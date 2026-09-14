@@ -1,0 +1,28 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:uav;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  flyway:
+    enabled: true
+    locations:
+      - classpath:db/migration
+
+app:
+  source-mode: mock
+  evidence-dir: ./target/evidence-test
+  map-package:
+    data-dir: ./target/map-data-test
+  login:
+    fail-limit: 5
+    lock-minutes: 30
+  session:
+    ttl-hours: 8
+  dev-seed:
+    enabled: true
+    password: changeme
+  live-device:
+    enabled: false
+  mqtt:
+    enabled: false

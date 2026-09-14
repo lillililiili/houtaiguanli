@@ -1,0 +1,46 @@
+spring:
+  flyway:
+    # 协作者 A 的 V202609050001 编号低于本地库已应用版本；仅本地开发库允许乱序应用，生产配置不放开。
+    out-of-order: true
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/uav
+    username: uav
+    password: uav
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: false
+
+app:
+  source-mode: live
+  evidence-dir: ./data/evidence
+  map-package:
+    # 与同级业务前台 Vite 的默认 /map-data/ 目录一致，后台启用后前台可直接感知。
+    data-dir: ${MAP_DATA_DIR:../../demo-ronghe/map-data}
+  handoff:
+    channel: ${APP_HANDOFF_CHANNEL:mock}
+  device:
+    mock-adapter:
+      enabled: ${APP_DEVICE_MOCK_ADAPTER_ENABLED:true}
+  dev-seed:
+    enabled: ${APP_DEV_SEED_ENABLED:true}
+    password: ${APP_DEV_SEED_PASSWORD:changeme}
+  flight:
+    status-advance:
+      enabled: ${APP_FLIGHT_STATUS_ADVANCE_ENABLED:true}
+  # 本地演示与验收同参：引擎开着、允许激活 DEMO 规则集、启动时回放阶段七与演示体量场景，合法性研判页才有记录可看。
+  rule-engine:
+    enabled: ${APP_RULE_ENGINE_ENABLED:true}
+    allow-demo-active: ${APP_RULE_ENGINE_ALLOW_DEMO_ACTIVE:true}
+    replay:
+      run-on-start: ${APP_RULE_ENGINE_REPLAY_RUN_ON_START:true}
+  disposal:
+    expiry:
+      enabled: true
+      poll-millis: 60000
+  # 本地演示按业务主流程自动引导光电；生产环境仍使用 application.yml 的安全默认值 false，需显式开启。
+  eo-edge:
+    auto-track-enabled: ${APP_EO_AUTO_TRACK_ENABLED:true}
+  network:
+    allow-loopback-when-listed: true

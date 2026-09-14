@@ -1,0 +1,69 @@
+services:
+  db:
+    image: postgis/postgis:16-3.5
+    environment:
+      POSTGRES_DB: ${DB_NAME:-uav}
+      POSTGRES_USER: ${DB_USER:-uav}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-uav}
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-uav} -d ${DB_NAME:-uav}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Loopback MQTT broker for Lingyun protocol A/C replay. Not a live field broker.
+  # api does not depend on this service: local `spring-boot:run` connects to host 127.0.0.1:1883.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+
+  api:
+    build: ../server
+    environment:
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-uav}
+      DB_USER: ${DB_USER:-uav}
+      DB_PASSWORD: ${DB_PASSWORD:-uav}
+      APP_SOURCE_MODE: mock
+      APP_DEV_SEED_ENABLED: "true"
+      APP_DEV_SEED_PASSWORD: ${APP_DEV_SEED_PASSWORD:-changeme}
+      EVIDENCE_DIR: /data/evidence
+      MAP_DATA_DIR: /data/map-data
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../data/evidence:/data/evidence
+      - ${MAP_PACKAGE_DATA_DIR:-../../demo-ronghe/map-data}:/data/map-data
+
+  business-web:
+    image: nginx:1.27
+    volumes:
+      - ${BUSINESS_UI_DIST:-../../demo-ronghe/dongying-vue/dist}:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${MAP_PACKAGE_DATA_DIR:-../../demo-ronghe/map-data}:/map-data:ro
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+  admin-web:
+    image: nginx:1.27
+    volumes:
+      - ../ruoyi-ui/dist:/usr/share/nginx/html:ro
+      - ./nginx-admin.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "5175:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata: {}
