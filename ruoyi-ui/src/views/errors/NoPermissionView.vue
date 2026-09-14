@@ -1,0 +1,1 @@
+<template><section class="result-page"><div class="result-icon">!</div><h1>暂无后台管理权限</h1><p>当前账号没有可访问的运维或系统管理菜单，请联系超级管理员分配相应权限。</p><el-button type="primary" @click="$router.push('/profile')">查看个人资料</el-button></section></template>

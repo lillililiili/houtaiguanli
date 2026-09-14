@@ -1,0 +1,28 @@
+server:
+  port: ${API_PORT:8080}
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  flyway:
+    clean-disabled: true
+
+app:
+  source-mode: ${APP_SOURCE_MODE}
+  evidence-dir: ${EVIDENCE_DIR:./data/evidence}
+  dev-seed:
+    enabled: ${APP_DEV_SEED_ENABLED:false}
+    password: ${APP_DEV_SEED_PASSWORD:}
+  bootstrap-admin:
+    enabled: ${APP_BOOTSTRAP_ADMIN_ENABLED:false}
+    account: ${APP_SUPER_ADMIN_ACCOUNT:}
+    name: ${APP_SUPER_ADMIN_NAME:超级管理员}
+    password: ${APP_SUPER_ADMIN_PASSWORD:}
+  super-admin:
+    account: ${APP_SUPER_ADMIN_ACCOUNT:}
+  live-device:
+    enabled: ${APP_LIVE_DEVICE_ENABLED:true}
+    instance-id: ${APP_INSTANCE_ID:}
+    lease-seconds: ${APP_LIVE_DEVICE_LEASE_SECONDS:30}

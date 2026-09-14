@@ -1,0 +1,41 @@
+# 阶段 14（处罚案件）决策记录
+
+自动裁定按"推荐项"执行，阶段结束随验收一并送用户。
+
+| 编号 | 决策 | 理由 |
+| --- | --- | --- |
+| 14-1 | 处罚交接材料包用 `schema_version=2`（事件形状），v1 风险形状原样保留；同一交接只有一份快照（PK=handoff_id），按 `schema_version` 分派解析 | 阶段 5 表结构允许（`schema_version >= 1`），不改历史快照 |
+| 14-2 | 材料包 v2 内容：`event`（事件 + 告警事实：编号、类型、等级、发生/接收时间、目标、归属）、`verifications`（`uav_event_verification` 全量历史）、`disposals`（该事件全部终态授权：编号、动作、通道、设备、申请/审批人姓名、时限、结果码与说明、完成时间；COMPLETED 至少一条由前提保证）、`evidence`（`evidence_link.subject_kind='EVENT'` 关联的 `evidence_file`：证据号、类别、sha256、采集时间、状态；只读，不改 A 的表）、`references`（target_id、track_id 可空） | 处罚要"事实清楚、证据充分"（事件驱动流程 4.7）；快照是提交那一刻的事实，之后不随源变 |
+| 14-3 | 提交处罚交接的读权限按来源种类：RISK→`risk:read`，UAV_EVENT→`alarm:read`；`expected_version` 对 `uav_event.version`；事件状态必须 `CONFIRMED`（否则 409 `INVALID_TRANSITION`）；落库 `event_id=source_id, risk_id=NULL` | 阶段 5 无条件要求 `risk:read` 是当时只有风险来源的产物 |
+| 14-4 | 读侧 `availability.material` 对 UAV_EVENT 来源：缺 `alarm:read` → `FORBIDDEN`；事件不在范围 → `SOURCE_NOT_VISIBLE`；材料内的证据段另按 `evidence:read` 裁剪（缺则整段省略并在 `availability.evidence=FORBIDDEN` 标明，不留空数组冒充"无证据"） | 沿用阶段 5 "无权限段省略且不泄露数量" |
+| 14-5 | 案件域独立模块 `modules/punishment`，从处罚交接立案：`POST /punishment-cases {handoff_id, party_type, party_name, note}`；一事件一案（`punishment_case.event_id UNIQUE`，并发一成一 409 `CASE_ALREADY_EXISTS`）；交接必须是 `UAV_PUNISHMENT` 且调用者可见 | 交接是"移送"的事实，案件是"受理"的事实，两者分开，交接编号不伪装案件编号（阶段 5 边界） |
+| 14-6 | 案件编号 `CASE-YYYYMMDD-NNNN`，`punishment_no_counter` 行锁递增，写法同 13-5/13-20 | 与授权编号同一体系 |
+| 14-7 | 案件状态机 `FILED → INVESTIGATING → UNDER_REVIEW → DECIDED → CLOSED`，`FILED/INVESTIGATING → WITHDRAWN`，复核结论 `REVISED` 或 `INSUFFICIENT` 都使 `UNDER_REVIEW → INVESTIGATING`（前者要求新裁量，后者挂待补线索），`UPHELD → DECIDED`；非法转换 409 `INVALID_TRANSITION`；每次转换 `expected_version` | 原产品三态（待核实/处置中/已结案）太粗，复核回退需要显式状态 |
+| 14-8 | 罚则档位表 `penalty_rule`（`schema_status=DEMO`）：按《无人驾驶航空器飞行管理暂行条例》给**区间**而不是定额（legacy 的十项定额只作 `fine_reference`），`penalty_types` 允许 `WARNING|FINE|WARNING_AND_FINE`；违法事由码复用 `REASON_CODE`/规则码（`NO_AUTHORIZATION`、`PROHIBITED_AIRSPACE_OVERLAP`、`AIRSPACE_ALTITUDE_EXCEEDED`、`PLAN_ALTITUDE_EXCEEDED`、`TIME_WINDOW_EXCEEDED`、`ROUTE_DEVIATION`、`BVLOS_EXCEEDED`、`NIGHT_FLIGHT`、`IDENTITY_MISMATCH`、`OTHER`） | 条例设定的是区间；档位未经业务确认（legacy `PUNISH_FINE confirmed:false`），DEMO 标注随每条规则返回 |
+| 14-9 | 裁量 `penalty_discretion`：一案多版（`DRAFT` 可改、`CONFIRMED` 只增一条且冻结）；`fine_amount` 必须落在规则区间（400 `FINE_OUT_OF_RANGE`），`penalty_type=WARNING` 时金额必须为 0；裁量因素 `factors`（从重/从轻/不予处罚，自由文本 + 码）；确认裁量的人记为 `decided_by` | 决定书只能基于冻结的裁量，改裁量必须另起版本 |
+| 14-10 | 决定书 `penalty_decision_document`：只能基于 `CONFIRMED` 裁量（否则 409 `DISCRETION_NOT_CONFIRMED`）；文书号 `<案件号>-DEC-NN`；内容 = 结构化字段 JSON + 服务端按 DEMO 模板渲染的纯文本（UTF-8，首行水印"演示模板 · 未经授权出具 · 金额档位未确认"）+ 渲染文本 sha256；下载 `GET /decision-documents/{id}/content` 返回 `text/plain; charset=UTF-8` 附件；`ISSUED` 后不可改，作废走 `REVOKED` 并记事件 | 平台未获授权出具文书（legacy 明标），先把"可追溯、不可篡改"做对；PDF/盖章不做 |
+| 14-11 | 复核 `punishment_review`（只增）：`conclusion ∈ UPHELD|REVISED|INSUFFICIENT`，`missing_leads[]`（`{kind, description}`，kind ∈ `PARTY_IDENTITY|EVIDENCE|JURISDICTION|FACT|OTHER`）；复核人 ≠ 承办人（409 `REVIEW_SELF_NOT_ALLOWED`）；`INSUFFICIENT` 回 `INVESTIGATING` 并把线索挂在案件上；`UPHELD` → `DECIDED`；`REVISED` → `INVESTIGATING` 且要求新裁量 | 事件驱动流程 4.7 的四个条件（事实清楚、主体可认定、证据充分、管辖明确）就是 `kind` 词表 |
+| 14-12 | 当事人只存 `party_type ∈ PERSON|ORG|UNKNOWN` 与 `party_name`（可空，UNKNOWN 时必空）；不存证件号、电话、住址 | 敏感个人信息不进演示库；主体认定不作立案闸门（legacy 口径），只影响文书描述 |
+| 14-13 | 权限 `punishment:read / file / decide / review / close`（ACTION，sort 975–979）；本阶段只有超管可用（13-33 缺口未改） | 与阶段 13 同 |
+| 14-14 | 结案 `POST /{id}/close` 要求 `DECIDED` 且至少一份 `ISSUED` 决定书（否则 409 `DECISION_DOCUMENT_REQUIRED`）；撤案 `POST /{id}/withdraw` 只允许 `FILED/INVESTIGATING`，理由必填 | 结案是有文书的结案 |
+| 14-15 | 案件不设时限、不做到期任务；证据主体扩到 CASE/HANDOFF 由 A 的 `evidence_link` 决定，本阶段只读引用事件证据，契约 §6 提请 A | 范围控制 |
+| 14-16 | 种子（`@Order(110)`，双门禁）：一条 `UAV_PUNISHMENT` 接收方、一条挂在阶段 13 种子事件上的处罚交接（快照 v2）、一件 `INVESTIGATING` 案件 + 一版 `DRAFT` 裁量；不造决定书与复核 | 处罚页各块都有数据可看，正面路径留给浏览器走 |
+| 14-17 | 迁移：`V202609080101`（领导权限）、`V202609080102`（E1 表）、`db/postgresql/V202609080103`（E1 PG 触发器/CHECK，版本化，不用 R__） | 13-8、13-32 修订 |
+| 14-18 | 告警页"通知处罚部门"按钮启用为"提交处罚交接"：弹窗选接收方（`GET /handoff-recipients?handoff_type=UAV_PUNISHMENT`），成功后提示到处罚页立案；不满足前提（未核实 / 无已完成授权）按服务端 409 文案显示，不在前端预判 | 入口就在事件详情，处罚页负责案件 |
+| 14-19 | `allowed_actions` 十项与写接口一一对应（`RESOLVE_LEAD`、`REVOKE_DOCUMENT` 补入，`SUBMIT_REVIEW` 删除——确认裁量即提请复核）；`punishment_reviewed` 审计 detail 带 `conclusion/resulting_status` | 审查第 1 轮 P1-1/P2-1：前端只按表启用按钮，表与接口对不上就是返工；审计要能说清复核结果 |
+| 14-20 | `penalty_rule.legal_basis` 只写条例名称加"（条款号待法制岗核定）"，不填条款号；金额区间同样是 DEMO 占位，迁移注释写明与条款号一并待核定；决定书渲染原样带出这句话 | E1 提出：仓库里没有权威条文出处，凭记忆写"第某条"会被渲染进可下载的决定书，水印只能说明"文书未获授权出具"，说明不了"法条是编的"。业务方给出条例原文或档位表后只改 0102 之后的一支数据迁移 |
+| 14-21（修订） | 处罚交接提交顺序：`handoff:create` → 宽松预解析只取 `source_kind`（不报错）→ 按来源种类要读权限（403；取不到按历史默认要 `risk:read`）→ 严格解析（400）→ 前提/组合校验（`(RISK,UAV_PUNISHMENT)` 仍 409、`(UAV_EVENT,RISK_NOTICE)` 仍 400）→ 锁事件 → 幂等 → 版本 → CONFIRMED → 接收方 → 逻辑唯一 → 写入 | 14-3"按种类给读权"与阶段 5"缺权限的畸形请求先 403 不给试探校验规则"冲突，靠"预解析只选权限、严格解析排在鉴权后"同时保住两条（E1，被既有断言逼出） |
+| 14-22 | 事件来源的交接 `handoff.source_mode` 取事件所属告警的 `source_mode`（与快照里 `event.source_mode` 同源），不写死 `live`；案件的 `source_mode` 继承交接 | 审查第 2 轮 P1-2：同一次提交里交接标 live、快照标 mock 自相矛盾，演示数据会在案件上标成 live |
+| 14-23 | 决定书触发器：除内容列冻结外，`status` 只允许 `ISSUED → REVOKED`，`revoked_at/revoke_reason` 一旦非空不得清空或改回 | 审查第 2 轮 P2-1：否则已作废文书可在库层悄悄恢复有效 |
+| 14-24 | `penalty_rule.penalty_types` 存 JSON 数组文本（如 `["WARNING","FINE"]`），迁移里每行必须是合法子集；拟定裁量时 `penalty_type` 必须落在规则允许值内，否则 400 `PENALTY_TYPE_NOT_ALLOWED`；只允许 WARNING 的规则 `fine_max` 必须为 0 且 `fine_reference` 置 NULL（前端 `fine_max=0` 时不显示参考值） | 审查第 2 轮 P2-2：PR-09 只允许警告却带 5 万上限，能开出合法的罚款裁量 |
+| 14-25 | `availability.evidence` 以 `availability.material` 为前提：material 是 `FORBIDDEN/SOURCE_NOT_VISIBLE` 时 evidence 同值；只有 material AVAILABLE 才再按 `evidence:read` 与 `evidence_omitted` 判 | 审查第 2 轮 P2-3：缺 `alarm:read` 的读者不该看到 evidence=AVAILABLE |
+| 14-26 | 快照 `disposals[].completed_at` 取该授权 `COMPLETE`/`MANUAL_RESULT` 事件的 `occurred_at`（无则省略键），不用 `updated_at`；线索 `resolved_note` 与 `resolved_by/at` 同生同灭（CHECK） | 审查第 2 轮建议：进卷宗的完成时刻不能随任意 UPDATE 漂移；同类约束松紧一致 |
+| 14-27 | 所有 `*_name` 回填一律取 `app_user.name`（同 assign 的查法），不用登录账号；决定书"出具人"随之；`revokeDocument` 也走 `requireTransition(REVOKE_DOCUMENT)`，重复作废答 409 `INVALID_TRANSITION`；`requireDifferentReviewer` 在 `officer_id` 为空时拒绝（409 `INVALID_TRANSITION`，"未指派承办人不能复核"）而不是放行 | 审查第 3 轮 P1-3/P2-4/建议：同一行案件不能一半姓名一半账号，且出具人进了 sha256；十一个写动作用同一张表；"自己办的案不能自己复核"不能因空值静默失效 |
+| 14-28 | 种子的处罚交接快照必须用服务路径的同一个材料组装器生成（把 v2 组装抽成可复用组件，种子与 `HandoffSubmissionService` 共用），不许手写空壳 JSON；种子的 `source_mode` 与 `*_name` 同样取真实行。空值处理分两种：`verifications`/`disposals` 查出零条即省略键（零条与 CONFIRMED / 有 COMPLETED 授权的前提矛盾，只可能是没取到）；`evidence` 有权限时查出零条保留空数组（『查过了、本案无关联证据』是真实结论），缺权限用 `evidence_omitted` | 升级路径实跑：种子快照 `event` 只有 event_id/state/version，`verifications/disposals` 为空——同一事件有 COMPLETED 授权 9002 却没进快照，页面拿它验四段渲染必然"未提供"；种子造的假材料比没有更糟 |
+| 14-29 | 裁量表单的处罚种类选项列全集，由校验按所选档位拦（错误文案写明该事由允许的种类）；不把 `openFormModal` 改成响应式裁剪 | E2：静态表单只能按第一条规则裁，用户换事由后选项就对不上，比列全更糟；改弹窗组件超出"只接数据" |
+| 14-30 | 0103 决定书触发器再加：`revoked_at`/`revoke_reason` 一旦非空即不得改为其它值（与"不得清空"同形）；补 `HandoffPunishmentMaterialsApiTest` 用例"持 `alarm:read` 提交 (UAV_EVENT, RISK_NOTICE) 得 400 INVALID_KIND" | 审查第 4 轮补记 P2-8 与覆盖缺口：挡住了"当作没作废过"，还要挡住"换个说法作废"；14-21 承诺保住的既有答复要有人看守 |
+| 14-31 | v2 材料组装抽成 `HandoffMaterialAssembler`（服务与种子共用，`includeEvidence` 由调用方按提交人当时的 `evidence:read` 给）；阶段 14 种子给阶段 13 的种子事件补一条人工核实记录（`PENDING_VERIFICATION → CONFIRMED`），不动阶段 13 文件 | 14-28 落地；处罚材料要能回答"谁在什么时候认定属实"，阶段 13 种子直接写成 CONFIRMED 没留核实记录 |
+| 14-32 | `allowed_actions` 按调用者裁剪时把 `REVIEW` 对承办人本人排除（服务端已知承办人），前端不预判；`allowed_actions` 语义明确为『当前调用者现在能做的』 | E2 联调：UNDER_REVIEW 下承办人也拿到 REVIEW，按钮出现后才被 409 挡，与 14-18『前端不预判』相配的是服务端把表给准 |
+| 14-33 | 复核请求体：`missing_leads[]` 的结构校验（kind 词表、description 非空）提到锁定/版本/状态判定之前（400 先于 409）；`UPHELD` 时携带 `missing_leads` 直接 400 `VALIDATION_ERROR`（"维持不能同时列待补线索"），不允许一半留痕一半消失 | 审查第 7 轮 P2-10：答复码顺序是契约；同一输入不能两种命运 |
+| 14-32（补充） | `allowed_actions` 的 `REVIEW` 同时排除"无承办人"与"调用者即承办人"两种情况（`mayReview(callerId, officerId)` 与 `requireDifferentReviewer` 共用同一组入参，不预计算布尔，避免两处分叉） | 审查第 7 轮建议：只镜像一半，问题从一种挪到另一种 |
+| 14-34 | 阶段 14 的 H2 夹具 `PunishmentFixture.cleanup()` 清掉自己建的会话、数据范围与角色授权（`ROLE-PC-%`）；`DeviceBusinessScopeTest` 的断言恢复原状（除管理员外无人持有 `handoff:*`），不再收窄到内置角色 | 审查第 8 轮 P2-11：根因是夹具泄漏而不是断言过严；收窄会放开整个非内置角色面，且下一条同类断言还会再撞。用户/角色行不删（审计与案件事件以 FK 引用），空授权对断言惰性 |

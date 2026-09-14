@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 仅放在 map-data 虚拟目录物理根下并改名 web.config，不覆盖业务站点配置。
+     启用 IIS Static Content；应用池身份只需读取地图目录。
+     站点已有 SPA rewrite 时必须先排除 /map-data/，不可把缺失包重写成 HTML。 -->
+<configuration>
+  <system.webServer>
+    <directoryBrowse enabled="false" />
+    <urlCompression doStaticCompression="false" doDynamicCompression="false" />
+    <staticContent>
+      <remove fileExtension=".pmtiles" />
+      <mimeMap fileExtension=".pmtiles" mimeType="application/vnd.pmtiles" />
+      <remove fileExtension=".pbf" />
+      <mimeMap fileExtension=".pbf" mimeType="application/x-protobuf" />
+      <remove fileExtension=".json" />
+      <mimeMap fileExtension=".json" mimeType="application/json" />
+      <remove fileExtension=".png" />
+      <mimeMap fileExtension=".png" mimeType="image/png" />
+      <remove fileExtension=".otf" />
+      <mimeMap fileExtension=".otf" mimeType="font/otf" />
+      <clientCache cacheControlMode="DisableCache" />
+    </staticContent>
+    <httpProtocol>
+      <customHeaders>
+        <remove name="X-Content-Type-Options" />
+        <add name="X-Content-Type-Options" value="nosniff" />
+      </customHeaders>
+    </httpProtocol>
+  </system.webServer>
+</configuration>

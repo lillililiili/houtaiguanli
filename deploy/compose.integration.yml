@@ -1,0 +1,24 @@
+services:
+  db:
+    image: postgis/postgis:16-3.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${INTEGRATION_DB_NAME:?请设置 INTEGRATION_DB_NAME}
+      POSTGRES_USER: ${INTEGRATION_DB_USER:?请设置 INTEGRATION_DB_USER}
+      POSTGRES_PASSWORD: ${INTEGRATION_DB_PASSWORD:?请设置 INTEGRATION_DB_PASSWORD}
+    ports:
+      - "${INTEGRATION_DB_BIND_ADDRESS:?请设置私网监听地址}:${INTEGRATION_DB_PORT:-5432}:5432"
+    volumes:
+      - integration_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${INTEGRATION_DB_USER:?请设置 INTEGRATION_DB_USER} -d ${INTEGRATION_DB_NAME:?请设置 INTEGRATION_DB_NAME}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  integration_pgdata: {}

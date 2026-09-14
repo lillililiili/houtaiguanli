@@ -1,0 +1,20 @@
+spring:
+  datasource:
+    url: ${POSTGRES_TEST_URL}
+    username: ${POSTGRES_TEST_USER}
+    password: ${POSTGRES_TEST_PASSWORD}
+  flyway:
+    enabled: false
+
+app:
+  dev-seed:
+    enabled: false
+  live-device:
+    enabled: false
+  mqtt:
+    enabled: false
+  # 决策 15-39：PG 用例拆 schema 期间这个 400ms 轮询还在跑，日志落 relation ... does not exist；
+  # 它还会写（超时指令置 TIMED_OUT + 写设备事件），关掉才不会有后台写手在断言中途改行。
+  # 一处覆盖全部 11 个 PG 用例类。H2 的 application-test.yml 不动——Outbox 相关用例仍靠它跑。
+  outbox:
+    enabled: false

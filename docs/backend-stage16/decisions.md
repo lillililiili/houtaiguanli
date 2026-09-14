@@ -1,0 +1,16 @@
+# 阶段 16 决策记录（领导自动裁定，事后汇报）
+
+| 编号 | 决策 | 依据 |
+| --- | --- | --- |
+| 16-1 | 管线内自动合并按契约 v1.2（`fusion-api-contract.md:55`）落地：同域两 STABLE 目标互距 ≤ `merge_max_dist_sigma·σ` 连续 ≥ `merge_min_frames` 帧，经 `association_pending(MANY_TO_ONE)` 计帧后由系统合并；survivor 取更早 `first_seen_at`；links 不迁移；`target.version` 不递增（沿用 8-6，系统写入不与人工写入争版本）；`operator_kind=SYSTEM` | 决策 8-16 遗留项，`association_pending` 表与 `IdentityStateMachine` 的合并辅助方法已存在且只有测试在调用；重复目标是现在能看到的缺口（`GET /targets` 同一实体出现两次只能人工合并） |
+| 16-2 | 自动分裂**不**按契约"原目标终止 + 两个新 ID"，而是：原目标保留 ID 继续存活，第二回波在计帧达阈后作为新目标落 `op=SPLIT, origin_target_id=原目标` 的血缘与 `fusion_event SPLIT`；未达阈值前维持现状（新目标 + CREATE） | 阶段 8 的原则是 ID 稳定、保留更早 ID；终止原目标会让态势页上一直在跟的目标突然换号。契约 v1.2 该句随本决策修订 |
+| 16-2 修订 | 自动分裂后原目标 `target_track_status` **保持不变（STABLE）**，不写 SPLIT：SPLIT 对引擎是终态（`activeTargets` 只取 TENTATIVE/STABLE/SHORT_LOST），而原目标自己的回波还在、仍要跟踪；人工分裂写 SPLIT 是因为来源被人挪走。契约 §55 拆成人工/自动两段，并把从未实现的"两新 ID"改为实际的"一个新目标" | 审查第 1 轮 P1-1：分裂语义三个版本并存，且契约与阶段 8 已上线的人工分裂不符；16.4 的用例必须照约定写而不是照实现写 |
+| 16-3 | 空域孔洞：`map.js` 改 even-odd 多环填充，`situationData` 输出全部环，大屏遍历全部多边形并补 `layer`；`AirspacePage`/`FlightsPage` 已是 even-odd 不动 | `situationData.js:43` 注释明写"孔洞 map.js 画不了，本期忽略"；大屏 `BigScreenApp.vue:197` 只取第一个多边形第一环且因缺 `layer` 被 `map.js` 整条跳过 |
+| 16-4 | `/auth/me.permission_codes` 追加动作码原文（等级 ≥ READ），模块码不变；不改 `menu_keys` | 15-36 开放项；`FlightsPage.actionAllowed` 已按冒号码嗅探，下发即生效；其余页面的动作按钮不再只能靠 403 |
+| 16-5 | Worker 恢复证据用新测试类而不是改动产品代码：融合过期租约重领、outbox 过期/在途领取、退避与死信；产品代码只有在用例证明有缺陷时才改 | P1-9 现状：`attempt_count/failOutbox` 与"过期租约重领并完成"在测试里零命中；用户要求不做冗余改动 |
+| 16-1 修订 | 实施细节按实测定：合并判定用经纬度经 `toEnu` 换算的距离（滤波状态 x/y 是各轨迹自己的 ENU 原点，跨目标不可减）；"运动一致"不引入新参数，两边有速度且点积为负即本帧不计；自动分裂**追加**一行 `SPLIT(origin_target_id)`、CREATE 行保留（`target_lineage` 只增触发器拒绝 UPDATE，H2 无此触发器改写会假绿）；`pending_expire_frames` 按字面实现，合并路径不可达、分裂路径以 `near-echo` 场景钉 EXPIRED；回放数据集加 `converge-merge`（同点双回波）与 `near-echo`，给 A 的 `stage85-lingyun-demo.mqtt.ndjson` 180→204 行并按同一码路重导出 | E1 16.1 实测；三处偏离简报均有可复现依据 |
+| 16-6 | `GET /targets` 默认排除 `target_track_status=MERGE` 的目标（被并者按定义是某个存活目标的别名），`include_merged=true` 可恢复；详情接口不变；TERMINATED 的处理本轮不碰 | 空库验收：自动合并已按设计落库，但列表不看 track_status、前端也不过滤，用户看到的仍是同一目标两次——功能的可见结果没闭合 |
+| 16-7 | 回放数据集的 `dataset_id` 是不可变内容：改内容必须换 id。16.1 新增的 `converge-merge`/`near-echo` 场景挪到新数据集 `stage16-fusion-merge-demo`，`stage85-lingyun-demo` 恢复为 HEAD 的 180 行原样（给 A 的联调件不变），seeder 按数据集逐个"已灌过就跳过"；验收必须包含在已灌过旧回放的库上启动 | 另一个会话报告：整树包在已灌过旧回放的库上启动时 `FusionReplayRunner.loadV2` 抛 `SOURCE_MESSAGE_CONFLICT`（同一 msg id 哈希不同），所有已有开发库起不来——升级路径断，属 13-30 那类只在旧库上现形的缺陷 |
+| 16-8 | 自动合并候选两侧都必须在**本帧被观测命中**（实现判据：`estimatesByTarget` 里该目标本帧的估计列表非空；只靠预测态续命的目标列表为空，不进候选）才计帧；长期 STABLE 但本轮从未被观测的目标不是候选 | 升级路径验收：干净包起在已灌过旧回放的 `uav_stage10_verify`，stage16 的 converge 目标先把无来源链接的阶段 2/8 种子目标当 survivor 吸收了阶段 8 的 EO/TDOA 种子目标，再被吸收成链——种子目标只要有 latest_state 且 STABLE 就永远是候选；全新库上没有陈旧 STABLE 目标同处，所以只出现一次合并、看不见这个缺陷 |
+| 16-9 | E2E `disposal-actions` 夹具自给：用例以 admin1 通过 API 在真实交接主体上申请一条 MANUAL 通道的处置授权，比对后 `finally` 撤回；`playwright.config.js` 的 webServer 改用仓库内 `node node_modules/vite/bin/vite.js` | CI 第三跑 39/40：干净库里阶段 13 种子的已批准授权早已过期，没有任何可动作行，用例一半空转；本机绿只因别人手工造过行。`npx vite` 在本机会解析到仓库外的另一个 vite 安装 |
+| 16-10 | 工作台队列次序按原版改回：`action_rank`（可操作 2 / 等回执 1 / 终态 0）> 等级 > 接收时间 > kind > id；终态 = 误报、已通知、已排除、已恢复，PROCESSING 居中；顶部说明同步改写 | 用户对照原版：现版首条是已结案的"误报"、右侧"当前事项无待办动作"；原版是等级 + 可操作性 + 时间，本次把可操作提到最前，避免所有高等级都终态时终态仍占队首（B 领导转达） |

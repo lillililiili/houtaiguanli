@@ -1,0 +1,33 @@
+{
+  "name": "uav-low-altitude-admin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "无人机融合感知与低空安全管理平台后台管理系统",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src tests --ext .js,.vue --quiet",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "2.0.10",
+    "axios": "0.27.2",
+    "echarts": "5.4.0",
+    "element-plus": "2.2.27",
+    "nprogress": "0.2.0",
+    "pinia": "2.0.22",
+    "vue": "3.5.12",
+    "vue-router": "4.1.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "5.0.4",
+    "@vue/compiler-sfc": "3.5.12",
+    "eslint": "8.57.0",
+    "eslint-plugin-vue": "9.25.0",
+    "jsdom": "25.0.1",
+    "vite": "5.4.21",
+    "vitest": "3.0.0"
+  }
+}

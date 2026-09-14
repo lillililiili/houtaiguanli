@@ -1,0 +1,2 @@
+<script setup>import { useRoute, useRouter } from 'vue-router'; const route=useRoute(); const router=useRouter(); function retry(){router.replace(String(route.query.from||'/'));}</script>
+<template><section class="result-page standalone"><div class="result-icon">!</div><h1>后台服务暂不可用</h1><p>会话尚未清除。请确认 API 服务已启动后重试。</p><el-button type="primary" @click="retry">重新连接</el-button><el-button @click="$router.push('/login')">返回登录页</el-button></section></template>

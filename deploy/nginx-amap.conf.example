@@ -1,0 +1,16 @@
+# 高德 JS API 安全代理示例。把 ${AMAP_SECURITY_CODE} 交给部署系统注入，
+# 不要把真实 securityJsCode 写入仓库或前端构建产物。
+location /_AMapService/v4/map/styles {
+    set $args "$args&jscode=${AMAP_SECURITY_CODE}";
+    proxy_pass https://webapi.amap.com/v4/map/styles;
+}
+
+location /_AMapService/v3/vectormap {
+    set $args "$args&jscode=${AMAP_SECURITY_CODE}";
+    proxy_pass https://fmap01.amap.com/v3/vectormap;
+}
+
+location /_AMapService/ {
+    set $args "$args&jscode=${AMAP_SECURITY_CODE}";
+    proxy_pass https://restapi.amap.com/;
+}

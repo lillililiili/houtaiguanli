@@ -1,0 +1,1 @@
+<template><section class="result-page standalone"><div class="result-icon">404</div><h1>页面不存在</h1><p>地址可能已失效或页面已迁移。</p><el-button type="primary" @click="$router.push('/')">返回后台首页</el-button></section></template>
