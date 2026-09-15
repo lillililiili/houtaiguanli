@@ -2,7 +2,7 @@ services:
   db:
     image: postgis/postgis:16-3.5
     environment:
-      POSTGRES_DB: ${DB_NAME:-uav}
+      POSTGRES_DB: ${DB_NAME:-houtaiguanli}
       POSTGRES_USER: ${DB_USER:-uav}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-uav}
     ports:
@@ -10,7 +10,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-uav} -d ${DB_NAME:-uav}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-uav} -d ${DB_NAME:-houtaiguanli}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -27,7 +27,7 @@ services:
   api:
     build: ../server
     environment:
-      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-uav}
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-houtaiguanli}
       DB_USER: ${DB_USER:-uav}
       DB_PASSWORD: ${DB_PASSWORD:-uav}
       APP_SOURCE_MODE: mock
@@ -39,7 +39,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "${API_PORT:-8081}:8080"
     volumes:
       - ../data/evidence:/data/evidence
       - ${MAP_PACKAGE_DATA_DIR:-../../demo-ronghe/map-data}:/data/map-data

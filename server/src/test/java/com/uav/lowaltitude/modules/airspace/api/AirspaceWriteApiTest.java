@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.airspace.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -236,6 +237,29 @@ class AirspaceWriteApiTest {
         // 成功审计与业务写入同事务：审计失败必须让空域、版本、来源、幂等占位一起消失。
         assertThat(count("airspace where owner_org_id=?", orgId)).isZero();
         assertThat(count("idempotency_request where user_id=?", userId)).isZero();
+    }
+
+    /** 上一版定了结束时间（临时管制区）也要被接替关闭，否则两版重叠、读取判 VERSION_AMBIGUOUS。 */
+    @Test
+    void addingVersionClosesPreviousTimedVersionToo() throws Exception {
+        Instant firstTo = T0.plusSeconds(86400);
+        MvcResult createdResult = mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + session)
+                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                .content(createBody("KY-9W-T-" + suffix, SQUARE, T0).replace("\"change_reason\"", "\"valid_to\":" + firstTo.toEpochMilli() + ",\"change_reason\"")))
+                .andExpect(status().isCreated()).andReturn();
+        String airspaceId = json.readTree(createdResult.getResponse().getContentAsString()).path("data").path("airspace_id").asText();
+        String firstVersionId = jdbc.queryForObject("select airspace_version_id from airspace_version where airspace_id=? and version_no=1", String.class, airspaceId);
+        Instant secondFrom = T0.plusSeconds(3600);
+
+        mvc.perform(version(session, airspaceId, SQUARE, secondFrom, 0, "提前结束"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.superseded_version_id").value(firstVersionId));
+
+        assertThat(jdbc.queryForObject("select valid_to from airspace_version where airspace_version_id=?", java.sql.Timestamp.class, firstVersionId).toInstant())
+                .isEqualTo(secondFrom);
+        // 接替后任意时刻只有一版生效：详情接口不再报版本重叠。
+        mvc.perform(get("/api/v1/airspaces/" + airspaceId).header("Authorization", "Bearer " + session))
+                .andExpect(status().isOk());
     }
 
     private ResultActions create(String token, String airspaceNo, String boundary, Instant validFrom, String key) throws Exception {

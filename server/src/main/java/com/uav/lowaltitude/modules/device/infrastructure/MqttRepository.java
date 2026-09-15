@@ -145,14 +145,14 @@ public class MqttRepository {
         return opsId;
     }
     public int updateDevice(Binding b, Registration p, long now) {
-        int changed=jdbc.update("UPDATE ops_device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=? AND version=?",
+        int changed=jdbc.update("UPDATE ops_device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=? AND version=? AND deleted_at IS NULL",
                 p.name(),p.vendor(),p.model(),now,b.opsDeviceId(),p.version());
         if(changed==1) jdbc.update("UPDATE device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=?",
                 p.name(),p.vendor(),p.model(),new Timestamp(now),b.deviceId());
         return changed;
     }
     public int enableDevice(Binding b,long version,boolean enabled,long now) {
-        int changed=jdbc.update("UPDATE ops_device SET enabled=?,version=version+1,updated_at=? WHERE device_id=? AND version=?",
+        int changed=jdbc.update("UPDATE ops_device SET enabled=?,version=version+1,updated_at=? WHERE device_id=? AND version=? AND deleted_at IS NULL",
                 enabled,now,b.opsDeviceId(),version);
         if(changed==1) {
             jdbc.update("UPDATE device SET enabled=?,version=version+1,updated_at=? WHERE device_id=?",enabled,new Timestamp(now),b.deviceId());

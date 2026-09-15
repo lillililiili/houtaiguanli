@@ -69,7 +69,7 @@ public class DeviceRepository {
         Map<String,Object> params=new HashMap<>();
         params.put("device_id",deviceId);
         List<Map<String, Object>> rows = named.queryForList(
-                DEVICE_SELECT + " WHERE d.device_id=:device_id" + mqttScope(params), params);
+                DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL" + mqttScope(params), params);
         return rows.isEmpty() ? null : rows.get(0);
     }
 
@@ -107,7 +107,7 @@ public class DeviceRepository {
         };
         Map<String,Object> params=new HashMap<>();
         return named.queryForList("SELECT DISTINCT " + safe + " FROM ops_device d WHERE " + safe
-                + " IS NOT NULL AND " + safe + "<>''" + mqttScope(params) + " ORDER BY " + safe,params,String.class);
+                + " IS NOT NULL AND " + safe + "<>'' AND d.deleted_at IS NULL" + mqttScope(params) + " ORDER BY " + safe,params,String.class);
     }
 
     public Map<String, Object> overview() {
@@ -124,7 +124,7 @@ public class DeviceRepository {
                        ,SUM(CASE WHEN d.source_mode='live' THEN 1 ELSE 0 END) AS live_count
                        ,SUM(CASE WHEN d.simulated=TRUE THEN 1 ELSE 0 END) AS simulated_count
                 FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id
-                """ + " WHERE 1=1" + mqttScope(params),params);
+                """ + " WHERE d.deleted_at IS NULL" + mqttScope(params),params);
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn) {
@@ -136,7 +136,7 @@ public class DeviceRepository {
                 + "SUM(CASE WHEN s.connectivity='ABNORMAL' THEN 1 ELSE 0 END) AS abnormal, "
                 + "SUM(CASE WHEN s.connectivity IS NULL OR s.connectivity='UNKNOWN' THEN 1 ELSE 0 END) AS unknown_count "
                 + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id "
-                + "WHERE 1=1" + mqttScope(params) + " GROUP BY " + safe + " ORDER BY " + safe,params);
+                + "WHERE d.deleted_at IS NULL" + mqttScope(params) + " GROUP BY " + safe + " ORDER BY " + safe,params);
     }
 
     public void insertDevice(Map<String, Object> values) {
@@ -170,12 +170,12 @@ public class DeviceRepository {
                     firmware_version=:firmware_version, installed_at=:installed_at,
                     source_mode=:source_mode, simulated=:simulated,
                     version=version+1, updated_at=:updated_at
-                WHERE device_id=:device_id AND version=:expected_version
+                WHERE device_id=:device_id AND version=:expected_version AND deleted_at IS NULL
                 """, p);
     }
 
     public int setEnabled(String deviceId, long expectedVersion, boolean enabled, long now) {
-        return jdbc.update("UPDATE ops_device SET enabled=?, version=version+1, updated_at=? WHERE device_id=? AND version=?",
+        return jdbc.update("UPDATE ops_device SET enabled=?, version=version+1, updated_at=? WHERE device_id=? AND version=? AND deleted_at IS NULL",
                 enabled, now, deviceId, expectedVersion);
     }
 
@@ -435,9 +435,36 @@ public class DeviceRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public boolean canDeleteInScope(String id, String userId, String scopeMode) {
+        if ("ALL".equals(scopeMode)) return true;
+        if (!"ASSIGNED".equals(scopeMode)) return false;
+        return jdbc.queryForObject("""
+                SELECT COUNT(*) FROM device_business_scope bs
+                JOIN app_user_data_scope us ON us.org_id=bs.owner_org_id AND us.district_id=bs.district_id
+                JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE
+                JOIN app_district dd ON dd.district_id=bs.district_id AND dd.enabled=TRUE
+                WHERE bs.ops_device_id=? AND us.user_id=?
+                """, Long.class, id, userId) > 0;
+    }
+
+    public int markDeleted(String id, long version, long now) {
+        return jdbc.update("""
+                UPDATE ops_device SET deleted_at=?,updated_at=?,version=version+1
+                WHERE device_id=? AND version=? AND enabled=FALSE AND deleted_at IS NULL
+                """, now, now, id, version);
+    }
+
+    public boolean hasActiveWork(String id) {
+        return jdbc.queryForObject("""
+                SELECT (SELECT COUNT(*) FROM device_command WHERE device_id=? AND status IN ('QUEUED','SENT','ACCEPTED'))
+                     + (SELECT COUNT(*) FROM commission_task WHERE device_id=? AND status IN ('CREATED','CONNECTING','CONNECTED','READY','RUNNING'))
+                     + (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING'))
+                """, Long.class, id, id, id) > 0;
+    }
+
     private SqlWhere where(DeviceQuery q) {
         Map<String, Object> p = new HashMap<>();
-        StringBuilder sql = new StringBuilder(" WHERE 1=1");
+        StringBuilder sql = new StringBuilder(" WHERE d.deleted_at IS NULL");
         sql.append(mqttScope(p));
         if (q.keyword != null && !q.keyword.isBlank()) {
             sql.append(" AND (LOWER(d.device_no) LIKE :keyword OR LOWER(d.name) LIKE :keyword)");

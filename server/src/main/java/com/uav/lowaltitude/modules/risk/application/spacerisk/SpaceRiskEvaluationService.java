@@ -37,7 +37,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 public class SpaceRiskEvaluationService {
     public static final String RULE_SET_CODE = "SPACE-RISK-DEMO";
     public static final String RISK_TYPE = "SPACE_OBJECT";
-    public static final String SOURCE_LIVE = "rule-engine-space-risk-live", SOURCE_MOCK = "rule-engine-space-risk-mock";
+    public static final String SOURCE_LIVE = "rule-engine-space-risk-live", SOURCE_MOCK = "rule-engine-space-risk-mock",
+            SOURCE_REPLAY = "rule-engine-space-risk-replay";
     public static final String STATUS_RUNNING = "RUNNING", STATUS_SUCCESS = "SUCCESS", STATUS_FAILED = "FAILED", STATUS_UNAVAILABLE = "UNAVAILABLE";
     public static final String MESSAGE_SPATIAL_UNAVAILABLE = "SPATIAL_BACKEND_UNAVAILABLE";
     public static final String MESSAGE_PLAN_REQUIRED = "PLAN_REQUIRED";
@@ -188,7 +189,7 @@ public class SpaceRiskEvaluationService {
         return switch (mode) {
             case "live" -> SOURCE_LIVE;
             case "mock" -> SOURCE_MOCK;
-            case "replay" -> "rule-engine-space-risk-replay";
+            case "replay" -> SOURCE_REPLAY;
             default -> throw new IllegalStateException("未知目标来源模式");
         };
     }

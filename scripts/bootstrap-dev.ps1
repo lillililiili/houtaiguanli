@@ -40,6 +40,17 @@ if ($LASTEXITCODE -ne 0) {
     throw 'The local database failed to start.'
 }
 
+# Existing pgdata volumes may have been initialized with the old uav database.
+$dbUser = $(if ($env:DB_USER) { $env:DB_USER } else { 'uav' })
+$hasAdminDatabase = docker compose -f $composeFile exec -T db psql -U $dbUser -d postgres -Atc "SELECT 1 FROM pg_database WHERE datname='houtaiguanli'"
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the local databases.' }
+if ($hasAdminDatabase -notcontains '1') {
+    docker compose -f $composeFile exec -T db createdb -U $dbUser houtaiguanli
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the independent admin database.' }
+}
+docker compose -f $composeFile exec -T db psql -U $dbUser -d houtaiguanli -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS postgis'
+if ($LASTEXITCODE -ne 0) { throw 'Could not enable PostGIS for the admin database.' }
+
 if (-not $SkipFrontendInstall -and -not (Test-Path (Join-Path $adminDir 'node_modules'))) {
     Write-Host 'Installing admin frontend dependencies...'
     Push-Location $adminDir
@@ -72,4 +83,4 @@ Write-Host "  cd server; .\mvnw.cmd spring-boot:run `"-Dspring-boot.run.profiles
 Write-Host ''
 Write-Host 'Admin frontend: http://127.0.0.1:5175/'
 Write-Host 'Business frontend: http://127.0.0.1:5173/'
-Write-Host 'Backend health: http://127.0.0.1:8080/actuator/health'
+Write-Host 'Backend health: http://127.0.0.1:8081/actuator/health'

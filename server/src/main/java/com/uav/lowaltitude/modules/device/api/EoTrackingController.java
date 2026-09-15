@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.uav.lowaltitude.modules.device.application.EoManualTrackService;
 import com.uav.lowaltitude.modules.device.application.EoManualTrackService.EoTrackingTask;
+import com.uav.lowaltitude.modules.device.application.EoManualTrackService.EoTrackingAvailability;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
@@ -37,6 +38,11 @@ public class EoTrackingController {
     @GetMapping("/targets/{targetId}/eo-tracking-tasks")
     public ApiResponse<EoTrackingTask> current(@PathVariable String targetId) {
         return ApiResponse.ok(service.current(targetId));
+    }
+
+    @GetMapping("/targets/{targetId}/eo-tracking-availability")
+    public ApiResponse<EoTrackingAvailability> availability(@PathVariable String targetId) {
+        return ApiResponse.ok(service.availability(targetId));
     }
 
     @PostMapping("/eo-tracking-tasks/{taskId}/end")

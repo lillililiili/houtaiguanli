@@ -35,6 +35,10 @@ public class Countermeasure4ChControlRepository {
                 """, commandId).stream().findFirst().orElse(null);
     }
 
+    public void lockCommand(String commandId) {
+        jdbc.queryForList("SELECT command_id FROM device_command WHERE command_id=? FOR UPDATE", commandId);
+    }
+
     public int updateCommand(String commandId, String expected, String status, long now, String code, String detail) {
         return jdbc.update("""
                 UPDATE device_command SET status=?,issued_at=CASE WHEN ?='SENT' THEN ? ELSE issued_at END,

@@ -146,6 +146,27 @@ class RiskListSortExportApiTest {
     }
 
     @Test
+    void weatherRiskCanBeFilteredReadAndExportedWithoutAnObjectFact() throws Exception {
+        risk("HIGH", "WEATHER", Instant.parse("2026-09-08T04:00:00Z"), "气象风险测试依据", "PENDING_VERIFICATION");
+        JsonNode filtered = page("risk_type=WEATHER");
+        assertThat(filtered.path("total").asInt()).isEqualTo(1);
+        JsonNode weather = filtered.path("items").get(0);
+        assertThat(weather.path("risk_type").asText()).isEqualTo("WEATHER");
+        assertThat(weather.hasNonNull("space_fact")).isFalse();
+        mvc.perform(get("/api/v1/risks/" + weather.path("risk_id").asText())
+                        .header("Authorization", bearer(reader)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.risk_type").value("WEATHER"))
+                .andExpect(jsonPath("$.data.reason_text").value("气象风险测试依据"));
+        byte[] body = mvc.perform(get("/api/v1/risks/export.csv?risk_type=WEATHER")
+                        .header("Authorization", bearer(reader)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        String csv = new String(body, StandardCharsets.UTF_8);
+        assertThat(csv).contains("气象风险").contains("气象风险测试依据").doesNotContain("WEATHER");
+        assertThat(csv.lines().filter(line -> !line.isBlank()).count()).isEqualTo(2);
+    }
+
+    @Test
     void riskTypeFilterMatchesTheListCount() throws Exception {
         JsonNode all = page("");
         JsonNode filtered = page("risk_type=AIRSPACE");
@@ -155,6 +176,25 @@ class RiskListSortExportApiTest {
         }
         // total 与实际返回的条数必须来自同一套筛选，否则分页会在最后一页对不上。
         assertThat(filtered.path("items").size()).isEqualTo((int) filtered.path("total").asLong());
+    }
+
+    @Test
+    void riskTypesShareListCountAndExportFiltersAndRejectMalformedInput() throws Exception {
+        JsonNode filtered = page("risk_types=AIRSPACE,ROUTE_DEVIATION,AIRSPACE");
+        long expected = page("risk_type=AIRSPACE").path("total").asLong()
+                + page("risk_type=ROUTE_DEVIATION").path("total").asLong();
+        assertThat(filtered.path("total").asLong()).isEqualTo(expected);
+        for (JsonNode item : filtered.path("items"))
+            assertThat(item.path("risk_type").asText()).isIn("AIRSPACE", "ROUTE_DEVIATION");
+        assertThat(page("risk_type=AIRSPACE&risk_types=AIRSPACE,ROUTE_DEVIATION").path("total").asLong())
+                .isEqualTo(page("risk_type=AIRSPACE").path("total").asLong());
+        String csv = mvc.perform(get("/api/v1/risks/export.csv?risk_types=AIRSPACE,ROUTE_DEVIATION")
+                        .header("Authorization", bearer(reader)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(csv.lines().filter(line -> !line.isBlank()).count()).isEqualTo(expected + 1);
+        for (String invalid : List.of("AIRSPACE,", "AIRSPACE,,WEATHER", "1,2,3,4,5,6,7,8,9,10,11"))
+            mvc.perform(get("/api/v1/risks").param("risk_types", invalid).header("Authorization", bearer(reader)))
+                    .andExpect(status().isBadRequest());
     }
 
     @Test

@@ -103,14 +103,14 @@ public class EoEdgeRepository {
     }
 
     public int updateDevice(Binding b, Registration p, long now) {
-        int changed = jdbc.update("UPDATE ops_device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=? AND version=?",
+        int changed = jdbc.update("UPDATE ops_device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=? AND version=? AND deleted_at IS NULL",
                 p.name(), p.vendor(), p.model(), now, b.opsDeviceId(), p.version());
         if (changed == 1) jdbc.update("UPDATE device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=?",
                 p.name(), p.vendor(), p.model(), new Timestamp(now), b.deviceId());
         return changed;
     }
     public int enableDevice(Binding b, long version, boolean enabled, long now) {
-        int changed = jdbc.update("UPDATE ops_device SET enabled=?,version=version+1,updated_at=? WHERE device_id=? AND version=?",
+        int changed = jdbc.update("UPDATE ops_device SET enabled=?,version=version+1,updated_at=? WHERE device_id=? AND version=? AND deleted_at IS NULL",
                 enabled, now, b.opsDeviceId(), version);
         if (changed == 1) {
             jdbc.update("UPDATE device SET enabled=?,version=version+1,updated_at=? WHERE device_id=?", enabled, new Timestamp(now), b.deviceId());
@@ -144,8 +144,8 @@ public class EoEdgeRepository {
     }
     public void heartbeat(Binding b, EoEdgeEnvelope m, String cameraJson, long received) {
         jdbc.update("""
-                UPDATE eo_device_binding SET last_heartbeat_at=?,work_state=?,camera_status_json=? WHERE ops_device_id=?
-                """, received, m.workState(), cameraJson, b.opsDeviceId());
+                UPDATE eo_device_binding SET last_heartbeat_at=?,work_state=?,camera_status_json=?,heartbeat_json=?,camera_received_at=? WHERE ops_device_id=?
+                """, received, m.workState(), cameraJson, m.json(), received, b.opsDeviceId());
         jdbc.update("""
                 UPDATE ops_device_state SET connectivity='ONLINE',work_state_code=?,observed_at=?,received_at=?,
                     last_heartbeat_at=?,unknown_reason=NULL,metrics_json=?,version=version+1 WHERE device_id=?
@@ -154,8 +154,8 @@ public class EoEdgeRepository {
         upsertRuntime(b, m, cameraJson, received, "ONLINE");
     }
     public void camera(Binding b, String cameraJson, Integer workState, long received) {
-        jdbc.update("UPDATE eo_device_binding SET camera_status_json=?,work_state=COALESCE(?,work_state) WHERE ops_device_id=?",
-                cameraJson, workState, b.opsDeviceId());
+        jdbc.update("UPDATE eo_device_binding SET camera_status_json=?,work_state=COALESCE(?,work_state),camera_received_at=? WHERE ops_device_id=?",
+                cameraJson, workState, received, b.opsDeviceId());
         if (workState != null)
             jdbc.update("UPDATE ops_device_state SET work_state_code=?,version=version+1 WHERE device_id=?",
                     String.valueOf(workState), b.opsDeviceId());

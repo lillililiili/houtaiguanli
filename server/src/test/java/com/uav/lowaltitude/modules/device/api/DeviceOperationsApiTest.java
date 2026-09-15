@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -34,6 +35,90 @@ class DeviceOperationsApiTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired OutboxWorker outboxWorker;
+
+    @Test
+    void monitorInformationUsesMonitoringPermissionAndRedactsConnectionForReadOnlyUsers() throws Exception {
+        String token = login("admin1");
+        String id = getJson("/api/v1/devices", token).path("data").path("items").get(0).path("device_id").asText();
+        String url = "/api/v1/device-monitor/devices/" + id + "/information";
+        mvc.perform(get(url)).andExpect(status().isUnauthorized());
+        JsonNode monitor = getJson(url, token).path("data");
+        JsonNode commission = getJson("/api/v1/commission-tasks/device-information/" + id, token).path("data");
+        assertThat(monitor.path("sections")).isEqualTo(commission.path("sections"));
+        assertThat(monitor.path("device_id").asText()).isEqualTo(id);
+        assertThat(monitor.path("generated_at").asLong()).isPositive();
+        mvc.perform(get("/api/v1/device-monitor/devices/missing/information").header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound());
+
+        jdbc.update("INSERT INTO app_role (role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES ('ROLE-MONITOR-TEST','监测只读测试','',FALSE,TRUE,0,0,0,FALSE)");
+        jdbc.update("INSERT INTO app_role_permission (role_code,permission_code,permission_level,menu_enabled) VALUES ('ROLE-MONITOR-TEST','monitoring','READ',TRUE)");
+        jdbc.update("UPDATE app_user SET role_code='ROLE-MONITOR-TEST',scope_mode='ALL' WHERE account='admin1'");
+        JsonNode readOnly = getJson(url, token).path("data");
+        JsonNode connection = java.util.stream.StreamSupport.stream(readOnly.path("sections").spliterator(), false)
+                .filter(section -> section.path("code").asText().equals("connection")).findFirst().orElseThrow();
+        for (JsonNode field : connection.path("fields")) {
+            assertThat(field.path("status").asText()).isEqualTo("REDACTED");
+            assertThat(field.path("value").isNull() || field.path("value").isMissingNode()).isTrue();
+        }
+        mvc.perform(get("/api/v1/commission-tasks/device-information/" + id).header("Authorization", bearer(token)))
+                .andExpect(status().isForbidden());
+        jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED' WHERE account='admin1'");
+        jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=(SELECT user_id FROM app_user WHERE account='admin1')");
+        mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isNotFound());
+        jdbc.update("UPDATE app_user SET scope_mode='NONE' WHERE account='admin1'");
+        mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isForbidden());
+        jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE account='admin1'");
+        jdbc.update("DELETE FROM app_role_permission WHERE role_code='ROLE-MONITOR-TEST'");
+        mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void deleteRequiresDisabledDeviceAndVersionAndPreservesHistory() throws Exception {
+        String token = login("admin1");
+        JsonNode created = objectMapper.readTree(mvc.perform(post("/api/v1/devices")
+                .header("Authorization", bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                .content(deviceBody("DELETE-" + UUID.randomUUID(), "待删除设备")))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("device");
+        String id = created.path("device_id").asText();
+        long version = created.path("version").asLong();
+        String body = "{\"version\":%d,\"reason\":\"设备退役\"}";
+        mvc.perform(delete("/api/v1/devices/{id}", id).contentType(MediaType.APPLICATION_JSON)
+                .content(body.formatted(version))).andExpect(status().isUnauthorized());
+        mvc.perform(delete("/api/v1/devices/{id}", id).header("Authorization", bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.formatted(version)))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DEVICE_ENABLED"));
+        mvc.perform(patch("/api/v1/devices/{id}/enabled", id).header("Authorization", bearer(token))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"enabled\":false,\"version\":" + version + ",\"reason\":\"设备退役\"}"))
+                .andExpect(status().isOk());
+        long before = getJson("/api/v1/devices", token).path("data").path("total").asLong();
+        mvc.perform(delete("/api/v1/devices/{id}", id).header("Authorization", bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.formatted(version)))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+        mvc.perform(delete("/api/v1/devices/{id}", id).header("Authorization", bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.formatted(version + 1)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+        mvc.perform(delete("/api/v1/devices/{id}", id).header("Authorization", bearer(token))
+                .header("Idempotency-Key", "device-delete-test-key")
+                .contentType(MediaType.APPLICATION_JSON).content(body.formatted(version + 1)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.device_id").value(id));
+        for (String url : new String[]{"/api/v1/devices", "/api/v1/device-monitor/tree", "/api/v1/device-monitor/overview"})
+            assertThat(getJson(url, token).path("data").path("total").asLong()).isEqualTo(before - 1);
+        mvc.perform(get("/api/v1/devices/{id}", id).header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/device-monitor/devices/{id}/information", id).header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/v1/devices/{id}", id).header("Authorization", bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.formatted(version + 1)))
+                .andExpect(status().isNotFound());
+        mvc.perform(patch("/api/v1/devices/{id}/enabled", id).header("Authorization", bearer(token))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"enabled\":true,\"version\":" + (version + 2) + ",\"reason\":\"不应恢复\"}"))
+                .andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_id=? AND deleted_at IS NOT NULL AND enabled=FALSE", Integer.class, id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=?", Integer.class, id)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE object_id=? AND action='device_delete'", Integer.class, id)).isEqualTo(1);
+    }
 
     @Test
     void catalogOverviewTreeAndSensitiveVisibilityUseOneSourceOfTruth() throws Exception {

@@ -52,10 +52,12 @@ public class DeviceService {
     private final ObjectMapper objectMapper;
     private final DeviceAdapterRegistry adapterRegistry;
     private final IntegrationSourceService sources;
+    private final com.uav.lowaltitude.modules.identity.application.IdempotencyGuard idempotency;
 
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
-                         DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources) {
+                         DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
+                         com.uav.lowaltitude.modules.identity.application.IdempotencyGuard idempotency) {
         this.repository = repository;
         this.access = access;
         this.clock = clock;
@@ -64,6 +66,7 @@ public class DeviceService {
         this.objectMapper = objectMapper;
         this.adapterRegistry = adapterRegistry;
         this.sources = sources;
+        this.idempotency = idempotency;
     }
 
     public DevicePage list(DeviceFilter filter, int page, int size, String sort) {
@@ -252,6 +255,30 @@ public class DeviceService {
                 "device", id, reason.trim(), null);
         return detail(id);
     }
+
+    @Transactional
+    public DeviceDeletion delete(String id, long version, String reason, String key) {
+        AuthUser user = access.requireDevicesOperate();
+        if (reason == null || reason.trim().length() < 2 || reason.trim().length() > 500)
+            throw bad("VALIDATION_ERROR", "删除原因长度必须为 2–500 个字符");
+        Map<String, Object> device = requiredDevice(id);
+        if (!repository.canDeleteInScope(id, user.userId(), user.scopeMode()))
+            throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在或不在授权范围内");
+        if (longNumber(device, "version") != version) throw conflict();
+        if (bool(device, "enabled"))
+            throw new ApiException(HttpStatus.CONFLICT, "DEVICE_ENABLED", "请先停用设备，再执行删除");
+        idempotency.claim(key, "device.delete:" + id + ":" + version + ":" + reason.trim());
+        long now = clock.nowMillis();
+        if (repository.markDeleted(id, version, now) != 1) throw conflict();
+        if (repository.hasActiveWork(id))
+            throw new ApiException(HttpStatus.CONFLICT, "DEVICE_BUSY", "设备仍有关联的未完成指令或调测任务，请处理后重试");
+        repository.addEvent(UUID.randomUUID().toString(), id, "CATALOG_DELETED", "WARN",
+                "设备已删除：" + reason.trim(), now, bool(device, "simulated"));
+        audit.record(user.userId(), user.account(), "device_delete", "device", id, reason.trim(), null);
+        return new DeviceDeletion(id, version + 1, now);
+    }
+
+    public record DeviceDeletion(String deviceId, long version, long deletedAt) { }
 
     @Transactional
     public Command createReboot(String deviceId, String idempotencyKey, String reason) {

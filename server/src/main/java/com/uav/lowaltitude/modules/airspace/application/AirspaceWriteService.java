@@ -117,7 +117,9 @@ public class AirspaceWriteService {
         String versionId = UUID.randomUUID().toString();
         String supersededId = null;
         Long supersededValidTo = null;
-        if (open != null && open.validTo() == null) {
+        /* 上一版只要在新版生效时刻仍然有效就必须被关闭到那一刻——不只是"长期有效"的那种。
+           定了结束时间的版本（临时管制区）若不关闭，两版区间重叠，读取会判 VERSION_AMBIGUOUS，整片空域从此打不开。 */
+        if (open != null && (open.validTo() == null || open.validTo().isAfter(request.validFrom()))) {
             if (repository.closeVersion(open.airspaceVersionId(), request.validFrom()) != 1) throw versionConflict();
             supersededId = open.airspaceVersionId();
             supersededValidTo = request.validFrom().toEpochMilli();

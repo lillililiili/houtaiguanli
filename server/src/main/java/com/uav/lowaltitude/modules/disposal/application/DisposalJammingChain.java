@@ -44,13 +44,16 @@ public class DisposalJammingChain {
     private final AuditService audit;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
+    private final com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops;
 
     public DisposalJammingChain(DisposalRepository repository, DisposalPolicyRepository policies,
             DisposalExecutionGateway gateway, DeviceAccessPolicy devices, AppClock clock, AuditService audit,
-            ObjectMapper json, PlatformTransactionManager transactions) {
+            ObjectMapper json, PlatformTransactionManager transactions,
+            com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops) {
         this.repository = repository; this.policies = policies; this.gateway = gateway; this.devices = devices;
         this.clock = clock; this.audit = audit; this.json = json;
         this.tx = new TransactionTemplate(transactions);
+        this.emergencyStops = emergencyStops;
     }
 
     /** 登记到当前事务 afterCommit；无事务时立即执行。 */
@@ -78,6 +81,11 @@ public class DisposalJammingChain {
         if (!DisposalRules.COUNTERMEASURE.equals(parent.actionType())) return;
         if (!DisposalRules.COMPLETED.equals(parent.status())) return;
         if (!"UAV_EVENT".equals(parent.subjectKind())) return;
+        emergencyStops.lockEvent(parent.subjectId());
+        if (emergencyStops.covered(parentAuthorizationId) || emergencyStops.unresolved(parent.subjectId())) return;
+        // Reload after waiting for a concurrent stop; never use the pre-lock completion snapshot.
+        parent = repository.findUnlocked(parentAuthorizationId);
+        if (parent == null || !DisposalRules.COMPLETED.equals(parent.status())) return;
         if (repository.chainedFrom(parent.authorizationId())) return;
         if (repository.actionExists(parent.subjectKind(), parent.subjectId(), DisposalRules.JAMMING)) return;
 
@@ -99,10 +107,15 @@ public class DisposalJammingChain {
         }
         Map<String, Object> snap = Map.of("status", DisposalRules.APPROVED, "chained_from", parent.authorizationId(),
                 "action_type", DisposalRules.JAMMING, "channel", parent.channel());
+        // 申请与批准是这一次调用里连做的两步，但事件时刻不能相同（决策 19-8）：
+        // 事件列表按 `occurred_at, event_id` 排序，而 event_id 是随机 UUID——两条同刻事件的先后就成了随机的，
+        // 处置时间线会有大约一半的时候把"批准"显示在"申请"前面。人工流程里两步隔着几秒，撞不上；
+        // 只有这种机器连做两步的链式流转会撞。批准确实发生在申请之后，所以让它晚一毫秒，次序就是确定的。
         event(id, "REQUEST", parent.requestedBy(), reason, snap, at);
+        OffsetDateTime approvedEventAt = at.plusNanos(1_000_000);
         event(id, "APPROVE", approver, note, Map.of("status", DisposalRules.APPROVED,
                 "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
-                "chained_from", parent.authorizationId()), at.plusNanos(1_000_000));
+                "chained_from", parent.authorizationId()), approvedEventAt);
         AuthUser requester = repository.actor(parent.requestedBy());
         audit.record(parent.requestedBy(), requester == null ? "" : requester.account(),
                 requester == null ? null : requester.roleCode(), "disposal", "disposal_jamming_chained",
@@ -121,6 +134,10 @@ public class DisposalJammingChain {
         if (executor == null || !devices.canOperateDevices(executor)) return;
         AuthorizationRow row = repository.findUnlocked(id);
         if (row == null) return;
+        if (row.deviceId() != null) {
+            emergencyStops.lockDevice(row.deviceId());
+            if (emergencyStops.deviceUnresolved(row.deviceId())) return;
+        }
         DisposalExecutionGateway.Result dispatched;
         try {
             dispatched = DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())

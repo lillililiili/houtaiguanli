@@ -21,6 +21,7 @@ import com.uav.lowaltitude.integration.replay.FusionReplayDatasetGenerator;
 import com.uav.lowaltitude.integration.replay.FusionReplayRunner;
 import com.uav.lowaltitude.integration.replay.FusionReplayRunner.LoadReport;
 import com.uav.lowaltitude.modules.fusion.application.FusionPipeline;
+import com.uav.lowaltitude.modules.fusion.application.FusionProperties;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
@@ -53,9 +54,11 @@ public class LocalStage8FusionReplaySeeder implements ApplicationRunner {
     private final FusionReplayRunner runner;
     private final FusionInboxRepository inbox;
     private final FusionPipeline pipeline;
+    private final FusionProperties properties;
 
-    public LocalStage8FusionReplaySeeder(JdbcTemplate jdbc, FusionReplayRunner runner, FusionInboxRepository inbox, FusionPipeline pipeline) {
-        this.jdbc = jdbc; this.runner = runner; this.inbox = inbox; this.pipeline = pipeline;
+    public LocalStage8FusionReplaySeeder(JdbcTemplate jdbc, FusionReplayRunner runner, FusionInboxRepository inbox, FusionPipeline pipeline,
+            FusionProperties properties) {
+        this.jdbc = jdbc; this.runner = runner; this.inbox = inbox; this.pipeline = pipeline; this.properties = properties;
     }
 
     public record SourceSeed(String sourceCode, String sourceType, String name, String sourceId, String deviceId, String deviceNo) { }
@@ -63,6 +66,11 @@ public class LocalStage8FusionReplaySeeder implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        // app.fusion.replay.seed-enabled=false：来源、设备、报文一样都不登记，把库留给直连 MQTT 摄取单独看。
+        if (!properties.getReplay().isSeedEnabled()) {
+            log.info("fusion replay seed skipped: app.fusion.replay.seed-enabled=false");
+            return;
+        }
         ensureScope();
         SOURCES.forEach(this::ensureSource);
         // 阶段 8.5 起默认摄取直连报文数据集（v2）；v1 的自建信封仍可读，留给需要复现阶段 8 结论的回归。

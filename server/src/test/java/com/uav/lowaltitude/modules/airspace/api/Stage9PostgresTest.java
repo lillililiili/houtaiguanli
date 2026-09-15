@@ -769,8 +769,8 @@ class Stage9PostgresTest {
 
     /**
      * E1 9.1 的 `R__stage9_airspace_succession` 接替式不变量的完整分支（此前只在 psql 里逐条验过，领导要求写成用例）。
-     * 阶段 9 唯一放开的写法是"把仍然开放的版本关闭到某个时刻"：`valid_to` NULL → 非 NULL，且必须晚于 `valid_from`。
-     * 其余任何列的改动、把已关闭的版本再改、把 `valid_to` 改回 NULL、DELETE，一律拒——历史空域版本是已保存研判的输入证据。
+     * 唯一放开的写法是"把失效时刻往前收"：`valid_to` NULL → 非 NULL，或非 NULL → 更早的时刻，且必须晚于 `valid_from`。
+     * 其余任何列的改动、延长 `valid_to`、把它改回 NULL、DELETE，一律拒——历史空域版本是已保存研判的输入证据。
      * 触发器给了三种不同的拒绝理由，用例按理由分别断言，避免"反正抛错了就算过"。
      */
     @Test
@@ -790,15 +790,24 @@ class Stage9PostgresTest {
         assertThat(jdbc.queryForObject("select valid_to from airspace_version where airspace_version_id=?", OffsetDateTime.class, closed))
                 .isEqualTo(T0.plusDays(1));
 
-        // ② 已关闭的版本不能再改 valid_to（接替只发生一次），也不能改回 NULL（那等于把一段已结束的生效期重新打开）。
+        // ② 已关闭的版本只能把失效时刻**往前收**：临时管制区建立时就带结束时间，"提前结束"正是这一种写法。
+        assertThat(jdbc.update("update airspace_version set valid_to=? where airspace_version_id=?", T0.plusHours(6), closed))
+                .as("valid_to 往前收是提前结束的正常写法").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select valid_to from airspace_version where airspace_version_id=?", OffsetDateTime.class, closed))
+                .isEqualTo(T0.plusHours(6));
+
+        // ③ 但不能延长，也不能改回 NULL——那等于把一段已经结束的生效期重新打开。
         assertThatThrownBy(() -> jdbc.update("update airspace_version set valid_to=? where airspace_version_id=?", T0.plusDays(2), closed))
                 .isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("immutable except closing valid_to");
+        assertThatThrownBy(() -> jdbc.update("update airspace_version set valid_to=? where airspace_version_id=?", T0.plusHours(6), closed))
+                .as("同值也是延长的一种：没有新增任何事实").isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("immutable except closing valid_to");
         assertThatThrownBy(() -> jdbc.update("update airspace_version set valid_to=null where airspace_version_id=?", closed))
                 .isInstanceOf(DataIntegrityViolationException.class).hasMessageContaining("immutable except closing valid_to");
         assertThat(jdbc.queryForObject("select valid_to from airspace_version where airspace_version_id=?", OffsetDateTime.class, closed))
-                .as("两次被拒之后关闭时刻保持第一次的值").isEqualTo(T0.plusDays(1));
+                .as("三次被拒之后关闭时刻保持往前收的值").isEqualTo(T0.plusHours(6));
 
-        // ③ 关闭时刻必须晚于 valid_from：零长度与倒挂的生效区间都说不清"这一版何时有效"。
+        // ④ 关闭时刻必须晚于 valid_from：零长度与倒挂的生效区间都说不清"这一版何时有效"。
         String windowCheck = insertOpenVersion(91);
         assertThatThrownBy(() -> jdbc.update("update airspace_version set valid_to=? where airspace_version_id=?", T0, windowCheck))
                 .as("valid_to = valid_from").isInstanceOf(DataIntegrityViolationException.class)
@@ -808,7 +817,7 @@ class Stage9PostgresTest {
                 .hasMessageContaining("must be later than valid_from");
         assertThat(jdbc.queryForObject("select valid_to from airspace_version where airspace_version_id=?", OffsetDateTime.class, windowCheck)).isNull();
 
-        // ④ 不关闭 valid_to 而单改其他列：落在第一道判断上（连"只能改 valid_to"那一条都到不了）。
+        // ⑤ 不关闭 valid_to 而单改其他列：落在第一道判断上（连"只能改 valid_to"那一条都到不了）。
         String stable = insertOpenVersion(92);
         for (String setClause : List.of("airspace_version_id='" + id() + "'", "airspace_id='" + id() + "'", "version_no=99",
                 "kind_code='RESTRICTED'", "boundary=ST_GeomFromEWKT('SRID=4326;MULTIPOLYGON(((118.70 37.50,118.71 37.50,118.71 37.51,118.70 37.51,118.70 37.50)))')",
@@ -819,7 +828,7 @@ class Stage9PostgresTest {
                     .hasMessageContaining("immutable except closing valid_to");
         }
 
-        // ⑤ 关闭 valid_to 的同时夹带别的列改动：这才落到第二道判断上。区分这两条很重要——
+        // ⑥ 关闭 valid_to 的同时夹带别的列改动：这才落到第二道判断上。区分这两条很重要——
         //    否则"合法关闭顺手改几何"这种最危险的写法可能因为第一道判断先命中而被误认为已覆盖。
         for (String setClause : List.of("kind_code='RESTRICTED'", "valid_from='2026-01-01T00:00:00Z'",
                 "boundary=ST_GeomFromEWKT('SRID=4326;MULTIPOLYGON(((118.70 37.50,118.71 37.50,118.71 37.51,118.70 37.51,118.70 37.50)))')")) {

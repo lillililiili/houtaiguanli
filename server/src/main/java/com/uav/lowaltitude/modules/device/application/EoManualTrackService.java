@@ -78,6 +78,22 @@ public class EoManualTrackService {
         return dto(task, text(task, "begin_command_id"));
     }
 
+    @Transactional(readOnly = true)
+    public EoTrackingAvailability availability(String targetId) {
+        access.requireDevicesOperate();
+        String id = pathId(targetId);
+        TargetDetailDto target = targets.target(id);
+        LocationDto location = target.latestState() == null ? null : target.latestState().location();
+        if (location == null || location.longitude() == null || location.latitude() == null)
+            return new EoTrackingAvailability(false, "目标位置尚未提供，无法引导光电追踪");
+        if (edges.targetHasOpenTask(id))
+            return new EoTrackingAvailability(false, "已有跟踪任务，无需重复发起");
+        if (target.ownerOrgId() == null || target.districtId() == null)
+            return new EoTrackingAvailability(false, "目标所属范围尚未提供，无法匹配光电设备");
+        Binding device = pickDevice(null, target.ownerOrgId(), target.districtId());
+        return new EoTrackingAvailability(device != null, device == null ? "当前范围无空闲可追踪设备" : null);
+    }
+
     @Transactional
     public EoTrackingTask end(String taskId, String idempotencyKey) {
         AuthUser user = access.requireDevicesOperate();
@@ -188,6 +204,8 @@ public class EoManualTrackService {
     private static ApiException unprocessable(String code, String message) {
         return new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
     }
+
+    public record EoTrackingAvailability(boolean available, String blockReason) { }
 
     public record EoTrackingTask(String taskId, String targetId, String deviceId, String commandId, String status) { }
 }

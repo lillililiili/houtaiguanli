@@ -22,7 +22,7 @@ public class MockSuperiorHandoffChannel implements HandoffChannelPort {
     @Override
     public DeliveryOutcome deliver(HandoffDispatch dispatch) {
         OffsetDateTime submitted = dispatch.at();
-        if (HandoffRules.TYPE_RISK_NOTICE.equals(dispatch.handoffType())) {
+        if (HandoffRules.TYPE_RISK_NOTICE.equals(dispatch.handoffType()) || "PLAN_FEEDBACK".equals(dispatch.handoffType())) {
             return new DeliveryOutcome("DELIVERED", "PENDING", null, null,
                     submitted, submitted.plusSeconds(1), null);
         }

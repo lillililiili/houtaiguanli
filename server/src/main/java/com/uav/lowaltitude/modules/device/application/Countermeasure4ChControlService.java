@@ -40,13 +40,16 @@ public class Countermeasure4ChControlService {
     private final AuditService audit;
     private final ObjectMapper json;
     private final long timeoutMillis;
+    private final com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard;
 
     public Countermeasure4ChControlService(DeviceAccessPolicy access, DeviceRepository devices,
                                            Countermeasure4ChControlRepository controls,
                                            DeviceAdapterRegistry adapters, AppClock clock, AuditService audit,
-                                           ObjectMapper json, org.springframework.core.env.Environment environment) {
+                                           ObjectMapper json, org.springframework.core.env.Environment environment,
+                                           com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard) {
         this.access = access; this.devices = devices; this.controls = controls; this.adapters = adapters;
         this.clock = clock; this.audit = audit; this.json = json;
+        this.disposalGuard = disposalGuard;
         this.timeoutMillis = Long.parseLong(environment.getProperty(
                 "app.countermeasure-4ch.command-timeout-millis", "10000"));
     }
@@ -90,6 +93,8 @@ public class Countermeasure4ChControlService {
             storedChannel = channel == null ? null : channel.trim();
             storedMask = Countermeasure4ChCodec.channelBit(storedChannel);
         }
+        if (starts(normalizedAction,storedMask) && !disposalGuard.mayStart(authorizationId.trim()))
+            throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止，不能继续下发启动指令");
         Map<String, Object> device = devices.find(deviceId);
         if (device == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
         if (!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(device, "protocol_code"))
@@ -127,6 +132,17 @@ public class Countermeasure4ChControlService {
     public void dispatch(String commandId) {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || terminal(text(command, "status"))) return;
+        // Authorization first, command second: same lock order as emergency stop and direct enqueue.
+        boolean allowed = !starts(text(command,"action"),number(command,"mask"))
+                || disposalGuard.mayStart(text(command,"control_authorization_id"));
+        controls.lockCommand(commandId);
+        command = controls.control(commandId);
+        if (command == null || terminal(text(command,"status"))) return;
+        if (!allowed) {
+            controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
+                    "AUTHORIZATION_STOPPED","处置已停止，禁止重投旧启动指令；此前设备动作仍需核查");
+            return;
+        }
         long now = clock.nowMillis();
         String status = text(command, "status");
         if ("QUEUED".equals(status)) {
@@ -192,6 +208,9 @@ public class Countermeasure4ChControlService {
 
     private static boolean terminal(String status) {
         return List.of("SUCCEEDED", "FAILED", "TIMED_OUT", "CANCELLED").contains(status);
+    }
+    private static boolean starts(String action,Integer mask) {
+        return ACTION_ON.equals(action) || (ACTION_MASK.equals(action) && mask!=null && mask!=0);
     }
     private static ApiException bad(String code, String message) {
         return new ApiException(HttpStatus.BAD_REQUEST, code, message);

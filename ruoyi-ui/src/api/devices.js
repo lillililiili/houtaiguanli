@@ -7,8 +7,10 @@ export const deviceApi = {
   detail: id => request({ url: `/v1/devices/${encodeURIComponent(id)}` }),
   onboard: (body, key = newIdempotencyKey('device-onboard')) => mutation('post', '/v1/devices/onboard', body, { idempotencyKey: key }),
   update: (id, body, key = newIdempotencyKey('device-update')) => mutation('put', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
+  remove: (id, body, key = newIdempotencyKey('device-delete')) => mutation('delete', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
   setEnabled: (id, body, key = newIdempotencyKey('device-enabled')) => mutation('patch', `/v1/devices/${encodeURIComponent(id)}/enabled`, body, { idempotencyKey: key }),
   overview: () => request({ url: '/v1/device-monitor/overview' }),
+  information: id => request({ url: `/v1/device-monitor/devices/${encodeURIComponent(id)}/information` }),
   tree: params => request({ url: `/v1/device-monitor/tree${queryString(params)}` }),
   state: id => request({ url: `/v1/devices/${encodeURIComponent(id)}/state` }),
   history: (id, params) => request({ url: `/v1/devices/${encodeURIComponent(id)}/state-history${queryString(params)}` }),
@@ -33,6 +35,7 @@ export const mqttApi = {
 };
 
 export const commissionApi = {
+  information: id => request({ url: `/v1/commission-tasks/device-information/${encodeURIComponent(id)}` }),
   list: params => request({ url: `/v1/commission-tasks${queryString(params)}` }),
   get: id => request({ url: `/v1/commission-tasks/${encodeURIComponent(id)}` }),
   create: body => mutation('post', '/v1/commission-tasks', body),

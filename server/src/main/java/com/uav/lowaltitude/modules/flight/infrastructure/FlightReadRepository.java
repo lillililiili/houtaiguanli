@@ -60,6 +60,20 @@ public class FlightReadRepository {
         return count("SELECT COUNT(*)" + routeFrom() + where.sql, where.parameters);
     }
 
+    public FilingRow findFiling(String planId, AccessDecision access) {
+        Where where = planWhere(PlanQuery.empty(), access);
+        add(where, "p.plan_id", "plan_id", planId);
+        return jdbc.query("SELECT p.pilot_name,p.operator_name,p.takeoff_site_name,p.landing_site_name,"
+                + "p.takeoff_longitude,p.takeoff_latitude,p.landing_longitude,p.landing_latitude" + planFrom() + where.sql,
+            where.parameters, (rs,n) -> new FilingRow(rs.getString("pilot_name"),rs.getString("operator_name"),
+                rs.getString("takeoff_site_name"),rs.getString("landing_site_name"),rs.getBigDecimal("takeoff_longitude"),
+                rs.getBigDecimal("takeoff_latitude"),rs.getBigDecimal("landing_longitude"),rs.getBigDecimal("landing_latitude")))
+            .stream().findFirst().orElse(null);
+    }
+
+    public record FilingRow(String pilotName,String operatorName,String takeoffSiteName,String landingSiteName,
+            BigDecimal takeoffLongitude,BigDecimal takeoffLatitude,BigDecimal landingLongitude,BigDecimal landingLatitude) { }
+
     public List<RouteRow> listRoutes(RouteQuery query, AccessDecision access, int offset, int size) {
         Where where = routeWhere(query, access, "r");
         where.parameters.put("offset", offset);

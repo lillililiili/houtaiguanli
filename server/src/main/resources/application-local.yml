@@ -1,11 +1,14 @@
+server:
+  port: ${SERVER_PORT:8081}
+
 spring:
   flyway:
     # 协作者 A 的 V202609050001 编号低于本地库已应用版本；仅本地开发库允许乱序应用，生产配置不放开。
     out-of-order: true
   datasource:
-    url: jdbc:postgresql://127.0.0.1:5432/uav
-    username: uav
-    password: uav
+    url: ${DB_URL:jdbc:postgresql://127.0.0.1:5432/houtaiguanli}
+    username: ${DB_USER:uav}
+    password: ${DB_PASSWORD:uav}
   devtools:
     restart:
       enabled: true
@@ -13,11 +16,14 @@ spring:
       enabled: false
 
 app:
+  flight-device-check:
+    # 用户授权使用独立 MQTT 模拟器演示 mock 计划；真实计划不使用这些模拟设备。
+    mqtt-demo-enabled: ${FLIGHT_DEVICE_CHECK_MQTT_DEMO_ENABLED:true}
   source-mode: live
   evidence-dir: ./data/evidence
   map-package:
-    # 与同级业务前台 Vite 的默认 /map-data/ 目录一致，后台启用后前台可直接感知。
-    data-dir: ${MAP_DATA_DIR:../../demo-ronghe/map-data}
+    # 新后端默认使用自身数据目录；需要对外提供地图时通过 MAP_DATA_DIR 显式指定。
+    data-dir: ${MAP_DATA_DIR:./data/map-data}
   handoff:
     channel: ${APP_HANDOFF_CHANNEL:mock}
   device:

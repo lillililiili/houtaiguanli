@@ -31,7 +31,7 @@ public final class CsvLabels {
             "CONFIRMED", "已核实，待处置", "FALSE_POSITIVE", "误报");
 
     private static final Map<String, String> RISK_TYPE = Map.of(
-            "FLIGHT_OPERATION", "飞行作业风险", "AIRSPACE", "空域风险",
+            "FLIGHT_OPERATION", "飞行作业风险", "AIRSPACE", "空域风险", "WEATHER", "气象风险",
             "SPACE_OBJECT", "空中异物风险", "FOREIGN_OBJECT", "空中异物风险");
 
     private static final Map<String, String> RISK_STATE = Map.of(

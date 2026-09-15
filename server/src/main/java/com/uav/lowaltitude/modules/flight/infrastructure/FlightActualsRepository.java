@@ -57,6 +57,16 @@ public class FlightActualsRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 只对已通过范围检查的研判读取其钉住的轨迹断点参数；缺配置时不猜时间间隔。 */
+    public Long trackGapMillis(String evaluationId) {
+        List<String> values = jdbc.query("SELECT p.value_text FROM rule_param p JOIN rule_evaluation e"
+                + " ON e.rule_set_version_id=p.rule_set_version_id WHERE e.evaluation_id=:id"
+                + " AND p.rule_code='C03' AND p.param_key='gap_seconds'",Map.of("id",evaluationId),(rs,i)->rs.getString(1));
+        if(values.size()!=1)return null;
+        try { long seconds=Long.parseLong(values.get(0));return seconds>0?Math.multiplyExact(seconds,1000):null; }
+        catch(NumberFormatException | ArithmeticException ex){return null;}
+    }
+
     private static EvaluationRow evaluation(ResultSet rs, int rowNum) throws SQLException {
         return new EvaluationRow(rs.getString("evaluation_id"), rs.getString("plan_match_code"), rs.getString("legal_status"),
                 time(rs, "evaluated_at"), rs.getString("param_status"), rs.getString("hit_details"), rs.getString("target_id"));

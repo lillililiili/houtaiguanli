@@ -36,6 +36,10 @@ public class LingyunControlRepository {
                 """, msgNo).stream().findFirst().orElse(null);
     }
 
+    public void lockCommand(String commandId) {
+        jdbc.queryForList("SELECT command_id FROM device_command WHERE command_id=? FOR UPDATE", commandId);
+    }
+
     public Map<String, Object> control(String commandId) {
         return jdbc.queryForList("""
                 SELECT c.*, x.operation_type,x.operation_cmd,x.params_json,x.authorization_id AS control_authorization_id,

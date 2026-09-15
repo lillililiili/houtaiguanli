@@ -77,9 +77,12 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
             RadarFrame heartbeat = waitFor(session, RadarV300Codec.COMMAND_HEARTBEAT, session.timeoutMillis());
             items.add(pass("HEARTBEAT", "心跳", "valid frame " + heartbeat.frameId(), "RADAR_V3_HEARTBEAT"));
 
-            write(session, RadarV300Codec.COMMAND_GET_REGISTER, RadarV300Codec.getWorkModePayload());
-            waitFor(session, RadarV300Codec.COMMAND_GET_REGISTER, session.timeoutMillis());
-            items.add(pass("WORK_MODE", "工作模式读取", "response received", "GETREG_0x401"));
+            write(session, RadarV300Codec.COMMAND_GET_REGISTER, RadarV300Codec.getInformationPayload());
+            var registers = RadarV300PayloadDecoder.registers(waitFor(session,
+                    RadarV300Codec.COMMAND_GET_REGISTER, session.timeoutMillis()).payload());
+            if (!registers.containsKey("user_cfg0_raw") || !registers.containsKey("working_mode_raw"))
+                throw new ProtocolException("RADAR_REGISTER_INCOMPLETE", "未返回协议定义的两个寄存器");
+            items.add(pass("WORK_MODE", "工作模式与检测参数", mapper.writeValueAsString(registers), "GETREG_0x440_0x401"));
 
             JsonNode protocol = session.configuration().protocol();
             if (protocol.path("rtk_enabled").asBoolean(false)) {
@@ -126,7 +129,7 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
         try (Session session = open(json)) {
             LoginResult result = login(session);
             if (!result.success()) throw new ProtocolException("ADAPTER_UNAVAILABLE", result.detail());
-            write(session, RadarV300Codec.COMMAND_GET_REGISTER, RadarV300Codec.getWorkModePayload());
+            write(session, RadarV300Codec.COMMAND_GET_REGISTER, RadarV300Codec.getInformationPayload());
             if (session.configuration().protocol().path("rtk_enabled").asBoolean(false))
                 write(session, RadarV300Codec.COMMAND_REQUEST_RTK, RadarV300Codec.enableRtkUploadPayload());
             listener.online();
@@ -139,6 +142,7 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
                 leasePulse.run();
                 if (now - lastHeartbeatAt >= 10_000L) {
                     write(session, RadarV300Codec.COMMAND_HEARTBEAT, RadarV300Codec.heartbeatPayload());
+                    write(session, RadarV300Codec.COMMAND_GET_REGISTER, RadarV300Codec.getInformationPayload());
                     lastHeartbeatAt = now;
                 }
                 try {

@@ -43,6 +43,10 @@ public class LocalMqttSimSeeder implements ApplicationRunner {
     public static final String PROVIDER = "dongying";
     public static final String EO_EDGE_ID = "S85E1";
     public static final String EO_DEVICE_NO = "S85E1D1";
+    /** Dedicated local-only device used by the risk-video demonstration. Remove when a live EO stream is available. */
+    public static final String RISK_VIDEO_BROKER_NAME = "local-risk-video-eo";
+    public static final String RISK_VIDEO_EDGE_ID = "LOCAL-RISK-VIDEO-EO";
+    public static final String RISK_VIDEO_DEVICE_NO = "LOCAL-RISK-VIDEO-EO-001";
 
     public static final List<LingyunDevice> LINGYUN_DEVICES = List.of(
             new LingyunDevice("radar", "S85R1", "凌云 MQTT 回放雷达"),
@@ -74,29 +78,39 @@ public class LocalMqttSimSeeder implements ApplicationRunner {
             for (LingyunDevice device : LINGYUN_DEVICES) {
                 registerLingyun(brokerId, device);
             }
-            registerEo(brokerId);
+            registerEo(brokerId, EO_EDGE_ID, EO_DEVICE_NO, "凌云 MQTT 回放光电",
+                    LocalStage5DeviceScopeSeeder.PLATFORM_ORG_ID, LocalStage5DeviceScopeSeeder.DONGYING_DISTRICT_ID);
+            registerEo(ensureRiskVideoBroker(), RISK_VIDEO_EDGE_ID, RISK_VIDEO_DEVICE_NO, "本地模拟视频光电",
+                    LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT);
         } finally {
             AuthContext.clear();
         }
     }
 
     private String ensureBroker() {
+        return ensureBroker(BROKER_NAME, LocalStage5DeviceScopeSeeder.PLATFORM_ORG_ID, LocalStage5DeviceScopeSeeder.DONGYING_DISTRICT_ID);
+    }
+
+    private String ensureRiskVideoBroker() {
+        return ensureBroker(RISK_VIDEO_BROKER_NAME, LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT);
+    }
+
+    private String ensureBroker(String name, String orgId, String districtId) {
         List<String> existing = jdbc.queryForList(
-                "SELECT broker_id FROM mqtt_broker WHERE name=? ORDER BY broker_id", String.class, BROKER_NAME);
+                "SELECT broker_id FROM mqtt_broker WHERE name=? ORDER BY broker_id", String.class, name);
         if (!existing.isEmpty()) {
             if (existing.size() > 1) {
                 log.warn("local MQTT sim seed: multiple brokers named {}, using {}", BROKER_NAME, existing.get(0));
             } else {
-                log.info("local MQTT sim seed: broker {} already exists, leaving configuration unchanged", BROKER_NAME);
+                log.info("local MQTT sim seed: broker {} already exists, leaving configuration unchanged", name);
             }
             return existing.get(0);
         }
         Broker created = configuration.create(new BrokerInput(
-                BROKER_NAME, HOST, PORT, false, null, null, ALLOWED_CIDRS, "replay",
-                LocalStage5DeviceScopeSeeder.PLATFORM_ORG_ID, LocalStage5DeviceScopeSeeder.DONGYING_DISTRICT_ID, null),
+                name, HOST, PORT, false, null, null, ALLOWED_CIDRS, "replay", orgId, districtId, null),
                 key());
         Broker enabled = configuration.enable(created.brokerId(), created.version(), true, key());
-        log.info("local MQTT sim seed: created and enabled broker {} ({})", BROKER_NAME, enabled.brokerId());
+        log.info("local MQTT sim seed: created and enabled broker {} ({})", name, enabled.brokerId());
         return enabled.brokerId();
     }
 
@@ -121,26 +135,25 @@ public class LocalMqttSimSeeder implements ApplicationRunner {
         }
     }
 
-    private void registerEo(String brokerId) {
-        if (exists("SELECT COUNT(*) FROM ops_device WHERE device_no=?", EO_DEVICE_NO)
+    private void registerEo(String brokerId, String edgeId, String deviceNo, String name, String orgId, String districtId) {
+        if (exists("SELECT COUNT(*) FROM ops_device WHERE device_no=?", deviceNo)
                 || exists("SELECT COUNT(*) FROM eo_device_binding WHERE edge_id=? AND external_device_id=?",
-                        EO_EDGE_ID, EO_DEVICE_NO)) {
-            log.info("local MQTT sim seed: EO {} already present, skip", EO_DEVICE_NO);
+                        edgeId, deviceNo)) {
+            log.info("local MQTT sim seed: EO {} already present, skip", deviceNo);
             return;
         }
         Registration registration = new Registration(
-                EoEdgeEnvelope.PROTOCOL, brokerId, null, EO_DEVICE_NO, null, "replay",
-                LocalStage5DeviceScopeSeeder.PLATFORM_ORG_ID, LocalStage5DeviceScopeSeeder.DONGYING_DISTRICT_ID,
-                EO_DEVICE_NO, "凌云 MQTT 回放光电", "凌云", null, null, EO_EDGE_ID);
+                EoEdgeEnvelope.PROTOCOL, brokerId, null, deviceNo, null, "replay", orgId, districtId,
+                deviceNo, name, "本地模拟", null, null, edgeId);
         try {
             configuration.register(registration, key());
-            log.info("local MQTT sim seed: registered EO edge {} device {}", EO_EDGE_ID, EO_DEVICE_NO);
+            log.info("local MQTT sim seed: registered EO edge {} device {}", edgeId, deviceNo);
         } catch (DataIntegrityViolationException ex) {
             log.warn("local MQTT sim seed: EO {} collided, skip", EO_DEVICE_NO);
         } catch (ApiException ex) {
             if ("MQTT_CONFIG_INVALID".equals(ex.getCode()) && ex.getMessage() != null
                     && ex.getMessage().contains("edgeId")) {
-                log.warn("local MQTT sim seed: EO edge {} already bound elsewhere, skip", EO_EDGE_ID);
+                log.warn("local MQTT sim seed: EO edge {} already bound elsewhere, skip", edgeId);
                 return;
             }
             throw ex;

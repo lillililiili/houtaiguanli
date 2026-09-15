@@ -30,8 +30,12 @@ public final class FlightDtos {
             String planId, String planNo, String statusCode, SourceDto source, String sourceMode, String uavSn,
             Long startAt, Long endAt, String ownerOrgId, String districtId, RouteReferenceDto route,
             List<FieldIssueDto> fieldIssues, long createdAt, long updatedAt, long version,
-            String ownerOrgName, String districtName) {
+            String ownerOrgName, String districtName, PlanFilingDto filing) {
     }
+
+    /** 仅计划详情返回报备事实；不把所属机构或航线端点代替未报备的信息。 */
+    public record PlanFilingDto(String pilotName, String operatorName, String takeoffSiteName, String landingSiteName,
+            BigDecimal takeoffLongitude, BigDecimal takeoffLatitude, BigDecimal landingLongitude, BigDecimal landingLatitude) { }
 
     public record RouteDto(
             String routeId, String routeNo, String name, boolean enabled, SourceDto source, String sourceMode,

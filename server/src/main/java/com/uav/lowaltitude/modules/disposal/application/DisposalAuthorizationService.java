@@ -59,14 +59,16 @@ public class DisposalAuthorizationService {
     private final AppClock clock;
     private final AuditService audit;
     private final ObjectMapper json;
+    private final com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops;
 
     public DisposalAuthorizationService(AccessControlService access, DisposalRepository repository,
             DisposalPolicyRepository policies, UavEventRepository events, DisposalExecutionGateway gateway,
             DisposalJammingChain jammingChain, IdempotencyGuard idempotency, AppClock clock, AuditService audit,
-            ObjectMapper json) {
+            ObjectMapper json, com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops) {
         this.access = access; this.repository = repository; this.policies = policies; this.events = events;
         this.gateway = gateway; this.jammingChain = jammingChain; this.idempotency = idempotency; this.clock = clock;
         this.audit = audit; this.json = json;
+        this.emergencyStops = emergencyStops;
     }
 
     /* ---- 申请 ---- */
@@ -93,6 +95,8 @@ public class DisposalAuthorizationService {
         // 若按调用方递进来的旧 ID 落库，"这个目标有没有未了结的授权"就会查不到自己，
         // 并发上限形同虚设，态势页也看不到已经批出去的处置。
         String effectiveSubjectId = subject.subjectId();
+        if ("UAV_EVENT".equals(request.subjectKind()) && emergencyStops.unresolved(effectiveSubjectId))
+            throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
         idempotency.claim(key, "disposal:create:" + request.subjectKind() + ":" + effectiveSubjectId + ":" + request.actionType());
         // 并发上限按主体+动作计：同一架无人机不该同时挂着两份还没了结的反制授权。
         if (repository.activeCount(request.subjectKind(), effectiveSubjectId, request.actionType()) >= policy.maxActivePerSubject())
@@ -161,6 +165,13 @@ public class DisposalAuthorizationService {
         AccessDecision decision = access.require(PermissionCode.DISPOSAL_EXECUTE);
         Execute body = parseExecute(rawRequest);
         AuthorizationRow row = locked(id, decision);
+        if ("UAV_EVENT".equals(row.subjectKind()) && emergencyStops.unresolved(row.subjectId()))
+            throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
+        if (row.deviceId() != null) {
+            emergencyStops.lockDevice(row.deviceId());
+            if (emergencyStops.deviceUnresolved(row.deviceId()))
+                throw conflict("EMERGENCY_STOP_UNCONFIRMED", "设备仍有待核查的急停任务，请先完成核查");
+        }
         idempotency.claim(key, "disposal:execute:" + id + ":" + body.expectedVersion());
         requireVersion(row, body.expectedVersion());
         DisposalRules.requireTransition(DisposalRules.EXECUTE, row.status());

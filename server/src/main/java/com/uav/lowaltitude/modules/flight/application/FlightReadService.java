@@ -21,6 +21,7 @@ import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteReferenceDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteVersionDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.SourceDto;
+import com.uav.lowaltitude.modules.flight.api.FlightDtos.PlanFilingDto;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanQuery;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanRow;
@@ -68,7 +69,10 @@ public class FlightReadService {
         AccessDecision access = accessControl.require(PermissionCode.FLIGHT_READ);
         PlanRow row = repository.findPlan(pathId(planId), access);
         if (row == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在");
-        return plan(row);
+        var filing = repository.findFiling(row.planId(), access);
+        if (filing == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在");
+        return plan(row, new PlanFilingDto(filing.pilotName(),filing.operatorName(),filing.takeoffSiteName(),filing.landingSiteName(),
+            filing.takeoffLongitude(),filing.takeoffLatitude(),filing.landingLongitude(),filing.landingLatitude()));
     }
 
     @Transactional(readOnly = true)
@@ -112,6 +116,10 @@ public class FlightReadService {
     }
 
     private FlightPlanDto plan(PlanRow row) {
+        return plan(row, null);
+    }
+
+    private FlightPlanDto plan(PlanRow row, PlanFilingDto filing) {
         List<FieldIssueDto> issues = new ArrayList<>();
         if (row.startAt() == null) issues.add(new FieldIssueDto("start_at", "TIME_UNTRUSTED"));
         if (row.endAt() == null) issues.add(new FieldIssueDto("end_at", "TIME_UNTRUSTED"));
@@ -119,7 +127,7 @@ public class FlightReadService {
                 row.sourceMode(), row.uavSn(), millis(row.startAt()), millis(row.endAt()), row.ownerOrgId(), row.districtId(),
                 new RouteReferenceDto(row.routeVersionId(), row.routeId(), row.routeNo(), row.routeName(), row.versionNo(), row.maxAltitudeM()),
                 List.copyOf(issues), requiredMillis(row.createdAt()), requiredMillis(row.updatedAt()), row.version(),
-                row.ownerOrgName(), row.districtName());
+                row.ownerOrgName(), row.districtName(), filing);
     }
 
     private RouteDto route(RouteRow row) {

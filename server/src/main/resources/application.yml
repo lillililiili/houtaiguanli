@@ -38,6 +38,9 @@ management:
         enabled: true
 
 app:
+  flight-device-check:
+    # 航线附近设备筛选距离（米），不代表已登记的实际监测覆盖范围。
+    nearby-meters: ${FLIGHT_DEVICE_CHECK_NEARBY_METERS:5000}
   source-mode: ${APP_SOURCE_MODE:mock}
   evidence-dir: ${EVIDENCE_DIR:./data/evidence}
   map-package:

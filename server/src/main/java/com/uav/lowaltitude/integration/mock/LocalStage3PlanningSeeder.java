@@ -20,6 +20,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Order(35)
 public class LocalStage3PlanningSeeder implements ApplicationRunner {
     private static final String SOURCE_ID = "seed-stage3-source";
+    /** 执行状态样例专属的机构与区域，见 {@link #statusScenarios(Instant)} 说明。 */
+    private static final String STATUS_ORG = "seed-stage3-status-org", STATUS_DISTRICT = "seed-stage3-status-district";
     private final JdbcTemplate jdbc;
     private final AppClock clock;
     public LocalStage3PlanningSeeder(JdbcTemplate jdbc, AppClock clock) { this.jdbc = jdbc; this.clock = clock; }
@@ -41,6 +43,42 @@ public class LocalStage3PlanningSeeder implements ApplicationRunner {
         plan("undetermined", "UNDETERMINED", "seed-stage3-org", "seed-stage3-district", start, end, "SRID=4326;LINESTRING (118.02 37.02,118.03 37.03)", null, null, null, "[{\"rule_code\":\"C01\",\"result_code\":\"UNDETERMINED\",\"reason_code\":\"ALTITUDE_DATUM_OR_RANGE_UNKNOWN\"}]", "[\"ALTITUDE_DATUM_OR_RANGE_UNKNOWN\"]", at);
         plan("cross-scope", "LEGAL", "seed-stage3-other-org", "seed-stage3-other-district", start, end, "SRID=4326;LINESTRING (119 38,119.01 38.01)", 10, 100, "AMSL", "[{\"rule_code\":\"C01\",\"result_code\":\"PASS\"}]", "[]", at);
         airspace(at, start, end);
+        if(arguments==null || !arguments.containsOption("preserve-existing-flight-demos"))statusScenarios(at);
+    }
+
+    /**
+     * 执行状态各一条：待执行 / 执行中 / 已完成（阶段 19）。
+     *
+     * <p>窗口每次启动都按 AppClock 当前时刻重新定位，**不是"已存在就跳过"**。别的种子都把时间固定在
+     * 第一次建库那一刻，而 {@code FlightPlanStatusAdvanceJob} 按真实时钟把 end_at 已过的计划一律推成已完成——
+     * 于是演示库第二天起所有计划都是"已完成"：飞行计划页的"今日报备 / 执行中 / 待执行"永远是 0，
+     * "待执行的计划暂无研判"那条分支也永远演示不到。插入一次就不管，等于第二天又坏。
+     *
+     * <p>只动这三条自己造的演示行，航线复用合法样例的版本，不造新几何。待执行那条**故意不配研判**：
+     * 研判是拿实际飞行与计划比对出来的，待执行的计划本来就还没有。
+     *
+     * <p>**放在专属机构/区域，不能挂在 seed-stage3-org 上**：规则引擎按"机构 + 区域 + 时间窗"取计划候选、
+     * 按 start_at 排序，而"此刻执行中"这条的窗口永远覆盖当下，挂在公共演示机构里就会抢在别的计划前面
+     * 被匹配上——演示里让真目标匹配到一条纯状态样例，测试里则会顶掉用例自己造的计划。
+     * 这三条没有目标也没有轨迹，本来就不该进任何匹配。
+     */
+    private void statusScenarios(Instant at) {
+        org(STATUS_ORG, "SEED-STAGE3-STATUS", "阶段三执行状态样例机构", at);
+        district(STATUS_DISTRICT, "SEED-STAGE3-STATUS", "阶段三执行状态样例区域", at);
+        scenario("pending", 5, at.plusSeconds(1_800), at.plusSeconds(5_400), "PENDING", at);
+        scenario("executing", 6, at.minusSeconds(1_800), at.plusSeconds(1_800), "EXECUTING", at);
+        scenario("done", 7, at.minusSeconds(10_800), at.minusSeconds(7_200), "COMPLETED", at);
+    }
+
+    private void scenario(String suffix, int seq, Instant start, Instant end, String status, Instant at) {
+        String plan = "seed-stage3-plan-" + suffix, no = String.format("计划-0905-%03d", seq);
+        jdbc.update("insert into flight_plan (plan_id,plan_no,status_code,source_id,source_mode,start_at,end_at,route_version_id,"
+                + "owner_org_id,district_id,created_at,updated_at,version)"
+                + " select ?,?,?,?,'mock',?,?,'seed-stage3-rv-legal',?,?,?,?,0"
+                + " where not exists(select 1 from flight_plan where plan_id=?)",
+                plan, no, status, SOURCE_ID, ts(start), ts(end), STATUS_ORG, STATUS_DISTRICT, ts(at), ts(at), plan);
+        jdbc.update("update flight_plan set plan_no=?,status_code=?,start_at=?,end_at=?,updated_at=?,version=version+1"
+                + " where plan_id=?", no, status, ts(start), ts(end), ts(at), plan);
     }
 
     private void plan(String suffix, String conclusion, String owner, String area, Instant start, Instant end, String line, Integer min, Integer max, String datum, String checks, String unknown, Instant at) {

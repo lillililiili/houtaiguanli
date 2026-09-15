@@ -140,6 +140,15 @@ public class ProtocolDataRepository {
         updateDeviceState(deviceId, "ONLINE", now, metrics);
     }
 
+    public void saveRadarRegisters(String deviceId, String frameId, Map<String, Object> registers, long now) {
+        upsertRuntime(deviceId, "RADAR_TCP_V3_0_0", "ONLINE", "LOGGED_IN", null, now,
+                frameId, null, null, null, null, null, null);
+        try {
+            jdbc.update("UPDATE protocol_runtime_state SET radar_registers_json=?,radar_registers_at=? WHERE device_id=?",
+                    mapper.writeValueAsString(registers), now, deviceId);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalStateException(ex); }
+    }
+
     public void markConnection(String deviceId, String protocol, String state, String loginState,
                                String blockingReason, long now, boolean reconnect) {
         upsertRuntime(deviceId, protocol, state, loginState, null, state.equals("ONLINE") ? now : null,

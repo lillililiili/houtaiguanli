@@ -39,6 +39,15 @@ public final class DisposalRules {
             STOP = "STOP", CANCEL = "CANCEL", MANUAL_RESULT = "MANUAL_RESULT";
 
     /** 事件种类；与迁移 0102 的 ck_stage13_event_kind 白名单一一对应。 */
+    /**
+     * 事件次序（阶段 19 补记，决策 19-8）：事件列表按 {@code (occurred_at, event_id)} 排序，
+     * 而 event_id 是随机 UUID——**同一时刻的多条事件没有确定次序**。
+     *
+     * <p>人工流程里各步隔着几秒，撞不上；机器连做两步的链式流转（反制完成自动接干扰，见
+     * {@code DisposalJammingChain}）会撞，目前的处理是让后一步的事件时刻晚一毫秒。
+     * 若将来链式流转变多、或要求严格的产品级确定次序，正解是事件表加一列 per-authorization 单调序号并按它排序；
+     * 那要迁移加列并改写入路径，本轮未做。
+     */
     public static final Set<String> EVENT_KINDS = Set.of("REQUEST", "APPROVE", "REJECT", "EXECUTE", "RECEIPT",
             "STOP", "COMPLETE", "FAIL", "EXPIRE", "CANCEL", "MANUAL_RESULT",
             "DEVICE_STOP_UNAVAILABLE", "DEVICE_CONTROL_UNAVAILABLE", "DEVICE_NOT_BOUND",

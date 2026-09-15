@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 export const SESSION_KEY = 'uav.admin.session.v1';
-const baseURL = String(import.meta.env.VITE_APP_BASE_API || '/api').replace(/\/$/, '');
+const baseURL = String(import.meta.env.VITE_APP_BASE_API || (import.meta.env.DEV ? '/dev-api' : '/api')).replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(message, code = 'REQUEST_FAILED', status = 0) {

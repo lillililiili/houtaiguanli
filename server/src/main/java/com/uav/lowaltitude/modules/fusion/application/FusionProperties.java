@@ -40,8 +40,17 @@ public class FusionProperties {
 
     public static class Replay {
         private boolean runOnStart;
+        /**
+         * 阶段 8/8.5/16 的回放夹具是否随 local/test 启动灌入（默认灌）。
+         * 关掉它才能在一个库里只看直连 MQTT 摄取的结果：夹具与 MQTT 适配器给同一批报文建的是两个
+         * integration_source，同时存在会让同一批物理目标以两套来源各进一遍融合。
+         * 单独一个开关而不是复用 app.dev-seed.enabled——后者还管着 admin1 与设备登记，关了就没法登录了。
+         */
+        private boolean seedEnabled = true;
 
         public boolean isRunOnStart() { return runOnStart; }
         public void setRunOnStart(boolean value) { runOnStart = value; }
+        public boolean isSeedEnabled() { return seedEnabled; }
+        public void setSeedEnabled(boolean value) { seedEnabled = value; }
     }
 }

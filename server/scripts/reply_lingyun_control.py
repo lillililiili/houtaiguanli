@@ -87,8 +87,10 @@ def main(argv: list[str]) -> int:
         if topic is None or body is None:
             print(f"忽略无法回执的报文 topic={message.topic}", file=sys.stderr)
             return
-        info = client.publish(topic, body, qos=1, retain=False)
-        info.wait_for_publish(timeout=10)
+        # 不要在这里 wait_for_publish：on_message 跑在网络线程上，等的正是这条消息自己要用的线程，
+        # 只能等满超时才放行。平台的控制指令超时是 10 秒，正好被这一等吃满，回执卡在截止线上，
+        # 同一条指令时而 SUCCEEDED 时而 TIMED_OUT。交给 loop 发即可，QoS 1 的重发由 paho 负责。
+        client.publish(topic, body, qos=1, retain=False)
         print(f"replied {message.topic} -> {topic} {len(body)} bytes")
 
     client.on_message = on_message

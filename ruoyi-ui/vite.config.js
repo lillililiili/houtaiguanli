@@ -15,7 +15,7 @@ export default defineConfig(({ mode }) => {
       port: 5175,
       proxy: {
         [env.VITE_APP_BASE_API || '/dev-api']: {
-          target: process.env.ADMIN_API_PROXY_TARGET || 'http://127.0.0.1:8080',
+          target: process.env.ADMIN_API_PROXY_TARGET || 'http://127.0.0.1:8081',
           changeOrigin: true,
           rewrite: requestPath => requestPath.replace(/^\/dev-api/, '/api')
         }

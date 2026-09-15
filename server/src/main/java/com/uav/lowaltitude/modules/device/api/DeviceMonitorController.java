@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.uav.lowaltitude.modules.device.application.DeviceService;
+import com.uav.lowaltitude.modules.device.application.CommissionDeviceInformationService;
 import com.uav.lowaltitude.modules.device.application.DeviceService.DeviceFilter;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
@@ -15,12 +16,19 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 public class DeviceMonitorController {
 
     private final DeviceService service;
+    private final CommissionDeviceInformationService information;
     private final com.uav.lowaltitude.modules.device.application.ProtocolStatusService protocolStatus;
 
-    public DeviceMonitorController(DeviceService service,
+    public DeviceMonitorController(DeviceService service, CommissionDeviceInformationService information,
             com.uav.lowaltitude.modules.device.application.ProtocolStatusService protocolStatus) {
         this.service = service;
+        this.information = information;
         this.protocolStatus = protocolStatus;
+    }
+
+    @GetMapping("/device-monitor/devices/{deviceId}/information")
+    public ApiResponse<CommissionDeviceInformationService.Information> information(@PathVariable String deviceId) {
+        return ApiResponse.ok(information.getForMonitoring(deviceId));
     }
 
     @GetMapping("/devices/{deviceId}/protocol-status")

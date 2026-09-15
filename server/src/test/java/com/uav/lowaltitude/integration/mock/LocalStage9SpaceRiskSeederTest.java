@@ -17,6 +17,25 @@ class LocalStage9SpaceRiskSeederTest {
     @Autowired LocalStage9SpaceRiskSeeder seeder;
     @Autowired JdbcTemplate jdbc;
 
+    /**
+     * 决策 19-7：引擎能映射出来的每一种来源模式，库里都必须有对应的来源行。
+     *
+     * 这一条钉的不是某个断言，而是**外键前提**：`SpaceRiskEvaluationService` 按目标的 source_mode 选来源 id，
+     * 而 `space_risk_fact.source_id` 是外键。回放那一行当初漏了迁移，后果不是测试红，
+     * 是"回放模式真跑一次才撞外键失败"——等到有人真去跑回放才暴露。
+     * 三个 id 从服务的常量取，不在这里抄字面量：抄一遍就变成了两处各自为政，改一处另一处照样绿。
+     */
+    @Test
+    void everySourceModeTheEngineCanMapHasACatalogueRow() {
+        var expected = java.util.Map.of(
+                com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskEvaluationService.SOURCE_LIVE, "live",
+                com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskEvaluationService.SOURCE_MOCK, "mock",
+                com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskEvaluationService.SOURCE_REPLAY, "replay");
+        expected.forEach((sourceId, mode) -> assertThat(jdbc.queryForObject(
+                "select count(*) from integration_source where source_id=? and source_mode=? and enabled=true",
+                Integer.class, sourceId, mode)).as(sourceId).isEqualTo(1));
+    }
+
     @Test
     void seedsTargetsAirportAndSpaceRisksThroughIngestion() {
         seeder.run(null);

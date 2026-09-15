@@ -4,6 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import MetricCards from '@/components/MetricCards.vue';
 import ErrorAlert from '@/components/ErrorAlert.vue';
+import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
+import { catalogInformation } from '@/utils/deviceInformationPresentation.js';
 import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
 import { useAuthStore } from '@/stores/auth.js';
@@ -22,12 +24,15 @@ const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0,
 const table = reactive({ items: [], page: 1, size: 10, total: 0 });
 const selectedId = ref('');
 const detail = ref(null);
-const protocolStatus = ref(null);
+const archive = computed(() => catalogInformation(detail.value));
+const detailError = ref('');
 const loading = ref(false);
 const detailLoading = ref(false);
+const deletingId = ref('');
 const error = ref('');
 let alive = true;
 let detailSequence = 0;
+let listSequence = 0;
 
 const metrics = computed(() => [
   { label: '设备总数', value: overview.value.total, tone: 'blue' },
@@ -68,27 +73,36 @@ async function loadOverview() {
 }
 
 async function loadDetail(id) {
-  if (!id) { detail.value = null; protocolStatus.value = null; return; }
   const sequence = ++detailSequence;
+  detailError.value = '';
+  if (!id) { detail.value = null; detailLoading.value = false; return; }
+  if (detail.value?.device?.device_id !== id) detail.value = null;
   detailLoading.value = true;
   try {
-    const [record, status] = await Promise.all([deviceApi.detail(id), deviceApi.protocolStatus(id)]);
+    const record = await deviceApi.detail(id);
     if (!alive || sequence !== detailSequence) return;
-    detail.value = record; protocolStatus.value = status;
-  } catch (e) { if (alive) ElMessage.error(e.message); }
+    detail.value = record;
+  } catch (e) { if (alive && sequence === detailSequence) { detail.value = null; detailError.value = e.message || '设备档案加载失败'; } }
   finally { if (sequence === detailSequence) detailLoading.value = false; }
 }
 
 async function loadList(keepSelection = true) {
+  const sequence = ++listSequence;
   loading.value = true; error.value = '';
   try {
-    const data = await deviceApi.list(listParams());
-    if (!alive) return;
+    let data = await deviceApi.list(listParams());
+    if (!alive || sequence !== listSequence) return;
+    const lastPage = Math.max(1, Math.ceil(data.total / table.size));
+    if (!data.items.length && table.page > lastPage) {
+      table.page = lastPage;
+      data = await deviceApi.list(listParams());
+      if (!alive || sequence !== listSequence) return;
+    }
     Object.assign(table, data);
     if (!keepSelection || !data.items.some(item => item.device_id === selectedId.value)) selectedId.value = data.items[0]?.device_id || '';
     await loadDetail(selectedId.value);
-  } catch (e) { error.value = e.message || '设备台账加载失败'; }
-  finally { loading.value = false; }
+  } catch (e) { if (alive && sequence === listSequence) error.value = e.message || '设备台账加载失败'; }
+  finally { if (sequence === listSequence) loading.value = false; }
 }
 
 async function bootstrap() {
@@ -203,6 +217,31 @@ async function toggleDevice(row) {
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || String(e)); }
 }
 
+async function deleteDevice(row) {
+  if (!canOperate.value || deletingId.value) return;
+  if (row.enabled) { ElMessage.warning('请先停用设备，再执行删除'); return; }
+  deletingId.value = row.device_id;
+  try {
+    const { value } = await ElMessageBox.prompt(`确认删除设备“${row.name}”（${row.device_no}）？删除后将从台账和监控列表移除，保留历史记录及设备编号，不能重新启用。请输入删除原因：`, '删除设备', {
+      type: 'warning', inputType: 'textarea', confirmButtonText: '确认删除', cancelButtonText: '取消',
+      inputValidator: value => (value?.trim().length >= 2 && value.trim().length <= 500) || '删除原因需填写 2–500 个字符'
+    });
+    await deviceApi.remove(row.device_id, { version: row.version, reason: value.trim() });
+    ++listSequence;
+    if (selectedId.value === row.device_id) {
+      selectedId.value = '';
+      await loadDetail('');
+    }
+    ElMessage.success('设备已删除，历史记录已保留');
+    await Promise.all([loadList(), loadOverview()]);
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') {
+      ElMessage.error(e.message || String(e));
+      if (['VERSION_CONFLICT', 'DEVICE_NOT_FOUND', 'IDEMPOTENCY_REPLAY'].includes(e.code)) await Promise.all([loadList(), loadOverview()]);
+    }
+  } finally { deletingId.value = ''; }
+}
+
 async function openBrokers() {
   brokerDialog.visible = true; brokerDialog.loading = true;
   try {
@@ -271,27 +310,12 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
           <el-table-column prop="connectivity" label="连接" width="84"><template #default="{row}"><el-tag :type="statusType(row.connectivity)" effect="plain">{{ statusText(row.connectivity) }}</el-tag></template></el-table-column>
           <el-table-column prop="last_heartbeat_at" label="最后心跳" min-width="165"><template #default="{row}"><span class="mono">{{ formatTime(row.last_heartbeat_at) }}</span></template></el-table-column>
           <el-table-column label="状态" width="76"><template #default="{row}"><el-tag :type="row.enabled?'success':'info'" effect="plain">{{ row.enabled?'启用':'停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="120" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button></template></el-table-column>
+          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId)" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
         </el-table></div>
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
 
-      <el-card v-loading="detailLoading" class="detail-panel viewport-detail-card">
-        <template #header><div class="table-toolbar"><span class="table-toolbar__title">设备详情</span><el-tag v-if="detail?.simulated" type="warning" effect="plain">模拟数据</el-tag></div></template>
-        <el-empty v-if="!detail" description="请选择设备" />
-        <template v-else>
-          <h2>{{ detail.device?.name }}</h2><p class="muted mono">{{ detail.device?.device_no }} · {{ display(detail.protocol_code,'未配置协议') }}</p>
-          <el-descriptions :column="1" border size="small">
-            <el-descriptions-item label="连接状态"><el-tag :type="statusType(detail.device?.connectivity)" effect="plain">{{ statusText(detail.device?.connectivity) }}</el-tag></el-descriptions-item>
-            <el-descriptions-item label="设备类型">{{ display(detail.device?.device_type_name) }}</el-descriptions-item>
-            <el-descriptions-item label="所属区域">{{ display(detail.region_name || detail.device?.region_name) }}</el-descriptions-item>
-            <el-descriptions-item label="供应商 / 型号">{{ display(detail.vendor) }} / {{ display(detail.model) }}</el-descriptions-item>
-            <el-descriptions-item label="来源模式">{{ detail.source_mode==='mock'||detail.source_mode==='replay'?'模拟/回放':'真实来源' }}</el-descriptions-item>
-          </el-descriptions>
-          <div class="detail-section"><h3>连接配置</h3><p v-if="!detail.connection_visible" class="muted">当前账号没有连接配置查看权限。</p><pre v-else class="json-block">{{ JSON.stringify(detail.connection || {}, null, 2) }}</pre></div>
-          <div class="detail-section"><h3>协议状态</h3><pre class="json-block">{{ JSON.stringify(protocolStatus || {}, null, 2) }}</pre></div>
-        </template>
-      </el-card>
+      <DeviceInformationPanel purpose="catalog" :information="archive" :loading="detailLoading" :error="detailError" class="detail-panel viewport-detail-card" @refresh="loadDetail(selectedId)" />
     </div>
 
     <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing?`编辑设备 · ${deviceForm.device_no}`:'接入设备'" width="780px" destroy-on-close>

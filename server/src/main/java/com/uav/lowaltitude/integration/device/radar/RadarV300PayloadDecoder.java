@@ -5,6 +5,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.HashSet;
 
 import com.uav.lowaltitude.integration.device.ProtocolException;
 
@@ -17,6 +20,42 @@ public final class RadarV300PayloadDecoder {
     public static final int RTK_BYTES = 32;
 
     private RadarV300PayloadDecoder() { }
+
+    public static Map<String, Object> registers(byte[] payload) {
+        ByteBuffer value = wrap(payload, 4);
+        int count = value.getInt();
+        requireCount(payload.length, 4, 8, count);
+        Map<String, Object> result = new LinkedHashMap<>();
+        var addresses = new HashSet<Integer>();
+        for (int i = 0; i < count; i++) {
+            int address = value.getInt(), raw = value.getInt();
+            if (!addresses.add(address)) throw invalid("寄存器地址重复");
+            if (address == 0x440) {
+                result.put("user_cfg0_raw", String.format("0x%08X", raw));
+                result.put("frequency_code", (raw >>> 24) & 255);
+                int speed = (raw >>> 16) & 255, detection = (raw >>> 8) & 255, rcs = raw & 255;
+                result.put("speed_threshold_code", speed);
+                result.put("detection_threshold_code", detection);
+                result.put("rcs_threshold_code", rcs);
+                if (speed <= 3) result.put("speed_threshold_mps", new BigDecimal("0.25").multiply(BigDecimal.valueOf(speed + 1)));
+                if (detection <= 2) result.put("detection_threshold", List.of("低门限", "正常门限", "高门限").get(detection));
+                if (rcs == 0) result.put("rcs_filter_enabled", false);
+                if (rcs == 1 || rcs == 2) {
+                    result.put("rcs_filter_enabled", true);
+                    result.put("rcs_threshold_m2", new BigDecimal(rcs == 1 ? "0.01" : "0.05"));
+                }
+            } else if (address == 0x401) {
+                result.put("working_mode_raw", String.format("0x%08X", raw));
+                int speed = (raw >>> 8) & 255, mode = raw & 255;
+                result.put("rotation_code", speed); result.put("work_mode_code", mode);
+                // The RPM column contradicts angular speed in the supplied document: retain code and °/s only.
+                Map<Integer, Integer> angularSpeeds = Map.of(0, 0, 1, 180, 2, 90, 4, 360);
+                if (angularSpeeds.containsKey(speed)) result.put("scan_speed_deg_s", angularSpeeds.get(speed));
+                if (mode <= 2) result.put("work_mode", List.of("待机", "周扫", "扇扫（协议注明暂不支持）").get(mode));
+            }
+        }
+        return result;
+    }
 
     public static TrackBatch track(byte[] payload) {
         ByteBuffer value = wrap(payload, TRACK_HEADER_BYTES);

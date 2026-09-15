@@ -154,6 +154,11 @@ public class LiveDeviceSupervisor {
                 key = deviceId + ":rtk:" + frame.frameId();
                 if (!protocolData.insertInbox(sourceId, deviceId, key, raw, receivedAt)) return;
                 protocolData.saveRtk(deviceId, Long.toUnsignedString(frame.frameId()), rtk, receivedAt);
+            } else if (frame.command() == RadarV300Codec.COMMAND_GET_REGISTER) {
+                var registers = RadarV300PayloadDecoder.registers(frame.payload());
+                key = deviceId + ":registers:" + receivedAt + ":" + frame.frameId();
+                if (!protocolData.insertInbox(sourceId, deviceId, key, raw, receivedAt)) return;
+                protocolData.saveRadarRegisters(deviceId, Long.toUnsignedString(frame.frameId()), registers, receivedAt);
             } else return;
             protocolData.inboxProcessed(deviceId, key, receivedAt);
         } catch (Exception ex) {

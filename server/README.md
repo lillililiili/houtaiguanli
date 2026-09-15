@@ -1,5 +1,7 @@
 # low-altitude-server
 
+2026-09-14：旧工作区 `dongyiwurenji/server` 的目标查询、飞行航迹/系统核验、天气风险、空域提前结束与本地模拟改动已迁入本仓库；保留本仓库的地图管理、统计导出、设备删除和完整调测信息。迁移版本冲突以追加独立迁移处理，详见 [迁移记录](../docs/新后端迁移记录.md)。
+
 无人机融合感知与低空安全管理平台的唯一后端，同时服务业务前台和后台管理系统。沿用 Java 17、Spring Boot 3.4.5、MyBatis Starter 3.0.4、Flyway、Maven Wrapper（Maven 3.9.9），开发数据库示例为 PostgreSQL 16/PostGIS 3.5。身份权限、设备运维以及目标/轨迹只读切片已形成可运行接口；其余业务域仍按开发基线渐进建设。
 
 - [后端开发基线](../docs/后端开发基线.md)：业务范围、能力状态、资料缺口与开发顺序。
@@ -16,7 +18,7 @@ T02 只读契约与设备运维模型使用独立表：契约表保留 `device/t
 
 ## 本地启动
 
-准备 JDK 17 和 Docker；用 Wrapper 固定 Maven 版本。开发端口为 API 8080、业务前台 5173、管理前端 5175。以下数据库必须是隔离开发实例，不使用生产库或已有业务库作试验。
+准备 JDK 17 和 Docker；用 Wrapper 固定 Maven 版本。本仓库 local API 端口为 8081、管理前端 5175；业务前台如需接入，应显式将 API 代理改为 8081。local 默认数据库是独立的 `houtaiguanli`，与旧工作区 `uav` 库分开。以下数据库必须是隔离开发实例，不使用生产库或已有业务库作试验。
 
 在仓库根目录启动开发数据库（需要 MQTT 模拟时一并启动 Mosquitto）：
 
@@ -53,6 +55,10 @@ Linux/macOS 在 `server/` 执行：
 协议 A MQTT（`LINGYUN_MQTT_V8_6`）与协议 C 光电边端（`EO_EDGE_MQTT_20250826`）由 `app.mqtt.enabled` 控制，默认开启；`test` profile 关闭以免占用嵌入式测试库。本地模拟：在设备页配置 `source_mode=replay` 的 MQTT 连接（回环仅允许 replay）。协议 A 登记雷达/5G-A/TDOA/AOA/协议破解/RemoteID，向 `bridge/{providerCode}/device|device_data/{type}/{externalDeviceId}` 发布。光电登记 `edgeId` 与设备 `deviceId`，设备向 `iot-reporting/cmlc/edge/{edgeId}` 上报 HeartBeat / BeginTracking，平台向 `iot-dispatcher/cmlc/edge/{deviceId}` 下发。有效告警或高风险目标会自动选择同机构、同辖区的在线空闲光电设备；`local` profile 默认开启，生产环境通过 `app.eo-edge.auto-track.enabled` 显式开启。人工补跟踪接口为 `POST /api/v1/targets/{id}/eo-tracking-tasks`。真实 broker 的密码只通过 `credential_ref=env:变量名` 注入，配置了 live 不等于现场已联调。目标/跟踪上报进入 `inbox_message` 后仍为 `RECEIVED`，融合消费由协作者 B 领取。雷达 TCP 与四通道反制维持厂家原生协议（四通道不登记凌云 `cm`）。本机回放步骤见下方「本地 MQTT 模拟」；数据集说明见[凌云回放说明](../docs/直连接入计划/凌云回放说明.md)。
 
 ## 本地 MQTT 模拟
+
+迁入的 `server/scripts/keepalive_lingyun_static.py` 用于持续发送带新时刻的本地工参，避免冻结回放的时间戳被判为旧报文；`publish_lingyun_ndjson.py` 支持 `--eo-task-id` 和 `--renumber-msgcnt`，需要时显式指定，冻结原文件保持不变。`simulate_flight_check_mqtt.py` 为 `FP-CHECK-*` 设备发送本机工参；local 下 `FLIGHT_DEVICE_CHECK_MQTT_DEMO_ENABLED=true` 仅供 mock 计划演示，真实计划不使用模拟检查结果。脚本默认连接本机 MQTT，不是现场设备联调。
+
+飞行核验现行入口是 `POST /api/v1/flight-plans/{id}/verifications/automatic`，携带 `expected_revision`；旧人工结论入口返回 `MANUAL_VERIFICATION_DISABLED`。系统检查保留起飞状态 UNKNOWN；来源回告通道缺失时不冒充已送达。
 
 本机用 Compose 里的 Mosquitto（只绑 `127.0.0.1:1883`）发布仓库内冻结的 180 行 NDJSON，验证协议 A/C 适配器把报文写入 `inbox_message`。这不是现场联调，也不打开融合。
 
@@ -153,3 +159,10 @@ POSTGRES_TEST_USER='<isolated-user>' POSTGRES_TEST_PASSWORD='<isolated-password>
 - 生产禁止公网依赖；真实部署网络按确认资料配置。live 来源默认停用，显式启用前逐台校验 TCP 配置、协议配置、凭据引用与 CIDR 白名单；任何连接失败都不得自动降级为 mock。`APP_LIVE_DEVICE_ENABLED=false` 可整体关闭 live 连接监督器，但不能把 live 数据改标为模拟成功。
 - 当前本地证据目录适配只用于开发测试；真实文件、元数据、哈希、下载授权和保管策略随业务切片建设。
 - 启动配置、默认账号、消息投递与测试发现等差距见[开发基线](../docs/后端开发基线.md)。
+
+### 本地空域风险追踪演示（2026-09-15）
+
+`LocalAirspaceRiskDemoSeeder` 仅在 local 且 dev-seed 开启、已有 `demo-airspace-risk-20260915` 样例时运行，幂等补齐八条风险的目标关联。目标位置/高度/观测时间沿用演示风险快照，不生成实时感知结论，不改变核验状态或历史空间事实。两个已有组织/区域各登记一台专用 replay 光电（`LOCAL-ASR-EO-001/002`），只连接本机 127.0.0.1:1883；`LocalRiskVideoEoSimulator` 按设备分别维护跟踪状态并返回 Protocol C 回执。原模拟视频设备继续支持。没有这些样例或在 production 环境不会补数据。
+
+
+2026-09-15补迁事件急停、计划备案事实、待执行计划设备预检和风险多类型筛选；需追加Flyway 202609150002–150004，旧迁移保持不变。详见[剩余迁移清单与验证记录](../docs/旧后端剩余改动迁移清单-20260915.md)。

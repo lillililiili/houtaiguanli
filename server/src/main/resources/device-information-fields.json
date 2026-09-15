@@ -1,0 +1,1839 @@
+{
+  "catalog": [
+    {
+      "path": "/device_id",
+      "label": "平台设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/device_no",
+      "label": "设备编号",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/name",
+      "label": "设备名称",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/device_type_name",
+      "label": "设备类型",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/model",
+      "label": "型号",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/vendor",
+      "label": "厂家",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/firmware_version",
+      "label": "固件版本",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/source_id",
+      "label": "来源 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/external_device_id",
+      "label": "外部设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/source_code",
+      "label": "来源编码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/source_name",
+      "label": "来源名称",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/source_mode",
+      "label": "来源模式",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/protocol_code",
+      "label": "接入协议",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/protocol_version",
+      "label": "协议版本",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/channel",
+      "label": "接入通道",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/enabled",
+      "label": "台账启用",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/owner_name",
+      "label": "所属单位",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/region_name",
+      "label": "区域",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/address",
+      "label": "安装地址",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/longitude",
+      "label": "安装经度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/latitude",
+      "label": "安装纬度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/coordinate_system",
+      "label": "坐标系",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/altitude_m",
+      "label": "安装高度",
+      "type": "number",
+      "unit": "m",
+      "required": false
+    },
+    {
+      "path": "/altitude_datum",
+      "label": "高度基准",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/installed_at",
+      "label": "安装时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/created_at",
+      "label": "建档时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/updated_at",
+      "label": "档案更新时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/version",
+      "label": "档案版本",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "connection": [
+    {
+      "path": "/transport",
+      "label": "传输方式",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/host",
+      "label": "主机地址",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/port",
+      "label": "端口",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/path",
+      "label": "服务路径",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/data_format",
+      "label": "数据格式",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/charset_name",
+      "label": "字符集",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/auth_mode",
+      "label": "认证方式",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/heartbeat_interval_seconds",
+      "label": "心跳间隔",
+      "type": "integer",
+      "unit": "s",
+      "required": false
+    },
+    {
+      "path": "/report_interval_millis",
+      "label": "上报间隔",
+      "type": "integer",
+      "unit": "ms",
+      "required": false
+    },
+    {
+      "path": "/sampling_rate_hz",
+      "label": "采样频率",
+      "type": "number",
+      "unit": "Hz",
+      "required": false
+    },
+    {
+      "path": "/compression_enabled",
+      "label": "压缩",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/retransmission_enabled",
+      "label": "重传",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/timeout_millis",
+      "label": "连接超时",
+      "type": "integer",
+      "unit": "ms",
+      "required": false
+    },
+    {
+      "path": "/retry_count",
+      "label": "重试次数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/longitude_offset_deg",
+      "label": "经度补偿",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/latitude_offset_deg",
+      "label": "纬度补偿",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/altitude_offset_m",
+      "label": "高度补偿",
+      "type": "number",
+      "unit": "m",
+      "required": false
+    },
+    {
+      "path": "/time_sync_mode",
+      "label": "校时方式",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/time_server",
+      "label": "时间服务器",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/timezone_name",
+      "label": "时区",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/time_sync_interval_seconds",
+      "label": "校时间隔",
+      "type": "integer",
+      "unit": "s",
+      "required": false
+    }
+  ],
+  "link": [
+    {
+      "path": "/connectivity",
+      "label": "设备连接状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/work_state_code",
+      "label": "设备工作状态码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/last_heartbeat_at",
+      "label": "最近有效心跳",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/observed_at",
+      "label": "设备上报时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/received_at",
+      "label": "平台接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/unknown_reason",
+      "label": "状态说明",
+      "type": "string",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "mqtt": [
+    {
+      "path": "/broker_name",
+      "label": "MQTT 连接名称",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/broker_enabled",
+      "label": "连接启用",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/tls",
+      "label": "TLS",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/connection_state",
+      "label": "MQTT 连接状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/lease_until",
+      "label": "连接租约截止",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/last_error",
+      "label": "最近连接错误",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/subscribed",
+      "label": "已订阅",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/provider_code",
+      "label": "提供方编码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/device_type_abbr",
+      "label": "设备类型缩写",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/external_device_id",
+      "label": "外部设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/last_static_at",
+      "label": "工参接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/last_sense_at",
+      "label": "感知接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/last_pt_time",
+      "label": "感知上报时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/last_msg_cnt",
+      "label": "最近消息编号",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/suspected_gap_count",
+      "label": "疑似丢包次数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/duplicate_count",
+      "label": "重复消息数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/conflict_count",
+      "label": "冲突消息数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/static_topic",
+      "label": "工参主题",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/sense_topic",
+      "label": "感知主题",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/control_topic",
+      "label": "控制主题",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/control_resp_topic",
+      "label": "控制回执主题",
+      "type": "string",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "eo_link": [
+    {
+      "path": "/broker_name",
+      "label": "MQTT 连接名称",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/broker_enabled",
+      "label": "连接启用",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/tls",
+      "label": "TLS",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/connection_state",
+      "label": "MQTT 连接状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/last_error",
+      "label": "最近连接错误",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/subscribed",
+      "label": "已订阅",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/edge_id",
+      "label": "边缘中心 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/external_device_id",
+      "label": "外部设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/reporting_topic",
+      "label": "上报主题",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/dispatcher_topic",
+      "label": "下发主题",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/last_heartbeat_at",
+      "label": "心跳接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/last_report_at",
+      "label": "跟踪上报接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/camera_received_at",
+      "label": "镜头状态接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/duplicate_count",
+      "label": "重复消息数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/conflict_count",
+      "label": "冲突消息数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "a_common": [
+    {
+      "path": "/providerCode",
+      "label": "上报提供方编码",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/deviceId",
+      "label": "上报设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/deviceName",
+      "label": "上报设备名称",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/deviceType",
+      "label": "上报设备类型",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/workState",
+      "label": "上报工作状态",
+      "type": "integer",
+      "unit": "",
+      "required": true,
+      "enum_labels": {
+        "0": "未工作",
+        "1": "工作中",
+        "2": "设备异常"
+      }
+    },
+    {
+      "path": "/deviceLongitude",
+      "label": "设备上报经度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/deviceLatitude",
+      "label": "设备上报纬度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/deviceAltitude",
+      "label": "设备上报海拔高度",
+      "type": "number",
+      "unit": "m",
+      "required": false
+    }
+  ],
+  "coverage": [
+    {
+      "path": "/extension/horizontalCoverageStartAngle",
+      "label": "水平覆盖起始角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/extension/horizontalCoverageEndAngle",
+      "label": "水平覆盖结束角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/extension/verticalCoverageStartAngle",
+      "label": "垂直覆盖起始角",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/extension/verticalCoverageEndAngle",
+      "label": "垂直覆盖结束角",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    }
+  ],
+  "range": [
+    {
+      "path": "/extension/detectionRange",
+      "label": "探测距离",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    }
+  ],
+  "frequency": [
+    {
+      "path": "/extension/detectionStartFrequencyBand",
+      "label": "探测起始频率",
+      "type": "number",
+      "unit": "MHz",
+      "required": false,
+      "note": "协议要求起止频率或非空频段列表至少提供一组",
+      "required_without_array": "/extension/detectionFrequency"
+    },
+    {
+      "path": "/extension/detectionEndFrequencyBand",
+      "label": "探测结束频率",
+      "type": "number",
+      "unit": "MHz",
+      "required": false,
+      "note": "协议要求起止频率或非空频段列表至少提供一组",
+      "required_without_array": "/extension/detectionFrequency"
+    },
+    {
+      "path": "/extension/detectionFrequency",
+      "label": "探测频段列表",
+      "type": "array",
+      "unit": "",
+      "required": false,
+      "note": "协议要求起止频率或非空频段列表至少提供一组"
+    }
+  ],
+  "counter": [
+    {
+      "path": "/extension/countermeasureRange",
+      "label": "反制距离",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    },
+    {
+      "path": "/extension/horizontalCoverageStartAngle",
+      "label": "水平覆盖起始角",
+      "type": "number",
+      "unit": "°",
+      "required": false,
+      "required_if": {
+        "path": "/extension/activeAntennaType",
+        "value": 0
+      },
+      "note": "定向设备必填；全向设备可不提供"
+    },
+    {
+      "path": "/extension/horizontalCoverageEndAngle",
+      "label": "水平覆盖结束角",
+      "type": "number",
+      "unit": "°",
+      "required": false,
+      "required_if": {
+        "path": "/extension/activeAntennaType",
+        "value": 0
+      },
+      "note": "定向设备必填；全向设备可不提供"
+    },
+    {
+      "path": "/extension/verticalCoverageStartAngle",
+      "label": "垂直覆盖起始角",
+      "type": "number",
+      "unit": "°",
+      "required": false,
+      "required_if": {
+        "path": "/extension/activeAntennaType",
+        "value": 0
+      },
+      "note": "定向设备必填；全向设备可不提供"
+    },
+    {
+      "path": "/extension/verticalCoverageEndAngle",
+      "label": "垂直覆盖结束角",
+      "type": "number",
+      "unit": "°",
+      "required": false,
+      "required_if": {
+        "path": "/extension/activeAntennaType",
+        "value": 0
+      },
+      "note": "定向设备必填；全向设备可不提供"
+    }
+  ],
+  "antenna": [
+    {
+      "path": "/extension/antennaType",
+      "label": "支持天线类型",
+      "type": "integer",
+      "unit": "",
+      "required": true,
+      "enum_labels": {
+        "0": "定向",
+        "1": "全向",
+        "2": "定向和全向"
+      }
+    },
+    {
+      "path": "/extension/activeAntennaType",
+      "label": "当前天线类型",
+      "type": "integer",
+      "unit": "",
+      "required": true,
+      "enum_labels": {
+        "0": "定向",
+        "1": "全向"
+      }
+    }
+  ],
+  "dec": [
+    {
+      "path": "/extension/decTypes",
+      "label": "支持诱骗方式",
+      "type": "array",
+      "unit": "",
+      "required": true
+    }
+  ],
+  "ifr": [
+    {
+      "path": "/extension/ifrTypes",
+      "label": "支持干扰方式",
+      "type": "array",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/bands",
+      "label": "支持干扰频段",
+      "type": "array",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "sense_header": [
+    {
+      "path": "/deviceId",
+      "label": "上报设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/ptTime",
+      "label": "上报时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": true
+    },
+    {
+      "path": "/msgCnt",
+      "label": "消息编号",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/object_count",
+      "label": "本帧目标数",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    }
+  ],
+  "sense_common": [
+    {
+      "path": "/objectId",
+      "label": "目标唯一编号",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/time",
+      "label": "探测时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": true
+    },
+    {
+      "path": "/speed",
+      "label": "目标速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": true
+    },
+    {
+      "path": "/extension/objectType",
+      "label": "目标类型",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    }
+  ],
+  "sense_position": [
+    {
+      "path": "/longitude",
+      "label": "目标经度",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/latitude",
+      "label": "目标纬度",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/altitude",
+      "label": "目标海拔高度",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    },
+    {
+      "path": "/height",
+      "label": "相对基站地面高度",
+      "type": "number",
+      "unit": "m",
+      "required": false
+    }
+  ],
+  "sense_radar": [
+    {
+      "path": "/extension/speedX",
+      "label": "正东速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": false
+    },
+    {
+      "path": "/extension/speedY",
+      "label": "正北速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": false
+    },
+    {
+      "path": "/extension/speedZ",
+      "label": "垂直向上速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": false
+    },
+    {
+      "path": "/extension/rcs",
+      "label": "雷达反射截面积",
+      "type": "number",
+      "unit": "m²",
+      "required": false
+    },
+    {
+      "path": "/extension/length",
+      "label": "目标长度",
+      "type": "integer",
+      "unit": "cm",
+      "required": false
+    },
+    {
+      "path": "/extension/width",
+      "label": "目标宽度",
+      "type": "integer",
+      "unit": "cm",
+      "required": false
+    },
+    {
+      "path": "/extension/height",
+      "label": "目标尺寸高度",
+      "type": "integer",
+      "unit": "cm",
+      "required": false
+    },
+    {
+      "path": "/extension/probability",
+      "label": "分类置信概率",
+      "type": "number",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "sense_5ga": [
+    {
+      "path": "/extension/taskId",
+      "label": "任务 ID",
+      "type": "string",
+      "unit": "",
+      "required": true
+    }
+  ],
+  "sense_radio": [
+    {
+      "path": "/extension/channel",
+      "label": "频点",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/bandWidth",
+      "label": "带宽",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/uavModel",
+      "label": "无人机型号",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/uavSN",
+      "label": "无人机识别码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/extension/pilotLon",
+      "label": "遥控器经度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/extension/pilotLat",
+      "label": "遥控器纬度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    }
+  ],
+  "sense_rid": [
+    {
+      "path": "/extension/uavModel",
+      "label": "无人机型号",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/uavSN",
+      "label": "无人机识别码",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/pilotLon",
+      "label": "遥控器经度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/extension/pilotLat",
+      "label": "遥控器纬度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    }
+  ],
+  "sense_aoa": [
+    {
+      "path": "/extension/direction",
+      "label": "目标方位角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    }
+  ],
+  "eo_heartbeat": [
+    {
+      "path": "/event",
+      "label": "事件类型",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/edgeId",
+      "label": "边缘中心 ID",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/timestamp",
+      "label": "上报时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": true
+    },
+    {
+      "path": "/metadata/deviceId",
+      "label": "上报设备 ID",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/metadata/codeStatus",
+      "label": "操作状态码",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/metadata/message",
+      "label": "附加信息",
+      "type": "string",
+      "unit": "",
+      "required": false,
+      "note": "空字符串表示无附加信息",
+      "allow_empty": true
+    },
+    {
+      "path": "/metadata/taskId",
+      "label": "设备跟踪任务 ID",
+      "type": "string",
+      "unit": "",
+      "required": false,
+      "note": "空闲时允许为空；以设备上报为准",
+      "nullable_if": {
+        "path": "/metadata/workState",
+        "value": 0
+      }
+    },
+    {
+      "path": "/metadata/workState",
+      "label": "工作状态",
+      "type": "integer",
+      "unit": "",
+      "required": true,
+      "enum_labels": {
+        "0": "空闲",
+        "1": "工作",
+        "2": "自主探测"
+      }
+    }
+  ],
+  "eo_camera": [
+    {
+      "path": "/hfov",
+      "label": "水平视场角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/vfov",
+      "label": "垂直视场角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/panOrientAngle",
+      "label": "水平指向角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/tiltOrientAngle",
+      "label": "俯仰指向角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/focalLen",
+      "label": "焦距",
+      "type": "number",
+      "unit": "mm",
+      "required": true
+    },
+    {
+      "path": "/detectDist",
+      "label": "最大检测距离",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    },
+    {
+      "path": "/zoomIndex",
+      "label": "光学变倍",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    }
+  ],
+  "radar_runtime": [
+    {
+      "path": "/connection_state",
+      "label": "协议会话状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/login_state",
+      "label": "登录状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/last_valid_frame_at",
+      "label": "最近有效帧时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/last_frame_id",
+      "label": "最近帧 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/crc_error_count",
+      "label": "校验错误数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/reconnect_count",
+      "label": "重连次数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/active_track_count",
+      "label": "活动航迹数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/coordinate_reference_state",
+      "label": "坐标参考状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/blocking_reason",
+      "label": "阻断原因",
+      "type": "string",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "radar_registers": [
+    {
+      "path": "/user_cfg0_raw",
+      "label": "检测配置寄存器原值",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/working_mode_raw",
+      "label": "工作模式寄存器原值",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/frequency_code",
+      "label": "工作频点编码",
+      "type": "integer",
+      "unit": "",
+      "required": true,
+      "note": "0—7 为协议定义的频点编码；未提供频率换算关系"
+    },
+    {
+      "path": "/speed_threshold_code",
+      "label": "速度门限编码",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/speed_threshold_mps",
+      "label": "速度门限",
+      "type": "number",
+      "unit": "m/s",
+      "required": false
+    },
+    {
+      "path": "/detection_threshold_code",
+      "label": "检测门限编码",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/detection_threshold",
+      "label": "检测门限",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/rcs_threshold_code",
+      "label": "RCS 门限编码",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/rcs_filter_enabled",
+      "label": "RCS 过滤启用",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/rcs_threshold_m2",
+      "label": "RCS 门限",
+      "type": "number",
+      "unit": "m²",
+      "required": false
+    },
+    {
+      "path": "/rotation_code",
+      "label": "转速编码",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/scan_speed_deg_s",
+      "label": "扫描角速度",
+      "type": "integer",
+      "unit": "°/s",
+      "required": false
+    },
+    {
+      "path": "/work_mode_code",
+      "label": "工作模式编码",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/work_mode",
+      "label": "工作模式",
+      "type": "string",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "radar_rtk": [
+    {
+      "path": "/latitude_deg",
+      "label": "RTK 纬度",
+      "type": "number",
+      "unit": "°",
+      "required": true,
+      "note": "WGS-84；原协议 RTK 高程保留且无效"
+    },
+    {
+      "path": "/longitude_deg",
+      "label": "RTK 经度",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/heading_deg",
+      "label": "RTK 航向角",
+      "type": "number",
+      "unit": "°",
+      "required": true
+    },
+    {
+      "path": "/satellite_count",
+      "label": "可用卫星数",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/frame_id",
+      "label": "RTK 帧 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "radar_point": [
+    {
+      "path": "/radar_boot_micros",
+      "label": "雷达上电标识",
+      "type": "integer",
+      "unit": "μs",
+      "required": false
+    },
+    {
+      "path": "/frame_id",
+      "label": "点迹帧 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/point_count",
+      "label": "本帧点迹数",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/summary/scan_start_deg",
+      "label": "扫描起始角",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/summary/scan_end_deg",
+      "label": "扫描结束角",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/summary/scan_direction",
+      "label": "扫描方向",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/summary/sample",
+      "label": "点迹样本（最多 20 条）",
+      "type": "array",
+      "unit": "",
+      "required": false,
+      "note": "原始雷达坐标 X/Y/Z：m；信噪比：dB"
+    }
+  ],
+  "radar_target": [
+    {
+      "path": "/external_track_id",
+      "label": "航迹 ID",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/radar_boot_micros",
+      "label": "雷达上电标识",
+      "type": "integer",
+      "unit": "μs",
+      "required": false
+    },
+    {
+      "path": "/frame_id",
+      "label": "帧 ID",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/raw_x_m",
+      "label": "雷达 X 坐标",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    },
+    {
+      "path": "/raw_y_m",
+      "label": "雷达 Y 坐标",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    },
+    {
+      "path": "/raw_z_m",
+      "label": "雷达 Z 坐标",
+      "type": "number",
+      "unit": "m",
+      "required": true
+    },
+    {
+      "path": "/velocity_x_mps",
+      "label": "X 方向速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": true
+    },
+    {
+      "path": "/velocity_y_mps",
+      "label": "Y 方向速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": true
+    },
+    {
+      "path": "/velocity_z_mps",
+      "label": "Z 方向速度",
+      "type": "number",
+      "unit": "m/s",
+      "required": true
+    },
+    {
+      "path": "/snr_db",
+      "label": "信噪比",
+      "type": "number",
+      "unit": "dB",
+      "required": true
+    },
+    {
+      "path": "/rcs_legacy_m2",
+      "label": "兼容 RCS",
+      "type": "number",
+      "unit": "m²",
+      "required": false
+    },
+    {
+      "path": "/rcs_high_resolution_m2",
+      "label": "高分辨率 RCS",
+      "type": "number",
+      "unit": "m²",
+      "required": false
+    },
+    {
+      "path": "/selected",
+      "label": "选中标志",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/radar_classification",
+      "label": "雷达分类编码",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/category_code",
+      "label": "分类",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/longitude_deg",
+      "label": "派生经度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/latitude_deg",
+      "label": "派生纬度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/derived",
+      "label": "是否派生坐标",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "relay": [
+    {
+      "path": "/raw_status_word",
+      "label": "继电器状态字",
+      "type": "integer",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/detected_wire_encoding",
+      "label": "实际线缆编码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/channels/900M",
+      "label": "通道 1 · 900M",
+      "type": "boolean",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/channels/1.5G",
+      "label": "通道 2 · 1.5G",
+      "type": "boolean",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/channels/2.4G",
+      "label": "通道 3 · 2.4G",
+      "type": "boolean",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/channels/5.8G",
+      "label": "通道 4 · 5.8G",
+      "type": "boolean",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/last_query_at",
+      "label": "最近查询时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    }
+  ],
+  "control_receipt": [
+    {
+      "path": "/command_no",
+      "label": "指令编号",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/command_type",
+      "label": "指令类型",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/status",
+      "label": "平台指令状态",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/device_result_code",
+      "label": "设备返回码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/occurred_at",
+      "label": "回执发生时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    },
+    {
+      "path": "/received_at",
+      "label": "回执接收时间",
+      "type": "integer",
+      "unit": "epoch_ms",
+      "required": false
+    }
+  ],
+  "mqtt_endpoint": [
+    {
+      "path": "/host",
+      "label": "MQTT 主机",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/port",
+      "label": "端口",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/tls",
+      "label": "TLS",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "radar_configuration": [
+    {
+      "path": "/login_role",
+      "label": "登录角色",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/rtk_enabled",
+      "label": "RTK 采集启用",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/coordinate_transform_enabled",
+      "label": "坐标转换启用",
+      "type": "boolean",
+      "unit": "",
+      "required": false
+    }
+  ],
+  "relay_configuration": [
+    {
+      "path": "/device_address",
+      "label": "控制器地址",
+      "type": "integer",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/wire_encoding",
+      "label": "配置线缆编码",
+      "type": "string",
+      "unit": "",
+      "required": false
+    },
+    {
+      "path": "/poll_interval_millis",
+      "label": "查询间隔",
+      "type": "integer",
+      "unit": "ms",
+      "required": false
+    }
+  ],
+  "sense_dcd": [
+    {
+      "path": "/extension/channel",
+      "label": "频点",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/bandWidth",
+      "label": "带宽",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/uavModel",
+      "label": "无人机型号",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/uavSN",
+      "label": "无人机识别码",
+      "type": "string",
+      "unit": "",
+      "required": true
+    },
+    {
+      "path": "/extension/pilotLon",
+      "label": "遥控器经度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    },
+    {
+      "path": "/extension/pilotLat",
+      "label": "遥控器纬度",
+      "type": "number",
+      "unit": "°",
+      "required": false
+    }
+  ]
+}

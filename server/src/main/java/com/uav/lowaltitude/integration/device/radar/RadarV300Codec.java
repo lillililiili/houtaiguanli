@@ -91,6 +91,12 @@ public final class RadarV300Codec {
         return ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putInt(1).putInt(WORK_MODE_REGISTER).array();
     }
 
+    /** Protocol 3.0.0 §2.4: only the two documented, read-only register addresses. */
+    public static byte[] getInformationPayload() {
+        return ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN)
+                .putInt(2).putInt(0x440).putInt(WORK_MODE_REGISTER).array();
+    }
+
     public static byte[] enableRtkUploadPayload() { return new byte[] { 1, 0 }; }
 
     private static ProtocolException invalid(String message) {

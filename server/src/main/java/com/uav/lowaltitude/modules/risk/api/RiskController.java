@@ -57,6 +57,11 @@ public class RiskController {
         return ApiResponse.ok(verification.history(riskId, parameters));
     }
 
+    @GetMapping("/{riskId}/weather-fact")
+    public ApiResponse<WeatherRiskDto> weatherFact(@PathVariable String riskId) {
+        return ApiResponse.ok(read.weatherFact(riskId));
+    }
+
     @PostMapping("/{riskId}/verifications")
     public ApiResponse<RiskDto> verify(@PathVariable String riskId, @RequestBody(required = false) String request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {

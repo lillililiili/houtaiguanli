@@ -30,7 +30,7 @@ public class RiskReadService {
     private static final Set<String> ALLOWED = Set.of("state", "severity", "plan_id", "occurred_from", "occurred_to",
             "owner_org_id", "district_id", "source_mode", "page", "size", "risk_type", "object_subtype",
             // 阶段 15 新增（决策 15-6 / 15-7）：写错的参数必须报错而不是被忽略。
-            "sort", "order", "target_type");
+            "sort", "order", "target_type", "risk_types");
     /* risk_type 在库里是自由文本（阶段 4 的 CHECK 只要求非空），已有数据用 ROUTE_DEVIATION 等值；
        这里不做白名单，否则会把合法的既有类型判成参数错误。SPACE_OBJECT 只是其中一个取值。 */
     private static final Set<String> STATES=Set.of("PENDING_VERIFICATION","PENDING_NOTIFICATION","NOTIFIED","ACKNOWLEDGED","EXCLUDED");
@@ -38,6 +38,7 @@ public class RiskReadService {
     private static final Set<String> SOURCE_MODES=Set.of("mock","replay","live");
     private final AccessControlService access;
     private final RiskRepository repository;
+    private final com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather;
     private final com.uav.lowaltitude.platform.audit.AuditService audit;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
 
@@ -45,9 +46,10 @@ public class RiskReadService {
 
     public RiskReadService(AccessControlService access, RiskRepository repository,
             @org.springframework.context.annotation.Lazy com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskReadService spaceRisk,
-            com.uav.lowaltitude.platform.audit.AuditService audit, com.uav.lowaltitude.platform.time.AppClock clock) {
+            com.uav.lowaltitude.platform.audit.AuditService audit, com.uav.lowaltitude.platform.time.AppClock clock,
+            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather) {
         this.access = access; this.repository = repository; this.spaceRisk = spaceRisk;
-        this.audit = audit; this.clock = clock;
+        this.audit = audit; this.clock = clock; this.weather = weather;
     }
 
     @Transactional(readOnly = true)
@@ -64,7 +66,7 @@ public class RiskReadService {
                 planId, occurred.from, occurred.to, request.optional("owner_org_id", 36),
                 request.optional("district_id", 36), request.enumerated("source_mode",SOURCE_MODES),
                 request.optional("risk_type", 64), request.optional("object_subtype", 32),
-                request.optional("target_type", 32));
+                request.optional("target_type", 32), request.riskTypes());
         String sort = sortKey(values), order = orderDirection(values);
         long total = repository.count(query, decision);
         return new PageDto<>(repository.list(query, decision, page.offset(), page.size, sort, order).stream()
@@ -115,7 +117,7 @@ public class RiskReadService {
                 request.optional("plan_id", 36), occurred.from, occurred.to, request.optional("owner_org_id", 36),
                 request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES),
                 request.optional("risk_type", 64), request.optional("object_subtype", 32),
-                request.optional("target_type", 32));
+                request.optional("target_type", 32), request.riskTypes());
         String sort = sortKey(values), order = orderDirection(values);
         long total = repository.count(query, decision);
         if (total > CsvExport.MAX_ROWS) {
@@ -127,7 +129,7 @@ public class RiskReadService {
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "risks", "risks_exported", "risk", null,
                 "filters=state=" + query.state() + ",severity=" + query.severity() + ",risk_type=" + query.riskType()
-                        + ",target_type=" + query.targetType() + ",sort=" + sort + ",order=" + order
+                        + ",risk_types=" + query.riskTypes() + ",target_type=" + query.targetType() + ",sort=" + sort + ",order=" + order
                         + "; rows=" + cells.size(), "SUCCESS", "", "");
         return CsvExport.response(CsvExport.fileName("risks", java.time.Instant.ofEpochMilli(clock.nowMillis())),
                 EXPORT_HEADERS, cells);
@@ -160,6 +162,16 @@ public class RiskReadService {
         RiskRow row = repository.find(id(riskId), decision);
         if (row == null) throw notFound();
         return dto(row);
+    }
+
+    @Transactional(readOnly = true)
+    public com.uav.lowaltitude.modules.risk.api.WeatherRiskDto weatherFact(String riskId) {
+        AccessDecision decision = access.require(PermissionCode.RISK_READ);
+        RiskRow row = repository.find(id(riskId), decision);
+        if (row == null) throw notFound();
+        var fact = "WEATHER".equals(row.riskType()) ? weather.find(row.riskId()) : null;
+        return fact == null ? null : new com.uav.lowaltitude.modules.risk.api.WeatherRiskDto(fact.polygon(), fact.publishedAt(),
+            fact.validFrom(), fact.validTo(), fact.windSpeedMps(), fact.windFromDegrees(), fact.visibilityM(), fact.sourceMode());
     }
 
     /** 空间事实是可空追加字段：没有事实的风险（阶段 4 的作业风险）整段缺省，不返回空对象。 */
@@ -203,6 +215,16 @@ public class RiskReadService {
         }
         Page page() { int page=integer("page",1),size=integer("size",20); if(page<1||size<1||size>100)throw invalid("分页参数无效"); return new Page(page,size); }
         String optional(String name,int max) { if(!values.containsKey(name))return null; String value=single(name); if(value.length()>max)throw invalid(name+" 参数无效"); return value; }
+        List<String> riskTypes() {
+            String value = optional("risk_types", 649);
+            if (value == null) return List.of();
+            String[] types = value.split(",", -1);
+            if (types.length > 10) throw invalid("risk_types 最多允许 10 个类型");
+            return java.util.Arrays.stream(types).map(String::trim).map(type -> {
+                if (type.isEmpty() || type.length() > 64) throw invalid("risk_types 参数无效");
+                return type;
+            }).distinct().toList();
+        }
         String enumerated(String name,Set<String> allowed){String value=optional(name,32);if(value!=null&&!allowed.contains(value))throw invalid(name+" 参数无效");return value;}
         TimeRange timeRange() {
             boolean hasFrom=values.containsKey("occurred_from"),hasTo=values.containsKey("occurred_to");

@@ -3,11 +3,22 @@
 
 Do not json.dumps the payload field again. The file already stores the device
 text; re-serializing it changes key order/whitespace and breaks payload_hash.
+
+Two opt-in rewrites exist because the frozen datasets do not match how the platform
+actually behaves (both off by default so the plain run still reconciles by hash):
+
+--eo-task-id   协议 C BeginTracking 里的 taskId 是平台手点跟踪时生成的 UUID，设备只是回显；
+               冻结文件里写死的 E-T1 / E-L / T-EO-TRACK 永远对不上，35 条全部 TRACK_NOT_OPEN。
+               传入当前 OPEN 任务号后，所有光电跟踪上报改用它（只替换这一个字段）。
+--renumber-msgcnt
+               协议 A v8.6 规定 msgCnt 是每台设备各自连续编号；冻结文件用的是跨设备的全局计数器，
+               回放后设备页会显示几十次"疑似缺报"。开启后按设备从 0 重新连续编号。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -85,7 +96,49 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="只校验并打印将要发布的主题，不连接 broker",
     )
+    parser.add_argument(
+        "--eo-task-id",
+        default=None,
+        help="把协议 C 跟踪上报里的 taskId 换成这个平台任务号（手点跟踪接口返回的 task_id）；改了字节，哈希对账对光电记录不再成立",
+    )
+    parser.add_argument(
+        "--eo-task-id-for",
+        default="E-T1",
+        help="--eo-task-id 只替换原来等于这个值的 taskId，默认 E-T1（主跟踪场景 24 条）。数据集里 E-L / T-EO-TRACK 是另外两段跟踪，平台同一时刻只允许一台光电有一个进行中任务，不能一起替换成同一个号，否则三段会被当成同一条航迹",
+    )
+    parser.add_argument(
+        "--renumber-msgcnt",
+        action="store_true",
+        help="协议 A 探测报文按设备重新连续编号 msgCnt（冻结文件是全局计数器，不符合协议）；改了字节，哈希对账不再成立",
+    )
     return parser.parse_args(argv)
+
+
+MSG_CNT = re.compile(r'"msgCnt"\s*:\s*\d+')
+DEVICE_ID = re.compile(r'"deviceId"\s*:\s*"([^"]*)"')
+
+
+def rewrite(records: list[dict], eo_task_id: str | None, renumber_msgcnt: bool, eo_task_id_for: str = "E-T1") -> int:
+    """只做正则级的单字段替换，其余字节原样；返回改动条数。两处改写都是给回放用的，不在默认路径上。"""
+    changed = 0
+    counters: dict[str, int] = {}
+    eo_pattern = re.compile(r'"taskId"\s*:\s*"' + re.escape(eo_task_id_for) + r'"') if eo_task_id else None
+    for row in records:
+        payload = row["payload"]
+        if eo_pattern and row["topic"].startswith("iot-reporting/") and '"BeginTracking"' in payload:
+            payload, count = eo_pattern.subn(f'"taskId":"{eo_task_id}"', payload, count=1)
+            if count:
+                changed += 1
+        if renumber_msgcnt and "/device_data/" in row["topic"]:
+            match = DEVICE_ID.search(payload)
+            if match and MSG_CNT.search(payload):
+                device = match.group(1)
+                seq = counters.get(device, 0)
+                counters[device] = seq + 1
+                payload = MSG_CNT.sub(f'"msgCnt":{seq}', payload, count=1)
+                changed += 1
+        row["payload"] = payload
+    return changed
 
 
 def main(argv: list[str]) -> int:
@@ -109,6 +162,10 @@ def main(argv: list[str]) -> int:
     if args.limit:
         records = records[: args.limit]
     print(f"loaded {len(records)} records from {path}")
+    if args.eo_task_id or args.renumber_msgcnt:
+        changed = rewrite(records, args.eo_task_id, args.renumber_msgcnt, args.eo_task_id_for)
+        print(f"rewrote {changed} payloads (eo_task_id={'yes' if args.eo_task_id else 'no'}, "
+              f"renumber_msgcnt={'yes' if args.renumber_msgcnt else 'no'}); payload_hash 对账对这些记录不再成立")
     if args.dry_run:
         for row in records:
             print(f"{row['record_no']}\t{row['topic']}\t{len(row['payload'].encode('utf-8'))} bytes")

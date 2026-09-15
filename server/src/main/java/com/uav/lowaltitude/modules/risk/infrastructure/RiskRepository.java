@@ -260,6 +260,10 @@ public class RiskRepository {
         add(where, "r.district_id", "district", query.districtId);
         add(where, "r.source_mode", "mode", query.sourceMode);
         add(where, "r.risk_type", "risk_type", query.riskType);
+        if (query.riskTypes != null && !query.riskTypes.isEmpty()) {
+            where.sql.append(" AND r.risk_type IN (:risk_types)");
+            where.params.put("risk_types", query.riskTypes);
+        }
         if (query.targetType != null) {
             // 用 EXISTS 而不是引用 nameJoins 的 tg 别名：导出与列表都要能用，
             // 而 EXISTS 不依赖任何联表，改联表结构时也不会跟着坏。
@@ -332,7 +336,13 @@ public class RiskRepository {
     public record RiskQuery(String state, String severity, String planId, OffsetDateTime occurredFrom, OffsetDateTime occurredTo,
             String ownerOrgId, String districtId, String sourceMode, String riskType, String objectSubtype,
             /* 阶段 15（决策 15-7）：按关联目标的类别筛。 */
-            String targetType) {
+            String targetType, List<String> riskTypes) {
+        // 保留现有调用方的单类型查询语义；多类型范围只在显式传入时生效。
+        public RiskQuery(String state, String severity, String planId, OffsetDateTime occurredFrom, OffsetDateTime occurredTo,
+                String ownerOrgId, String districtId, String sourceMode, String riskType, String objectSubtype, String targetType) {
+            this(state, severity, planId, occurredFrom, occurredTo, ownerOrgId, districtId, sourceMode,
+                    riskType, objectSubtype, targetType, List.of());
+        }
         public static RiskQuery empty(){return new RiskQuery(null,null,null,null,null,null,null,null,null,null,null);} }
     public record RiskRow(String riskId,String sourceRiskId,String planId,String routeVersionId,String assessmentId,String targetId,String trackId,
             String riskType,String severity,String state,String reasonCode,String reasonText,OffsetDateTime occurredAt,OffsetDateTime receivedAt,

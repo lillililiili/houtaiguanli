@@ -4,6 +4,8 @@ import * as echarts from 'echarts';
 import PageHeader from '@/components/PageHeader.vue';
 import MetricCards from '@/components/MetricCards.vue';
 import ErrorAlert from '@/components/ErrorAlert.vue';
+import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
+import DeviceMaintenancePanel from './DeviceMaintenancePanel.vue';
 import { deviceApi } from '@/api/devices.js';
 import { display, formatTime, statusText, statusType } from '@/utils/format.js';
 
@@ -19,17 +21,22 @@ const eventSeq = ref(0);
 const metricCode = ref('link_latency_ms');
 const protocolStatus = ref(null);
 const radarTargets = ref([]);
+const information = ref(null);
+const informationError = ref('');
+const selectedError = ref('');
 const loading = ref(false);
 const selectedLoading = ref(false);
 const paused = ref(false);
 const error = ref('');
 const chartEl = ref();
+const maintenanceTasks = ref(null);
 let chart;
 let aggregateTimer;
 let selectedTimer;
 let aggregateInFlight = false;
 let selectedInFlight = false;
 let selectedPending = false;
+let selectedGeneration = 0;
 let alive = true;
 
 const selected = computed(() => tree.value.find(item => item.device_id === selectedId.value));
@@ -54,6 +61,7 @@ function healthText(value) { return ({ GOOD: '良好', DEGRADED: '一般', BAD: 
 async function loadAggregate(showBusy = false) {
   if (aggregateInFlight || paused.value) return;
   aggregateInFlight = true; if (showBusy) loading.value = true;
+  void maintenanceTasks.value?.reload();
   try {
     const [summary, deviceTree, incidentPage] = await Promise.all([deviceApi.overview(), deviceApi.tree(filters), deviceApi.incidents({ page: 1, size: 20, stage: 'PENDING' })]);
     if (!alive) return;
@@ -64,26 +72,36 @@ async function loadAggregate(showBusy = false) {
   finally { loading.value = false; aggregateInFlight = false; }
 }
 
-async function loadSelected(showBusy = false) {
-  if (!selectedId.value || paused.value) return;
-  if (selectedInFlight) { selectedPending = true; return; }
+async function loadSelected(showBusy = false, manual = false) {
+  if (!alive || !selectedId.value || (paused.value && !manual)) return;
+  if (selectedInFlight) { if (manual) selectedPending = true; return; }
   selectedInFlight = true; if (showBusy) selectedLoading.value = true;
   const deviceId = selectedId.value; const requestedMetric = metricCode.value;
+  const generation = selectedGeneration;
   try {
-    const [deviceState, points, eventPage, protocol, targetPage] = await Promise.all([
+    const [statusResult, informationResult] = await Promise.allSettled([Promise.all([
       deviceApi.state(deviceId), deviceApi.history(deviceId, { metric_code: requestedMetric, limit: 120 }),
       deviceApi.events({ device_id: deviceId, after_seq: eventSeq.value, limit: 100 }), deviceApi.protocolStatus(deviceId),
       selected.value?.protocol_code === 'RADAR_TCP_V3_0_0' ? deviceApi.targets({ device_id: deviceId, active: true, page: 1, size: 20 }) : Promise.resolve({ items: [] })
-    ]);
-    if (!alive || deviceId !== selectedId.value || requestedMetric !== metricCode.value) return;
-    state.value = deviceState; history.value = points.points || []; protocolStatus.value = protocol; radarTargets.value = targetPage.items || [];
-    const merged = new Map([...events.value, ...(eventPage.items || [])].map(item => [item.event_seq, item]));
-    events.value = [...merged.values()].sort((a, b) => a.event_seq - b.event_seq).slice(-100); eventSeq.value = eventPage.next_seq || eventSeq.value;
-    error.value = ''; await nextTick(); paintChart();
-  } catch (e) { error.value = e.message || '所选设备状态加载失败'; }
+    ]), deviceApi.information(deviceId)]);
+    if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value || requestedMetric !== metricCode.value) return;
+    information.value = informationResult.status === 'fulfilled' ? informationResult.value : null;
+    informationError.value = informationResult.status === 'rejected' ? informationResult.reason?.message || '完整信息加载失败' : '';
+    if (statusResult.status === 'fulfilled') {
+      const [deviceState, points, eventPage, protocol, targetPage] = statusResult.value;
+      state.value = deviceState; history.value = points.points || []; protocolStatus.value = protocol; radarTargets.value = targetPage.items || [];
+      const merged = new Map([...events.value, ...(eventPage.items || [])].map(item => [item.event_seq, item]));
+      events.value = [...merged.values()].sort((a, b) => a.event_seq - b.event_seq).slice(-100); eventSeq.value = eventPage.next_seq || eventSeq.value;
+      selectedError.value = '';
+    } else {
+      state.value = null; history.value = []; protocolStatus.value = null; radarTargets.value = [];
+      selectedError.value = statusResult.reason?.message || '所选设备状态加载失败';
+    }
+    await nextTick(); paintChart();
+  }
   finally {
     selectedLoading.value = false; selectedInFlight = false;
-    if (selectedPending) { selectedPending = false; void loadSelected(); }
+    if (selectedPending) { selectedPending = false; void loadSelected(true, true); }
   }
 }
 
@@ -104,16 +122,28 @@ function paintChart() {
 }
 
 function selectDevice(item) {
-  selectedId.value = item.device_id; state.value = null; history.value = []; events.value = []; eventSeq.value = 0; protocolStatus.value = null; radarTargets.value = [];
+  selectedId.value = item.device_id;
 }
-async function applyFilters() { paused.value = false; await loadAggregate(true); await loadSelected(true); }
+async function applyFilters() {
+  paused.value = false;
+  const previousId = selectedId.value;
+  await loadAggregate(true);
+  if (previousId === selectedId.value) await loadSelected(true, true);
+}
 function togglePause() { paused.value = !paused.value; if (!paused.value) applyFilters(); }
 function resizeChart() { chart?.resize(); }
 
-watch(selectedId, () => { if (selectedId.value) loadSelected(true); });
-watch(metricCode, () => { history.value = []; loadSelected(true); });
+watch(selectedId, () => {
+  selectedGeneration++;
+  state.value = null; history.value = []; events.value = []; eventSeq.value = 0;
+  protocolStatus.value = null; radarTargets.value = []; information.value = null;
+  informationError.value = ''; selectedError.value = ''; chart?.clear();
+  if (selectedId.value) loadSelected(true, true);
+});
+watch(metricCode, () => { history.value = []; loadSelected(true, true); });
 onMounted(async () => {
-  await loadAggregate(true); await loadSelected(true);
+  await loadAggregate(true);
+  if (!alive) return;
   aggregateTimer = window.setInterval(loadAggregate, 10000); selectedTimer = window.setInterval(loadSelected, 2000);
   window.addEventListener('resize', resizeChart);
 });
@@ -127,7 +157,9 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
       <el-button @click="togglePause">{{ paused?'继续刷新':'暂停刷新' }}</el-button>
     </PageHeader>
     <MetricCards :items="metrics" />
+    <DeviceMaintenancePanel ref="maintenanceTasks" />
     <ErrorAlert :message="error" @retry="applyFilters" />
+    <ErrorAlert :message="selectedError" @retry="loadSelected(true, true)" />
     <div class="monitor-layout">
       <el-card v-loading="loading">
         <template #header><div class="table-toolbar"><b>设备树</b><span class="muted">{{ tree.length }} 台</span></div></template>
@@ -171,5 +203,6 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
         </el-card>
       </div>
     </div>
+    <DeviceInformationPanel v-if="selectedId" :key="selectedId" purpose="monitor" :information="information" :loading="selectedLoading" :error="informationError" @refresh="loadSelected(true, true)" />
   </section>
 </template>

@@ -36,13 +36,16 @@ public class LingyunControlService {
     private final AuditService audit;
     private final ObjectMapper json;
     private final long timeoutMillis;
+    private final com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard;
 
     public LingyunControlService(DeviceAccessPolicy access, DeviceRepository devices, MqttRepository mqtt,
                                  LingyunControlRepository controls, ObjectProvider<MqttSessionSupervisor> sessions,
                                  AppClock clock, AuditService audit, ObjectMapper json,
-                                 org.springframework.core.env.Environment environment) {
+                                 org.springframework.core.env.Environment environment,
+                                 com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard) {
         this.access = access; this.devices = devices; this.mqtt = mqtt; this.controls = controls;
         this.sessions = sessions; this.clock = clock; this.audit = audit; this.json = json;
+        this.disposalGuard = disposalGuard;
         this.timeoutMillis = Long.parseLong(environment.getProperty("app.lingyun-control.command-timeout-millis", "10000"));
     }
 
@@ -73,6 +76,8 @@ public class LingyunControlService {
             throw bad("VALIDATION_ERROR", "operation_type 必须为 0、1 或 2");
         if (operationCmd == null || !LingyunControlEnvelope.COMMANDS.contains(operationCmd))
             throw bad("VALIDATION_ERROR", "operation_cmd 不在协议 B 白名单");
+        if (operationType != 0 && !disposalGuard.mayStart(authorizationId.trim()))
+            throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止，不能继续下发启动指令");
         String family = LingyunControlEnvelope.family(operationCmd);
         if (family == null)
             throw new ApiException(HttpStatus.BAD_REQUEST, "PROTOCOL_UNSUPPORTED", "该指令码对应的设备类型缩写尚未确认，不能下发");
@@ -124,6 +129,16 @@ public class LingyunControlService {
     public void dispatch(String commandId) {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || terminal(text(command, "status"))) return;
+        boolean allowed = ((Number)command.get("operation_type")).intValue()==0
+                || disposalGuard.mayStart(text(command,"control_authorization_id"));
+        controls.lockCommand(commandId);
+        command = controls.control(commandId);
+        if (command == null || terminal(text(command,"status"))) return;
+        if (!allowed) {
+            controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
+                    "AUTHORIZATION_STOPPED","处置已停止，禁止重投旧启动指令；此前设备动作仍需核查");
+            return;
+        }
         long now = clock.nowMillis();
         String status = text(command, "status");
         if ("QUEUED".equals(status)) {

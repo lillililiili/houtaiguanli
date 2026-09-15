@@ -137,7 +137,8 @@ public class AirspaceWriteRepository {
      * WHERE 里再判一次 valid_to IS NULL，保证并发下只有一方能关闭它（PostgreSQL 触发器同样只放行 NULL → 非 NULL）。
      */
     public int closeVersion(String airspaceVersionId, Instant validTo) {
-        return jdbc.update("UPDATE airspace_version SET valid_to=:to WHERE airspace_version_id=:id AND valid_to IS NULL",
+        // 允许把已定结束时间的版本提前关闭；但只能往前收，不能把已关闭的区间重新拉长。
+        return jdbc.update("UPDATE airspace_version SET valid_to=:to WHERE airspace_version_id=:id AND (valid_to IS NULL OR valid_to > :to)",
                 Map.of("id", airspaceVersionId, "to", Timestamp.from(validTo)));
     }
 
