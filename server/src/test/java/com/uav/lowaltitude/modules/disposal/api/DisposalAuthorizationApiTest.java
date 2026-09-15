@@ -361,6 +361,29 @@ class DisposalAuthorizationApiTest {
         return id;
     }
 
+    @Test
+    void listCanExcludeCompletedAuthorizations() throws Exception {
+        String completedId = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        jdbc.update("update disposal_authorization set status='COMPLETED' where authorization_id=?", completedId);
+        String openId = id(create(requester, "DISPERSAL", eventId, "MANUAL").andExpect(status().isCreated()));
+
+        JsonNode excluded = body(mvc.perform(get("/api/v1/disposal-authorizations")
+                        .param("subject_id", eventId).param("exclude_status", "COMPLETED")
+                        .header("Authorization", bearer(reader)))
+                .andExpect(status().isOk())).path("data");
+        List<String> excludedIds = new java.util.ArrayList<>();
+        excluded.path("items").forEach(item -> excludedIds.add(item.path("authorization_id").asText()));
+        assertThat(excludedIds).contains(openId).doesNotContain(completedId);
+
+        JsonNode all = body(mvc.perform(get("/api/v1/disposal-authorizations")
+                        .param("subject_id", eventId)
+                        .header("Authorization", bearer(reader)))
+                .andExpect(status().isOk())).path("data");
+        List<String> allIds = new java.util.ArrayList<>();
+        all.path("items").forEach(item -> allIds.add(item.path("authorization_id").asText()));
+        assertThat(allIds).contains(openId, completedId);
+    }
+
     /* ---- 策略透出 ---- */
 
     @Test

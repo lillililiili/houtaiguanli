@@ -52,13 +52,17 @@ public class DisposalReadService {
     }
 
     @Transactional(readOnly = true)
-    public PageDto<AuthorizationDto> list(String subjectKind, String subjectId, String status, String actionType,
-                                          Integer page, Integer size) {
+    public PageDto<AuthorizationDto> list(String subjectKind, String subjectId, String status, String excludeStatus,
+                                          String actionType, Integer page, Integer size) {
         AccessDecision decision = access.require(PermissionCode.DISPOSAL_READ);
         int p = page == null ? 1 : page, s = size == null ? 20 : size;
         if (p < 1 || s < 1 || s > MAX_SIZE)
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "分页参数无效");
-        DisposalRepository.Query query = new DisposalRepository.Query(subjectKind, subjectId, status, actionType);
+        String exclude = blankToNull(excludeStatus);
+        if (exclude != null && !DisposalRules.STATUSES.contains(exclude))
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "排除状态无效");
+        DisposalRepository.Query query = new DisposalRepository.Query(subjectKind, subjectId, blankToNull(status),
+                exclude, actionType);
         long total = repository.count(decision, query);
         List<AuthorizationRow> rows = repository.list(decision, query, (p - 1) * s, s);
         // 一次取回本页所有事件种类，避免逐条查事件流（列表页 N+1）。
@@ -158,6 +162,10 @@ public class DisposalReadService {
     }
 
     private static Long millis(OffsetDateTime at) { return at == null ? null : at.toInstant().toEpochMilli(); }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
 
     private static ApiException notFound() {
         return new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "授权不存在或不可见");

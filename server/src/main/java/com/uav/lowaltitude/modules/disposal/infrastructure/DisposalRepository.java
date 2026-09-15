@@ -341,6 +341,10 @@ public class DisposalRepository {
         add(where, "a.subject_kind", "f_kind", query.subjectKind());
         add(where, "a.subject_id", "f_subject", query.subjectId());
         add(where, "a.status", "f_status", query.status());
+        if (query.excludeStatus() != null) {
+            where.sql.append(" AND a.status<>:f_exclude_status");
+            where.params.put("f_exclude_status", query.excludeStatus());
+        }
         add(where, "a.action_type", "f_action", query.actionType());
         return where;
     }
@@ -390,7 +394,7 @@ public class DisposalRepository {
     public record TargetScope(String targetId, String ownerOrgId, String districtId, String sourceMode,
             OffsetDateTime observedAt) { }
 
-    public record Query(String subjectKind, String subjectId, String status, String actionType) { }
+    public record Query(String subjectKind, String subjectId, String status, String excludeStatus, String actionType) { }
 
     public record AuthorizationInsert(String authorizationId, String authorizationNo, String actionType,
             String subjectKind, String subjectId, String targetId, String deviceId, String channel, String reason,

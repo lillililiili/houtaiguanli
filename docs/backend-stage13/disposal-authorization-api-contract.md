@@ -27,7 +27,7 @@
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | POST | `/disposal-authorizations` | `disposal:request` + 主体读权限 | body `{action_type, subject_kind, subject_id, device_id?, channel, reason}`；策略校验：`requires_confirmed_event` 时事件须 `CONFIRMED`（否则 409 `POLICY_REQUIRES_CONFIRMED_EVENT`）；同主体同类型已有活动授权 → 409 `ACTIVE_AUTHORIZATION_EXISTS` |
-| GET | `/disposal-authorizations?subject_kind&subject_id&status&action_type&page&size` | `disposal:read` | 分页 |
+| GET | `/disposal-authorizations?subject_kind&subject_id&status&exclude_status&action_type&page&size` | `disposal:read` | 分页；`exclude_status` 排除某一状态（处置授权队列默认排除 `COMPLETED`） |
 | GET | `/disposal-authorizations/{id}` | `disposal:read` | 含 `allowed_actions`（按状态与调用者权限计算：APPROVE/REJECT/EXECUTE/STOP/CANCEL/MANUAL_RESULT） |
 | GET | `/disposal-authorizations/{id}/events` | `disposal:read` | 只增事件流 |
 | POST | `/{id}/approve` `{expected_version, note?}` | `disposal:approve` | 两人规则：审批人 ≠ 申请人 → 否则 409 `TWO_PERSON_RULE`；REQUESTED 以外 409 `INVALID_TRANSITION` |

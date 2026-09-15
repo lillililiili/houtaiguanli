@@ -42,9 +42,10 @@ public class DisposalController {
     @GetMapping("/disposal-authorizations")
     public ApiResponse<PageDto<AuthorizationDto>> list(
             @RequestParam(required = false) String subject_kind, @RequestParam(required = false) String subject_id,
-            @RequestParam(required = false) String status, @RequestParam(required = false) String action_type,
+            @RequestParam(required = false) String status, @RequestParam(required = false) String exclude_status,
+            @RequestParam(required = false) String action_type,
             @RequestParam(required = false) Integer page, @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(read.list(subject_kind, subject_id, status, action_type, page, size));
+        return ApiResponse.ok(read.list(subject_kind, subject_id, status, exclude_status, action_type, page, size));
     }
 
     @GetMapping("/disposal-authorizations/{id}")
