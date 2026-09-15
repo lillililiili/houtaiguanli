@@ -141,7 +141,7 @@ onMounted(load);
 </script>
 
 <template>
-  <section class="page-stack maps-page">
+  <section class="page-stack page-stack--viewport maps-page">
     <PageHeader title="地图管理" description="上传、校验、启用和回滚离线地图版本；启用后，业务前台的所有地图会自动切换到同一底图。">
       <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
       <el-button v-if="canActivate" :icon="RefreshLeft" :disabled="!previous" @click="rollback">回滚上一版</el-button>
@@ -170,12 +170,12 @@ onMounted(load);
 
     <MetricCards :items="metrics" />
 
-    <el-card class="table-card" v-loading="loading">
+    <el-card class="table-card viewport-table-card viewport-fill" v-loading="loading">
       <div class="table-toolbar">
         <div><div class="table-toolbar__title">离线地图版本</div><span class="table-caption">上传只会新增待启用版本，只有“启用”操作才会影响业务前台。</span></div>
         <el-tag effect="plain">共 {{ packages.length }} 个版本</el-tag>
       </div>
-      <el-table :data="packages" empty-text="暂无地图包，请先上传一个符合规范的 ZIP 包">
+      <div class="table-scroll"><el-table :data="packages" height="100%" empty-text="暂无地图包，请先上传一个符合规范的 ZIP 包">
         <el-table-column label="状态" width="96"><template #default="{ row }"><el-tag :type="status(row)[0]" effect="light">{{ status(row)[1] }}</el-tag></template></el-table-column>
         <el-table-column label="城市 / 地图" min-width="200"><template #default="{ row }"><div class="map-name"><b>{{ row.city_name }}</b><span>{{ row.package_name }}</span></div></template></el-table-column>
         <el-table-column prop="data_version" label="数据版本" min-width="110" />
@@ -184,7 +184,7 @@ onMounted(load);
         <el-table-column label="SHA-256" min-width="155"><template #default="{ row }"><el-tooltip :content="row.archive_sha256"><span class="mono hash">{{ shortHash(row.archive_sha256) }}</span></el-tooltip></template></el-table-column>
         <el-table-column label="上传信息" min-width="170"><template #default="{ row }"><span>{{ row.uploaded_by_name }}</span><small class="cell-note">{{ dateTime(row.uploaded_at) }}</small></template></el-table-column>
         <el-table-column label="操作" width="172" fixed="right"><template #default="{ row }"><div class="inline-actions"><el-button v-if="canActivate && row.status !== 'ACTIVE'" link type="primary" @click="activate(row)">启用</el-button><el-button v-if="canDelete && row.status !== 'ACTIVE' && row.package_id !== runtime.previous_package_id" link type="danger" :icon="Delete" @click="remove(row)">删除</el-button><span v-if="row.status === 'ACTIVE'" class="active-note">全局生效中</span><span v-else-if="row.package_id === runtime.previous_package_id" class="muted">回滚保留</span></div></template></el-table-column>
-      </el-table>
+      </el-table></div>
     </el-card>
 
     <el-dialog v-model="uploadOpen" title="上传离线地图包" width="620px" :show-close="!uploading" :close-on-click-modal="!uploading" :close-on-press-escape="!uploading" @closed="resetUpload">
@@ -217,4 +217,11 @@ onMounted(load);
 .maps-page :deep(.metric-grid){grid-template-columns:repeat(4,minmax(0,1fr))}.map-runtime{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:16px;padding:17px 19px;border:1px solid #bbd2ef;border-left:4px solid #15803d;border-radius:9px;background:linear-gradient(105deg,#f0fdf4,#f8fbff 55%,#fff);box-shadow:0 4px 16px rgba(30,64,175,.05)}.map-runtime.is-empty{border-left-color:#d97706;background:linear-gradient(105deg,#fffbeb,#fff)}.runtime-mark{display:grid;width:48px;height:48px;place-items:center;border-radius:12px;color:#fff;background:linear-gradient(135deg,#0f766e,#2563eb);font-size:24px}.runtime-copy{min-width:0}.runtime-kicker{color:#526177;font-size:11px;font-weight:800;letter-spacing:.12em}.runtime-copy h2{margin:4px 0;color:#16233a;font-size:18px}.runtime-copy p{margin:0;color:var(--admin-muted);font-size:12px;line-height:1.55}.runtime-health{text-align:right}.runtime-health>span{display:flex;align-items:center;justify-content:flex-end;gap:5px;font-weight:700}.runtime-health .ok{color:#15803d}.runtime-health .waiting{color:#b45309}.runtime-health small{display:block;margin-top:6px;color:var(--admin-muted)}.table-caption{display:block;margin-top:4px;color:var(--admin-muted);font-size:11px}.map-name b,.map-name span,.cell-note{display:block}.map-name span,.cell-note{margin-top:3px;color:var(--admin-muted);font-size:11px}.hash{cursor:help}.active-note{color:#15803d;font-size:12px;font-weight:700}.map-uploader{width:100%}.map-uploader :deep(.el-upload){width:100%}.map-uploader :deep(.el-upload-dragger){width:100%;padding:26px 20px}.upload-form{margin-top:16px}.upload-progress{margin-top:10px;padding:13px;border:1px solid #bfdbfe;border-radius:7px;background:#eff6ff}.upload-progress>div{display:flex;justify-content:space-between;margin-bottom:9px;color:#1e3a8a}.upload-progress p{display:flex;align-items:center;gap:5px;margin:8px 0 0;color:#526177;font-size:11px}
 @media(max-width:900px){.maps-page :deep(.metric-grid){grid-template-columns:repeat(2,minmax(0,1fr))}.map-runtime{grid-template-columns:auto minmax(0,1fr)}.runtime-health{grid-column:1/-1;text-align:left}.runtime-health>span{justify-content:flex-start}}
 @media(max-width:640px){.maps-page :deep(.metric-grid){grid-template-columns:1fr}.map-runtime{grid-template-columns:1fr}.runtime-mark{width:42px;height:42px}}
+.map-runtime{position:relative;overflow:hidden;border-color:#cfe0ef;border-left-color:var(--admin-success);border-radius:12px;background:linear-gradient(105deg,rgba(238,250,246,.96),rgba(248,251,255,.94) 58%,rgba(255,255,255,.96)),url('/assets/img/admin/aviation-ambient.webp') center/cover;box-shadow:var(--admin-shadow-soft)}
+.map-runtime::after{position:absolute;right:-35px;width:170px;height:170px;border:1px solid rgba(32,167,216,.12);border-radius:50%;box-shadow:0 0 0 24px rgba(32,167,216,.035),0 0 0 50px rgba(22,119,255,.025);content:"";pointer-events:none}
+.map-runtime.is-empty{border-left-color:var(--admin-warning);background:linear-gradient(105deg,#fff9ed,#fff)}
+.runtime-mark{position:relative;z-index:1;border-radius:14px;background:linear-gradient(135deg,var(--admin-secondary),var(--admin-primary));box-shadow:0 8px 20px rgba(22,119,255,.2)}
+.runtime-copy,.runtime-health{position:relative;z-index:1}.runtime-copy h2{color:var(--admin-text-strong)}.runtime-health .ok,.active-note{color:var(--admin-success)}.runtime-health .waiting{color:var(--admin-warning)}
+.map-uploader :deep(.el-upload-dragger){border-radius:12px;background:linear-gradient(rgba(248,251,255,.92),rgba(248,251,255,.92)),url('/assets/img/admin/aviation-ambient.webp') center/cover}
+.upload-progress{border-color:#c6defd;border-radius:10px;background:#f0f6ff}.upload-progress>div{color:var(--admin-primary-strong)}
 </style>

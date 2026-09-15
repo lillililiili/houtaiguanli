@@ -174,12 +174,12 @@ onMounted(refreshAll)
 </script>
 
 <template>
-  <div class="page-stack">
+  <div class="page-stack page-stack--viewport">
     <PageHeader title="用户管理" description="单位、账号、角色与状态统一管理；唯一超级管理员受服务端保护。">
       <el-button :disabled="!canOperate" type="primary" @click="openUser('create')">新增用户</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="refreshAll" />
-    <section class="content-card user-management">
+    <section class="content-card user-management viewport-fill">
       <aside class="org-panel">
         <div class="org-panel__header">
           <div class="org-panel__heading"><span class="org-panel__icon"><el-icon><OfficeBuilding /></el-icon></span><span><strong>单位机构</strong><small>共 {{ organizations.length }} 个单位</small></span></div>
@@ -211,7 +211,7 @@ onMounted(refreshAll)
           <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
         </el-form>
         <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><el-button @click="refreshAll">刷新</el-button></div>
-        <el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
+        <div class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
           <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" show-overflow-tooltip />
           <el-table-column label="状态" width="82"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
@@ -222,7 +222,7 @@ onMounted(refreshAll)
             <el-button link :disabled="!canOperate || isAdmin(row)" @click="toggleStatus(row)">{{ row.status === 'ACTIVE' ? '停用' : '启用' }}</el-button>
             <el-button link type="danger" :disabled="!canOperate || isAdmin(row)" @click="removeUser(row)">删除</el-button>
           </template></el-table-column>
-        </el-table>
+        </el-table></div>
         <el-pagination v-model:current-page="filters.page" v-model:page-size="filters.size" class="pagination" background layout="total, sizes, prev, pager, next" :total="total" :page-sizes="[10,20,50,100]" @current-change="loadUsers" @size-change="filters.page=1;loadUsers()" />
       </main>
     </section>
@@ -251,7 +251,7 @@ onMounted(refreshAll)
 </template>
 
 <style scoped>
-.user-management{display:grid;grid-template-columns:292px minmax(0,1fr);min-height:620px;overflow:hidden}
+.user-management{display:grid;grid-template-columns:292px minmax(0,1fr);min-height:0;overflow:hidden}
 .org-panel{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:linear-gradient(180deg,#fbfdff 0%,#f6f9fd 100%)}
 .org-panel__header{display:flex;min-height:76px;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--admin-border);background:#fff}
 .org-panel__heading{display:flex;min-width:0;align-items:center;gap:10px}.org-panel__heading>span:last-child{min-width:0}.org-panel__heading strong,.org-panel__heading small{display:block}.org-panel__heading strong{font-size:15px}.org-panel__heading small{margin-top:3px;color:var(--admin-muted);font-size:12px}
@@ -266,5 +266,11 @@ onMounted(refreshAll)
 :deep(.org-tree .el-tree-node__content:hover) .org-node__more,:deep(.org-tree .el-tree-node.is-current>.el-tree-node__content) .org-node__more{opacity:1}
 .org-panel__hint{margin:0;padding:11px 16px;border-top:1px solid var(--admin-border);color:var(--admin-muted);background:#fff;font-size:12px}
 .table-toolbar{display:flex;align-items:center;justify-content:space-between}.table-panel{display:flex;min-width:0;min-height:0;flex-direction:column;padding:16px}.filter-bar{flex:none}.table-toolbar{padding:4px 0 12px;color:var(--admin-muted)}.pagination{justify-content:flex-end;margin-top:16px}.dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.dialog-grid small{display:block;margin-top:5px;color:var(--admin-muted)}
-@media(max-width:900px){.user-management{grid-template-columns:1fr}.org-panel{max-height:320px;border-right:0;border-bottom:1px solid var(--admin-border)}.org-panel__header{min-height:68px}.dialog-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.user-management{min-height:620px;grid-template-columns:1fr}.org-panel{max-height:320px;border-right:0;border-bottom:1px solid var(--admin-border)}.org-panel__header{min-height:68px}.dialog-grid{grid-template-columns:1fr}}
+.user-management{border:1px solid var(--admin-border);border-radius:12px;background:var(--admin-card);box-shadow:var(--admin-shadow);isolation:isolate}
+.org-panel{background:linear-gradient(rgba(238,242,246,.94),rgba(238,242,246,.94)),url('/assets/img/admin/aviation-ambient.webp') center/cover}.org-panel__header{background:rgba(255,255,255,.82);backdrop-filter:blur(10px)}
+.org-panel__icon{color:var(--admin-primary);background:var(--admin-primary-soft)}
+:deep(.org-tree .el-tree-node__content:hover){background:rgba(255,255,255,.7)}
+:deep(.org-tree .el-tree-node.is-current>.el-tree-node__content){color:var(--admin-primary-strong);background:#fff;box-shadow:inset 3px 0 0 var(--admin-primary),0 5px 14px rgba(30,74,128,.08)}
+.org-panel__hint{background:rgba(255,255,255,.82)}.table-panel{background:#fff}.table-toolbar{border-bottom:1px solid #edf2f7}
 </style>

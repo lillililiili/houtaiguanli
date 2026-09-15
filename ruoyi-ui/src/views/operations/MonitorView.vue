@@ -95,10 +95,10 @@ function paintChart() {
   }
   chart ||= echarts.init(chartEl.value);
   const metric = state.value?.metrics?.find(item => item.code === metricCode.value);
-  chart.setOption({ animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches, color: ['#2563eb'],
+  chart.setOption({ animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches, color: ['#1677ff'],
     grid: { top: 30, right: 18, bottom: 28, left: 48 }, tooltip: { trigger: 'axis' },
     xAxis: { type: 'category', boundaryGap: false, data: history.value.map(item => new Date(item.received_at).toLocaleTimeString('zh-CN', { hour12: false })) },
-    yAxis: { type: 'value', name: metric?.unit || '', splitLine: { lineStyle: { color: '#e6edf6' } } },
+    yAxis: { type: 'value', name: metric?.unit || '', splitLine: { lineStyle: { color: '#e6edf5' } } },
     series: [{ name: metricLabel(metric), type: 'line', smooth: true, showSymbol: false, areaStyle: { opacity: .1 }, data: history.value.map(item => item.value) }]
   }, true);
 }

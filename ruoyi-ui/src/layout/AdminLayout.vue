@@ -47,7 +47,7 @@ function closeTag(item) {
   <div class="admin-shell" :class="{ 'is-collapsed': collapsed, 'is-mobile-open': mobileOpen }">
     <aside class="admin-sidebar" aria-label="后台主导航">
       <div class="brand">
-        <span class="brand__mark">U</span>
+        <span class="brand__mark"><img src="/assets/img/brand/logo-mark.png" alt="平台 Logo" width="1251" height="559" /></span>
         <span v-if="!collapsed" class="brand__text"><b>低空安全管理</b><small>ADMIN CONSOLE</small></span>
       </div>
       <el-scrollbar class="sidebar-scroll">

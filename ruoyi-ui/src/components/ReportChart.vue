@@ -24,6 +24,10 @@ async function render() {
   chart.setOption({
     animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     aria: { enabled: true, decal: { show: true } },
+    textStyle: {
+      color: '#405069',
+      fontFamily: '"Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif'
+    },
     ...props.option
   }, true);
 }
@@ -49,5 +53,5 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.report-chart-shell{display:grid;width:100%;place-items:center}.report-chart{width:100%;height:100%;min-height:inherit}.report-chart-shell :deep(.el-empty){padding:24px 0}
+.report-chart-shell{display:grid;width:100%;place-items:center;border-radius:10px;background:linear-gradient(180deg,rgba(248,251,255,.72),rgba(255,255,255,.18))}.report-chart{width:100%;height:100%;min-height:inherit}.report-chart-shell :deep(.el-empty){padding:24px 0}
 </style>

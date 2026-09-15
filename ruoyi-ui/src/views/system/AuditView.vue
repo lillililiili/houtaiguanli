@@ -95,12 +95,12 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page-stack">
+  <div class="page-stack page-stack--viewport">
     <PageHeader title="审计日志" description="日志只读且不可修改或删除；CSV 导出沿用当前筛选条件。">
       <el-button type="primary" :loading="exporting" :disabled="!canExport" @click="exportCsv">导出 CSV</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="load" />
-    <section class="content-card audit-card">
+    <section class="content-card audit-card viewport-fill">
       <el-form class="filter-bar" inline @submit.prevent="search">
         <el-form-item label="时间"><el-date-picker v-model="filters.range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" value-format="x" /></el-form-item>
         <el-form-item label="账号"><el-input v-model="filters.account" clearable placeholder="登录账号" @keyup.enter="search" /></el-form-item>
@@ -109,7 +109,7 @@ onMounted(load)
         <el-form-item label="结果"><el-select v-model="filters.result" clearable placeholder="全部结果"><el-option label="成功" value="SUCCESS" /><el-option label="失败" value="FAILURE" /></el-select></el-form-item>
         <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="reset">重置</el-button></el-form-item>
       </el-form>
-      <el-table v-loading="loading" :data="rows" height="100%" empty-text="当前条件下暂无审计日志">
+      <div class="table-scroll"><el-table v-loading="loading" :data="rows" height="100%" empty-text="当前条件下暂无审计日志">
         <el-table-column label="时间" min-width="172"><template #default="{row}">{{ formatTime(row.occurred_at) }}</template></el-table-column>
         <el-table-column prop="account" label="账号" min-width="120" show-overflow-tooltip /><el-table-column label="角色" min-width="120"><template #default="{row}"><span :title="row.role_code">{{ roleText(row.role_code) }}</span></template></el-table-column>
         <el-table-column label="模块" min-width="120"><template #default="{row}">{{ moduleText(row.module_code) }}</template></el-table-column>
@@ -117,7 +117,7 @@ onMounted(load)
         <el-table-column label="结果" width="82"><template #default="{row}"><el-tag :type="row.result==='SUCCESS'?'success':'danger'">{{ row.result==='SUCCESS'?'成功':'失败' }}</el-tag></template></el-table-column>
         <el-table-column label="IP" min-width="130"><template #default="{row}"><span :title="row.ip">{{ ipText(row.ip) }}</span></template></el-table-column>
         <el-table-column label="操作" width="80" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openDetail(row)">详情</el-button></template></el-table-column>
-      </el-table>
+      </el-table></div>
       <div class="audit-footer"><span>默认按时间倒序，单次 CSV 导出上限 50,000 条。</span><el-pagination v-model:current-page="filters.page" v-model:page-size="filters.size" background layout="total, sizes, prev, pager, next" :page-sizes="[10,20,50,100]" :total="total" @current-change="load" @size-change="filters.page=1;load()" /></div>
     </section>
 
@@ -135,6 +135,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.audit-card{display:flex;min-height:640px;flex-direction:column;padding:16px}.filter-bar{flex:none}.filter-bar .el-input,.filter-bar .el-select{width:170px}.audit-footer{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-top:16px;color:var(--text-secondary)}.detail-text{white-space:pre-wrap;word-break:break-word}
-@media(max-width:900px){.audit-footer{align-items:flex-start;flex-direction:column}.filter-bar .el-input,.filter-bar .el-select{width:220px}}
+.audit-card{display:flex;min-height:0;flex:1;flex-direction:column;padding:16px;border-radius:12px}.filter-bar{flex:none}.filter-bar .el-input,.filter-bar .el-select{width:170px}.audit-footer{display:flex;flex:none;align-items:center;justify-content:space-between;gap:20px;padding-top:16px;color:var(--admin-muted)}.detail-text{padding:12px;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-card-soft);white-space:pre-wrap;word-break:break-word}
+@media(max-width:900px){.audit-card{min-height:640px}.audit-footer{align-items:flex-start;flex-direction:column}.filter-bar .el-input,.filter-bar .el-select{width:220px}}
 </style>

@@ -34,6 +34,7 @@ async function submit() {
     <section class="login-hero" aria-label="平台介绍">
       <div class="login-grid" />
       <div class="login-hero__content">
+        <img class="login-logo" src="/assets/img/brand/logo-mark.png" alt="平台标志" width="1251" height="559" />
         <span class="login-eyebrow">LOW-ALTITUDE SAFETY · ADMIN</span>
         <h1>无人机融合感知与<br />低空安全管理平台</h1>
         <p>统一维护设备接入、运行状态、账号权限与审计证据，让每一次配置和操作都有据可查。</p>
@@ -42,7 +43,7 @@ async function submit() {
     </section>
     <section class="login-panel">
       <div class="login-card">
-        <header><span class="brand__mark">U</span><div><h2>后台管理系统</h2><p>请使用平台账号登录</p></div></header>
+        <header><span class="brand__mark brand__mark--login"><img src="/assets/img/brand/logo-mark.png" alt="" aria-hidden="true" width="1251" height="559" /></span><div><h2>后台管理系统</h2><p>请使用平台账号登录</p></div></header>
         <el-form ref="formRef" :model="form" :rules="rules" label-position="top" size="large" @submit.prevent="submit">
           <el-form-item label="账号" prop="account"><el-input v-model="form.account" autocomplete="username" placeholder="请输入账号" :prefix-icon="User" /></el-form-item>
           <el-form-item label="密码" prop="password"><el-input v-model="form.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :prefix-icon="Lock" @keyup.enter="submit" /></el-form-item>

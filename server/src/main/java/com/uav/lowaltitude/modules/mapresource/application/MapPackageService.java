@@ -78,7 +78,9 @@ public class MapPackageService {
     public void reconcileRuntimePointer() {
         RuntimeRow runtime = repository.runtime(false);
         if (runtime.activePackageId() == null) {
-            // 空库可能只是新环境或独立测试库，不能据此删除共享目录中由另一环境维护的运行指针。
+            // 数据库没有启用版本时，磁盘指针只能是上一次数据库/环境遗留的数据。
+            // 前台会优先读取该文件，因此必须清理，避免管理端显示“尚未启用”却仍加载旧地图。
+            storage.deleteRuntimeConfig();
             return;
         }
         PackageRow active = repository.find(runtime.activePackageId(), false);

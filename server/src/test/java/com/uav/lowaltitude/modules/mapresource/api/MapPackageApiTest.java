@@ -37,6 +37,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.mapresource.application.MapPackageService;
 import com.uav.lowaltitude.platform.config.MapPackageProperties;
 
 @SpringBootTest
@@ -47,6 +48,7 @@ class MapPackageApiTest {
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
     @Autowired MapPackageProperties properties;
+    @Autowired MapPackageService maps;
 
     @AfterEach
     void cleanup() throws IOException {
@@ -100,6 +102,21 @@ class MapPackageApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.runtime.business_overlays_visible").value(true));
         assertThat(json.readTree(Files.readAllBytes(pointer)).path("city_code").asText()).isEqualTo("370500");
+    }
+
+    @Test
+    void staleRuntimePointerIsRemovedWhenDatabaseHasNoActivePackage() throws Exception {
+        Path pointer = Path.of(properties.getDataDir()).toAbsolutePath().resolve("control/map-config.json");
+        Files.createDirectories(pointer.getParent());
+        Files.writeString(pointer, "{\"package_id\":\"stale-package\",\"revision\":99}", StandardCharsets.UTF_8);
+
+        assertThat(jdbc.queryForObject(
+                "select active_package_id from map_runtime_config where config_id='global'", String.class))
+                .isNull();
+
+        maps.reconcileRuntimePointer();
+
+        assertThat(pointer).doesNotExist();
     }
 
     @Test

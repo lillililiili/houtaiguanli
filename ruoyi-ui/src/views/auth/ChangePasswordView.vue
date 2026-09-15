@@ -25,7 +25,7 @@ async function submit() {
 </script>
 
 <template>
-  <main class="standalone-page"><el-card class="standalone-card">
+  <main class="standalone-page"><div class="standalone-brand" aria-hidden="true"><img src="/assets/img/brand/logo-mark.png" alt="" width="1251" height="559" /><span>低空安全管理</span></div><el-card class="standalone-card">
     <template #header><div><h1>{{ forced ? '首次登录，请修改密码' : '修改密码' }}</h1><p>修改成功后会撤销该账号的全部旧会话。</p></div></template>
     <el-alert v-if="forced" title="当前账号必须先修改初始密码，完成前不能访问其他页面。" type="warning" show-icon :closable="false" />
     <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">

@@ -1,6 +1,11 @@
 **/node_modules/
 **/dist/
 **/target/
+# Maven 产物目录仍忽略；业务源码包 modules/target 必须纳入版本控制。
+!server/src/main/java/com/uav/lowaltitude/modules/target/
+!server/src/main/java/com/uav/lowaltitude/modules/target/**
+!server/src/test/java/com/uav/lowaltitude/modules/target/
+!server/src/test/java/com/uav/lowaltitude/modules/target/**
 **/.vite/
 **/.playwright-cli/
 **/coverage/

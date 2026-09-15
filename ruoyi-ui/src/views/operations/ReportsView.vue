@@ -44,15 +44,15 @@ const metrics = computed(() => [
   { label: '异常目标', value: number(summary.value.abnormal), tone: 'red', note: '需关注目标' }
 ]);
 
-const axisText = { color: '#596579', fontSize: 11 };
-const splitLine = { lineStyle: { color: '#e8edf4' } };
-const chartColors = ['#2563eb', '#dc2626', '#b45309', '#7c3aed', '#15803d', '#0891b2'];
+const axisText = { color: '#64748b', fontSize: 11 };
+const splitLine = { lineStyle: { color: '#e6edf5' } };
+const chartColors = ['#1677ff', '#d93d4c', '#c57813', '#7457d6', '#16875b', '#20a7d8'];
 const trendOption = computed(() => ({
   color: chartColors,
   tooltip: { trigger: 'axis' },
   legend: { top: 0, textStyle: axisText },
   grid: { top: 44, right: 20, bottom: 28, left: 46, containLabel: true },
-  xAxis: { type: 'category', boundaryGap: false, data: report.value?.days.map(item => item.md) || [], axisLabel: axisText, axisLine: { lineStyle: { color: '#cfd8e5' } } },
+  xAxis: { type: 'category', boundaryGap: false, data: report.value?.days.map(item => item.md) || [], axisLabel: axisText, axisLine: { lineStyle: { color: '#cad7e6' } } },
   yAxis: { type: 'value', minInterval: 1, axisLabel: axisText, splitLine },
   series: [
     lineSeries('目标总次数', 'total', 'solid', 3),
@@ -61,12 +61,12 @@ const trendOption = computed(() => ({
     lineSeries('高风险目标', 'highRisk', 'dashed', 2)
   ]
 }));
-const riskOption = computed(() => barOption(report.value?.byRisk, ['#991b1b', '#dc2626', '#f59e0b', '#3b82f6', '#94a3b8']));
-const typeOption = computed(() => barOption(report.value?.byType, ['#2563eb']));
+const riskOption = computed(() => barOption(report.value?.byRisk, ['#9f2334', '#d93d4c', '#d99022', '#2f86f6', '#8c9aac']));
+const typeOption = computed(() => barOption(report.value?.byType, ['#1677ff']));
 const durationOption = computed(() => barOption(report.value?.byDuration));
-const trackOption = computed(() => barOption(report.value?.byTrack, ['#0f766e']));
-const altitudeOption = computed(() => barOption(report.value?.altBands, ['#1d4ed8']));
-const penaltyOption = computed(() => donutOption(report.value?.byPenalty, ['#f59e0b', '#dc2626', '#2563eb']));
+const trackOption = computed(() => barOption(report.value?.byTrack, ['#168f84']));
+const altitudeOption = computed(() => barOption(report.value?.altBands, ['#0e5ed7']));
+const penaltyOption = computed(() => donutOption(report.value?.byPenalty, ['#d99022', '#d93d4c', '#1677ff']));
 
 function lineSeries(name, key, lineType, width) {
   return {
@@ -80,9 +80,9 @@ function barOption(rows = [], colors = chartColors) {
     color: colors,
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
     grid: { top: 18, right: 24, bottom: 26, left: 18, containLabel: true },
-    xAxis: { type: 'category', data: (rows || []).map(item => item.name), axisLabel: { ...axisText, interval: 0, hideOverlap: true }, axisLine: { lineStyle: { color: '#cfd8e5' } } },
+    xAxis: { type: 'category', data: (rows || []).map(item => item.name), axisLabel: { ...axisText, interval: 0, hideOverlap: true }, axisLine: { lineStyle: { color: '#cad7e6' } } },
     yAxis: { type: 'value', minInterval: 1, axisLabel: axisText, splitLine },
-    series: [{ type: 'bar', barMaxWidth: 34, data: (rows || []).map((item, index) => ({ value: item.value, itemStyle: { color: colors[index % colors.length], borderRadius: [4, 4, 0, 0] } })), label: { show: true, position: 'top', color: '#354258' } }]
+    series: [{ type: 'bar', barMaxWidth: 34, data: (rows || []).map((item, index) => ({ value: item.value, itemStyle: { color: colors[index % colors.length], borderRadius: [6, 6, 0, 0] } })), label: { show: true, position: 'top', color: '#33435b' } }]
   };
 }
 function donutOption(rows = [], colors = chartColors) {
@@ -92,7 +92,7 @@ function donutOption(rows = [], colors = chartColors) {
     legend: { type: 'scroll', bottom: 0, textStyle: axisText },
     series: [{
       type: 'pie', radius: ['43%', '67%'], center: ['50%', '43%'], minAngle: 3,
-      avoidLabelOverlap: true, label: { show: true, formatter: '{b}\n{c}', color: '#354258', fontSize: 11 },
+      avoidLabelOverlap: true, label: { show: true, formatter: '{b}\n{c}', color: '#33435b', fontSize: 11 },
       labelLine: { length: 8, length2: 6 }, data: rows || []
     }]
   };
@@ -235,4 +235,8 @@ watch([type, selectedDate], loadPreview, { immediate: true, flush: 'post' });
 @media(max-width:1360px){.report-period-card{grid-template-columns:minmax(380px,1.2fr) minmax(280px,.8fr)}.report-meta{grid-column:1/-1;grid-template-columns:1fr 1fr;padding-top:12px;padding-left:0;border-top:1px solid var(--admin-border);border-left:0}.report-page :deep(.metric-grid){grid-template-columns:repeat(3,minmax(0,1fr))}.report-grid--top,.report-grid--bottom{grid-template-columns:minmax(450px,1.35fr) minmax(270px,.75fr)}.report-grid--top>*:last-child,.report-grid--bottom>*:last-child{grid-column:1/-1}.report-grid--three{grid-template-columns:repeat(2,minmax(0,1fr))}.report-grid--three>*:last-child{grid-column:1/-1}}
 @media(max-width:900px){.report-period-card{grid-template-columns:1fr}.period-controls{flex-wrap:wrap}.period-summary,.report-meta{padding-top:12px;padding-left:0;border-top:1px solid var(--admin-border);border-left:0}.report-grid--top,.report-grid--bottom,.report-grid--three{grid-template-columns:1fr}.report-grid--top>*:last-child,.report-grid--bottom>*:last-child,.report-grid--three>*:last-child{grid-column:auto}}
 @media(max-width:640px){.report-period-card{padding:14px}.period-controls{align-items:stretch}.section-kicker{width:100%}.period-controls :deep(.el-radio-group){display:flex;width:100%}.period-controls :deep(.el-radio-button){flex:1}.period-controls :deep(.el-radio-button__inner){width:100%;padding-right:10px;padding-left:10px}.period-controls :deep(.el-date-editor){width:100%}.report-meta{grid-template-columns:1fr}.report-meta div{grid-template-columns:66px minmax(0,1fr)}.report-page :deep(.metric-grid){grid-template-columns:repeat(2,minmax(0,1fr))}.short-trend{min-height:240px;align-items:flex-start;flex-direction:column}.report-footnote{align-items:flex-start}}
+.report-period-card{position:relative;overflow:hidden;border-color:#cfe0ef;border-left-color:var(--admin-primary);border-radius:12px;background:linear-gradient(102deg,rgba(247,251,255,.96),rgba(255,255,255,.94) 65%),url('/assets/img/admin/aviation-ambient.webp') center/cover;box-shadow:var(--admin-shadow-soft)}
+.report-period-card::after{position:absolute;right:-42px;width:150px;height:150px;border:1px solid rgba(32,167,216,.12);border-radius:50%;box-shadow:0 0 0 24px rgba(32,167,216,.035);content:"";pointer-events:none}
+.period-controls,.period-summary,.report-meta{position:relative;z-index:1}.section-kicker{color:var(--admin-text)}.period-icon{border-radius:11px;background:linear-gradient(135deg,var(--admin-secondary),var(--admin-primary));box-shadow:0 7px 16px rgba(22,119,255,.18)}.period-summary>div>strong{color:var(--admin-text-strong)}.report-meta dd{color:#405069}
+.chart-card{overflow:hidden;border-color:var(--admin-border);border-radius:12px}.chart-card :deep(.el-card__header){background:linear-gradient(180deg,#fff,#fbfdff)}.short-trend{border-color:#c7d9ec;border-radius:10px;background:linear-gradient(145deg,#f6faff,#fbfdff)}.short-trend__icon{border-radius:14px;background:var(--admin-primary-soft)}
 </style>

@@ -26,7 +26,6 @@ const protocolStatus = ref(null);
 const loading = ref(false);
 const detailLoading = ref(false);
 const error = ref('');
-let refreshTimer;
 let alive = true;
 let detailSequence = 0;
 
@@ -237,12 +236,12 @@ async function toggleBroker(row) {
 }
 
 watch(() => [filters.type_code, filters.channel, filters.connectivity, filters.enabled, filters.sort], search);
-onMounted(() => { bootstrap(); refreshTimer = window.setInterval(() => { if (!loading.value && !document.hidden) { loadList(); loadOverview(); } }, 10000); });
-onBeforeUnmount(() => { alive = false; detailSequence++; window.clearInterval(refreshTimer); });
+onMounted(bootstrap);
+onBeforeUnmount(() => { alive = false; detailSequence++; });
 </script>
 
 <template>
-  <section class="page-stack">
+  <section class="page-stack page-stack--viewport">
     <PageHeader title="设备管理" description="统一维护设备台账、连接身份和协议配置；密码和识别码只保存外部凭据引用。">
       <el-button v-if="canReadBrokers" @click="openBrokers">MQTT 连接</el-button>
       <el-button type="primary" :disabled="!canOperate" @click="openDevice()">接入设备</el-button>
@@ -260,10 +259,10 @@ onBeforeUnmount(() => { alive = false; detailSequence++; window.clearInterval(re
       </el-form>
     </el-card>
 
-    <div class="split-panel">
-      <el-card class="table-card">
+    <div class="split-panel viewport-fill">
+      <el-card class="table-card viewport-table-card">
         <div class="table-toolbar"><span class="table-toolbar__title">设备台账</span><span class="muted">默认优先显示异常、离线和未知设备</span></div>
-        <el-table v-loading="loading" :data="table.items" height="520" row-key="device_id" :row-class-name="({row}) => row.device_id===selectedId?'selected-row':''" @row-click="selectRow">
+        <div class="table-scroll"><el-table v-loading="loading" :data="table.items" height="100%" row-key="device_id" :row-class-name="({row}) => row.device_id===selectedId?'selected-row':''" @row-click="selectRow">
           <el-table-column prop="device_no" label="设备编号" min-width="135" fixed />
           <el-table-column prop="name" label="设备名称" min-width="160" show-overflow-tooltip />
           <el-table-column prop="device_type_name" label="类型" width="100" />
@@ -273,11 +272,11 @@ onBeforeUnmount(() => { alive = false; detailSequence++; window.clearInterval(re
           <el-table-column prop="last_heartbeat_at" label="最后心跳" min-width="165"><template #default="{row}"><span class="mono">{{ formatTime(row.last_heartbeat_at) }}</span></template></el-table-column>
           <el-table-column label="状态" width="76"><template #default="{row}"><el-tag :type="row.enabled?'success':'info'" effect="plain">{{ row.enabled?'启用':'停用' }}</el-tag></template></el-table-column>
           <el-table-column label="操作" width="120" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button></template></el-table-column>
-        </el-table>
+        </el-table></div>
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
 
-      <el-card v-loading="detailLoading" class="detail-panel">
+      <el-card v-loading="detailLoading" class="detail-panel viewport-detail-card">
         <template #header><div class="table-toolbar"><span class="table-toolbar__title">设备详情</span><el-tag v-if="detail?.simulated" type="warning" effect="plain">模拟数据</el-tag></div></template>
         <el-empty v-if="!detail" description="请选择设备" />
         <template v-else>
