@@ -69,6 +69,11 @@ public class TargetReadRepository {
                 where.parameters, this::targetRow);
     }
 
+    public void lockTarget(String targetId) {
+        jdbc.queryForList("SELECT target_id FROM target WHERE target_id=:target_id FOR UPDATE",
+                java.util.Map.of("target_id", targetId));
+    }
+
     public TargetRow findTarget(String targetId, AccessDecision access) {
         TargetQuery query = new TargetQuery(null, null, null, null, null, null, null, true);
         Where where = targetWhere(query, access);

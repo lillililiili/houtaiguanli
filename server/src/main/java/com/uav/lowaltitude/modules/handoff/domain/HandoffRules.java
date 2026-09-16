@@ -6,13 +6,7 @@ import org.springframework.http.HttpStatus;
 
 import com.uav.lowaltitude.platform.api.ApiException;
 
-/**
- * 交接规则：提交成功推进风险为已通知，可信确认回执推进已回执；投递事实独立记录，不表示处罚办结。
- *
- * 阶段 13（决策 13-6）起，UAV_PUNISHMENT 不再一律阻断：处置授权域上线后，"该事件已被反制/干扰且完成"
- * 成了库里可查的事实，处罚交接因此有了可信前提。没有完成授权时仍然阻断——阻断的理由从
- * "本期没有这种事实"变成了"这一件事上还没有这个事实"。
- */
+/** 处罚交接依据核实后的事件事实，不以完成反制为前置条件；交接不代表处罚办结。 */
 public final class HandoffRules {
     public static final Set<String> SOURCE_KINDS = Set.of("RISK", "UAV_EVENT");
     public static final Set<String> HANDOFF_TYPES = Set.of("RISK_NOTICE", "UAV_PUNISHMENT");
@@ -33,10 +27,7 @@ public final class HandoffRules {
 
     private HandoffRules() { }
 
-    /**
-     * 处罚交接的前提：该无人机事件存在已完成的处置授权（决策 13-6）。
-     * 前提不成立时仍然 409 —— 没有"确实处置过"的事实就发起处罚，处罚本身站不住。
-     */
+    /** 类型守卫；核实状态、版本、接收方与范围仍由提交服务检查。 */
     public static void requirePrerequisite(String handoffType, String sourceKind, String sourceId,
                                            DisposalCompletionPort disposals) {
         if (!TYPE_UAV_PUNISHMENT.equals(handoffType)) return;
@@ -44,10 +35,7 @@ public final class HandoffRules {
             throw new ApiException(HttpStatus.CONFLICT, "HANDOFF_PREREQUISITE_UNAVAILABLE",
                     "只有无人机事件可以发起处罚交接");
         }
-        if (disposals == null || !disposals.completedExists(KIND_UAV_EVENT, sourceId)) {
-            throw new ApiException(HttpStatus.CONFLICT, "HANDOFF_PREREQUISITE_UNAVAILABLE",
-                    "该事件尚无已完成的处置授权，不能发起处罚交接");
-        }
+
     }
 
     /**

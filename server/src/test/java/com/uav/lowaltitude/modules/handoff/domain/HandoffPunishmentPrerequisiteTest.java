@@ -37,20 +37,11 @@ class HandoffPunishmentPrerequisiteTest {
     }
 
     @Test
-    void punishmentWithoutCompletedAuthorizationIsBlocked() {
+    void punishmentCanBeSubmittedWithoutDisposal() {
         FakePort port = new FakePort(false);
-        assertThatThrownBy(() -> HandoffRules.requirePrerequisite("UAV_PUNISHMENT", "UAV_EVENT", "event-1", port))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("code", "HANDOFF_PREREQUISITE_UNAVAILABLE");
-        assertThat(port.asked).containsExactly("UAV_EVENT/event-1");
-    }
-
-    @Test
-    void punishmentWithCompletedAuthorizationPasses() {
-        FakePort port = new FakePort(true);
         assertThatCode(() -> HandoffRules.requirePrerequisite("UAV_PUNISHMENT", "UAV_EVENT", "event-1", port))
                 .doesNotThrowAnyException();
-        assertThat(port.asked).containsExactly("UAV_EVENT/event-1");
+        assertThat(port.asked).isEmpty();
     }
 
     @Test
@@ -65,11 +56,9 @@ class HandoffPunishmentPrerequisiteTest {
     }
 
     @Test
-    void missingPortBlocksRatherThanPasses() {
-        // 端口没接上时必须阻断。默认放行会让"处置域没装好"表现成"处罚随便交"——失败要往安全的方向倒。
-        assertThatThrownBy(() -> HandoffRules.requirePrerequisite("UAV_PUNISHMENT", "UAV_EVENT", "event-1", null))
-                .isInstanceOf(ApiException.class)
-                .hasFieldOrPropertyWithValue("code", "HANDOFF_PREREQUISITE_UNAVAILABLE");
+    void disposalPortIsNoLongerAPrerequisite() {
+        assertThatCode(() -> HandoffRules.requirePrerequisite("UAV_PUNISHMENT", "UAV_EVENT", "event-1", null))
+                .doesNotThrowAnyException();
     }
 
     @Test

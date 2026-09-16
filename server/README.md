@@ -166,3 +166,22 @@ POSTGRES_TEST_USER='<isolated-user>' POSTGRES_TEST_PASSWORD='<isolated-password>
 
 
 2026-09-15补迁事件急停、计划备案事实、待执行计划设备预检和风险多类型筛选；需追加Flyway 202609150002–150004，旧迁移保持不变。详见[剩余迁移清单与验证记录](../docs/旧后端剩余改动迁移清单-20260915.md)。
+
+
+### 无人机短信劝离与现场核查（2026-09-15）
+
+`GET /api/v1/uav-events/{eventId}/advisory` 返回当前版本、短信渠道模式、模拟接收对象、`can_write`、`can_request_counter`、`can_handoff`、阻断说明与按事件版本升序排列的记录。
+`POST /api/v1/uav-events/{eventId}/advisory/actions` 使用 `Idempotency-Key`、`expected_version` 和 `kind`：
+
+- `SMS_SIMULATED`：接收对象 `recipient_name`、联系依据 `contact_basis`、劝离正文 `content`。仅 local/test 且事件来源 mock/replay 可调用，明确保存 `simulated=true`、`delivery_status=SIMULATED_DELIVERED`。不采集真实手机号，不发送真实短信。`AdvisorySmsPort` 是后续正式渠道接入边界，live 未接入时返回 `SMS_CHANNEL_UNAVAILABLE`，不回退模拟。
+- `CONTACT_RECORDED`：同样三个字段，登记人工联系事实；没有短信送达含义。
+- `OBSERVATION`：`outcome` 为 DEPARTED/STILL_INSIDE/UNKNOWN，`danger` 为 HIGH/MEDIUM/LOW/UNKNOWN，必须有 `note`。`urgent=true` 仅在仍在范围内且危险度高、现场依据至少20字时可登记，仍须按既有规则申请有效授权。
+
+读取需 alarm:read 与事件范围；写入还需 alarm:verify、handoff:create 且事件已确认。事务锁事件、校验版本、追加记录与审计并递增事件版本；相同键相同请求重放既有响应，不重复记录。记录中的手机号脱敏，不在材料中携带手机号。
+
+普通反制/干扰新申请要求最后一次联系后的核查明确“仍在范围内且危险度高”。未知、已离开、风险降低或新增联系后尚无核查均阻断；紧急核查可先申请。执行前再次检查新记录；没有劝离记录的存量授权维持原有兼容。既有自动关联干扰链保留，但也须经过最新核查条件。
+处罚移送不再要求已完成反制，仍校验事件属实、版本、操作者和接收方权限。v2 材料增加 `advisory_records`，冻结提交时联系/核查事实；旧快照缺少该字段时保持兼容，读取按原事件可见范围裁剪。
+
+### 2026-09-15 拉取时的迁移版本兼容
+
+本地开发库已执行 `V202609150005__uav_event_advisory.sql`，故保留该脚本及历史记录。此次远端新增的设备感知脚本尚未在本地执行，从 `V202609150005__device_sensing_profile.sql` 顺延为 `V202609150007__device_sensing_profile.sql`，内容不变；风险排除脚本保持 `V202609150006`。本版本沿用本地开发库的迁移历史。向其他环境发布前须核对各环境的 Flyway 历史，不能直接覆盖已执行的版本。

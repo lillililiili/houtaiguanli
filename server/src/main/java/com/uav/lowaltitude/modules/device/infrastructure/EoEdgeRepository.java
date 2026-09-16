@@ -243,6 +243,20 @@ public class EoEdgeRepository {
                 ORDER BY m.ops_device_id FETCH FIRST 1 ROWS ONLY
                 """, this::binding, org, district).stream().findFirst().orElse(null);
     }
+    /** Manual tracking uses the target's source mode as well as its business scope. */
+    public Binding idleDeviceForMode(String org, String district, String deviceId, String mode) {
+        return jdbc.query(BINDING_SELECT + """
+                WHERE s.owner_org_id=? AND s.district_id=? AND d.enabled=TRUE
+                AND m.source_mode=?
+                AND (CAST(? AS VARCHAR) IS NULL OR m.ops_device_id=?)
+                AND EXISTS (SELECT 1 FROM mqtt_broker b WHERE b.broker_id=m.broker_id AND b.enabled=TRUE)
+                AND EXISTS (SELECT 1 FROM ops_device_state ds WHERE ds.device_id=m.ops_device_id AND ds.connectivity='ONLINE')
+                AND (m.work_state IS NULL OR m.work_state=0)
+                AND NOT EXISTS (SELECT 1 FROM eo_tracking_task t WHERE t.ops_device_id=m.ops_device_id AND t.status IN ('OPEN','ENDING'))
+                ORDER BY m.ops_device_id FETCH FIRST 1 ROWS ONLY
+                """, this::binding, org, district, mode, deviceId, deviceId).stream().findFirst().orElse(null);
+    }
+
     public boolean targetHasOpenTask(String targetId) {
         Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task WHERE target_id=? AND status IN ('OPEN','ENDING')",
                 Integer.class, targetId);

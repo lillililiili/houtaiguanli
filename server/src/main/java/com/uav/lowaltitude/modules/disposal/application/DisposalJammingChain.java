@@ -36,6 +36,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 public class DisposalJammingChain {
     private static final Logger log = LoggerFactory.getLogger(DisposalJammingChain.class);
 
+    private final com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
     private final DisposalRepository repository;
     private final DisposalPolicyRepository policies;
     private final DisposalExecutionGateway gateway;
@@ -49,7 +50,9 @@ public class DisposalJammingChain {
     public DisposalJammingChain(DisposalRepository repository, DisposalPolicyRepository policies,
             DisposalExecutionGateway gateway, DeviceAccessPolicy devices, AppClock clock, AuditService audit,
             ObjectMapper json, PlatformTransactionManager transactions,
-            com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops) {
+            com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops,
+            com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory) {
+        this.advisory = advisory;
         this.repository = repository; this.policies = policies; this.gateway = gateway; this.devices = devices;
         this.clock = clock; this.audit = audit; this.json = json;
         this.tx = new TransactionTemplate(transactions);
@@ -82,6 +85,8 @@ public class DisposalJammingChain {
         if (!DisposalRules.COMPLETED.equals(parent.status())) return;
         if (!"UAV_EVENT".equals(parent.subjectKind())) return;
         emergencyStops.lockEvent(parent.subjectId());
+        // 沿用现有授权关联链，但新核查显示已离开/未知/风险降低时不得继续下发。
+        if (!advisory.records(parent.subjectId()).isEmpty() && !advisory.counterBlockReason(parent.subjectId()).isEmpty()) return;
         if (emergencyStops.covered(parentAuthorizationId) || emergencyStops.unresolved(parent.subjectId())) return;
         // Reload after waiting for a concurrent stop; never use the pre-lock completion snapshot.
         parent = repository.findUnlocked(parentAuthorizationId);

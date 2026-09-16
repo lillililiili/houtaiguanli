@@ -49,6 +49,7 @@ public class DisposalAuthorizationService {
     private static final Set<String> EXECUTE_FIELDS = Set.of("expected_version", "operation_params");
     private static final Set<String> MANUAL_FIELDS = Set.of("expected_version", "result", "detail");
 
+    private final com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory;
     private final AccessControlService access;
     private final DisposalRepository repository;
     private final DisposalPolicyRepository policies;
@@ -64,7 +65,9 @@ public class DisposalAuthorizationService {
     public DisposalAuthorizationService(AccessControlService access, DisposalRepository repository,
             DisposalPolicyRepository policies, UavEventRepository events, DisposalExecutionGateway gateway,
             DisposalJammingChain jammingChain, IdempotencyGuard idempotency, AppClock clock, AuditService audit,
-            ObjectMapper json, com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops) {
+            ObjectMapper json, com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops,
+            com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory) {
+        this.advisory = advisory;
         this.access = access; this.repository = repository; this.policies = policies; this.events = events;
         this.gateway = gateway; this.jammingChain = jammingChain; this.idempotency = idempotency; this.clock = clock;
         this.audit = audit; this.json = json;
@@ -164,6 +167,11 @@ public class DisposalAuthorizationService {
     public ExecuteOutcome execute(String id, String rawRequest, String key) {
         AccessDecision decision = access.require(PermissionCode.DISPOSAL_EXECUTE);
         Execute body = parseExecute(rawRequest);
+        // 先事件后授权，与核查写入/急停采用一致锁顺序。
+        AuthorizationRow initial = repository.find(id, decision);
+        if (initial == null) throw notFound();
+        if ("UAV_EVENT".equals(initial.subjectKind()) && Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType()))
+            advisory.requireCounter(initial.subjectId(), true, decision);
         AuthorizationRow row = locked(id, decision);
         if ("UAV_EVENT".equals(row.subjectKind()) && emergencyStops.unresolved(row.subjectId()))
             throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
@@ -327,6 +335,7 @@ public class DisposalAuthorizationService {
             // 未核实的事件不该被反制：先确认"确实是它"，再谈能不能动手（策略可关，但要明示）。
             if (policy.requiresConfirmedEvent(actionType) && !"CONFIRMED".equals(row.state()))
                 throw conflict("POLICY_REQUIRES_CONFIRMED_EVENT", "该动作要求事件已核实为属实");
+            if (Set.of("COUNTERMEASURE", "JAMMING").contains(actionType)) advisory.requireCounter(subjectId, false, alarmDecision);
             return new Subject(subjectId, row.targetId(), row.ownerOrgId(), row.districtId(), row.sourceMode());
         }
         if ("TARGET".equals(kind)) {

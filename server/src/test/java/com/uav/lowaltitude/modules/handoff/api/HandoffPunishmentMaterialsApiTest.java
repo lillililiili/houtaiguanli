@@ -162,11 +162,26 @@ class HandoffPunishmentMaterialsApiTest {
     }
 
     @Test
-    void eventWithoutCompletedDisposalIsStillBlocked() throws Exception {
+    void advisoryRecordsFreezeAtSubmissionAndStayHiddenWithoutSourceRead() throws Exception {
+        String actor=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,submitter);
+        jdbc.update("INSERT INTO uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) VALUES(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场确认身份','请立即飞离',FALSE,FALSE)",UUID.randomUUID().toString(),eventId,actor);
+        try {
+            String handoff=body(submit(submitter,eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+            JsonNode original=detail(handoff,submitter).path("material").path("advisory_records");
+            assertThat(original.size()).isEqualTo(1);
+            jdbc.update("INSERT INTO uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) VALUES(?,?,2,'OBSERVATION',1,?,'DEPARTED','LOW','现场确认已飞离',FALSE,FALSE)",UUID.randomUUID().toString(),eventId,actor);
+            assertThat(detail(handoff,submitter).path("material").path("advisory_records")).isEqualTo(original);
+            String forbidden=user("NOALARM",List.of("handoff:read"));
+            assertThat(detail(handoff,forbidden).path("material").has("advisory_records")).isFalse();
+        } finally {jdbc.update("delete from uav_event_advisory where event_id=?",eventId);}
+    }
+
+    @Test
+    void eventWithoutCompletedDisposalCanBeHandedOver() throws Exception {
         String noDisposal = confirmedEvent();
-        // 阶段 13 的前提没有被材料包 v2 取消：没处置过就不能移送处罚。
-        submit(submitter, noDisposal).andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("HANDOFF_PREREQUISITE_UNAVAILABLE"));
+        // 处罚独立判断，不要求先实施反制；其余核实、版本与接收方守卫保留。
+        String handoffId=body(submit(submitter, noDisposal).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+        assertThat(detail(handoffId,submitter).path("material").path("advisory_records").isArray()).isTrue();
     }
 
     @Test

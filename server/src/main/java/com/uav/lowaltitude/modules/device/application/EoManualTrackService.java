@@ -47,7 +47,7 @@ public class EoManualTrackService {
         AuthUser user = access.requireDevicesOperate();
         String id = pathId(targetId);
         idempotency.claim(idempotencyKey, "eo-track-begin:" + id + ":" + blank(deviceId) + ":" + blank(reason));
-        TargetDetailDto target = targets.target(id);
+        TargetDetailDto target = targets.lockForTracking(id);
         TargetStateDto state = target.latestState();
         LocationDto location = state == null ? null : state.location();
         if (location == null || location.longitude() == null || location.latitude() == null)
@@ -56,8 +56,11 @@ public class EoManualTrackService {
             throw new ApiException(HttpStatus.CONFLICT, "TRACK_ALREADY_OPEN", "该目标已有进行中的光电跟踪任务");
         if (target.ownerOrgId() == null || target.districtId() == null)
             throw unprocessable("EO_DEVICE_UNAVAILABLE", "目标没有组织区域，无法匹配空闲光电");
-        Binding device = pickDevice(blank(deviceId), target.ownerOrgId(), target.districtId());
+        Binding device = pickDevice(blank(deviceId), target);
         if (device == null) throw unprocessable("EO_DEVICE_UNAVAILABLE", "当前范围没有空闲光电");
+        edges.binding(device.opsDeviceId(), true);
+        // Another target may have claimed this device since the availability read.
+        device = pickDevice(device.opsDeviceId(), target);
         String notes = notes(state, target.objectTypeCode());
         Map<String, Object> bootstrap = bootstrap(id, target.objectTypeCode(), state, location);
         String commandId = commands.enqueueBegin(device, UUID.randomUUID().toString(), id, null, notes, bootstrap,
@@ -90,7 +93,7 @@ public class EoManualTrackService {
             return new EoTrackingAvailability(false, "已有跟踪任务，无需重复发起");
         if (target.ownerOrgId() == null || target.districtId() == null)
             return new EoTrackingAvailability(false, "目标所属范围尚未提供，无法匹配光电设备");
-        Binding device = pickDevice(null, target.ownerOrgId(), target.districtId());
+        Binding device = pickDevice(null, target);
         return new EoTrackingAvailability(device != null, device == null ? "当前范围无空闲可追踪设备" : null);
     }
 
@@ -115,14 +118,21 @@ public class EoManualTrackService {
         return dto(updated, commandId);
     }
 
-    private Binding pickDevice(String deviceId, String org, String district) {
-        if (deviceId == null) return edges.idleDevice(org, district);
-        Binding specified = edges.idleDeviceById(deviceId, org, district);
-        if (specified != null) return specified;
+    private Binding pickDevice(String deviceId, TargetDetailDto target) {
+        String org = target.ownerOrgId(), district = target.districtId();
+        // Mock/replay observations must never steer live equipment (and vice versa).
+        String mode = switch (target.sourceMode() == null ? "" : target.sourceMode()) {
+            case "mock", "replay" -> "replay";
+            case "live" -> "live";
+            default -> null;
+        };
+        if (mode == null) return null;
+        Binding specified = edges.idleDeviceForMode(org, district, deviceId, mode);
+        if (specified != null || deviceId == null) return specified;
         Binding existing = edges.binding(deviceId, false);
         if (existing == null || !org.equals(existing.ownerOrgId()) || !district.equals(existing.districtId()))
             throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "光电设备不存在");
-        throw unprocessable("EO_DEVICE_UNAVAILABLE", "指定光电正忙或未空闲");
+        throw unprocessable("EO_DEVICE_UNAVAILABLE", "指定光电正忙、未空闲或与目标数据模式不匹配");
     }
 
     private static Map<String, Object> bootstrap(String targetId, String classCode, TargetStateDto state,

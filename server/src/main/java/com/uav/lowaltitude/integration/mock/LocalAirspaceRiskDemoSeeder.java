@@ -35,9 +35,8 @@ public class LocalAirspaceRiskDemoSeeder implements ApplicationRunner {
         this.jdbc=jdbc;this.tx=tx;this.configuration=configuration;
     }
     @Override public void run(ApplicationArguments args){
-        if(jdbc.queryForObject("select count(*) from flight_risk where source_id in (?,?) and source_mode='mock'",Integer.class,SOURCE,"seed-stage3-source")==0)return;
         tx.executeWithoutResult(status -> TARGET_SOURCES.forEach(this::completeTargets));
-        if(jdbc.queryForObject("select count(*) from flight_risk where source_id=? and source_mode='mock'",Integer.class,SOURCE)==0)return;
+        // Monitor-only demo targets also need cameras; registration is independent of risk imports.
         var admin=jdbc.queryForObject("select user_id,name,role_code,permission_version,must_change_password,scope_mode from app_user where account='admin1'",
             (rs,i)->new AuthUser(rs.getString("user_id"),"admin1",rs.getString("name"),rs.getString("role_code"),rs.getInt("permission_version"),rs.getBoolean("must_change_password"),rs.getString("scope_mode")));
         AuthContext.set(admin);
@@ -60,6 +59,7 @@ public class LocalAirspaceRiskDemoSeeder implements ApplicationRunner {
         }
     }
     private void register(Camera c){
+        if(jdbc.queryForObject("select count(*) from app_org o cross join app_district d where o.org_id=? and d.district_id=?",Integer.class,c.org(),c.district())==0)return;
         if(jdbc.queryForObject("select count(*) from eo_device_binding where external_device_id=?",Integer.class,c.device())>0)return;
         String name="local-airspace-risk-"+c.edge();
         var brokers=jdbc.queryForList("select broker_id from mqtt_broker where name=?",String.class,name);

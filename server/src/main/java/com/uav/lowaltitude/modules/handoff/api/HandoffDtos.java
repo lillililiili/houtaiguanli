@@ -46,13 +46,13 @@ public final class HandoffDtos {
        快照是"提交那一刻的事实"，之后不随源变——所以这里的每一段都是值，不是引用。 */
     public record MaterialV2Dto(int schemaVersion, EventMaterialDto event, List<EventVerificationDto> verifications,
             List<DisposalMaterialDto> disposals, List<EvidenceMaterialDto> evidence, Boolean evidenceOmitted,
-            ReferenceMaterialDto references) { }
+            ReferenceMaterialDto references, List<com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record> advisoryRecords) { }
     public record EventMaterialDto(String eventId, String alarmId, String sourceAlarmId, String alarmType, String severity,
             Long occurredAt, Long receivedAt, String state, String targetId, String ownerOrgId, String districtId,
             String sourceMode, long version) { }
     public record EventVerificationDto(String conclusion, String note, String resultingState, long version, long createdAt,
             String actorId, String actorName) { }
-    /** 该事件的全部终态授权；COMPLETED 至少一条由提交前提保证（决策 14-2）。 */
+    /** 该事件已经产生的终态授权；未实施反制也可以移送处罚。 */
     public record DisposalMaterialDto(String authorizationId, String authorizationNo, String actionType, String channel,
             String deviceId, String status, String requestedByName, String approvedByName, Long validFrom, Long validUntil,
             String resultCode, String resultDetail, Long completedAt) { }

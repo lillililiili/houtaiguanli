@@ -28,8 +28,9 @@ public class HandoffMaterialAssembler {
     public static final int SCHEMA_V2 = 2;
 
     private final HandoffRepository repository;
+    private final com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
 
-    public HandoffMaterialAssembler(HandoffRepository repository) { this.repository = repository; }
+    public HandoffMaterialAssembler(HandoffRepository repository, com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory) { this.repository = repository; this.advisory = advisory; }
 
     /**
      * @param includeEvidence 证据段是否纳入。由调用方按**提交人当时**的 evidence:read 决定；
@@ -59,12 +60,9 @@ public class HandoffMaterialAssembler {
                 : null;
         ReferenceMaterialDto references = event == null || event.targetId() == null ? null
                 : new ReferenceMaterialDto(null, null, null, event.targetId(), null);
-        // 取不到就省略键，不落空数组（决策 14-28 补充）。空数组是在**断言"没有"**：
-        // `verifications: []` 等于说"这个事件从没被核实过"，而它的状态是 CONFIRMED；
-        // `disposals: []` 等于说"从没处置过"，而交接能存在的前提正是有一条 COMPLETED 授权。
-        // 两者都会让读卷宗的人得出与事实相反的结论，比缺一段更糟。
+        // 兼容旧材料对空历史段的省略；劝离记录按提交时事实独立冻结。
         return new MaterialV2Dto(SCHEMA_V2, eventDto, emptyToNull(verifications), emptyToNull(disposals), evidence,
-                includeEvidence ? null : Boolean.TRUE, references);
+                includeEvidence ? null : Boolean.TRUE, references, advisory.records(eventId));
     }
 
     /** 事件所属告警的 source_mode（决策 14-22）；取不到时按 mock 处理，绝不冒充 live。 */

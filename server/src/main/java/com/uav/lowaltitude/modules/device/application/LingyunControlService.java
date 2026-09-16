@@ -77,7 +77,7 @@ public class LingyunControlService {
         if (operationCmd == null || !LingyunControlEnvelope.COMMANDS.contains(operationCmd))
             throw bad("VALIDATION_ERROR", "operation_cmd 不在协议 B 白名单");
         if (operationType != 0 && !disposalGuard.mayStart(authorizationId.trim()))
-            throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止，不能继续下发启动指令");
+            throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止或当前现场核查不允许继续执行，请查看事件处置记录");
         String family = LingyunControlEnvelope.family(operationCmd);
         if (family == null)
             throw new ApiException(HttpStatus.BAD_REQUEST, "PROTOCOL_UNSUPPORTED", "该指令码对应的设备类型缩写尚未确认，不能下发");
@@ -136,7 +136,7 @@ public class LingyunControlService {
         if (command == null || terminal(text(command,"status"))) return;
         if (!allowed) {
             controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
-                    "AUTHORIZATION_STOPPED","处置已停止，禁止重投旧启动指令；此前设备动作仍需核查");
+                    "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查");
             return;
         }
         long now = clock.nowMillis();

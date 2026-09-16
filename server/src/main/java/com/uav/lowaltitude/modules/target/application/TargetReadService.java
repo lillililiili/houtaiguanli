@@ -125,6 +125,14 @@ public class TargetReadService {
         return new PageDto<>(items, page.page, page.size, total);
     }
 
+    /** The caller's transaction retains this lock while claiming a target operation. */
+    @Transactional
+    public TargetDetailDto lockForTracking(String targetId) {
+        target(targetId);
+        repository.lockTarget(targetId);
+        return target(targetId);
+    }
+
     @Transactional(readOnly = true)
     public TargetDetailDto target(String targetId) {
         AccessDecision access = accessControl.require(PermissionCode.TARGET_READ);
