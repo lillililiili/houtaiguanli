@@ -117,6 +117,7 @@ class Stage3AccessControlServiceTest {
                         "ROLE-DEMO-AUDIT airspace:read=READ", "ROLE-DEMO-AUDIT assessment:read=READ",
                         "ROLE-DEMO-AUDIT flight:read=READ", "ROLE-DEMO-AUDIT route:read=READ",
                         "ROLE-DEMO-AUTH airspace:read=READ", "ROLE-DEMO-AUTH assessment:read=READ",
+                        "ROLE-DEMO-AUTH flight:read=READ", "ROLE-DEMO-AUTH route:read=READ",
                         "ROLE-DEMO-DUTY airspace:read=READ", "ROLE-DEMO-DUTY assessment:read=READ",
                         "ROLE-DEMO-DUTY flight:read=READ", "ROLE-DEMO-DUTY route:read=READ",
                         "ROLE-DEMO-REVIEWER airspace:read=READ", "ROLE-DEMO-REVIEWER assessment:read=READ",

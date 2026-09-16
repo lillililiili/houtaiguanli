@@ -92,10 +92,11 @@ public class RiskRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public int update(String riskId, long expectedVersion, String nextState, OffsetDateTime at) {
+    public int update(String riskId, long expectedVersion, String currentState, String nextState, OffsetDateTime at) {
         return jdbc.update("UPDATE flight_risk SET state_code=:state,updated_at=:at,version=version+1"
-                + " WHERE risk_id=:id AND version=:version AND state_code='PENDING_VERIFICATION'",
-                Map.of("state", nextState, "at", at, "id", riskId, "version", expectedVersion));
+                + " WHERE risk_id=:id AND version=:version AND state_code=:current_state",
+                Map.of("state", nextState, "at", at, "id", riskId, "version", expectedVersion,
+                        "current_state", currentState));
     }
 
     /**

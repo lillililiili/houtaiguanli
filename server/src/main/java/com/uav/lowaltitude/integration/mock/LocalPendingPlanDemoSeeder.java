@@ -58,7 +58,6 @@ public class LocalPendingPlanDemoSeeder implements ApplicationRunner {
             jdbc.update("update flight_plan set status_code='PENDING',start_at=?,end_at=?,updated_at=?,version=version+1 where plan_id=? and source_mode='mock' and status_code <> 'CANCELLED'",
                     ts(start), ts(start.plusSeconds(3600)), ts(at), id);
             if (i <= 3) {
-                seedRisk(id, i, at, false);
                 seedRisk(id, i, at, true);
             }
         }
@@ -83,7 +82,9 @@ public class LocalPendingPlanDemoSeeder implements ApplicationRunner {
                 index == 2 ? 1 : 20, "UNKNOWN", "[\"ALTITUDE_DATUM_OR_RANGE_UNKNOWN\"]",
                 lon, lat, null, at.minusMinutes(15), at, at));
         String actor = jdbc.queryForObject("select user_id from app_user where account='admin1'", String.class);
-        if (risks.update(id, 0, "PENDING_NOTIFICATION", at) != 1) throw new IllegalStateException("demo risk verification failed");
+        if (risks.update(id, 0, "PENDING_VERIFICATION", "PENDING_NOTIFICATION", at) != 1) {
+            throw new IllegalStateException("demo risk verification failed");
+        }
         risks.appendVerification(UUID.randomUUID().toString(), id, "CONFIRMED", "模拟夹具预置核验，用于通知流程演示，非真实人工核验",
                 "PENDING_VERIFICATION", "PENDING_NOTIFICATION", 0, actor, at);
     }

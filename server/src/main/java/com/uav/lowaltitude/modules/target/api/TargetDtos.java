@@ -165,6 +165,10 @@ public final class TargetDtos {
             String degradationLevel) {
     }
 
+    public record RecentTracksDto(long asOf, List<RecentTrackDto> items) { }
+
+    public record RecentTrackDto(String targetId, String trackId, List<TrackPointDto> points) { }
+
     /** 阶段 8 追加：参与本点位置融合的来源与权重（只给来源编码）。 */
     public record ContributionDto(String sourceCode, BigDecimal weight) {
     }

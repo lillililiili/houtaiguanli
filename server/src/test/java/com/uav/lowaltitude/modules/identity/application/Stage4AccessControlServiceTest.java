@@ -113,9 +113,10 @@ class Stage4AccessControlServiceTest {
                 where permission_code in ('alarm:verify', 'risk:read', 'risk:verify')
                   and role_code like 'ROLE-DEMO-%' order by role_code, permission_code
                 """, String.class)).containsExactly(
-                        // 审计员经飞行监管页拿到风险读；值班员另有核实操作权。
+                        // 态势页会读取风险；值班员另有独立的风险核验操作权。
                         "ROLE-DEMO-AUDIT risk:read=READ",
-                        "ROLE-DEMO-DUTY alarm:verify=OP", "ROLE-DEMO-DUTY risk:read=READ",
+                        "ROLE-DEMO-AUTH risk:read=READ",
+                        "ROLE-DEMO-DUTY alarm:verify=OP", "ROLE-DEMO-DUTY risk:read=READ", "ROLE-DEMO-DUTY risk:verify=OP",
                         "ROLE-DEMO-REVIEWER risk:read=READ");
 
     }

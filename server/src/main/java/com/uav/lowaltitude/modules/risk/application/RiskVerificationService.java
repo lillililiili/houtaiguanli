@@ -64,7 +64,7 @@ public class RiskVerificationService {
         String next=RiskState.next(row.state(),conclusion);
         OffsetDateTime at=clock.now().atOffset(ZoneOffset.UTC);
         // 条件写失败说明锁外仍发生竞争；不允许追加与实际状态不一致的核验历史。
-        if(repository.update(id,expected,next,at)!=1)throw new ApiException(HttpStatus.CONFLICT,"VERSION_CONFLICT","风险已被其他操作更新");
+        if(repository.update(id,expected,row.state(),next,at)!=1)throw new ApiException(HttpStatus.CONFLICT,"VERSION_CONFLICT","风险已被其他操作更新");
         AuthUser actor=AuthContext.require();
         repository.appendVerification(UUID.randomUUID().toString(),id,conclusion,note,row.state(),next,expected,actor.userId(),at);
         audit.record(actor.userId(),actor.account(),actor.roleCode(),"risk","risk_verified","flight_risk",id,

@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -28,8 +29,13 @@ import com.uav.lowaltitude.modules.fusion.domain.IdentityStateMachine.TrackState
 public class IdentityRepository {
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.ofHours(8));
     private final NamedParameterJdbcTemplate jdbc;
+    private final boolean postgresql;
 
-    public IdentityRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }
+    public IdentityRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
+        this.postgresql = Boolean.TRUE.equals(jdbcTemplate.execute((ConnectionCallback<Boolean>) connection ->
+                "PostgreSQL".equalsIgnoreCase(connection.getMetaData().getDatabaseProductName())));
+    }
 
     public record TargetRow(String targetId, String targetNo, String objectTypeCode, Instant firstSeenAt, Instant lastSeenAt, String sourceMode,
             String ownerOrgId, String districtId, boolean unified) {
@@ -38,9 +44,18 @@ public class IdentityRepository {
     public record StatusRow(String targetId, TrackState state, String primarySourceId, long version) { }
     public record ActiveTarget(TargetRow target, StatusRow status) { }
 
-    /** 业务编号：目标-yyyyMMdd-序号（北京时间当天内递增，冲突则顺延）。 */
-    public String nextTargetNo(Instant at) {
+    /**
+     * 业务编号：目标-yyyyMMdd-序号（北京时间当天内递增，冲突则顺延）。
+     *
+     * PostgreSQL 用事务级 advisory lock 串行化同一天的编号分配，避免多个应用实例同时按 COUNT(*)
+     * 算出相同编号；H2 测试环境由 synchronized 保证单 JVM 内的同等语义。
+     */
+    public synchronized String nextTargetNo(Instant at) {
         String prefix = "目标-" + DAY.format(at) + "-";
+        if (postgresql) {
+            jdbc.query("SELECT pg_advisory_xact_lock(hashtext(:lock_key))",
+                    Map.of("lock_key", "target-business-no:" + prefix), rs -> { });
+        }
         Long existing = jdbc.queryForObject("SELECT COUNT(*) FROM target WHERE target_no LIKE :prefix", Map.of("prefix", prefix + "%"), Long.class);
         long seq = (existing == null ? 0 : existing) + 1;
         while (true) {

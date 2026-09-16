@@ -78,6 +78,22 @@ class RiskVerificationApiTest {
     }
 
     @Test
+    void pendingNotificationCanBeExcludedWithASecondAuditedVerification() throws Exception {
+        verify(riskId, "CONFIRMED", "态势页通知前先完成固定说明核验", 0, "confirm-before-exclude-" + UUID.randomUUID())
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("PENDING_NOTIFICATION"));
+        verify(riskId, "EXCLUDED", "态势页批量排除尚未通知的当前风险", 1, "exclude-before-notify-" + UUID.randomUUID())
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("EXCLUDED"))
+                .andExpect(jsonPath("$.data.version").value(2));
+
+        assertThat(state(riskId)).isEqualTo("EXCLUDED");
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk_verification where risk_id=?", Long.class, riskId))
+                .isEqualTo(2L);
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk_verification where risk_id=?"
+                        + " and previous_state='PENDING_NOTIFICATION' and conclusion='EXCLUDED'"
+                        + " and resulting_state='EXCLUDED'", Long.class, riskId)).isEqualTo(1L);
+    }
+
+    @Test
     void invalidConclusionNoteAndVersionAreRejectedWithoutMutation() throws Exception {
         verify(riskId, "NOTIFIED", "非法直接通知", 0, "bad-conclusion-" + UUID.randomUUID())
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("INVALID_CONCLUSION"));

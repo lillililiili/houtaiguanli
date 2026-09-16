@@ -166,6 +166,59 @@ public class TargetReadRepository {
                 where.parameters, this::pointRow);
     }
 
+    /** 当前态势批量轨迹：每个可见目标只取最新一条 FUSED 轨迹。 */
+    public List<RecentTrackRow> recentFusedTracks(OffsetDateTime observedFrom, OffsetDateTime observedTo,
+                                                   AccessDecision access) {
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("observed_from", observedFrom);
+        parameters.put("observed_to", observedTo);
+        StringBuilder sql = new StringBuilder("""
+                SELECT tr.target_id,tr.track_id
+                FROM track tr JOIN target t ON t.target_id=tr.target_id
+                """);
+        appendScope(sql, parameters, access);
+        sql.append(" AND tr.layer='FUSED'")
+                .append(" AND t.last_seen_at>=:observed_from AND t.last_seen_at<=:observed_to")
+                .append(" AND NOT EXISTS (SELECT 1 FROM target_track_status merged_status"
+                        + " WHERE merged_status.target_id=t.target_id AND merged_status.status='MERGE')")
+                .append(" AND NOT EXISTS (SELECT 1 FROM track newer WHERE newer.target_id=tr.target_id"
+                        + " AND newer.layer='FUSED' AND (COALESCE(newer.started_at,newer.created_at),newer.track_id)"
+                        + " > (COALESCE(tr.started_at,tr.created_at),tr.track_id))")
+                .append(" ORDER BY t.last_seen_at DESC,tr.target_id");
+        return jdbc.query(sql.toString(), parameters,
+                (rs, rowNum) -> new RecentTrackRow(rs.getString("target_id"), rs.getString("track_id")));
+    }
+
+    /** 用窗口排序在数据库内完成“每条轨迹最后 N 点”，避免页面目标数增长后产生 N+1。 */
+    public List<RecentPointRow> recentPoints(List<String> trackIds, OffsetDateTime observedFrom,
+                                              OffsetDateTime observedTo, int pointsPerTrack) {
+        if (trackIds == null || trackIds.isEmpty()) return List.of();
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("track_ids", trackIds);
+        parameters.put("observed_from", observedFrom);
+        parameters.put("observed_to", observedTo);
+        parameters.put("points_per_track", pointsPerTrack);
+        String sql = """
+                SELECT point_id,track_id,target_id,point_seq,observed_at,received_at,altitude_amsl_m,
+                       height_agl_m,point_kind,position_accuracy_m,contributing,source_switched,
+                       degradation_level,longitude,latitude,location_srid,location_text
+                FROM (
+                    SELECT p.point_id,p.track_id,tr.target_id,p.point_seq,p.observed_at,p.received_at,
+                           p.altitude_amsl_m,p.height_agl_m,p.point_kind,p.position_accuracy_m,
+                           p.contributing,p.source_switched,p.degradation_level,
+                """ + locationColumns("p.location", "") + ","
+                + " ROW_NUMBER() OVER (PARTITION BY p.track_id ORDER BY COALESCE(p.observed_at,p.received_at) DESC,"
+                + " p.point_seq DESC,p.point_id DESC) AS point_rank"
+                + " FROM track_point p JOIN track tr ON tr.track_id=p.track_id"
+                + " WHERE p.track_id IN (:track_ids)"
+                + " AND COALESCE(p.observed_at,p.received_at)>=:observed_from"
+                + " AND COALESCE(p.observed_at,p.received_at)<=:observed_to"
+                + ") ranked WHERE point_rank<=:points_per_track"
+                + " ORDER BY target_id,COALESCE(observed_at,received_at),point_seq,point_id";
+        return jdbc.query(sql, parameters, (rs, rowNum) -> new RecentPointRow(
+                rs.getString("target_id"), pointRow(rs, rowNum)));
+    }
+
     private Where targetWhere(TargetQuery query, AccessDecision access) {
         Where where = new Where();
         appendScope(where.sql, where.parameters, access);
@@ -543,6 +596,8 @@ public class TargetReadRepository {
             OffsetDateTime receivedAt, Coordinate location, BigDecimal altitudeAmslM, BigDecimal heightAglM,
             String pointKind, BigDecimal positionAccuracyM, String contributingJson, Boolean sourceSwitched, String degradationLevel) {
     }
+    public record RecentTrackRow(String targetId, String trackId) { }
+    public record RecentPointRow(String targetId, PointRow point) { }
 
     /** JSON 列在 H2 上回读为 byte[]，PostgreSQL 为文本；统一成文本交由应用层解析。 */
     private static String jsonTextOf(Object stored) {

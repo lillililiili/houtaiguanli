@@ -274,6 +274,7 @@ class TargetReadApiTest {
         assertError("/api/v1/targets/" + "x".repeat(37), 403, "FORBIDDEN");
         assertError("/api/v1/tracks/" + validTrack + "/points", 403, "FORBIDDEN");
         assertError("/api/v1/tracks/" + "x".repeat(37) + "/points", 403, "FORBIDDEN");
+        assertError("/api/v1/tracks/recent?observed_from=1&observed_to=2", 403, "FORBIDDEN");
     }
 
     @Test
@@ -378,6 +379,39 @@ class TargetReadApiTest {
         long to = T0.plusSeconds(2).toInstant().toEpochMilli();
         assertThat(getJson("/api/v1/tracks/" + validTrack + "/points?time_from=" + from + "&time_to=" + to)
                 .path("data").path("total").asLong()).isEqualTo(1);
+    }
+
+    @Test
+    void recentTracksReturnsLatestFusedTrackPerVisibleTargetWithBoundedAscendingPoints() throws Exception {
+        String olderFused = fusedTrack(targetLatest, T0.plusSeconds(3));
+        point(id(), olderFused, 1, T0.plusSeconds(4), T0.plusSeconds(4), 120.01, 30.01, null);
+        String latestFused = fusedTrack(targetLatest, T0.plusSeconds(5));
+        point(id(), latestFused, 1, T0.plusSeconds(6), T0.plusSeconds(6), 120.11, 30.11, null);
+        point(id(), latestFused, 2, T0.plusSeconds(7), T0.plusSeconds(7), 120.12, 30.12, null);
+        point(id(), latestFused, 3, T0.plusSeconds(8), T0.plusSeconds(8), 120.13, 30.13, null);
+        String inaccessibleFused = fusedTrack(targetOtherScope, T0.plusSeconds(6));
+        point(id(), inaccessibleFused, 1, T0.plusSeconds(7), T0.plusSeconds(7), 121.1, 31.1, null);
+
+        long from = T0.toInstant().toEpochMilli();
+        long to = T0.plusMinutes(1).toInstant().toEpochMilli();
+        JsonNode response = getJson("/api/v1/tracks/recent?observed_from=" + from + "&observed_to=" + to
+                + "&points_per_target=2");
+        JsonNode data = response.path("data");
+        assertThat(data.path("as_of").asLong()).isEqualTo(to);
+        assertThat(data.path("items")).hasSize(1);
+        JsonNode item = data.path("items").get(0);
+        assertThat(item.path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(item.path("track_id").asText()).isEqualTo(latestFused);
+        assertThat(item.path("points").findValuesAsText("point_seq")).containsExactly("2", "3");
+        assertThat(item.path("points").get(0).path("sort_time").asLong())
+                .isLessThan(item.path("points").get(1).path("sort_time").asLong());
+        assertNoSensitiveFields(response);
+
+        assertError("/api/v1/tracks/recent?observed_from=" + from + "&observed_to=" + to
+                + "&points_per_target=51", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/tracks/recent?observed_from=" + from + "&observed_to="
+                + T0.plusHours(2).toInstant().toEpochMilli(), 400, "INVALID_TIME_RANGE");
+        assertError("/api/v1/tracks/recent?observed_from=" + from, 400, "INVALID_TIME_RANGE");
     }
 
     @Test
@@ -508,6 +542,14 @@ class TargetReadApiTest {
     private void track(String id, String targetId, String linkId, String externalId, OffsetDateTime startedAt) {
         jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at) values (?,?,?,?,?,?)",
                 id, targetId, linkId, externalId, startedAt, T0);
+    }
+
+    private String fusedTrack(String targetId, OffsetDateTime startedAt) {
+        String trackId = id();
+        jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at,layer)"
+                        + " values (?,?,null,?,?,?,'FUSED')",
+                trackId, targetId, "fused-" + trackId, startedAt, T0);
+        return trackId;
     }
 
     private void point(String id, String trackId, long seq, OffsetDateTime observedAt,

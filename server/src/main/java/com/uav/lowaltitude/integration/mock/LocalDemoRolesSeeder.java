@@ -50,7 +50,9 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
      */
     private static final Map<String, List<PermissionCode>> MENU_READS = Map.of(
             "situation", List.of(PermissionCode.DEVICE_READ, PermissionCode.TARGET_READ, PermissionCode.FUSION_READ,
-                    PermissionCode.AIRSPACE_READ, PermissionCode.ASSESSMENT_READ),
+                    PermissionCode.AIRSPACE_READ, PermissionCode.ASSESSMENT_READ, PermissionCode.ALARM_READ,
+                    PermissionCode.FLIGHT_READ, PermissionCode.ROUTE_READ, PermissionCode.RISK_READ,
+                    PermissionCode.DISPOSAL_READ, PermissionCode.HANDOFF_READ),
             "flights", List.of(PermissionCode.FLIGHT_READ, PermissionCode.ROUTE_READ,
                     PermissionCode.AIRSPACE_READ, PermissionCode.RISK_READ),
             // 告警页与工作台要显示这条告警的反制/干扰处置状态，所以这一页也要读处置授权（决策 18-12）。
@@ -89,6 +91,8 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
             new DemoRole("ROLE-DEMO-DUTY", "值班员", "态势监视、告警核实与派发",
                     List.of("situation", "alarms", "flights"),
                     List.of(new String[]{PermissionCode.ALARM_VERIFY.value(), "OP"},
+                            new String[]{PermissionCode.RISK_VERIFY.value(), "OP"},
+                            new String[]{PermissionCode.DISPOSAL_REQUEST.value(), "OP"},
                             new String[]{PermissionCode.HANDOFF_CREATE.value(), "OP"})),
             new DemoRole("ROLE-DEMO-OPS", "设备运维", "设备接入、调测与监测",
                     List.of("devices", "commission", "monitor"),

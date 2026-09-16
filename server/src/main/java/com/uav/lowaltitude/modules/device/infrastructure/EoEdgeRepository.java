@@ -66,11 +66,14 @@ public class EoEdgeRepository {
                 """, source, "eo-" + source, p.name(), EoEdgeEnvelope.PROTOCOL, p.sourceMode(), time, time);
         jdbc.update("""
                 INSERT INTO ops_device(device_id,source_id,external_device_id,device_no,name,device_type_code,device_type_name,
-                    channel,model,vendor,source_mode,simulated,created_at,updated_at,owner_name,region_name)
-                SELECT ?,?,?,?,?,'EO','光电','凌云光电边端',?,?,?,?,?,?,o.name,d.name FROM app_org o CROSS JOIN app_district d
+                    channel,model,vendor,source_mode,simulated,created_at,updated_at,owner_name,region_name,
+                    longitude,latitude,coordinate_system,altitude_m)
+                SELECT ?,?,?,?,?,'EO','光电','凌云光电边端',?,?,?,?,?,?,o.name,d.name,?,?,?,?
+                FROM app_org o CROSS JOIN app_district d
                 WHERE o.org_id=? AND d.district_id=?
                 """, opsId, opsSource, p.externalDeviceId(), p.deviceNo(), p.name(), p.model(), p.vendor(), p.sourceMode(),
-                simulated, now, now, p.ownerOrgId(), p.districtId());
+                simulated, now, now, p.longitude(), p.latitude(), p.longitude() == null ? null : "WGS-84", p.altitudeM(),
+                p.ownerOrgId(), p.districtId());
         jdbc.update("""
                 INSERT INTO device(device_id,source_id,external_device_id,device_no,name,device_type_code,model,vendor,
                     source_mode,owner_org_id,district_id,created_at,updated_at) VALUES (?,?,?,?,?,'EO',?,?,?,?,?,?,?)
@@ -103,8 +106,13 @@ public class EoEdgeRepository {
     }
 
     public int updateDevice(Binding b, Registration p, long now) {
-        int changed = jdbc.update("UPDATE ops_device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=? AND version=? AND deleted_at IS NULL",
-                p.name(), p.vendor(), p.model(), now, b.opsDeviceId(), p.version());
+        int changed = jdbc.update("""
+                UPDATE ops_device SET name=?,vendor=?,model=?,longitude=COALESCE(?,longitude),
+                    latitude=COALESCE(?,latitude),coordinate_system=CASE WHEN ? IS NULL THEN coordinate_system ELSE 'WGS-84' END,
+                    altitude_m=COALESCE(?,altitude_m),version=version+1,updated_at=?
+                WHERE device_id=? AND version=? AND deleted_at IS NULL
+                """, p.name(), p.vendor(), p.model(), p.longitude(), p.latitude(), p.longitude(), p.altitudeM(),
+                now, b.opsDeviceId(), p.version());
         if (changed == 1) jdbc.update("UPDATE device SET name=?,vendor=?,model=?,version=version+1,updated_at=? WHERE device_id=?",
                 p.name(), p.vendor(), p.model(), new Timestamp(now), b.deviceId());
         return changed;

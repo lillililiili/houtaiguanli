@@ -9,17 +9,20 @@ public final class RiskState {
     private RiskState() { }
 
     public static String next(String current, String conclusion) {
-        if (!"PENDING_VERIFICATION".equals(current)) {
-            throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "当前风险状态不允许核验");
+        if ("PENDING_NOTIFICATION".equals(current) && "EXCLUDED".equals(conclusion)) {
+            return "EXCLUDED";
         }
-        return switch (conclusion) {
-            case "CONFIRMED" -> "PENDING_NOTIFICATION";
-            case "EXCLUDED" -> "EXCLUDED";
-            default -> throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CONCLUSION", "核验结论无效");
-        };
+        if ("PENDING_VERIFICATION".equals(current)) {
+            return switch (conclusion) {
+                case "CONFIRMED" -> "PENDING_NOTIFICATION";
+                case "EXCLUDED" -> "EXCLUDED";
+                default -> throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CONCLUSION", "核验结论无效");
+            };
+        }
+        throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "当前风险状态不允许核验");
     }
 
     public static boolean verifiable(String state) {
-        return "PENDING_VERIFICATION".equals(state);
+        return "PENDING_VERIFICATION".equals(state) || "PENDING_NOTIFICATION".equals(state);
     }
 }

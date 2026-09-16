@@ -262,7 +262,9 @@ class WorkbenchReadApiTest {
         mvc.perform(get("/api/v1/workbench/items/UAV_EVENT/wb-pending-" + suffix).header("Authorization", bearer(actor)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.item.allowed_actions[0]").value("VERIFY"));
         mvc.perform(get("/api/v1/workbench/items/RISK/wb-notify-" + suffix).header("Authorization", bearer(actor)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.item.allowed_actions[0]").value("NOTIFY"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.item.allowed_actions[0]").value("VERIFY"))
+                .andExpect(jsonPath("$.data.item.allowed_actions[1]").value("NOTIFY"))
                 .andExpect(jsonPath("$.data.item.blocked_reason").value(nullValue()));
     }
 

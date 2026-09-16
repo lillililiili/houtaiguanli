@@ -1,5 +1,7 @@
 package com.uav.lowaltitude.modules.device.domain;
 
+import java.math.BigDecimal;
+
 /** Public configuration contains credential references only, never resolved passwords. */
 public final class MqttConfiguration {
     private MqttConfiguration() { }
@@ -12,12 +14,19 @@ public final class MqttConfiguration {
                               String ownerOrgId, String districtId, Long version) { }
     public record Registration(String protocolCode, String brokerId, String providerCode, String externalDeviceId,
                                String deviceTypeAbbr, String sourceMode, String ownerOrgId, String districtId,
-                               String deviceNo, String name, String vendor, String model, Long version, String edgeId) {
+                               String deviceNo, String name, String vendor, String model, Long version, String edgeId,
+                               BigDecimal longitude, BigDecimal latitude, BigDecimal altitudeM) {
+        public Registration(String protocolCode, String brokerId, String providerCode, String externalDeviceId,
+                            String deviceTypeAbbr, String sourceMode, String ownerOrgId, String districtId,
+                            String deviceNo, String name, String vendor, String model, Long version, String edgeId) {
+            this(protocolCode, brokerId, providerCode, externalDeviceId, deviceTypeAbbr, sourceMode, ownerOrgId,
+                    districtId, deviceNo, name, vendor, model, version, edgeId, null, null, null);
+        }
         public Registration(String protocolCode, String brokerId, String providerCode, String externalDeviceId,
                             String deviceTypeAbbr, String sourceMode, String ownerOrgId, String districtId,
                             String deviceNo, String name, String vendor, String model, Long version) {
             this(protocolCode, brokerId, providerCode, externalDeviceId, deviceTypeAbbr, sourceMode, ownerOrgId,
-                    districtId, deviceNo, name, vendor, model, version, null);
+                    districtId, deviceNo, name, vendor, model, version, null, null, null, null);
         }
     }
     public record Binding(String opsDeviceId, String deviceId, String opsSourceId, String sourceId,

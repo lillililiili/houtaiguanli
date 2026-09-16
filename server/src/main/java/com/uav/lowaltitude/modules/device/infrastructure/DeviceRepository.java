@@ -19,9 +19,17 @@ public class DeviceRepository {
                    s.unknown_reason, s.version AS state_version,
                    src.source_code, src.name AS source_name, src.protocol_code, src.protocol_version,
                    src.allowed_cidrs, src.credential_ref AS source_credential_ref,
-                   src.enabled AS source_enabled
+                   src.enabled AS source_enabled,
+                   sensing.coverage_kind, sensing.radius_m AS coverage_radius_m,
+                   sensing.range_m AS coverage_range_m, sensing.azimuth_deg AS coverage_azimuth_deg,
+                   sensing.fov_deg AS coverage_fov_deg, sensing.source_label AS coverage_source_label,
+                   sensing.version AS coverage_version, sensing.updated_at AS coverage_updated_at,
+                   COALESCE(mqtt_binding.device_id, eo_binding.device_id) AS fusion_device_id
             FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id = d.device_id
             LEFT JOIN ops_integration_source src ON src.source_id=d.source_id
+            LEFT JOIN device_sensing_profile sensing ON sensing.device_id=d.device_id
+            LEFT JOIN mqtt_device_binding mqtt_binding ON mqtt_binding.ops_device_id=d.device_id
+            LEFT JOIN eo_device_binding eo_binding ON eo_binding.ops_device_id=d.device_id
             """;
 
     private final JdbcTemplate jdbc;
@@ -78,6 +86,42 @@ public class DeviceRepository {
                 "SELECT * FROM device_connection_profile WHERE device_id=:device_id",
                 Map.of("device_id", deviceId));
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public Map<String, Object> findSensingProfile(String deviceId) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT * FROM device_sensing_profile WHERE device_id=?", deviceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public void insertSensingProfile(String deviceId, Map<String, Object> values, long now) {
+        Map<String, Object> p = new HashMap<>(values);
+        p.put("device_id", deviceId);
+        p.put("updated_at", now);
+        named.update("""
+                INSERT INTO device_sensing_profile (
+                    device_id, coverage_kind, radius_m, range_m, azimuth_deg, fov_deg,
+                    source_label, version, updated_at)
+                VALUES (:device_id, :coverage_kind, :radius_m, :range_m, :azimuth_deg, :fov_deg,
+                    :source_label, 0, :updated_at)
+                """, p);
+    }
+
+    public int updateSensingProfile(String deviceId, long expectedVersion, Map<String, Object> values, long now) {
+        Map<String, Object> p = new HashMap<>(values);
+        p.put("device_id", deviceId);
+        p.put("expected_version", expectedVersion);
+        p.put("updated_at", now);
+        return named.update("""
+                UPDATE device_sensing_profile SET coverage_kind=:coverage_kind, radius_m=:radius_m,
+                    range_m=:range_m, azimuth_deg=:azimuth_deg, fov_deg=:fov_deg,
+                    source_label=:source_label, version=version+1, updated_at=:updated_at
+                WHERE device_id=:device_id AND version=:expected_version
+                """, p);
+    }
+
+    public int deleteSensingProfile(String deviceId, long expectedVersion) {
+        return jdbc.update("DELETE FROM device_sensing_profile WHERE device_id=? AND version=?", deviceId, expectedVersion);
     }
 
     public Map<String, Object> findIntegrationSource(String sourceId) {

@@ -214,6 +214,11 @@ public class MqttConfigurationService {
         required(p.deviceNo(),64); required(p.name(),128); required(p.brokerId(),36);
         required(p.ownerOrgId(),36); required(p.districtId(),36); mode(p.sourceMode());
         if((p.vendor()!=null && p.vendor().length()>128) || (p.model()!=null && p.model().length()>128)) throw bad("厂家或型号过长");
+        if ((p.longitude() == null) != (p.latitude() == null)) throw bad("经纬度必须同时填写或同时为空");
+        if (p.longitude() != null && (p.longitude().compareTo(java.math.BigDecimal.valueOf(-180)) < 0
+                || p.longitude().compareTo(java.math.BigDecimal.valueOf(180)) > 0)) throw bad("经度范围必须为 -180 到 180");
+        if (p.latitude() != null && (p.latitude().compareTo(java.math.BigDecimal.valueOf(-90)) < 0
+                || p.latitude().compareTo(java.math.BigDecimal.valueOf(90)) > 0)) throw bad("纬度范围必须为 -90 到 90");
         if(eo(p)) { segment(p.edgeId(),64); segment(p.externalDeviceId(),32); return; }
         if(!LingyunEnvelope.PROTOCOL.equals(p.protocolCode()) || !LingyunControlEnvelope.registrable(p.deviceTypeAbbr()))
             throw bad("支持雷达、5G-A、TDOA、AOA、协议破解、RemoteID、诱骗、干扰、驱鸟炮、光电或光电边端");

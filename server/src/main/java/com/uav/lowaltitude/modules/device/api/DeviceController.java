@@ -35,6 +35,7 @@ import com.uav.lowaltitude.modules.device.application.DeviceService.DeviceMutati
 import com.uav.lowaltitude.modules.device.application.DeviceService.DeviceOptions;
 import com.uav.lowaltitude.modules.device.application.DeviceService.DevicePage;
 import com.uav.lowaltitude.modules.device.application.DeviceService.ProtocolConfiguration;
+import com.uav.lowaltitude.modules.device.application.DeviceService.SensingProfileMutation;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
@@ -135,6 +136,25 @@ public class DeviceController {
 
     public record DeleteRequest(@NotNull Long version, @NotBlank String reason) { }
 
+    @PutMapping("/{deviceId}/sensing-profile")
+    public ApiResponse<DeviceDetail> upsertSensingProfile(
+            @PathVariable String deviceId,
+            @RequestBody SensingProfileRequest request,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        return ApiResponse.ok(service.upsertSensingProfile(deviceId, request.toMutation(), idempotencyKey));
+    }
+
+    @DeleteMapping("/{deviceId}/sensing-profile")
+    public ApiResponse<DeviceDetail> deleteSensingProfile(
+            @PathVariable String deviceId,
+            @RequestBody SensingProfileVersionRequest request,
+            @RequestHeader("Idempotency-Key") String idempotencyKey) {
+        if (request == null || request.expectedVersion() == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "expected_version 必填");
+        }
+        return ApiResponse.ok(service.deleteSensingProfile(deviceId, request.expectedVersion(), idempotencyKey));
+    }
+
     private <T> T convert(JsonNode body,Class<T> type) {
         final T value;
         try { value=mapper.treeToValue(body,type); }
@@ -145,6 +165,22 @@ public class DeviceController {
     }
 
     public record EnabledRequest(@NotNull Boolean enabled, @NotNull Long version, @NotBlank String reason) { }
+
+    public record SensingProfileRequest(
+            String coverageKind,
+            BigDecimal radiusM,
+            BigDecimal rangeM,
+            BigDecimal azimuthDeg,
+            BigDecimal fovDeg,
+            String sourceLabel,
+            Long expectedVersion) {
+        SensingProfileMutation toMutation() {
+            return new SensingProfileMutation(coverageKind, radiusM, rangeM, azimuthDeg, fovDeg,
+                    sourceLabel, expectedVersion);
+        }
+    }
+
+    public record SensingProfileVersionRequest(Long expectedVersion) { }
 
     public record DeviceRequest(
             Long version,

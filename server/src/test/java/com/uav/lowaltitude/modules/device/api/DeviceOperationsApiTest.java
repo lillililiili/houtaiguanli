@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -182,6 +183,66 @@ class DeviceOperationsApiTest {
                         .content("{\"enabled\":true,\"version\":" + version + ",\"reason\":\"使用旧版本冲突\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+    }
+
+    @Test
+    void sensingProfileUsesIndependentVersionIdempotencyAndAvailability() throws Exception {
+        String ops = login("admin1");
+        String deviceId = deviceId("DEV-MOCK-001", ops);
+        String circle = "{\"coverage_kind\":\"CIRCLE\",\"radius_m\":6500,"
+                + "\"source_label\":\"MQTT 验收配置\",\"expected_version\":0}";
+
+        mvc.perform(put("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", "coverage-create-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content(circle))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.device.coverage.kind").value("CIRCLE"))
+                .andExpect(jsonPath("$.data.device.coverage.radius_m").value(6500))
+                .andExpect(jsonPath("$.data.device.coverage.source_label").value("MQTT 验收配置"))
+                .andExpect(jsonPath("$.data.device.coverage.version").value(0));
+
+        String replayKey = "coverage-update-" + UUID.randomUUID();
+        String sector = "{\"coverage_kind\":\"SECTOR\",\"range_m\":7200,\"azimuth_deg\":90,"
+                + "\"fov_deg\":45,\"source_label\":\"现场标定\",\"expected_version\":0}";
+        mvc.perform(put("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", replayKey)
+                        .contentType(MediaType.APPLICATION_JSON).content(sector))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.device.coverage.kind").value("SECTOR"))
+                .andExpect(jsonPath("$.data.device.coverage.version").value(1));
+        mvc.perform(put("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", replayKey)
+                        .contentType(MediaType.APPLICATION_JSON).content(sector))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_REPLAY"));
+        mvc.perform(put("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", "coverage-stale-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content(circle))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+
+        mvc.perform(delete("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", "coverage-delete-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.device.coverage.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.device.coverage.availability_reason").isNotEmpty());
+    }
+
+    @Test
+    void sensingProfileRejectsInvalidGeometryAndMissingOperationPermission() throws Exception {
+        String ops = login("admin1");
+        String deviceId = deviceId("DEV-MOCK-002", ops);
+        mvc.perform(put("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", "coverage-invalid-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"coverage_kind\":\"CIRCLE\",\"radius_m\":500,\"range_m\":600,"
+                                + "\"source_label\":\"非法组合\",\"expected_version\":0}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+
+        String duty = login("wugang");
+        mvc.perform(put("/api/v1/devices/{id}/sensing-profile", deviceId)
+                        .header("Authorization", bearer(duty)).header("Idempotency-Key", "coverage-denied-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isForbidden());
     }
 
     @Test

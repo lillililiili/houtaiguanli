@@ -12,6 +12,7 @@ import com.uav.lowaltitude.modules.target.api.TargetDtos.TargetDetailDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TargetSummaryDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TrackPointDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TrackSummaryDto;
+import com.uav.lowaltitude.modules.target.api.TargetDtos.RecentTracksDto;
 import com.uav.lowaltitude.modules.target.application.TargetReadService;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
@@ -47,5 +48,10 @@ public class TargetReadController {
             @PathVariable String trackId,
             @RequestParam MultiValueMap<String, String> parameters) {
         return ApiResponse.ok(service.points(trackId, parameters));
+    }
+
+    @GetMapping("/tracks/recent")
+    public ApiResponse<RecentTracksDto> recentTracks(@RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(service.recentTracks(parameters));
     }
 }

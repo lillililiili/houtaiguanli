@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -21,8 +22,13 @@ import org.springframework.stereotype.Repository;
 public class TargetWriteRepository {
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("yyyyMMdd");
     private final NamedParameterJdbcTemplate jdbc;
+    private final boolean postgresql;
 
-    public TargetWriteRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }
+    public TargetWriteRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
+        this.postgresql = Boolean.TRUE.equals(jdbcTemplate.execute((ConnectionCallback<Boolean>) connection ->
+                "PostgreSQL".equalsIgnoreCase(connection.getMetaData().getDatabaseProductName())));
+    }
 
     public TargetHead lock(String targetId) {
         List<TargetHead> rows = jdbc.query("SELECT target_id,target_no,object_type_code,subtype,uav_sn,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,version"
@@ -82,8 +88,12 @@ public class TargetWriteRepository {
     }
 
     /** 目标编号：目标-yyyyMMdd-序号，同日顺延；唯一约束兜底。 */
-    public String nextTargetNo(OffsetDateTime at) {
+    public synchronized String nextTargetNo(OffsetDateTime at) {
         String prefix = "目标-" + DAY.format(at.atZoneSameInstant(java.time.ZoneOffset.UTC)) + "-";
+        if (postgresql) {
+            jdbc.query("SELECT pg_advisory_xact_lock(hashtext(:lock_key))",
+                    Map.of("lock_key", "target-business-no:" + prefix), rs -> { });
+        }
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM target WHERE target_no LIKE :p", Map.of("p", prefix + "%"), Long.class);
         long next = (count == null ? 0 : count) + 1;
         while (exists(prefix + String.format("%04d", next))) next++;

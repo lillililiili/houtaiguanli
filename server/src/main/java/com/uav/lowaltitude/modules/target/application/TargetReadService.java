@@ -6,6 +6,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -44,6 +45,8 @@ import com.uav.lowaltitude.modules.target.api.TargetDtos.TargetStateDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TargetSummaryDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TrackPointDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TrackSummaryDto;
+import com.uav.lowaltitude.modules.target.api.TargetDtos.RecentTrackDto;
+import com.uav.lowaltitude.modules.target.api.TargetDtos.RecentTracksDto;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.Coordinate;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.PointRow;
@@ -58,6 +61,7 @@ import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.Ta
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TimeQuery;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TrackQuery;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TrackRow;
+import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.RecentTrackRow;
 import com.uav.lowaltitude.platform.api.ApiException;
 
 @Service
@@ -177,6 +181,30 @@ public class TargetReadService {
                 .map(this::point)
                 .toList();
         return new PageDto<>(items, page.page, page.size, total);
+    }
+
+    @Transactional(readOnly = true)
+    public RecentTracksDto recentTracks(MultiValueMap<String, String> parameters) {
+        AccessDecision access = accessControl.require(PermissionCode.TARGET_READ);
+        parameters.keySet().stream()
+                .filter(key -> !Set.of("observed_from", "observed_to", "points_per_target").contains(key))
+                .findFirst().ifPresent(key -> { throw RequestValues.validation(key); });
+        RequestValues request = new RequestValues(parameters);
+        TimeRange observed = request.timeRange("observed_from", "observed_to");
+        if (observed.from == null || observed.to == null) throw RequestValues.invalidTime();
+        if (java.time.Duration.between(observed.from, observed.to).toMillis() > 3_600_000L) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_TIME_RANGE", "近期轨迹查询窗口不能超过 1 小时");
+        }
+        int pointsPerTarget = request.integer("points_per_target", 24);
+        if (pointsPerTarget < 1 || pointsPerTarget > 50) throw RequestValues.validation("points_per_target");
+        List<RecentTrackRow> tracks = repository.recentFusedTracks(observed.from, observed.to, access);
+        Map<String, List<TrackPointDto>> points = new LinkedHashMap<>();
+        repository.recentPoints(tracks.stream().map(RecentTrackRow::trackId).toList(), observed.from, observed.to,
+                pointsPerTarget).forEach(row -> points.computeIfAbsent(row.point().trackId(), ignored -> new ArrayList<>())
+                        .add(point(row.point())));
+        List<RecentTrackDto> items = tracks.stream().map(track -> new RecentTrackDto(
+                track.targetId(), track.trackId(), List.copyOf(points.getOrDefault(track.trackId(), List.of())))).toList();
+        return new RecentTracksDto(observed.to.toInstant().toEpochMilli(), items);
     }
 
     private TargetSummaryDto summary(TargetRow row, TargetSummariesRow summaries) {

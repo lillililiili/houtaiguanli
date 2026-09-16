@@ -41,6 +41,8 @@ final class AuditLabels {
             Map.entry("integration_source_enable", "启用或停用接入来源"),
             Map.entry("device_create", "新增设备"),
             Map.entry("device_update", "修改设备"),
+            Map.entry("device_sensing_profile_update", "更新设备感知覆盖参数"),
+            Map.entry("device_sensing_profile_delete", "删除设备感知覆盖参数"),
             Map.entry("device_reboot_requested", "远程重启设备"),
             Map.entry("commission_create", "新建接入调测任务"),
             Map.entry("commission_start", "开始调测"),

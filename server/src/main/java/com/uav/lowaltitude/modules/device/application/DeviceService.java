@@ -24,6 +24,7 @@ import com.uav.lowaltitude.integration.DeviceAdapterPort;
 import com.uav.lowaltitude.integration.DeviceAdapterRegistry;
 import com.uav.lowaltitude.integration.SourceMode;
 import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
+import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.config.AppProperties;
@@ -52,12 +53,12 @@ public class DeviceService {
     private final ObjectMapper objectMapper;
     private final DeviceAdapterRegistry adapterRegistry;
     private final IntegrationSourceService sources;
-    private final com.uav.lowaltitude.modules.identity.application.IdempotencyGuard idempotency;
+    private final IdempotencyGuard idempotency;
 
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
                          DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
-                         com.uav.lowaltitude.modules.identity.application.IdempotencyGuard idempotency) {
+                         IdempotencyGuard idempotency) {
         this.repository = repository;
         this.access = access;
         this.clock = clock;
@@ -281,6 +282,50 @@ public class DeviceService {
     public record DeviceDeletion(String deviceId, long version, long deletedAt) { }
 
     @Transactional
+    public DeviceDetail upsertSensingProfile(String id, SensingProfileMutation mutation, String idempotencyKey) {
+        AuthUser user = access.requireDevicesOperate();
+        requiredDevice(id);
+        validateSensingProfile(mutation);
+        idempotency.claim(idempotencyKey, "device:sensing-profile:upsert:" + id + ":" + mutation.operationKey());
+        Map<String, Object> current = repository.findSensingProfile(id);
+        long expected = mutation.expectedVersion();
+        long now = clock.nowMillis();
+        Map<String, Object> values = sensingProfileValues(mutation);
+        try {
+            if (current == null) {
+                if (expected != 0) throw conflict();
+                repository.insertSensingProfile(id, values, now);
+            } else if (repository.updateSensingProfile(id, expected, values, now) != 1) {
+                throw conflict();
+            }
+        } catch (DataIntegrityViolationException ex) {
+            throw bad("VALIDATION_ERROR", "覆盖参数组合无效");
+        }
+        repository.addEvent(UUID.randomUUID().toString(), id, "SENSING_PROFILE_UPDATED", "INFO",
+                "设备覆盖参数已更新", now, bool(requiredDevice(id), "simulated"));
+        audit.record(user.userId(), user.account(), "device_sensing_profile_update", "device", id,
+                "kind=" + mutation.coverageKind() + "; version=" + expected, null);
+        return detail(id);
+    }
+
+    @Transactional
+    public DeviceDetail deleteSensingProfile(String id, long expectedVersion, String idempotencyKey) {
+        AuthUser user = access.requireDevicesOperate();
+        requiredDevice(id);
+        if (expectedVersion < 0) throw bad("VALIDATION_ERROR", "expected_version 必须大于等于 0");
+        idempotency.claim(idempotencyKey, "device:sensing-profile:delete:" + id + ":" + expectedVersion);
+        if (repository.findSensingProfile(id) == null)
+            throw new ApiException(HttpStatus.NOT_FOUND, "SENSING_PROFILE_NOT_FOUND", "设备未配置覆盖参数");
+        if (repository.deleteSensingProfile(id, expectedVersion) != 1) throw conflict();
+        long now = clock.nowMillis();
+        repository.addEvent(UUID.randomUUID().toString(), id, "SENSING_PROFILE_DELETED", "WARN",
+                "设备覆盖参数已清除", now, bool(requiredDevice(id), "simulated"));
+        audit.record(user.userId(), user.account(), "device_sensing_profile_delete", "device", id,
+                "version=" + expectedVersion, null);
+        return detail(id);
+    }
+
+    @Transactional
     public Command createReboot(String deviceId, String idempotencyKey, String reason) {
         AuthUser user = access.requireMonitoringOperate();
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 96)
@@ -500,7 +545,60 @@ public class DeviceService {
                 text(r, "health_code", "UNKNOWN"), longValue(r, "last_heartbeat_at"),
                 bool(r, "simulated"), text(r, "source_mode"), text(r, "source_name"),
                 text(r, "protocol_code"), text(r, "protocol_version"),
-                decimal(r, "longitude"), decimal(r, "latitude"), text(r, "coordinate_system"));
+                decimal(r, "longitude"), decimal(r, "latitude"), text(r, "coordinate_system"),
+                text(r, "fusion_device_id"), coverage(r));
+    }
+
+    private Coverage coverage(Map<String, Object> row) {
+        String kind = text(row, "coverage_kind");
+        if (kind == null) return new Coverage(null, "UNKNOWN", null, null, null, null,
+                "未配置覆盖参数", null, null, null);
+        boolean hasCoordinates = decimal(row, "longitude") != null && decimal(row, "latitude") != null;
+        boolean available = bool(row, "enabled") && "ONLINE".equals(text(row, "connectivity"));
+        String status = !hasCoordinates ? "UNKNOWN" : available ? "AVAILABLE" : "UNAVAILABLE";
+        String reason = !hasCoordinates ? "设备缺少坐标，覆盖能力不可判定"
+                : available ? null : "设备非在线或未启用，覆盖能力不可用";
+        return new Coverage(kind, status, decimal(row, "coverage_radius_m"), decimal(row, "coverage_range_m"),
+                decimal(row, "coverage_azimuth_deg"), decimal(row, "coverage_fov_deg"), reason,
+                text(row, "coverage_source_label"), longValue(row, "coverage_updated_at"),
+                longValue(row, "coverage_version"));
+    }
+
+    private static Map<String, Object> sensingProfileValues(SensingProfileMutation mutation) {
+        Map<String, Object> values = new HashMap<>();
+        values.put("coverage_kind", mutation.coverageKind());
+        values.put("radius_m", mutation.radiusM());
+        values.put("range_m", mutation.rangeM());
+        values.put("azimuth_deg", mutation.azimuthDeg());
+        values.put("fov_deg", mutation.fovDeg());
+        values.put("source_label", mutation.sourceLabel().trim());
+        return values;
+    }
+
+    private static void validateSensingProfile(SensingProfileMutation mutation) {
+        if (mutation == null || mutation.expectedVersion() == null || mutation.expectedVersion() < 0)
+            throw bad("VALIDATION_ERROR", "expected_version 必须大于等于 0");
+        String label = mutation.sourceLabel() == null ? "" : mutation.sourceLabel().trim();
+        if (label.isEmpty() || label.length() > 128)
+            throw bad("VALIDATION_ERROR", "source_label 长度必须为 1–128 个字符");
+        if ("CIRCLE".equals(mutation.coverageKind())) {
+            if (!positive(mutation.radiusM()) || mutation.rangeM() != null || mutation.azimuthDeg() != null || mutation.fovDeg() != null)
+                throw bad("VALIDATION_ERROR", "圆形覆盖只允许提供正数 radius_m");
+            return;
+        }
+        if ("SECTOR".equals(mutation.coverageKind())) {
+            if (mutation.radiusM() != null || !positive(mutation.rangeM()) || mutation.azimuthDeg() == null
+                    || mutation.azimuthDeg().compareTo(BigDecimal.ZERO) < 0
+                    || mutation.azimuthDeg().compareTo(BigDecimal.valueOf(360)) >= 0
+                    || !positive(mutation.fovDeg()) || mutation.fovDeg().compareTo(BigDecimal.valueOf(360)) > 0)
+                throw bad("VALIDATION_ERROR", "扇形覆盖需要有效的 range_m、azimuth_deg 和 fov_deg");
+            return;
+        }
+        throw bad("VALIDATION_ERROR", "coverage_kind 只能为 CIRCLE 或 SECTOR");
+    }
+
+    private static boolean positive(BigDecimal value) {
+        return value != null && value.compareTo(BigDecimal.ZERO) > 0;
     }
 
     private Incident incident(Map<String, Object> r) {
@@ -604,7 +702,19 @@ public class DeviceService {
                                 String connectivity, String workStateCode, boolean hasAlarm, String healthCode,
                                 Long lastHeartbeatAt, boolean simulated, String sourceMode, String sourceName,
                                 String protocolCode, String protocolVersion,
-                                BigDecimal longitude, BigDecimal latitude, String coordinateSystem) { }
+                                BigDecimal longitude, BigDecimal latitude, String coordinateSystem,
+                                String fusionDeviceId, Coverage coverage) { }
+    public record Coverage(String kind, String status, BigDecimal radiusM, BigDecimal rangeM,
+                           BigDecimal azimuthDeg, BigDecimal fovDeg, String availabilityReason,
+                           String sourceLabel, Long updatedAt, Long version) { }
+    public record SensingProfileMutation(String coverageKind, BigDecimal radiusM, BigDecimal rangeM,
+                                         BigDecimal azimuthDeg, BigDecimal fovDeg, String sourceLabel,
+                                         Long expectedVersion) {
+        String operationKey() {
+            return coverageKind + ":" + radiusM + ":" + rangeM + ":" + azimuthDeg + ":" + fovDeg
+                    + ":" + sourceLabel + ":" + expectedVersion;
+        }
+    }
     public record DeviceDetail(DeviceSummary device, String sourceId, String externalDeviceId, String model,
                                String vendor, String ownerName, String regionName, String address,
                                BigDecimal longitude, BigDecimal latitude, String coordinateSystem,
