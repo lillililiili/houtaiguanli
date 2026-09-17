@@ -9,7 +9,8 @@ import com.uav.lowaltitude.modules.flight.api.FlightVerificationDtos.Feedback;
 @Repository
 public class FlightVerificationRepository {
     private final JdbcTemplate jdbc;
-    public FlightVerificationRepository(JdbcTemplate jdbc) { this.jdbc=jdbc; }
+    private final com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory;
+    public FlightVerificationRepository(JdbcTemplate jdbc,com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory) { this.jdbc=jdbc;this.directory=directory; }
     public void lockPlan(String planId) { jdbc.queryForObject("SELECT plan_id FROM flight_plan WHERE plan_id=? FOR UPDATE",String.class,planId); }
     public List<Verification> verifications(String planId) {
         return jdbc.query("SELECT * FROM flight_plan_verification WHERE plan_id=? ORDER BY revision_no DESC",(rs,i)->
@@ -22,7 +23,7 @@ public class FlightVerificationRepository {
             new Feedback(rs.getString("feedback_id"),rs.getString("verification_id"),rs.getString("plan_id"),
                 rs.getString("recipient_id"),rs.getString("recipient_name"),rs.getString("delivery_status"),rs.getString("receipt_status"),
                 rs.getString("processing_result"),rs.getString("blocked_reason"),rs.getLong("created_at"),
-                rs.getObject("submitted_at",Long.class),rs.getObject("delivered_at",Long.class),rs.getObject("acknowledged_at",Long.class)),planId);
+                rs.getObject("submitted_at",Long.class),rs.getObject("delivered_at",Long.class),rs.getObject("acknowledged_at",Long.class),directory.decodeSnapshot(rs.getString("recipient_snapshot"))),planId);
     }
     public boolean sourceEnabled(String id) {
         return id != null && jdbc.queryForObject("SELECT COUNT(*) FROM integration_source WHERE source_id=? AND enabled=TRUE",Long.class,id)>0;

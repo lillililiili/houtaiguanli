@@ -9,6 +9,13 @@ describe('后台菜单权限', () => {
     expect(canAccessMenu(user, 'roles')).toBe(true)
   })
 
+  it('单位档案和通知对象配置分别要求菜单与读取权限', () => {
+    const user = { menu_keys: ['organizations', 'notificationSettings'], permission_codes: ['organizations.read', 'notificationSettings.read'] }
+    expect(accessibleItems(user).map(item => item.path)).toEqual(['/system/organizations', '/system/notification-settings'])
+    expect(canAccessMenu({ ...user, permission_codes: ['organizations.read'] }, 'notificationSettings')).toBe(false)
+    expect(canAccessMenu({ ...user, menu_keys: [] }, 'organizations')).toBe(false)
+  })
+
   it('没有任何管理菜单时进入明确空态', () => {
     expect(firstAccessiblePath({ menu_keys: [], permission_codes: [] })).toBe('/no-permission')
   })

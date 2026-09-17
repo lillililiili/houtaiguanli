@@ -27,6 +27,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavAdvisoryService {
+    private final AutoSmsService automatic;
+    private final AutoVoiceService voice;
     private final UavEventRepository events;
     private final UavAdvisoryRepository repository;
     private final AccessControlService access;
@@ -35,7 +37,9 @@ public class UavAdvisoryService {
     private final AppClock clock;
     private final AuditService audit;
     public UavAdvisoryService(UavEventRepository events,UavAdvisoryRepository repository,AccessControlService access,
-            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit) {
+            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice) {
+        this.voice=voice;
+        this.automatic=automatic;
         this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;
     }
     @Transactional(readOnly=true)
@@ -56,6 +60,7 @@ public class UavAdvisoryService {
         }
         if(event.version()!=a.expectedVersion()) throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
         if(!"CONFIRMED".equals(event.state())) throw conflict("INVALID_TRANSITION","请先人工核实事件属实");
+        if("SMS_SIMULATED".equals(a.kind())&&automatic.sending(id))throw conflict("AUTO_SMS_SENDING","后台正在发送短信，请等待结果后再补发");
         AdvisorySmsPort.Delivery delivery="SMS_SIMULATED".equals(a.kind())?sms.simulate(event.sourceMode(),a.recipientName(),a.content()):null;
         long now=clock.nowMillis();
         if(events.update(id,event.version(),event.state(),java.time.Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1) throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
@@ -65,6 +70,60 @@ public class UavAdvisoryService {
         try { repository.saveReplay(actor.userId(),key.trim(),hash,id,write(response)); }
         catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作"); }
         return response;
+    }
+    @Transactional
+    public Overview retryAutomatic(String id,String raw,String key) {
+        var scope=access.require(PermissionCode.ALARM_READ);
+        access.require(PermissionCode.ALARM_VERIFY);access.require(PermissionCode.HANDOFF_CREATE);
+        long version;String note;
+        try(JsonParser parser=json.getFactory().createParser(raw==null?"":raw)) {
+            parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);JsonNode n=json.readTree(parser);
+            if(n==null||!n.isObject()||parser.nextToken()!=null||n.size()!=2||!n.has("expected_version")||!n.get("expected_version").isIntegralNumber()||!n.get("expected_version").canConvertToLong())throw new IllegalArgumentException();
+            version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=text(n,"note",1000,true);
+        } catch(Exception bad){throw bad("VALIDATION_ERROR","补发需要有效版本与原因说明");}
+        if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
+        EventRow event=events.lock(id,scope);if(event==null)throw notFound();var actor=AuthContext.require();
+        String hash=hash("auto-sms-retry:"+id+":"+version+":"+note);var previous=repository.replay(actor.userId(),key.trim());
+        if(previous!=null) {
+            if(!id.equals(previous.eventId())||!hash.equals(previous.hash()))throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作");
+            try{return json.readValue(previous.response(),Overview.class);}catch(Exception invalid){throw new IllegalStateException(invalid);}
+        }
+        if(event.version()!=version)throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
+        automatic.retry(event);
+        long now=clock.nowMillis();
+        if(events.update(id,version,event.state(),java.time.Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1)throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
+        audit.record(actor.userId(),actor.account(),actor.roleCode(),"alarm","auto_sms_retry_requested","uav_event",id,note,"SUCCESS","","");
+        Overview result=view(events.find(id,scope));
+        try { repository.saveReplay(actor.userId(),key.trim(),hash,id,write(result)); }
+        catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","\u8be5\u8bf7\u6c42\u7f16\u53f7\u5df2\u7528\u4e8e\u5176\u4ed6\u64cd\u4f5c"); }
+        return result;
+    }
+    @Transactional
+    public Overview retryAutomaticVoice(String id,String raw,String key) {
+        var scope=access.require(PermissionCode.ALARM_READ);
+        access.require(PermissionCode.ALARM_VERIFY);access.require(PermissionCode.HANDOFF_CREATE);
+        long version;String note;
+        try(JsonParser parser=json.getFactory().createParser(raw==null?"":raw)) {
+            parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);JsonNode n=json.readTree(parser);
+            if(n==null||!n.isObject()||parser.nextToken()!=null||n.size()!=2||!n.has("expected_version")||!n.get("expected_version").isIntegralNumber()||!n.get("expected_version").canConvertToLong())throw new IllegalArgumentException();
+            version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=text(n,"note",1000,true);
+        } catch(Exception bad){throw bad("VALIDATION_ERROR","补呼需要有效版本与原因说明");}
+        if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
+        EventRow event=events.lock(id,scope);if(event==null)throw notFound();var actor=AuthContext.require();
+        String hash=hash("auto-voice-retry:"+id+":"+version+":"+note);var previous=repository.replay(actor.userId(),key.trim());
+        if(previous!=null) {
+            if(!id.equals(previous.eventId())||!hash.equals(previous.hash()))throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作");
+            try{return json.readValue(previous.response(),Overview.class);}catch(Exception invalid){throw new IllegalStateException(invalid);}
+        }
+        if(event.version()!=version)throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
+        voice.retry(event);
+        long now=clock.nowMillis();
+        if(events.update(id,version,event.state(),java.time.Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1)throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
+        audit.record(actor.userId(),actor.account(),actor.roleCode(),"alarm","auto_voice_retry_requested","uav_event",id,note,"SUCCESS","","");
+        Overview result=view(events.find(id,scope));
+        try { repository.saveReplay(actor.userId(),key.trim(),hash,id,write(result)); }
+        catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","\u8be5\u8bf7\u6c42\u7f16\u53f7\u5df2\u7528\u4e8e\u5176\u4ed6\u64cd\u4f5c"); }
+        return result;
     }
     /** 调用方持有受限事件/授权范围；此方法额外锁定事件，防止核查结果和执行竞争。 */
     @Transactional
@@ -86,10 +145,13 @@ public class UavAdvisoryService {
         String reason=UavAdvisoryRules.counterBlockReason(event.state(),records);
         boolean mode=sms.simulationAvailable(event.sourceMode());
         boolean request=allowed(PermissionCode.DISPOSAL_REQUEST);
+        var currentRecipient=automatic.currentRecipient(event);
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
                 "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request?"当前账号没有反制申请权限":reason,records,
-                mode?new Recipient("演示飞手","模拟接收端","本地演示数据，不对应真实手机号"):null);
+                currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的计划执行飞手"),
+                automatic.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE)),
+                voice.mode(event),voice.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE)));
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
     private Action parse(String raw) {

@@ -70,6 +70,15 @@ public class DeviceMaintenanceRepository {
                 + " ORDER BY t.reported_at DESC,t.task_id DESC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,DeviceMaintenanceRepository::row);
     }
 
+    public List<Row> forPlan(String planId,String deviceId,int page,int size,AuthUser actor) {
+        Map<String,Object> p=new HashMap<>();p.put("plan",planId);p.put("device",deviceId);p.put("offset",(page-1)*size);p.put("size",size);
+        return jdbc.query("SELECT t.* FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND t.plan_id=:plan"+(deviceId==null?"":" AND t.device_id=:device")+" ORDER BY t.reported_at DESC,t.task_id DESC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,DeviceMaintenanceRepository::row);
+    }
+    public long countForPlan(String planId,String deviceId,AuthUser actor) {
+        Map<String,Object> p=new HashMap<>();p.put("plan",planId);p.put("device",deviceId);
+        return jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND t.plan_id=:plan"+(deviceId==null?"":" AND t.device_id=:device"),p,Long.class);
+    }
+
     public int handle(String id, long version, String note, AuthUser actor, long at) {
         return jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',active_key=NULL,handled_by=:actor,"
                 + "handled_by_name=:name,handled_at=:at,handling_note=:note,version=version+1"

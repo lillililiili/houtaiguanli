@@ -16,6 +16,16 @@ spring:
       enabled: false
 
 app:
+  advisory:
+    auto-sms:
+      # 仅本地演示模拟短信；生产模式无渠道时不会发送或伪造送达。
+      enabled: ${APP_ADVISORY_AUTO_SMS_ENABLED:true}
+      fresh-seconds: ${APP_ADVISORY_AUTO_SMS_FRESH_SECONDS:120}
+      event-seconds: ${APP_ADVISORY_AUTO_SMS_EVENT_SECONDS:300}
+      poll-millis: ${APP_ADVISORY_AUTO_SMS_POLL_MILLIS:10000}
+  fusion:
+    # 本机 MQTT 回放必须消费融合 inbox，持续生成近期目标；仍可显式关闭。
+    enabled: ${APP_FUSION_ENABLED:true}
   flight-device-check:
     # 用户授权使用独立 MQTT 模拟器演示 mock 计划；真实计划不使用这些模拟设备。
     mqtt-demo-enabled: ${FLIGHT_DEVICE_CHECK_MQTT_DEMO_ENABLED:true}

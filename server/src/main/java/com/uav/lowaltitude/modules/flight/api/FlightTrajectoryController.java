@@ -8,4 +8,6 @@ public class FlightTrajectoryController {
     public FlightTrajectoryController(FlightTrajectoryService service){this.service=service;}
     @GetMapping("/api/v1/flight-plans/{planId}/trajectory")
     public ApiResponse<FlightTrajectoryService.Trajectory> trajectory(@PathVariable String planId){return ApiResponse.ok(service.read(planId));}
+    @GetMapping("/api/v1/legality-evaluations/{evaluationId}/trajectory")
+    public ApiResponse<FlightTrajectoryService.Trajectory> evaluationTrajectory(@PathVariable String evaluationId){return ApiResponse.ok(service.readEvaluation(evaluationId));}
 }

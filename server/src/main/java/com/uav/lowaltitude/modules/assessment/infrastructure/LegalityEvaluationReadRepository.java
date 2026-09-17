@@ -181,9 +181,14 @@ public class LegalityEvaluationReadRepository {
             where.parameters.put("from", query.from()); where.parameters.put("to", query.to());
         }
         if (query.latestOnly()) {
-            // 队列只看每个主体在该模式下最近一条研判；被重算取代的旧研判自然被更新的一条压掉。
-            where.sql.append(" AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE n.mode=e.mode AND n.subject_kind=e.subject_kind"
-                    + " AND ((e.subject_kind='TARGET' AND n.target_id=e.target_id) OR (e.subject_kind='PLAN' AND n.plan_id=e.plan_id))"
+            // 最新判定先于外层状态、时间、来源及权限筛选；不能把不匹配筛选条件的最新行换成旧行。
+            // TARGET / PLAN 分开反连接，使数据库按目标/计划等值匹配，避免 OR 把所有同类主体混在一起比较。
+            // 保留 evaluated_at + evaluation_id 尾键，以及主体引用为空时不相互覆盖的既有语义。
+            where.sql.append(" AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='TARGET' AND n.subject_kind='TARGET'"
+                    + " AND n.mode=e.mode AND n.target_id=e.target_id"
+                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))"
+                    + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='PLAN' AND n.subject_kind='PLAN'"
+                    + " AND n.mode=e.mode AND n.plan_id=e.plan_id"
                     + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))");
         }
         return where;

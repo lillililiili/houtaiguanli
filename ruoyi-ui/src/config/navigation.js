@@ -1,4 +1,4 @@
-import { Cpu, Monitor, Connection, User, UserFilled, DocumentChecked, DataAnalysis, MapLocation } from '@element-plus/icons-vue';
+import { Cpu, Monitor, Connection, User, UserFilled, DocumentChecked, DataAnalysis, MapLocation, OfficeBuilding, Bell } from '@element-plus/icons-vue';
 
 export const navigationGroups = [
   {
@@ -15,6 +15,8 @@ export const navigationGroups = [
     title: '系统管理', key: 'system', icon: UserFilled,
     children: [
       { title: '用户管理', key: 'users', path: '/system/users', permission: 'users.read', icon: User },
+      { title: '单位档案', key: 'organizations', path: '/system/organizations', permission: 'organizations.read', icon: OfficeBuilding },
+      { title: '通知对象配置', key: 'notificationSettings', path: '/system/notification-settings', permission: 'notificationSettings.read', icon: Bell },
       { title: '角色管理', key: 'roles', path: '/system/roles', permission: 'roles.read', icon: UserFilled },
       { title: '审计日志', key: 'archive', path: '/system/audit', permission: 'audit.read', icon: DocumentChecked }
     ]

@@ -22,6 +22,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class DeviceMaintenanceService {
+    private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService notifications;
     private final DeviceMaintenanceRepository tasks;
     private final DeviceService devices;
     private final DeviceAccessPolicy deviceAccess;
@@ -34,7 +35,8 @@ public class DeviceMaintenanceService {
 
     public DeviceMaintenanceService(DeviceMaintenanceRepository tasks,DeviceService devices,DeviceAccessPolicy deviceAccess,
             FlightDeviceCheckService checks,FlightReadRepository plans,AccessControlService access,
-            IdempotencyGuard idempotency,AuditService audit,AppClock clock) {
+            IdempotencyGuard idempotency,AuditService audit,AppClock clock,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService notifications) {
+        this.notifications=notifications;
         this.tasks=tasks;this.devices=devices;this.deviceAccess=deviceAccess;this.checks=checks;
         this.plans=plans;this.access=access;this.idempotency=idempotency;this.audit=audit;this.clock=clock;
     }
@@ -74,6 +76,7 @@ public class DeviceMaintenanceService {
                 plan.planNo(),device.deviceNo(),row.name(),reasons,row.connectivity(),row.healthCode(),row.observedAt(),
                 row.lastHeartbeatAt(),row.simulated(),"PENDING",actor.userId(),actorName,clock.nowMillis(),null,null,null,1);
         tasks.insert(task);
+        notifications.notifyMaintenance(task.taskId(),body.notificationSettingId(),plan.sourceMode(),"设备="+device.deviceNo()+"；计划="+plan.planNo()+"；异常="+reasons);
         remember(actor,key,task.taskId());
         audit.record(actor.userId(),actor.account(),"device_maintenance_reported","device_maintenance_task",
                 task.taskId(),"通知设备异常；设备="+deviceId+"；计划="+planKey,null);
@@ -87,6 +90,16 @@ public class DeviceMaintenanceService {
                 ||(long)(page-1)*size>Integer.MAX_VALUE)throw bad("待办筛选或分页参数无效");
         return new Page(tasks.list(status,page,size,actor).stream().map(row->dto(row,actor,false)).toList(),
                 page,size,tasks.count(status,actor));
+    }
+
+    @Transactional(readOnly=true)
+    public Page forPlan(String planId,String deviceId,int page,int size) {
+        var scope=access.require(PermissionCode.FLIGHT_READ);
+        AuthUser actor=com.uav.lowaltitude.platform.security.AuthContext.require();
+        String planKey=id(planId),deviceKey=deviceId==null?null:id(deviceId);
+        if(plans.findPlan(planKey,scope)==null)throw missing();
+        if(page<1||size<1||size>100||(long)(page-1)*size>Integer.MAX_VALUE)throw bad("分页参数无效");
+        return new Page(tasks.forPlan(planKey,deviceKey,page,size,actor).stream().map(row->dto(row,actor,false)).toList(),page,size,tasks.countForPlan(planKey,deviceKey,actor));
     }
 
     @Transactional
@@ -116,10 +129,12 @@ public class DeviceMaintenanceService {
         boolean planVisible=false;
         try { planVisible=plans.findPlan(r.planId(),access.require(PermissionCode.FLIGHT_READ))!=null; }
         catch(ApiException error) { if(error.getStatus()!=HttpStatus.FORBIDDEN)throw error; }
+        var notice=notifications.maintenanceNotice(r.taskId());
         return new Task(r.taskId(),planVisible?r.planId():null,planVisible?r.planNo():null,r.deviceId(),r.deviceNo(),
                 r.deviceName(),r.reason(),r.connectivity(),r.healthCode(),r.observedAt(),r.lastHeartbeatAt(),r.simulated(),
                 r.status(),r.reportedByName(),r.reportedAt(),r.handledByName(),r.handledAt(),r.handlingNote(),r.version(),
-                "PENDING".equals(r.status())&&deviceAccess.canOperateMonitoring(actor),reused);
+                "PENDING".equals(r.status())&&deviceAccess.canOperateMonitoring(actor),reused,notice==null?null:notice.recipientSnapshot(),
+                notice==null?null:notice.deliveryStatus(),notice==null?null:notice.receiptStatus(),notice==null?null:notice.blockedReason());
     }
     private static String id(String v) { if(v==null||v.isBlank()||v.trim().length()>36)throw bad("对象编号无效");return v.trim(); }
     private static String key(String v) { if(v==null||v.trim().length()<8||v.trim().length()>128)throw bad("提交编号长度必须为 8–128 字符");return v.trim(); }

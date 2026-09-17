@@ -26,7 +26,8 @@ public final class HandoffDtos {
             // 用 Object 而不是共同父类型，是因为两者字段完全不同、也不该互相迁就；序列化按实际类型走。
             Object material,
             DeliveryDto latestDelivery, AvailabilityDto availability,
-            String ownerOrgName, String districtName, String submittedByName, String sourceNo) { }
+            String ownerOrgName, String districtName, String submittedByName, String sourceNo,
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
     /**
      * material：AVAILABLE / FORBIDDEN（读者缺来源读权限）/ SOURCE_NOT_VISIBLE（源对象已不在读者可见范围）。
      * evidence（仅 v2）：AVAILABLE / FORBIDDEN（读者缺 evidence:read）/ OMITTED_AT_SUBMISSION（提交人当时就没有该权限）。

@@ -32,6 +32,7 @@ import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.VerifyDto;
 import com.uav.lowaltitude.modules.evidence.domain.EvidenceRetention;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository.FileInsert;
+import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository.CaptureProvenance;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository.FileQuery;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository.FileRow;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository.HoldRow;
@@ -184,8 +185,9 @@ public class EvidenceAssociationService {
         if (org == null || district == null) throw invalid("必须指定归属组织与区域，或关联一个业务对象");
         if (!repository.catalogEnabled(org, district)) throw invalid("组织或区域无效");
         menuAccess.requireTuple(org, district);
+        CaptureProvenance capture = readCapture(form, decision, org, district);
         idempotency.claim(idempotencyKey, request.kindCode() + "|" + request.originalName() + "|" + request.size()
-                + "|" + org + "|" + district + "|" + nullToEmpty(request.subjectKind()) + "|" + nullToEmpty(request.subjectId()));
+                + "|" + org + "|" + district + "|" + nullToEmpty(request.subjectKind()) + "|" + nullToEmpty(request.subjectId()) + "|" + capture);
         Instant now = clock.now();
         String evidenceId = UUID.randomUUID().toString();
         String objectKey = now.toString().substring(0, 10) + "/" + evidenceId + "/" + request.storedName();
@@ -193,6 +195,7 @@ public class EvidenceAssociationService {
         repository.insertFile(new FileInsert(evidenceId, evidenceNo(now, evidenceId), request.kindCode(),
                 request.originalName(), request.contentType(), "local", objectKey, null, null,
                 request.capturedAt(), null, retainUntil, "PENDING", request.sourceMode(), org, district, now, now, 0));
+        repository.storeCapture(evidenceId, capture);
         StoredObject stored;
         try (InputStream in = file.getInputStream()) {
             stored = storage.putNew(objectKey, in);
@@ -209,6 +212,28 @@ public class EvidenceAssociationService {
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "evidence", "evidence_ingested",
                 "evidence_file", evidenceId, "kind=" + request.kindCode(), "SUCCESS", "", "");
         return detail(repository.find(evidenceId), decision);
+    }
+
+    private CaptureProvenance readCapture(MultiValueMap<String, String> form, AccessDecision decision, String org, String district) {
+        String device = IngestRequest.one(form, "source_device_id", false);
+        String longitude = IngestRequest.one(form, "capture_longitude", false);
+        String latitude = IngestRequest.one(form, "capture_latitude", false);
+        if ((longitude == null) != (latitude == null)) throw invalid("采集经纬度必须成对提供");
+        String name = null;
+        if (device != null) {
+            access.require(PermissionCode.DEVICE_READ);
+            device = id(device);
+            SubjectRef source = requireVisibleSubject("DEVICE", device, decision);
+            if (!org.equals(source.ownerOrgId()) || !district.equals(source.districtId())) throw invalid("来源设备与证据归属范围不一致");
+            name = repository.sourceDeviceName(device);
+        }
+        Double lon = null, lat = null;
+        if (longitude != null) {
+            try { lon = Double.valueOf(longitude); lat = Double.valueOf(latitude); }
+            catch (NumberFormatException ex) { throw invalid("采集坐标必须为 WGS84 经纬度"); }
+            if (!Double.isFinite(lon) || !Double.isFinite(lat) || lon < -180 || lon > 180 || lat < -90 || lat > 90) throw invalid("采集坐标超出有效经纬度范围");
+        }
+        return new CaptureProvenance(device, name, lon, lat, device == null && lon == null ? null : "UPLOADER_DECLARED");
     }
 
     @Transactional
@@ -369,6 +394,10 @@ public class EvidenceAssociationService {
                 "DOWNLOAD", "DENIED", reason, clock.now());
     }
 
+    FileRow visibleForContent(String evidenceId, AccessDecision decision) {
+        return visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST));
+    }
+
     private FileRow visible(String evidenceId, AccessDecision decision, boolean ingest) {
         FileRow file = repository.find(evidenceId);
         if (file == null) throw notFound();
@@ -429,13 +458,15 @@ public class EvidenceAssociationService {
         Instant until = retainUntilOf(row);
         boolean held = repository.hasActiveHold(row.evidenceId());
         EvidenceRetention.Policy policy = EvidenceRetention.policy(row.kindCode());
+        CaptureProvenance capture = repository.capture(row.evidenceId());
         return new EvidenceDetailDto(row.evidenceId(), row.evidenceNo(), row.kindCode(), row.originalName(),
                 row.contentType(), row.sizeBytes(), row.sha256(), row.status(), millis(row.capturedAt()),
                 millis(row.storedAt()), millis(until), policy.label(),
                 EvidenceRetention.custody(until, clock.now(), held), policy.note(), held,
                 row.sourceMode(), row.ownerOrgId(), row.districtId(), row.version(), millis(row.createdAt()),
                 millis(row.updatedAt()), List.copyOf(links), holds, millis(row.destroyedAt()), row.destroyedBy(),
-                row.destroyReason(), row.destroyApproval());
+                row.destroyReason(), row.destroyApproval(), capture.sourceDeviceId(), capture.sourceDeviceName(),
+                capture.captureLongitude(), capture.captureLatitude(), capture.captureProvenance());
     }
 
     private static Instant retainUntilOf(FileRow row) {
@@ -573,7 +604,7 @@ public class EvidenceAssociationService {
             if (file == null || file.isEmpty()) throw invalid("必须上传文件");
             if (file.getSize() > MAX_BYTES) throw new ApiException(HttpStatus.BAD_REQUEST, "FILE_TOO_LARGE", "文件超过 32 MiB");
             Set<String> allowed = Set.of("kind_code", "owner_org_id", "district_id", "captured_at",
-                    "subject_kind", "subject_id", "source_mode");
+                    "subject_kind", "subject_id", "source_mode", "source_device_id", "capture_longitude", "capture_latitude");
             form.keySet().stream().filter(key -> !allowed.contains(key) && !"file".equals(key)).findFirst()
                     .ifPresent(key -> { throw invalid("参数无效"); });
             String kind = one(form, "kind_code", true);

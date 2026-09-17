@@ -55,14 +55,15 @@ class HandoffReceiptResultApiTest {
         session = user();
         riskId = "risk-receipt-" + UUID.randomUUID().toString().substring(0, 8);
         insertNotifiableRisk(riskId);
-        recipientId = "recipient-receipt-" + UUID.randomUUID().toString().substring(0, 8);
-        Timestamp at = Timestamp.from(Instant.now());
-        jdbc.update("insert into handoff_recipient (recipient_id,display_name,handoff_type,enabled,created_at,updated_at) values (?,'测试接收方','RISK_NOTICE',true,?,?)",
-                recipientId, at, at);
+        recipientId = "fixed-superior-recipient";
+        jdbc.update("UPDATE notification_setting SET enabled=TRUE,channel_type='MOCK' WHERE setting_id='risk-superior'");
+
     }
 
     @AfterEach
     void cleanup() {
+        org.mockito.Mockito.reset(channel);
+        jdbc.update("UPDATE notification_setting SET enabled=FALSE,channel_type='NONE' WHERE setting_id='risk-superior'");
         jdbc.update("delete from handoff_delivery where handoff_id in (select handoff_id from handoff where source_id like 'risk-receipt-%')");
         jdbc.update("delete from handoff_material_snapshot where handoff_id in (select handoff_id from handoff where source_id like 'risk-receipt-%')");
         jdbc.update("delete from handoff where source_id like 'risk-receipt-%'");

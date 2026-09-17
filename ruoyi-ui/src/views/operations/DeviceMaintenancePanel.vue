@@ -50,6 +50,10 @@ async function handle() {
     await reload(true);
   } finally { if (alive) saving.value = false; }
 }
+function notificationStatus(value, receipt = false) {
+  const labels = receipt ? { NOT_EXPECTED: '本次无需回执', PENDING: '等待回执', ACKNOWLEDGED: '已确认收到', TIMEOUT: '回执超时' } : { PENDING_DELIVERY: '待投递', SUBMITTED: '已提交渠道', DELIVERED: '已送达', FAILED: '投递失败' };
+  return labels[value] || value || '尚无记录';
+}
 function close(done) { if (!saving.value) done(); }
 onBeforeUnmount(() => { alive = false; generation++; });
 defineExpose({ reload });
@@ -66,7 +70,7 @@ defineExpose({ reload });
     <p v-if="error && items.length" class="muted">刷新失败，下方保留上次读取的待办。</p>
     <el-table v-loading="loading" :data="items" empty-text="当前没有这类运维待办">
       <el-table-column label="异常设备" min-width="190"><template #default="{row}"><b>{{ row.device_name }}</b><div class="muted">{{ row.device_no }}</div><el-tag v-if="row.simulated" size="small" type="info">模拟设备</el-tag></template></el-table-column>
-      <el-table-column prop="reason" label="异常说明" min-width="240" show-overflow-tooltip />
+      <el-table-column prop="reason" label="异常说明" min-width="240" />
       <el-table-column label="上报时间" min-width="175"><template #default="{row}">{{ formatTime(row.reported_at) }}</template></el-table-column>
       <el-table-column label="状态" width="95"><template #default="{row}"><el-tag :type="row.status==='PENDING'?'warning':'success'">{{ row.status==='PENDING'?'待处理':'已反馈' }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="130"><template #default="{row}"><el-button link type="primary" @click="showTask(row)">{{ row.can_handle ? '记录处理结果' : '查看待办' }}</el-button></template></el-table-column>
@@ -81,6 +85,12 @@ defineExpose({ reload });
           <el-descriptions-item label="通知时的健康状态">{{ ({GOOD:'良好',BAD:'异常',DEGRADED:'异常',UNKNOWN:'未知'})[selected.health_code] || '未知' }}</el-descriptions-item>
           <el-descriptions-item label="状态上报时间">{{ formatTime(selected.observed_at) }}</el-descriptions-item>
           <el-descriptions-item label="异常说明">{{ selected.reason }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.recipient_snapshot" label="通知时的接收单位">{{ selected.recipient_snapshot.org_name || selected.recipient_snapshot.recipient_name || '尚未确定接收单位' }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.recipient_snapshot?.contact_name" label="通知时的联系人">{{ selected.recipient_snapshot.contact_name }}<span v-if="selected.recipient_snapshot.contact_hint"> · {{ selected.recipient_snapshot.contact_hint }}</span></el-descriptions-item>
+          <el-descriptions-item v-if="selected.notification_delivery_status" label="通知投递结果">{{ notificationStatus(selected.notification_delivery_status) }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.notification_receipt_status" label="通知回执">{{ notificationStatus(selected.notification_receipt_status, true) }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.notification_blocked_reason" label="通知阻断原因">{{ selected.notification_blocked_reason }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.recipient_snapshot?.config_version != null" label="通知配置版本">{{ selected.recipient_snapshot.config_version }}</el-descriptions-item>
           <el-descriptions-item label="上报人 / 时间">{{ selected.reported_by_name }} · {{ formatTime(selected.reported_at) }}</el-descriptions-item>
           <el-descriptions-item v-if="selected.handling_note" label="处理结果">{{ selected.handling_note }}<p class="muted">{{ selected.handled_by_name }} · {{ formatTime(selected.handled_at) }}</p></el-descriptions-item>
         </el-descriptions>
@@ -101,5 +111,6 @@ defineExpose({ reload });
 .maintenance-tools { display: flex; gap: 8px; flex-wrap: wrap; }
 .maintenance-tools .el-select { width: 120px; }
 .maintenance-pager { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 12px; gap: 8px; }
+.maintenance-panel :deep(.el-table .cell) { overflow-wrap: anywhere; white-space: normal; word-break: break-word; }
 .maintenance-panel :deep(.el-descriptions__content) { overflow-wrap: anywhere; white-space: pre-wrap; }
 </style>

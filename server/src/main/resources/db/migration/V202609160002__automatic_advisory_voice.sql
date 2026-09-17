@@ -1,0 +1,47 @@
+CREATE TABLE uav_event_voice_advisory (
+    record_id VARCHAR(36) PRIMARY KEY,
+    event_id VARCHAR(36) NOT NULL REFERENCES uav_event(event_id),
+    event_version BIGINT NOT NULL,
+    created_at BIGINT NOT NULL,
+    recording_id VARCHAR(100) NOT NULL,
+    recording_name VARCHAR(120) NOT NULL,
+    recording_sha256 VARCHAR(64) NOT NULL,
+    transcript VARCHAR(1000) NOT NULL,
+    provider_call_id VARCHAR(160) NOT NULL UNIQUE,
+    answered_at BIGINT NOT NULL,
+    playback_completed_at BIGINT NOT NULL,
+    policy_code VARCHAR(64) NOT NULL,
+    simulated BOOLEAN NOT NULL CHECK (simulated=TRUE),
+    delivery_status VARCHAR(32) NOT NULL CHECK (delivery_status='SIMULATED_PLAYED'),
+    UNIQUE(event_id,event_version),
+    CHECK (answered_at<=playback_completed_at AND playback_completed_at<=created_at)
+);
+CREATE INDEX idx_voice_advisory_event ON uav_event_voice_advisory(event_id,event_version);
+CREATE TABLE uav_auto_voice_task (
+    event_id VARCHAR(36) PRIMARY KEY REFERENCES uav_event(event_id),
+    status VARCHAR(32) NOT NULL CHECK (status IN ('WAITING','CALLING','SIMULATED_PLAYED','FAILED','UNKNOWN','UNAVAILABLE','BLOCKED')),
+    policy_code VARCHAR(64) NOT NULL,
+    reason VARCHAR(1000) NOT NULL,
+    trigger_source VARCHAR(40),
+    evaluation_id VARCHAR(36),
+    evaluated_at BIGINT,
+    data_updated_at BIGINT,
+    triggered_at BIGINT,
+    updated_at BIGINT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count>=0),
+    lease_until BIGINT,
+    claim_token VARCHAR(36),
+    provider_key VARCHAR(100) NOT NULL UNIQUE,
+    recording_id VARCHAR(100),
+    recording_name VARCHAR(120),
+    recording_sha256 VARCHAR(64),
+    recording_transcript VARCHAR(1000),
+    delivery_record_id VARCHAR(36) REFERENCES uav_event_voice_advisory(record_id),
+    provider_call_id VARCHAR(160),
+    answered_at BIGINT,
+    playback_completed_at BIGINT,
+    CHECK (status<>'SIMULATED_PLAYED' OR (delivery_record_id IS NOT NULL AND provider_call_id IS NOT NULL AND answered_at IS NOT NULL AND playback_completed_at IS NOT NULL)),
+    CHECK (status<>'CALLING' OR (claim_token IS NOT NULL AND lease_until IS NOT NULL AND recording_id IS NOT NULL AND recording_sha256 IS NOT NULL)),
+    CHECK (playback_completed_at IS NULL OR (answered_at IS NOT NULL AND answered_at<=playback_completed_at))
+);
+CREATE INDEX idx_auto_voice_status ON uav_auto_voice_task(status,updated_at);

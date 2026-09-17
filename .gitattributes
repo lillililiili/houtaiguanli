@@ -1,0 +1,2 @@
+# Preserve the PDF evidence fixture as binary, including its xref spacing.
+server/src/test/resources/evidence/*.pdf binary

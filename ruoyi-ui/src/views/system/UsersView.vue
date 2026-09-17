@@ -22,6 +22,7 @@ const userDialog = reactive({ visible: false, busy: false, mode: 'create', row: 
 const orgDialog = reactive({ visible: false, busy: false, row: null, parent: null, form: {} })
 const resetDialog = reactive({ visible: false, busy: false, row: null, password: '' })
 const canOperate = computed(() => auth.hasPermission('users.op'))
+const canManageOrganization = computed(() => auth.hasPermission('users.auth'))
 const selectedOrg = computed(() => organizations.value.find(item => item.org_id === selectedOrgId.value))
 const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false))
 
@@ -147,12 +148,14 @@ async function removeUser(row) {
 }
 
 function openOrg(row = null, parent = null) {
+  if (!canManageOrganization.value) return
   orgDialog.row = row
   orgDialog.parent = parent
   orgDialog.form = { name: row?.name || '', parent_id: row?.parent_id || parent?.org_id || '' }
   orgDialog.visible = true
 }
 async function saveOrg() {
+  if (!canManageOrganization.value || orgDialog.busy) return
   if (!orgDialog.form.name?.trim()) return ElMessage.warning('单位名称不能为空。')
   orgDialog.busy = true
   try {
@@ -183,7 +186,7 @@ onMounted(refreshAll)
       <aside class="org-panel">
         <div class="org-panel__header">
           <div class="org-panel__heading"><span class="org-panel__icon"><el-icon><OfficeBuilding /></el-icon></span><span><strong>单位机构</strong><small>共 {{ organizations.length }} 个单位</small></span></div>
-          <el-button type="primary" plain :icon="Plus" :disabled="!canOperate" @click="openOrg()">新增</el-button>
+          <el-button type="primary" plain :icon="Plus" :disabled="!canManageOrganization" @click="openOrg()">新增</el-button>
         </div>
         <div class="org-panel__body">
           <el-tree class="org-tree" :data="treeData" node-key="org_id" default-expand-all highlight-current :expand-on-click-node="false" :current-node-key="selectedOrgId" @node-click="selectOrg">
@@ -193,8 +196,8 @@ onMounted(refreshAll)
                 <el-dropdown v-if="data.org_id !== ALL_ORGS" trigger="click" @click.stop @command="command => handleOrgCommand(command, data)">
                   <button class="org-node__more" type="button" :aria-label="`管理单位 ${data.label}`" @click.stop><el-icon><MoreFilled /></el-icon></button>
                 <template #dropdown><el-dropdown-menu>
-                  <el-dropdown-item command="add" :disabled="!canOperate">新增下级单位</el-dropdown-item>
-                  <el-dropdown-item command="edit" :disabled="!canOperate">编辑单位</el-dropdown-item>
+                  <el-dropdown-item command="add" :disabled="!canManageOrganization">新增下级单位</el-dropdown-item>
+                  <el-dropdown-item command="edit" :disabled="!canManageOrganization">编辑单位</el-dropdown-item>
                 </el-dropdown-menu></template>
               </el-dropdown>
               </span>
@@ -260,7 +263,7 @@ onMounted(refreshAll)
 :deep(.org-tree .el-tree-node__content){height:40px;margin:2px 0;padding-right:5px;border-radius:7px;color:var(--admin-text);transition:background-color .16s ease,color .16s ease}
 :deep(.org-tree .el-tree-node__content:hover){background:#eef4fc}
 :deep(.org-tree .el-tree-node.is-current>.el-tree-node__content){color:var(--admin-secondary);background:var(--admin-primary-soft);box-shadow:inset 3px 0 0 var(--admin-secondary)}
-.org-node{display:flex;min-width:0;flex:1;align-items:center;gap:6px}.org-node__label{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.org-node{display:flex;min-width:0;flex:1;align-items:center;gap:6px}.org-node__label{min-width:0;flex:1;white-space:normal;overflow-wrap:anywhere;line-height:1.5}
 .org-node__more{display:grid;width:28px;height:28px;flex:none;place-items:center;border:0;border-radius:6px;color:var(--admin-muted);background:transparent;cursor:pointer;opacity:0;transition:opacity .16s ease,background-color .16s ease,color .16s ease}
 .org-node__more:hover,.org-node__more:focus-visible{color:var(--admin-secondary);background:#fff;opacity:1}
 :deep(.org-tree .el-tree-node__content:hover) .org-node__more,:deep(.org-tree .el-tree-node.is-current>.el-tree-node__content) .org-node__more{opacity:1}
@@ -273,4 +276,5 @@ onMounted(refreshAll)
 :deep(.org-tree .el-tree-node__content:hover){background:rgba(255,255,255,.7)}
 :deep(.org-tree .el-tree-node.is-current>.el-tree-node__content){color:var(--admin-primary-strong);background:#fff;box-shadow:inset 3px 0 0 var(--admin-primary),0 5px 14px rgba(30,74,128,.08)}
 .org-panel__hint{background:rgba(255,255,255,.82)}.table-panel{background:#fff}.table-toolbar{border-bottom:1px solid #edf2f7}
+:deep(.org-tree .el-tree-node__content){height:auto;min-height:36px;padding-top:6px;padding-bottom:6px}
 </style>

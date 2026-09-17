@@ -203,7 +203,7 @@ public class HandoffRepository {
         if (value != null) { where.sql.append(" AND ").append(column).append("=:").append(name); where.params.put(name, value); }
     }
     private static String select() {
-        return "SELECT h.handoff_id,h.source_kind,h.source_id,h.handoff_type,h.recipient_id,rc.display_name,h.source_version,h.owner_org_id,"
+        return "SELECT h.handoff_id,h.source_kind,h.source_id,h.handoff_type,h.recipient_id,COALESCE(h.recipient_name_snapshot,rc.display_name) AS display_name,h.source_version,h.owner_org_id,"
                 + "h.district_id,h.source_mode,h.submitted_by,h.created_at,h.receipt_result,d.delivery_status,d.receipt_status,d.blocked_reason,"
                 + "org_ref.name AS owner_org_name,dist_ref.name AS district_name,su.name AS submitted_by_name,"
                 // 来源业务编号：风险取来源风险编号，无人机事件取其告警的来源告警编号。

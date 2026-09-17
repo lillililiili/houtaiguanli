@@ -21,6 +21,8 @@ const routes = [
       { path: 'operations/maps', name: 'Maps', component: () => import('@/views/operations/MapsView.vue'), meta: { title: '地图管理', menuKey: 'maps', permission: 'maps.read' } },
       { path: 'operations/reports', name: 'Reports', component: () => import('@/views/operations/ReportsView.vue'), meta: { title: '报表管理', menuKey: 'stats', permission: 'statistics.read' } },
       { path: 'system/users', name: 'Users', component: () => import('@/views/system/UsersView.vue'), meta: { title: '用户管理', menuKey: 'users', permission: 'users.read' } },
+      { path: 'system/organizations', name: 'Organizations', component: () => import('@/views/system/OrganizationsView.vue'), meta: { title: '单位档案', menuKey: 'organizations', permission: 'organizations.read' } },
+      { path: 'system/notification-settings', name: 'NotificationSettings', component: () => import('@/views/system/NotificationSettingsView.vue'), meta: { title: '通知对象配置', menuKey: 'notificationSettings', permission: 'notificationSettings.read' } },
       { path: 'system/roles', name: 'Roles', component: () => import('@/views/system/RolesView.vue'), meta: { title: '角色管理', menuKey: 'roles', permission: 'roles.read' } },
       { path: 'system/audit', name: 'Audit', component: () => import('@/views/system/AuditView.vue'), meta: { title: '审计日志', menuKey: 'archive', permission: 'audit.read' } }
     ]

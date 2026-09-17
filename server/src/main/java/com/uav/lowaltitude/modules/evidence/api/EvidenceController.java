@@ -36,6 +36,7 @@ import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.LinkRequest;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.PageDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.VerifyDto;
 import com.uav.lowaltitude.modules.evidence.application.EvidenceAssociationService;
+import com.uav.lowaltitude.modules.evidence.application.EvidencePreviewService;
 import com.uav.lowaltitude.modules.evidence.application.EvidenceAssociationService.CsvExport;
 import com.uav.lowaltitude.modules.evidence.application.EvidenceAssociationService.Download;
 import com.uav.lowaltitude.platform.api.ApiException;
@@ -46,8 +47,11 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 public class EvidenceController {
     private final EvidenceAssociationService evidence;
 
-    public EvidenceController(EvidenceAssociationService evidence) {
+    private final EvidencePreviewService previews;
+
+    public EvidenceController(EvidenceAssociationService evidence, EvidencePreviewService previews) {
         this.evidence = evidence;
+        this.previews = previews;
     }
 
     @GetMapping
@@ -80,6 +84,26 @@ public class EvidenceController {
         headers.setContentType(MediaType.parseMediaType(download.contentType()));
         if (download.sizeBytes() != null) headers.setContentLength(download.sizeBytes());
         return new ResponseEntity<>(new InputStreamResource(download.stream()), headers, HttpStatus.OK);
+    }
+
+    @GetMapping("/{evidenceId}/preview")
+    public ResponseEntity<byte[]> preview(@PathVariable String evidenceId) {
+        return previewResponse(previews.open(evidenceId, false));
+    }
+
+    @GetMapping("/{evidenceId}/thumbnail")
+    public ResponseEntity<byte[]> thumbnail(@PathVariable String evidenceId) {
+        return previewResponse(previews.open(evidenceId, true));
+    }
+
+    private ResponseEntity<byte[]> previewResponse(EvidencePreviewService.Content content) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(content.contentType()))
+                .contentLength(content.bytes().length)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
+                .header(HttpHeaders.CACHE_CONTROL, "no-store, private")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Security-Policy", "sandbox; default-src 'none'")
+                .body(content.bytes());
     }
 
     @GetMapping("/{evidenceId}/access-logs")

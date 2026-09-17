@@ -23,6 +23,27 @@ public class EvidenceRepository {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
     }
 
+    public String sourceDeviceName(String deviceId) {
+        List<String> names = jdbc.query("SELECT name FROM ops_device WHERE device_id=:id", Map.of("id", deviceId), (rs, i) -> rs.getString("name"));
+        return names.isEmpty() ? null : names.get(0);
+    }
+
+    public void storeCapture(String evidenceId, CaptureProvenance capture) {
+        Map<String, Object> values = new HashMap<>();
+        values.put("id", evidenceId); values.put("device", capture.sourceDeviceId()); values.put("name", capture.sourceDeviceName());
+        values.put("longitude", capture.captureLongitude()); values.put("latitude", capture.captureLatitude()); values.put("provenance", capture.captureProvenance());
+        int changed = jdbc.update("UPDATE evidence_file SET source_device_id=:device,source_device_name=:name,capture_longitude=:longitude,capture_latitude=:latitude,capture_provenance=:provenance WHERE evidence_id=:id AND status='PENDING' AND version=0", values);
+        if (changed != 1) throw new IllegalStateException("Evidence capture can only be stored during initial ingest");
+    }
+
+    public CaptureProvenance capture(String evidenceId) {
+        return jdbc.queryForObject("SELECT source_device_id,source_device_name,capture_longitude,capture_latitude,capture_provenance FROM evidence_file WHERE evidence_id=:id", Map.of("id", evidenceId),
+                (rs, i) -> new CaptureProvenance(rs.getString("source_device_id"), rs.getString("source_device_name"),
+                        (Double) rs.getObject("capture_longitude"), (Double) rs.getObject("capture_latitude"), rs.getString("capture_provenance")));
+    }
+
+    public record CaptureProvenance(String sourceDeviceId, String sourceDeviceName, Double captureLongitude, Double captureLatitude, String captureProvenance) { }
+
     public boolean catalogEnabled(String orgId, String districtId) {
         Long count = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM app_org o JOIN app_district d ON d.district_id=:district AND d.enabled=TRUE

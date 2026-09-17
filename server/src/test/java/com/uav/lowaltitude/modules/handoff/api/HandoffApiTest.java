@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
@@ -41,18 +42,22 @@ class HandoffApiTest {
     private String session;
     private String riskId;
     private String recipientId;
+    private Map<String, Object> notificationSettingBefore;
 
     @BeforeEach
     void fixture() {
         session = user(true, true, true, false, false);
         riskId = "risk-handoff-" + UUID.randomUUID().toString().substring(0, 8);
         insertNotifiableRisk(riskId, session);
-        recipientId = "recipient-test-" + UUID.randomUUID().toString().substring(0, 8);
-        insertRecipient(recipientId, "RISK_NOTICE", true);
+        recipientId = "fixed-superior-recipient";
+        notificationSettingBefore = jdbc.queryForMap("select enabled,channel_type,endpoint_ref,valid_until from notification_setting where setting_id='risk-superior'");
+        jdbc.update("update notification_setting set enabled=false,channel_type='NONE',endpoint_ref=null,valid_until=null where setting_id='risk-superior'");
     }
 
     @AfterEach
     void cleanup() {
+        if (notificationSettingBefore != null) jdbc.update("update notification_setting set enabled=?,channel_type=?,endpoint_ref=?,valid_until=? where setting_id='risk-superior'",
+                notificationSettingBefore.get("enabled"), notificationSettingBefore.get("channel_type"), notificationSettingBefore.get("endpoint_ref"), notificationSettingBefore.get("valid_until"));
         AuditService target = org.springframework.test.util.AopTestUtils.getTargetObject(audit);
         org.mockito.Mockito.reset(target);
         jdbc.update("delete from handoff_delivery where handoff_id in (select handoff_id from handoff where source_id like 'risk-handoff-%')");
@@ -96,7 +101,7 @@ class HandoffApiTest {
         String createOnly = user(true, false, true, false, false);
         mvc.perform(get("/api/v1/handoff-recipients?handoff_type=RISK_NOTICE").header("Authorization", bearer(createOnly)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[?(@.recipient_id=='" + recipientId + "')].display_name").value("测试接收方"));
+                .andExpect(jsonPath("$.data.items[?(@.recipient_id=='" + recipientId + "')].display_name").value("上级"));
         // 鉴权仍先于 handoff_type 解析：有 create 权限时坏参数才轮到 400。
         mvc.perform(get("/api/v1/handoff-recipients?handoff_type=BOGUS").header("Authorization", bearer(createOnly))).andExpect(status().isBadRequest());
         String readOnly = user(true, true, false, false, false);
@@ -145,77 +150,64 @@ class HandoffApiTest {
         assertThat(handoffCount(riskId)).isZero();
     }
 
-    /**
-     * 决策 18-14 / 18-16：风险通知不该再让值班员选接收方——上级就那一个，每次问一遍既慢又容易选错。
-     * 不传接收方时依次找：标了默认的那个 → 该类型唯一的启用接收方 → 都没有才 400。
-     * 三条用例分别钉这三档，缺任何一条这套回落规则都可能悄悄退化成另一种。
-     */
+    /** 2026-09-16：风险统一通知上级，旧默认标记不再参与接收对象解析。 */
     @Test
-    void riskNoticeWithoutRecipientFallsBackToTheDefaultOne() throws Exception {
-        String risk = "risk-handoff-dflt-" + UUID.randomUUID().toString().substring(0, 8);
-        insertNotifiableRisk(risk, session);
-        // 库里本来就有一个默认接收方；不先让开，命中哪一个就取决于 ID 排序，这条用例等于没钉住任何东西。
+    void riskNoticeWithoutRecipientAlwaysUsesFixedSuperiorInsteadOfLegacyDefault() throws Exception {
+        String legacy = "recipient-test-default-" + UUID.randomUUID().toString().substring(0, 6);
+        insertRecipient(legacy, "RISK_NOTICE", true);
         List<String> defaults = riskNoticeDefaults();
         jdbc.update("update handoff_recipient set is_default=false where handoff_type='RISK_NOTICE'");
-        jdbc.update("update handoff_recipient set is_default=true where recipient_id=?", recipientId);
-        String withoutRecipient = "{\"source_kind\":\"RISK\",\"source_id\":\"" + risk
-                + "\",\"handoff_type\":\"RISK_NOTICE\",\"expected_version\":1}";
-
-        MvcResult result;
+        jdbc.update("update handoff_recipient set is_default=true where recipient_id=?", legacy);
         try {
-            result = create(session, withoutRecipient, "default-" + UUID.randomUUID())
-                    .andExpect(status().isCreated()).andReturn();
-        } finally {
-            restoreRiskNoticeDefaults(defaults);
-        }
-        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
-        assertThat(body.path("recipient_id").asText()).isEqualTo(recipientId);
-        // 本类固定跑"未接通"渠道：回执结果是上级给的，没投出去就不该有；空值字段照本接口惯例整条不出现。
-        assertThat(body.has("receipt_result")).isFalse();
+            MvcResult result = create(session, withoutRecipient(riskId), "fixed-default-" + UUID.randomUUID())
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.recipient_id").value(recipientId)).andReturn();
+            JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+            assertThat(body.has("receipt_result")).isFalse();
+            assertThat(jdbc.queryForObject("select recipient_name_snapshot from handoff where source_id=?", String.class, riskId)).isEqualTo("上级");
+        } finally { restoreRiskNoticeDefaults(defaults); }
     }
 
-    /** 决策 18-16：一个默认都没标，但该类型只有一个启用接收方——只有一个的时候没有可选的余地，不该再要求他抄一遍。 */
     @Test
-    void riskNoticeWithoutRecipientUsesTheOnlyEnabledOneWhenNoneIsDefault() throws Exception {
-        String risk = "risk-handoff-dflt-" + UUID.randomUUID().toString().substring(0, 8);
-        insertNotifiableRisk(risk, session);
+    void riskNoticeWithoutRecipientUsesSuperiorWhenNoDefaultIsMarked() throws Exception {
         List<String> defaults = riskNoticeDefaults();
-        List<String> others = jdbc.queryForList("select recipient_id from handoff_recipient"
-                + " where handoff_type='RISK_NOTICE' and enabled=true and recipient_id<>?", String.class, recipientId);
         jdbc.update("update handoff_recipient set is_default=false where handoff_type='RISK_NOTICE'");
-        for (String id : others) jdbc.update("update handoff_recipient set enabled=false where recipient_id=?", id);
-        String withoutRecipient = "{\"source_kind\":\"RISK\",\"source_id\":\"" + risk
-                + "\",\"handoff_type\":\"RISK_NOTICE\",\"expected_version\":1}";
-        MvcResult result;
         try {
-            result = create(session, withoutRecipient, "sole-" + UUID.randomUUID())
-                    .andExpect(status().isCreated()).andReturn();
-        } finally {
-            for (String id : others) jdbc.update("update handoff_recipient set enabled=true where recipient_id=?", id);
-            restoreRiskNoticeDefaults(defaults);
-        }
-        assertThat(objectMapper.readTree(result.getResponse().getContentAsString())
-                .path("data").path("recipient_id").asText()).isEqualTo(recipientId);
+            create(session, withoutRecipient(riskId), "fixed-sole-" + UUID.randomUUID())
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.recipient_id").value(recipientId));
+        } finally { restoreRiskNoticeDefaults(defaults); }
     }
 
-    /** 决策 18-16：有好几个启用接收方又没标默认，服务端替不了值班员决定发给谁——这时才 400。 */
     @Test
-    void riskNoticeWithoutRecipientIsRejectedWhenSeveralAreEnabledAndNoneIsDefault() throws Exception {
-        String risk = "risk-handoff-dflt-" + UUID.randomUUID().toString().substring(0, 8);
-        insertNotifiableRisk(risk, session);
-        // 自己再插一个，"有好几个"就不依赖库里恰好还剩几个接收方——那正是这条规则的分界点。
+    void riskNoticeIgnoresMultipleLegacyRecipientsWithoutDefaults() throws Exception {
         insertRecipient("recipient-test-second-" + UUID.randomUUID().toString().substring(0, 6), "RISK_NOTICE", true);
+        insertRecipient("recipient-test-third-" + UUID.randomUUID().toString().substring(0, 6), "RISK_NOTICE", true);
         List<String> defaults = riskNoticeDefaults();
         jdbc.update("update handoff_recipient set is_default=false where handoff_type='RISK_NOTICE'");
-        String withoutRecipient = "{\"source_kind\":\"RISK\",\"source_id\":\"" + risk
-                + "\",\"handoff_type\":\"RISK_NOTICE\",\"expected_version\":1}";
         try {
-            create(session, withoutRecipient, "nodefault-" + UUID.randomUUID())
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error.code").value("RECIPIENT_REQUIRED"));
-        } finally {
-            restoreRiskNoticeDefaults(defaults);
-        }
+            create(session, withoutRecipient(riskId), "fixed-many-" + UUID.randomUUID())
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.recipient_id").value(recipientId));
+            mvc.perform(get("/api/v1/handoff-recipients?handoff_type=RISK_NOTICE").header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1))
+                    .andExpect(jsonPath("$.data.items[0].display_name").value("上级"));
+        } finally { restoreRiskNoticeDefaults(defaults); }
+    }
+
+    @Test
+    void disabledFixedSuperiorDoesNotFallBackToAnotherEnabledRecipient() throws Exception {
+        insertRecipient("recipient-test-fallback-" + UUID.randomUUID().toString().substring(0, 6), "RISK_NOTICE", true);
+        boolean before = Boolean.TRUE.equals(jdbc.queryForObject("select enabled from handoff_recipient where recipient_id=?", Boolean.class, recipientId));
+        jdbc.update("update handoff_recipient set enabled=false where recipient_id=?", recipientId);
+        try {
+            create(session, withoutRecipient(riskId), "fixed-disabled-" + UUID.randomUUID())
+                    .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("RECIPIENT_NOT_CONFIGURED"));
+        } finally { jdbc.update("update handoff_recipient set enabled=? where recipient_id=?", before, recipientId); }
+        assertThat(handoffCount(riskId)).isZero();
+        assertThat(state(riskId)).isEqualTo("PENDING_NOTIFICATION");
+    }
+
+    private String withoutRecipient(String id) {
+        return "{\"source_kind\":\"RISK\",\"source_id\":\"" + id
+                + "\",\"handoff_type\":\"RISK_NOTICE\",\"expected_version\":1}";
     }
 
     private List<String> riskNoticeDefaults() {
@@ -224,18 +216,19 @@ class HandoffApiTest {
     }
 
     private void restoreRiskNoticeDefaults(List<String> defaults) {
+        jdbc.update("update handoff_recipient set is_default=false where handoff_type='RISK_NOTICE'");
         for (String id : defaults) jdbc.update("update handoff_recipient set is_default=true where recipient_id=?", id);
     }
 
     @Test
-    void unknownDisabledOrWrongTypeRecipientIsNotFound() throws Exception {
+    void unknownDisabledOrWrongTypeRecipientCannotOverrideFixedSuperior() throws Exception {
         String disabled = "recipient-test-off-" + UUID.randomUUID().toString().substring(0, 6);
         String wrongType = "recipient-test-uav-" + UUID.randomUUID().toString().substring(0, 6);
         insertRecipient(disabled, "RISK_NOTICE", false);
         insertRecipient(wrongType, "UAV_PUNISHMENT", true);
         for (String recipient : new String[]{"recipient-missing", disabled, wrongType}) {
             create(session, body("RISK", riskId, "RISK_NOTICE", recipient, 1), "rcpt-" + UUID.randomUUID())
-                    .andExpect(status().isNotFound()).andExpect(jsonPath("$.error.code").value("RECIPIENT_NOT_FOUND"));
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
         }
         assertThat(handoffCount(riskId)).isZero();
     }
@@ -292,6 +285,7 @@ class HandoffApiTest {
 
     @Test
     void acknowledgedDeliveryRecordsBothStagesAndPreservesSnapshotVersion() throws Exception {
+        enableSimulatedRiskChannel();
         var at = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
         org.mockito.Mockito.doReturn(new com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome(
                 "DELIVERED", "ACKNOWLEDGED", null, null, at, at, at)).when(channel).deliver(org.mockito.ArgumentMatchers.any());
@@ -311,27 +305,28 @@ class HandoffApiTest {
     }
 
     @Test
-    void confirmationAfterEarlierSubmissionAdvancesOnlyOnceAndNeverRegresses() throws Exception {
-        created(session, body("RISK", riskId, "RISK_NOTICE", recipientId, 1), "submit-" + UUID.randomUUID());
+    void earlierSubmissionCannotBeAcknowledgedOrRegressedByReroutingToAnotherRecipient() throws Exception {
+        String original = created(session, body("RISK", riskId, "RISK_NOTICE", recipientId, 1), "submit-" + UUID.randomUUID());
         assertThat(state(riskId)).isEqualTo("NOTIFIED");
+        enableSimulatedRiskChannel();
         var at = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
         org.mockito.Mockito.doReturn(new com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome(
                 "DELIVERED", "ACKNOWLEDGED", null, null, at, at, at)).when(channel).deliver(org.mockito.ArgumentMatchers.any());
-        String second = "recipient-test-" + UUID.randomUUID().toString().substring(0, 8);
+        String second = "recipient-test-reroute-" + UUID.randomUUID().toString().substring(0, 6);
         insertRecipient(second, "RISK_NOTICE", true);
-        created(session, body("RISK", riskId, "RISK_NOTICE", second, 2), "ack-later-" + UUID.randomUUID());
-        assertThat(state(riskId)).isEqualTo("ACKNOWLEDGED");
-        String third = "recipient-test-" + UUID.randomUUID().toString().substring(0, 8);
-        insertRecipient(third, "RISK_NOTICE", true);
-        org.mockito.Mockito.doReturn(com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome.notConnected())
-                .when(channel).deliver(org.mockito.ArgumentMatchers.any());
-        created(session, body("RISK", riskId, "RISK_NOTICE", third, 3), "third-" + UUID.randomUUID());
-        assertThat(state(riskId)).isEqualTo("ACKNOWLEDGED");
-        assertThat(jdbc.queryForObject("select version from flight_risk where risk_id=?", Long.class, riskId)).isEqualTo(3L);
+        create(session, body("RISK", riskId, "RISK_NOTICE", second, 2), "reroute-" + UUID.randomUUID())
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        create(session, body("RISK", riskId, "RISK_NOTICE", recipientId, 2), "duplicate-" + UUID.randomUUID())
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("HANDOFF_ALREADY_EXISTS"));
+        assertThat(state(riskId)).isEqualTo("NOTIFIED");
+        assertThat(jdbc.queryForObject("select version from flight_risk where risk_id=?", Long.class, riskId)).isEqualTo(2L);
+        assertThat(handoffCount(riskId)).isOne();
+        assertThat(jdbc.queryForObject("select count(*) from handoff_delivery where handoff_id=? and delivery_status='PENDING_DELIVERY' and receipt_status='NOT_EXPECTED'", Long.class, original)).isOne();
     }
 
     @Test
     void simulatedAcknowledgmentCannotCloseLiveRisk() throws Exception {
+        enableSimulatedRiskChannel();
         jdbc.update("update flight_risk set source_id='rule-engine-space-risk-live',source_mode='live' where risk_id=?", riskId);
         var at = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
         org.mockito.Mockito.doReturn(true).when(channel).simulated();
@@ -343,6 +338,7 @@ class HandoffApiTest {
 
     @Test
     void deliveredWithoutAcknowledgmentRemainsNotified() throws Exception {
+        enableSimulatedRiskChannel();
         var at = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
         org.mockito.Mockito.doReturn(new com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome(
                 "DELIVERED", "PENDING", null, null, at, at, null)).when(channel).deliver(org.mockito.ArgumentMatchers.any());
@@ -361,7 +357,7 @@ class HandoffApiTest {
                 .andExpect(jsonPath("$.data.source_version").value(1))
                 .andExpect(jsonPath("$.data.delivery_status").value("PENDING_DELIVERY"))
                 .andExpect(jsonPath("$.data.receipt_status").value("NOT_EXPECTED"))
-                .andExpect(jsonPath("$.data.blocked_reason").value("CHANNEL_NOT_CONNECTED"))
+                .andExpect(jsonPath("$.data.blocked_reason").value("通知配置尚未启用"))
                 .andExpect(jsonPath("$.data.created_at").isNumber())
                 .andReturn();
         String handoffId = objectMapper.readTree(result.getResponse().getContentAsString()).path("data").path("handoff_id").asText();
@@ -370,7 +366,7 @@ class HandoffApiTest {
         assertThat(jdbc.queryForObject("select version from flight_risk where risk_id=?", Long.class, riskId)).isEqualTo(2L);
         assertThat(handoffCount(riskId)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(*) from handoff_material_snapshot where handoff_id=? and schema_version=1", Long.class, handoffId)).isEqualTo(1L);
-        assertThat(jdbc.queryForObject("select count(*) from handoff_delivery where handoff_id=? and attempt_no=1 and delivery_status='PENDING_DELIVERY' and receipt_status='NOT_EXPECTED' and blocked_reason='CHANNEL_NOT_CONNECTED' and submitted_at is null and delivered_at is null and acknowledged_at is null", Long.class, handoffId)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select count(*) from handoff_delivery where handoff_id=? and attempt_no=1 and delivery_status='PENDING_DELIVERY' and receipt_status='NOT_EXPECTED' and blocked_reason='通知配置尚未启用' and submitted_at is null and delivered_at is null and acknowledged_at is null", Long.class, handoffId)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(*) from handoff where handoff_id=? and risk_id=? and event_id is null and owner_org_id='seed-stage3-org' and district_id='seed-stage3-district' and source_mode='mock'", Long.class, handoffId, riskId)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where module_code='handoff' and action='handoff_created' and object_type='handoff' and object_id=? and result='SUCCESS'", Long.class, handoffId)).isEqualTo(1L);
     }
@@ -423,7 +419,7 @@ class HandoffApiTest {
                 .andExpect(jsonPath("$.data.items[0].handoff_id").value(handoffId))
                 .andExpect(jsonPath("$.data.items[0].delivery_status").value("PENDING_DELIVERY"))
                 .andExpect(jsonPath("$.data.items[0].receipt_status").value("NOT_EXPECTED"))
-                .andExpect(jsonPath("$.data.items[0].blocked_reason").value("CHANNEL_NOT_CONNECTED"))
+                .andExpect(jsonPath("$.data.items[0].blocked_reason").value("通知配置尚未启用"))
                 .andExpect(jsonPath("$.data.items[0].recipient_id").value(recipientId))
                 .andExpect(jsonPath("$.data.page").value(1)).andExpect(jsonPath("$.data.size").value(20));
         mvc.perform(get("/api/v1/handoffs?source_id={id}&delivery_status=DELIVERED", riskId).header("Authorization", bearer(session)))
@@ -443,7 +439,7 @@ class HandoffApiTest {
                 .andExpect(jsonPath("$.data.material.files").doesNotExist())
                 .andExpect(jsonPath("$.data.latest_delivery.attempt_no").value(1))
                 .andExpect(jsonPath("$.data.latest_delivery.delivery_status").value("PENDING_DELIVERY"))
-                .andExpect(jsonPath("$.data.latest_delivery.blocked_reason").value("CHANNEL_NOT_CONNECTED"));
+                .andExpect(jsonPath("$.data.latest_delivery.blocked_reason").value("通知配置尚未启用"));
         mvc.perform(get("/api/v1/handoffs/{id}/deliveries", handoffId).header("Authorization", bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.items[0].attempt_no").value(1))
@@ -457,7 +453,7 @@ class HandoffApiTest {
         mvc.perform(get("/api/v1/handoffs/{id}/deliveries", handoffId).header("Authorization", bearer(otherScope)))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
         mvc.perform(get("/api/v1/handoff-recipients?handoff_type=RISK_NOTICE").header("Authorization", bearer(session)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[?(@.recipient_id=='" + recipientId + "')].display_name").value("测试接收方"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[?(@.recipient_id=='" + recipientId + "')].display_name").value("上级"));
         mvc.perform(get("/api/v1/handoff-recipients?handoff_type=BOGUS").header("Authorization", bearer(session))).andExpect(status().isBadRequest());
         mvc.perform(get("/api/v1/handoff-recipients?wat=1").header("Authorization", bearer(session))).andExpect(status().isBadRequest());
     }
@@ -530,6 +526,11 @@ class HandoffApiTest {
     private static String body(String kind, String sourceId, String type, String recipient, long version) {
         return "{\"source_kind\":\"" + kind + "\",\"source_id\":\"" + sourceId + "\",\"handoff_type\":\"" + type
                 + "\",\"recipient_id\":\"" + recipient + "\",\"expected_version\":" + version + "}";
+    }
+
+    private void enableSimulatedRiskChannel() {
+        jdbc.update("update notification_setting set enabled=true,channel_type='MOCK',endpoint_ref=null,valid_until=null where setting_id='risk-superior'");
+        org.mockito.Mockito.doReturn(true).when(channel).simulated();
     }
 
     private void insertNotifiableRisk(String id, String token) {

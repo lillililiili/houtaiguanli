@@ -60,6 +60,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
         disabledReason = "未验证：缺少 POSTGRES_TEST_PASSWORD，Stage5PostgresTest 未在真实 PostgreSQL 上执行")
 class Stage5PostgresTest {
 
+    private static final String SUPERIOR_RECIPIENT = "fixed-superior-recipient";
     private static final String SCHEMA_PREFIX = "stage456_";
     private static final String SCHEMA = SCHEMA_PREFIX + UUID.randomUUID().toString().replace("-", "");
     private static final String DATABASE_PATTERN = "^stage456_verify_[a-z0-9_]+$";
@@ -167,9 +168,40 @@ class Stage5PostgresTest {
                 "select permission_code from app_permission where permission_code in ('workbench:read','handoff:read','handoff:create') order by permission_code",
                 String.class);
         assertThat(permissions).containsExactly("handoff:create", "handoff:read", "workbench:read");
-        // 迁移不得自动插入任何接收方：本 schema 内只允许各用例夹具写入的“验证接收方”，没有其他来源的行。
-        assertThat(jdbc.queryForObject("select count(*) from handoff_recipient where display_name not like '验证接收方%'", Long.class)).isZero();
+        // 目录迁移仅新增统一上级；旧接收方必须保留供历史交接引用。
+        assertThat(jdbc.queryForList("select recipient_id from handoff_recipient where display_name not like '验证接收方%'", String.class))
+                .containsExactly(SUPERIOR_RECIPIENT);
+        assertThat(jdbc.queryForMap("select display_name,handoff_type,enabled,is_default from handoff_recipient where recipient_id=?", SUPERIOR_RECIPIENT))
+                .containsAllEntriesOf(Map.of("display_name", "上级", "handoff_type", "RISK_NOTICE", "enabled", true, "is_default", false));
         assertThat(jdbc.queryForObject("select count(*) from handoff_recipient where recipient_id in (?,?)", Long.class, recipientA, recipientB)).isEqualTo(2L);
+    }
+
+    @Test
+    void directoryUpgradePreservesExistingRecipientsWithoutOverwritingTheirFields() {
+        String schema = SCHEMA_PREFIX + UUID.randomUUID().toString().replace("-", "");
+        JdbcTemplate root = new JdbcTemplate(rootDataSource());
+        root.execute("create schema " + schema);
+        try {
+            Flyway.configure().dataSource(rootDataSource()).schemas(schema).defaultSchema(schema).createSchemas(false)
+                    .cleanDisabled(true).locations("classpath:db/migration", "classpath:db/postgresql")
+                    .target("202609160003.2").load().migrate();
+            root.update("insert into " + schema + ".handoff_recipient (recipient_id,display_name,handoff_type,enabled,is_default,created_at,updated_at) values (?,?,'RISK_NOTICE',true,true,?,?),(?,?,'UAV_PUNISHMENT',false,false,?,?)",
+                    recipientA, "旧风险接收方", T0, T0.plusSeconds(1), recipientB, "旧处罚接收方", T0, T0.plusSeconds(2));
+            List<Map<String, Object>> before = root.queryForList("select * from " + schema + ".handoff_recipient order by recipient_id");
+            var upgraded = Flyway.configure().dataSource(rootDataSource()).schemas(schema).defaultSchema(schema).createSchemas(false)
+                    .cleanDisabled(true).locations("classpath:db/migration", "classpath:db/postgresql").load();
+            assertThat(upgraded.migrate().migrationsExecuted).isPositive();
+            assertThat(root.queryForList("select * from " + schema + ".handoff_recipient where recipient_id in (?,?) order by recipient_id", recipientA, recipientB))
+                    .isEqualTo(before);
+            assertThat(root.queryForList("select recipient_id from " + schema + ".handoff_recipient where recipient_id not in (?,?)", String.class, recipientA, recipientB))
+                    .containsExactly(SUPERIOR_RECIPIENT);
+            assertThat(root.queryForMap("select display_name,handoff_type,enabled,is_default from " + schema + ".handoff_recipient where recipient_id=?", SUPERIOR_RECIPIENT))
+                    .containsAllEntriesOf(Map.of("display_name", "上级", "handoff_type", "RISK_NOTICE", "enabled", true, "is_default", false));
+            upgraded.validate();
+            assertThat(upgraded.migrate().migrationsExecuted).isZero();
+        } finally {
+            root.execute("drop schema " + schema + " cascade");
+        }
     }
 
     @Test
@@ -220,7 +252,7 @@ class Stage5PostgresTest {
 
     @Test
     void snapshotIsStoredAsJsonbObjectWithSchemaVersionOne() throws Exception {
-        MvcResult created = mvc.perform(create(sessionA, riskId, recipientA, 1, "pg-snapshot-" + UUID.randomUUID())).andReturn();
+        MvcResult created = mvc.perform(create(sessionA, riskId, SUPERIOR_RECIPIENT, 1, "pg-snapshot-" + UUID.randomUUID())).andReturn();
         assertThat(created.getResponse().getStatus()).isEqualTo(201);
         String handoffId = json.readTree(created.getResponse().getContentAsString()).path("data").path("handoff_id").asText();
         assertThat(handoffId).isNotBlank();
@@ -236,7 +268,7 @@ class Stage5PostgresTest {
         assertThat(jdbc.queryForObject("select jsonb_exists(snapshot,'files') from handoff_material_snapshot where handoff_id=?", Boolean.class, handoffId)).isFalse();
         // 首投记录：attempt_no=1、待投递、无回执、渠道未接通；提交不等于送达。
         assertThat(jdbc.queryForObject(
-                "select count(*) from handoff_delivery where handoff_id=? and attempt_no=1 and delivery_status='PENDING_DELIVERY' and receipt_status='NOT_EXPECTED' and blocked_reason='CHANNEL_NOT_CONNECTED' and submitted_at is null and delivered_at is null and acknowledged_at is null",
+                "select count(*) from handoff_delivery where handoff_id=? and attempt_no=1 and delivery_status='PENDING_DELIVERY' and receipt_status='NOT_EXPECTED' and blocked_reason='通知配置尚未启用' and submitted_at is null and delivered_at is null and acknowledged_at is null",
                 Long.class, handoffId)).isEqualTo(1L);
         assertRiskNotified();
     }
@@ -244,8 +276,8 @@ class Stage5PostgresTest {
     @Test
     void twoRealConnectionsSubmittingSameRiskToSameRecipientCommitExactlyOneHandoff() throws Exception {
         List<MvcResult> results = race(
-                create(sessionA, riskId, recipientA, 1, "race-handoff-a-" + UUID.randomUUID()),
-                create(sessionB, riskId, recipientA, 1, "race-handoff-b-" + UUID.randomUUID()));
+                create(sessionA, riskId, SUPERIOR_RECIPIENT, 1, "race-handoff-a-" + UUID.randomUUID()),
+                create(sessionB, riskId, SUPERIOR_RECIPIENT, 1, "race-handoff-b-" + UUID.randomUUID()));
         List<Integer> statuses = results.stream().map(r -> r.getResponse().getStatus()).sorted().toList();
         assertThat(statuses).containsExactly(201, 409);
         MvcResult rejected = results.stream().filter(r -> r.getResponse().getStatus() == 409).findFirst().orElseThrow();
@@ -258,7 +290,7 @@ class Stage5PostgresTest {
         // 断言数据库行：恰一份交接、恰一条首投记录、恰一份快照、恰一条成功审计；输家的幂等占位已随事务回滚。
         List<Map<String, Object>> handoffs = jdbc.queryForList(
                 "select handoff_id,submitted_by,source_version from handoff where source_kind='RISK' and source_id=? and handoff_type='RISK_NOTICE' and recipient_id=?",
-                riskId, recipientA);
+                riskId, SUPERIOR_RECIPIENT);
         assertThat(handoffs).singleElement().satisfies(row -> {
             assertThat(row.get("handoff_id")).isEqualTo(handoffId);
             assertThat(((Number) row.get("source_version")).longValue()).isEqualTo(1L);
@@ -276,20 +308,26 @@ class Stage5PostgresTest {
     }
 
     @Test
-    void differentRecipientsEachGetTheirOwnHandoffWithVersionRetry() throws Exception {
-        List<MvcResult> results = race(
-                create(sessionA, riskId, recipientA, 1, "pair-handoff-a-" + UUID.randomUUID()),
-                create(sessionB, riskId, recipientB, 1, "pair-handoff-b-" + UUID.randomUUID()));
-        assertThat(results.stream().map(r -> r.getResponse().getStatus()).sorted().toList()).containsExactly(201, 409);
-        int loser = results.get(0).getResponse().getStatus() == 409 ? 0 : 1;
-        assertThat(json.readTree(results.get(loser).getResponse().getContentAsString()).path("error").path("code").asText()).isEqualTo("VERSION_CONFLICT");
-        assertThat(mvc.perform(create(loser == 0 ? sessionA : sessionB, riskId, loser == 0 ? recipientA : recipientB, 2,
-                "retry-version-" + UUID.randomUUID())).andReturn().getResponse().getStatus()).isEqualTo(201);
-        List<String> recipients = jdbc.queryForList(
-                "select recipient_id from handoff where source_kind='RISK' and source_id=? and handoff_type='RISK_NOTICE' order by recipient_id", String.class, riskId);
-        assertThat(recipients).containsExactlyInAnyOrder(recipientA, recipientB);
-        assertThat(jdbc.queryForObject("select count(*) from handoff_delivery d join handoff h on h.handoff_id=d.handoff_id where h.source_id=? and d.attempt_no=1", Long.class, riskId)).isEqualTo(2L);
-        assertThat(jdbc.queryForObject("select count(*) from handoff_material_snapshot s join handoff h on h.handoff_id=s.handoff_id where h.source_id=?", Long.class, riskId)).isEqualTo(2L);
+    void legacyRiskRecipientsAreRejectedAndOmittedRecipientResolvesToSuperior() throws Exception {
+        List<MvcResult> rejected = race(
+                create(sessionA, riskId, recipientA, 1, "legacy-recipient-a-" + UUID.randomUUID()),
+                create(sessionB, riskId, recipientB, 1, "legacy-recipient-b-" + UUID.randomUUID()));
+        for (MvcResult result : rejected) {
+            assertThat(result.getResponse().getStatus()).isEqualTo(400);
+            assertThat(json.readTree(result.getResponse().getContentAsString()).path("error").path("code").asText())
+                    .isEqualTo("VALIDATION_ERROR");
+        }
+        assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?", String.class, riskId)).isEqualTo("PENDING_NOTIFICATION");
+        assertThat(jdbc.queryForObject("select version from flight_risk where risk_id=?", Long.class, riskId)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select count(*) from handoff where source_id=?", Long.class, riskId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from idempotency_request where user_id in (?,?)", Long.class, userA, userB)).isZero();
+
+        MvcResult created = mvc.perform(create(sessionA, riskId, null, 1, "default-superior-" + UUID.randomUUID())).andReturn();
+        assertThat(created.getResponse().getStatus()).isEqualTo(201);
+        assertThat(jdbc.queryForList("select recipient_id from handoff where source_kind='RISK' and source_id=? and handoff_type='RISK_NOTICE'", String.class, riskId))
+                .containsExactly(SUPERIOR_RECIPIENT);
+        assertThat(jdbc.queryForObject("select count(*) from handoff_delivery d join handoff h on h.handoff_id=d.handoff_id where h.source_id=? and d.attempt_no=1", Long.class, riskId)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select count(*) from handoff_material_snapshot s join handoff h on h.handoff_id=s.handoff_id where h.source_id=?", Long.class, riskId)).isEqualTo(1L);
         assertRiskNotified();
     }
 
@@ -316,8 +354,8 @@ class Stage5PostgresTest {
     private static MockHttpServletRequestBuilder create(String session, String riskId, String recipientId, long version, String key) {
         return post("/api/v1/handoffs").header("Authorization", "Bearer " + session).header("Idempotency-Key", key)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"source_kind\":\"RISK\",\"source_id\":\"" + riskId + "\",\"handoff_type\":\"RISK_NOTICE\",\"recipient_id\":\""
-                        + recipientId + "\",\"expected_version\":" + version + "}");
+                .content("{\"source_kind\":\"RISK\",\"source_id\":\"" + riskId + "\",\"handoff_type\":\"RISK_NOTICE\""
+                        + (recipientId == null ? "" : ",\"recipient_id\":\"" + recipientId + "\"") + ",\"expected_version\":" + version + "}");
     }
 
     private String role() {

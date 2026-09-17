@@ -41,6 +41,7 @@ class HandoffPunishmentMaterialsApiTest {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper objectMapper;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
 
     private String submitter;
     private String eventId;
@@ -174,6 +175,27 @@ class HandoffPunishmentMaterialsApiTest {
             String forbidden=user("NOALARM",List.of("handoff:read"));
             assertThat(detail(handoff,forbidden).path("material").has("advisory_records")).isFalse();
         } finally {jdbc.update("delete from uav_event_advisory where event_id=?",eventId);}
+    }
+
+    @Test
+    void automaticSmsSystemIdentitySurvivesMaterialSnapshotRoundTrip() throws Exception {
+        advisory.appendAutomatic(UUID.randomUUID().toString(),eventId,0,1L,"Simulation notice","LOCAL_AUTO_SMS_DEMO_V1");
+        try {
+            String handoff=body(submit(submitter,eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+            JsonNode original=detail(handoff,submitter).path("material").path("advisory_records");
+            assertThat(original.size()).isEqualTo(1);
+            JsonNode record=original.get(0);
+            assertThat(record.path("trigger_mode").asText()).isEqualTo("AUTO");
+            assertThat(record.path("policy_code").asText()).isEqualTo("LOCAL_AUTO_SMS_DEMO_V1");
+            assertThat(record.path("delivery_status").asText()).isEqualTo("SIMULATED_DELIVERED");
+            assertThat(record.path("simulated").asBoolean()).isTrue();
+            assertThat(record.path("actor_name").asText()).isEqualTo("\u81ea\u52a8\u77ed\u4fe1\u670d\u52a1");
+            // The frozen read traverses MaterialV2Dto JSON parsing after the source row disappears.
+            jdbc.update("DELETE FROM uav_event_advisory WHERE event_id=?",eventId);
+            assertThat(detail(handoff,submitter).path("material").path("advisory_records")).isEqualTo(original);
+            String forbidden=user("NOAUTO",List.of("handoff:read"));
+            assertThat(detail(handoff,forbidden).path("material").has("advisory_records")).isFalse();
+        } finally {jdbc.update("DELETE FROM uav_event_advisory WHERE event_id=?",eventId);}
     }
 
     @Test

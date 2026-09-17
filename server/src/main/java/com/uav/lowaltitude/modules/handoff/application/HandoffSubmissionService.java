@@ -71,11 +71,13 @@ public class HandoffSubmissionService {
     private final UavEventRepository events;
     private final HandoffMaterialAssembler materials;
     private final RiskNotificationService notifications;
+    private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
 
     public HandoffSubmissionService(AccessControlService access, HandoffRepository repository, RiskRepository risks, RiskReadService riskRead,
             IdempotencyGuard idempotency, AppClock clock, AuditService audit, ObjectMapper objectMapper,
             DisposalCompletionPort disposals, UavEventRepository events, HandoffMaterialAssembler materials, HandoffChannelPort channel,
-            RiskNotificationService notifications) {
+            RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+        this.directory=directory;
         this.channel = channel;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
         this.idempotency = idempotency; this.clock = clock; this.audit = audit; this.objectMapper = objectMapper;
@@ -136,7 +138,7 @@ public class HandoffSubmissionService {
         String snapshot = json(material);
         repository.insertSnapshot(handoffId, HandoffRules.SNAPSHOT_SCHEMA_VERSION, snapshot, at);
         // 提交不等于送达：首条投递记录写渠道返回的事实（未接通=待投递+阻断原因；模拟/真实上级接口=送达与回执时刻）。
-        DeliveryOutcome outcome = dispatch(handoffId, request.sourceKind(), sourceId, request.handoffType(), recipient, snapshot, at);
+        DeliveryOutcome outcome = dispatch(handoffId, request.sourceKind(), sourceId, request.handoffType(), recipient, snapshot, at, risk.sourceMode());
         repository.insertDelivery(delivery(handoffId, outcome, at));
         if (outcome.receiptResult() != null) repository.updateReceiptResult(handoffId, outcome.receiptResult());
         String riskState = "";
@@ -197,7 +199,7 @@ public class HandoffSubmissionService {
         }
         String snapshot = json(material);
         repository.insertSnapshot(handoffId, MATERIAL_SCHEMA_V2, snapshot, at);
-        DeliveryOutcome outcome = dispatch(handoffId, request.sourceKind(), sourceId, request.handoffType(), recipient, snapshot, at);
+        DeliveryOutcome outcome = dispatch(handoffId, request.sourceKind(), sourceId, request.handoffType(), recipient, snapshot, at, materials.sourceMode(sourceId));
         repository.insertDelivery(delivery(handoffId, outcome, at));
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "handoff", "handoff_created", "handoff", handoffId,
                 "source_kind=" + request.sourceKind() + "; source_id=" + sourceId + "; handoff_type=" + request.handoffType()
@@ -314,21 +316,16 @@ public class HandoffSubmissionService {
      * 而这种错要等回执回来（甚至更久）才看得出来。
      */
     private RecipientRow resolveRecipient(String recipientId, String handoffType) {
-        if (recipientId != null && !recipientId.isBlank()) {
-            RecipientRow chosen = repository.findEnabledRecipient(recipientId, handoffType);
-            if (chosen == null) throw new ApiException(HttpStatus.NOT_FOUND, "RECIPIENT_NOT_FOUND", "接收方不存在或不可用");
-            return chosen;
+        if (HandoffRules.TYPE_RISK_NOTICE.equals(handoffType)) {
+            var superior = directory.forHandoff(handoffType, recipientId);
+            RecipientRow row = repository.findEnabledRecipient(superior.recipientId(), handoffType);
+            if (row == null) throw new ApiException(HttpStatus.CONFLICT, "RECIPIENT_NOT_CONFIGURED", "统一上级接收端不可用");
+            return new RecipientRow(row.recipientId(), "上级", handoffType);
         }
-        if (!HandoffRules.TYPE_RISK_NOTICE.equals(handoffType)) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "RECIPIENT_REQUIRED", "请指定接收方");
-        }
-        RecipientRow fallback = repository.findDefaultRecipient(handoffType);
-        if (fallback != null) return fallback;
-        // 没标默认，但该类型只有一个启用接收方（决策 18-16）：只有一个的时候没有可选的余地，
-        // 再要求值班员显式指定就是让他把唯一的答案抄一遍。零个或多个才是真的没法替他决定。
-        RecipientRow sole = repository.findSoleEnabledRecipient(handoffType);
-        if (sole != null) return sole;
-        throw new ApiException(HttpStatus.BAD_REQUEST, "RECIPIENT_REQUIRED", "未配置默认接收方，请指定接收方");
+        if (recipientId == null || recipientId.isBlank()) throw new ApiException(HttpStatus.BAD_REQUEST, "RECIPIENT_REQUIRED", "请指定接收单位");
+        RecipientRow selected = repository.findEnabledRecipient(recipientId, handoffType);
+        if (selected == null) throw new ApiException(HttpStatus.NOT_FOUND, "RECIPIENT_NOT_FOUND", "接收方不存在或不可用");
+        return selected;
     }
 
     private static ApiException alreadyExists() { return new ApiException(HttpStatus.CONFLICT, "HANDOFF_ALREADY_EXISTS", "该事项已向此接收方提交过交接"); }
@@ -337,16 +334,20 @@ public class HandoffSubmissionService {
 
     /** 渠道异常不吞：交接与快照已入库，投递记录如实写"待投递 · 未接通"，由后续人工或重试处理。 */
     private DeliveryOutcome dispatch(String handoffId, String sourceKind, String sourceId, String handoffType, RecipientRow recipient,
-            String snapshot, OffsetDateTime at) {
-        try {
-            DeliveryOutcome outcome = channel.deliver(new HandoffDispatch(handoffId, sourceKind, sourceId, handoffType,
-                    recipient.recipientId(), recipient.displayName(), snapshot, at));
-            if (outcome == null || !HandoffRules.DELIVERY_STATUSES.contains(outcome.deliveryStatus())
-                    || !HandoffRules.RECEIPT_STATUSES.contains(outcome.receiptStatus())) return DeliveryOutcome.notConnected();
-            return outcome;
-        } catch (RuntimeException ex) {
-            return DeliveryOutcome.notConnected();
+            String snapshot, OffsetDateTime at, String sourceMode) {
+        var target = directory.forHandoff(handoffType, recipient.recipientId());
+        if (target.recipientName() == null) {
+            target = new com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot(target.recipientId(),
+                recipient.displayName(), target.orgId(), target.orgName(), target.contactId(), target.contactName(),
+                target.contactHint(), target.channelType(), target.endpointRef(), target.settingId(), target.configVersion(),
+                target.configured(), target.blockedReason(), target.capturedAt(), target.templateCode(), target.templateVersion(), target.receiptRequirement(), target.contactVersion());
         }
+        directory.freezeHandoff(handoffId, target);
+        DeliveryOutcome outcome = directory.deliver(target, sourceMode, new HandoffDispatch(handoffId, sourceKind, sourceId,
+                handoffType, recipient.recipientId(), target.recipientName(), snapshot, at));
+        if (outcome == null || !HandoffRules.DELIVERY_STATUSES.contains(outcome.deliveryStatus())
+                || !HandoffRules.RECEIPT_STATUSES.contains(outcome.receiptStatus())) return DeliveryOutcome.notConnected();
+        return outcome;
     }
 
     private static DeliveryInsert delivery(String handoffId, DeliveryOutcome outcome, OffsetDateTime at) {

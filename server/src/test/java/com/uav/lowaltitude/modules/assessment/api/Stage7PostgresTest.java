@@ -5,6 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
+import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository;
+import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.EvaluationQuery;
+import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
+import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.OffsetDateTime;
@@ -83,6 +89,7 @@ class Stage7PostgresTest {
 
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
+    @Autowired LegalityEvaluationReadRepository evaluations;
     @Autowired ObjectMapper json;
     @Autowired DataSource dataSource;
     /** !production 下注册；run-on-start 关闭，由用例显式调用 replay()。 */
@@ -518,6 +525,79 @@ class Stage7PostgresTest {
         // 回放写入的研判在 PostgreSQL 上同样只增。
         assertThatThrownBy(() -> jdbc.update("update rule_evaluation set legal_status='LEGAL' where evaluation_id=?", createdRow.get("evaluation_id")))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    @Order(9)
+    void latestQueryPreservesSubjectsModesTiesNullsAndFilterOrder() {
+        String prefix = "latest-" + suffix;
+        cloneLatestEvaluation(prefix + "-a", "TARGET", targetId, "ACTIVE", "LEGAL", T0.plusSeconds(1));
+        cloneLatestEvaluation(prefix + "-z", "TARGET", targetId, "ACTIVE", "UNDETERMINED", T0.plusSeconds(1));
+        cloneLatestEvaluation(prefix + "-shadow", "TARGET", targetId, "SHADOW", "LEGAL", T0.plusSeconds(2));
+        // PLAN 可以关联同一 target；不能把它与 TARGET 研判相互压掉。
+        cloneLatestEvaluation(prefix + "-plan-a", "PLAN", targetId, "ACTIVE", "LEGAL", T0.plusSeconds(3));
+        cloneLatestEvaluation(prefix + "-plan-z", "PLAN", targetId, "ACTIVE", "UNDETERMINED", T0.plusSeconds(3));
+        // 保持旧查询的空主体引用语义：缺引用的历史记录不相互覆盖。
+        cloneLatestEvaluation(prefix + "-null-a", "TARGET", null, "ACTIVE", "LEGAL", T0.plusSeconds(4));
+        cloneLatestEvaluation(prefix + "-null-b", "TARGET", null, "ACTIVE", "LEGAL", T0.plusSeconds(5));
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        EvaluationQuery latest = latestQuery(null, null);
+        assertThat(evaluations.count(latest, access)).isEqualTo(5);
+        assertThat(evaluations.list(latest, access, 0, 100)).extracting(r -> r.evaluationId())
+                .containsExactly(prefix + "-null-b", prefix + "-null-a", prefix + "-plan-z", prefix + "-shadow", prefix + "-z");
+        assertThat(evaluations.count(latestQuery("ACTIVE", "ABNORMAL"), access)).isZero();
+        assertThat(evaluations.count(latestQuery("ACTIVE", "LEGAL"), access)).isEqualTo(2);
+        assertThat(evaluations.list(latestQuery("ACTIVE", null), access, 1, 2)).extracting(r -> r.evaluationId())
+                .containsExactly(prefix + "-null-a", prefix + "-plan-z");
+        // 全局最新行即使在当前授权范围外，也不能让旧行重新成为“最新”。
+        String foreignOrg = id();
+        jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)",
+                foreignOrg, "LATEST-" + suffix, "范围外机构");
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at) "
+                + "select ?,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,?,'FRESH',plan_match_code,'LEGAL','[]','[]','[]','[]','{}',?,district_id,'mock',created_at from rule_evaluation where evaluation_id=?",
+                prefix + "-hidden", T0.plusSeconds(9), foreignOrg, evaluationId);
+        assertThat(evaluations.count(latestQuery("ACTIVE", null), access)).isEqualTo(3);
+        assertThat(evaluations.list(latestQuery("ACTIVE", null), access, 0, 100)).extracting(r -> r.evaluationId())
+                .doesNotContain(prefix + "-z", prefix + "-hidden", evaluationId);
+        assertThat(evaluations.count(new EvaluationQuery("ACTIVE", false, null, null, null, null, null, null, null, null, org, district, null), access)).isEqualTo(7);
+    }
+
+    @Test
+    @Order(10)
+    void latestListWithThirtyThousandHistoricalRowsFinishesWithinFiveSeconds() {
+        // 隔离 schema 内生成 50 个目标、每目标 600 条真实 SQL 历史；不写日常联调库。
+        jdbc.update("insert into target (target_id,target_no,source_mode,owner_org_id,district_id,created_at,updated_at,version) "
+                + "select md5(? || '-' || n), 'PERF-' || ? || '-' || n,'mock',?,?,?, ?,0 from generate_series(1,50) n",
+                suffix, suffix, org, district, T0, T0);
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at) "
+                + "select md5(? || '-' || t || '-' || n),?,?,'ACTIVE','TARGET',md5(? || '-' || t),cast(? as timestamptz)+n*interval '1 second',?,?, 'FRESH','NONE','LEGAL','[]','[]','[]','[]','{}',?,?,'mock',? "
+                + "from generate_series(1,50) t cross join generate_series(1,600) n",
+                suffix, runId, publishedVersionId, suffix, T0, T0, T0, org, district, T0);
+        jdbc.execute("analyze rule_evaluation");
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        long before = jdbc.queryForObject("select count(*) from rule_evaluation where owner_org_id=?", Long.class, org);
+        assertThat(before).isEqualTo(30001);
+        int previousTimeout = jdbc.getQueryTimeout();
+        jdbc.setQueryTimeout(5);
+        try {
+            assertTimeout(Duration.ofSeconds(5), () -> {
+                assertThat(evaluations.count(latestQuery("ACTIVE", null), access)).isEqualTo(51);
+                assertThat(evaluations.list(latestQuery("ACTIVE", null), access, 0, 100)).hasSize(51);
+            });
+        } finally {
+            jdbc.setQueryTimeout(previousTimeout);
+        }
+        assertThat(jdbc.queryForObject("select count(*) from rule_evaluation where owner_org_id=?", Long.class, org)).isEqualTo(before);
+    }
+
+    private EvaluationQuery latestQuery(String mode, String legalStatus) {
+        return new EvaluationQuery(mode, true, legalStatus, null, null, null, null, null, null, null, org, district, null);
+    }
+
+    private void cloneLatestEvaluation(String id, String kind, String target, String mode, String status, OffsetDateTime at) {
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at) "
+                + "select ?,run_id,rule_set_version_id,?,?,?,?,observed_at,as_of,?,freshness_code,plan_match_code,?,'[]','[]','[]','[]','{}',owner_org_id,district_id,'mock',created_at from rule_evaluation where evaluation_id=?",
+                id, mode, kind, target, planId, at, status, evaluationId);
     }
 
     private void assertScenario(Scenario scenario, Map<String, Object> row) {

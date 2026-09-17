@@ -17,6 +17,12 @@ public class DeviceMaintenanceController {
         return ApiResponse.ok(service.create(planId, body, key));
     }
 
+    @GetMapping("/flight-plans/{planId}/device-maintenance-tasks")
+    public ApiResponse<Page> forPlan(@PathVariable String planId,@RequestParam(value="device_id",required=false) String deviceId,
+            @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size) {
+        return ApiResponse.ok(service.forPlan(planId,deviceId,page,size));
+    }
+
     @GetMapping("/device-maintenance-tasks")
     public ApiResponse<Page> list(@RequestParam(defaultValue="PENDING") String status,
             @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int size) {

@@ -27,6 +27,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 核实结论是独立事实，不修改计划执行状态、不生成处置告警。 */
 @Service
 public class FlightVerificationService {
+    private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private final FlightReadRepository plans;
     private final FlightVerificationRepository records;
     private final FlightActualsService actuals;
@@ -38,7 +39,8 @@ public class FlightVerificationService {
     private final ObjectMapper json;
     private final FlightDeviceCheckService deviceChecks;
     public FlightVerificationService(FlightReadRepository plans,FlightVerificationRepository records,FlightActualsService actuals,
-            AccessControlService access,IdempotencyGuard idempotency,AppClock clock,AuditService audit,HandoffChannelPort channel,ObjectMapper json,FlightDeviceCheckService deviceChecks) {
+            AccessControlService access,IdempotencyGuard idempotency,AppClock clock,AuditService audit,HandoffChannelPort channel,ObjectMapper json,FlightDeviceCheckService deviceChecks,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+        this.directory=directory;
         this.plans=plans;this.records=records;this.actuals=actuals;this.access=access;this.idempotency=idempotency;
         this.clock=clock;this.audit=audit;this.channel=channel;this.json=json;this.deviceChecks=deviceChecks;
     }
@@ -48,8 +50,9 @@ public class FlightVerificationService {
         var history=records.verifications(plan.planId());
         String blocker=blocker(plan);
         boolean write=allowed(PermissionCode.FLIGHT_VERIFY);
-        return new Workflow(plan.planId(),history.isEmpty()?0:history.get(0).revisionNo(),plan.sourceId(),plan.sourceName(),
-            write && blocker==null,!write?"没有计划核实权限":blocker,allowed(PermissionCode.HANDOFF_CREATE),history,records.feedback(plan.planId()));
+        var recipient=directory.forPlan(plan.planId());
+        return new Workflow(plan.planId(),history.isEmpty()?0:history.get(0).revisionNo(),plan.sourceId(),recipient.recipientName(),
+            write && blocker==null,!write?"没有计划核实权限":blocker,allowed(PermissionCode.HANDOFF_CREATE)&&recipient.configured(),history,records.feedback(plan.planId()),recipient,recipient.blockedReason());
     }
     @Transactional
     public Verification verify(String planId,VerifyRequest request,String key) {
@@ -107,18 +110,19 @@ public class FlightVerificationService {
         idempotency.claim(key,"plan-feedback:"+plan.planId()+":"+writeJson(request));
         if(records.feedback(plan.planId()).stream().anyMatch(f->f.verificationId().equals(request.verificationId())))
             throw conflict("FEEDBACK_ALREADY_EXISTS","这条核实结论已提交通知，请查看回告记录");
+        var recipient=directory.forPlan(plan.planId());
+        if(recipient.recipientName()==null)throw conflict("PLAN_RECIPIENT_UNAVAILABLE",recipient.blockedReason());
         Verification verification=history.get(0);String id=UUID.randomUUID().toString();
         String snapshot=writeJson(Map.of("plan_id",plan.planId(),"plan_no",plan.planNo(),"verification",verification,
-            "recipient_id",plan.sourceId(),"recipient_name",plan.sourceName()));
+            "recipient_id",plan.sourceId(),"recipient_name",recipient.recipientName(),"recipient_snapshot",recipient));
         OffsetDateTime at=clock.now().atOffset(ZoneOffset.UTC);
         // 未有真实来源回告适配器时不借用风险通知通道冒充送达；模拟渠道也不得处理 live 计划。
-        DeliveryOutcome outcome="live".equals(plan.sourceMode()) && channel.simulated()?DeliveryOutcome.notConnected():
-            channel.deliver(new HandoffDispatch(id,"PLAN_VERIFICATION",verification.verificationId(),"PLAN_FEEDBACK",plan.sourceId(),plan.sourceName(),snapshot,at));
+        DeliveryOutcome outcome=directory.deliver(recipient,plan.sourceMode(),new HandoffDispatch(id,"PLAN_VERIFICATION",verification.verificationId(),"PLAN_FEEDBACK",plan.sourceId(),recipient.recipientName(),snapshot,at));
         if(outcome==null)outcome=DeliveryOutcome.notConnected();
-        Feedback feedback=new Feedback(id,verification.verificationId(),plan.planId(),plan.sourceId(),plan.sourceName(),
+        Feedback feedback=new Feedback(id,verification.verificationId(),plan.planId(),plan.sourceId(),recipient.recipientName(),
             outcome.deliveryStatus(),outcome.receiptStatus(),outcome.receiptResult(),outcome.blockedReason(),clock.nowMillis(),
-            millis(outcome.submittedAt()),millis(outcome.deliveredAt()),millis(outcome.acknowledgedAt()));
-        records.insert(feedback,snapshot,AuthContext.require().userId());audit("plan_feedback_submitted",id,"plan_id="+plan.planId()+"; verification_id="+verification.verificationId());
+            millis(outcome.submittedAt()),millis(outcome.deliveredAt()),millis(outcome.acknowledgedAt()),recipient);
+        records.insert(feedback,snapshot,AuthContext.require().userId());directory.freezeFeedback(id,recipient);audit("plan_feedback_submitted",id,"plan_id="+plan.planId()+"; verification_id="+verification.verificationId());
         return feedback;
     }
     private PlanRow plan(String id) {

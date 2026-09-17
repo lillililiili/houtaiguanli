@@ -42,6 +42,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 
 @Service
 public class HandoffReadService {
+    private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private static final Set<String> LIST_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
             "source_mode", "page", "size");
     private static final Set<String> PAGE_PARAMETERS = Set.of("page", "size");
@@ -54,7 +55,8 @@ public class HandoffReadService {
     private final ObjectMapper objectMapper;
 
     public HandoffReadService(AccessControlService access, HandoffRepository repository, RiskRepository risks,
-            RiskReadService riskRead, UavEventRepository events, ObjectMapper objectMapper) {
+            RiskReadService riskRead, UavEventRepository events, ObjectMapper objectMapper,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+        this.directory=directory;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
         this.events = events; this.objectMapper = objectMapper;
     }
@@ -66,6 +68,7 @@ public class HandoffReadService {
         requireReadOrCreate();
         Request request = new Request(values, RECIPIENT_PARAMETERS);
         String type = request.enumerated("handoff_type", HandoffRules.HANDOFF_TYPES);
+        if (HandoffRules.TYPE_RISK_NOTICE.equals(type)) return new RecipientListDto(List.of(new RecipientDto(com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService.SUPERIOR_RECIPIENT, "上级", type)));
         return new RecipientListDto(repository.enabledRecipients(type).stream()
                 .map(row -> new RecipientDto(row.recipientId(), row.displayName(), row.handoffType())).toList());
     }
@@ -99,7 +102,7 @@ public class HandoffReadService {
         return new HandoffDetailDto(row.handoffId(), row.sourceKind(), row.sourceId(), row.handoffType(), row.recipientId(), row.recipientName(),
                 row.sourceVersion(), row.ownerOrgId(), row.districtId(), row.sourceMode(), row.submittedBy(), requiredMillis(row.createdAt()),
                 row.deliveryStatus(), row.receiptStatus(), row.receiptResult(), row.blockedReason(), material(row, source), latest == null ? null : dto(latest),
-                new AvailabilityDto(source.availability, evidenceAvailability(row, repository.snapshot(row.handoffId()), source.availability)), row.ownerOrgName(), row.districtName(), row.submittedByName(), row.sourceNo());
+                new AvailabilityDto(source.availability, evidenceAvailability(row, repository.snapshot(row.handoffId()), source.availability)), row.ownerOrgName(), row.districtName(), row.submittedByName(), row.sourceNo(), directory.handoffSnapshot(row.handoffId()));
     }
 
     @Transactional(readOnly = true)

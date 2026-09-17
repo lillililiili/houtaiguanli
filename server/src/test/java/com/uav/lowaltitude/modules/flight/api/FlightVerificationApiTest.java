@@ -39,6 +39,10 @@ class FlightVerificationApiTest {
         jdbc.update("INSERT INTO flight_plan(plan_id,plan_no,status_code,source_id,source_mode,route_version_id,owner_org_id,district_id,start_at,end_at,created_at,updated_at,version)"
                 + " SELECT ?,?,'COMPLETED',source_id,source_mode,route_version_id,owner_org_id,district_id,?,?,created_at,updated_at,0 FROM flight_plan WHERE plan_id=?",
                 planId,"TEST-"+planId,Timestamp.from(Instant.now().minusSeconds(7200)),Timestamp.from(Instant.now().minusSeconds(3600)),template);
+        String binding=UUID.randomUUID().toString(),setting=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO plan_source_binding(binding_id,source_id,external_org_code,org_id,enabled,created_at,updated_at,version) SELECT ?,source_id,?,owner_org_id,TRUE,0,0,0 FROM flight_plan WHERE plan_id=?",binding,"VERIFY-"+binding,planId);
+        jdbc.update("UPDATE flight_plan SET source_binding_id=? WHERE plan_id=?",binding,planId);
+        jdbc.update("INSERT INTO notification_setting(setting_id,purpose,routing_key,recipient_org_id,source_binding_id,channel_type,enabled,created_at,updated_at,version) SELECT ?,'PLAN_FEEDBACK',?,owner_org_id,?,'MOCK',TRUE,0,0,0 FROM flight_plan WHERE plan_id=?",setting,"PLAN_FEEDBACK:"+binding,binding,planId);
         // H2 covers unknown device locations; PostgreSQL subclasses retain the real spatial path.
         try (var connection = jdbc.getDataSource().getConnection()) {
             if ("H2".equals(connection.getMetaData().getDatabaseProductName()))

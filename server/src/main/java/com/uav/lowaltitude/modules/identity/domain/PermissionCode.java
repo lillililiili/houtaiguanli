@@ -32,6 +32,7 @@ public enum PermissionCode {
     FUSION_MANAGE("fusion:manage"),
     // 证据文件底座：读、入库、下载、关联、冻结、销毁分权；菜单 evidence 不能替代其中任一动作。
     EVIDENCE_READ("evidence:read"),
+    EVIDENCE_PREVIEW("evidence:preview"),
     EVIDENCE_INGEST("evidence:ingest"),
     EVIDENCE_DOWNLOAD("evidence:download"),
     EVIDENCE_LINK("evidence:link"),

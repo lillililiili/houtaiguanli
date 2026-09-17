@@ -14,7 +14,7 @@ public class LocalAdvisorySmsAdapter implements AdvisorySmsPort {
     private final Environment environment;
     public LocalAdvisorySmsAdapter(Environment environment) { this.environment = environment; }
     public boolean simulationAvailable(String mode) {
-        return environment.acceptsProfiles(Profiles.of("local", "test"))
+        return environment.acceptsProfiles(Profiles.of("!production & (local | test)"))
                 && mode != null && Set.of("mock", "replay").contains(mode);
     }
     public Delivery simulate(String mode, String recipientName, String content) {

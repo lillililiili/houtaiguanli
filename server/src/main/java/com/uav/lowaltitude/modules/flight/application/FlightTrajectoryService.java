@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.LinkedMultiValueMap;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SpatialFactPort;
+import com.uav.lowaltitude.modules.assessment.application.LegalityEvaluationReadService;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TargetState;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightActualsRepository;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
@@ -27,11 +28,12 @@ public class FlightTrajectoryService {
     private final AccessControlService access;
     private final TargetReadService targets;
     private final SpatialFactPort spatial;
+    private final LegalityEvaluationReadService evaluationReads;
     public record Point(String pointId,String trackId,long pointSeq,long observedAt,BigDecimal longitude,
             BigDecimal latitude,String corridorRelation,boolean breakBefore) { }
     public record Trajectory(String availability,String targetId,Long gapMillis,String paramStatus,List<Point> points,String note) { }
     public FlightTrajectoryService(FlightReadRepository plans,FlightActualsRepository evaluations,AccessControlService access,
-            TargetReadService targets,SpatialFactPort spatial){this.plans=plans;this.evaluations=evaluations;this.access=access;this.targets=targets;this.spatial=spatial;}
+            TargetReadService targets,SpatialFactPort spatial,LegalityEvaluationReadService evaluationReads){this.plans=plans;this.evaluations=evaluations;this.access=access;this.targets=targets;this.spatial=spatial;this.evaluationReads=evaluationReads;}
 
     @Transactional(readOnly=true)
     public Trajectory read(String planId) {
@@ -56,14 +58,51 @@ public class FlightTrajectoryService {
         long from=plan.startAt().toInstant().toEpochMilli(),to=plan.endAt().toInstant().toEpochMilli();
         tracks.removeIf(t->(t.startedAt()!=null && t.startedAt()>to) || (t.endedAt()!=null && t.endedAt()<from));
         boolean fused=tracks.stream().anyMatch(t->"FUSED".equals(t.layer()));
+        return compare(evaluation.targetId(),plan.routeVersionId(),gap,evaluation.paramStatus(),
+                tracks.stream().filter(t->!fused || "FUSED".equals(t.layer())).map(TrackSummaryDto::trackId).toList(),from,to);
+    }
+
+    /** 研判地图必须钉住本次研判，不能借计划的最新研判切换到另一架飞机。 */
+    @Transactional(readOnly=true)
+    public Trajectory readEvaluation(String evaluationId) {
+        var evaluation=evaluationReads.detail(evaluationId);
+        access.require(PermissionCode.TARGET_READ);
+        if(evaluation.targetId()==null)return empty("UNAVAILABLE","本次研判没有可查看的目标轨迹");
+        String routeId=evaluation.routeVersionId();
+        if(routeId!=null){
+            var routeAccess=access.require(PermissionCode.ROUTE_READ);
+            if(plans.findRouteVersion(routeId,routeAccess)==null)
+                throw new ApiException(HttpStatus.NOT_FOUND,"ROUTE_VERSION_NOT_FOUND","研判引用的航线不存在或不可见");
+        }
+        long to=Math.min(evaluation.asOf(),evaluation.evaluatedAt());
+        var query=params(1);query.add("layer","FUSED");
+        query.add("started_from","0");query.add("started_to",String.valueOf(to));
+        var fused=targets.tracks(evaluation.targetId(),query).items();
+        List<String> ids;
+        if(!fused.isEmpty())ids=List.of(fused.get(0).trackId());
+        else if(evaluation.trackId()!=null){
+            boolean found=false;
+            for(int page=1;;page++){
+                var batch=targets.tracks(evaluation.targetId(),params(page));
+                if(batch.items().stream().anyMatch(t->evaluation.trackId().equals(t.trackId()))){found=true;break;}
+                if((long)page*100>=batch.total())break;
+                if(batch.items().isEmpty())throw incomplete();
+            }
+            ids=found?List.of(evaluation.trackId()):List.of();
+        }else ids=List.of();
+        return compare(evaluation.targetId(),routeId,evaluations.trackGapMillis(evaluation.evaluationId()),
+                evaluation.paramStatus(),ids,0,to);
+    }
+
+    private Trajectory compare(String targetId,String routeVersionId,Long gap,String paramStatus,
+            List<String> trackIds,long from,long to) {
         List<Point> result=new ArrayList<>();boolean spatialAvailable=true;
-        for(var track:tracks){
-            if(fused && !"FUSED".equals(track.layer()))continue;
+        for(var trackId:trackIds){
             List<TrackPointDto> raw=new ArrayList<>();
             for(int page=1;;page++){
-                var query=params(page);query.add("time_from",String.valueOf(plan.startAt().toInstant().toEpochMilli()));
-                query.add("time_to",String.valueOf(plan.endAt().toInstant().toEpochMilli()));
-                var data=targets.points(track.trackId(),query);raw.addAll(data.items());
+                var query=params(page);query.add("time_from",String.valueOf(from));
+                query.add("time_to",String.valueOf(to));
+                var data=targets.points(trackId,query);raw.addAll(data.items());
                 if(raw.size()>=data.total())break;
                 if(data.items().isEmpty())throw incomplete();
             }
@@ -71,9 +110,9 @@ public class FlightTrajectoryService {
             for(var point:raw){
                 if(!measured(point)){previous=null;continue;}
                 var location=point.location();String relation="UNKNOWN";
-                if(spatialAvailable)try {
-                    var distance=spatial.distanceToRoute(new TargetState(evaluation.targetId(),track.trackId(),null,
-                        location.longitude(),location.latitude(),point.altitudeAmslM(),point.heightAglM(),null,null,null,null,null),plan.routeVersionId());
+                if(spatialAvailable && routeVersionId!=null)try {
+                    var distance=spatial.distanceToRoute(new TargetState(targetId,trackId,null,
+                        location.longitude(),location.latitude(),point.altitudeAmslM(),point.heightAglM(),null,null,null,null,null),routeVersionId);
                     if(distance.unknownReason()==null && distance.distanceM()!=null && distance.halfWidthM()!=null){
                         int comparison=distance.distanceM().compareTo(distance.halfWidthM());
                         relation=comparison<0?"WITHIN":comparison>0?"OUTSIDE":"BOUNDARY";
@@ -84,13 +123,13 @@ public class FlightTrajectoryService {
                 previous=point;
             }
         }
-        String note="颜色只表示实测位置与计划走廊的横向关系，不代表合法性；缺失轨迹断开，不补点。";
-        if(result.isEmpty())note="已有计划匹配记录，但计划时段内没有可用实测点，计划线保留灰色虚线。";
+        String note=routeVersionId==null?"未关联可比对的计划航线，轨迹关系未知；缺失轨迹断开，不补点。":"颜色只表示实测位置与计划走廊的横向关系，不代表合法性；缺失轨迹断开，不补点。";
+        if(result.isEmpty())note=routeVersionId==null?"本次研判暂无有效实测轨迹。":"已有计划匹配记录，但查询时段内没有可用实测点，计划线保留灰色虚线。";
         else if(result.stream().map(p->List.of(p.longitude().stripTrailingZeros(),p.latitude().stripTrailingZeros())).distinct().limit(2).count()==1)
             note="实测点都在同一位置，只显示位置点；完全匹配不代表已有整条飞行轨迹，计划线仍为灰色虚线。";
         if(gap==null)note+="缺少轨迹间隔参数，仅显示实测点。";
         if(!spatialAvailable)note+="空间计算不可用，范围关系未知。";
-        return new Trajectory("AVAILABLE",evaluation.targetId(),gap,evaluation.paramStatus(),List.copyOf(result),note);
+        return new Trajectory("AVAILABLE",targetId,gap,paramStatus,List.copyOf(result),note);
     }
     static boolean measured(TrackPointDto point){
         var p=point.location();

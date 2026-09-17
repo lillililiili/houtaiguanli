@@ -91,7 +91,7 @@ public class WorkbenchReadRepository {
     public List<HandoffRow> riskHandoffs(String riskId, AccessDecision access) {
         Map<String, Object> params = new HashMap<>();
         params.put("source_id", riskId);
-        return jdbc.query("SELECT h.handoff_id,h.handoff_type,h.recipient_id,rc.display_name AS recipient_name,h.source_version,"
+        return jdbc.query("SELECT h.handoff_id,h.handoff_type,h.recipient_id,COALESCE(h.recipient_name_snapshot,rc.display_name) AS recipient_name,h.source_version,"
                 + ms("h.created_at") + " AS created_at,"
                 + " (SELECT d.delivery_status FROM handoff_delivery d WHERE d.handoff_id=h.handoff_id ORDER BY d.attempt_no DESC FETCH FIRST 1 ROW ONLY) AS delivery_status,"
                 + " (SELECT d.blocked_reason FROM handoff_delivery d WHERE d.handoff_id=h.handoff_id ORDER BY d.attempt_no DESC FETCH FIRST 1 ROW ONLY) AS blocked_reason"

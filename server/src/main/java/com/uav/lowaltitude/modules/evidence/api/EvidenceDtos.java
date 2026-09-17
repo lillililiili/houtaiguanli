@@ -22,7 +22,12 @@ public final class EvidenceDtos {
             @JsonInclude(JsonInclude.Include.NON_NULL) Long destroyedAt,
             @JsonInclude(JsonInclude.Include.NON_NULL) String destroyedBy,
             @JsonInclude(JsonInclude.Include.NON_NULL) String destroyReason,
-            @JsonInclude(JsonInclude.Include.NON_NULL) String destroyApproval) { }
+            @JsonInclude(JsonInclude.Include.NON_NULL) String destroyApproval,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String sourceDeviceId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String sourceDeviceName,
+            @JsonInclude(JsonInclude.Include.NON_NULL) Double captureLongitude,
+            @JsonInclude(JsonInclude.Include.NON_NULL) Double captureLatitude,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String captureProvenance) { }
 
     public record LinkDto(String linkId, String subjectKind, String subjectId,
             @JsonInclude(JsonInclude.Include.NON_NULL) String subjectNo) { }

@@ -90,7 +90,7 @@ python server/scripts/publish_lingyun_ndjson.py
 #   WHERE source LIKE 'lingyun:%' OR source LIKE 'eo-edge:%';
 
 # 6. 光电 BeginTracking 须先手点跟踪（POST /api/v1/targets/{id}/eo-tracking-tasks），
-#    否则适配器记 TRACK_NOT_OPEN；看态势需 APP_FUSION_ENABLED=true（默认关）
+#    否则适配器记 TRACK_NOT_OPEN；local 环境默认开启融合消费，可用 APP_FUSION_ENABLED=false 显式关闭；其他环境默认关
 ```
 
 发布脚本参数：`--host --port --file --limit --sleep-ms --dry-run`。默认文件为 `docs/直连接入计划/stage85-lingyun-demo.mqtt.ndjson`，不要改这个文件。工参与 5G-A / 协议破解 / RemoteID 用阶段 2 文件：
@@ -185,3 +185,42 @@ POSTGRES_TEST_USER='<isolated-user>' POSTGRES_TEST_PASSWORD='<isolated-password>
 ### 2026-09-15 拉取时的迁移版本兼容
 
 本地开发库已执行 `V202609150005__uav_event_advisory.sql`，故保留该脚本及历史记录。此次远端新增的设备感知脚本尚未在本地执行，从 `V202609150005__device_sensing_profile.sql` 顺延为 `V202609150007__device_sensing_profile.sql`，内容不变；风险排除脚本保持 `V202609150006`。本版本沿用本地开发库的迁移历史。向其他环境发布前须核对各环境的 Flyway 历史，不能直接覆盖已执行的版本。
+
+
+### 后台自动短信（2026-09-16，本地模拟策略）
+
+`app.advisory.auto-sms.enabled` 默认关闭，local 配置默认打开；实现再次校验 local/test 环境。策略 `LOCAL_AUTO_SMS_DEMO_V1` 是演示配置，不代表正式监管阈值：目标/研判120秒、事件及人工确认300秒，可分别用 `fresh-seconds`、`event-seconds` 配置。后台10秒轮询，关闭页面不影响执行；GET 绝不发送或创建任务。
+
+触发来自精确关联事件的最新 ACTIVE/FRESH/ILLEGAL 规则结果且无未知原因，**不要求全部先人工核实**。有最新规则结果时，人工确认不能覆盖后来合法/未知/过期的结果；完全没有规则结果时，仅近期人工确认+新鲜明确UAV观测可作为退路。误报、待补证、已飞离、现场未知、目标或事件过期、没有精确关联依据均阻断。来源 live 没接正式渠道时显示不可用，不模拟成功。
+
+自动发送使用独立 SYSTEM 执行主体，actor_id 不借用任何用户，记录 trigger_mode=AUTO、policy_code；渠道返回明确 SIMULATED_DELIVERED 才追加送达记录并递增事件版本。后台不会修改人工核实状态、批准或执行反制、作出处罚决定。新的联系记录仍使之前的观察失效。
+
+新增持久化自动任务，唯一 event_id 和稳定 provider_key 防重复，事件行锁串行领取；渠道调用在数据库事务外，失败/超时状态可回读。租约失效不自动冒进重投，需在触发条件仍满足时补发，沿用同一渠道幂等键。正式短信适配器后续必须按该键去重并接可信送达回执。
+
+GET `/api/v1/uav-events/{id}/advisory` 新增 `auto_sms`：enabled、status、reason、triggered_at、updated_at、can_retry、attempt_count、policy_code、trigger_source、evaluated_at、data_updated_at。判定/观测时间和任务更新时间分开。状态包括 DISABLED、WAITING、SENDING、SIMULATED_DELIVERED、FAILED、UNAVAILABLE、BLOCKED；SENDING/已送达保留事实，其他状态按当前阻断条件显示，仍为纯读取。
+
+POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_version,note}` 和 Idempotency-Key；复用 alarm:read、alarm:verify、handoff:create 与事件范围，校验版本并只排队，发送仍由后台执行。相同请求重放不重复排队。旧人工短信/联系记录及处罚快照保持兼容。
+
+
+### 研判轨迹航线对照（2026-09-16）
+
+`GET /api/v1/legality-evaluations/{evaluationId}/trajectory` 复用轨迹响应（availability、target_id、gap_millis、param_status、points、note）。按可见研判钉住目标、航线版本及 min(as_of, evaluated_at)，不使用计划最新研判。点只取实测，携带 corridor_relation 与 break_before；原始轨迹退路需核对目标归属。使用既有研判/目标/航线权限及 PostGIS 距离；无航线时 UNKNOWN，不生成新结论或改观测。前台合法性页消费该接口，管理端无直接消费者。原计划轨迹接口保持兼容。
+
+### 最新研判列表查询优化（2026-09-16）
+
+`GET /api/v1/legality-evaluations?latest_only=true` 将目标和计划的最新记录检查拆成两条等值关联，避免把同类全部历史互相比较。保留原有权限范围、筛选、时间与 ID 尾键、空主体引用语义，以及历史记录；接口结构、研判频率和前台超时不变。没有新增索引或迁移。实现与验收见[查询优化记录](../docs/最新研判列表查询优化-2026-09-16.md)。
+
+
+### 电话录音通知（2026-09-16，默认关闭）
+
+在无人机事件 advisory 增加独立电话录音通知，与短信按渠道各自防重；两者共享当前目标、规则结论、观测/事件时效及人工联系阻断规则。电话录音按“自动外呼播放预录音频”实现，本轮仅提供明确的本地模拟状态回执，不拨号、不实际播放文件，不代表任何人接听或听取。
+
+- `app.advisory.auto-voice.enabled` 默认 `false`，没有修改 local 配置自动启用。开启后仍必须是非 production 的 local/test 环境、mock/replay 事件来源，且同时配置 `recording-id`、`recording-name`、`recording-path`、`recording-transcript`。
+- `recording-path` 仅由部署配置提供已有 WAV 文件的绝对路径，文件上限 10 MiB；校验实际音频帧完整性并从真实文件计算 SHA-256。没有音频、不完整/截断文件、缺文稿或真实渠道不可用均不会生成模拟成功。没有新增录音上传或管理页面。
+- `GET /api/v1/uav-events/{id}/advisory` 追加 `voice_mode` 和 `auto_voice`。`voice_mode=SIMULATED` 也用于已有模拟尝试的来源标记，不表示当前仍允许发起；当前启用状态用 `auto_voice.enabled`。无配置且未尝试时为 `UNAVAILABLE`。
+- `auto_voice` 字段为 `enabled,status,reason,triggered_at,updated_at,can_retry,attempt_count,policy_code,trigger_source,evaluated_at,data_updated_at,recording_id,recording_name,answered_at,playback_completed_at`。缺少接通/播完证据时相应时间不返回。状态为 `DISABLED|WAITING|CALLING|SIMULATED_PLAYED|FAILED|UNKNOWN|UNAVAILABLE|BLOCKED`。
+- `POST /api/v1/uav-events/{id}/advisory/auto-voice/retry` 使用 `{expected_version,note}` 和 `Idempotency-Key`；校验 `alarm:read`、`alarm:verify`、`handoff:create` 与事件范围，只对明确 `FAILED` 且当前条件仍满足的任务排队。`UNKNOWN`（包括接通但播完未知、调用异常、租约失效）不允许盲目重拨。既有任务不允许用同一幂等编号换录音内容重试。
+- 完成结果仅在模拟回执明确确认接通和播完、时间顺序合法时追加 `VOICE_SIMULATED/SIMULATED_PLAYED` 联系记录。语音记录与短信/人工联系/观察按事件版本合并，后续交接材料自然包含已完成电话记录；已冻结材料保持原样。电话完成不代表飞离、危险解除、反制授权或处罚办结。
+- 关闭策略、后续数据过期或录音移除不会覆盖已有接通/播放结果和模拟来源；关闭策略后后台仍会把过期 CALLING 标记为 UNKNOWN，但不会新呼叫。读取页面不会建任务或发送通知。
+
+迁移仅追加 `V202609160002__automatic_advisory_voice.sql`。详细边界、代码清单和隔离验收记录见[电话录音通知实现与验收](../docs/电话录音通知实现与验收-2026-09-16.md)。管理端 `ruoyi-ui/src` 未发现该 advisory 契约消费者；业务前台同步展示双通道。

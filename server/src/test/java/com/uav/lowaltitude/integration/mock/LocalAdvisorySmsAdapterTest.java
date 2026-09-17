@@ -3,6 +3,10 @@ import static org.assertj.core.api.Assertions.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 class LocalAdvisorySmsAdapterTest {
+    @Test void productionCannotBypassGuardWithDevelopmentProfile() {
+        var environment=new MockEnvironment();environment.setActiveProfiles("production","local");
+        assertThat(new LocalAdvisorySmsAdapter(environment).simulationAvailable("mock")).isFalse();
+    }
     @Test void onlyLocalOrTestMockReplayCanSimulate() {
         for(String profile:new String[]{"production","default","local","test"}) {
             var env=new MockEnvironment();env.setActiveProfiles(profile);var adapter=new LocalAdvisorySmsAdapter(env);

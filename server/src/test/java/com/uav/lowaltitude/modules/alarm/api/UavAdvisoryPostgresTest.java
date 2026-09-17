@@ -43,8 +43,13 @@ class UavAdvisoryPostgresTest extends UavAdvisoryApiTest {
         String schema="advisory_upgrade_"+UUID.randomUUID().toString().replace("-","");var jdbc=new JdbcTemplate(root());jdbc.execute("create schema "+schema);
         try {
             Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true).locations("classpath:db/migration","classpath:db/postgresql").target("202609150005").load().migrate();
+            var historical=AdvisoryMigrationFixture.seed(jdbc,schema);
             var upgraded=Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true).locations("classpath:db/migration","classpath:db/postgresql").load();
-            assertThat(upgraded.migrate().migrationsExecuted).isEqualTo(2);upgraded.validate();assertThat(upgraded.migrate().migrationsExecuted).isZero();
+            assertThat(upgraded.migrate().migrationsExecuted).isPositive();
+            assertThat(java.util.Arrays.stream(upgraded.info().applied()).map(org.flywaydb.core.api.MigrationInfo::getVersion).filter(java.util.Objects::nonNull).map(Object::toString)).contains("202609160002");
+            assertThat(AdvisoryMigrationFixture.snapshot(jdbc,schema)).isEqualTo(historical);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM "+schema+".uav_auto_voice_task",Integer.class)).isZero();
+            upgraded.validate();assertThat(upgraded.migrate().migrationsExecuted).isZero();
         } finally {jdbc.execute("drop schema "+schema+" cascade");}
     }
     @AfterAll static void cleanSchema(@org.springframework.beans.factory.annotation.Autowired org.springframework.context.ConfigurableApplicationContext context) {context.getBeansOfType(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class).values().forEach(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler::shutdown);if(created){new JdbcTemplate(root()).execute("drop schema "+SCHEMA+" cascade");created=false;}}
