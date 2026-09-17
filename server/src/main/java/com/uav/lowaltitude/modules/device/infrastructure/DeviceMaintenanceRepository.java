@@ -12,6 +12,18 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 
 @Repository
 public class DeviceMaintenanceRepository {
+
+    public com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset reportDataset(
+            com.uav.lowaltitude.platform.report.BusinessReportSource.Range range, AuthUser actor) {
+        Map<String,Object> params = new HashMap<>();
+        String sql = "SELECT t.task_id AS id,t.device_name AS label,t.reported_at AS at_ms,"
+            + "t.status AS state,t.health_code AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,"
+            + "CASE WHEN t.simulated=TRUE THEN 'mock' ELSE d.source_mode END AS source_mode,"
+            + "t.device_no AS related,t.handling_note AS result,t.reason AS note"
+            + " FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"
+            + " LEFT JOIN app_district rd ON rd.district_id=t.district_id" + scope(actor, params);
+        return com.uav.lowaltitude.platform.report.ReportDatasetReader.window(sql, params, range, "t.reported_at");
+    }
     private final NamedParameterJdbcTemplate jdbc;
     public DeviceMaintenanceRepository(JdbcTemplate jdbc) { this.jdbc = new NamedParameterJdbcTemplate(jdbc); }
 

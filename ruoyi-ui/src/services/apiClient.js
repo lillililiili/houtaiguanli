@@ -50,7 +50,12 @@ client.interceptors.response.use(response => {
   const envelope = response.data;
   if (envelope?.ok !== true) throw new ApiError(envelope?.error?.message || '服务响应格式无效', envelope?.error?.code || 'INVALID_RESPONSE', response.status);
   return envelope.data;
-}, error => Promise.reject(normalizeError(error)));
+}, async error => {
+  if (error?.response?.data instanceof Blob) {
+    try { error.response.data = JSON.parse(await error.response.data.text()); } catch { /* Non-JSON download error. */ }
+  }
+  return Promise.reject(normalizeError(error));
+});
 
 export function request(config) {
   return client(config).catch(error => { throw normalizeError(error); });
@@ -70,9 +75,9 @@ export function queryString(values = {}) {
   return text ? `?${text}` : '';
 }
 
-export async function download(url, filename) {
+export async function download(url, filename, options = {}) {
   let response;
-  try { response = await client.get(url, { responseType: 'blob' }); }
+  try { response = await client.get(url, { ...options, responseType: 'blob' }); }
   catch (error) { throw normalizeError(error); }
   const objectUrl = URL.createObjectURL(response.data);
   const link = document.createElement('a');

@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.disposal.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -22,6 +26,19 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 /** 处置授权持久化。事件表只增：本类不提供任何 UPDATE/DELETE 事件的方法，PG 侧另有触发器兜底。 */
 @Repository
 public class DisposalRepository {
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = scope(access);
+        String time = reader.epoch("e.created_at");
+        String sql = "SELECT a.authorization_id AS id,a.authorization_no AS label," + time + " AS at_ms,"
+            + "a.status AS state,a.action_type AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,a.source_mode,"
+            + "e.event_id AS related,a.result_code AS result,a.result_detail AS note"
+            + " FROM disposal_authorization a JOIN uav_event e ON a.subject_kind='UAV_EVENT' AND a.subject_id=e.event_id"
+            + " AND e.owner_org_id=a.owner_org_id AND e.district_id=a.district_id"
+            + " JOIN alarm ea ON ea.alarm_id=e.alarm_id AND ea.owner_org_id=e.owner_org_id AND ea.district_id=e.district_id"
+            + " LEFT JOIN app_district rd ON rd.district_id=a.district_id" + w.sql;
+        return ReportDatasetReader.window(sql, w.params, range, reader.epoch("e.created_at"));
+    }
     /** 姓名随行取出：页面要显示人名而不是内部 ID，逐条再查一次用户就是列表页的 N+1（决策 13-26）。 */
     private static final String JOINS = " LEFT JOIN app_user ru ON ru.user_id=a.requested_by"
             + " LEFT JOIN app_user au ON au.user_id=a.approved_by";

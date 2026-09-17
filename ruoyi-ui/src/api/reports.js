@@ -61,3 +61,14 @@ export const reportApi = {
   preview: params => request({ url: `/v1/stats/reports/preview${queryString(params)}` }).then(normalizeReportPreview),
   exportExcel: (params, filename) => download(`/v1/stats/reports/export.xlsx${queryString(params)}`, filename)
 };
+
+export const businessReportApi = {
+  preview: params => request({ url: `/v1/stats/reports/preview${queryString(params)}` }),
+  details: params => request({ url: `/v1/stats/reports/details${queryString(params)}` }),
+  exportFile: (params, format, filename) => download(`/v1/stats/reports/export.${format}${queryString(params)}`, filename, { timeout: 120000 })
+};
+
+export function businessReportFilename(preview, format) {
+  const period = { DAILY: '日报', WEEKLY: '周报', MONTHLY: '月报' }[preview.period_type] || '';
+  return `${preview.title}${period}-${preview.from}-${preview.to}.${format}`;
+}

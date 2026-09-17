@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.target.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -27,6 +31,16 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class TargetReadRepository {
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = new Where(); appendScope(w.sql, w.parameters, access);
+        String time = reader.epoch("t.first_seen_at");
+        String sql = "SELECT t.target_id AS id,t.target_no AS label," + time + " AS at_ms,"
+            + "CAST(NULL AS VARCHAR) AS state,t.object_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,"
+            + "dist_ref.name AS region,t.source_mode,CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
+            + " " + TARGET_FROM + w.sql;
+        return ReportDatasetReader.window(sql, w.parameters, range, time);
+    }
 
     private static final String TARGET_FROM = """
             FROM target t
