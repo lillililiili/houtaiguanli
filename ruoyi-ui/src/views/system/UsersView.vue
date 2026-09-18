@@ -220,7 +220,7 @@ onMounted(refreshAll)
           <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
         </el-form>
         <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><div class="unit-toolbar-actions"><el-button v-if="selectedOrg" @click="openOrg(selectedOrg, null, 'view')">查看单位</el-button><el-button @click="refreshAll">刷新</el-button></div></div>
-        <el-empty v-if="!canReadUsers" description="选择左侧单位后点击查看单位，维护单位资料与联系人。当前账号没有用户列表读取权限。" />
+        <el-empty v-if="!canReadUsers" description="选择左侧单位后点击查看单位，维护单位资料。当前账号没有用户列表读取权限。" />
         <div v-else class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
           <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" />

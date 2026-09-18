@@ -1,21 +1,18 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Clock, DataAnalysis, Edit, Plus, Setting } from '@element-plus/icons-vue'
-import { RouterLink } from 'vue-router'
+import { Edit, Plus, Setting } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { automationRuleApi } from '@/api/automationRules'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
 import RuleEditorDialog from './RuleEditorDialog.vue'
-import RuleHistoryDialog from './RuleHistoryDialog.vue'
-import RuleRunsDialog from './RuleRunsDialog.vue'
 import RuleSettingsDialog from './RuleSettingsDialog.vue'
 import { CATEGORIES, actionSummary, categoryMeta, conditionText, enabledCount, scopeSummary, timeSummary } from './ruleModel'
 import { useAutomationRuleGroup } from './useAutomationRuleGroup'
 
 const auth = useAuthStore()
-const editorVisible = ref(false), settingsVisible = ref(false), historyVisible = ref(false), runsVisible = ref(false), editingRule = ref(null)
+const editorVisible = ref(false), settingsVisible = ref(false), editingRule = ref(null)
 const { category, group, loading, saving, error, actionError, uncertain, recoveryRevision, load, mutate, clearActionError } = useAutomationRuleGroup()
 const canManage = computed(() => Boolean(group.value?.can_manage && auth.hasPermission('responsePlans.auth')))
 const count = computed(() => enabledCount(group.value))
@@ -27,7 +24,7 @@ const executionType = computed(() => ({ CONNECTED: 'success', STARTING: 'warning
 
 function openEditor(rule = null) { clearActionError(); editingRule.value = rule; editorVisible.value = true }
 function openSettings() { clearActionError(); settingsVisible.value = true }
-function changeCategory(next) { if (!saving.value && !loading.value && next !== category.value) { editorVisible.value = false; settingsVisible.value = false; runsVisible.value = false; clearActionError(); load(next) } }
+function changeCategory(next) { if (!saving.value && !loading.value && next !== category.value) { editorVisible.value = false; settingsVisible.value = false; clearActionError(); load(next) } }
 async function saveRule(payload) {
   const current = editingRule.value
   const success = await mutate(state => current ? automationRuleApi.updateRule(category.value, current.rule_id, { ...payload, expected_version: state.version }) : automationRuleApi.createRule(category.value, { ...payload, expected_version: state.version }))
@@ -40,11 +37,7 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
 </script>
 <template>
   <div class="page-stack rules-page">
-    <PageHeader title="规则管理" description="配置核实、反制和处置的判定条件；配置状态与运行执行状态分别展示。">
-      <RouterLink to="/system/response-plans/legacy">查看原处置预案与空域关联</RouterLink>
-      <el-button :icon="DataAnalysis" @click="runsVisible = true">运行记录</el-button>
-      <el-button :icon="Clock" @click="historyVisible = true">变更记录</el-button>
-    </PageHeader>
+    <PageHeader title="规则管理" description="配置核实、反制和处置的判定条件；配置状态与运行执行状态分别展示。" />
     <el-alert v-if="group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
     <el-alert v-if="uncertain" :title="uncertain" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon><template #default><el-button :disabled="loading" @click="load(category)">重新读取</el-button></template></el-alert>
@@ -52,9 +45,8 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
     <el-card class="rule-card" shadow="never">
       <el-tabs :model-value="category" @update:model-value="changeCategory"><el-tab-pane v-for="item in CATEGORIES" :key="item.key" :label="item.label" :name="item.key" :disabled="saving || loading" /></el-tabs>
       <template v-if="group">
-        <section class="context-grid"><div><span>适用范围</span><strong>{{ scopeSummary(group.settings) }}</strong></div><div><span>生效时间</span><strong>{{ timeSummary(group.settings) }}</strong></div><div><span>预设动作</span><strong>{{ actionSummary(category, group.settings) }}</strong></div><el-button text type="primary" :icon="Setting" :disabled="!canManage || saving || loading" @click="openSettings">生效设置</el-button></section>
-        <section class="list-bar"><div><p :class="{ paused: !count }">{{ policyText }}</p><small>共 {{ group.rules.length }} 条 · {{ count }} 条已启用 · 当前版本 v{{ group.version }}</small></div><el-button type="primary" :icon="Plus" :disabled="!mayCreate || saving" @click="openEditor()">新建规则</el-button></section>
-        <el-alert v-if="category === 'counter'" title="执行前独立校验授权对象、动作、范围与有效期，规则开关不替代授权。" type="info" :closable="false" />
+        <section class="context-grid"><div><span>适用范围</span><strong>{{ scopeSummary(group.settings) }}</strong></div><div><span>生效时间</span><strong>{{ timeSummary(group.settings) }}</strong></div><div><span>预设动作</span><strong>{{ actionSummary(category, group.settings) }}</strong></div><el-button type="primary" :icon="Setting" :disabled="!canManage || saving || loading" @click="openSettings">生效设置</el-button></section>
+        <section class="list-bar"><div><p :class="{ paused: !count }">{{ policyText }}</p><small>共 {{ group.rules.length }} 条 · {{ count }} 条已启用</small></div><el-button type="primary" :icon="Plus" :disabled="!mayCreate || saving" @click="openEditor()">新建规则</el-button></section>
         <el-table v-loading="loading" :data="group.rules" class="rules-table">
           <el-table-column label="规则名称" min-width="150"><template #default="{ row }"><strong>{{ row.name }}</strong><small>更新于 {{ formatTime(row.updated_at) }}<template v-if="row.updated_by"> · {{ row.updated_by }}</template></small></template></el-table-column>
           <el-table-column label="条件要求" min-width="190"><template #default="{ row }">{{ conditionText(row, group.catalog) }}</template></el-table-column>
@@ -69,8 +61,6 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
     </el-card>
     <RuleEditorDialog v-model="editorVisible" :rule="editingRule" :catalog="catalog" :category-label="meta.label" :execution-status="group?.execution_status" :execution-message="group?.execution_message" :busy="saving" :server-error="actionError" @save="saveRule" />
     <RuleSettingsDialog v-if="group" v-model="settingsVisible" :settings="group.settings" :category="category" :busy="saving" :server-error="actionError" @save="saveSettings" />
-    <RuleRunsDialog v-model="runsVisible" :category="category" />
-    <RuleHistoryDialog v-model="historyVisible" :category="category" />
   </div>
 </template>
 <style scoped>
