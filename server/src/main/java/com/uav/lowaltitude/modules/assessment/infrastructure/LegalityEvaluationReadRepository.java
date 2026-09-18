@@ -182,13 +182,19 @@ public class LegalityEvaluationReadRepository {
         if (query.reviewState() != null) {
             where.sql.append(" AND r.review_state=:review_state"); where.parameters.put("review_state", query.reviewState());
         }
+        String reviewRequired = "e.mode='ACTIVE' AND e.legal_status<>'NOT_APPLICABLE'"
+                + " AND r.review_state='PENDING_REVIEW'"
+                + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation successor WHERE successor.supersedes_evaluation_id=e.evaluation_id)"
+                + " AND (e.decision_assurance_code IS NULL OR e.decision_assurance_code='INSUFFICIENT')";
         if (query.needsReview() != null) {
-            where.sql.append(" AND (CASE WHEN e.mode='ACTIVE' AND e.legal_status<>'NOT_APPLICABLE'"
-                    + " AND r.review_state='PENDING_REVIEW'"
-                    + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation successor WHERE successor.supersedes_evaluation_id=e.evaluation_id)"
-                    + " AND (e.decision_assurance_code IS NULL OR e.decision_assurance_code='INSUFFICIENT')"
-                    + " THEN TRUE ELSE FALSE END)=:needs_review");
+            where.sql.append(" AND (CASE WHEN " + reviewRequired + " THEN TRUE ELSE FALSE END)=:needs_review");
             where.parameters.put("needs_review", query.needsReview());
+        }
+        if (query.needsAttention() != null) {
+            // 并集在权限、最新记录筛选和分页前执行；同一条同时满足两项也只计一次。
+            where.sql.append(" AND (CASE WHEN e.legal_status='UNDETERMINED' OR (" + reviewRequired
+                    + ") THEN TRUE ELSE FALSE END)=:needs_attention");
+            where.parameters.put("needs_attention", query.needsAttention());
         }
         if (query.from() != null) {
             where.sql.append(" AND e.evaluated_at>=:from AND e.evaluated_at<:to");
@@ -283,7 +289,13 @@ public class LegalityEvaluationReadRepository {
 
     public record EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
             String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
-            String objectTypeCode, Boolean needsReview) {
+            String objectTypeCode, Boolean needsReview, Boolean needsAttention) {
+        public EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
+                String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
+                String objectTypeCode, Boolean needsReview) {
+            this(mode, latestOnly, legalStatus, planMatch, reviewState, subjectKind, targetId, planId, from, to,
+                    ownerOrgId, districtId, sourceMode, objectTypeCode, needsReview, null);
+        }
         public static EvaluationQuery empty() { return new EvaluationQuery(null, false, null, null, null, null, null, null, null, null, null, null, null, null, null); }
     }
 

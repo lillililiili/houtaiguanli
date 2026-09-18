@@ -42,7 +42,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 public class LegalityEvaluationReadService {
     public static final String ACTION_REVIEW = "REVIEW", ACTION_RECOMPUTE = "RECOMPUTE", ACTION_ESCALATE = "ESCALATE";
     private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id", "object_type_code",
-            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "page", "size");
+            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "needs_attention", "page", "size");
     private static final Set<String> MODES = Set.of("ACTIVE", "SHADOW");
     private static final Set<String> LEGAL_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE");
     private static final Set<String> PLAN_MATCHES = Set.of("FULL", "PARTIAL", "NONE", "UNDETERMINED", "NOT_APPLICABLE");
@@ -74,7 +74,7 @@ public class LegalityEvaluationReadService {
                 request.enumerated("review_state", REVIEW_STATES), request.enumerated("subject_kind", SUBJECTS),
                 request.optional("target_id", 36), request.optional("plan_id", 36), range.from, range.to,
                 request.optional("owner_org_id", 36), request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES),
-                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"));
+                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"), request.optionalBool("needs_attention"));
         long total = repository.count(query, decision);
         return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row, decision)).toList(), page.page, page.size, total);
     }

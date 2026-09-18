@@ -620,6 +620,32 @@ class Stage7PostgresTest {
 
     @Test
     @Order(10)
+    void attentionUnionUsesTheSamePostgresPredicateForRowsCountAndPaging() {
+        String uncertain = id(), reliable = id();
+        cloneLatestEvaluation(uncertain, "TARGET", targetId, "ACTIVE", "UNDETERMINED", T0.plusSeconds(1));
+        jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,'CONFIRMED',null,1,?,?,?,?)",
+                uncertain, org, district, T0, T0);
+        cloneEvaluationWithAssurance(reliable, "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]", T0.plusSeconds(2));
+        jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,'PENDING_REVIEW',null,0,?,?,?,?)",
+                reliable, org, district, T0, T0);
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        EvaluationQuery attention = new EvaluationQuery("ACTIVE", false, null, null, null, null,
+                null, null, null, null, org, district, null, "UAV", null, true);
+        assertThat(evaluations.count(attention, access)).isEqualTo(2);
+        assertThat(evaluations.list(attention, access, 0, 1)).extracting(r -> r.evaluationId()).containsExactly(uncertain);
+        assertThat(evaluations.list(attention, access, 1, 1)).extracting(r -> r.evaluationId()).containsExactly(evaluationId);
+        jdbc.update("update legality_review set review_state='PENDING_REVIEW',version=0 where evaluation_id=?", uncertain);
+        assertThat(evaluations.count(attention, access)).isEqualTo(2);
+        EvaluationQuery latest = new EvaluationQuery("ACTIVE", true, null, null, null, null,
+                null, null, null, null, org, district, null, "UAV", null, true);
+        assertThat(evaluations.count(latest, access)).isZero();
+        assertThat(evaluations.list(latest, access, 0, 100)).isEmpty();
+        jdbc.update("update target set object_type_code='BIRD' where target_id=?", targetId);
+        assertThat(evaluations.count(attention, access)).isZero();
+    }
+
+    @Test
+    @Order(10)
     void latestListWithThirtyThousandHistoricalRowsFinishesWithinFiveSeconds() {
         // 隔离 schema 内生成 50 个目标、每目标 600 条真实 SQL 历史；不写日常联调库。
         jdbc.update("insert into target (target_id,target_no,source_mode,owner_org_id,district_id,created_at,updated_at,version) "

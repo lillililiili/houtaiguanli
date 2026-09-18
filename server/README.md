@@ -239,3 +239,5 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 ## 规则配置管理（2026-09-17）
 
 新增 `/api/v1/automation-rule-groups/{category}` 配置接口及追加迁移 `V202609170040`。三类配置独立保存、版本校验、幂等写入及审计。`V202609170050` 接入后台持续判定与 `/runs` 运行记录；`app.automation-rules.enabled=true` 启用判定，状态由调度心跳提供。当前部署能力仅判定与留痕，不自动派发反制、通知或跟踪动作。原处置预案 API 和人工动作保留。详见[规则判定运行说明](../docs/规则判定引擎接入-2026-09-17.md)；原配置阶段见[规则管理接口与验收](../docs/规则管理实现与验收-2026-09-17.md)。
+
+2026-09-18：`GET /api/v1/legality-evaluations` 新增可选布尔筛选 `needs_attention`。为 true 时返回系统结论 `UNDETERMINED` 或既有 `needs_review=true` 的并集；同一条不重复计数，权限、目标类别、最新记录、分页及 total 共用数据库谓词。其他筛选继续取交集，为 false 时返回该并集的补集；不改变判定结果、人工复核状态或历史记录。业务前台默认待处理队列使用此参数，管理后台原调用不传参时不受影响。

@@ -298,6 +298,37 @@ class LegalityReviewApiTest {
     }
 
     @Test
+    void attentionQueueUnionsUndeterminedAndReviewRequiredBeforePaging() throws Exception {
+        String path = "/api/v1/legality-evaluations?mode=ACTIVE&owner_org_id=" + orgId + "&needs_attention=true";
+        String undetermined = "s7r-und-" + suffix, reliable = "s7r-rel-" + suffix;
+        insertEvaluation(undetermined, run, "UNDETERMINED", "[]", null, null);
+        insertReview(undetermined, "CONFIRMED", 1);
+        insertEvaluation(reliable, run, "ILLEGAL", "[\"NO_PLAN_CANDIDATE\"]", "HIGH", new BigDecimal("80"));
+        insertReview(reliable, "PENDING_REVIEW", 0);
+        setAssurance(reliable, "legality-assurance-v1", "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]");
+        mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items[*].evaluation_id", org.hamcrest.Matchers.containsInAnyOrder(evaluation, undetermined)));
+        for (int page = 1; page <= 2; page++) {
+            mvc.perform(get(path + "&page=" + page + "&size=1").header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
+                    .andExpect(jsonPath("$.data.items.length()").value(1));
+        }
+        mvc.perform(get(path + "&legal_status=ILLEGAL").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        mvc.perform(get(path + "&needs_review=true").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        jdbc.update("update legality_review set review_state='PENDING_REVIEW',version=0 where evaluation_id=?", undetermined);
+        jdbc.update("update legality_review set review_state='CONFIRMED',version=1 where evaluation_id=?", evaluation);
+        mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1)).andExpect(jsonPath("$.data.items[0].evaluation_id").value(undetermined));
+        mvc.perform(get(path.replace("true", "invalid")).header("Authorization", bearer(session)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get(path).header("Authorization", bearer(user("ASSIGNED", "target:read"))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void malformedStoredDecisionAssuranceFailsClosed() throws Exception {
         assertThatThrownBy(() -> jdbc.update(
                 "update rule_evaluation set decision_algorithm_version='legality-assurance-v1' where evaluation_id=?", evaluation))
