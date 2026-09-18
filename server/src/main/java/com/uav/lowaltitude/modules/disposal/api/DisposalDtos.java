@@ -30,12 +30,15 @@ public final class DisposalDtos {
             Long approvedAt, String decisionNote, Long validFrom, Long validUntil, String status,
             String executionCommandId, String resultCode, String resultDetail, String deviceStopResult,
             String executionBlockReason, String policyVersion, String policyStatus, String ownerOrgId, String districtId, String sourceMode,
-            long version, List<String> allowedActions) { }
+            long version, List<String> allowedActions, String authorizationMode) { }
 
     public record EventDto(String eventId, String eventKind, String actorId, String actorName, String note,
             Map<String, Object> snapshot, long occurredAt) { }
 
     public record CreatedDto(String authorizationId, String authorizationNo, String status, long version) { }
+
+    public record DirectResultDto(String authorizationId, String authorizationNo, String status, long version,
+            String authorizationMode, String executionBlockReason) { }
 
     public record ActionResultDto(String authorizationId, String status, long version, String deviceStopResult,
             String executionCommandId, String resultCode) { }

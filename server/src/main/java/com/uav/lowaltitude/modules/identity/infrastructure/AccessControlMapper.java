@@ -23,6 +23,7 @@ public interface AccessControlMapper {
             WHERE u.user_id = #{userId}
               AND u.status = 'ACTIVE'
               AND p.permission_code = #{permissionCode}
+              AND (p.permission_code <> 'disposal:direct' OR rp.permission_level = 'OP')
             """)
     String findGrantedScopeMode(
             @Param("userId") String userId,

@@ -11,6 +11,11 @@ const loading = ref(false), error = ref(''), selected = ref(null), note = ref(''
 const key = ref(null), open = ref(false);
 const pages = computed(() => Math.max(1, Math.ceil(total.value / 10)));
 const changedElsewhere = ref(false);
+const notificationAttempts = computed(() => Array.isArray(selected.value?.notification_attempts) ? selected.value.notification_attempts : []);
+const latestNotification = computed(() => notificationAttempts.value[0]);
+const previousDeliveries = computed(() => notificationAttempts.value.slice(1).filter(attempt => attempt.delivery_status === 'DELIVERED').length);
+const latestNotificationText = computed(() => latestNotification.value ? attemptStatus(latestNotification.value)
+  : selected.value?.notification_delivery_status ? notificationStatus(selected.value.notification_delivery_status) : '未保存通知资料，发送情况未知');
 let generation = 0, alive = true;
 
 async function reload(force = false) {
@@ -54,6 +59,25 @@ function notificationStatus(value, receipt = false) {
   const labels = receipt ? { NOT_EXPECTED: '本次无需回执', PENDING: '等待回执', ACKNOWLEDGED: '已确认收到', TIMEOUT: '回执超时' } : { PENDING_DELIVERY: '待投递', SUBMITTED: '已提交渠道', DELIVERED: '已送达', FAILED: '投递失败' };
   return labels[value] || value || '尚无记录';
 }
+function attemptStatus(attempt) {
+  if (attempt.outcome_state === 'UNKNOWN') return '通知结果未知';
+  if (attempt.outcome_state === 'NOT_SENT') return '本次未发送';
+  return notificationStatus(attempt.delivery_status);
+}
+function attemptTone(attempt) {
+  if (['UNKNOWN', 'NOT_SENT'].includes(attempt.outcome_state)) return 'warning';
+  return ({ DELIVERED: 'success', FAILED: 'danger', SUBMITTED: 'info', PENDING_DELIVERY: 'warning' })[attempt.delivery_status] || 'info';
+}
+function receiptStatus(value, outcome) {
+  if (outcome === 'UNKNOWN') return '回执状态未知';
+  if (outcome === 'NOT_SENT') return '尚未产生回执';
+  return notificationStatus(value, true);
+}
+function simulatedNotification(snapshot) { return ['MOCK', 'SMS_SIMULATED', 'VOICE_SIMULATED'].includes(snapshot?.channel_type); }
+function notificationChannel(snapshot) {
+  return ({ NONE: '未配置', MOCK: '模拟通道', API: '系统接口', HTTP: '接口通知', SMS: '短信', VOICE: '语音电话',
+    INTERNAL: '平台待办', SMS_SIMULATED: '模拟短信', VOICE_SIMULATED: '模拟语音' })[snapshot?.channel_type] || snapshot?.channel_type || '未记录';
+}
 function close(done) { if (!saving.value) done(); }
 onBeforeUnmount(() => { alive = false; generation++; });
 defineExpose({ reload });
@@ -81,19 +105,45 @@ defineExpose({ reload });
         <el-descriptions :column="1" border>
           <el-descriptions-item label="设备">{{ selected.device_name }} · {{ selected.device_no }}</el-descriptions-item>
           <el-descriptions-item label="关联计划">{{ selected.plan_no || selected.plan_id || '无关联计划查看权限' }}</el-descriptions-item>
-          <el-descriptions-item label="通知时的连接状态">{{ statusText(selected.connectivity) }}</el-descriptions-item>
-          <el-descriptions-item label="通知时的健康状态">{{ ({GOOD:'良好',BAD:'异常',DEGRADED:'异常',UNKNOWN:'未知'})[selected.health_code] || '未知' }}</el-descriptions-item>
+          <el-descriptions-item label="首次上报时连接状态">{{ statusText(selected.connectivity) }}</el-descriptions-item>
+          <el-descriptions-item label="首次上报时健康状态">{{ ({GOOD:'良好',BAD:'异常',DEGRADED:'异常',UNKNOWN:'未知'})[selected.health_code] || '未知' }}</el-descriptions-item>
           <el-descriptions-item label="状态上报时间">{{ formatTime(selected.observed_at) }}</el-descriptions-item>
           <el-descriptions-item label="异常说明">{{ selected.reason }}</el-descriptions-item>
-          <el-descriptions-item v-if="selected.recipient_snapshot" label="通知时的接收单位">{{ selected.recipient_snapshot.org_name || selected.recipient_snapshot.recipient_name || '尚未确定接收单位' }}</el-descriptions-item>
-          <el-descriptions-item v-if="selected.recipient_snapshot?.contact_name" label="通知时的联系人">{{ selected.recipient_snapshot.contact_name }}<span v-if="selected.recipient_snapshot.contact_hint"> · {{ selected.recipient_snapshot.contact_hint }}</span></el-descriptions-item>
-          <el-descriptions-item v-if="selected.notification_delivery_status" label="通知投递结果">{{ notificationStatus(selected.notification_delivery_status) }}</el-descriptions-item>
-          <el-descriptions-item v-if="selected.notification_receipt_status" label="通知回执">{{ notificationStatus(selected.notification_receipt_status, true) }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.recipient_snapshot" label="最近通知接收单位">{{ selected.recipient_snapshot.org_name || selected.recipient_snapshot.recipient_name || '尚未确定接收单位' }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.recipient_snapshot?.contact_name" label="最近通知联系人">{{ selected.recipient_snapshot.contact_name }}<span v-if="selected.recipient_snapshot.contact_hint"> · {{ selected.recipient_snapshot.contact_hint }}</span></el-descriptions-item>
+          <el-descriptions-item label="最新通知结果">{{ latestNotificationText }}<el-tag v-if="simulatedNotification(selected.recipient_snapshot)" class="notification-kind" size="small" type="info">模拟通知</el-tag><p v-if="previousDeliveries && latestNotification?.delivery_status !== 'DELIVERED'" class="muted">此前已有 {{ previousDeliveries }} 次送达记录，本次结果不改变历史送达事实。</p></el-descriptions-item>
+          <el-descriptions-item v-if="selected.notification_receipt_status || latestNotification?.outcome_state === 'UNKNOWN'" label="最新通知回执">{{ receiptStatus(selected.notification_receipt_status, latestNotification?.outcome_state) }}</el-descriptions-item>
           <el-descriptions-item v-if="selected.notification_blocked_reason" label="通知阻断原因">{{ selected.notification_blocked_reason }}</el-descriptions-item>
           <el-descriptions-item v-if="selected.recipient_snapshot?.config_version != null" label="通知配置版本">{{ selected.recipient_snapshot.config_version }}</el-descriptions-item>
           <el-descriptions-item label="上报人 / 时间">{{ selected.reported_by_name }} · {{ formatTime(selected.reported_at) }}</el-descriptions-item>
           <el-descriptions-item v-if="selected.handling_note" label="处理结果">{{ selected.handling_note }}<p class="muted">{{ selected.handled_by_name }} · {{ formatTime(selected.handled_at) }}</p></el-descriptions-item>
         </el-descriptions>
+        <details v-if="notificationAttempts.length" :key="selected.task_id" class="maintenance-notifications">
+          <summary><span class="expand-label">查看 {{ notificationAttempts.length }} 次通知记录</span><span class="collapse-label">收起通知记录</span></summary>
+          <article v-for="attempt in notificationAttempts" :key="attempt.attempt_id" class="notification-attempt">
+            <div class="notification-heading"><b>第 {{ attempt.attempt_no }} 次通知</b><el-tag :type="attemptTone(attempt)" size="small">{{ attemptStatus(attempt) }}</el-tag><el-tag v-if="simulatedNotification(attempt.recipient_snapshot)" size="small" type="info">模拟通知</el-tag><el-tag v-if="attempt.historical" size="small" type="info">历史资料转存</el-tag></div>
+            <p v-if="attempt.historical" class="muted">沿用原待办保存的通知资料；未保存的投递与回执时间仍为未知。</p>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item :label="attempt.historical ? '原待办上报时间' : '通知提交时间'">{{ formatTime(attempt.requested_at) }}</el-descriptions-item>
+              <el-descriptions-item :label="attempt.historical ? '原上报人' : '通知提交人'">{{ attempt.requested_by_name || '未记录' }}</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.reason" label="通知原因">{{ attempt.reason }}</el-descriptions-item>
+              <template v-if="attempt.recipient_snapshot">
+                <el-descriptions-item label="通知时的接收单位">{{ attempt.recipient_snapshot.org_name || attempt.recipient_snapshot.recipient_name || '未记录' }}</el-descriptions-item>
+                <el-descriptions-item v-if="attempt.recipient_snapshot.contact_name" label="通知时的联系人">{{ attempt.recipient_snapshot.contact_name }}<span v-if="attempt.recipient_snapshot.contact_hint"> · {{ attempt.recipient_snapshot.contact_hint }}</span></el-descriptions-item>
+                <el-descriptions-item label="通知渠道">{{ notificationChannel(attempt.recipient_snapshot) }}</el-descriptions-item>
+                <el-descriptions-item v-if="attempt.recipient_snapshot.config_version != null" label="通知配置版本">{{ attempt.recipient_snapshot.config_version }}</el-descriptions-item>
+                <el-descriptions-item v-if="attempt.recipient_snapshot.captured_at" label="接收资料记录时间">{{ formatTime(attempt.recipient_snapshot.captured_at) }}</el-descriptions-item>
+              </template>
+              <el-descriptions-item v-else label="接收资料">原记录未保存完整接收资料，不使用当前联系人补写。</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.submitted_at" label="渠道提交时间">{{ formatTime(attempt.submitted_at) }}</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.delivered_at" label="送达时间">{{ formatTime(attempt.delivered_at) }}</el-descriptions-item>
+              <el-descriptions-item label="回执情况">{{ receiptStatus(attempt.receipt_status, attempt.outcome_state) }}</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.acknowledged_at" label="回执确认时间">{{ formatTime(attempt.acknowledged_at) }}</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.receipt_result" label="回执内容">{{ attempt.receipt_result }}</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.blocked_reason" label="未完成原因">{{ attempt.blocked_reason }}</el-descriptions-item>
+            </el-descriptions>
+          </article>
+        </details>
         <template v-if="selected.can_handle && !changedElsewhere">
           <p class="muted">记录已做的检查、处理及后续安排。提交后待办移至“已反馈”，设备是否恢复仍以实时监测和恢复核验为准。</p>
           <el-input v-model="note" type="textarea" :rows="4" :maxlength="1000" show-word-limit :disabled="saving || !!key" placeholder="填写处理结果" aria-label="处理结果" />
@@ -113,4 +163,13 @@ defineExpose({ reload });
 .maintenance-pager { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 12px; gap: 8px; }
 .maintenance-panel :deep(.el-table .cell) { overflow-wrap: anywhere; white-space: normal; word-break: break-word; }
 .maintenance-panel :deep(.el-descriptions__content) { overflow-wrap: anywhere; white-space: pre-wrap; }
+.notification-kind { margin-left: 8px; }
+.maintenance-notifications { margin: 16px 0; }
+.maintenance-notifications > summary { width: fit-content; max-width: 100%; color: var(--el-color-primary); cursor: pointer; line-height: 1.8; overflow-wrap: anywhere; }
+.maintenance-notifications > summary:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 3px; }
+.maintenance-notifications .collapse-label,.maintenance-notifications[open] .expand-label { display: none; }
+.maintenance-notifications[open] .collapse-label { display: inline; }
+.notification-attempt { margin-top: 14px; }
+.notification-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-bottom: 8px; }
+.notification-heading :deep(.el-tag),.notification-kind { height: auto; max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.6; }
 </style>

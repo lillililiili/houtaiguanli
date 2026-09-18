@@ -21,6 +21,10 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class RiskRepository {
+    /** 查询展示样例的统一排除条件；仅依赖风险别名 r，可同时用于列表与空间汇总。 */
+    static final String EXCLUDE_DEMO_SAMPLES_SQL = " AND NOT (r.source_mode='mock' AND ("
+            + "EXISTS (SELECT 1 FROM integration_source demo_source WHERE demo_source.source_id=r.source_id"
+            + " AND demo_source.source_code='WEATHER-DEMO') OR r.source_risk_id LIKE 'pending-plan-notice-demo-%'))";
     private final NamedParameterJdbcTemplate jdbc;
 
     public RiskRepository(JdbcTemplate jdbcTemplate) {
@@ -261,6 +265,11 @@ public class RiskRepository {
         add(where, "r.district_id", "district", query.districtId);
         add(where, "r.source_mode", "mode", query.sourceMode);
         add(where, "r.risk_type", "risk_type", query.riskType);
+        if (query.excludeDemoSamples) {
+            // 只排除两类预设展示样例；保留实际规则产生的 mock/replay 和已接入的气象风险。
+            // 与分页、总数、导出共用，不删除样例或改写既有核验/通知历史。
+            where.sql.append(EXCLUDE_DEMO_SAMPLES_SQL);
+        }
         if (query.riskTypes != null && !query.riskTypes.isEmpty()) {
             where.sql.append(" AND r.risk_type IN (:risk_types)");
             where.params.put("risk_types", query.riskTypes);
@@ -337,7 +346,13 @@ public class RiskRepository {
     public record RiskQuery(String state, String severity, String planId, OffsetDateTime occurredFrom, OffsetDateTime occurredTo,
             String ownerOrgId, String districtId, String sourceMode, String riskType, String objectSubtype,
             /* 阶段 15（决策 15-7）：按关联目标的类别筛。 */
-            String targetType, List<String> riskTypes) {
+            String targetType, List<String> riskTypes, boolean excludeDemoSamples) {
+        public RiskQuery(String state, String severity, String planId, OffsetDateTime occurredFrom, OffsetDateTime occurredTo,
+                String ownerOrgId, String districtId, String sourceMode, String riskType, String objectSubtype,
+                String targetType, List<String> riskTypes) {
+            this(state, severity, planId, occurredFrom, occurredTo, ownerOrgId, districtId, sourceMode,
+                    riskType, objectSubtype, targetType, riskTypes, false);
+        }
         // 保留现有调用方的单类型查询语义；多类型范围只在显式传入时生效。
         public RiskQuery(String state, String severity, String planId, OffsetDateTime occurredFrom, OffsetDateTime occurredTo,
                 String ownerOrgId, String districtId, String sourceMode, String riskType, String objectSubtype, String targetType) {

@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { accessibleItems, canAccessMenu, firstAccessiblePath } from '@/config/navigation'
 
 describe('后台菜单权限', () => {
+  it('规则管理沿用原预案权限和地址，不新增执行授权', () => {
+    const user = { menu_keys: ['responsePlans'], permission_codes: ['responsePlans.read'] }
+    expect(accessibleItems(user).map(item => [item.title, item.path])).toEqual([['规则管理', '/system/response-plans']])
+    expect(canAccessMenu({ ...user, permission_codes: [] }, 'responsePlans')).toBe(false)
+  })
   it('按菜单键和读取权限的交集生成路由', () => {
     const user = { menu_keys: ['devices', 'roles'], permission_codes: ['devices.read', 'roles.read'] }
     expect(accessibleItems(user).map(item => item.key)).toEqual(['devices', 'roles'])
@@ -9,9 +14,9 @@ describe('后台菜单权限', () => {
     expect(canAccessMenu(user, 'roles')).toBe(true)
   })
 
-  it('单位档案和通知对象配置分别要求菜单与读取权限', () => {
+  it('单位资料入口并入用户管理，通知对象配置仍独立', () => {
     const user = { menu_keys: ['organizations', 'notificationSettings'], permission_codes: ['organizations.read', 'notificationSettings.read'] }
-    expect(accessibleItems(user).map(item => item.path)).toEqual(['/system/organizations', '/system/notification-settings'])
+    expect(accessibleItems(user).map(item => item.path)).toEqual(['/system/users', '/system/notification-settings'])
     expect(canAccessMenu({ ...user, permission_codes: ['organizations.read'] }, 'notificationSettings')).toBe(false)
     expect(canAccessMenu({ ...user, menu_keys: [] }, 'organizations')).toBe(false)
   })

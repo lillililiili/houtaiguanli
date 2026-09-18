@@ -243,7 +243,7 @@ class DisposalRulesTest {
 
     @Test
     void eventKindsMatchTheMigrationWhitelist() {
-        assertThat(DisposalRules.EVENT_KINDS).containsExactlyInAnyOrder("REQUEST", "APPROVE", "REJECT", "EXECUTE",
+        assertThat(DisposalRules.EVENT_KINDS).containsExactlyInAnyOrder("DIRECT_AUTHORIZE", "REQUEST", "APPROVE", "REJECT", "EXECUTE",
                 "RECEIPT", "STOP", "COMPLETE", "FAIL", "EXPIRE", "CANCEL", "MANUAL_RESULT",
                 "DEVICE_STOP_UNAVAILABLE", "DEVICE_CONTROL_UNAVAILABLE", "DEVICE_NOT_BOUND",
                 "PROTOCOL_NOT_OPENED", "DEVICE_OFFLINE", "DEVICE_ALL_OFF_ISSUED");

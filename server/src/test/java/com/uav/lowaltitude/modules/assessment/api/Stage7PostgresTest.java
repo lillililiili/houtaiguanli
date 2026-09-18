@@ -217,7 +217,7 @@ class Stage7PostgresTest {
     void migrations041And042AndStage7RepeatableAreAppliedToIsolatedPostgresSchema() {
         List<String> versions = jdbc.queryForList(
                 "select version from flyway_schema_history where success=true and version is not null", String.class);
-        assertThat(versions).contains("202609050040", "202609050041", "202609050042");
+        assertThat(versions).contains("202609050040", "202609050041", "202609050042", "202609170020", "202609170020.1");
         List<String> repeatables = jdbc.queryForList(
                 "select description from flyway_schema_history where success=true and version is null", String.class);
         assertThat(repeatables).anyMatch(d -> d.toLowerCase().contains("stage7"));
@@ -234,6 +234,15 @@ class Stage7PostgresTest {
                     "select data_type from information_schema.columns where table_schema=? and table_name='rule_evaluation' and column_name=?",
                     String.class, SCHEMA, column)).as(column).isEqualTo("jsonb");
         }
+        assertThat(jdbc.queryForObject(
+                "select data_type from information_schema.columns where table_schema=? and table_name='rule_evaluation' and column_name='decision_algorithm_version'",
+                String.class, SCHEMA)).isEqualTo("character varying");
+        assertThat(jdbc.queryForObject(
+                "select data_type from information_schema.columns where table_schema=? and table_name='rule_evaluation' and column_name='decision_assurance_code'",
+                String.class, SCHEMA)).isEqualTo("character varying");
+        assertThat(jdbc.queryForObject(
+                "select data_type from information_schema.columns where table_schema=? and table_name='rule_evaluation' and column_name='decision_assurance_reasons'",
+                String.class, SCHEMA)).isEqualTo("jsonb");
         List<String> permissions = jdbc.queryForList(
                 "select permission_code from app_permission where permission_code in ('rule:read','rule:manage','assessment:evaluate','assessment:revise','assessment:escalate') order by permission_code",
                 String.class);
@@ -257,6 +266,10 @@ class Stage7PostgresTest {
                 .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> jdbc.update("delete from rule_evaluation where evaluation_id=?", evaluationId))
                 .isInstanceOf(DataIntegrityViolationException.class);
+        // 历史 NULL 不能事后补写算法可靠性；算法输出必须与新研判一次 INSERT 冻结。
+        assertThatThrownBy(() -> jdbc.update(
+                "update rule_evaluation set decision_algorithm_version='legality-assurance-v1',decision_assurance_code='SUFFICIENT',decision_assurance_reasons=cast('[]' as jsonb) where evaluation_id=?",
+                evaluationId)).isInstanceOf(DataIntegrityViolationException.class);
         // 唯一例外：C06 在研判行存在之后一次性回填告警关联；回填后同样冻结，不能再改第二次。
         assertThat(jdbc.update("update rule_evaluation set alarm_outcome=cast(? as jsonb) where evaluation_id=?", "{\"kind\":\"SUPPRESSED_SHADOW\"}", evaluationId)).isEqualTo(1);
         assertThatThrownBy(() -> jdbc.update("update rule_evaluation set alarm_outcome=cast(? as jsonb) where evaluation_id=?", "{\"kind\":\"CREATED\"}", evaluationId))
@@ -559,7 +572,50 @@ class Stage7PostgresTest {
         assertThat(evaluations.count(latestQuery("ACTIVE", null), access)).isEqualTo(3);
         assertThat(evaluations.list(latestQuery("ACTIVE", null), access, 0, 100)).extracting(r -> r.evaluationId())
                 .doesNotContain(prefix + "-z", prefix + "-hidden", evaluationId);
-        assertThat(evaluations.count(new EvaluationQuery("ACTIVE", false, null, null, null, null, null, null, null, null, org, district, null), access)).isEqualTo(7);
+        assertThat(evaluations.count(new EvaluationQuery("ACTIVE", false, null, null, null, null, null, null, null, null, org, district, null, null, null), access)).isEqualTo(7);
+    }
+
+    @Test
+    @Order(10)
+    void uavFilterUsesCurrentVisibleTargetBeforePaginationAndCount() {
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        EvaluationQuery uavOnly = new EvaluationQuery("ACTIVE", true, null, null, null, null,
+                null, null, null, null, org, district, null, "UAV", null);
+        cloneLatestEvaluation("uav-plan-" + suffix, "PLAN", targetId, "ACTIVE", "LEGAL", T0.plusSeconds(1));
+        assertThat(evaluations.count(uavOnly, access)).isEqualTo(2);
+        assertThat(evaluations.list(uavOnly, access, 0, 1)).hasSize(1)
+                .allSatisfy(row -> assertThat(row.objectTypeCode()).isEqualTo("UAV"));
+        // 计划尚无目标观测不证明是已识别 UAV；最新无目标计划不回退成旧研判。
+        cloneLatestEvaluation("empty-plan-" + suffix, "PLAN", null, "ACTIVE", "NOT_APPLICABLE", T0.plusSeconds(2));
+        assertThat(evaluations.count(uavOnly, access)).isEqualTo(1);
+        assertThat(evaluations.list(uavOnly, access, 0, 100)).extracting(row -> row.evaluationId()).containsExactly(evaluationId);
+        for (String type : List.of("BIRD", "UNKNOWN")) {
+            jdbc.update("update target set object_type_code=? where target_id=?", type, targetId);
+            assertThat(evaluations.count(uavOnly, access)).isZero();
+            assertThat(evaluations.list(uavOnly, access, 0, 100)).isEmpty();
+            assertThat(evaluations.count(latestQuery("ACTIVE", null), access)).isEqualTo(2);
+        }
+    }
+
+    @Test
+    @Order(10)
+    void decisionAssuranceColumnsAreInsertedAtomicallyAndNeedsReviewCountMatchesRows() {
+        String insufficient = id(), sufficient = id();
+        cloneEvaluationWithAssurance(insufficient, "INSUFFICIENT", "[\"MISSING_IDENTITY\"]", T0.plusSeconds(1));
+        cloneEvaluationWithAssurance(sufficient, "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]", T0.plusSeconds(2));
+        jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,'PENDING_REVIEW',null,0,?,?,?,?), (?,'PENDING_REVIEW',null,0,?,?,?,?)",
+                insufficient, org, district, T0, T0, sufficient, org, district, T0, T0);
+
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        EvaluationQuery needsReview = new EvaluationQuery("ACTIVE", false, null, null, null, null,
+                null, null, null, null, org, district, null, null, true);
+        List<String> ids = evaluations.list(needsReview, access, 0, 100).stream().map(row -> row.evaluationId()).toList();
+        assertThat(evaluations.count(needsReview, access)).isEqualTo(ids.size());
+        assertThat(ids).containsExactlyInAnyOrder(evaluationId, insufficient).doesNotContain(sufficient);
+        assertThat(jdbc.queryForObject("select decision_algorithm_version||'/'||decision_assurance_code from rule_evaluation where evaluation_id=?",
+                String.class, insufficient)).isEqualTo("legality-assurance-v1/INSUFFICIENT");
+        assertThatThrownBy(() -> jdbc.update("update rule_evaluation set decision_assurance_code='SUFFICIENT' where evaluation_id=?", insufficient))
+                .isInstanceOf(DataIntegrityViolationException.class);
     }
 
     @Test
@@ -591,13 +647,19 @@ class Stage7PostgresTest {
     }
 
     private EvaluationQuery latestQuery(String mode, String legalStatus) {
-        return new EvaluationQuery(mode, true, legalStatus, null, null, null, null, null, null, null, org, district, null);
+        return new EvaluationQuery(mode, true, legalStatus, null, null, null, null, null, null, null, org, district, null, null, null);
     }
 
     private void cloneLatestEvaluation(String id, String kind, String target, String mode, String status, OffsetDateTime at) {
         jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at) "
                 + "select ?,run_id,rule_set_version_id,?,?,?,?,observed_at,as_of,?,freshness_code,plan_match_code,?,'[]','[]','[]','[]','{}',owner_org_id,district_id,'mock',created_at from rule_evaluation where evaluation_id=?",
                 id, mode, kind, target, planId, at, status, evaluationId);
+    }
+
+    private void cloneEvaluationWithAssurance(String id, String assurance, String reasons, OffsetDateTime at) {
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons,created_at) "
+                + "select ?,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,?,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,'legality-assurance-v1',?,cast(? as jsonb),created_at from rule_evaluation where evaluation_id=?",
+                id, at, assurance, reasons, evaluationId);
     }
 
     private void assertScenario(Scenario scenario, Map<String, Object> row) {

@@ -29,7 +29,7 @@ public class DisposalRepository {
     private static final String COLUMNS = "a.authorization_id,a.authorization_no,a.action_type,a.subject_kind,a.subject_id,"
             + "a.target_id,a.device_id,a.channel,a.reason,a.requested_by,a.requested_at,a.approved_by,a.approved_at,"
             + "a.decision_note,a.valid_from,a.valid_until,a.status,a.execution_command_id,a.result_code,a.result_detail,"
-            + "a.policy_version,a.owner_org_id,a.district_id,a.source_mode,a.version";
+            + "a.policy_version,a.owner_org_id,a.district_id,a.source_mode,a.version,a.authorization_mode";
 
     private final NamedParameterJdbcTemplate jdbc;
     /** 只用于"建当日计数行"这一步：见 nextSequence 的说明，它必须跑在调用方事务之外。 */
@@ -105,6 +105,25 @@ public class DisposalRepository {
                 + "chained_from_authorization_id,version,created_at,updated_at) VALUES (:id,:no,:action,:kind,:subject,:target,"
                 + ":device,:channel,:reason,:by,:at,:approver,:approvedAt,:note,:from,:until,:status,:policy,:org,:district,"
                 + ":mode,:chained,0,:at,:at)", p);
+    }
+
+    /** 直接授权只记录发起人和窗口，不伪造审批人。 */
+    public int authorizeDirect(String id, long version, OffsetDateTime at, OffsetDateTime until, String note) {
+        return jdbc.update("UPDATE disposal_authorization SET authorization_mode='DIRECT',status='APPROVED',"
+                + "valid_from=:at,valid_until=:until,decision_note=:note,version=version+1,updated_at=:at"
+                + " WHERE authorization_id=:id AND version=:v AND authorization_mode='REVIEW' AND approved_by IS NULL",
+                Map.of("id",id,"v",version,"at",at,"until",until,"note",note));
+    }
+
+    public void insertChainedDirect(AuthorizationInsert row, String chainedFrom, OffsetDateTime from,
+                                   OffsetDateTime until, String note) {
+        Map<String,Object> p=insertParams(row);
+        p.put("chained",chainedFrom); p.put("from",from); p.put("until",until); p.put("note",note);
+        jdbc.update("INSERT INTO disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,"
+                + "target_id,device_id,channel,reason,requested_by,requested_at,decision_note,valid_from,valid_until,status,"
+                + "policy_version,owner_org_id,district_id,source_mode,chained_from_authorization_id,authorization_mode,version,created_at,updated_at)"
+                + " VALUES (:id,:no,:action,:kind,:subject,:target,:device,:channel,:reason,:by,:at,:note,:from,:until,:status,"
+                + ":policy,:org,:district,:mode,:chained,'DIRECT',0,:at,:at)",p);
     }
 
     private static Map<String, Object> insertParams(AuthorizationInsert row) {
@@ -378,7 +397,7 @@ public class DisposalRepository {
                 rs.getString("execution_command_id"), rs.getString("result_code"), rs.getString("result_detail"),
                 rs.getString("policy_version"), rs.getString("owner_org_id"), rs.getString("district_id"),
                 rs.getString("source_mode"), rs.getLong("version"),
-                name(rs, "requested_by_name"), name(rs, "approved_by_name"));
+                name(rs, "requested_by_name"), name(rs, "approved_by_name"), rs.getString("authorization_mode"));
     }
 
     /** 姓名列在部分查询里不存在（如到期扫描），取不到就当没有，不让缺一列把整条读崩。 */
@@ -406,7 +425,7 @@ public class DisposalRepository {
             OffsetDateTime requestedAt, String approvedBy, OffsetDateTime approvedAt, String decisionNote,
             OffsetDateTime validFrom, OffsetDateTime validUntil, String status, String executionCommandId,
             String resultCode, String resultDetail, String policyVersion, String ownerOrgId, String districtId,
-            String sourceMode, long version, String requestedByName, String approvedByName) { }
+            String sourceMode, long version, String requestedByName, String approvedByName, String authorizationMode) { }
 
     public record EventRow(String eventId, String authorizationId, String eventKind, String actorId, String note,
             String snapshot, OffsetDateTime occurredAt) { }

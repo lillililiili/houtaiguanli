@@ -159,7 +159,8 @@ public class LegalityEvaluationReadRepository {
                 + "e.alarm_id AS engine_alarm_id,m.alarm_id AS member_alarm_id,"
                 // 人工转告警不回写只增的研判行，其告警引用只存在于复核历史。
                 + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
-                + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode";
+                + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,tg.object_type_code,"
+                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons";
     }
 
     private static Where where(EvaluationQuery query, AccessDecision access) {
@@ -168,6 +169,11 @@ public class LegalityEvaluationReadRepository {
         add(where, "e.legal_status", "legal_status", query.legalStatus());
         add(where, "e.plan_match_code", "plan_match", query.planMatch());
         add(where, "e.subject_kind", "subject_kind", query.subjectKind());
+        if (query.objectTypeCode() != null) {
+            // 目标类别与详情引用遵守同一可见元组；列表和 total 在分页前共同过滤。
+            add(where, "tg.object_type_code", "object_type_code", query.objectTypeCode());
+            where.sql.append(" AND tg.owner_org_id=e.owner_org_id AND tg.district_id=e.district_id");
+        }
         add(where, "e.target_id", "target_id", query.targetId());
         add(where, "e.plan_id", "plan_id", query.planId());
         add(where, "e.owner_org_id", "owner_org_id", query.ownerOrgId());
@@ -175,6 +181,14 @@ public class LegalityEvaluationReadRepository {
         add(where, "e.source_mode", "source_mode", query.sourceMode());
         if (query.reviewState() != null) {
             where.sql.append(" AND r.review_state=:review_state"); where.parameters.put("review_state", query.reviewState());
+        }
+        if (query.needsReview() != null) {
+            where.sql.append(" AND (CASE WHEN e.mode='ACTIVE' AND e.legal_status<>'NOT_APPLICABLE'"
+                    + " AND r.review_state='PENDING_REVIEW'"
+                    + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation successor WHERE successor.supersedes_evaluation_id=e.evaluation_id)"
+                    + " AND (e.decision_assurance_code IS NULL OR e.decision_assurance_code='INSUFFICIENT')"
+                    + " THEN TRUE ELSE FALSE END)=:needs_review");
+            where.parameters.put("needs_review", query.needsReview());
         }
         if (query.from() != null) {
             where.sql.append(" AND e.evaluated_at>=:from AND e.evaluated_at<:to");
@@ -241,7 +255,8 @@ public class LegalityEvaluationReadRepository {
                 rs.getString("supersedes_evaluation_id"), rs.getString("superseded_by_evaluation_id"), rs.getString("engine_alarm_id"),
                 rs.getString("member_alarm_id"), rs.getString("manual_alarm_id"), rs.getString("alarm_outcome"), rs.getString("member_kind"),
                 rs.getString("assessment_id"), rs.getString("owner_org_id"), rs.getString("owner_org_name"), rs.getString("district_id"),
-                rs.getString("district_name"), rs.getString("source_mode"));
+                rs.getString("district_name"), rs.getString("source_mode"), rs.getString("object_type_code"),
+                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"));
     }
 
     private static RevisionRow revision(ResultSet rs, int i) throws SQLException {
@@ -267,8 +282,9 @@ public class LegalityEvaluationReadRepository {
     private record Where(StringBuilder sql, Map<String, Object> parameters) { }
 
     public record EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
-            String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode) {
-        public static EvaluationQuery empty() { return new EvaluationQuery(null, false, null, null, null, null, null, null, null, null, null, null, null); }
+            String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
+            String objectTypeCode, Boolean needsReview) {
+        public static EvaluationQuery empty() { return new EvaluationQuery(null, false, null, null, null, null, null, null, null, null, null, null, null, null, null); }
     }
 
     public record FactQuery(OffsetDateTime from, OffsetDateTime to, String mode, String legalStatus, String reviewState, String sourceMode,
@@ -280,7 +296,8 @@ public class LegalityEvaluationReadRepository {
             String legalStatus, BigDecimal score, String grade, String violationReasons, String unknownReasons, String evidenceReferences, String hitDetails,
             String reviewState, String manualStatus, Long reviewVersion, String supersedesEvaluationId, String supersededByEvaluationId,
             String engineAlarmId, String memberAlarmId, String manualAlarmId, String alarmOutcome, String memberKind, String assessmentId,
-            String ownerOrgId, String ownerOrgName, String districtId, String districtName, String sourceMode) {
+            String ownerOrgId, String ownerOrgName, String districtId, String districtName, String sourceMode, String objectTypeCode,
+            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons) {
         /** 引擎回填 > 合并成员 > 人工转告警历史；三者都空才算“无告警”。 */
         public String alarmId() { return engineAlarmId != null ? engineAlarmId : memberAlarmId != null ? memberAlarmId : manualAlarmId; }
     }

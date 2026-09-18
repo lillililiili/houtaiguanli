@@ -30,7 +30,7 @@ public class RiskReadService {
     private static final Set<String> ALLOWED = Set.of("state", "severity", "plan_id", "occurred_from", "occurred_to",
             "owner_org_id", "district_id", "source_mode", "page", "size", "risk_type", "object_subtype",
             // 阶段 15 新增（决策 15-6 / 15-7）：写错的参数必须报错而不是被忽略。
-            "sort", "order", "target_type", "risk_types");
+            "sort", "order", "target_type", "risk_types", "exclude_demo_samples");
     /* risk_type 在库里是自由文本（阶段 4 的 CHECK 只要求非空），已有数据用 ROUTE_DEVIATION 等值；
        这里不做白名单，否则会把合法的既有类型判成参数错误。SPACE_OBJECT 只是其中一个取值。 */
     private static final Set<String> STATES=Set.of("PENDING_VERIFICATION","PENDING_NOTIFICATION","NOTIFIED","ACKNOWLEDGED","EXCLUDED");
@@ -66,7 +66,7 @@ public class RiskReadService {
                 planId, occurred.from, occurred.to, request.optional("owner_org_id", 36),
                 request.optional("district_id", 36), request.enumerated("source_mode",SOURCE_MODES),
                 request.optional("risk_type", 64), request.optional("object_subtype", 32),
-                request.optional("target_type", 32), request.riskTypes());
+                request.optional("target_type", 32), request.riskTypes(), request.excludeDemoSamples());
         String sort = sortKey(values), order = orderDirection(values);
         long total = repository.count(query, decision);
         return new PageDto<>(repository.list(query, decision, page.offset(), page.size, sort, order).stream()
@@ -117,7 +117,7 @@ public class RiskReadService {
                 request.optional("plan_id", 36), occurred.from, occurred.to, request.optional("owner_org_id", 36),
                 request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES),
                 request.optional("risk_type", 64), request.optional("object_subtype", 32),
-                request.optional("target_type", 32), request.riskTypes());
+                request.optional("target_type", 32), request.riskTypes(), request.excludeDemoSamples());
         String sort = sortKey(values), order = orderDirection(values);
         long total = repository.count(query, decision);
         if (total > CsvExport.MAX_ROWS) {
@@ -129,7 +129,8 @@ public class RiskReadService {
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "risks", "risks_exported", "risk", null,
                 "filters=state=" + query.state() + ",severity=" + query.severity() + ",risk_type=" + query.riskType()
-                        + ",risk_types=" + query.riskTypes() + ",target_type=" + query.targetType() + ",sort=" + sort + ",order=" + order
+                        + ",risk_types=" + query.riskTypes() + ",target_type=" + query.targetType()
+                        + ",exclude_demo_samples=" + query.excludeDemoSamples() + ",sort=" + sort + ",order=" + order
                         + "; rows=" + cells.size(), "SUCCESS", "", "");
         return CsvExport.response(CsvExport.fileName("risks", java.time.Instant.ofEpochMilli(clock.nowMillis())),
                 EXPORT_HEADERS, cells);
@@ -215,6 +216,7 @@ public class RiskReadService {
         }
         Page page() { int page=integer("page",1),size=integer("size",20); if(page<1||size<1||size>100)throw invalid("分页参数无效"); return new Page(page,size); }
         String optional(String name,int max) { if(!values.containsKey(name))return null; String value=single(name); if(value.length()>max)throw invalid(name+" 参数无效"); return value; }
+        boolean excludeDemoSamples() { return "true".equals(enumerated("exclude_demo_samples", Set.of("true", "false"))); }
         List<String> riskTypes() {
             String value = optional("risk_types", 649);
             if (value == null) return List.of();

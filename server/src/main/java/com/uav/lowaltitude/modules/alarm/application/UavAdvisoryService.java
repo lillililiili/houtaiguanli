@@ -145,10 +145,11 @@ public class UavAdvisoryService {
         String reason=UavAdvisoryRules.counterBlockReason(event.state(),records);
         boolean mode=sms.simulationAvailable(event.sourceMode());
         boolean request=allowed(PermissionCode.DISPOSAL_REQUEST);
+        boolean direct=allowed(PermissionCode.DISPOSAL_DIRECT);
         var currentRecipient=automatic.currentRecipient(event);
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
                 "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
-                reason.isEmpty() && request,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request?"当前账号没有反制申请权限":reason,records,
+                reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的计划执行飞手"),
                 automatic.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE)),
                 voice.mode(event),voice.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE)));

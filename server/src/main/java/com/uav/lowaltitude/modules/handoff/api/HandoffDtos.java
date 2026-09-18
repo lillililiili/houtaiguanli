@@ -9,7 +9,7 @@ public final class HandoffDtos {
     public record RecipientDto(String recipientId, String displayName, String handoffType) { }
     public record RecipientListDto(List<RecipientDto> items) { }
     public record CreateRequest(String sourceKind, String sourceId, String handoffType, String recipientId, long expectedVersion) { }
-    /** POST 成功体固定为契约列出的字段；提交成功只代表材料入库，delivery_status 只可能是 PENDING_DELIVERY。 */
+    /** POST 成功保证材料入库；投递状态以通道返回事实为准，不代表处罚办结。 */
     public record CreatedDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
             long sourceVersion, String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
             long createdAt) { }
@@ -56,7 +56,7 @@ public final class HandoffDtos {
     /** 该事件已经产生的终态授权；未实施反制也可以移送处罚。 */
     public record DisposalMaterialDto(String authorizationId, String authorizationNo, String actionType, String channel,
             String deviceId, String status, String requestedByName, String approvedByName, Long validFrom, Long validUntil,
-            String resultCode, String resultDetail, Long completedAt) { }
+            String resultCode, String resultDetail, Long completedAt, String authorizationMode) { }
     public record EvidenceMaterialDto(String evidenceId, String evidenceNo, String kindCode, String sha256,
             Long capturedAt, String status) { }
 

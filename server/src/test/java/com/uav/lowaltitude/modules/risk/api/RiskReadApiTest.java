@@ -207,6 +207,58 @@ class RiskReadApiTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items").isEmpty());
     }
 
+    @Test
+    void demoSampleExclusionIsOptInAndConsistentAcrossPagingCountsAndExport() throws Exception {
+        jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values ('risk-filter-weather','WEATHER-DEMO','预设气象样例',true,'mock',?,?,0)", ts(12_000), ts(12_000));
+        jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values ('risk-filter-replay','RISK-FILTER-REPLAY','MQTT 回放输入',true,'replay',?,?,0)", ts(12_000), ts(12_000));
+        jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values ('risk-filter-live','RISK-FILTER-LIVE','气象接入',true,'live',?,?,0)", ts(12_000), ts(12_000));
+        filterRisk("filter-wx-sample", "risk-filter-weather", "WX-DEMO-filter", "mock", "WEATHER", 12_001);
+        filterRisk("filter-map-sample", "seed-stage3-source", "pending-plan-notice-demo-filter", "mock", "SPACE_OBJECT", 12_002);
+        filterRisk("filter-mock-engine", "seed-stage3-source", "C04:space-risk-demo-v1:mock", "mock", "SPACE_OBJECT", 12_003);
+        filterRisk("filter-replay-engine", "risk-filter-replay", "pending-plan-notice-demo-replay", "replay", "SPACE_OBJECT", 12_004);
+        filterRisk("filter-live-weather", "risk-filter-live", "WX-LIVE-filter", "live", "WEATHER", 12_005);
+        filterRisk("filter-mock-weather", "seed-stage3-source", "WX-MOCK-INTEGRATION-filter", "mock", "WEATHER", 12_006);
+        String query = "?occurred_from=12000&occurred_to=12001&sort=received_at&order=asc";
+        for (String suffix : new String[]{"", "&exclude_demo_samples=false"}) {
+            mvc.perform(get("/api/v1/risks" + query + suffix).header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(6));
+        }
+        mvc.perform(get("/api/v1/risks" + query + "&exclude_demo_samples=true&page=1&size=2").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(4))
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].risk_id").value("filter-mock-engine"))
+                .andExpect(jsonPath("$.data.items[1].risk_id").value("filter-replay-engine"));
+        mvc.perform(get("/api/v1/risks" + query + "&exclude_demo_samples=true&page=2&size=2").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(4))
+                .andExpect(jsonPath("$.data.items[0].risk_id").value("filter-live-weather"))
+                .andExpect(jsonPath("$.data.items[1].risk_id").value("filter-mock-weather"));
+        mvc.perform(get("/api/v1/risks" + query + "&exclude_demo_samples=true&source_mode=mock&risk_type=WEATHER").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].risk_id").value("filter-mock-weather"));
+        String csv = mvc.perform(get("/api/v1/risks/export.csv" + query + "&exclude_demo_samples=true").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(csv).contains("C04:space-risk-demo-v1:mock", "pending-plan-notice-demo-replay", "WX-LIVE-filter", "WX-MOCK-INTEGRATION-filter")
+                .doesNotContain("WX-DEMO-filter", "pending-plan-notice-demo-filter");
+        // 展示过滤保留既有记录及详情，不抹去核验、通知与审计历史。
+        mvc.perform(get("/api/v1/risks/filter-map-sample").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.source_risk_id").value("pending-plan-notice-demo-filter"));
+    }
+
+    @Test
+    void demoSampleExclusionRejectsInvalidAndRepeatedValues() throws Exception {
+        for (String query : new String[]{"exclude_demo_samples=1", "exclude_demo_samples=", "exclude_demo_samples=TRUE", "exclude_demo_samples=true&exclude_demo_samples=false"}) {
+            for (String path : new String[]{"/api/v1/risks", "/api/v1/risks/export.csv"}) {
+                mvc.perform(get(path + "?" + query).header("Authorization", bearer(session)))
+                        .andExpect(status().isBadRequest());
+            }
+        }
+    }
+
+    private void filterRisk(String id, String source, String sourceRiskId, String mode, String type, long received) {
+        jdbc.update("insert into flight_risk (risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,?,'seed-stage3-plan-legal','seed-stage3-rv-legal',?,'HIGH','PENDING_VERIFICATION','FILTER_TEST','筛选契约用例',?,?,'UNKNOWN',?,'seed-stage3-org','seed-stage3-district',?,?,0)",
+                id, source, sourceRiskId, type, ts(12_000), ts(received), mode, ts(received), ts(received));
+    }
+
     private void insertRisk(String id, String sourceRiskId, String severity, String state, String plan, String routeVersion,
             String org, String district, long occurred, long received, Double altitude, String datum) {
         jdbc.update("insert into flight_risk (risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,observed_altitude_m,observed_altitude_datum,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,'seed-stage3-source',?,?,?,?,?,?,'ROUTE_DEVIATION','服务端保存的风险依据',?,?,?,?,'UNKNOWN','mock',?,?,?, ?,0)",

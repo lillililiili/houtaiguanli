@@ -1,5 +1,19 @@
 # 处置授权 API 契约（阶段 13，v1.1）
 
+## 2026-09-17 增量：直接反制权限
+
+本节替代旧稿中“所有新反制一律逐次审批”的描述。普通申请仍走原来的申请、异人审批和执行流程。
+
+- 角色管理 → 动作权限 → 处置授权新增 `disposal:direct`“直接反制（免逐次审批）”。仅显式 `OP` 生效；管理端显示“无/允许”，接口拒绝 READ/AUTH。迁移不授予任何角色，ROLE-ADMIN 全动作目录和本地种子也不继承此项；角色权限变更继续作废旧会话。
+- `POST /api/v1/disposal-authorizations/direct-execute` 使用与普通申请相同的六字段请求体和 `Idempotency-Key`。要求直接权限、主体读权及数据范围；设备通道另需 `devices.op`。按现有策略校验事件/目标、现场条件、急停阻断、并发上限和有效期。直接权限只免去本次审批步骤，不代表取得法定反制资格或放宽这些条件。
+- 成功建单返回 201：`authorization_id,authorization_no,status,version,authorization_mode=DIRECT,execution_block_reason?`。真正受理执行后为 EXECUTING；设备预检受阻则保留 APPROVED（表示授权窗口有效），记录阻塞事件并返回枚举原因，与详情字段相同。两种都不代表设备执行成功；参数/权限/主体错误事务回滚。
+- 列表、详情新增 `authorization_mode=REVIEW|DIRECT`。旧记录默认 REVIEW，历史审批人与事件不回填、不篡改。DIRECT 的 `requested_by/at` 表示直接发起人/时间，`approved_by/at` 必须为空，`valid_from/until` 明确，事件为 `DIRECT_AUTHORIZE`，不伪造 APPROVE。
+- DIRECT 记录的后续执行和人工结果仅原发起人且仍持有 direct 可操作；普通 `disposal:execute` 不会代替 direct。停止仍用既有独立停止权限。直接权限不能给普通申请自己审批。
+- 排队设备启动以及反制完成后的自动干扰重新检查 DIRECT 发起人的当前权限、用户/角色状态、数据范围和有效期；干扰沿用 DIRECT，窗口不超过父授权，不产生假审批人。真实设备回执及急停核查沿用原链。
+- advisory overview 新增 `can_direct_counter`，与 `can_request_counter` 独立计算。业务前台直接资格成立时优先显示“直接反制”，否则有申请资格时显示“申请反制”；每次提交仍由后端重新校验。
+- 迁移：`V202609170030__direct_disposal_permission.sql`。只增目录/模式/约束，不自动触发处置、不写真实角色授权。代码生效需要迁移和后端重启。
+
+
 2026-09-10 修订：UAV_EVENT 授权的 `source_mode` 继承源告警，TARGET 授权继承目标，均不硬编码 live。页面新增独立“处置与处罚 → 处置授权”队列，先审批、执行、核对结果，再提交处罚交接。
 
 > 状态：v1.3（2026-09-09，四通道原生 TCP 设置：`COUNTERMEASURE`→`SET_MASK 0x0F`，`JAMMING`→`0x0D`，停止=全关 `0x00`；DECOY/DISPERSAL 走四通道 400。v1.2 为 A 开通 `dec`/`ifr`/`bsc`；v1.1 为 2026-09-08 验收修订；v1.0 冻结稿 2026-09-07）。依据：计划 `docs/superpowers/plans/2026-09-07-collaborator-b-stage-13-disposal-authorization.md`、决策 13-1…13-9、协作者 A 的 P5 与四通道 REST。通用约定同前：`{ok,data}` 包络、snake_case、字符串 ID、epoch ms、`page,size→items/page/size/total`、先鉴权再解析、精确 `(owner_org_id,district_id)` 元组、越权 404、`Idempotency-Key` + `expected_version`。

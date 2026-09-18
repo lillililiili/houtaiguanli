@@ -54,19 +54,22 @@ public interface IdentityAdminMapper {
             """)
     List<PermissionRow> listPermissionsForRole(@Param("roleCode") String roleCode);
 
-    /** 该角色等级 ≥ READ 的动作码原文（决策 16-4）。动作没有 read/op/auth 三级，取的就是码本身。 */
+    /** 该角色已授予的动作码原文；直接反制是例外，只有显式 OP 才算授予。 */
     @Select("""
             SELECT p.permission_code
             FROM app_permission p
             JOIN app_role_permission rp
               ON rp.permission_code = p.permission_code AND rp.role_code = #{roleCode}
-            WHERE p.permission_kind = 'ACTION' AND rp.permission_level <> 'NONE'
+            WHERE p.permission_kind = 'ACTION'
+              AND ((p.permission_code = 'disposal:direct' AND rp.permission_level = 'OP')
+                OR (p.permission_code <> 'disposal:direct' AND rp.permission_level <> 'NONE'))
             ORDER BY p.permission_code
             """)
     List<String> listActionCodesForRole(@Param("roleCode") String roleCode);
 
-    /** 目录里的全部动作码：超级管理员不靠授权行取权限（见 AccessService），这里给它整份目录。 */
-    @Select("SELECT permission_code FROM app_permission WHERE permission_kind = 'ACTION' ORDER BY permission_code")
+    /** 超级管理员隐式继承的动作目录；直接反制必须显式授权，因此排除。 */
+    @Select("SELECT permission_code FROM app_permission WHERE permission_kind = 'ACTION'"
+            + " AND permission_code <> 'disposal:direct' ORDER BY permission_code")
     List<String> listActionCodeCatalog();
 
     @Select("""

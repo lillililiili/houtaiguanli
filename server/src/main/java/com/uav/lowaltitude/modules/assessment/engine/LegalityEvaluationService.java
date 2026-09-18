@@ -71,6 +71,7 @@ public class LegalityEvaluationService {
     private final AppClock clock;
     private final ObjectMapper json;
     private final C03Decision decision = new C03Decision();
+    private final DecisionAssuranceAlgorithm assuranceAlgorithm = new DecisionAssuranceAlgorithm();
 
     public LegalityEvaluationService(RuleEngineRepository repository, RuleParamLoader params, SpatialFactPort spatial, PlanMatcher planMatcher,
             List<RuleCheck> checks, RuleEngineHooks hooks, AppClock clock, ObjectMapper json) {
@@ -147,6 +148,7 @@ public class LegalityEvaluationService {
                     : Decision.notApplicable("NON_UAV_OBJECT");
         }
 
+        DecisionAssuranceAlgorithm.Assurance assurance = assuranceAlgorithm.assess(context, hits, verdict, ruleParams);
         String evaluationId = UUID.randomUUID().toString();
         PlanFact plan = planMatch.plan();
         String planId = plan != null ? plan.planId() : resolved.planId();
@@ -157,7 +159,7 @@ public class LegalityEvaluationService {
                 planId, routeVersionId, stateRow == null ? null : stateRow.observedAt(), effectiveAsOf, now, freshness.name(), planMatch.code().name(),
                 verdict.status().name(), verdict.score(), verdict.grade(), write(verdict.violationReasons()), write(hits), write(verdict.unknownReasons()),
                 write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness)), supersedesEvaluationId, shadowOutcome,
-                resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode()));
+                resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons())));
 
         String assessmentId = null;
         boolean projectable = mode == RunMode.ACTIVE && plan != null && (planMatch.code() == PlanMatchCode.FULL || planMatch.code() == PlanMatchCode.PARTIAL);

@@ -18,6 +18,10 @@ public final class LegalityEvaluationDtos {
     /** 复核头行快照；SHADOW 研判没有复核行时整个 review 为 null。 */
     public record ReviewDto(String state, String manualStatus, long version) { }
 
+    /** 算法对单次结论是否足以自动定性的保存结果；review_required 与操作者权限无关。 */
+    public record DecisionAssuranceDto(String algorithmVersion, String status, boolean reviewRequired, List<String> reasons,
+            String accuracyStatus) { }
+
     /** 单条规则命中明细（与 RuleContracts.HitDetail 同构，facts 只含安全字段）。 */
     public record HitDetailDto(String ruleCode, String ruleVersionId, String resultCode, String reasonCode, BigDecimal severity,
             Map<String, Object> facts, List<ParamRefDto> params, List<EvidenceRefDto> evidence, String message) { }
@@ -28,7 +32,8 @@ public final class LegalityEvaluationDtos {
 
     /**
      * 研判列表项/详情。列表不带 hit_details（体积），详情带；alarm_id/event_id 只在具备 alarm:read 且告警仍在同一有效元组时返回，
-     * target_id/target_no 同理受 target:read 约束，plan_id/plan_no 受 flight:read 约束。
+     * target_id/target_no/object_type_code 同理受 target:read 约束，plan_id/plan_no 受 flight:read 约束。
+     * object_type_code 为关联目标当前明确类别，不以历史研判结论或计划关联推断。
      */
     public record EvaluationDto(String evaluationId, String runId, String ruleSetCode, String ruleSetVersionId, Integer ruleSetVersionNo,
             String paramStatus, String mode, String triggerKind, String subjectKind, String targetId, String targetNo, String trackId,
@@ -37,7 +42,7 @@ public final class LegalityEvaluationDtos {
             List<String> unknownReasons, List<EvidenceRefDto> evidenceReferences, List<HitDetailDto> hitDetails,
             ReviewDto review, List<String> allowedActions, String supersedesEvaluationId, String supersededByEvaluationId,
             String alarmId, String eventId, String alarmOutcomeKind, String assessmentId, String ownerOrgId, String ownerOrgName,
-            String districtId, String districtName, String sourceMode) { }
+            String districtId, String districtName, String sourceMode, String objectTypeCode, DecisionAssuranceDto decisionAssurance) { }
 
     /** 复核历史项；actor_id 只提供操作归属 ID，actor_name 仅用于展示。 */
     public record RevisionDto(String historyId, long version, String previousState, String resultingState, String conclusion,

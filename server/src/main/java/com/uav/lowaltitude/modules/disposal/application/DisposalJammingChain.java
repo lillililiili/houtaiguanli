@@ -30,7 +30,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 反制完成后自动接信号干扰。
  *
  * 必须在来源授权的完成事务提交之后跑：干扰创建或下发失败不能把「反制已完成」一起回滚。
- * 一次「联动反制」批准覆盖这条链，不再二次审批；下发用原反制执行人，没有登录会话。
+ * 普通审批链沿用原批准；直接反制链保留 DIRECT 并重新检查发起人当前权限，不生成审批事实。
  */
 @Service
 public class DisposalJammingChain {
@@ -42,6 +42,7 @@ public class DisposalJammingChain {
     private final DisposalExecutionGateway gateway;
     private final DeviceAccessPolicy devices;
     private final AppClock clock;
+    private final DirectDisposalAccess directAccess;
     private final AuditService audit;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
@@ -51,8 +52,10 @@ public class DisposalJammingChain {
             DisposalExecutionGateway gateway, DeviceAccessPolicy devices, AppClock clock, AuditService audit,
             ObjectMapper json, PlatformTransactionManager transactions,
             com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops,
-            com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory) {
+            com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory,
+            DirectDisposalAccess directAccess) {
         this.advisory = advisory;
+        this.directAccess = directAccess;
         this.repository = repository; this.policies = policies; this.gateway = gateway; this.devices = devices;
         this.clock = clock; this.audit = audit; this.json = json;
         this.tx = new TransactionTemplate(transactions);
@@ -94,19 +97,25 @@ public class DisposalJammingChain {
         if (repository.chainedFrom(parent.authorizationId())) return;
         if (repository.actionExists(parent.subjectKind(), parent.subjectId(), DisposalRules.JAMMING)) return;
 
+        boolean direct = "DIRECT".equals(parent.authorizationMode());
+        if (direct && directAccess.eligibleRequester(parent, !DisposalRules.MANUAL.equals(parent.channel())) == null) return;
         DisposalPolicy policy = policies.active();
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(DisposalRules.JAMMING));
+        if (direct && parent.validUntil().isBefore(until)) until = parent.validUntil();
+        if (!until.isAfter(at)) return;
         String id = UUID.randomUUID().toString();
         String no = DisposalRules.authorizationNo(dayKey(at), repository.nextSequence(dayKey(at)));
         String reason = "反制完成后自动发起信号干扰（来源 " + parent.authorizationNo() + "）";
-        String approver = parent.approvedBy() != null ? parent.approvedBy() : parent.requestedBy();
-        String note = "反制完成后自动批准，不再二次审批";
+        String approver = direct ? null : parent.approvedBy() != null ? parent.approvedBy() : parent.requestedBy();
+        String note = direct ? "直接反制完成后接续信号干扰，沿用原直接授权有效期" : "反制完成后自动批准，不再二次审批";
+        AuthorizationInsert insert = new AuthorizationInsert(id, no, DisposalRules.JAMMING, parent.subjectKind(),
+                parent.subjectId(), parent.targetId(), parent.deviceId(), parent.channel(), reason,
+                parent.requestedBy(), at, DisposalRules.APPROVED, parent.policyVersion(), parent.ownerOrgId(),
+                parent.districtId(), parent.sourceMode());
         try {
-            repository.insertChainedApproved(new AuthorizationInsert(id, no, DisposalRules.JAMMING, parent.subjectKind(),
-                    parent.subjectId(), parent.targetId(), parent.deviceId(), parent.channel(), reason,
-                    parent.requestedBy(), at, DisposalRules.APPROVED, parent.policyVersion(), parent.ownerOrgId(),
-                    parent.districtId(), parent.sourceMode()), parent.authorizationId(), approver, at, at, until, note);
+            if (direct) repository.insertChainedDirect(insert, parent.authorizationId(), at, until, note);
+            else repository.insertChainedApproved(insert, parent.authorizationId(), approver, at, at, until, note);
         } catch (DataIntegrityViolationException raced) {
             return;
         }
@@ -118,9 +127,10 @@ public class DisposalJammingChain {
         // 只有这种机器连做两步的链式流转会撞。批准确实发生在申请之后，所以让它晚一毫秒，次序就是确定的。
         event(id, "REQUEST", parent.requestedBy(), reason, snap, at);
         OffsetDateTime approvedEventAt = at.plusNanos(1_000_000);
-        event(id, "APPROVE", approver, note, Map.of("status", DisposalRules.APPROVED,
-                "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
-                "chained_from", parent.authorizationId()), approvedEventAt);
+        event(id, direct ? "DIRECT_AUTHORIZE" : "APPROVE", direct ? parent.requestedBy() : approver, note,
+                Map.of("status", DisposalRules.APPROVED, "authorization_mode", direct ? "DIRECT" : "REVIEW",
+                        "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
+                        "chained_from", parent.authorizationId()), approvedEventAt);
         AuthUser requester = repository.actor(parent.requestedBy());
         audit.record(parent.requestedBy(), requester == null ? "" : requester.account(),
                 requester == null ? null : requester.roleCode(), "disposal", "disposal_jamming_chained",
@@ -128,17 +138,23 @@ public class DisposalJammingChain {
                 "SUCCESS", "", "");
 
         if (DisposalRules.MANUAL.equals(parent.channel())) return;
-        tryDispatch(id, parent, policy, reason, at);
+        tryDispatch(id, parent, policy, reason, direct ? approvedEventAt : at);
     }
 
     private void tryDispatch(String id, AuthorizationRow parent, DisposalPolicy policy, String reason,
                              OffsetDateTime at) {
-        String actorId = repository.latestExecuteActor(parent.authorizationId());
-        if (actorId == null) actorId = parent.requestedBy();
-        AuthUser executor = repository.actor(actorId);
-        if (executor == null || !devices.canOperateDevices(executor)) return;
         AuthorizationRow row = repository.findUnlocked(id);
         if (row == null) return;
+        AuthUser executor;
+        if ("DIRECT".equals(row.authorizationMode())) {
+            executor = directAccess.eligibleRequester(row, true);
+        } else {
+            String actorId = repository.latestExecuteActor(parent.authorizationId());
+            if (actorId == null) actorId = parent.requestedBy();
+            executor = repository.actor(actorId);
+            if (executor == null || !devices.canOperateDevices(executor)) return;
+        }
+        if (executor == null) return;
         if (row.deviceId() != null) {
             emergencyStops.lockDevice(row.deviceId());
             if (emergencyStops.deviceUnresolved(row.deviceId())) return;
@@ -152,6 +168,12 @@ public class DisposalJammingChain {
         } catch (RuntimeException ex) {
             log.warn("auto jamming {} created but dispatch failed: {}", id, ex.getMessage());
             return;
+        }
+        if ("DIRECT".equals(row.authorizationMode())) {
+            // 设备结果发生在直接授权之后；重采实际时刻，并为同毫秒调用保留确定的逻辑顺序。
+            OffsetDateTime observedAt = clock.now().atOffset(ZoneOffset.UTC);
+            OffsetDateTime earliestResultAt = at.plusNanos(1_000_000);
+            at = observedAt.isAfter(earliestResultAt) ? observedAt : earliestResultAt;
         }
         if (dispatched instanceof DisposalExecutionGateway.Rejected rejected) {
             event(id, rejected.eventKind(), executor.userId(), rejected.detail(),

@@ -47,6 +47,7 @@ public enum PermissionCode {
     DISPOSAL_READ("disposal:read"),
     DISPOSAL_REQUEST("disposal:request"),
     DISPOSAL_APPROVE("disposal:approve"),
+    DISPOSAL_DIRECT("disposal:direct"),
     DISPOSAL_EXECUTE("disposal:execute"),
     DISPOSAL_STOP("disposal:stop"),
     // 阶段 14：处罚案件域（立案/指派/线索、裁量与决定书、复核、结案）。目录行由迁移 V202609080101 先落。

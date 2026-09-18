@@ -450,6 +450,20 @@ class Stage13PostgresTest {
         }
     }
 
+    @Test
+    @Order(11)
+    void directMigrationPreservesHistoryAndRequiresAWindowWithoutAnApprover() {
+        assertThat(jdbc.queryForObject("select count(*) from app_role_permission where permission_code='disposal:direct'", Integer.class)).isZero();
+        String old = insertAuthorization("REQUESTED", null, null);
+        assertThat(jdbc.queryForObject("select authorization_mode from disposal_authorization where authorization_id=?",String.class,old)).isEqualTo("REVIEW");
+        assertThat(sqlState(catching(() -> jdbc.update("update disposal_authorization set authorization_mode='DIRECT' where authorization_id=?",old)))).isEqualTo("23514");
+        jdbc.update("update disposal_authorization set authorization_mode='DIRECT',status='APPROVED',valid_from=?,valid_until=? where authorization_id=?",T0,T0.plusMinutes(10),old);
+        assertThat(jdbc.queryForObject("select approved_by from disposal_authorization where authorization_id=?",String.class,old)).isNull();
+        assertThat(sqlState(catching(() -> jdbc.update("update disposal_authorization set approved_by=?,approved_at=? where authorization_id=?",approver,T0,old)))).isEqualTo("23514");
+        String event = insertEvent(old,"DIRECT_AUTHORIZE","显式权限免逐次审批");
+        assertThat(sqlState(catching(() -> jdbc.update("delete from disposal_authorization_event where event_id=?",event)))).isEqualTo("23514");
+    }
+
     /** 在指定 schema 上造出一条授权与一条事件，返回事件 id。夹具链：角色→用户→机构/区域→授权→事件。 */
     private String seedAuthorizationEvent(JdbcTemplate scratch, String schema) {
         String tag = schema.substring(SCHEMA_PREFIX.length(), SCHEMA_PREFIX.length() + 8);

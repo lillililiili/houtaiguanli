@@ -31,6 +31,7 @@ public class LocalStage2AccessSeeder implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         boolean changed = false;
         for (PermissionCode permission : PermissionCode.values()) {
+            if (permission == PermissionCode.DISPOSAL_DIRECT) continue;
             changed |= jdbcTemplate.update("""
                     insert into app_role_permission (
                         role_code, permission_code, permission_level, menu_enabled, created_at

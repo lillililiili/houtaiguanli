@@ -202,6 +202,7 @@ public class SpaceRiskRepository {
         } else if (access.scopeMode() != ScopeMode.ALL) {
             where.sql.append(" AND 1=0");
         }
+        if (query.excludeDemoSamples()) where.sql.append(RiskRepository.EXCLUDE_DEMO_SAMPLES_SQL);
         if (query.from() != null) {
             where.sql.append(" AND r.received_at>=:from AND r.received_at<:to");
             where.params.put("from", query.from()); where.params.put("to", query.to());
@@ -278,6 +279,10 @@ public class SpaceRiskRepository {
     public record RunRow(String runId, String ruleCode, String triggerKind, OffsetDateTime windowFrom, OffsetDateTime windowTo, String status,
             int targetsSeen, int risksCreated, int risksDeduplicated, String message, String actorId, OffsetDateTime startedAt, OffsetDateTime finishedAt) { }
     public record CountRow(String bucket, long total) { }
-    public record SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId) { }
+    public record SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, boolean excludeDemoSamples) {
+        public SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId) {
+            this(from, to, ownerOrgId, districtId, false);
+        }
+    }
     public record RuleVersionRow(String ruleSetCode, String ruleSetVersionId, int versionNo, String paramStatus) { }
 }

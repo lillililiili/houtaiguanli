@@ -18,6 +18,7 @@ import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.ActionResultDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.CreateRequest;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.CreatedDto;
+import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.DirectResultDto;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository;
@@ -51,6 +52,7 @@ public class DisposalAuthorizationService {
 
     private final com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory;
     private final AccessControlService access;
+    private final com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy devices;
     private final DisposalRepository repository;
     private final DisposalPolicyRepository policies;
     private final UavEventRepository events;
@@ -66,7 +68,9 @@ public class DisposalAuthorizationService {
             DisposalPolicyRepository policies, UavEventRepository events, DisposalExecutionGateway gateway,
             DisposalJammingChain jammingChain, IdempotencyGuard idempotency, AppClock clock, AuditService audit,
             ObjectMapper json, com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops,
-            com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory) {
+            com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory,
+            com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy devices) {
+        this.devices = devices;
         this.advisory = advisory;
         this.access = access; this.repository = repository; this.policies = policies; this.events = events;
         this.gateway = gateway; this.jammingChain = jammingChain; this.idempotency = idempotency; this.clock = clock;
@@ -80,6 +84,21 @@ public class DisposalAuthorizationService {
     public CreatedDto create(String rawRequest, String key) {
         // 申请权与主体读权都先于请求体解析：缺任一权限统一 403，不给人靠 400/404 的差异探测系统里有什么。
         access.require(PermissionCode.DISPOSAL_REQUEST);
+        return createInternal(rawRequest, key, false);
+    }
+
+    @Transactional
+    public DirectResultDto directExecute(String rawRequest, String key) {
+        access.require(PermissionCode.DISPOSAL_DIRECT);
+        CreatedDto created = createInternal(rawRequest, key, true);
+        ExecuteOutcome outcome = executeInternal(created.authorizationId(), new Execute(created.version(), Map.of()),
+                null, executionAccess(created.authorizationId()));
+        return new DirectResultDto(created.authorizationId(), created.authorizationNo(), outcome.dto().status(),
+                outcome.dto().version(), "DIRECT", outcome.rejected()
+                        ? DisposalRules.executionBlockReason(outcome.dto().status(), java.util.List.of(outcome.dto().resultCode())) : null);
+    }
+
+    private CreatedDto createInternal(String rawRequest, String key, boolean direct) {
         CreateRequest request = parseCreate(rawRequest);
         DisposalRules.requireKnown(request.actionType(), DisposalRules.ACTION_TYPES, "处置动作类型无效");
         // 风险单独给码（决策 18-14）：它不在主体名单里，但落进泛泛的"类型无效"就把一句能读懂的话
@@ -92,6 +111,7 @@ public class DisposalAuthorizationService {
         if (!DisposalRules.MANUAL.equals(request.channel()) && blank(request.deviceId()))
             throw bad("经设备执行的处置必须指定设备");
 
+        if (direct && !DisposalRules.MANUAL.equals(request.channel())) devices.requireDevicesOperate();
         DisposalPolicy policy = policies.active();
         Subject subject = resolveSubject(request.subjectKind(), subjectId, request.actionType(), policy);
         // 一律用**解析后**的主体 ID：目标经 target_current_alias 并入当前航迹后，旧 ID 与新 ID 指的是同一件事。
@@ -100,7 +120,7 @@ public class DisposalAuthorizationService {
         String effectiveSubjectId = subject.subjectId();
         if ("UAV_EVENT".equals(request.subjectKind()) && emergencyStops.unresolved(effectiveSubjectId))
             throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
-        idempotency.claim(key, "disposal:create:" + request.subjectKind() + ":" + effectiveSubjectId + ":" + request.actionType());
+        idempotency.claim(key, (direct ? "disposal:direct:" : "disposal:create:") + request.subjectKind() + ":" + effectiveSubjectId + ":" + request.actionType());
         // 并发上限按主体+动作计：同一架无人机不该同时挂着两份还没了结的反制授权。
         if (repository.activeCount(request.subjectKind(), effectiveSubjectId, request.actionType()) >= policy.maxActivePerSubject())
             throw conflict("ACTIVE_AUTHORIZATION_EXISTS", "该主体已有未了结的同类处置授权");
@@ -110,11 +130,21 @@ public class DisposalAuthorizationService {
         String id = UUID.randomUUID().toString();
         String no = DisposalRules.authorizationNo(dayKey(at), repository.nextSequence(dayKey(at)));
         // approval_required=false 的策略可以直接成 APPROVED，但那必须是策略的明示决定，不是代码里的默认。
-        String status = policy.approvalRequired() ? DisposalRules.REQUESTED : DisposalRules.APPROVED;
+        String status = direct || policy.approvalRequired() ? DisposalRules.REQUESTED : DisposalRules.APPROVED;
         repository.insert(new AuthorizationInsert(id, no, request.actionType(), request.subjectKind(), effectiveSubjectId,
                 subject.targetId(), blank(request.deviceId()) ? null : request.deviceId().trim(), request.channel(),
                 reason, actor.userId(), at, status, policy.policyCode(), subject.ownerOrgId(), subject.districtId(),
                 subject.sourceMode()));
+        if (direct) {
+            OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(request.actionType()));
+            if (repository.authorizeDirect(id, 0L, at, until, "持有直接反制权限，免逐次审批") != 1) throw versionConflict();
+            event(id, "DIRECT_AUTHORIZE", actor.userId(), reason, Map.of("status", DisposalRules.APPROVED,
+                    "authorization_mode", "DIRECT", "permission", PermissionCode.DISPOSAL_DIRECT.value(),
+                    "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli()), at);
+            audit(actor, "disposal_direct_authorized", id, "authorization_no=" + no + "; action_type=" + request.actionType()
+                    + "; subject=" + request.subjectKind() + "/" + effectiveSubjectId + "; channel=" + request.channel());
+            return new CreatedDto(id, no, DisposalRules.APPROVED, 1L);
+        }
         event(id, "REQUEST", actor.userId(), reason, Map.of("status", status, "action_type", request.actionType(),
                 "channel", request.channel(), "policy_version", policy.policyCode()), at);
         audit(actor, "disposal_requested", id, "authorization_no=" + no + "; action_type=" + request.actionType()
@@ -165,13 +195,16 @@ public class DisposalAuthorizationService {
 
     @Transactional
     public ExecuteOutcome execute(String id, String rawRequest, String key) {
-        AccessDecision decision = access.require(PermissionCode.DISPOSAL_EXECUTE);
-        Execute body = parseExecute(rawRequest);
+        AccessDecision decision = executionAccess(id);
+        return executeInternal(id, parseExecute(rawRequest), key, decision);
+    }
+
+    private ExecuteOutcome executeInternal(String id, Execute body, String key, AccessDecision decision) {
         // 先事件后授权，与核查写入/急停采用一致锁顺序。
         AuthorizationRow initial = repository.find(id, decision);
         if (initial == null) throw notFound();
         if ("UAV_EVENT".equals(initial.subjectKind()) && Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType()))
-            advisory.requireCounter(initial.subjectId(), true, decision);
+            advisory.requireCounter(initial.subjectId(), !"DIRECT".equals(initial.authorizationMode()), decision);
         AuthorizationRow row = locked(id, decision);
         if ("UAV_EVENT".equals(row.subjectKind()) && emergencyStops.unresolved(row.subjectId()))
             throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
@@ -180,13 +213,16 @@ public class DisposalAuthorizationService {
             if (emergencyStops.deviceUnresolved(row.deviceId()))
                 throw conflict("EMERGENCY_STOP_UNCONFIRMED", "设备仍有待核查的急停任务，请先完成核查");
         }
-        idempotency.claim(key, "disposal:execute:" + id + ":" + body.expectedVersion());
+        if (key != null) idempotency.claim(key, "disposal:execute:" + id + ":" + body.expectedVersion());
         requireVersion(row, body.expectedVersion());
         DisposalRules.requireTransition(DisposalRules.EXECUTE, row.status());
         long now = clock.nowMillis();
         DisposalRules.requireWithinWindow(now, millis(row.validFrom()), millis(row.validUntil()));
         AuthUser actor = AuthContext.require();
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        // 同次直接授权和执行也保持时间线顺序，避免同毫秒时被随机事件 ID 倒排。
+        if ("DIRECT".equals(row.authorizationMode()) && !at.isAfter(row.validFrom()))
+            at = row.validFrom().plusNanos(1_000_000);
 
         if (DisposalRules.MANUAL.equals(row.channel())) {
             if (repository.transition(id, row.version(), DisposalRules.EXECUTING, at, null, null, null) != 1)
@@ -230,7 +266,7 @@ public class DisposalAuthorizationService {
 
     @Transactional
     public ActionResultDto manualResult(String id, String rawRequest, String key) {
-        AccessDecision decision = access.require(PermissionCode.DISPOSAL_EXECUTE);
+        AccessDecision decision = executionAccess(id);
         Manual body = parseManual(rawRequest);
         AuthorizationRow row = locked(id, decision);
         idempotency.claim(key, "disposal:manual-result:" + id + ":" + body.expectedVersion());
@@ -381,6 +417,21 @@ public class DisposalAuthorizationService {
     private record Subject(String subjectId, String targetId, String ownerOrgId, String districtId, String sourceMode) { }
 
     /* ---- 公共写入辅助 ---- */
+
+    /** 普通执行权不能执行直接授权，直接权限也不能代替普通授权的执行权。 */
+    private AccessDecision executionAccess(String id) {
+        AccessDecision decision;
+        try { decision = access.require(PermissionCode.DISPOSAL_EXECUTE); }
+        catch (ApiException denied) { decision = access.require(PermissionCode.DISPOSAL_DIRECT); }
+        AuthorizationRow row = repository.find(id, decision);
+        if (row == null) throw notFound();
+        if ("DIRECT".equals(row.authorizationMode())) {
+            decision = access.require(PermissionCode.DISPOSAL_DIRECT);
+            if (!AuthContext.require().userId().equals(row.requestedBy()))
+                throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "直接反制须由原发起人继续执行");
+        } else decision = access.require(PermissionCode.DISPOSAL_EXECUTE);
+        return decision;
+    }
 
     private AuthorizationRow locked(String id, AccessDecision decision) {
         AuthorizationRow row = repository.lock(id, decision);

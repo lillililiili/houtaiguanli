@@ -48,7 +48,7 @@ public final class DisposalRules {
      * 若将来链式流转变多、或要求严格的产品级确定次序，正解是事件表加一列 per-authorization 单调序号并按它排序；
      * 那要迁移加列并改写入路径，本轮未做。
      */
-    public static final Set<String> EVENT_KINDS = Set.of("REQUEST", "APPROVE", "REJECT", "EXECUTE", "RECEIPT",
+    public static final Set<String> EVENT_KINDS = Set.of("DIRECT_AUTHORIZE", "REQUEST", "APPROVE", "REJECT", "EXECUTE", "RECEIPT",
             "STOP", "COMPLETE", "FAIL", "EXPIRE", "CANCEL", "MANUAL_RESULT",
             "DEVICE_STOP_UNAVAILABLE", "DEVICE_CONTROL_UNAVAILABLE", "DEVICE_NOT_BOUND",
             "PROTOCOL_NOT_OPENED", "DEVICE_OFFLINE", "DEVICE_ALL_OFF_ISSUED");

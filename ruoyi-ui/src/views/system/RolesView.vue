@@ -23,16 +23,19 @@ const createDialog = reactive({ visible: false, busy: false, form: { name: '', d
 const protectedCodes = new Set(['users', 'roles', 'audit', 'countermeasure'])
 const levels = [{ value: 'NONE', label: '无权限' }, { value: 'READ', label: '查看' }, { value: 'OP', label: '操作' }, { value: 'AUTH', label: '授权' }]
 const actionLevels = [{ value: 'NONE', label: '无' }, { value: 'READ', label: '查看' }, { value: 'OP', label: '操作' }]
+const directActionLevels = [{ value: 'NONE', label: '无' }, { value: 'OP', label: '允许' }]
 const menuLabels = {
+  responsePlans: '规则管理',
   dashboard: '数据大屏', sensing: '感知监测', statistics: '统计分析', stats: '报表管理',
   flights: '飞行活动', legality: '合法性判定', airspace: '空域与航线', alarms: '异常告警',
   risk: '空间风险', punishment: '处置处罚', countermeasure: '反制授权', devices: '设备管理',
   monitor: '设备实时监测', monitoring: '设备实时监测', commission: '设备接入调测', commissioning: '设备接入调测',
   maps: '地图管理', interfaces: '接口管理', users: '用户管理', roles: '角色管理',
-  organizations: '单位档案', notificationSettings: '通知对象配置', archive: '审计日志', audit: '审计日志', evidence: '证据管理'
+  organizations: '单位资料（用户管理）', notificationSettings: '通知对象配置', archive: '审计日志', audit: '审计日志', evidence: '证据管理'
 }
-const moduleLabels = { organizations: '单位档案', notificationSettings: '通知对象配置', devices: '设备管理', monitoring: '实时监测', commissioning: '接入调测', maps: '地图管理', users: '用户管理', roles: '角色管理', audit: '审计日志', alarms: '告警处置', flights: '飞行计划', fusion: '融合感知', airspace: '空域管理', countermeasure: '反制处置', evidence: '证据管理', punishment: '处罚案件' }
+const moduleLabels = { organizations: '单位资料（用户管理）', notificationSettings: '通知对象配置', devices: '设备管理', monitoring: '实时监测', commissioning: '接入调测', maps: '地图管理', users: '用户管理', roles: '角色管理', audit: '审计日志', alarms: '告警处置', flights: '飞行计划', fusion: '融合感知', airspace: '空域管理', countermeasure: '反制处置', evidence: '证据管理', punishment: '处罚案件' }
 const actionLabels = { create: '新增', read: '查看', update: '修改', delete: '删除', enable: '启用', disable: '停用', export: '导出', operate: '操作', authorize: '授权', reset_password: '重置密码', preview: '预览' }
+moduleLabels.responsePlans = '规则管理'
 const canOperate = computed(() => auth.hasPermission('roles.auth'))
 const locked = computed(() => detail.value?.role_code === 'ROLE-ADMIN')
 const filteredRoles = computed(() => {
@@ -57,12 +60,17 @@ function permissionLimitType(row, asCreate = false) {
   const text = permissionLimit(row, asCreate)
   return text === '仅超级管理员' ? 'warning' : text === '固定权限' ? 'info' : ''
 }
-function moduleLabel(group) { return /[\u4e00-\u9fff]/.test(group.module_name || '') ? group.module_name : (moduleLabels[group.module_code] || group.module_code) }
+function moduleLabel(group) {
+  if (group.module_code === 'disposal') return '反制授权'
+  return /[\u4e00-\u9fff]/.test(group.module_name || '') ? group.module_name : (moduleLabels[group.module_code] || group.module_code)
+}
 function actionLabel(action) {
-  if (/[\u4e00-\u9fff]/.test(action.name || '')) return action.name
+  if (/[\u4e00-\u9fff]/.test(action.name || '')) return action.permission_code?.startsWith('disposal:') ? action.name.replaceAll('处置', '反制') : action.name
   const suffix = action.permission_code?.split('.').pop()
   return actionLabels[suffix] || action.permission_code
 }
+function actionLevelsFor(action) { return action.permission_code === 'disposal:direct' ? directActionLevels : actionLevels }
+function actionDescription(action) { return action.permission_code === 'disposal:direct' ? '免逐次审批；仍校验反制范围、时效及设备权限。' : '' }
 function isPermissionLocked(row) { return locked.value || protectedCodes.has(row.permission_code) }
 function isActionLocked(action) { return locked.value || action.permission_code === 'map:activate' || ['users', 'roles', 'audit', 'countermeasure'].includes(action.permission_code?.split(':')[0]) }
 function setLevel(row, level) { row.level = level; if (level === 'NONE') row.menu_enabled = false }
@@ -231,7 +239,7 @@ onMounted(loadAll)
             <template #label><span class="permission-tab-label"><span>动作权限</span><span class="permission-tab-count">{{ actionPermissionCount }}</span></span></template>
             <div class="permission-intro"><div><h3>动作权限</h3><p>配置进入页面后可执行的具体业务操作。</p></div></div>
             <div v-if="actionCatalog.length" class="action-grid"><section v-for="group in actionCatalog" :key="group.module_code" class="action-group"><h4>{{ moduleLabel(group) }}</h4>
-              <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span :title="action.permission_code">{{ actionLabel(action) }}</span><el-select v-model="actionDraft[action.permission_code]" :disabled="isActionLocked(action) || actionDraft[action.permission_code]==='AUTH'" size="small"><el-option v-for="level in actionLevels" :key="level.value" :label="level.label" :value="level.value" /></el-select></div>
+              <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label" :title="action.permission_code"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-select v-model="actionDraft[action.permission_code]" :disabled="isActionLocked(action) || actionDraft[action.permission_code]==='AUTH'" size="small"><el-option v-for="level in actionLevelsFor(action)" :key="level.value" :label="level.label" :value="level.value" /></el-select></div>
             </section></div><el-empty v-else description="当前没有可配置的动作权限" />
           </el-tab-pane>
         </el-tabs>
@@ -281,7 +289,7 @@ onMounted(loadAll)
 .permission-matrix__entry{min-width:0}.permission-matrix__entry :deep(.el-checkbox){display:flex;align-items:flex-start;height:auto;white-space:normal}.permission-matrix__entry :deep(.el-checkbox__label){padding-left:8px;line-height:1.35}
 .permission-matrix__meta{display:flex;flex-direction:column;gap:2px}.permission-matrix__meta strong{color:var(--admin-text);font-size:14px;font-weight:650}
 .permission-matrix__level .el-select{width:100%}.permission-matrix__limit{justify-self:start}.permission-matrix__empty{padding:36px 16px;color:var(--admin-muted);text-align:center}
-.code-note{display:block;margin-top:0;color:var(--admin-muted);font-family:ui-monospace,monospace;font-size:11px}.action-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}.action-group{padding:14px;border:1px solid var(--admin-border);border-radius:8px;background:#fbfcfe}.action-group h4{margin:0 0 8px;padding-bottom:10px;border-bottom:1px solid var(--admin-border);color:var(--admin-text)}.action-row{display:flex;min-height:40px;align-items:center;justify-content:space-between;gap:10px;padding:4px 0}.action-row>span{min-width:0;white-space:normal;overflow-wrap:anywhere}.action-row .el-select{width:104px}.save-bar{position:sticky;z-index:2;bottom:-20px;margin:20px -20px -20px;padding:14px 20px;border-top:1px solid var(--admin-border);background:rgba(255,255,255,.96);box-shadow:0 -6px 16px rgba(23,32,51,.04)}.save-bar>span{margin-right:auto;color:var(--admin-muted)}.role-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.code-note{display:block;margin-top:0;color:var(--admin-muted);font-family:ui-monospace,monospace;font-size:11px}.action-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}.action-group{padding:14px;border:1px solid var(--admin-border);border-radius:8px;background:#fbfcfe}.action-group h4{margin:0 0 8px;padding-bottom:10px;border-bottom:1px solid var(--admin-border);color:var(--admin-text)}.action-row{display:flex;min-height:40px;align-items:center;justify-content:space-between;gap:10px;padding:4px 0}.action-row>span{min-width:0;white-space:normal;overflow-wrap:anywhere}.action-row__label{display:flex;flex-direction:column;gap:3px}.action-row__label small{color:var(--admin-muted);font-size:11px;line-height:1.45}.action-row .el-select{width:104px;flex:none}.save-bar{position:sticky;z-index:2;bottom:-20px;margin:20px -20px -20px;padding:14px 20px;border-top:1px solid var(--admin-border);background:rgba(255,255,255,.96);box-shadow:0 -6px 16px rgba(23,32,51,.04)}.save-bar>span{margin-right:auto;color:var(--admin-muted)}.role-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media(max-width:1100px){.roles-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.role-sidebar{border-right:0;border-bottom:1px solid var(--admin-border)}.role-list{max-height:210px}.role-summary,.save-bar{align-items:flex-start;flex-direction:column}.save-actions{width:100%;justify-content:flex-end}.role-fields{grid-template-columns:1fr}}
 @media(max-width:900px){.roles-layout{min-height:680px;grid-template-rows:auto auto}.role-list{max-height:272px}}
 @media(max-width:560px){.role-detail{padding:16px}.role-summary__actions,.save-actions{width:100%;flex-wrap:wrap}.permission-tabs :deep(.el-tabs__item){padding:0 14px}.action-grid{grid-template-columns:1fr}.save-bar{bottom:-16px;margin:16px -16px -16px;padding:12px 16px}.permission-matrix__head{display:none}.permission-matrix__head,.permission-matrix__row{grid-template-columns:1fr;justify-items:start;gap:8px;padding:12px 14px}.permission-matrix__level{width:100%}}

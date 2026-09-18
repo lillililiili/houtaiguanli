@@ -112,6 +112,19 @@ class HandoffPunishmentMaterialsApiTest {
         assertThat(material.path("evidence")).hasSize(1);
     }
 
+    @Test
+    void directDisposalSnapshotKeepsItsModeWithoutInventingAnApprover() throws Exception {
+        jdbc.update("update disposal_authorization set authorization_mode='DIRECT',approved_by=null,approved_at=null"
+                + " where subject_id=?", eventId);
+
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+        JsonNode disposal = detail(handoffId, submitter).path("material").path("disposals").get(0);
+
+        assertThat(disposal.path("authorization_mode").asText()).isEqualTo("DIRECT");
+        assertThat(disposal.has("approved_by_name")).isFalse();
+    }
+
     /* ---- 权限与状态 ---- */
 
     @Test

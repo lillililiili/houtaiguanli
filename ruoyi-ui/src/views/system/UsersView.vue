@@ -2,6 +2,9 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled, OfficeBuilding, Plus } from '@element-plus/icons-vue'
+import OrganizationDialog from './organization/OrganizationDialog.vue'
+import { directoryApi } from '@/api/organizationDirectory'
+import { hasUserAccess, hasOrganizationAccess } from '@/config/navigation'
 import PageHeader from '@/components/PageHeader.vue'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
@@ -19,10 +22,14 @@ const total = ref(0)
 const selectedOrgId = ref(ALL_ORGS)
 const filters = reactive({ keyword: '', roleCode: '', status: '', page: 1, size: 20 })
 const userDialog = reactive({ visible: false, busy: false, mode: 'create', row: null, form: {} })
-const orgDialog = reactive({ visible: false, busy: false, row: null, parent: null, form: {} })
+const orgDialog = reactive({ visible: false, row: null, parent: null, mode: 'view' })
 const resetDialog = reactive({ visible: false, busy: false, row: null, password: '' })
 const canOperate = computed(() => auth.hasPermission('users.op'))
-const canManageOrganization = computed(() => auth.hasPermission('users.auth'))
+const canReadUsers = computed(() => hasUserAccess(auth.user))
+const canReadDirectory = computed(() => auth.hasPermission('organizations.read'))
+const canEditDirectory = computed(() => canReadDirectory.value && auth.hasPermission('organizations.auth'))
+const canEditBasic = computed(() => canReadUsers.value && auth.hasPermission('users.auth'))
+const canManageOrganization = computed(() => canEditDirectory.value || canEditBasic.value)
 const selectedOrg = computed(() => organizations.value.find(item => item.org_id === selectedOrgId.value))
 const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false))
 
@@ -41,10 +48,6 @@ const treeData = computed(() => {
 
 function statusLabel(value) { return value === 'ACTIVE' ? '启用' : '停用' }
 function isAdmin(row) { return row?.role_code === 'ROLE-ADMIN' }
-function makeOrgCode() {
-  const raw = globalThis.crypto?.randomUUID?.() || `${Date.now()}`
-  return `ORG-${raw.replaceAll('-', '').slice(0, 8).toUpperCase()}`
-}
 function passwordError(password, account = '') {
   if (password.length < 6 || password.length > 32) return '临时密码须为 6–32 位。'
   if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password) || !/[^\w]/.test(password)) return '临时密码须包含大小写字母、数字和特殊字符。'
@@ -53,12 +56,25 @@ function passwordError(password, account = '') {
 }
 
 async function loadCatalog() {
-  const [roleRows, orgRows] = await Promise.all([systemApi.roles(), systemApi.organizations()])
-  roles.value = roleRows || []
-  organizations.value = orgRows || []
+  if (canReadUsers.value) {
+    const [roleRows, orgRows] = await Promise.all([systemApi.roles(), systemApi.organizations()])
+    roles.value = roleRows || []; organizations.value = orgRows || []
+  } else if (hasOrganizationAccess(auth.user)) {
+    const all = []
+    let page = 1
+    let hasMore = true
+    while (hasMore) {
+      const result = await directoryApi.profiles({ page, size: 100 })
+      all.push(...(result.items || []))
+      hasMore = all.length < result.total && Boolean(result.items?.length)
+      page++
+    }
+    organizations.value = all
+  }
   if (selectedOrgId.value !== ALL_ORGS && !organizations.value.some(item => item.org_id === selectedOrgId.value)) selectedOrgId.value = ALL_ORGS
 }
 async function loadUsers() {
+  if (!canReadUsers.value) { users.value = []; total.value = 0; loading.value = false; return }
   loading.value = true
   error.value = ''
   try {
@@ -147,29 +163,18 @@ async function removeUser(row) {
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '删除失败。') }
 }
 
-function openOrg(row = null, parent = null) {
-  if (!canManageOrganization.value) return
-  orgDialog.row = row
-  orgDialog.parent = parent
-  orgDialog.form = { name: row?.name || '', parent_id: row?.parent_id || parent?.org_id || '' }
-  orgDialog.visible = true
+function openOrg(row = null, parent = null, mode = row ? 'edit' : 'create') {
+  if (mode !== 'view' && !canManageOrganization.value) return
+  Object.assign(orgDialog, { row, parent, mode, visible: true })
 }
-async function saveOrg() {
-  if (!canManageOrganization.value || orgDialog.busy) return
-  if (!orgDialog.form.name?.trim()) return ElMessage.warning('单位名称不能为空。')
-  orgDialog.busy = true
-  try {
-    if (orgDialog.row) await systemApi.updateOrganization(orgDialog.row.org_id, { name: orgDialog.form.name.trim(), parent_id: orgDialog.form.parent_id || null, expected_version: orgDialog.row.version })
-    else await systemApi.createOrganization({ name: orgDialog.form.name.trim(), parent_id: orgDialog.form.parent_id || null, org_code: makeOrgCode() })
-    orgDialog.visible = false
-    ElMessage.success('单位已保存。')
-    await refreshAll()
-  } catch (e) { ElMessage.error(e.message || '单位保存失败。') }
-  finally { orgDialog.busy = false }
+async function orgSaved(result) {
+  if (result?.org_id) selectedOrgId.value = result.org_id
+  await refreshAll()
 }
 function handleOrgCommand(command, row) {
   if (command === 'add') openOrg(null, row)
   else if (command === 'edit') openOrg(row)
+  else if (command === 'view') openOrg(row, null, 'view')
 }
 
 watch(() => [filters.roleCode, filters.status], search)
@@ -179,7 +184,7 @@ onMounted(refreshAll)
 <template>
   <div class="page-stack page-stack--viewport">
     <PageHeader title="用户管理" description="单位、账号、角色与状态统一管理；唯一超级管理员受服务端保护。">
-      <el-button :disabled="!canOperate" type="primary" @click="openUser('create')">新增用户</el-button>
+      <el-button v-if="canReadUsers" :disabled="!canOperate" type="primary" @click="openUser('create')">新增用户</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="refreshAll" />
     <section class="content-card user-management viewport-fill">
@@ -196,6 +201,7 @@ onMounted(refreshAll)
                 <el-dropdown v-if="data.org_id !== ALL_ORGS" trigger="click" @click.stop @command="command => handleOrgCommand(command, data)">
                   <button class="org-node__more" type="button" :aria-label="`管理单位 ${data.label}`" @click.stop><el-icon><MoreFilled /></el-icon></button>
                 <template #dropdown><el-dropdown-menu>
+                  <el-dropdown-item command="view">查看单位</el-dropdown-item>
                   <el-dropdown-item command="add" :disabled="!canManageOrganization">新增下级单位</el-dropdown-item>
                   <el-dropdown-item command="edit" :disabled="!canManageOrganization">编辑单位</el-dropdown-item>
                 </el-dropdown-menu></template>
@@ -207,16 +213,17 @@ onMounted(refreshAll)
         <p class="org-panel__hint">选择单位后，右侧仅显示该单位用户</p>
       </aside>
       <main class="table-panel">
-        <el-form class="filter-bar" inline @submit.prevent="search">
+        <el-form v-if="canReadUsers" class="filter-bar" inline @submit.prevent="search">
           <el-form-item label="用户"><el-input v-model="filters.keyword" clearable placeholder="账号、姓名或联系电话" @keyup.enter="search" /></el-form-item>
           <el-form-item label="角色"><el-select v-model="filters.roleCode" clearable placeholder="全部角色"><el-option v-for="role in roles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
           <el-form-item label="状态"><el-select v-model="filters.status" clearable placeholder="全部状态"><el-option label="启用" value="ACTIVE" /><el-option label="停用" value="DISABLED" /></el-select></el-form-item>
           <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
         </el-form>
-        <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><el-button @click="refreshAll">刷新</el-button></div>
-        <div class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
+        <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><div class="unit-toolbar-actions"><el-button v-if="selectedOrg" @click="openOrg(selectedOrg, null, 'view')">查看单位</el-button><el-button @click="refreshAll">刷新</el-button></div></div>
+        <el-empty v-if="!canReadUsers" description="选择左侧单位后点击查看单位，维护单位资料与联系人。当前账号没有用户列表读取权限。" />
+        <div v-else class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
-          <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" />
           <el-table-column label="状态" width="82"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
           <el-table-column label="最后登录" min-width="168"><template #default="{ row }">{{ row.last_login_at ? formatTime(row.last_login_at) : '从未登录' }}</template></el-table-column>
           <el-table-column label="操作" width="276" fixed="right"><template #default="{ row }">
@@ -226,7 +233,7 @@ onMounted(refreshAll)
             <el-button link type="danger" :disabled="!canOperate || isAdmin(row)" @click="removeUser(row)">删除</el-button>
           </template></el-table-column>
         </el-table></div>
-        <el-pagination v-model:current-page="filters.page" v-model:page-size="filters.size" class="pagination" background layout="total, sizes, prev, pager, next" :total="total" :page-sizes="[10,20,50,100]" @current-change="loadUsers" @size-change="filters.page=1;loadUsers()" />
+        <el-pagination v-if="canReadUsers" v-model:current-page="filters.page" v-model:page-size="filters.size" class="pagination" background layout="total, sizes, prev, pager, next" :total="total" :page-sizes="[10,20,50,100]" @current-change="loadUsers" @size-change="filters.page=1;loadUsers()" />
       </main>
     </section>
 
@@ -246,21 +253,19 @@ onMounted(refreshAll)
       <el-form label-position="top"><el-form-item label="临时密码" required><el-input v-model="resetDialog.password" type="password" show-password maxlength="32" autocomplete="new-password" /></el-form-item></el-form>
       <template #footer><el-button @click="resetDialog.visible=false">取消</el-button><el-button type="primary" :loading="resetDialog.busy" @click="resetPassword">重置密码</el-button></template>
     </el-dialog>
-    <el-dialog v-model="orgDialog.visible" :title="orgDialog.row ? '编辑单位' : (orgDialog.parent ? `新增下级单位 · ${orgDialog.parent.name}` : '新增单位')" width="520px">
-      <el-form label-position="top"><el-form-item label="单位名称" required><el-input v-model="orgDialog.form.name" /></el-form-item><el-form-item v-if="!orgDialog.parent" label="上级单位"><el-select v-model="orgDialog.form.parent_id" clearable filterable><el-option v-for="org in organizations.filter(item => item.org_id !== orgDialog.row?.org_id)" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item></el-form>
-      <template #footer><el-button @click="orgDialog.visible=false">取消</el-button><el-button type="primary" :loading="orgDialog.busy" @click="saveOrg">保存</el-button></template>
-    </el-dialog>
+    <OrganizationDialog v-model:visible="orgDialog.visible" :row="orgDialog.row" :parent="orgDialog.parent" :mode="orgDialog.mode" :organizations="organizations" :can-read-directory="canReadDirectory" :can-edit-directory="canEditDirectory" :can-edit-basic="canEditBasic" @saved="orgSaved" />
   </div>
 </template>
 
 <style scoped>
+.unit-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;flex:none}.unit-toolbar-actions .el-button+.el-button{margin-left:0}.table-toolbar{flex-wrap:wrap;gap:12px}:deep(.el-table .cell){white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
 .user-management{display:grid;grid-template-columns:292px minmax(0,1fr);min-height:0;overflow:hidden}
 .org-panel{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:linear-gradient(180deg,#fbfdff 0%,#f6f9fd 100%)}
 .org-panel__header{display:flex;min-height:76px;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--admin-border);background:#fff}
 .org-panel__heading{display:flex;min-width:0;align-items:center;gap:10px}.org-panel__heading>span:last-child{min-width:0}.org-panel__heading strong,.org-panel__heading small{display:block}.org-panel__heading strong{font-size:15px}.org-panel__heading small{margin-top:3px;color:var(--admin-muted);font-size:12px}
 .org-panel__icon{display:grid;width:34px;height:34px;flex:none;place-items:center;border-radius:9px;color:var(--admin-secondary);background:var(--admin-primary-soft);font-size:18px}
 .org-panel__body{min-height:0;flex:1;padding:10px 9px;overflow:auto}.org-tree{background:transparent}
-:deep(.org-tree .el-tree-node__content){height:40px;margin:2px 0;padding-right:5px;border-radius:7px;color:var(--admin-text);transition:background-color .16s ease,color .16s ease}
+:deep(.org-tree .el-tree-node__content){height:auto;min-height:40px;margin:2px 0;padding-right:5px;border-radius:7px;color:var(--admin-text);transition:background-color .16s ease,color .16s ease}
 :deep(.org-tree .el-tree-node__content:hover){background:#eef4fc}
 :deep(.org-tree .el-tree-node.is-current>.el-tree-node__content){color:var(--admin-secondary);background:var(--admin-primary-soft);box-shadow:inset 3px 0 0 var(--admin-secondary)}
 .org-node{display:flex;min-width:0;flex:1;align-items:center;gap:6px}.org-node__label{min-width:0;flex:1;white-space:normal;overflow-wrap:anywhere;line-height:1.5}

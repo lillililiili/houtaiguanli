@@ -23,6 +23,12 @@ public class DeviceMaintenanceController {
         return ApiResponse.ok(service.forPlan(planId,deviceId,page,size));
     }
 
+    @PostMapping("/device-maintenance-tasks/{taskId}/notifications/resend")
+    public ApiResponse<Task> resend(@PathVariable String taskId,@RequestBody ResendRequest body,
+            @RequestHeader(value="Idempotency-Key",required=false) String key){
+        return ApiResponse.ok(service.resend(taskId,body,key));
+    }
+
     @GetMapping("/device-maintenance-tasks")
     public ApiResponse<Page> list(@RequestParam(defaultValue="PENDING") String status,
             @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int size) {

@@ -22,14 +22,16 @@ import com.uav.lowaltitude.modules.handoff.application.HandoffReadService;
 import com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
-/** 交接只有提交与读取；送达、回执、处罚办结没有任何写入口，也不放入设备 Outbox。 */
+/** 交接提交、读取及处罚通知；客户端不能自行填写送达、签收或处罚结果。 */
 @RestController
 @RequestMapping("/api/v1")
 public class HandoffController {
     private final HandoffReadService read;
     private final HandoffSubmissionService submission;
+    private final com.uav.lowaltitude.modules.handoff.application.HandoffNotificationService notifications;
 
-    public HandoffController(HandoffReadService read, HandoffSubmissionService submission) {
+    public HandoffController(HandoffReadService read, HandoffSubmissionService submission, com.uav.lowaltitude.modules.handoff.application.HandoffNotificationService notifications) {
+        this.notifications = notifications;
         this.read = read;
         this.submission = submission;
     }
@@ -54,6 +56,18 @@ public class HandoffController {
     @GetMapping("/handoffs/{handoffId}")
     public ApiResponse<HandoffDetailDto> detail(@PathVariable String handoffId) {
         return ApiResponse.ok(read.detail(handoffId));
+    }
+
+    @GetMapping("/handoffs/{handoffId}/notifications")
+    public ApiResponse<com.uav.lowaltitude.modules.handoff.application.HandoffNotificationService.StatusDto> notificationStatus(@PathVariable String handoffId) {
+        return ApiResponse.ok(notifications.status(handoffId));
+    }
+
+    @PostMapping("/handoffs/{handoffId}/notifications")
+    public ApiResponse<DeliveryDto> notifyDepartment(@PathVariable String handoffId,
+            @RequestBody(required = false) String request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key) {
+        return ApiResponse.ok(notifications.notify(handoffId, request, key));
     }
 
     @GetMapping("/handoffs/{handoffId}/deliveries")

@@ -50,7 +50,8 @@ public class HandoffMaterialAssembler {
         List<DisposalMaterialDto> disposals = repository.eventDisposals(eventId).stream()
                 .map(d -> new DisposalMaterialDto(d.authorizationId(), d.authorizationNo(), d.actionType(), d.channel(),
                         d.deviceId(), d.status(), d.requestedByName(), d.approvedByName(), millis(d.validFrom()),
-                        millis(d.validUntil()), d.resultCode(), d.resultDetail(), millis(d.completedAt())))
+                        millis(d.validUntil()), d.resultCode(), d.resultDetail(), millis(d.completedAt()),
+                        d.authorizationMode()))
                 .toList();
         List<EvidenceMaterialDto> evidence = includeEvidence
                 ? repository.eventEvidence(eventId).stream()

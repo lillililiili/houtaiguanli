@@ -1,4 +1,4 @@
-import { Cpu, Monitor, Connection, User, UserFilled, DocumentChecked, DataAnalysis, MapLocation, OfficeBuilding, Bell } from '@element-plus/icons-vue';
+import { Cpu, Monitor, Connection, User, UserFilled, DocumentChecked, DataAnalysis, MapLocation, Bell } from '@element-plus/icons-vue';
 
 export const navigationGroups = [
   {
@@ -15,8 +15,8 @@ export const navigationGroups = [
     title: '系统管理', key: 'system', icon: UserFilled,
     children: [
       { title: '用户管理', key: 'users', path: '/system/users', permission: 'users.read', icon: User },
-      { title: '单位档案', key: 'organizations', path: '/system/organizations', permission: 'organizations.read', icon: OfficeBuilding },
       { title: '通知对象配置', key: 'notificationSettings', path: '/system/notification-settings', permission: 'notificationSettings.read', icon: Bell },
+      { title: '规则管理', key: 'responsePlans', path: '/system/response-plans', permission: 'responsePlans.read', icon: DocumentChecked },
       { title: '角色管理', key: 'roles', path: '/system/roles', permission: 'roles.read', icon: UserFilled },
       { title: '审计日志', key: 'archive', path: '/system/audit', permission: 'audit.read', icon: DocumentChecked }
     ]
@@ -25,10 +25,16 @@ export const navigationGroups = [
 
 export const navigationItems = navigationGroups.flatMap(group => group.children);
 
+export function hasUserAccess(user) {
+  return user?.menu_keys?.includes('users') && user?.permission_codes?.includes('users.read') || false;
+}
+export function hasOrganizationAccess(user) {
+  return user?.menu_keys?.includes('organizations') && user?.permission_codes?.includes('organizations.read') || false;
+}
 export function accessibleItems(user) {
   const keys = new Set(user?.menu_keys || []);
   const permissions = new Set(user?.permission_codes || []);
-  return navigationItems.filter(item => keys.has(item.key) && permissions.has(item.permission));
+  return navigationItems.filter(item => item.key === 'users' ? hasUserAccess(user) || hasOrganizationAccess(user) : keys.has(item.key) && permissions.has(item.permission));
 }
 
 export function firstAccessiblePath(user) {

@@ -1,5 +1,7 @@
 # low-altitude-server
 
+2026-09-17：飞行风险列表、CSV 与空间汇总支持可选 `exclude_demo_samples=true`，供业务前台隐藏预设气象与计划通知样例；默认查询、历史记录和 MQTT replay 规则结果保留。详见[风险接口契约](../docs/backend-stage4/alarm-risk-api-contract.md)。
+
 2026-09-14：旧工作区 `dongyiwurenji/server` 的目标查询、飞行航迹/系统核验、天气风险、空域提前结束与本地模拟改动已迁入本仓库；保留本仓库的地图管理、统计导出、设备删除和完整调测信息。迁移版本冲突以追加独立迁移处理，详见 [迁移记录](../docs/新后端迁移记录.md)。
 
 无人机融合感知与低空安全管理平台的唯一后端，同时服务业务前台和后台管理系统。沿用 Java 17、Spring Boot 3.4.5、MyBatis Starter 3.0.4、Flyway、Maven Wrapper（Maven 3.9.9），开发数据库示例为 PostgreSQL 16/PostGIS 3.5。身份权限、设备运维以及目标/轨迹只读切片已形成可运行接口；其余业务域仍按开发基线渐进建设。
@@ -224,3 +226,16 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 - 关闭策略、后续数据过期或录音移除不会覆盖已有接通/播放结果和模拟来源；关闭策略后后台仍会把过期 CALLING 标记为 UNKNOWN，但不会新呼叫。读取页面不会建任务或发送通知。
 
 迁移仅追加 `V202609160002__automatic_advisory_voice.sql`。详细边界、代码清单和隔离验收记录见[电话录音通知实现与验收](../docs/电话录音通知实现与验收-2026-09-16.md)。管理端 `ruoyi-ui/src` 未发现该 advisory 契约消费者；业务前台同步展示双通道。
+
+## 2026-09-17 合法性自动判定分流
+
+每次规则研判新增证据充分性算法 `EVIDENCE_SUFFICIENCY_V1`，将算法版本、SUFFICIENT/INSUFFICIENT/NOT_APPLICABLE 与原因随研判 INSERT 冻结。前台消费 `decision_assurance` 决定是否显示人工复核，`needs_review` 在服务端分页前筛选；原风险分类、权限和复核历史保留。迁移 `V202609170020` 与 PG `V202609170020.1` 需随本版本应用，旧记录新字段为空时返回 UNAVAILABLE，不补造历史结果。该算法提供规则证据充分性，真实样本统计准确率尚未验证。详见[规则引擎接口](../docs/backend-stage7/rule-engine-api-contract.md)。
+
+
+## 2026-09-17 直接反制权限
+
+后台角色管理的“处置授权”增加“直接反制（免逐次审批）”，默认无。`disposal:direct` 仅显式 OP 有效，超级管理员不自动继承。前台告警详情按服务端能力显示直接反制/申请反制；DIRECT 记录明确操作人、有效期、执行状态和受阻原因，无审批人。追加迁移 `V202609170030`，需随后端重启应用；没有自动给真实账号授权或操作设备。接口和现有规则边界见[处置授权 API](../docs/backend-stage13/disposal-authorization-api-contract.md)。
+
+## 规则配置管理（2026-09-17）
+
+新增 `/api/v1/automation-rule-groups/{category}` 配置接口及追加迁移 `V202609170040`。三类配置独立保存、版本校验、幂等写入及审计。`V202609170050` 接入后台持续判定与 `/runs` 运行记录；`app.automation-rules.enabled=true` 启用判定，状态由调度心跳提供。当前部署能力仅判定与留痕，不自动派发反制、通知或跟踪动作。原处置预案 API 和人工动作保留。详见[规则判定运行说明](../docs/规则判定引擎接入-2026-09-17.md)；原配置阶段见[规则管理接口与验收](../docs/规则管理实现与验收-2026-09-17.md)。

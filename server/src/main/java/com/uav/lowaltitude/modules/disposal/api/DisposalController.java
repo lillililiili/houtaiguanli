@@ -70,6 +70,13 @@ public class DisposalController {
         return ApiResponse.ok(service.create(body, key));
     }
 
+    @PostMapping("/disposal-authorizations/direct-execute")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<DisposalDtos.DirectResultDto> directExecute(@RequestHeader("Idempotency-Key") String key,
+            @RequestBody(required = false) String body) {
+        return ApiResponse.ok(service.directExecute(body, key));
+    }
+
     @PostMapping("/disposal-authorizations/{id}/approve")
     public ApiResponse<ActionResultDto> approve(@PathVariable String id,
             @RequestHeader("Idempotency-Key") String key, @RequestBody(required = false) String body) {

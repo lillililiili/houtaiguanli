@@ -18,6 +18,7 @@ import org.springframework.util.MultiValueMap;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvaluationDto;
+import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.DecisionAssuranceDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvidenceRefDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.HitDetailDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.PageDto;
@@ -40,13 +41,14 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @Service
 public class LegalityEvaluationReadService {
     public static final String ACTION_REVIEW = "REVIEW", ACTION_RECOMPUTE = "RECOMPUTE", ACTION_ESCALATE = "ESCALATE";
-    private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id",
-            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "page", "size");
+    private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id", "object_type_code",
+            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "page", "size");
     private static final Set<String> MODES = Set.of("ACTIVE", "SHADOW");
     private static final Set<String> LEGAL_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE");
     private static final Set<String> PLAN_MATCHES = Set.of("FULL", "PARTIAL", "NONE", "UNDETERMINED", "NOT_APPLICABLE");
     private static final Set<String> REVIEW_STATES = Set.of("PENDING_REVIEW", "CONFIRMED", "REJECTED", "OVERRIDDEN", "SUPERSEDED");
     private static final Set<String> SUBJECTS = Set.of("TARGET", "PLAN");
+    private static final Set<String> OBJECT_TYPES = Set.of("UAV", "BIRD", "UNKNOWN");
     private static final Set<String> SOURCE_MODES = Set.of("mock", "replay", "live");
     private static final Set<String> RESULT_CODES = Set.of("PASS", "FAIL", "UNDETERMINED", "NOT_APPLICABLE");
     private final AccessControlService access;
@@ -62,7 +64,7 @@ public class LegalityEvaluationReadService {
         // 鉴权必须先于参数解析，防止未授权调用者用 400/404 差异探测受保护接口。
         AccessDecision decision = access.require(PermissionCode.ASSESSMENT_READ);
         // 原始请求只要出现关联筛选就先要求关联读取动作；不能先解析其他坏参数泄露筛选能力。
-        if (values.containsKey("target_id")) access.require(PermissionCode.TARGET_READ);
+        if (values.containsKey("target_id") || values.containsKey("object_type_code")) access.require(PermissionCode.TARGET_READ);
         if (values.containsKey("plan_id")) access.require(PermissionCode.FLIGHT_READ);
         Request request = new Request(values);
         Page page = request.page();
@@ -71,7 +73,8 @@ public class LegalityEvaluationReadService {
                 request.enumerated("legal_status", LEGAL_STATUSES), request.enumerated("plan_match", PLAN_MATCHES),
                 request.enumerated("review_state", REVIEW_STATES), request.enumerated("subject_kind", SUBJECTS),
                 request.optional("target_id", 36), request.optional("plan_id", 36), range.from, range.to,
-                request.optional("owner_org_id", 36), request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES));
+                request.optional("owner_org_id", 36), request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES),
+                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"));
         long total = repository.count(query, decision);
         return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row, decision)).toList(), page.page, page.size, total);
     }
@@ -116,7 +119,26 @@ public class LegalityEvaluationReadService {
                 strings(row.unknownReasons()), evidence(row.evidenceReferences()), row.hitDetails() == null ? null : hits(row.hitDetails()),
                 review, allowedActions(row, alarmId != null), row.supersedesEvaluationId(), row.supersededByEvaluationId(),
                 alarmVisible ? alarmId : null, alarmVisible ? repository.eventIdOfAlarm(alarmId) : null, outcomeKind(row.alarmOutcome(), row.memberKind()),
-                row.assessmentId(), row.ownerOrgId(), row.ownerOrgName(), row.districtId(), row.districtName(), row.sourceMode());
+                row.assessmentId(), row.ownerOrgId(), row.ownerOrgName(), row.districtId(), row.districtName(), row.sourceMode(),
+                targetVisible ? row.objectTypeCode() : null, assurance(row));
+    }
+
+    private DecisionAssuranceDto assurance(EvaluationRow row) {
+        String version = row.decisionAlgorithmVersion(), code = row.decisionAssuranceCode(), reasonsJson = row.decisionAssuranceReasons();
+        boolean allMissing = version == null && code == null && reasonsJson == null;
+        if (allMissing) {
+            return new DecisionAssuranceDto(null, "UNAVAILABLE", reviewRequired(row, null),
+                    List.of("ALGORITHM_RESULT_UNAVAILABLE"), "NOT_VALIDATED");
+        }
+        if (version == null || version.isBlank() || code == null || reasonsJson == null
+                || !Set.of("SUFFICIENT", "INSUFFICIENT", "NOT_APPLICABLE").contains(code)) throw invalidStoredJson();
+        return new DecisionAssuranceDto(version, code, reviewRequired(row, code), strings(reasonsJson), "NOT_VALIDATED");
+    }
+
+    private static boolean reviewRequired(EvaluationRow row, String code) {
+        return "ACTIVE".equals(row.mode()) && !"NOT_APPLICABLE".equals(row.legalStatus())
+                && "PENDING_REVIEW".equals(row.reviewState()) && row.supersededByEvaluationId() == null
+                && (code == null || "INSUFFICIENT".equals(code));
     }
 
     /**
@@ -216,6 +238,7 @@ public class LegalityEvaluationReadService {
         String optional(String name, int max) { if (!values.containsKey(name)) return null; String value = single(name); if (value.length() > max) throw invalid(name + " 参数无效"); return value; }
         String enumerated(String name, Set<String> allowed) { String value = optional(name, 32); if (value != null && !allowed.contains(value)) throw invalid(name + " 参数无效"); return value; }
         boolean bool(String name) { String value = optional(name, 8); if (value == null) return false; if ("true".equals(value)) return true; if ("false".equals(value)) return false; throw invalid(name + " 参数无效"); }
+        Boolean optionalBool(String name) { if (!values.containsKey(name)) return null; return bool(name); }
         TimeRange timeRange(String fromKey, String toKey) {
             boolean hasFrom = values.containsKey(fromKey), hasTo = values.containsKey(toKey);
             if (!hasFrom && !hasTo) return new TimeRange(null, null); if (hasFrom != hasTo) throw badTime();

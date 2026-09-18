@@ -78,7 +78,32 @@ public class NotificationDirectoryService {
  @Transactional public void freezeAdvisoryTask(String purpose,String eventId,RecipientSnapshot target){repo.freezeAdvisoryTask(purpose,eventId,target);}
  @Transactional public void freezeAdvisoryRecord(String purpose,String recordId,RecipientSnapshot target){repo.freezeAdvisoryRecord(purpose,recordId,target);}
  public RecipientSnapshot advisoryHistoryRecipient(String purpose,String eventId){return repo.advisoryTaskSnapshot(purpose,eventId);}
- @Transactional public void notifyMaintenance(String taskId,String selectedSettingId,String sourceMode,String material){SettingRow row=blank(selectedSettingId)==null?repo.soleMaintenanceSetting(currentScope()):repo.setting(selectedSettingId);var target=row!=null&&row.orgId()!=null&&!repo.orgVisible(row.orgId(),currentScope())?missing(null,null,"所选运维通知对象不在当前可用范围内"):row!=null&&!"DEVICE_MAINTENANCE".equals(row.purpose())?missing(null,null,"所选配置不是设备运维通知用途，请核查通知设置"):row==null?missing(null,null,"尚未确定唯一的运维通知对象，请明确配置接收单位"):snapshot(row,row.id(),name(row));var at=clock.now().atOffset(java.time.ZoneOffset.UTC);var outcome=deliver(target,sourceMode,new HandoffDispatch(taskId,"DEVICE_MAINTENANCE",taskId,"DEVICE_MAINTENANCE",target.recipientId(),target.recipientName(),material,at));repo.maintenanceNotice(taskId,target,outcome);}
+ public RecipientSnapshot forMaintenance(String selectedSettingId){
+  SettingRow row=blank(selectedSettingId)==null?repo.soleMaintenanceSetting(currentScope()):repo.setting(selectedSettingId);
+  return row!=null&&row.orgId()!=null&&!repo.orgVisible(row.orgId(),currentScope())?missing(null,null,"所选运维通知对象不在当前可用范围内")
+    :row!=null&&!"DEVICE_MAINTENANCE".equals(row.purpose())?missing(null,null,"所选配置不是设备运维通知用途，请核查通知设置")
+    :row==null?missing(null,null,"尚未确定唯一的运维通知对象，请明确配置接收单位"):snapshot(row,row.id(),name(row));
+ }
+ public String maintenanceBlocker(RecipientSnapshot target,String sourceMode){
+  if(!target.configured())return target.blockedReason();
+  if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return "通知渠道尚未接通或不允许此数据来源";
+  return null;
+ }
+ public MaintenanceOutcome dispatchMaintenance(String taskId,String attemptId,RecipientSnapshot target,String sourceMode,String material){
+  String blocked=maintenanceBlocker(target,sourceMode);
+  if(blocked!=null)return new MaintenanceOutcome(unavailable(blocked),"NOT_SENT");
+  var at=clock.now().atOffset(java.time.ZoneOffset.UTC);
+  try {
+   var result=channel.deliver(new HandoffDispatch(attemptId,"DEVICE_MAINTENANCE",taskId,"DEVICE_MAINTENANCE",target.recipientId(),target.recipientName(),material,at));
+   if(result==null||result.deliveryStatus()==null||!Set.of("PENDING_DELIVERY","SUBMITTED","DELIVERED","FAILED").contains(result.deliveryStatus())
+       ||result.receiptStatus()==null||!Set.of("NOT_EXPECTED","PENDING","ACKNOWLEDGED","TIMEOUT").contains(result.receiptStatus()))return unknownMaintenance();
+   String state=Set.of("DELIVERED","FAILED").contains(result.deliveryStatus())?"COMPLETED":"SUBMITTED".equals(result.deliveryStatus())?"SUBMITTED":"UNKNOWN";
+   return new MaintenanceOutcome(result,state);
+  }catch(RuntimeException error){return unknownMaintenance();}
+ }
+ private MaintenanceOutcome unknownMaintenance(){return new MaintenanceOutcome(new DeliveryOutcome("PENDING_DELIVERY","NOT_EXPECTED",null,"通知结果未知，请核对原发送记录后处理，暂不允许再次通知",null,null,null),"UNKNOWN");}
+ @Transactional public void freezeMaintenance(String taskId,RecipientSnapshot target,DeliveryOutcome result){repo.maintenanceNotice(taskId,target,result);}
+ public record MaintenanceOutcome(DeliveryOutcome result,String state) { }
  public DirectoryRepository.MaintenanceNotice maintenanceNotice(String taskId){return repo.maintenanceNotice(taskId);}
  public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null?DeliveryOutcome.notConnected():result;}catch(RuntimeException e){return DeliveryOutcome.notConnected();}}
  @Transactional public void freezeHandoff(String id,RecipientSnapshot snapshot){repo.freeze("handoff",id,snapshot);}

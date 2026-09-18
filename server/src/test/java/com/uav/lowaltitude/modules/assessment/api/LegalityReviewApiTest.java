@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.assessment.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -220,10 +221,98 @@ class LegalityReviewApiTest {
     }
 
     @Test
+    void objectTypeFilterKeepsOnlyConfirmedUavTargetsAndCountsSameScope() throws Exception {
+        String path = "/api/v1/legality-evaluations?mode=ACTIVE&latest_only=true&owner_org_id=" + orgId;
+        mvc.perform(get(path + "&object_type_code=UAV").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(evaluation))
+                .andExpect(jsonPath("$.data.items[0].object_type_code").value("UAV"))
+                .andExpect(jsonPath("$.data.items[0].plan_id").doesNotExist());
+        for (String objectType : List.of("BIRD", "UNKNOWN")) {
+            jdbc.update("update target set object_type_code=? where target_id=?", objectType, target);
+            mvc.perform(get(path + "&object_type_code=UAV").header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0))
+                    .andExpect(jsonPath("$.data.items").isEmpty());
+            mvc.perform(get(path).header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                    .andExpect(jsonPath("$.data.items[0].object_type_code").value(objectType));
+            mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.object_type_code").value(objectType));
+        }
+        jdbc.update("update target set object_type_code='UAV',owner_org_id='seed-stage7-other-org' where target_id=?", target);
+        try {
+            mvc.perform(get(path + "&object_type_code=UAV").header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0))
+                    .andExpect(jsonPath("$.data.items").isEmpty());
+        } finally {
+            jdbc.update("update target set owner_org_id=? where target_id=?", orgId, target);
+        }
+    }
+
+    @Test
+    void objectTypeFilterRequiresTargetPermissionBeforeParsingAndRejectsUnknownCodes() throws Exception {
+        mvc.perform(get("/api/v1/legality-evaluations?object_type_code=UAV&wat=1")
+                        .header("Authorization", bearer(user("ASSIGNED", "assessment:read"))))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/legality-evaluations?object_type_code=PERSON")
+                        .header("Authorization", bearer(session)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void decisionAssuranceSeparatesReviewNeedFromActionPermissionAndFiltersBeforePaging() throws Exception {
+        String path = "/api/v1/legality-evaluations?mode=ACTIVE&owner_org_id=" + orgId;
+        mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.status").value("UNAVAILABLE"))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.review_required").value(true))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.reasons[0]").value("ALGORITHM_RESULT_UNAVAILABLE"))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.accuracy_status").value("NOT_VALIDATED"));
+
+        String readOnly = user("ASSIGNED", "assessment:read");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(readOnly))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(true))
+                .andExpect(jsonPath("$.data.allowed_actions").isEmpty());
+
+        jdbc.update("update rule_evaluation set legal_status='ILLEGAL' where evaluation_id=?", evaluation);
+        setAssurance(evaluation, "legality-assurance-v1", "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]");
+        mvc.perform(get(path + "&needs_review=true").header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0)).andExpect(jsonPath("$.data.items").isEmpty());
+        mvc.perform(get(path + "&needs_review=false").header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.status").value("SUFFICIENT"))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.review_required").value(false));
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.legal_status").value("ILLEGAL"))
+                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(false));
+
+        jdbc.update("update rule_evaluation set legal_status='LEGAL',score=null,grade=null where evaluation_id=?", evaluation);
+        setAssurance(evaluation, "legality-assurance-v1", "INSUFFICIENT", "[\"MISSING_IDENTITY\"]");
+        mvc.perform(get(path + "&needs_review=true&page=1&size=1").header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(evaluation))
+                .andExpect(jsonPath("$.data.items[0].legal_status").value("LEGAL"))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.review_required").value(true));
+        jdbc.update("update legality_review set review_state='CONFIRMED' where evaluation_id=?", evaluation);
+        mvc.perform(get(path + "&needs_review=true").header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(0));
+    }
+
+    @Test
+    void malformedStoredDecisionAssuranceFailsClosed() throws Exception {
+        assertThatThrownBy(() -> jdbc.update(
+                "update rule_evaluation set decision_algorithm_version='legality-assurance-v1' where evaluation_id=?", evaluation))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        setAssurance(evaluation, "legality-assurance-v1", "INSUFFICIENT", "{}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isInternalServerError()).andExpect(jsonPath("$.error.code").value("INTERNAL_ERROR"));
+    }
+
+    @Test
     void allowedActionsReflectStatePermissionsAndAlarmLinkage() throws Exception {
         mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.allowed_actions").value(org.hamcrest.Matchers.containsInAnyOrder("REVIEW", "RECOMPUTE", "ESCALATE")))
                 .andExpect(jsonPath("$.data.target_id").value(target))
+                .andExpect(jsonPath("$.data.object_type_code").value("UAV"))
                 .andExpect(jsonPath("$.data.review.state").value("PENDING_REVIEW"))
                 .andExpect(jsonPath("$.data.hit_details").isArray())
                 .andExpect(jsonPath("$.data.rule_set_code").value(LocalStage7RuleEngineSeeder.RULE_SET_CODE))
@@ -231,7 +320,8 @@ class LegalityReviewApiTest {
         String readOnly = user("ASSIGNED", "assessment:read");
         mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(readOnly))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.allowed_actions").isEmpty())
-                .andExpect(jsonPath("$.data.target_id").doesNotExist());
+                .andExpect(jsonPath("$.data.target_id").doesNotExist())
+                .andExpect(jsonPath("$.data.object_type_code").doesNotExist());
         // LEGAL 研判不能转告警；列表按 review_state 与 latest_only 过滤，且 total 与 items 同谓词。
         String legal = "s7r-eval-legal-" + suffix;
         insertEvaluation(legal, run, "LEGAL", "[]", null, null);
@@ -396,6 +486,11 @@ class LegalityReviewApiTest {
     private void insertReview(String id, String state, long version) {
         jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,?,null,?,?,?,?,?)",
                 id, state, version, orgId, district, ts(T0), ts(T0));
+    }
+
+    private void setAssurance(String id, String version, String status, String reasons) {
+        jdbc.update("update rule_evaluation set decision_algorithm_version=?,decision_assurance_code=?,decision_assurance_reasons=CAST(? AS JSON) where evaluation_id=?",
+                version, status, reasons, id);
     }
 
     /** ASSIGNED 用户配本测试的 (orgId, district) 授权元组；越权用例再把授权改到别的元组。 */

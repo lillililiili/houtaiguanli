@@ -51,7 +51,8 @@ class Stage2AccessControlServiceTest {
                 ) select ?, 'Stage 2 duty role', '', false, true, 0, 0, 0, false
                 where not exists (select 1 from app_role where role_code=?)
                 """, ROLE, ROLE);
-        jdbc.update("delete from app_role_permission where role_code=? and permission_code like '%:read'", ROLE);
+        jdbc.update("delete from app_role_permission where role_code=?"
+                + " and (permission_code like '%:read' or permission_code='disposal:direct')", ROLE);
         jdbc.update("update app_role set enabled=true where role_code=?", ROLE);
         jdbc.update("""
                 insert into app_user (
@@ -76,7 +77,8 @@ class Stage2AccessControlServiceTest {
         AuthContext.clear();
         jdbc.update("delete from app_user_data_scope where user_id=?", userId);
         jdbc.update("delete from app_user where user_id=?", userId);
-        jdbc.update("delete from app_role_permission where role_code=? and permission_code like '%:read'", ROLE);
+        jdbc.update("delete from app_role_permission where role_code=?"
+                + " and (permission_code like '%:read' or permission_code='disposal:direct')", ROLE);
         jdbc.update("update app_role set enabled=true where role_code=?", ROLE);
     }
 
@@ -144,16 +146,38 @@ class Stage2AccessControlServiceTest {
         assertForbidden(PermissionCode.ALARM_READ);
     }
 
+    @Test
+    void directCountermeasureRequiresAnExplicitOpGrant() {
+        authenticate(ROLE);
+        jdbc.update("update app_user set scope_mode='ALL' where user_id=?", userId);
+
+        grant(PermissionCode.DISPOSAL_DIRECT, "READ");
+        assertForbidden(PermissionCode.DISPOSAL_DIRECT);
+
+        jdbc.update("update app_role_permission set permission_level='AUTH'"
+                + " where role_code=? and permission_code=?", ROLE, PermissionCode.DISPOSAL_DIRECT.value());
+        assertForbidden(PermissionCode.DISPOSAL_DIRECT);
+
+        jdbc.update("update app_role_permission set permission_level='OP'"
+                + " where role_code=? and permission_code=?", ROLE, PermissionCode.DISPOSAL_DIRECT.value());
+        assertThat(accessControlService.require(PermissionCode.DISPOSAL_DIRECT))
+                .isEqualTo(new AccessDecision(userId, ScopeMode.ALL));
+    }
+
     private void authenticate(String untrustedRole) {
         AuthContext.set(new AuthUser(userId, "stage2", "Stage 2", untrustedRole, 0, false, "ALL"));
     }
 
     private void grant(PermissionCode permission) {
+        grant(permission, "READ");
+    }
+
+    private void grant(PermissionCode permission, String level) {
         jdbc.update("""
                 insert into app_role_permission (
                     role_code, permission_code, permission_level, menu_enabled, created_at
-                ) values (?, ?, 'READ', false, current_timestamp)
-                """, ROLE, permission.value());
+                ) values (?, ?, ?, false, current_timestamp)
+                """, ROLE, permission.value(), level);
     }
 
     private void addScope() {

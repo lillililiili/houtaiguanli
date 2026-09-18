@@ -336,13 +336,14 @@ public class RuleEngineRepository {
         p.put("plan_match", e.planMatchCode()); p.put("legal", e.legalStatus()); p.put("score", e.score()); p.put("grade", e.grade());
         p.put("violations", e.violationReasonsJson()); p.put("hits", e.hitDetailsJson()); p.put("unknowns", e.unknownReasonsJson());
         p.put("evidence", e.evidenceJson()); p.put("snapshot", e.inputSnapshotJson()); p.put("supersedes", e.supersedesEvaluationId());
+        p.put("assurance_version", e.decisionAlgorithmVersion()); p.put("assurance_code", e.decisionAssuranceCode()); p.put("assurance_reasons", e.decisionAssuranceReasonsJson());
         p.put("alarm_outcome", e.alarmOutcomeJson()); p.put("org", e.ownerOrgId()); p.put("district", e.districtId()); p.put("source_mode", e.sourceMode());
         jdbc.update("INSERT INTO rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,"
                 + "evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,"
-                + "supersedes_evaluation_id,alarm_outcome,owner_org_id,district_id,source_mode,created_at)"
+                + "supersedes_evaluation_id,alarm_outcome,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons)"
                 + " VALUES (:id,:run,:version,:mode,:kind,:target,:track,:plan,:route,:observed,:as_of,:evaluated,:freshness,:plan_match,:legal,:score,:grade,"
                 + "CAST(:violations AS JSON),CAST(:hits AS JSON),CAST(:unknowns AS JSON),CAST(:evidence AS JSON),CAST(:snapshot AS JSON),:supersedes,"
-                + "CAST(:alarm_outcome AS JSON),:org,:district,:source_mode,:evaluated)", p);
+                + "CAST(:alarm_outcome AS JSON),:org,:district,:source_mode,:evaluated,:assurance_version,:assurance_code,CAST(:assurance_reasons AS JSON))", p);
     }
 
     /**
@@ -488,7 +489,8 @@ public class RuleEngineRepository {
             String trackId, String planId, String routeVersionId, OffsetDateTime observedAt, OffsetDateTime asOf, OffsetDateTime evaluatedAt,
             String freshness, String planMatchCode, String legalStatus, BigDecimal score, String grade, String violationReasonsJson,
             String hitDetailsJson, String unknownReasonsJson, String evidenceJson, String inputSnapshotJson, String supersedesEvaluationId,
-            String alarmOutcomeJson, String ownerOrgId, String districtId, String sourceMode) { }
+            String alarmOutcomeJson, String ownerOrgId, String districtId, String sourceMode,
+            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasonsJson) { }
     public record AssessmentInsert(String assessmentId, String planId, String targetId, String trackId, String routeVersionId, String ruleVersionId,
             OffsetDateTime assessedAt, String conclusionCode, String checksJson, String unknownReasonsJson, String evidenceJson, String sourceMode,
             String evaluationId, String ruleSetVersionId, String supersedesAssessmentId) { }

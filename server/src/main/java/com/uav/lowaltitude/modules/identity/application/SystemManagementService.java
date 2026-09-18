@@ -52,6 +52,7 @@ import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserProfileRequest;
 import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserResponse;
 import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserStatusRequest;
 import com.uav.lowaltitude.modules.identity.domain.AppUser;
+import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.ActionRow;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.AccessChangeRow;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.DistrictRow;
@@ -862,6 +863,10 @@ public class SystemManagementService {
             if (PROTECTED_ACTION_DOMAINS.contains(action.getModuleCode())
                     || PROTECTED_ACTION_CODES.contains(action.getPermissionCode())) {
                 throw bad("SYSTEM_PERMISSION_PROTECTED", "该高风险动作仅允许超级管理员执行");
+            }
+            if (PermissionCode.DISPOSAL_DIRECT.value().equals(item.permissionCode())
+                    && !Set.of("NONE", "OP").contains(item.level())) {
+                throw bad("INVALID_PERMISSION_LEVEL", "直接反制权限只允许无或允许");
             }
             if (!"NONE".equals(item.level())) granted.add(item);
         }

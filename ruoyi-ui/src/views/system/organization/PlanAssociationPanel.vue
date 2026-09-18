@@ -70,7 +70,7 @@ onBeforeUnmount(() => { sequence++ })
         <el-form-item label="关联依据" required><el-input v-model="form.reason" type="textarea" :rows="2" placeholder="填写可核对的报送材料、外部编码或人工核对依据" /></el-form-item>
         <p class="form-note">报送单位由来源系统与外部单位编码的映射确定。保存后由后端校验飞手身份、联系方式和用途，不会仅凭同名自动关联或替代历史接收人。</p>
         <el-button v-if="canEdit" type="primary" :loading="saving" :disabled="blocked" @click="save">保存计划关联</el-button>
-        <p v-else class="readonly-note">当前账号可查看关联，修改需要单位档案维护权限及该计划的数据权限。</p>
+        <p v-else class="readonly-note">当前账号可查看关联，修改需要单位资料维护权限及该计划的数据权限。</p>
       </el-form>
     </template>
   </section>

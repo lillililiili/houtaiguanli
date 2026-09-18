@@ -146,6 +146,42 @@ public class HandoffRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 只锁交接主行，避免 PostgreSQL 对外连接 nullable side 的 FOR UPDATE 限制。 */
+    public HandoffRow lockNotification(String handoffId, AccessDecision access) {
+        Where where = scope(access);
+        where.sql.append(" AND h.handoff_id=:id"); where.params.put("id", handoffId);
+        List<String> locked = jdbc.query("SELECT h.handoff_id FROM handoff h" + where.sql + " FOR UPDATE",
+                where.params, (rs, ignored) -> rs.getString(1));
+        return locked.isEmpty() ? null : find(handoffId, access);
+    }
+
+    public void notificationRecipient(String deliveryId, String snapshot) {
+        jdbc.update("UPDATE handoff_delivery SET recipient_snapshot=:snapshot WHERE delivery_id=:id AND recipient_snapshot IS NULL",
+                Map.of("id",deliveryId,"snapshot",snapshot));
+    }
+
+    public String notificationRecipient(String deliveryId) {
+        return jdbc.queryForObject("SELECT recipient_snapshot FROM handoff_delivery WHERE delivery_id=:id", Map.of("id",deliveryId), String.class);
+    }
+
+    public boolean hasDelivered(String handoffId) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM handoff_delivery WHERE handoff_id=:id"
+                + " AND (delivery_status='DELIVERED' OR receipt_status='ACKNOWLEDGED' OR delivered_at IS NOT NULL OR acknowledged_at IS NOT NULL)",
+                Map.of("id", handoffId), Long.class);
+        return count != null && count > 0;
+    }
+
+    public void completeNotification(String deliveryId, com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome outcome) {
+        Map<String,Object> params = new HashMap<>();
+        params.put("id",deliveryId);params.put("delivery",outcome.deliveryStatus());params.put("receipt",outcome.receiptStatus());
+        params.put("reason",outcome.blockedReason());params.put("submitted",outcome.submittedAt());
+        params.put("delivered",outcome.deliveredAt());params.put("acknowledged",outcome.acknowledgedAt());
+        int changed = jdbc.update("UPDATE handoff_delivery SET delivery_status=:delivery,receipt_status=:receipt,blocked_reason=:reason,"
+                + "submitted_at=:submitted,delivered_at=:delivered,acknowledged_at=:acknowledged"
+                + " WHERE delivery_id=:id AND blocked_reason='DELIVERY_IN_PROGRESS'",params);
+        if(changed!=1)throw new IllegalStateException("通知结果已变化，不能覆盖原回执");
+    }
+
     public SnapshotRow snapshot(String handoffId) {
         List<SnapshotRow> rows = jdbc.query("SELECT schema_version,CAST(snapshot AS VARCHAR) AS snapshot_text"
                 + " FROM handoff_material_snapshot WHERE handoff_id=:id", Map.of("id", handoffId),
@@ -292,7 +328,7 @@ public class HandoffRepository {
      */
     public List<DisposalMaterialRow> eventDisposals(String eventId) {
         return jdbc.query("SELECT d.authorization_id,d.authorization_no,d.action_type,d.channel,d.device_id,d.status,"
-                + "ru.name AS requested_by_name,au.name AS approved_by_name,d.valid_from,d.valid_until,"
+                + "ru.name AS requested_by_name,au.name AS approved_by_name,d.valid_from,d.valid_until,d.authorization_mode,"
                 + "d.result_code,d.result_detail,"
                 // 完成时刻取事件流里 COMPLETE/MANUAL_RESULT 的发生时刻（决策 14-26）。
                 // 原先拿 updated_at 冒充：那是"这行最后被改动的时间"，作废、回执、任何一次更新都会推它，
@@ -311,7 +347,8 @@ public class HandoffRepository {
                         rs.getString("device_id"), rs.getString("status"), rs.getString("requested_by_name"),
                         rs.getString("approved_by_name"), rs.getObject("valid_from", OffsetDateTime.class),
                         rs.getObject("valid_until", OffsetDateTime.class), rs.getString("result_code"),
-                        rs.getString("result_detail"), rs.getObject("completed_at", OffsetDateTime.class)));
+                        rs.getString("result_detail"), rs.getObject("completed_at", OffsetDateTime.class),
+                        rs.getString("authorization_mode")));
     }
 
     /** 事件主体上关联的证据（只读协作者 A 的表，不写）。 */
@@ -332,7 +369,8 @@ public class HandoffRepository {
             OffsetDateTime createdAt, String actorId, String actorName) { }
     public record DisposalMaterialRow(String authorizationId, String authorizationNo, String actionType, String channel,
             String deviceId, String status, String requestedByName, String approvedByName, OffsetDateTime validFrom,
-            OffsetDateTime validUntil, String resultCode, String resultDetail, OffsetDateTime completedAt) { }
+            OffsetDateTime validUntil, String resultCode, String resultDetail, OffsetDateTime completedAt,
+            String authorizationMode) { }
     public record EvidenceMaterialRow(String evidenceId, String evidenceNo, String kindCode, String sha256,
             OffsetDateTime capturedAt, String status) { }
 

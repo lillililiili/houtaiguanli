@@ -40,8 +40,11 @@ class LocalStage2AccessSeederTest {
 
     @Test
     void localSeedExplicitlyGrantsOnlyTheSyntheticAdministrator() {
-        // 期望值直接从 PermissionCode 目录生成：新增动作时种子必须自动补齐，测试不再手抄清单而过期。
+        // 期望值从 PermissionCode 目录生成，但显式排除必须人工授予的直接反制权限。
         assertThat(actionGrants(jdbc)).containsExactlyElementsOf(expectedAdminGrants());
+        assertThat(actionGrants(jdbc)).doesNotContain("ROLE-ADMIN:" + PermissionCode.DISPOSAL_DIRECT.value());
+        assertThat(legacyAccessService.permissionCodes("ROLE-ADMIN"))
+                .doesNotContain(PermissionCode.DISPOSAL_DIRECT.value());
         // 本地/测试种子另造了几个演示角色（15-3 的复核员，阶段 18 的四个业务角色），它们是仅有的被允许
         // 持动作码的非管理员角色。**逐个列出名字**：再冒出第六个持码角色仍然要红——
         // 换成"凡是 ROLE-DEMO- 开头的都放行"就等于把这条守卫拆了，谁新造一个演示角色都不会有人知道。
@@ -66,7 +69,7 @@ class LocalStage2AccessSeederTest {
 
         seeder.run(new DefaultApplicationArguments(new String[0]));
         seeder.run(new DefaultApplicationArguments(new String[0]));
-        assertThat(actionGrants(jdbc)).hasSize(PermissionCode.values().length);
+        assertThat(actionGrants(jdbc)).hasSize(PermissionCode.values().length - 1);
     }
 
     @Test
@@ -174,6 +177,7 @@ class LocalStage2AccessSeederTest {
 
     private static java.util.List<String> expectedAdminGrants() {
         return java.util.Arrays.stream(PermissionCode.values())
+                .filter(code -> code != PermissionCode.DISPOSAL_DIRECT)
                 .map(code -> "ROLE-ADMIN:" + code.value())
                 .sorted()
                 .toList();

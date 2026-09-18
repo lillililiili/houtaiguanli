@@ -113,6 +113,15 @@ public class DisposalReadService {
                                  DisposalPolicy policy) {
         AuthUser actor = AuthContext.require();
         Set<String> actions = DisposalRules.allowedActions(row.status(), row.channel(), row.requestedBy(), actor.userId(), permissions);
+        if ("DIRECT".equals(row.authorizationMode())) {
+            actions.remove(DisposalRules.EXECUTE);
+            actions.remove(DisposalRules.MANUAL_RESULT);
+            if (actor.userId().equals(row.requestedBy()) && permissions.contains("disposal:direct")) {
+                if (DisposalRules.APPROVED.equals(row.status())) actions.add(DisposalRules.EXECUTE);
+                if (DisposalRules.EXECUTING.equals(row.status()) && DisposalRules.MANUAL.equals(row.channel()))
+                    actions.add(DisposalRules.MANUAL_RESULT);
+            }
+        }
         if (!DisposalRules.MANUAL.equals(row.channel()) && !permissions.contains("devices.op")) actions.remove(DisposalRules.EXECUTE);
         return new AuthorizationDto(row.authorizationId(), row.authorizationNo(), row.actionType(), row.subjectKind(),
                 row.subjectId(), row.targetId(), row.deviceId(), row.channel(), row.reason(), row.requestedBy(),
@@ -122,7 +131,7 @@ public class DisposalReadService {
                 row.resultCode(), row.resultDetail(), DisposalRules.deviceStopResult(row.channel(), eventKinds),
                 DisposalRules.executionBlockReason(row.status(), eventKinds), row.policyVersion(), policy == null ? null : policy.schemaStatus(), row.ownerOrgId(), row.districtId(),
                 row.sourceMode(), row.version(),
-                List.copyOf(actions));
+                List.copyOf(actions), row.authorizationMode());
     }
 
     private EventDto event(EventRow row) {
@@ -147,7 +156,7 @@ public class DisposalReadService {
     private Set<String> permissions() {
         Set<String> held = new LinkedHashSet<>();
         for (PermissionCode code : List.of(PermissionCode.DISPOSAL_READ, PermissionCode.DISPOSAL_REQUEST,
-                PermissionCode.DISPOSAL_APPROVE, PermissionCode.DISPOSAL_EXECUTE, PermissionCode.DISPOSAL_STOP)) {
+                PermissionCode.DISPOSAL_APPROVE, PermissionCode.DISPOSAL_EXECUTE, PermissionCode.DISPOSAL_STOP, PermissionCode.DISPOSAL_DIRECT)) {
             try { access.require(code); held.add(code.value()); }
             catch (ApiException denied) { /* 没有这项权限就不加，不是错误 */ }
         }

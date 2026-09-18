@@ -155,6 +155,26 @@ class SpaceRiskReadApiTest {
     }
 
     @Test
+    void summaryCanExcludePresetSamplesWithoutDroppingRuleEvaluatedMockRisks() throws Exception {
+        String samplePlan = fixture.planWithRoute(org, district, suffix + "demo");
+        String sample = fixture.risk(samplePlan, fixture.routeVersionOf(samplePlan), source, null,
+                "SPACE_OBJECT", "HIGH", "PENDING_NOTIFICATION", org, district, "demo-" + suffix);
+        jdbc.update("update flight_risk set source_risk_id=? where risk_id=?", "pending-plan-notice-demo-" + suffix, sample);
+        fixture.spaceFact(sample, "BIRD_FLOCK", "INSIDE", "UNKNOWN", 20);
+        assertThat(data("/api/v1/space-risks/summary", reader).path("routes_involved").path("value").asLong()).isEqualTo(2);
+        assertThat(data("/api/v1/space-risks/summary?exclude_demo_samples=false", reader).path("total").path("value").asLong()).isEqualTo(2);
+        JsonNode filtered = data("/api/v1/space-risks/summary?exclude_demo_samples=true", reader);
+        assertThat(filtered.path("total").path("value").asLong()).isEqualTo(1);
+        assertThat(filtered.path("routes_involved").path("value").asLong()).isEqualTo(1);
+        assertThat(filtered.path("by_subtype").get(0).path("count").asLong()).isEqualTo(1);
+        assertThat(filtered.path("bird_events").path("value").asLong()).isEqualTo(1);
+        assertThat(filtered.path("pending_verification").path("value").asLong()).isEqualTo(1);
+        for (String query : new String[]{"exclude_demo_samples=1", "exclude_demo_samples=", "exclude_demo_samples=true&exclude_demo_samples=false"}) {
+            error("/api/v1/space-risks/summary?" + query, reader, 400, "VALIDATION_ERROR");
+        }
+    }
+
+    @Test
     void readingNeedsRiskReadPermission() throws Exception {
         String denied = fixture.session(fixture.role("D-" + suffix), org, district, "ASSIGNED");
         error("/api/v1/space-object-subtypes", denied, 403, "FORBIDDEN");

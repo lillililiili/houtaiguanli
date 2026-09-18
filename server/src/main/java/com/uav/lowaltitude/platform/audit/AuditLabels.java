@@ -110,6 +110,7 @@ final class AuditLabels {
             Map.entry("alarms_exported", "导出告警列表"),
             Map.entry("risks_exported", "导出风险列表"),
             Map.entry("disposal_requested", "申请处置授权"),
+            Map.entry("disposal_direct_authorized", "直接反制授权（免逐次审批）"),
             Map.entry("disposal_approved", "批准处置授权"),
             Map.entry("disposal_rejected", "驳回处置授权"),
             Map.entry("disposal_executed", "执行处置"),

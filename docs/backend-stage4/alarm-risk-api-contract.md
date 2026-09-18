@@ -86,6 +86,13 @@ POST /api/v1/risks/{risk_id}/verifications
 
 风险过滤：`state,severity,plan_id,occurred_from,occurred_to,owner_org_id,district_id,source_mode,page,size`。固定排序为 `received_at DESC, risk_id DESC`。风险关联固定计划、航线版本和可选研判版本；读取历史依据时不能改用最新版本。
 
+2026-09-17 可选展示筛选补充：`GET /api/v1/risks`、`GET /api/v1/risks/export.csv` 与 `GET /api/v1/space-risks/summary` 支持 `exclude_demo_samples=true|false`，省略为 false。空值、重复值及其他取值返回 400 `VALIDATION_ERROR`。
+
+- true 仅排除 `source_mode=mock` 且满足以下任一结构化标志的记录：来源 `source_code=WEATHER-DEMO`，或 `source_risk_id` 以 `pending-plan-notice-demo-` 开头。
+- 筛选在分页、计数、CSV 上限判断和空间汇总前执行；不改变排序、风险类型、时间窗、范围权限或汇总维度。
+- `mock` 的规则研判结果、MQTT `replay`、`live` 和其他气象风险继续保留；`space-risk-demo-v1` 是规则集版本，不能据此排除实际规则产出的风险。
+- 仅改变显式请求的读结果，不删除样例，不更改详情、核验、通知、回执或审计；默认接口保持兼容。
+
 风险状态：
 
 ```text

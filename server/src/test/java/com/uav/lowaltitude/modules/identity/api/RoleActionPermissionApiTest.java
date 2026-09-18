@@ -260,6 +260,21 @@ class RoleActionPermissionApiTest {
         assertThat(actionCount(roleCode)).isEqualTo(1);
     }
 
+    @Test
+    void directCountermeasureAcceptsOnlyNoneOrOpAndDoesNotGrantOtherActions() throws Exception {
+        String admin = login("admin1", "changeme");
+        String roleCode = customRole();
+
+        expectGrantError(admin, roleCode, "INVALID_PERMISSION_LEVEL", entry("disposal:direct", "READ"));
+        putPermissions(admin, roleCode, new ObjectNode[]{entry("disposal:direct", "AUTH")})
+                .andExpect(status().isBadRequest());
+        grantActions(admin, roleCode, entry("disposal:direct", "OP"));
+
+        assertThat(jdbc.queryForList("select permission_code from app_role_permission where role_code=?"
+                + " and permission_code like 'disposal:%' order by permission_code", String.class, roleCode))
+                .containsExactly("disposal:direct");
+    }
+
     /* ---- 拒绝 ---- */
 
     @Test
