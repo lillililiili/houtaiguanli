@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.handoff.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -20,6 +24,22 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class HandoffRepository {
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = scope(access);
+        String time = reader.epoch("e.created_at");
+        String sql = "SELECT h.handoff_id AS id,rc.display_name AS label," + time + " AS at_ms,"
+            + "d.delivery_status AS state,h.handoff_type AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,h.source_mode,"
+            + "e.event_id AS related,d.receipt_status AS result,h.receipt_result AS note"
+            + " FROM handoff h JOIN uav_event e ON e.event_id=h.event_id AND h.source_kind='UAV_EVENT'"
+            + " AND e.owner_org_id=h.owner_org_id AND e.district_id=h.district_id"
+            + " JOIN alarm ea ON ea.alarm_id=e.alarm_id AND ea.owner_org_id=e.owner_org_id AND ea.district_id=e.district_id"
+            + " JOIN handoff_recipient rc ON rc.recipient_id=h.recipient_id"
+            + " LEFT JOIN handoff_delivery d ON d.handoff_id=h.handoff_id"
+            + " AND d.attempt_no=(SELECT MAX(dd.attempt_no) FROM handoff_delivery dd WHERE dd.handoff_id=h.handoff_id)"
+            + " LEFT JOIN app_district rd ON rd.district_id=h.district_id" + w.sql;
+        return ReportDatasetReader.window(sql, w.params, range, reader.epoch("e.created_at"));
+    }
     private final NamedParameterJdbcTemplate jdbc;
 
     public HandoffRepository(JdbcTemplate jdbcTemplate) {

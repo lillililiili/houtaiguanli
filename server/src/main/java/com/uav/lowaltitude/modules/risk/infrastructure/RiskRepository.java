@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.risk.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -25,6 +29,16 @@ public class RiskRepository {
     static final String EXCLUDE_DEMO_SAMPLES_SQL = " AND NOT (r.source_mode='mock' AND ("
             + "EXISTS (SELECT 1 FROM integration_source demo_source WHERE demo_source.source_id=r.source_id"
             + " AND demo_source.source_code='WEATHER-DEMO') OR r.source_risk_id LIKE 'pending-plan-notice-demo-%'))";
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = scope(access);
+        String time = reader.epoch("r.occurred_at");
+        String sql = "SELECT r.risk_id AS id,COALESCE(r.risk_no,r.source_risk_id) AS label," + time + " AS at_ms,"
+            + "r.state_code AS state,r.risk_type AS kind,r.severity,dist_ref.name AS region,r.source_mode,"
+            + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,r.reason_text AS note"
+            + from() + nameJoins() + w.sql;
+        return ReportDatasetReader.window(sql, w.params, range, time);
+    }
     private final NamedParameterJdbcTemplate jdbc;
 
     public RiskRepository(JdbcTemplate jdbcTemplate) {

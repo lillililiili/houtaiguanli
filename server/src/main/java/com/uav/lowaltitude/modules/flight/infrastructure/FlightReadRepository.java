@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.flight.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -24,6 +28,18 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class FlightReadRepository {
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = new Where(); appendScope(w, access, "p");
+        String time = reader.epoch("p.start_at");
+        String sql = "SELECT p.plan_id AS id,p.plan_no AS label," + time + " AS at_ms,"
+            + "p.status_code AS state,CAST(NULL AS VARCHAR) AS kind,CAST(NULL AS VARCHAR) AS severity,"
+            + "dist_ref.name AS region,p.source_mode,CAST(NULL AS VARCHAR) AS related,"
+            + "COALESCE(v.conclusion,'NOT_VERIFIED') AS result,v.note AS note"
+            + planFrom() + " LEFT JOIN flight_plan_verification v ON v.plan_id=p.plan_id"
+            + " AND v.revision_no=(SELECT MAX(vv.revision_no) FROM flight_plan_verification vv WHERE vv.plan_id=p.plan_id)" + w.sql;
+        return ReportDatasetReader.window(sql, w.parameters, range, time);
+    }
 
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;

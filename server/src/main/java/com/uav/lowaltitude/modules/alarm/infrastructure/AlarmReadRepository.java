@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.alarm.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -21,6 +25,15 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 /** 告警范围以 alarm 自身完整组织/区域元组为真源，event 不能借目标的范围扩大可见性。 */
 @Repository
 public class AlarmReadRepository {
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = where(AlarmQuery.empty(), access);
+        String time = reader.epoch("a.occurred_at");
+        String sql = "SELECT a.alarm_id AS id,COALESCE(a.alarm_no,a.source_alarm_id) AS label," + time + " AS at_ms,"
+            + "e.state_code AS state,a.alarm_type AS kind,a.severity,dist_ref.name AS region,a.source_mode,"
+            + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note" + from() + w.sql;
+        return ReportDatasetReader.window(sql, w.parameters, range, time);
+    }
     private final NamedParameterJdbcTemplate jdbc;
 
     public AlarmReadRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }

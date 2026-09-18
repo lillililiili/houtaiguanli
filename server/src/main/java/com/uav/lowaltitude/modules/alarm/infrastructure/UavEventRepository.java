@@ -1,5 +1,9 @@
 package com.uav.lowaltitude.modules.alarm.infrastructure;
 
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
+import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
+import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
@@ -21,6 +25,16 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class UavEventRepository {
+
+    public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
+        Where w = where(access);
+        String time = reader.epoch("e.created_at");
+        String sql = "SELECT e.event_id AS id,COALESCE(a.alarm_no,a.source_alarm_id,e.event_id) AS label," + time + " AS at_ms,"
+            + "e.state_code AS state,a.alarm_type AS kind,a.severity,rd.name AS region,a.source_mode,"
+            + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
+            + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id LEFT JOIN app_district rd ON rd.district_id=e.district_id" + w.sql;
+        return ReportDatasetReader.window(sql, w.parameters, range, time);
+    }
     private final NamedParameterJdbcTemplate jdbc;
 
     public UavEventRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }

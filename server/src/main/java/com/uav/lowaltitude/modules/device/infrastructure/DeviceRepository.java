@@ -13,6 +13,16 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class DeviceRepository {
 
+    public com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset reportDataset() {
+        Map<String,Object> params = new HashMap<>();
+        String sql = "SELECT d.device_id AS id,d.name AS label,CAST(NULL AS BIGINT) AS at_ms,"
+            + "s.connectivity AS state,d.device_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,d.region_name AS region,"
+            + "CASE WHEN d.simulated=TRUE AND d.source_mode='live' THEN 'mock' ELSE d.source_mode END AS source_mode,"
+            + "d.device_no AS related,s.health_code AS result,CAST(NULL AS VARCHAR) AS note"
+            + " FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id WHERE d.deleted_at IS NULL" + mqttScope(params);
+        return new com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset(sql, params);
+    }
+
     private static final String DEVICE_SELECT = """
             SELECT d.*, s.connectivity, s.work_state_code, s.has_alarm, s.health_code,
                    s.observed_at, s.received_at, s.last_heartbeat_at, s.metrics_json,
