@@ -41,13 +41,11 @@ class UavAdvisoryApiTest {
         jdbc.update("insert into alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values(?,null,?,?,'UAV_INTRUSION','HIGH',?,?,'mock',?,?,?)",alarm,source,"ADV-"+suffix,at,at,ORG,DISTRICT,at);
         jdbc.update("insert into uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values(?,?,'CONFIRMED',?,?,?,?,0)",eventId,alarm,ORG,DISTRICT,at,at);
     }
-    @Test void smsThenHighRiskObservationAllowsRequestAndRecordsPersist() throws Exception {
-        read().andExpect(jsonPath("$.data.sms_mode").value("SIMULATED")).andExpect(jsonPath("$.data.can_request_counter").value(false));
-        act(sms(0),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.records[0].delivery_status").value("SIMULATED_DELIVERED")).andExpect(jsonPath("$.data.records[0].simulated").value(true));
-        act(observe(1,"STILL_INSIDE","HIGH",false),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(true));
-        read().andExpect(jsonPath("$.data.event_version").value(2)).andExpect(jsonPath("$.data.records.length()").value(2));
-        counter().andExpect(status().isCreated());
-        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?",Integer.class,eventId)).isEqualTo(2);
+    @Test void manualObservationIsRetiredWithoutWritingOrAdvancing() throws Exception {
+        act(observe(0,"STILL_INSIDE","HIGH",true),key()).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_OBSERVATION_RETIRED"));
+        read().andExpect(jsonPath("$.data.event_version").value(0)).andExpect(jsonPath("$.data.records.length()").value(0));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?",Integer.class,eventId)).isZero();
     }
     @Test void replayReturnsSameResultWithoutDuplicateAndReusedKeyConflicts() throws Exception {
         String key=key();String first=act(sms(0),key).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
@@ -65,7 +63,7 @@ class UavAdvisoryApiTest {
     }
     @Test void sameReadPermissionWithoutRequestPermissionCannotOfferCounter() throws Exception {
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='disposal:request'",role);
-        act(observe(0,"STILL_INSIDE","HIGH",true),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false));
     }
     @Test void liveCannotSimulateButManualContactCanBeRecorded() throws Exception {
         jdbc.update("update alarm set source_mode='live' where alarm_id=(select alarm_id from uav_event where event_id=?)",eventId);
@@ -80,50 +78,36 @@ class UavAdvisoryApiTest {
         act(sms(0),key()).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));
         assertThat(jdbc.queryForObject("select version from uav_event where event_id=?",Long.class,eventId)).isZero();
     }
-    @Test void departedUnknownLowRiskAndNewContactBlockCounter() throws Exception {
+    @Test void historicalObservationRemainsReadableButCannotEnableCounter() throws Exception {
+        jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) values(?,?,0,'OBSERVATION',0,?,'STILL_INSIDE','HIGH','历史记录',true,false)",key(),eventId,userId);
+        read().andExpect(jsonPath("$.data.records[0].kind").value("OBSERVATION")).andExpect(jsonPath("$.data.can_request_counter").value(false));
         counter().andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ADVISORY_COUNTER_BLOCKED"));
-        act(sms(0),key()).andExpect(status().isOk());
-        act(observe(1,"DEPARTED","HIGH",false),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
-        counter().andExpect(status().isConflict());
-        act(observe(2,"UNKNOWN","HIGH",false),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
-        act(observe(3,"STILL_INSIDE","LOW",false),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
-        act(observe(4,"STILL_INSIDE","HIGH",false),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(true));
-        act(sms(5),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
     }
-    @Test void ordinaryHighRiskWithoutContactIsBlockedAndUrgentNeedsDetailedBasis() throws Exception {
-        act(observe(0,"STILL_INSIDE","HIGH",false),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
-        act(observe(1,"STILL_INSIDE","HIGH",true),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(true));
-        JsonNode created=data(counter().andExpect(status().isCreated()));
-        assertThat(created.path("status").asText()).isEqualTo("REQUESTED");
+    @Test void notificationAloneDoesNotEnableCounter() throws Exception {
+        act(sms(0),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_request_counter").value(false));
+        counter().andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ADVISORY_COUNTER_BLOCKED"));
     }
-    @Test void newObservationBlocksAlreadyApprovedExecution() throws Exception {
-        act(observe(0,"STILL_INSIDE","HIGH",true),key()).andExpect(status().isOk());
-        String id=data(counter().andExpect(status().isCreated())).path("authorization_id").asText();
-        // 固定有效批准夹具，只测执行前的新核查守卫，不伪造外部设备回执。
-        jdbc.update("update disposal_authorization set status='APPROVED',approved_by=?,approved_at=current_timestamp,valid_from=?,valid_until=? where authorization_id=?",userId,Timestamp.from(Instant.now().minusSeconds(10)),Timestamp.from(Instant.now().plusSeconds(600)),id);
-        act(observe(1,"DEPARTED","LOW",false),key()).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/disposal-authorizations/"+id+"/execute").header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0}"))
-                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ADVISORY_COUNTER_BLOCKED"));
+    @Test void allManualObservationOutcomesAreRejected() throws Exception {
+        for(String outcome:List.of("DEPARTED","UNKNOWN","STILL_INSIDE"))
+            act(observe(0,outcome,"HIGH",false),key()).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_OBSERVATION_RETIRED"));
     }
     @Test void contactNumbersAreRedactedBeforePersistence() throws Exception {
         act(sms(0).replace("演示飞手","联系人 +8613800138000"),key()).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.records[0].recipient_name").value("联系人 [手机号已隐藏]"));
         assertThat(jdbc.queryForObject("select recipient_name from uav_event_advisory where event_id=?",String.class,eventId)).doesNotContain("13800138000");
     }
-    @Test void existingAuthorizedExecutorDoesNotNeedRequestOrAlarmReadPermission() throws Exception {
-        act(observe(0,"STILL_INSIDE","HIGH",true),key()).andExpect(status().isOk());
-        String id=data(counter().andExpect(status().isCreated())).path("authorization_id").asText();
-        jdbc.update("update disposal_authorization set status='APPROVED',approved_by=?,approved_at=current_timestamp,valid_from=?,valid_until=? where authorization_id=?",userId,Timestamp.from(Instant.now().minusSeconds(10)),Timestamp.from(Instant.now().plusSeconds(600)),id);
-        jdbc.update("delete from app_role_permission where role_code=? and permission_code in ('disposal:request','alarm:read')",role);
-        mvc.perform(post("/api/v1/disposal-authorizations/"+id+"/execute").header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0}"))
-                .andExpect(status().isOk());
+    @Test void disabledObservationCannotReplayHistoricalSuccess() throws Exception {
+        String historicalKey=key();
+        jdbc.update("insert into uav_event_advisory_request(actor_id,request_key,request_hash,event_id,response_text) values(?,?,?,?,?)",
+                userId,historicalKey,"historical",eventId,"{}");
+        act(observe(0,"STILL_INSIDE","HIGH",true),historicalKey).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_OBSERVATION_RETIRED"));
+        read().andExpect(jsonPath("$.data.event_version").value(0));
     }
-    @Test void deviceDispatchGuardRechecksLatestObservation() throws Exception {
-        act(observe(0,"STILL_INSIDE","HIGH",true),key()).andExpect(status().isOk());
-        String id=data(counter().andExpect(status().isCreated())).path("authorization_id").asText();
-        assertThat(dispatchAllowed(id)).isTrue();
-        act(observe(1,"UNKNOWN","UNKNOWN",false),key()).andExpect(status().isOk());
-        assertThat(dispatchAllowed(id)).isFalse();
+    @Test void missingSystemEvidenceNeverOffersDirectCounter() throws Exception {
+        read().andExpect(jsonPath("$.data.can_direct_counter").value(false))
+            .andExpect(jsonPath("$.data.counter_block_reason").isNotEmpty());
     }
     @Autowired org.springframework.transaction.support.TransactionTemplate transaction;
     @Autowired com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard commandGuard;

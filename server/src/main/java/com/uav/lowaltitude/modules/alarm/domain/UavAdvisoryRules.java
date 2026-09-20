@@ -1,23 +1,26 @@
 package com.uav.lowaltitude.modules.alarm.domain;
 
-import java.util.List;
-import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record;
+import com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository.Facts;
+import com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository.Evaluation;
 
-/** 现场核查依据决定是否可以申请升级；本规则不替代审批、目标校验或设备授权。 */
+/** 当前系统依据仅决定反制资格；不授予权限、不创建授权、不替代设备回执。 */
 public final class UavAdvisoryRules {
     private UavAdvisoryRules() { }
-    public static String counterBlockReason(String state,List<Record> records) {
-        if (!"CONFIRMED".equals(state)) return "请先人工核实事件属实";
-        if (records.isEmpty()) return "请先短信或电话录音劝离，或记录联系情况，再核查目标是否飞离及当前危险度";
-        int observation=-1,contact=-1;
-        for(int i=0;i<records.size();i++) {
-            if("OBSERVATION".equals(records.get(i).kind())) observation=i; else contact=i;
-        }
-        if(observation<0 || observation<contact) return "请记录本次联系后的现场核查结果";
-        Record last=records.get(observation);
-        if(!"STILL_INSIDE".equals(last.outcome())) return "DEPARTED".equals(last.outcome())?"目标已飞离，无需升级反制":"目标情况不明，请继续核查，不能据此申请反制";
-        if(!"HIGH".equals(last.danger())) return "当前未确认高危险度，请继续观察核查";
-        if(!last.urgent() && contact<0) return "请先短信或电话录音劝离，或记录联系情况，再补充联系后的核查结果";
+    public static String counterBlockReason(String state, String alarmId, Facts facts, Evaluation evaluation,
+            boolean sufficient, boolean noUnknowns, Integer freshSeconds, long now) {
+        if (!"CONFIRMED".equals(state)) return "事件尚未核实属实";
+        if (freshSeconds == null || freshSeconds <= 0) return "缺少有效的目标观测时效配置，不能确认当前反制依据";
+        long window = freshSeconds * 1000L;
+        if (facts == null || !"UAV".equals(facts.objectType()) || !fresh(facts.observedAt(), now, window))
+            return "缺少当前有效无人机观测，不能确认反制依据";
+        if (evaluation == null || !"ILLEGAL".equals(evaluation.legalStatus())
+                || !"FRESH".equals(evaluation.freshness()) || !sufficient || !noUnknowns
+                || !alarmId.equals(evaluation.alarmId())
+                || !fresh(evaluation.evaluatedAt(), now, window) || !fresh(evaluation.observedAt(), now, window))
+            return "缺少关联本事件且证据充分的当前违规研判，暂不能申请或执行反制";
         return "";
+    }
+    private static boolean fresh(Long at, long now, long window) {
+        return at != null && at <= now && now - at <= window;
     }
 }

@@ -482,7 +482,7 @@ class EmergencyStopApiTest {
                 alarm, tag, at, at, ORG, DISTRICT, at);
         jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)"
                 + " values (?,?,'CONFIRMED',?,?,?,?,1)", event, alarm, ORG, DISTRICT, at, at);
-        jdbc.update("INSERT INTO uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) VALUES(?,?,0,'OBSERVATION',0,?,'STILL_INSIDE','HIGH','测试现场确认持续逼近受保护区域，存在紧急危险，需要立即申请有效授权',TRUE,FALSE)",key(),event,jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,requester));
+        CounterEvidenceFixture.seed(jdbc,event);
         return event;
     }
 

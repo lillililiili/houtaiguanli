@@ -136,7 +136,7 @@ class DirectDisposalApiTest {
         String id=UUID.randomUUID().toString(),alarm=UUID.randomUUID().toString();Timestamp now=Timestamp.from(Instant.now());
         jdbc.update("insert into alarm(alarm_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) select ?,source_id,?,'UAV_INTRUSION','HIGH',?,?,'mock',?,?,? from integration_source limit 1",alarm,id,now,now,ORG,DISTRICT,now);
         jdbc.update("insert into uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values (?,?,?,?,?,?,?,0)",id,alarm,state,ORG,DISTRICT,now,now);
-        if("CONFIRMED".equals(state)) jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) values (?,?,0,'OBSERVATION',?,?,'STILL_INSIDE','HIGH','隔离测试：目标持续逼近受保护区域，当前证据充分，验证直接操作权限与审计',true,false)",UUID.randomUUID().toString(),id,System.currentTimeMillis(),actor.id());
+        if ("CONFIRMED".equals(state)) CounterEvidenceFixture.seed(jdbc,id);
         return id;
     }
     private String body(String event,String action){return "{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+event+"\",\"action_type\":\""+action+"\",\"channel\":\"MANUAL\",\"reason\":\"隔离模拟验证\"}";}

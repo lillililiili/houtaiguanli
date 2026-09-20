@@ -53,17 +53,23 @@ public class RuleEngineHooksImpl implements RuleEngineHooks {
                 outcome.planMatchCode() == null ? null : outcome.planMatchCode().name(), outcome.grade(), outcome.score(), outcome.violationReasons(),
                 outcome.asOf() != null ? outcome.asOf() : now, now);
         MergeOutcome result = merge.apply(input, outcome.params());
+        // MERGED/DOWNGRADED 没有新建告警，但仍属于原事件。保存这层关联，供通知重新核验最新依据。
+        String linkedAlarmId = result.alarmId();
+        if (linkedAlarmId == null && (AlarmMergePolicy.KIND_MERGED.equals(result.kind())
+                || AlarmMergePolicy.KIND_DOWNGRADED.equals(result.kind()))) {
+            linkedAlarmId = merge.associatedAlarmId(outcome.evaluationId());
+        }
         // alarm_outcome 只放安全摘要：kind/告警/组/等级/被阻断原因，不带任何输入快照。
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("kind", result.kind());
-        if (result.alarmId() != null) summary.put("alarm_id", result.alarmId());
+        if (linkedAlarmId != null) summary.put("alarm_id", linkedAlarmId);
         if (result.eventId() != null) summary.put("event_id", result.eventId());
         if (result.groupId() != null) summary.put("group_id", result.groupId());
         if (result.severity() != null) summary.put("severity", result.severity());
         if (result.reason() != null) summary.put("reason", result.reason());
         boolean created = AlarmMergePolicy.KIND_CREATED.equals(result.kind()) || AlarmMergePolicy.KIND_UPGRADED.equals(result.kind());
         boolean merged = AlarmMergePolicy.KIND_MERGED.equals(result.kind()) || AlarmMergePolicy.KIND_DOWNGRADED.equals(result.kind());
-        return new HookResult(result.alarmId(), summary, created, merged);
+        return new HookResult(linkedAlarmId, summary, created, merged);
     }
 
     /** 运行收尾：只有 ACTIVE 运行才自动关闭到期合并组；窗口参数来自本次运行版本的 C06.*。 */

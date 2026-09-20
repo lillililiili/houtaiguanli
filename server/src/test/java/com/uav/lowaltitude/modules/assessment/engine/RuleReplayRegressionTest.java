@@ -216,7 +216,7 @@ class RuleReplayRegressionTest {
         String merged = rows.stream().filter(r -> "MERGED".equals(kind(r.get("alarm_outcome")))).map(r -> (String) r.get("evaluation_id")).findFirst().orElseThrow();
         assertThat(alarm.get("source_alarm_id")).isEqualTo("eval:" + created);
         assertThat(rows.stream().filter(r -> created.equals(r.get("evaluation_id"))).findFirst().orElseThrow().get("alarm_id")).isEqualTo(alarms.get(0));
-        assertThat(rows.stream().filter(r -> merged.equals(r.get("evaluation_id"))).findFirst().orElseThrow().get("alarm_id")).as("合并不建第二条告警").isNull();
+        assertThat(rows.stream().filter(r -> merged.equals(r.get("evaluation_id"))).findFirst().orElseThrow().get("alarm_id")).as("合并研判关联原告警，不建第二条告警").isEqualTo(alarms.get(0));
         assertThat(jdbc.queryForObject("select count(*) from uav_event where alarm_id=? and state_code='PENDING_VERIFICATION'", Long.class, alarms.get(0))).isEqualTo(1L);
         List<Map<String, Object>> groups = jdbc.queryForList("select group_id,state,hit_count,first_alarm_id,latest_alarm_id,current_severity from alarm_merge_group where target_id=? and alarm_type='RULE_LEGALITY'", target);
         assertThat(groups).hasSize(1);

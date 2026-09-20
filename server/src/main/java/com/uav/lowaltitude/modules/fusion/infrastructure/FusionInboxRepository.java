@@ -113,12 +113,19 @@ public class FusionInboxRepository {
         Map<String, Object> p = new HashMap<>();
         p.put("token", token); p.put("until", nowMillis + leaseMillis); p.put("now", nowMillis); p.put("batch", batch);
         p.put("max", maxAttempts);
+        p.put("recent", nowMillis - 120_000);
         List<String> prefixes = claimablePrefixes();
         putPrefixes(p, prefixes);
+        // 优先级按来源分配，不能只挑新帧而越过该来源更早的待处理帧。
+        // 这里只优化领取延迟；观测/研判/通知仍使用各自原有时效校验。
+        String sourcePriority = properties.isPrioritizeFreshSources()
+                ? "CASE WHEN (source,source_id) IN (SELECT recent.source,recent.source_id FROM inbox_message recent"
+                  + " WHERE recent.received_at BETWEEN :recent AND :now) THEN 0 ELSE 1 END, "
+                : "";
         List<String> ids = jdbc.queryForList("SELECT inbox_id FROM inbox_message"
                 + " WHERE (status='RECEIVED' OR (status='PROCESSING' AND lease_until<:now))"
                 + " AND fusion_attempts<:max AND " + prefixSql(prefixes) + " AND source_id IS NOT NULL AND payload IS NOT NULL"
-                + " ORDER BY received_at ASC, ingest_seq ASC FETCH FIRST :batch ROWS ONLY FOR UPDATE SKIP LOCKED", p, String.class);
+                + " ORDER BY " + sourcePriority + "received_at ASC, ingest_seq ASC FETCH FIRST :batch ROWS ONLY FOR UPDATE SKIP LOCKED", p, String.class);
         if (ids.isEmpty()) return List.of();
         p.put("ids", ids);
         int claimed = jdbc.update("UPDATE inbox_message SET status='PROCESSING', lease_token=:token, lease_until=:until, fusion_attempts=fusion_attempts+1"

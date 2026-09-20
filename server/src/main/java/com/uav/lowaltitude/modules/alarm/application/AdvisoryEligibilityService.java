@@ -31,8 +31,6 @@ public class AdvisoryEligibilityService {
         if(!"UAV".equals(facts.objectType()))return blocked("目标类型尚未确认为无人机，不能仅凭身份识别猜测违规",evaluation,observed);
         if(!policy.fresh(observed,now,policy.freshMillis()))return blocked("缺少近期目标观测，不能确认目标仍在场；"+policy.description(),evaluation,observed);
         var history=records.records(event.eventId());
-        var observation=history.stream().filter(r->"OBSERVATION".equals(r.kind())).reduce((a,b)->b).orElse(null);
-        if(observation!=null&&!"STILL_INSIDE".equals(observation.outcome()))return blocked("DEPARTED".equals(observation.outcome())?"现场核查确认已飞离，不再发送":"现场核查结果不明，暂停自动发送",evaluation,observed);
         if(history.stream().anyMatch(r->blocksChannel(r.kind(),channel)))return blocked("已有本渠道通知或人工联系记录，后台不重复自动通知",evaluation,observed);
         String source;
         if(evaluation!=null) {

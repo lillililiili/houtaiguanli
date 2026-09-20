@@ -55,6 +55,17 @@ public class AlarmMergeRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 归并命中关联当时已有的告警；不指向后来升级生成的新告警。成员的 alarm_id 仍只表示本次新建。 */
+    public String associatedAlarmId(String evaluationId) {
+        var rows = jdbc.queryForList("SELECT previous.alarm_id FROM alarm_merge_member current_member"
+                + " JOIN alarm_merge_member previous ON previous.group_id=current_member.group_id"
+                + " AND previous.alarm_id IS NOT NULL AND previous.created_at<=current_member.created_at"
+                + " WHERE current_member.evaluation_id=:evaluation"
+                + " ORDER BY previous.created_at DESC,previous.member_id DESC FETCH FIRST 1 ROWS ONLY",
+                Map.of("evaluation", evaluationId), String.class);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public String eventIdOfAlarm(String alarmId) {
         List<String> rows = jdbc.queryForList("SELECT event_id FROM uav_event WHERE alarm_id=:alarm", Map.of("alarm", alarmId), String.class);
         return rows.isEmpty() ? null : rows.get(0);

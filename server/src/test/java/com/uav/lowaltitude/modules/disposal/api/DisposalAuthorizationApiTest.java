@@ -66,6 +66,7 @@ class DisposalAuthorizationApiTest {
         jdbc.update("delete from target_latest_state where target_id like 'dsp-target-%'");
         jdbc.update("delete from target where target_id like 'dsp-target-%'");
         jdbc.update("delete from uav_event_advisory where event_id like 'dsp-event-%'");
+        jdbc.update("delete from rule_evaluation where alarm_id like 'dsp-alarm-%'");
         jdbc.update("delete from uav_event where event_id like 'dsp-event-%'");
         jdbc.update("delete from alarm where alarm_id like 'dsp-alarm-%'");
     }
@@ -457,7 +458,7 @@ class DisposalAuthorizationApiTest {
                 alarmId, "告警-测试-" + suffix, at, at, ORG, DISTRICT, at);
         jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)"
                 + " values (?,?,?,?,?,?,?,1)", id, alarmId, state, ORG, DISTRICT, at, at);
-        if ("CONFIRMED".equals(state)) jdbc.update("INSERT INTO uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) VALUES(?,?,0,'OBSERVATION',0,?,'STILL_INSIDE','HIGH','测试现场确认持续逼近受保护区域，存在紧急危险，需要立即申请有效授权',TRUE,FALSE)",UUID.randomUUID().toString(),id,requesterId);
+        if ("CONFIRMED".equals(state)) CounterEvidenceFixture.seed(jdbc,id);
         return id;
     }
 

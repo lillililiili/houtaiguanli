@@ -199,3 +199,14 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 列表新增可选 `needs_review=true|false`。未传不增加条件；显式 false 与未传不同。与 DTO 使用同一业务条件，在 count 与列表分页前筛选，继续叠加组织/区域、目标类别、最新研判等既有条件。`信息待核对` 使用 `needs_review=true`，不能固定筛选 `legal_status=UNDETERMINED` 或在分页后删行。
 
 前端根据分流结果隐藏或显示右侧“核对信息缺口”。可靠合法与可靠非法都没有主复核要求；低可靠合法/非法保留原标签并标识“暂不能可靠确认”。无提交权限时只读原因；旧响应缺新字段显示未提供算法可靠性结果；复核、重新研判、刷新与重新登录均回读服务端，保留原结论、来源及历史。
+
+### 2026-09-18 归并研判与告警关联
+
+新产生的 MERGED/DOWNGRADED 研判通过 `alarm_id` 关联归并当时已有的告警，通知资格校验因此可以使用最新研判。该关联不表示本次新建告警；新增数量仍以 `alarm_outcome.kind` 的 CREATED/UPGRADED 为准。合并成员的 `alarm_id` 仍只记录本次新建，原告警时间、历史研判和既有通知任务不回写。后续升级不得使先前研判的关联改指新告警。旧记录缺少关联仍按旧事实读取。
+
+### 2026-09-18：停用无人机人工现场记录
+
+- `POST /api/v1/uav-events/{id}/advisory/actions` 不再接收 `kind=OBSERVATION`，返回 400 / `MANUAL_OBSERVATION_RETIRED`；历史只读查询、通知记录及冻结材料保留。
+- 旧人工观察不再阻断短信/电话，也不再决定列表进度或反制资格。通知仍检查原时效、当前规则结论、接收对象和独立渠道回执。
+- 反制申请、执行、排队下发及续链统一读取当前系统依据：已核实事件、当前 UAV 观测、有效 C03.fresh_seconds、关联本事件的最新 ACTIVE / ILLEGAL / FRESH 研判、SUFFICIENT 充分性及空未知原因。无依据或过期时明确阻断，删除空历史兼容放行。
+- 权限、审批、设备范围、授权时间窗及急停后的设备停机核查保持；此变更未实现自动飞离解除、自动反制或自动处罚。

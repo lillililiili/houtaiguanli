@@ -7,7 +7,7 @@ import com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopReposito
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository;
 
-/** 对已知授权的设备启动与现场核查、急停事务串行；外部协议授权保持既有兼容。 */
+/** 设备启动前检查当前系统依据，并与急停事务串行；外部协议授权保持既有兼容。 */
 @Component
 public class DisposalCommandGuard {
     private final EmergencyStopRepository stops;
@@ -28,7 +28,6 @@ public class DisposalCommandGuard {
         if (initial != null && "UAV_EVENT".equals(initial.subjectKind())) {
             stops.lockEvent(initial.subjectId());
             if (Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType())
-                    && !advisory.records(initial.subjectId()).isEmpty()
                     && !advisory.counterBlockReason(initial.subjectId()).isEmpty()) return false;
         }
         String status = stops.lockAuthorizationStatus(authorizationId);

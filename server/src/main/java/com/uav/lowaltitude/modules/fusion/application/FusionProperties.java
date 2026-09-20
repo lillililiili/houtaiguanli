@@ -15,6 +15,8 @@ public class FusionProperties {
     private long leaseMillis = 30_000;
     /** 同一 inbox 行最多被领取的次数，超过即置 FAILED（毒帧不得无限重领）。 */
     private int maxAttempts = 5;
+    /** 本地回放可优先仍在上报的来源；不改变同一来源内部的摄取顺序。 */
+    private boolean prioritizeFreshSources;
     private final LivePromotion livePromotion = new LivePromotion();
     private final Replay replay = new Replay();
 
@@ -28,6 +30,8 @@ public class FusionProperties {
     public void setLeaseMillis(long value) { leaseMillis = value; }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int value) { maxAttempts = value; }
+    public boolean isPrioritizeFreshSources() { return prioritizeFreshSources; }
+    public void setPrioritizeFreshSources(boolean value) { prioritizeFreshSources = value; }
     public LivePromotion getLivePromotion() { return livePromotion; }
     public Replay getReplay() { return replay; }
 

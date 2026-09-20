@@ -88,8 +88,8 @@ public class DisposalJammingChain {
         if (!DisposalRules.COMPLETED.equals(parent.status())) return;
         if (!"UAV_EVENT".equals(parent.subjectKind())) return;
         emergencyStops.lockEvent(parent.subjectId());
-        // 沿用现有授权关联链，但新核查显示已离开/未知/风险降低时不得继续下发。
-        if (!advisory.records(parent.subjectId()).isEmpty() && !advisory.counterBlockReason(parent.subjectId()).isEmpty()) return;
+        // 续链重新检查当前系统依据；历史人工记录不参与资格判定。
+        if (!advisory.counterBlockReason(parent.subjectId()).isEmpty()) return;
         if (emergencyStops.covered(parentAuthorizationId) || emergencyStops.unresolved(parent.subjectId())) return;
         // Reload after waiting for a concurrent stop; never use the pre-lock completion snapshot.
         parent = repository.findUnlocked(parentAuthorizationId);

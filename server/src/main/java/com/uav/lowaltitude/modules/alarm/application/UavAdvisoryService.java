@@ -14,7 +14,6 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.*;
-import com.uav.lowaltitude.modules.alarm.domain.UavAdvisoryRules;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
@@ -125,14 +124,12 @@ public class UavAdvisoryService {
         catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","\u8be5\u8bf7\u6c42\u7f16\u53f7\u5df2\u7528\u4e8e\u5176\u4ed6\u64cd\u4f5c"); }
         return result;
     }
-    /** 调用方持有受限事件/授权范围；此方法额外锁定事件，防止核查结果和执行竞争。 */
+    /** 调用方持有受限事件/授权范围；锁定事件并读取当前系统依据。 */
     @Transactional
-    public void requireCounter(String eventId, boolean allowLegacy, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {
+    public void requireCounter(String eventId, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {
         EventRow event=events.lock(eventId,scope);
         if(event==null) throw notFound();
-        var records=repository.records(eventId);
-        if(allowLegacy && records.isEmpty()) return;
-        String reason=UavAdvisoryRules.counterBlockReason(event.state(),records);
+        String reason=repository.counterBlockReason(eventId);
         if(!reason.isEmpty()) throw conflict("ADVISORY_COUNTER_BLOCKED",reason);
     }
     private EventRow event(String id,boolean lock) {
@@ -142,7 +139,7 @@ public class UavAdvisoryService {
     }
     private Overview view(EventRow event) {
         var records=repository.records(event.eventId());
-        String reason=UavAdvisoryRules.counterBlockReason(event.state(),records);
+        String reason=repository.counterBlockReason(event.eventId());
         boolean mode=sms.simulationAvailable(event.sourceMode());
         boolean request=allowed(PermissionCode.DISPOSAL_REQUEST);
         boolean direct=allowed(PermissionCode.DISPOSAL_DIRECT);
@@ -164,16 +161,13 @@ public class UavAdvisoryService {
             n.fieldNames().forEachRemaining(f->{if(!fields.contains(f)) throw new IllegalArgumentException();});
             if(!n.has("expected_version") || !n.get("expected_version").isIntegralNumber() || !n.get("expected_version").canConvertToLong() || n.get("expected_version").longValue()<0) throw new IllegalArgumentException();
             String kind=text(n,"kind",32,true),recipient=text(n,"recipient_name",120,false),basis=text(n,"contact_basis",500,false),content=text(n,"content",1000,false),outcome=text(n,"outcome",24,false),danger=text(n,"danger",16,false),note=text(n,"note",1000,false);
-            if(!Set.of("SMS_SIMULATED","CONTACT_RECORDED","OBSERVATION").contains(kind)) throw new IllegalArgumentException();
+            if("OBSERVATION".equals(kind)) throw bad("MANUAL_OBSERVATION_RETIRED","人工现场记录已停用，请使用系统观测与研判依据");
+            if(!Set.of("SMS_SIMULATED","CONTACT_RECORDED").contains(kind)) throw new IllegalArgumentException();
             if(n.has("urgent")&&!n.get("urgent").isBoolean()) throw new IllegalArgumentException();
             boolean urgent=n.path("urgent").asBoolean(false);
-            if("OBSERVATION".equals(kind)) {
-                if(outcome==null || danger==null || note==null || !Set.of("DEPARTED","STILL_INSIDE","UNKNOWN").contains(outcome) || !Set.of("HIGH","MEDIUM","LOW","UNKNOWN").contains(danger)) throw new IllegalArgumentException();
-                if(recipient!=null||basis!=null||content!=null) throw new IllegalArgumentException();
-                if(urgent && (!"STILL_INSIDE".equals(outcome)||!"HIGH".equals(danger)||note.length()<20)) throw bad("VALIDATION_ERROR","紧急升级需确认仍在区域内、危险度高，并填写至少20字现场依据");
-            } else if(recipient==null||basis==null||content==null||outcome!=null||danger!=null||urgent) throw new IllegalArgumentException();
+            if(recipient==null||basis==null||content==null||outcome!=null||danger!=null||urgent) throw new IllegalArgumentException();
             return new Action(n.get("expected_version").longValue(),kind,recipient,basis,content,outcome,danger,note,urgent);
-        } catch(ApiException ex) {throw ex;} catch(Exception ex) {throw bad("VALIDATION_ERROR","请填写接收对象、联系依据与劝离内容，或完整填写现场核查结果、危险度和依据");}
+        } catch(ApiException ex) {throw ex;} catch(Exception ex) {throw bad("VALIDATION_ERROR","请填写接收对象、联系依据与劝离内容");}
     }
     private static String text(JsonNode n,String key,int max,boolean required) {
         if(!n.has(key)||n.get(key).isNull()) {if(required) throw new IllegalArgumentException();return null;}

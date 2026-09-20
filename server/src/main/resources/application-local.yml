@@ -2,6 +2,11 @@ server:
   port: ${SERVER_PORT:8081}
 
 spring:
+  task:
+    scheduling:
+      # MQTT 续租、通知轮询与融合处理并行，避免历史回放拖住实时接入。
+      pool:
+        size: 4
   flyway:
     # 协作者 A 的 V202609050001 编号低于本地库已应用版本；仅本地开发库允许乱序应用，生产配置不放开。
     out-of-order: true
@@ -26,6 +31,8 @@ app:
   fusion:
     # 本机 MQTT 回放必须消费融合 inbox，持续生成近期目标；仍可显式关闭。
     enabled: ${APP_FUSION_ENABLED:true}
+    batch-size: 5
+    prioritize-fresh-sources: true
   flight-device-check:
     # 用户授权使用独立 MQTT 模拟器演示 mock 计划；真实计划不使用这些模拟设备。
     mqtt-demo-enabled: ${FLIGHT_DEVICE_CHECK_MQTT_DEMO_ENABLED:true}

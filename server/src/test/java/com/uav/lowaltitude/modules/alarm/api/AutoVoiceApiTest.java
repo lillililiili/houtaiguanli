@@ -164,7 +164,7 @@ class AutoVoiceApiTest {
                 .andExpect(jsonPath("$.data.auto_voice.trigger_source").value("RULE_ILLEGAL"));
         fixture();evaluation("LEGAL","FRESH","[]",true,Instant.now().minusSeconds(1));voiceService.process(eventId);
         read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));assertThat(count("uav_event_voice_advisory")).isZero();
-        fixture();observation("UNKNOWN");voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));
+        fixture();observation("UNKNOWN");voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
     }
     @Test void manualContactBlocksVoiceButDoesNotFabricatePlayback()throws Exception {
         jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);

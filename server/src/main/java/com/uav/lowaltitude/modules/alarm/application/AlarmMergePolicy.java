@@ -142,6 +142,10 @@ public class AlarmMergePolicy {
         return SEVERITY_UNKNOWN;
     }
 
+    public String associatedAlarmId(String evaluationId) {
+        return repository.associatedAlarmId(evaluationId);
+    }
+
     private static String defaultSeverity(String grade) {
         if (grade == null) return SEVERITY_UNKNOWN;
         String value = grade.trim().toUpperCase(Locale.ROOT);

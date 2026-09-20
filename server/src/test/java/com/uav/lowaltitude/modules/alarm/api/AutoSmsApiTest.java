@@ -151,10 +151,11 @@ class AutoSmsApiTest {
         jdbc.update("update alarm set received_at=current_timestamp where alarm_id=(select alarm_id from uav_event where event_id=?)",eventId);
         jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where event_id=?",eventId);automatic.process(eventId);assertBlocked();
     }
-    @Test void departedAndUnknownObservationBlockAndNoContactDuplicates()throws Exception {
-        observation("DEPARTED");automatic.process(eventId);assertBlocked();
-        jdbc.update("update uav_event_advisory set outcome='UNKNOWN' where event_id=?",eventId);automatic.process(eventId);assertBlocked();
-        jdbc.update("delete from uav_event_advisory where event_id=?",eventId);
+    @Test void historicalObservationDoesNotOverrideCurrentNotificationFacts()throws Exception {
+        observation("DEPARTED");automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
+        assertThat(count("uav_event_advisory")).isEqualTo(2);
+        fixture();
         jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);
         automatic.process(eventId);assertThat(count("uav_event_advisory")).isEqualTo(1);
         assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
@@ -208,7 +209,7 @@ class AutoSmsApiTest {
         read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));
         assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("WAITING");
     }
-    @Test void automaticContactInvalidatesEarlierObservationForCountermeasure()throws Exception {
+    @Test void historicalObservationCannotSubstituteForReliableSystemEvidence()throws Exception {
         observation("STILL_INSIDE");jdbc.update("update uav_event_advisory set danger='HIGH' where event_id=?",eventId);
         automatic.process(eventId);
         read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED")).andExpect(jsonPath("$.data.can_request_counter").value(false));
@@ -241,15 +242,32 @@ class AutoSmsApiTest {
         } finally {pool.shutdownNow();}
     }
     protected ResultActions read()throws Exception{return mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization","Bearer "+session));}
+    @Test void currentReliableEvidenceReplacesManualObservationAndIsRechecked()throws Exception {
+        evaluation("ILLEGAL","FRESH","[]",true,Instant.now(),true);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(true));
+        observation("DEPARTED");
+        read().andExpect(jsonPath("$.data.can_request_counter").value(true));
+        evaluation("LEGAL","FRESH","[]",true,Instant.now(),true);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false));
+    }
+    @Test void staleOrInsufficientSystemEvidenceCannotEnableCounter()throws Exception {
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false));
+        evaluation("ILLEGAL","FRESH","[]",true,Instant.now(),true);
+        jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(7200)),targetId);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false));
+    }
     private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-sms/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+",\"note\":\"已核对发送失败且目标仍在范围，申请补发\"}"));}
     private int count(String table){return jdbc.queryForObject("select count(*) from "+table+" where event_id=?",Integer.class,eventId);}
     private void assertBlocked()throws Exception{read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();}
     private void observation(String outcome){jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) values(?,?,0,'OBSERVATION',0,?,?,'UNKNOWN','人工现场核查',false,false)",UUID.randomUUID().toString(),eventId,userId,outcome);}
     protected void evaluation(String legal,String fresh,String unknowns,boolean linked,Instant at) {
+        evaluation(legal,fresh,unknowns,linked,at,false);
+    }
+    private void evaluation(String legal,String fresh,String unknowns,boolean linked,Instant at,boolean sufficient) {
         var version=jdbc.queryForMap("SELECT rule_set_id,rule_set_version_id FROM rule_set_version FETCH FIRST 1 ROWS ONLY");
         String run=UUID.randomUUID().toString(),id=UUID.randomUUID().toString();Timestamp time=Timestamp.from(at);
         jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,source_mode,created_at) values(?,?,?,'ACTIVE','SCHEDULED',?,?,'DONE','mock',?)",run,version.get("rule_set_id"),version.get("rule_set_version_id"),time,time,time);
         String alarm=linked?jdbc.queryForObject("select alarm_id from uav_event where event_id=?",String.class,eventId):null;
-        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at) values(?,?,?,'ACTIVE','TARGET',?,?,?,?,?,?,'FULL',?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,'mock',?)",id,run,version.get("rule_set_version_id"),targetId,pilotPlanId,time,time,time,fresh,legal,unknowns,alarm,ORG,DISTRICT,time);
+        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) values(?,?,?,'ACTIVE','TARGET',?,?,?,?,?,?,'FULL',?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,'mock',?,?,?,CAST(? AS JSON))",id,run,version.get("rule_set_version_id"),targetId,pilotPlanId,time,time,time,fresh,legal,unknowns,alarm,ORG,DISTRICT,time,sufficient?"SUFFICIENT":null,sufficient?"test-v1":null,sufficient?"[]":null);
     }
 }

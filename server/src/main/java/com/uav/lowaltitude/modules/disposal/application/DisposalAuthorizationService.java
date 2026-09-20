@@ -204,7 +204,7 @@ public class DisposalAuthorizationService {
         AuthorizationRow initial = repository.find(id, decision);
         if (initial == null) throw notFound();
         if ("UAV_EVENT".equals(initial.subjectKind()) && Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType()))
-            advisory.requireCounter(initial.subjectId(), !"DIRECT".equals(initial.authorizationMode()), decision);
+            advisory.requireCounter(initial.subjectId(), decision);
         AuthorizationRow row = locked(id, decision);
         if ("UAV_EVENT".equals(row.subjectKind()) && emergencyStops.unresolved(row.subjectId()))
             throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
@@ -371,7 +371,7 @@ public class DisposalAuthorizationService {
             // 未核实的事件不该被反制：先确认"确实是它"，再谈能不能动手（策略可关，但要明示）。
             if (policy.requiresConfirmedEvent(actionType) && !"CONFIRMED".equals(row.state()))
                 throw conflict("POLICY_REQUIRES_CONFIRMED_EVENT", "该动作要求事件已核实为属实");
-            if (Set.of("COUNTERMEASURE", "JAMMING").contains(actionType)) advisory.requireCounter(subjectId, false, alarmDecision);
+            if (Set.of("COUNTERMEASURE", "JAMMING").contains(actionType)) advisory.requireCounter(subjectId, alarmDecision);
             return new Subject(subjectId, row.targetId(), row.ownerOrgId(), row.districtId(), row.sourceMode());
         }
         if ("TARGET".equals(kind)) {
