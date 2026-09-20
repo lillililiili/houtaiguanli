@@ -33,7 +33,11 @@ final class AuditLabels {
             Map.entry("evidence", "证据管理"),
             Map.entry("airport", "机场基础数据"),
             Map.entry("maps", "地图管理"),
-            Map.entry("system", "系统"));
+            Map.entry("system", "系统"),
+            Map.entry("organizations", "单位档案"),
+            Map.entry("notificationSettings", "通知对象配置"),
+            Map.entry("responsePlans", "处置预案"),
+            Map.entry("flight", "飞行计划"));
 
     private static final Map<String, String> ACTIONS = Map.ofEntries(
             Map.entry("integration_source_create", "新增接入来源"),
@@ -148,7 +152,33 @@ final class AuditLabels {
             Map.entry("map_package_uploaded", "上传离线地图包"),
             Map.entry("map_package_activated", "启用离线地图"),
             Map.entry("map_package_rolled_back", "回滚离线地图"),
-            Map.entry("map_package_deleted", "删除离线地图包"));
+            Map.entry("map_package_deleted", "删除离线地图包"),
+            Map.entry("automation_rule_changed", "调整自动化规则"),
+            Map.entry("countermeasure_4ch_requested", "下发四通道反制指令"),
+            Map.entry("device_maintenance_reported", "上报设备维护任务"),
+            Map.entry("device_maintenance_handled", "处理设备维护任务"),
+            Map.entry("device_maintenance_notice_resent", "补发设备维护通知"),
+            Map.entry("response_plan_draft_created", "新建处置预案草稿"),
+            Map.entry("response_plan_draft_updated", "更新处置预案草稿"),
+            Map.entry("response_plan_published", "发布处置预案"),
+            Map.entry("response_plan_withdrawn", "撤回处置预案"),
+            Map.entry("response_plan_bound", "绑定处置预案"),
+            Map.entry("response_plan_unbound", "解除处置预案绑定"),
+            Map.entry("organization_profile_created", "创建单位档案"),
+            Map.entry("organization_profile_updated", "更新单位档案"),
+            Map.entry("business_contact_created", "新增业务联系人"),
+            Map.entry("business_contact_updated", "更新业务联系人"),
+            Map.entry("plan_source_binding_created", "登记计划来源关联"),
+            Map.entry("plan_source_binding_updated", "更新计划来源关联"),
+            Map.entry("plan_subjects_associated", "关联计划主体"),
+            Map.entry("notification_setting_created", "新增通知配置"),
+            Map.entry("notification_setting_updated", "更新通知配置"),
+            Map.entry("plan_device_checked", "核实计划执行设备"),
+            Map.entry("plan_feedback_submitted", "提交计划执行反馈"),
+            Map.entry("auto_sms_retry_requested", "申请补发自动短信"),
+            Map.entry("auto_voice_retry_requested", "申请补发自动电话"),
+            Map.entry("device_delete", "删除设备"),
+            Map.entry("uav_advisory_recorded", "登记无人机劝离记录"));
 
     private static final Map<String, String> METHODS = Map.of(
             "GET", "查询", "POST", "提交", "PUT", "更新", "PATCH", "更新", "DELETE", "删除");

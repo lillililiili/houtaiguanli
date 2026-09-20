@@ -119,8 +119,8 @@ class LegalityReviewApiTest {
         jdbc.update("delete from app_user where account like 's7r-%'");
         jdbc.update("delete from app_role_permission where role_code like 'ROLE-S7R-%'");
         jdbc.update("delete from app_role where role_code like 'ROLE-S7R-%'");
-        jdbc.update("delete from app_district where district_id=?", district);
-        jdbc.update("delete from app_org where org_id=?", orgId);
+        jdbc.update("delete from app_district where district_id=? or district_id=?", district, "s7r-other-dist-" + suffix);
+        jdbc.update("delete from app_org where org_id=? or org_id=?", orgId, "s7r-other-org-" + suffix);
     }
 
     @Test
@@ -167,7 +167,10 @@ class LegalityReviewApiTest {
     @Test
     void crossScopeIsNotFoundAndMissingPermissionWinsOverBadBody() throws Exception {
         String stranger = user("ASSIGNED", "assessment:read", "assessment:revise");
-        jdbc.update("update app_user_data_scope set org_id='seed-stage3-org',district_id='seed-stage3-district' where user_id=(select user_id from app_session where session_id=?)", stranger);
+        String otherOrg = "s7r-other-org-" + suffix, otherDistrict = "s7r-other-dist-" + suffix;
+        jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", otherOrg, "S7R-O-" + suffix, "跨范围机构");
+        jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", otherDistrict, "S7R-O-" + suffix, "跨范围区域");
+        jdbc.update("update app_user_data_scope set org_id=?,district_id=? where user_id=(select user_id from app_session where session_id=?)", otherOrg, otherDistrict, stranger);
         revise(stranger, evaluation, "CONFIRM", null, "跨范围复核", 0).andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("LEGALITY_EVALUATION_NOT_FOUND"));
         mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(stranger))).andExpect(status().isNotFound());

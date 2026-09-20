@@ -11,7 +11,7 @@ class MergedEvaluationAlarmTest {
     @Test void mergedEvidenceKeepsItsOriginalAlarmAcrossLaterUpgrades() {
         check(new DriverManagerDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";DB_CLOSE_DELAY=-1;MODE=PostgreSQL","sa",""));
     }
-    @Test @EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches=".+")
+    @Test @EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches="jdbc:postgresql://[^/]+/advisory_verify_[a-z0-9_]+")
     void postgresKeepsHistoricalAssociation() {
         String url=System.getenv("POSTGRES_TEST_URL"), user=System.getenv("POSTGRES_TEST_USER"), password=System.getenv("POSTGRES_TEST_PASSWORD");
         var admin=new JdbcTemplate(new DriverManagerDataSource(url,user,password));

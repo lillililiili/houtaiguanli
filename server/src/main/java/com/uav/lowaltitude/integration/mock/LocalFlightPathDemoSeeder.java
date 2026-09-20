@@ -69,10 +69,20 @@ public class LocalFlightPathDemoSeeder implements ApplicationRunner {
         }
         jdbc.update("INSERT INTO target_latest_state(target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,unknown_fields,created_at,updated_at,version) SELECT ?,CAST(? AS GEOMETRY),50,40,8,90,0.95,0.95,?,?,'[]',?,?,0 WHERE NOT EXISTS(SELECT 1 FROM target_latest_state WHERE target_id=?)",target,point(count-1,lat,deviation),ts(last),ts(last),ts(first),ts(last),target);
         // 由现有引擎计算匹配与偏离，不直接伪造 FULL/PARTIAL 或合法性结论。
+        if(!postgis())return;
         var asOf=last.atOffset(ZoneOffset.UTC);
         var run=runs.start(LocalStage7RuleEngineSeeder.RULE_SET_CODE,RunMode.ACTIVE,"REPLAY",dataset,null,asOf);
         var result=runs.runBatch(run,List.of(new Subject(SubjectKind.TARGET,target,org,district,"mock")),asOf);
         if(!result.errors().isEmpty())throw new IllegalStateException("飞行演示研判失败: "+result.errors());
+    }
+    private boolean postgis() {
+        var source = jdbc.getDataSource();
+        if (source == null) return false;
+        try (var connection = source.getConnection()) {
+            return connection.getMetaData().getDatabaseProductName().toLowerCase().contains("postgresql");
+        } catch (Exception ignored) {
+            return false;
+        }
     }
     private static String point(int i,double lat,boolean deviation){return String.format(Locale.ROOT,"SRID=4326;POINT(%.6f %.6f)",118.61+i*.0015,lat+(deviation && i>6?(i-6)*.00025:0));}
     private static Timestamp ts(Instant at){return Timestamp.from(at);}

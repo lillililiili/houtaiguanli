@@ -43,7 +43,8 @@ public class LocalAirspaceRiskDemoSeeder implements ApplicationRunner {
         try { for(var camera:CAMERAS)register(camera); } finally { AuthContext.clear(); }
     }
     private void completeTargets(String source){
-        var rows=jdbc.queryForList("select r.risk_id,COALESCE(r.risk_no,r.source_risk_id) as risk_no,r.owner_org_id,r.district_id,COALESCE(r.occurred_at,r.received_at) as occurred_at,r.observed_altitude_m,r.observed_altitude_datum,f.subtype_code,ST_AsEWKT(f.target_location) as point from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id where r.source_id=? and r.source_mode='mock' and r.target_id is null and f.target_location is not null",source);
+        String point = postgis() ? "ST_AsEWKT(f.target_location)" : "CAST(f.target_location AS VARCHAR)";
+        var rows=jdbc.queryForList("select r.risk_id,COALESCE(r.risk_no,r.source_risk_id) as risk_no,r.owner_org_id,r.district_id,COALESCE(r.occurred_at,r.received_at) as occurred_at,r.observed_altitude_m,r.observed_altitude_datum,f.subtype_code," + point + " as point from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id where r.source_id=? and r.source_mode='mock' and r.target_id is null and f.target_location is not null",source);
         for(var r:rows){
             String id=UUID.nameUUIDFromBytes((source+":"+r.get("risk_id")).getBytes(StandardCharsets.UTF_8)).toString();
             boolean bird="BIRD_FLOCK".equals(r.get("subtype_code"));
@@ -69,5 +70,14 @@ public class LocalAirspaceRiskDemoSeeder implements ApplicationRunner {
             configuration.enable(created.brokerId(),created.version(),true,UUID.randomUUID().toString());broker=created.brokerId();
         } else broker=brokers.get(0);
         configuration.register(new Registration(com.uav.lowaltitude.integration.mqtt.EoEdgeEnvelope.PROTOCOL,broker,null,c.device(),null,"replay",c.org(),c.district(),c.device(),"空域风险模拟光电 "+c.edge().substring(c.edge().length()-1),"本地模拟",null,null,c.edge()),UUID.randomUUID().toString());
+    }
+    private boolean postgis() {
+        var source = jdbc.getDataSource();
+        if (source == null) return false;
+        try (var connection = source.getConnection()) {
+            return connection.getMetaData().getDatabaseProductName().toLowerCase().contains("postgresql");
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 }

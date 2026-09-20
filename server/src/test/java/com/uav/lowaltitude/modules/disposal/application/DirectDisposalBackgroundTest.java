@@ -25,6 +25,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 
@@ -59,6 +60,7 @@ class DirectDisposalBackgroundTest {
         Timestamp now = Timestamp.from(at);
         jdbc.update("insert into alarm(alarm_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) select ?,source_id,?,'UAV_INTRUSION','HIGH',?,?,'mock',?,?,? from integration_source limit 1", alarmId, eventId, now, now, ORG, DISTRICT, now);
         jdbc.update("insert into uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'CONFIRMED',?,?,?,?,0)", eventId, alarmId, ORG, DISTRICT, now, now);
+        CounterEvidenceFixture.seed(jdbc, eventId);
     }
 
     @Test void activeDirectAuthorizationMayReachDeviceGuard() {

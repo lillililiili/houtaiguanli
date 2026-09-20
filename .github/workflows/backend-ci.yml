@@ -55,12 +55,18 @@ jobs:
           PGPASSWORD=uav psql -h 127.0.0.1 -U uav -d stage456_verify_ci -c "CREATE EXTENSION IF NOT EXISTS postgis;"
           PGPASSWORD=uav psql -h 127.0.0.1 -U uav -d ci_verify -c "CREATE DATABASE stage2_target_verify_ci;"
           PGPASSWORD=uav psql -h 127.0.0.1 -U uav -d stage2_target_verify_ci -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+          PGPASSWORD=uav psql -h 127.0.0.1 -U uav -d ci_verify -c "CREATE DATABASE advisory_verify_ci;"
+          PGPASSWORD=uav psql -h 127.0.0.1 -U uav -d advisory_verify_ci -c "CREATE EXTENSION IF NOT EXISTS postgis;"
       - name: Full test suite (H2 + PostgreSQL suites on stage456_verify_ci)
         run: ./mvnw -B test -Dtest='!TargetReadPostgresApiTest' -Dsurefire.failIfNoSpecifiedTests=false
       - name: TargetRead PostgreSQL suite (needs its own stage2_target_verify_* database)
         run: ./mvnw -B -Dtest=TargetReadPostgresApiTest -Dsurefire.failIfNoSpecifiedTests=false test
         env:
           POSTGRES_TEST_URL: jdbc:postgresql://127.0.0.1:5432/stage2_target_verify_ci
+      - name: Advisory PostgreSQL suite (needs its own advisory_verify_* database)
+        run: ./mvnw -B -Dtest=UavAdvisoryPostgresTest,AutoSmsPostgresTest,AutoVoicePostgresTest,EvidencePreviewPostgresTest,FusionInboxFreshSourceTest,MergedEvaluationAlarmTest -Dsurefire.failIfNoSpecifiedTests=false test
+        env:
+          POSTGRES_TEST_URL: jdbc:postgresql://127.0.0.1:5432/advisory_verify_ci
       - name: Package (tests already ran above)
         run: ./mvnw -B -DskipTests package
       - name: Test summary (run / failures / errors / skipped)

@@ -488,7 +488,7 @@ class Stage7PostgresTest {
         List<String> alarms = jdbc.queryForList("select alarm_id from alarm where target_id=? and alarm_type='RULE_LEGALITY'", String.class, mergeTarget);
         assertThat(alarms).hasSize(1);
         assertThat(createdRow.get("alarm_id")).isEqualTo(alarms.get(0));
-        assertThat(mergedRow.get("alarm_id")).as("合并不建第二条告警").isNull();
+        assertThat(mergedRow.get("alarm_id")).as("合并研判关联原告警，不建第二条告警").isEqualTo(alarms.get(0));
         assertThat(mergedRow.get("group_id")).isEqualTo(createdRow.get("group_id"));
         Map<String, Object> alarm = jdbc.queryForMap("select source_id,source_alarm_id,severity,source_mode,owner_org_id,district_id from alarm where alarm_id=?", alarms.get(0));
         assertThat(alarm.get("source_id")).isEqualTo("rule-engine-legality-mock");

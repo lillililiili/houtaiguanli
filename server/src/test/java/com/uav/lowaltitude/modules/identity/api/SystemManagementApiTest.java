@@ -88,6 +88,7 @@ class SystemManagementApiTest {
                 "maps:运维管理:maps",
                 "organizations:系统管理:organizations",
                 "notificationSettings:系统管理:notificationSettings",
+                "responsePlans:系统管理:responsePlans",
                 "users:系统管理:users",
                 "roles:系统管理:roles",
                 "audit:系统管理:archive");

@@ -15,7 +15,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 /** 在明确隔离数据库的独立 schema 上验证预览权限、拒绝审计及升级路径。 */
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
-@EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = "jdbc:postgresql://[^/]+/advisory_verify_[a-z0-9_]+")
 class EvidencePreviewPostgresTest extends EvidencePreviewApiTest {
     private static final String SCHEMA = "evidence_preview_" + UUID.randomUUID().toString().replace("-", "");
     private static boolean created;

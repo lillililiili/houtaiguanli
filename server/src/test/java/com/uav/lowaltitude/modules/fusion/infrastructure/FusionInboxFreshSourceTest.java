@@ -19,7 +19,7 @@ class FusionInboxFreshSourceTest {
     @Test void activeSourceGetsPriorityWithoutSkippingItsOlderFrames() { check(h2(), true); }
 
     @Test
-    @EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL", matches=".+")
+    @EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL", matches="jdbc:postgresql://[^/]+/advisory_verify_[a-z0-9_]+")
     void postgresPriorityKeepsSourceOrderAndHistoricalBacklog() {
         var root = new DriverManagerDataSource(System.getenv("POSTGRES_TEST_URL"),
                 System.getenv("POSTGRES_TEST_USER"), System.getenv("POSTGRES_TEST_PASSWORD"));

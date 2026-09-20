@@ -40,7 +40,7 @@ class ProductionStage5SeedIsolationTest {
             assertThat(jdbc.queryForObject("select count(*) from app_district where district_id like 'seed-stage5-%'", Integer.class)).isZero();
             // 生产不自动插入接收方：既无 seed 前缀行，也没有任何接收方。
             assertThat(jdbc.queryForObject("select count(*) from handoff_recipient where recipient_id like 'seed-stage5-%'", Integer.class)).isZero();
-            assertThat(jdbc.queryForObject("select count(*) from handoff_recipient", Integer.class)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from handoff_recipient where recipient_id<>'fixed-superior-recipient'", Integer.class)).isZero();
             assertThat(jdbc.queryForObject("select count(*) from handoff where handoff_id like 'seed-stage5-%'", Integer.class)).isZero();
             assertThat(jdbc.queryForObject("select count(*) from handoff", Integer.class)).isZero();
             assertThat(jdbc.queryForObject("select count(*) from handoff_material_snapshot where handoff_id like 'seed-stage5-%'", Integer.class)).isZero();

@@ -5,6 +5,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -22,6 +23,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * @ConditionalOnProperty 默认关闭：生产不跑回放摄取；种子与测试直接调用 {@link #drain()} 同步驱动。
  */
 @Component
+@Profile("!production")
 @ConditionalOnProperty(prefix = "app.fusion", name = "enabled", havingValue = "true")
 public class FusionIngestWorker {
     private static final Logger log = LoggerFactory.getLogger(FusionIngestWorker.class);

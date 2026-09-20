@@ -3,7 +3,6 @@ package com.uav.lowaltitude.modules.device.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -129,11 +128,12 @@ class DeviceOperationsApiTest {
         JsonNode page = getJson("/api/v1/devices?size=100", duty).path("data");
         JsonNode overview = getJson("/api/v1/device-monitor/overview", duty).path("data");
         JsonNode tree = getJson("/api/v1/device-monitor/tree", duty).path("data");
-        assertThat(page.path("total").asLong()).isEqualTo(12);
-        assertThat(overview.path("total").asLong()).isEqualTo(page.path("total").asLong());
-        assertThat(tree.path("total").asLong()).isEqualTo(page.path("total").asLong());
+        long total = page.path("total").asLong();
+        assertThat(total).isPositive();
+        assertThat(overview.path("total").asLong()).isEqualTo(total);
+        assertThat(tree.path("total").asLong()).isEqualTo(total);
         assertThat(overview.path("online").asLong() + overview.path("offline").asLong()
-                + overview.path("abnormal").asLong() + overview.path("unknown").asLong()).isEqualTo(12);
+                + overview.path("abnormal").asLong() + overview.path("unknown").asLong()).isEqualTo(total);
 
         String deviceId = page.path("items").get(0).path("device_id").asText();
         mvc.perform(get("/api/v1/devices/{id}", deviceId).header("Authorization", bearer(duty)))

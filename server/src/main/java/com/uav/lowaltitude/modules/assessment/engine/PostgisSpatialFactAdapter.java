@@ -26,7 +26,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
  */
 @Component
 public class PostgisSpatialFactAdapter implements SpatialFactPort {
-    static final String ERROR_CODE = "SPATIAL_BACKEND_UNAVAILABLE";
+    public static final String ERROR_CODE = "SPATIAL_BACKEND_UNAVAILABLE";
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;
 

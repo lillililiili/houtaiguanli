@@ -105,7 +105,7 @@ class LocalStage5HandoffSeederTest {
                 .web(WebApplicationType.NONE).profiles(profiles).run(args)) {
             assertThat(context.getBeansOfType(LocalStage5HandoffSeeder.class)).isEmpty();
             JdbcTemplate isolated = context.getBean(JdbcTemplate.class);
-            assertThat(isolated.queryForObject("select count(*) from handoff_recipient", Long.class)).isZero();
+            assertThat(isolated.queryForObject("select count(*) from handoff_recipient where recipient_id like 'seed-stage5-%'", Long.class)).isZero();
             assertThat(isolated.queryForObject("select count(*) from handoff", Long.class)).isZero();
         }
     }

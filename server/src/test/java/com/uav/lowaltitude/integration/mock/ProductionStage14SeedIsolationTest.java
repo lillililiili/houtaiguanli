@@ -62,8 +62,8 @@ class ProductionStage14SeedIsolationTest {
                         .as(table + " 是案件业务数据，生产必须为空").isZero();
             }
             // 阶段 14 的交接与接收方同样是演示资产（种子建的），生产不得有。
-            assertThat(jdbc.queryForObject("select count(*) from handoff_recipient", Integer.class))
-                    .as("接收方目录由运维在生产自行登记，迁移与种子都不得预置").isZero();
+            assertThat(jdbc.queryForObject("select count(*) from handoff_recipient where recipient_id<>'fixed-superior-recipient'", Integer.class))
+                    .as("接收方目录由运维在生产自行登记，除迁移登记的上级逻辑接收方外不得预置").isZero();
             assertThat(jdbc.queryForObject("select count(*) from handoff", Integer.class)).isZero();
 
             // ② 档位表必须在，且必须自述为 DEMO。这一段断言方向与上面相反，是有意的。

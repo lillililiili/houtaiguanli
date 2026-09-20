@@ -14,7 +14,7 @@ import org.springframework.test.context.DynamicPropertySource;
 
 /** 同一组 HTTP、并发与权限契约在隔离 PostgreSQL/PostGIS 模式上验证。 */
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
-@EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches=".+")
+@EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches="jdbc:postgresql://[^/]+/advisory_verify_[a-z0-9_]+")
 class AutoVoicePostgresTest extends AutoVoiceApiTest {
     private static final String SCHEMA="auto_voice_"+UUID.randomUUID().toString().replace("-","");
     private static boolean created;
