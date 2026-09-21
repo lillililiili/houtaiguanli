@@ -250,6 +250,44 @@ class FlightReadApiTest {
                 """, id, code, code);
     }
 
+    @Test
+    void weatherAvailabilityRespectsTheSamePlanScope() throws Exception {
+        mvc.perform(get("/api/v1/flight-plans/" + planA + "/weather-forecast").header("Authorization", "Bearer " + sessionId))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.plan_id").value(planA))
+            .andExpect(jsonPath("$.data.status").value("NOT_CONFIGURED")).andExpect(jsonPath("$.data.forecast").doesNotExist());
+        mvc.perform(get("/api/v1/flight-plans/" + planOtherScope + "/weather-forecast").header("Authorization", "Bearer " + sessionId))
+            .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void mockForecastIsStableScopedExpiresAndNeverFallsBackFromLive() throws Exception {
+        long published=System.currentTimeMillis()-1000;
+        jdbc.update("UPDATE external_interface_config SET source_mode='mock',name='天气模拟',area_name='东营市',updated_at=? WHERE kind='WEATHER_FORECAST'",published);
+        String url="/api/v1/flight-plans/"+planA+"/weather-forecast";
+        var first=mvc.perform(get(url).header("Authorization","Bearer "+sessionId)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("READY"))
+            .andExpect(jsonPath("$.data.forecast.source_mode").value("mock"))
+            .andExpect(jsonPath("$.data.forecast.area_name").value("东营市"))
+            .andExpect(jsonPath("$.data.forecast.published_at").value(published))
+            .andExpect(jsonPath("$.data.forecast.periods.length()").value(6))
+            .andExpect(jsonPath("$.data.forecast.periods[0].from").value(published))
+            .andExpect(jsonPath("$.data.forecast.periods[5].to").value(published+86400000L))
+            .andReturn().getResponse().getContentAsString();
+        var second=mvc.perform(get(url).header("Authorization","Bearer "+sessionId)).andReturn().getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(second).path("data")).isEqualTo(objectMapper.readTree(first).path("data"));
+        mvc.perform(get("/api/v1/flight-plans/"+planOtherScope+"/weather-forecast").header("Authorization","Bearer "+sessionId))
+            .andExpect(status().isNotFound());
+        long expired=published-86400000L;
+        jdbc.update("UPDATE external_interface_config SET updated_at=? WHERE kind='WEATHER_FORECAST'",expired);
+        mvc.perform(get(url).header("Authorization","Bearer "+sessionId))
+            .andExpect(jsonPath("$.data.status").value("STALE"))
+            .andExpect(jsonPath("$.data.forecast.published_at").value(expired));
+        jdbc.update("UPDATE external_interface_config SET source_mode='live' WHERE kind='WEATHER_FORECAST'");
+        mvc.perform(get(url).header("Authorization","Bearer "+sessionId))
+            .andExpect(jsonPath("$.data.status").value("AWAITING_ADAPTER"))
+            .andExpect(jsonPath("$.data.forecast").doesNotExist());
+    }
+
     private static String id() {
         return UUID.randomUUID().toString();
     }

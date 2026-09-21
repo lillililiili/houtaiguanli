@@ -513,6 +513,53 @@ class HandoffApiTest {
                 .andExpect(jsonPath("$.data.availability.material").value("SOURCE_NOT_VISIBLE"));
     }
 
+    @Test
+    void statsShareScopeAndFiltersWithList() throws Exception {
+        created(session, body("RISK", riskId, "RISK_NOTICE", recipientId, 1), "stats-" + UUID.randomUUID());
+        MvcResult result = mvc.perform(get("/api/v1/handoffs/stats?source_kind=RISK&source_id={id}", riskId).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.by_delivery.length()").value(4))
+                .andExpect(jsonPath("$.data.by_delivery[0].code").value("PENDING_DELIVERY"))
+                .andExpect(jsonPath("$.data.by_delivery[0].count").value(1))
+                .andExpect(jsonPath("$.data.by_delivery[2].code").value("DELIVERED"))
+                .andExpect(jsonPath("$.data.by_delivery[2].count").value(0))
+                .andExpect(jsonPath("$.data.by_receipt.length()").value(4))
+                .andExpect(jsonPath("$.data.by_receipt[0].code").value("NOT_EXPECTED"))
+                .andExpect(jsonPath("$.data.by_receipt[0].count").value(1))
+                .andExpect(jsonPath("$.data.by_recipient.length()").value(1))
+                .andExpect(jsonPath("$.data.by_recipient[0].recipient_id").value(recipientId))
+                .andExpect(jsonPath("$.data.by_recipient[0].count").value(1))
+                .andExpect(jsonPath("$.data.by_recipient[0].delivered").value(0))
+                .andExpect(jsonPath("$.data.by_day.length()").value(30))
+                .andReturn();
+        JsonNode stats = objectMapper.readTree(result.getResponse().getContentAsString()).path("data");
+        long trendTotal = 0;
+        for (JsonNode day : stats.path("by_day")) trendTotal += day.path("count").asLong();
+        assertThat(trendTotal).isEqualTo(1);
+        assertThat(stats.path("by_day").get(29).path("date").asText()).isEqualTo(stats.path("trend_to").asText());
+        // 同一筛选：送达状态与清单口径一致；提交时间范围决定趋势窗口（按日、含首尾）。
+        mvc.perform(get("/api/v1/handoffs/stats?source_id={id}&delivery_status=DELIVERED", riskId).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0))
+                .andExpect(jsonPath("$.data.by_recipient").isEmpty())
+                .andExpect(jsonPath("$.data.by_delivery[0].count").value(0));
+        long now = System.currentTimeMillis();
+        mvc.perform(get("/api/v1/handoffs/stats?source_id={id}&created_from={from}&created_to={to}", riskId, now - 86_400_000L, now + 86_400_000L)
+                .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.by_day.length()").value(3))
+                .andExpect(jsonPath("$.data.by_day[1].count").value(1));
+        for (String query : new String[]{"page=1", "size=5", "delivery_status=SENT", "created_from=5&created_to=5", "wat=1"}) {
+            mvc.perform(get("/api/v1/handoffs/stats?" + query).header("Authorization", bearer(session))).andExpect(status().isBadRequest());
+        }
+        String otherScope = user(true, true, true, false, true);
+        mvc.perform(get("/api/v1/handoffs/stats?source_id={id}", riskId).header("Authorization", bearer(otherScope)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0))
+                .andExpect(jsonPath("$.data.by_recipient").isEmpty());
+        String noHandoffRead = user(true, false, true, false, false);
+        mvc.perform(get("/api/v1/handoffs/stats?wat=1").header("Authorization", bearer(noHandoffRead))).andExpect(status().isForbidden());
+    }
+
     private ResultActions create(String token, String json, String key) throws Exception {
         return mvc.perform(post("/api/v1/handoffs").header("Authorization", bearer(token)).header("Idempotency-Key", key)
                 .contentType(MediaType.APPLICATION_JSON).content(json));

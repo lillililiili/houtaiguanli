@@ -18,6 +18,7 @@ const routes = [
       { path: 'operations/devices', name: 'Devices', component: () => import('@/views/operations/DevicesView.vue'), meta: { title: '设备管理', menuKey: 'devices', permission: 'devices.read' } },
       { path: 'operations/monitor', name: 'Monitor', component: () => import('@/views/operations/MonitorView.vue'), meta: { title: '设备实时监测', menuKey: 'monitor', permission: 'monitoring.read' } },
       { path: 'operations/commission', name: 'Commission', component: () => import('@/views/operations/CommissionView.vue'), meta: { title: '设备接入调测', menuKey: 'commission', permission: 'commissioning.read' } },
+      { path: 'operations/interfaces', name: 'Interfaces', component: () => import('@/views/operations/InterfacesView.vue'), meta: { title: '接口配置', menuKey: 'interfaces', permission: 'interfaces.read' } },
       { path: 'operations/maps', name: 'Maps', component: () => import('@/views/operations/MapsView.vue'), meta: { title: '地图管理', menuKey: 'maps', permission: 'maps.read' } },
       { path: 'operations/reports', name: 'Reports', component: () => import('@/views/operations/ReportsView.vue'), meta: { title: '报表管理', menuKey: 'stats', permission: 'statistics.read' } },
       { path: 'system/users', name: 'Users', component: () => import('@/views/system/UsersView.vue'), meta: { title: '用户管理', menuKey: 'users', permission: 'users.read' } },

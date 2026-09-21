@@ -8,6 +8,11 @@ public final class EvidenceDtos {
     private EvidenceDtos() { }
 
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
+    /** 台账统计：与列表同一权限、同一范围谓词与筛选；每个种类/状态码固定出现，无记录时为 0。 */
+    public record CountDto(String code, long count) { }
+    public record DayCountDto(String date, long count) { }
+    public record EvidenceStatsDto(long total, long sizeBytes, List<CountDto> byKind, List<CountDto> byStatus,
+            List<CountDto> byCustody, List<DayCountDto> byDay, String trendFrom, String trendTo) { }
 
     public record EvidenceSummaryDto(String evidenceId, String evidenceNo, String kindCode, String originalName,
             String contentType, Long sizeBytes, String status, Long capturedAt, Long storedAt, boolean held,

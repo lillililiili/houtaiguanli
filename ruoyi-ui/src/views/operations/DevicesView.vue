@@ -2,10 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
-import MetricCards from '@/components/MetricCards.vue';
+import OperationMetrics from './OperationMetrics.vue';
+import './operations-reference.css';
 import ErrorAlert from '@/components/ErrorAlert.vue';
-import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
-import { catalogInformation } from '@/utils/deviceInformationPresentation.js';
+import { useRoute } from 'vue-router';
+import WeatherSensorDialog from './WeatherSensorDialog.vue';
+import DeviceCatalogPreview from './DeviceCatalogPreview.vue';
 import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
 import { useAuthStore } from '@/stores/auth.js';
@@ -17,14 +19,13 @@ const auth = useAuthStore();
 const canOperate = computed(() => auth.hasPermission('devices.op'));
 const canReadBrokers = computed(() => auth.hasPermission('interfaces.read'));
 const canEditBrokers = computed(() => auth.hasPermission('interfaces.op'));
-const filters = reactive({ keyword: '', type_code: '', channel: '', connectivity: '', enabled: '', sort: 'priority' });
+const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: '', sort: 'priority' });
 const options = ref({ types: [], channels: [], regions: [], vendors: [] });
 const protocols = ref([]);
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0, vendor_count: 0 });
 const table = reactive({ items: [], page: 1, size: 10, total: 0 });
 const selectedId = ref('');
 const detail = ref(null);
-const archive = computed(() => catalogInformation(detail.value));
 const detailError = ref('');
 const loading = ref(false);
 const detailLoading = ref(false);
@@ -34,12 +35,15 @@ let alive = true;
 let detailSequence = 0;
 let listSequence = 0;
 
+const rate = value => overview.value.total ? `${((value || 0) / overview.value.total * 100).toFixed(1)}%` : '—';
+const healthText = value => ({ GOOD: '良好', DEGRADED: '一般', BAD: '异常', UNKNOWN: '未知' })[value] || '未知';
 const metrics = computed(() => [
-  { label: '设备总数', value: overview.value.total, tone: 'blue' },
-  { label: '在线设备', value: overview.value.online, tone: 'green' },
-  { label: '离线设备', value: overview.value.offline, tone: 'amber' },
-  { label: '异常 / 未知', value: `${overview.value.abnormal || 0} / ${overview.value.unknown || 0}`, tone: 'red' },
-  { label: '告警中设备', value: overview.value.alarm, tone: 'purple' }
+  { label: '设备总数', value: overview.value.total, icon: 'total', note: '当前权限范围内设备' },
+  { label: '在线设备', value: overview.value.online, tone: 'green', icon: 'online', note: `在线率 ${rate(overview.value.online)}` },
+  { label: '离线设备', value: overview.value.offline, tone: 'amber', icon: 'offline', note: `离线率 ${rate(overview.value.offline)}` },
+  { label: '异常设备', value: overview.value.abnormal, tone: 'red', icon: 'abnormal', note: `另有 ${overview.value.unknown || 0} 台状态未知` },
+  { label: '告警中设备', value: overview.value.alarm, tone: 'amber', icon: 'alarm', note: '包含在设备状态统计内' },
+  { label: '接入厂家数', value: overview.value.vendor_count, tone: 'purple', icon: 'vendor', note: `设备型号 ${overview.value.model_count ?? '—'} 种` }
 ]);
 
 const deviceDialog = reactive({ visible: false, saving: false, editing: false, row: null, current: null });
@@ -105,6 +109,13 @@ async function loadList(keepSelection = true) {
   finally { if (sequence === listSequence) loading.value = false; }
 }
 
+const sensorDialog = ref();
+const route = useRoute();
+if (route.query.type === 'weather_sensor') filters.type_code = 'weather_sensor';
+async function sensorSaved(row) {
+  await bootstrap(); selectedId.value = row.device_id; await loadDetail(row.device_id);
+}
+
 async function bootstrap() {
   loading.value = true; error.value = '';
   try {
@@ -116,7 +127,7 @@ async function bootstrap() {
 }
 
 function search() { table.page = 1; loadList(false); }
-function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', connectivity: '', enabled: '', sort: 'priority' }); search(); }
+function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: '', sort: 'priority' }); search(); }
 function selectRow(row) { selectedId.value = row.device_id; loadDetail(row.device_id); }
 
 function resetDeviceForm() {
@@ -128,6 +139,7 @@ function resetDeviceForm() {
 
 async function openDevice(row = null) {
   if (!canOperate.value) return;
+  if (row?.device_type_code === 'weather_sensor') { sensorDialog.value.open(row); return; }
   deviceDialog.editing = Boolean(row); deviceDialog.row = row; deviceDialog.current = null; resetDeviceForm();
   try {
     const [brokerOptions, scopeOptions, current] = await Promise.all([
@@ -274,50 +286,54 @@ async function toggleBroker(row) {
   catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || String(e)); }
 }
 
-watch(() => [filters.type_code, filters.channel, filters.connectivity, filters.enabled, filters.sort], search);
+watch(() => [filters.type_code, filters.channel, filters.region, filters.vendor, filters.connectivity, filters.enabled, filters.sort], search);
 onMounted(bootstrap);
 onBeforeUnmount(() => { alive = false; detailSequence++; });
 </script>
 
 <template>
-  <section class="page-stack page-stack--viewport">
-    <PageHeader title="设备管理" description="统一维护设备台账、连接身份和协议配置；密码和识别码只保存外部凭据引用。">
+  <section class="page-stack operation-page devices-reference">
+    <PageHeader title="设备管理" description="设备台账、接入配置与运行状态统一管理。">
       <el-button v-if="canReadBrokers" @click="openBrokers">MQTT 连接</el-button>
+      <el-button :disabled="!canOperate" @click="sensorDialog.open()">登记天气传感器</el-button>
       <el-button type="primary" :disabled="!canOperate" @click="openDevice()">接入设备</el-button>
     </PageHeader>
-    <MetricCards :items="metrics" />
+    <OperationMetrics :items="metrics" />
     <ErrorAlert :message="error" @retry="bootstrap" />
-    <el-card class="filter-card">
+    <div class="devices-workspace">
+    <el-card class="table-card devices-list-panel">
+      <template #header><div class="table-toolbar"><b>设备管理</b><span class="muted">共 {{ table.total }} 台 · 点击设备查看详情</span></div></template>
+      <div class="device-filters">
       <el-form inline @submit.prevent="search">
         <el-form-item label="关键词"><el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="search" /></el-form-item>
-        <el-form-item label="设备类型"><el-select v-model="filters.type_code" clearable placeholder="全部"><el-option v-for="item in options.types" :key="item" :label="item" :value="item" /></el-select></el-form-item>
+        <el-form-item label="设备类型"><el-select v-model="filters.type_code" clearable placeholder="全部"><el-option v-for="item in [...new Set([...options.types, '天气传感器'])]" :key="item" :label="item" :value="item==='天气传感器'?'weather_sensor':item" /></el-select></el-form-item>
+        <el-form-item label="所属区域"><el-select v-model="filters.region" clearable placeholder="全部"><el-option v-for="item in options.regions" :key="item" :label="item" :value="item" /></el-select></el-form-item>
+        <el-form-item label="供应商"><el-select v-model="filters.vendor" clearable placeholder="全部"><el-option v-for="item in options.vendors" :key="item" :label="item" :value="item" /></el-select></el-form-item>
         <el-form-item label="接入通道"><el-select v-model="filters.channel" clearable placeholder="全部"><el-option v-for="item in options.channels" :key="item" :label="item" :value="item" /></el-select></el-form-item>
         <el-form-item label="连接状态"><el-select v-model="filters.connectivity" clearable placeholder="全部"><el-option v-for="value in ['ONLINE','OFFLINE','ABNORMAL','UNKNOWN']" :key="value" :label="statusText(value)" :value="value" /></el-select></el-form-item>
         <el-form-item label="台账状态"><el-select v-model="filters.enabled" clearable placeholder="全部"><el-option label="启用" value="true" /><el-option label="停用" value="false" /></el-select></el-form-item>
         <el-form-item><el-button type="primary" native-type="submit">查询</el-button><el-button @click="reset">重置</el-button></el-form-item>
       </el-form>
-    </el-card>
-
-    <div class="split-panel viewport-fill">
-      <el-card class="table-card viewport-table-card">
+      </div>
         <div class="table-toolbar"><span class="table-toolbar__title">设备台账</span><span class="muted">默认优先显示异常、离线和未知设备</span></div>
-        <div class="table-scroll"><el-table v-loading="loading" :data="table.items" height="100%" row-key="device_id" :row-class-name="({row}) => row.device_id===selectedId?'selected-row':''" @row-click="selectRow">
+        <div class="table-scroll"><el-table v-loading="loading" :data="table.items" max-height="560" row-key="device_id" :row-class-name="({row}) => row.device_id===selectedId?'selected-row':''" @row-click="selectRow">
           <el-table-column prop="device_no" label="设备编号" min-width="135" fixed />
           <el-table-column prop="name" label="设备名称" min-width="160" show-overflow-tooltip />
-          <el-table-column prop="device_type_name" label="类型" width="100" />
-          <el-table-column prop="channel" label="接入通道" width="115" />
-          <el-table-column prop="region_name" label="区域" width="105"><template #default="{row}">{{ display(row.region_name) }}</template></el-table-column>
-          <el-table-column prop="connectivity" label="连接" width="84"><template #default="{row}"><el-tag :type="statusType(row.connectivity)" effect="plain">{{ statusText(row.connectivity) }}</el-tag></template></el-table-column>
+          <el-table-column label="类型 / 通道" min-width="125"><template #default="{row}">{{ display(row.device_type_name) }}<span class="cell-secondary">{{ display(row.channel) }}</span></template></el-table-column>
+          <el-table-column label="产权单位 / 位置" min-width="170"><template #default="{row}">{{ display(row.owner_name) }}<span class="cell-secondary">{{ row.address || row.region_name || '未登记位置' }}</span></template></el-table-column>
+          <el-table-column label="型号 / 供应商" min-width="145"><template #default="{row}">{{ display(row.model) }}<span class="cell-secondary">{{ display(row.vendor) }}</span></template></el-table-column>
+          <el-table-column label="状态 / 健康" width="105"><template #default="{row}"><el-tag :type="statusType(row.connectivity)" effect="plain">{{ statusText(row.connectivity) }}</el-tag><span class="cell-secondary">{{ healthText(row.health_code) }}</span></template></el-table-column>
           <el-table-column prop="last_heartbeat_at" label="最后心跳" min-width="165"><template #default="{row}"><span class="mono">{{ formatTime(row.last_heartbeat_at) }}</span></template></el-table-column>
           <el-table-column label="状态" width="76"><template #default="{row}"><el-tag :type="row.enabled?'success':'info'" effect="plain">{{ row.enabled?'启用':'停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId)" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
+          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId)" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId) || (row.device_type_code==='weather_sensor' && !row.enabled)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
         </el-table></div>
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
 
-      <DeviceInformationPanel purpose="catalog" :information="archive" :loading="detailLoading" :error="detailError" class="detail-panel viewport-detail-card" @refresh="loadDetail(selectedId)" />
+      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)" />
     </div>
 
+    <WeatherSensorDialog ref="sensorDialog" @saved="sensorSaved" />
     <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing?`编辑设备 · ${deviceForm.device_no}`:'接入设备'" width="780px" destroy-on-close>
       <p class="form-note">TCP 设备填写现场地址和允许网段；MQTT 设备选择已配置连接。接入身份创建后不可修改。</p>
       <el-form ref="deviceFormRef" :model="deviceForm" label-position="top" class="form-grid">
@@ -375,3 +391,14 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
     </el-dialog>
   </section>
 </template>
+
+<style scoped>
+.devices-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 14px; align-items: start; }
+.device-filters .el-form { display: flex; flex-wrap: wrap; gap: 0 12px; }
+.device-filters .el-form-item { margin: 0 0 12px; }
+.device-filters .el-select { width: 130px; }
+.device-filters .el-input { width: 180px; }
+.devices-list-panel .table-scroll { height: auto; }
+.devices-list-panel .pagination-row { flex-wrap: wrap; }
+@media (max-width: 1100px) { .devices-workspace { grid-template-columns: minmax(0, 1fr); } }
+</style>

@@ -8,6 +8,10 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -22,7 +26,10 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.AccessLogDto;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.CountDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.CreatedLinkDto;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.DayCountDto;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.EvidenceStatsDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.EvidenceDetailDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.EvidenceSummaryDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.HoldDto;
@@ -64,6 +71,14 @@ public class EvidenceAssociationService {
     private static final Set<String> LIST_PARAMS = Set.of("page", "size", "kind_code", "status", "custody",
             "subject_kind", "subject_id", "q");
     private static final Set<String> CUSTODIES = Set.of("KEPT", "NEARING", "DUE", "HELD");
+    private static final Set<String> STATS_PARAMS = Set.of("kind_code", "status", "custody", "subject_kind", "subject_id", "q");
+    /** 统计输出的固定顺序；Set 常量无序，前端图例按这里的顺序展示。 */
+    private static final List<String> KIND_ORDER = List.of("EO_VIDEO", "EO_STILL", "TRACK_SNAPSHOT", "NOTICE_RECEIPT",
+            "COMMISSION_REPORT", "COMMAND_LOG", "SCENE_PHOTO", "PENALTY_DOCUMENT");
+    private static final List<String> STATUS_ORDER = List.of("PENDING", "AVAILABLE", "MISSING", "CORRUPT", "DESTROYED");
+    private static final List<String> CUSTODY_ORDER = List.of("KEPT", "NEARING", "DUE", "HELD");
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int TREND_DAYS = 30;
 
     private final AccessControlService access;
     private final AccessService menuAccess;
@@ -101,6 +116,49 @@ public class EvidenceAssociationService {
         List<EvidenceSummaryDto> items = repository.list(query, decision, ingest, request.offset(), request.size())
                 .stream().map(this::summary).toList();
         return new PageDto<>(items, request.page(), request.size(), total);
+    }
+
+    /**
+     * 台账统计：与列表同一权限判断（含 ingest 可见性）、同一范围谓词与筛选参数（不含分页）。
+     * 趋势按取证时刻（缺则入库时刻）取最近 30 天，逐日分桶按业务时区计算。
+     */
+    @Transactional(readOnly = true)
+    public EvidenceStatsDto stats(MultiValueMap<String, String> parameters) {
+        AccessDecision decision = access.require(PermissionCode.EVIDENCE_READ);
+        boolean ingest = probe(PermissionCode.EVIDENCE_INGEST);
+        Request request = Request.stats(parameters);
+        Instant now = clock.now();
+        LocalDate end = now.atZone(BUSINESS_ZONE).toLocalDate(), start = end.minusDays(TREND_DAYS - 1);
+        Map<LocalDate, long[]> buckets = new LinkedHashMap<>();
+        for (LocalDate day = start; !day.isAfter(end); day = day.plusDays(1)) buckets.put(day, new long[1]);
+        if (request.subjectKind() != null && (!canSeeKind(request.subjectKind())
+                || !repository.subjectVisible(request.subjectKind(), request.subjectId(), decision))) {
+            return new EvidenceStatsDto(0, 0, ordered(KIND_ORDER, Map.of()), ordered(STATUS_ORDER, Map.of()),
+                    ordered(CUSTODY_ORDER, Map.of()), days(buckets), start.toString(), end.toString());
+        }
+        FileQuery query = request.query();
+        long total = repository.count(query, decision, ingest);
+        List<CountDto> byKind = ordered(KIND_ORDER, repository.countByKind(query, decision, ingest));
+        List<CountDto> byStatus = ordered(STATUS_ORDER, repository.countByStatus(query, decision, ingest));
+        List<CountDto> byCustody = ordered(CUSTODY_ORDER, repository.countByCustody(query, decision, ingest, now));
+        long sizeBytes = repository.sumSizeBytes(query, decision, ingest);
+        Instant windowFrom = start.atStartOfDay(BUSINESS_ZONE).toInstant(), windowTo = end.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant();
+        for (Instant moment : repository.trendMoments(query, decision, ingest, windowFrom, windowTo)) {
+            if (moment == null) continue;
+            long[] bucket = buckets.get(moment.atZone(BUSINESS_ZONE).toLocalDate());
+            if (bucket != null) bucket[0]++;
+        }
+        return new EvidenceStatsDto(total, sizeBytes, byKind, byStatus, byCustody, days(buckets), start.toString(), end.toString());
+    }
+
+    private static List<CountDto> ordered(List<String> order, Map<String, Long> counts) {
+        return order.stream().map(code -> new CountDto(code, counts.getOrDefault(code, 0L))).toList();
+    }
+
+    private static List<DayCountDto> days(Map<LocalDate, long[]> buckets) {
+        List<DayCountDto> out = new ArrayList<>();
+        buckets.forEach((day, bucket) -> out.add(new DayCountDto(day.toString(), bucket[0])));
+        return out;
     }
 
     @Transactional
@@ -539,6 +597,7 @@ public class EvidenceAssociationService {
                     .ifPresent(key -> { throw invalid("参数无效"); });
         }
         static Request list(MultiValueMap<String, String> values) { return new Request(values, LIST_PARAMS); }
+        static Request stats(MultiValueMap<String, String> values) { return new Request(values, STATS_PARAMS); }
         static Request pageOnly(MultiValueMap<String, String> values) { return new Request(values, Set.of("page", "size")); }
         int page() { return integer("page", 1); }
         int size() { return integer("size", 20); }

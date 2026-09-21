@@ -188,6 +188,7 @@ public class DeviceService {
     @Transactional
     public DeviceDetail create(DeviceMutation mutation) {
         AuthUser user = access.requireDevicesOperate();
+        rejectWeatherMutation(mutation);
         validate(mutation);
         long now = clock.nowMillis();
         String id = UUID.randomUUID().toString();
@@ -212,6 +213,9 @@ public class DeviceService {
     @Transactional
     public DeviceDetail update(String id, long version, DeviceMutation mutation) {
         AuthUser user = access.requireDevicesOperate();
+        rejectWeatherMutation(mutation);
+        if ("weather_sensor".equals(text(requiredDevice(id), "device_type_code")))
+            throw bad("WEATHER_REGISTRATION_REQUIRED", "请通过天气传感器档案修改设备");
         validate(mutation);
         requiredDevice(id);
         long now = clock.nowMillis();
@@ -243,6 +247,8 @@ public class DeviceService {
         if (reason == null || reason.trim().length() < 2 || reason.trim().length() > 500)
             throw bad("VALIDATION_ERROR", "reason 长度必须为 2–500 个字符");
         Map<String, Object> device = requiredDevice(id);
+        if (enabled && "weather_sensor".equals(text(device, "device_type_code")))
+            throw bad("PROTOCOL_UNSUPPORTED", "天气传感器协议尚未接入，不能启用");
         long now = clock.nowMillis();
         if (repository.setEnabled(id, version, enabled, now) != 1) throw conflict();
         repository.addEvent(UUID.randomUUID().toString(), id, enabled ? "DEVICE_ENABLED" : "DEVICE_DISABLED", "WARN",
@@ -400,6 +406,11 @@ public class DeviceService {
             throw bad("VALIDATION_ERROR", "connectivity 不在允许范围内");
         return new DeviceQuery(keyword, blankToNull(f.typeCode()), blankToNull(f.channel()), blankToNull(f.region()),
                 blankToNull(f.vendor()), connectivity, f.enabled());
+    }
+
+    private static void rejectWeatherMutation(DeviceMutation m) {
+        if (m != null && "weather_sensor".equals(m.deviceTypeCode()))
+            throw bad("WEATHER_REGISTRATION_REQUIRED", "请通过天气传感器登记入口保存");
     }
 
     private void validate(DeviceMutation m) {

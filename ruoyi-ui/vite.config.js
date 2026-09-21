@@ -17,7 +17,14 @@ export default defineConfig(({ mode }) => {
         [env.VITE_APP_BASE_API || '/dev-api']: {
           target: process.env.ADMIN_API_PROXY_TARGET || 'http://127.0.0.1:8081',
           changeOrigin: true,
-          rewrite: requestPath => requestPath.replace(/^\/dev-api/, '/api')
+          rewrite: requestPath => requestPath.replace(/^\/dev-api/, '/api'),
+          configure: proxy => proxy.on('proxyReq', (proxyReq, req) => {
+            // Only normalize the explicitly configured public preview origin.
+            // Other origins still reach the backend's normal CORS validation.
+            if (process.env.ADMIN_PUBLIC_ORIGIN && req.headers.origin === process.env.ADMIN_PUBLIC_ORIGIN) {
+              proxyReq.setHeader('origin', 'http://127.0.0.1:5175');
+            }
+          })
         }
       }
     },

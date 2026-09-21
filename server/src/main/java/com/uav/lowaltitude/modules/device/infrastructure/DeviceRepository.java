@@ -528,7 +528,7 @@ public class DeviceRepository {
         add(sql, p, "d.channel", "channel", q.channel);
         add(sql, p, "d.region_name", "region", q.region);
         add(sql, p, "d.vendor", "vendor", q.vendor);
-        add(sql, p, "s.connectivity", "connectivity", q.connectivity);
+        add(sql, p, "COALESCE(s.connectivity,'UNKNOWN')", "connectivity", q.connectivity);
         if (q.enabled != null) {
             sql.append(" AND d.enabled=:enabled");
             p.put("enabled", q.enabled);
@@ -548,7 +548,7 @@ public class DeviceRepository {
         if(actor==null || "ALL".equals(actor.scopeMode())) return "";
         params.put("mqtt_actor",actor.userId());
         return """
-                 AND (NOT EXISTS(SELECT 1 FROM mqtt_device_binding mb WHERE mb.ops_device_id=d.device_id)
+                 AND ((COALESCE(d.device_type_code,'') <> 'weather_sensor' AND NOT EXISTS(SELECT 1 FROM mqtt_device_binding mb WHERE mb.ops_device_id=d.device_id))
                  OR EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_user_data_scope us
                      ON us.org_id=bs.owner_org_id AND us.district_id=bs.district_id
                      WHERE bs.ops_device_id=d.device_id AND us.user_id=:mqtt_actor))

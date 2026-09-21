@@ -353,6 +353,60 @@ class EvidenceApiTest {
                 .andExpect(jsonPath("$.data.total").value(0));
     }
 
+    @Test
+    void statsShareScopeAndFiltersWithLedger() throws Exception {
+        String ingest = reader("ASSIGNED", org, district);
+        grantAction(ingest, "evidence:ingest", "evidence:read");
+        ingestFile(ingest, "still.jpg", org, district, null, null);
+        ingestFile(ingest, "clip.mp4", org, district, null, null, "EO_VIDEO", null);
+        String body = mvc.perform(get("/api/v1/evidence-files/stats").header("Authorization", bearer(ingest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.size_bytes").value(2L * PAYLOAD.length))
+                .andExpect(jsonPath("$.data.by_kind.length()").value(8))
+                .andExpect(jsonPath("$.data.by_kind[0].code").value("EO_VIDEO"))
+                .andExpect(jsonPath("$.data.by_kind[0].count").value(1))
+                .andExpect(jsonPath("$.data.by_kind[1].code").value("EO_STILL"))
+                .andExpect(jsonPath("$.data.by_kind[1].count").value(1))
+                .andExpect(jsonPath("$.data.by_kind[7].count").value(0))
+                .andExpect(jsonPath("$.data.by_status.length()").value(5))
+                .andExpect(jsonPath("$.data.by_status[1].code").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.by_status[1].count").value(2))
+                .andExpect(jsonPath("$.data.by_custody.length()").value(4))
+                .andExpect(jsonPath("$.data.by_custody[0].code").value("KEPT"))
+                .andExpect(jsonPath("$.data.by_custody[0].count").value(2))
+                .andExpect(jsonPath("$.data.by_day.length()").value(30))
+                .andReturn().getResponse().getContentAsString();
+        JsonNode stats = json.readTree(body).get("data");
+        long trendTotal = 0;
+        for (JsonNode day : stats.get("by_day")) trendTotal += day.get("count").asLong();
+        assertThat(trendTotal).isEqualTo(2);
+        assertThat(stats.get("by_day").get(29).get("date").asText()).isEqualTo(stats.get("trend_to").asText());
+        // 同一筛选口径：种类筛选后总数与分布一起收窄。
+        mvc.perform(get("/api/v1/evidence-files/stats?kind_code=EO_VIDEO").header("Authorization", bearer(ingest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.by_kind[1].count").value(0))
+                .andExpect(jsonPath("$.data.by_status[1].count").value(1));
+        // 与台账同一可见性：无 ingest 权限看不到未关联文件；其他范围看不到本范围文件。
+        String readOnly = reader("ASSIGNED", org, district);
+        grantAction(readOnly, "evidence:read");
+        mvc.perform(get("/api/v1/evidence-files/stats").header("Authorization", bearer(readOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0))
+                .andExpect(jsonPath("$.data.by_kind[0].count").value(0));
+        String outsider = reader("ASSIGNED", otherOrg, otherDistrict);
+        grantAction(outsider, "evidence:read", "evidence:ingest");
+        mvc.perform(get("/api/v1/evidence-files/stats").header("Authorization", bearer(outsider)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        for (String query : new String[]{"page=1", "size=5", "kind_code=NOPE", "custody=LOST", "foo=1"}) {
+            mvc.perform(get("/api/v1/evidence-files/stats?" + query).header("Authorization", bearer(ingest)))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        }
+        String noRead = reader("ASSIGNED", org, district);
+        mvc.perform(get("/api/v1/evidence-files/stats?foo=1").header("Authorization", bearer(noRead)))
+                .andExpect(status().isForbidden());
+    }
+
     private JsonNode ingestFile(String token, String filename, String orgId, String districtId,
             String subjectKind, String subjectId) throws Exception {
         return ingestFile(token, filename, orgId, districtId, subjectKind, subjectId, "EO_STILL", null);

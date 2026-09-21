@@ -27,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.AccessLogDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.CreatedLinkDto;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.EvidenceStatsDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.EvidenceDetailDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.EvidenceSummaryDto;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.HoldDto;
@@ -68,6 +69,11 @@ public class EvidenceController {
         response.setHeader(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.filename() + "\"");
         response.getWriter().write('\ufeff');
         response.getWriter().write(file.body());
+    }
+
+    @GetMapping("/stats")
+    public ApiResponse<EvidenceStatsDto> stats(@RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(evidence.stats(parameters));
     }
 
     @GetMapping("/{evidenceId}")

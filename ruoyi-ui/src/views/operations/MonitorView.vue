@@ -2,7 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import * as echarts from 'echarts';
 import PageHeader from '@/components/PageHeader.vue';
-import MetricCards from '@/components/MetricCards.vue';
+import OperationMetrics from './OperationMetrics.vue';
+import './operations-reference.css';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
 import DeviceMaintenancePanel from './DeviceMaintenancePanel.vue';
@@ -13,6 +14,12 @@ const filters = reactive({ keyword: '', channel: '', type_code: '' });
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0 });
 const tree = ref([]);
 const incidents = ref([]);
+const incidentTotal = ref(0);
+const severity = ref('');
+const metricTab = ref('all');
+const treeTruncated = ref(false);
+const treeTotal = ref(0);
+const filteredIncidents = computed(() => incidents.value.filter(item => !severity.value || item.severity === severity.value));
 const selectedId = ref('');
 const state = ref(null);
 const history = ref([]);
@@ -43,11 +50,23 @@ const selected = computed(() => tree.value.find(item => item.device_id === selec
 const groups = computed(() => Object.entries(tree.value.reduce((result, item) => {
   (result[item.channel || '未分组'] ||= []).push(item); return result;
 }, {})));
+const rate = value => overview.value.total ? `${((value || 0) / overview.value.total * 100).toFixed(1)}%` : '—';
 const metrics = computed(() => [
-  { label: '设备总数', value: overview.value.total }, { label: '在线', value: overview.value.online, tone: 'green' },
-  { label: '离线', value: overview.value.offline, tone: 'amber' }, { label: '异常', value: overview.value.abnormal, tone: 'red' },
-  { label: '告警中', value: overview.value.alarm, tone: 'purple' }
+  { label: '设备总数', value: overview.value.total, icon: 'total', note: '当前权限范围内设备' },
+  { label: '在线设备', value: overview.value.online, tone: 'green', icon: 'online', note: `在线率 ${rate(overview.value.online)}` },
+  { label: '离线设备', value: overview.value.offline, tone: 'red', icon: 'offline', note: `离线率 ${rate(overview.value.offline)}` },
+  { label: '异常设备', value: overview.value.abnormal, tone: 'amber', icon: 'abnormal', note: `异常率 ${rate(overview.value.abnormal)}` },
+  { label: '告警设备', value: overview.value.alarm, tone: 'amber', icon: 'alarm', note: '包含在设备状态统计内' },
+  { label: '状态未知', value: overview.value.unknown, tone: 'purple', icon: 'abnormal', note: '尚无有效状态上报' }
 ]);
+const categoryCodes = {
+  resource: ['cpu_pct', 'memory_pct', 'disk_pct', 'temperature_c', 'bandwidth_kbps'],
+  signal: ['signal_dbm', 'signal_strength_dbm', 'snr_db'],
+  link: ['link_latency_ms', 'packet_loss_pct', 'packet_loss_rate', 'jitter_ms']
+};
+const visibleMetrics = computed(() => (state.value?.metrics || []).filter(item => metricTab.value === 'all' || categoryCodes[metricTab.value]?.includes(item.code)));
+function typeGroups(items) { return Object.entries(items.reduce((groups, item) => { (groups[item.device_type_name || '其他设备'] ||= []).push(item); return groups; }, {})); }
+
 const metricOptions = computed(() => (state.value?.metrics || []).map(item => ({ value: item.code, label: `${metricLabel(item)}${item.unit ? `（${item.unit}）` : ''}` })));
 
 const METRIC_LABELS = { link_latency_ms: '链路时延', packet_loss_pct: '丢包率', packet_loss_rate: '丢包率', signal_dbm: '信号强度', signal_strength_dbm: '信号强度', relay_state: '继电器状态字', temperature_c: '温度', cpu_pct: '处理器占用', memory_pct: '内存占用' };
@@ -65,7 +84,7 @@ async function loadAggregate(showBusy = false) {
   try {
     const [summary, deviceTree, incidentPage] = await Promise.all([deviceApi.overview(), deviceApi.tree(filters), deviceApi.incidents({ page: 1, size: 20, stage: 'PENDING' })]);
     if (!alive) return;
-    overview.value = summary; tree.value = deviceTree.items || []; incidents.value = incidentPage.items || [];
+    overview.value = summary; tree.value = deviceTree.items || []; treeTotal.value = deviceTree.total ?? tree.value.length; treeTruncated.value = Boolean(deviceTree.truncated); incidents.value = incidentPage.items || []; incidentTotal.value = incidentPage.total ?? incidents.value.length;
     if (!tree.value.some(item => item.device_id === selectedId.value)) selectedId.value = tree.value[0]?.device_id || '';
     error.value = '';
   } catch (e) { error.value = e.message || '实时监测数据加载失败'; }
@@ -151,34 +170,38 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
 </script>
 
 <template>
-  <section class="page-stack">
+  <section class="page-stack operation-page monitor-reference">
     <PageHeader title="设备实时监测" description="总览每 10 秒、当前设备每 2 秒增量刷新；暂停后不再发起轮询。">
       <el-tag :type="paused?'warning':'success'" effect="plain">{{ paused?'刷新已暂停':'实时刷新中' }}</el-tag>
       <el-button @click="togglePause">{{ paused?'继续刷新':'暂停刷新' }}</el-button>
     </PageHeader>
-    <MetricCards :items="metrics" />
-    <DeviceMaintenancePanel ref="maintenanceTasks" />
+    <OperationMetrics :items="metrics" />
     <ErrorAlert :message="error" @retry="applyFilters" />
     <ErrorAlert :message="selectedError" @retry="loadSelected(true, true)" />
     <div class="monitor-layout">
       <el-card v-loading="loading">
-        <template #header><div class="table-toolbar"><b>设备树</b><span class="muted">{{ tree.length }} 台</span></div></template>
+        <template #header><div class="table-toolbar"><b>设备分类与状态</b><span class="muted">{{ tree.length }} 台</span></div></template>
         <el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="applyFilters"><template #append><el-button @click="applyFilters">筛选</el-button></template></el-input>
         <div class="device-tree-list">
-          <section v-for="[name,items] in groups" :key="name" class="device-tree-group"><h3>{{ name }} · {{ items.length }}</h3>
-            <button v-for="item in items" :key="item.device_id" type="button" class="device-tree-item" :class="{active:item.device_id===selectedId}" @click="selectDevice(item)"><span class="device-tree-copy"><b>{{ item.name }}</b><small class="mono">{{ item.device_no }}</small></span><el-tag class="device-tree-status" size="small" :type="statusType(item.connectivity)" effect="plain">{{ statusText(item.connectivity) }}</el-tag></button>
-          </section><el-empty v-if="!loading&&!tree.length" description="没有匹配的设备" />
+          <details v-for="[name,items] in groups" :key="name" open class="device-tree-group"><summary>{{ name }}<span>{{ items.length }}</span></summary>
+            <details v-for="[type,members] in typeGroups(items)" :key="type" open class="device-type-group"><summary>{{ type }}<span>{{ members.length }}</span></summary>
+              <button v-for="item in members" :key="item.device_id" type="button" class="device-tree-item" :class="{active:item.device_id===selectedId}" @click="selectDevice(item)"><span class="device-tree-copy"><b>{{ item.name }}</b><small class="mono">{{ item.device_no }}</small></span><el-tag class="device-tree-status" size="small" :type="statusType(item.connectivity)" effect="plain">{{ statusText(item.connectivity) }}</el-tag></button>
+            </details>
+          </details><el-empty v-if="!loading&&!tree.length" description="没有匹配的设备" />
         </div>
+        <p class="tree-note">{{ treeTruncated ? `显示前 ${tree.length} / ${treeTotal} 台，请通过搜索缩小范围` : `共 ${tree.length} 台 · 展开类型查看设备` }}</p>
       </el-card>
 
       <div class="monitor-column">
         <el-card v-loading="selectedLoading">
-          <template #header><div class="table-toolbar"><b>实时状态</b><span class="mono muted">{{ selected?.device_no || '未选择设备' }}</span></div></template>
+          <template #header><div class="table-toolbar"><b>设备运行监控</b><span class="mono muted">{{ selected?.device_no || '未选择设备' }}</span></div></template>
           <el-empty v-if="!state" description="请选择设备查看状态" />
           <template v-else>
             <div class="state-hero"><article><small>连接状态</small><strong>{{ statusText(state.connectivity) }}</strong></article><article><small>健康状态</small><strong>{{ healthText(state.health_code) }}</strong></article><article><small>最后心跳</small><strong class="mono">{{ formatTime(state.last_heartbeat_at) }}</strong></article></div>
             <el-alert v-if="state.connectivity==='OFFLINE'" title="设备离线；曲线仅展示离线前的历史上报，不补零。" type="warning" :closable="false" />
-            <div v-else class="metric-values"><article v-for="item in state.metrics||[]" :key="item.code"><small>{{ metricLabel(item) }}</small><b>{{ metricValue(item.value) }} {{ item.unit||'' }}</b><span class="muted">{{ SOURCE_LABELS[item.source] || '来源未声明' }}</span></article></div>
+            <el-tabs v-model="metricTab" class="monitor-metric-tabs"><el-tab-pane label="全部指标" name="all" /><el-tab-pane label="资源监控" name="resource" /><el-tab-pane label="信号质量" name="signal" /><el-tab-pane label="链路质量" name="link" /></el-tabs>
+            <div v-if="state.connectivity!=='OFFLINE'" class="metric-values"><article v-for="item in visibleMetrics" :key="item.code"><small>{{ metricLabel(item) }}</small><b>{{ metricValue(item.value) }} {{ item.unit||'' }}</b><span class="muted">{{ SOURCE_LABELS[item.source] || '来源未声明' }}</span></article></div>
+            <p v-if="state.connectivity!=='OFFLINE' && !visibleMetrics.length" class="tree-note">设备协议尚未上报此类指标。</p>
             <div v-if="protocolStatus?.protocol_code" class="detail-section"><h3>协议状态</h3><el-tag :type="statusType(protocolStatus.connection_state)" effect="plain">{{ statusText(protocolStatus.connection_state) }}</el-tag><p v-if="protocolStatus.blocking_reason" class="danger-text">{{ protocolStatus.blocking_reason }}</p></div>
           </template>
         </el-card>
@@ -195,14 +218,32 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
       </div>
 
       <div class="monitor-column">
-        <el-card><template #header><div class="table-toolbar"><b>活动告警</b><span class="muted">{{ incidents.length }} 条</span></div></template>
-          <div v-if="incidents.length" class="event-feed"><button v-for="item in incidents" :key="item.incident_id" type="button" class="device-tree-item" @click="selectedId=item.device_id"><span class="device-tree-copy"><b>{{ item.device_name }}</b><small>{{ item.reason }}</small></span><el-tag class="device-tree-status" :type="['HIGH','CRITICAL'].includes(item.severity)?'danger':'warning'" effect="plain">{{ SEVERITY_LABELS[item.severity] || item.severity }}</el-tag></button></div><el-empty v-else description="当前没有活动告警" />
-        </el-card>
-        <el-card class="table-card"><template #header><div class="table-toolbar"><b>设备事件流</b><span class="muted">按序号增量拉取</span></div></template>
-          <div v-if="events.length" class="event-feed"><article v-for="item in [...events].reverse()" :key="item.event_seq" class="event-item"><b>{{ EVENT_LABELS[item.event_type] || item.event_type || '设备事件' }}</b><p>{{ item.message }}</p><time>#{{ item.event_seq }} · {{ formatTime(item.occurred_at) }}</time></article></div><el-empty v-else description="暂无设备事件" />
+        <el-card><template #header><div class="table-toolbar"><b>实时告警</b><span class="muted">共 {{ incidentTotal }} 条</span><el-select v-model="severity" clearable placeholder="全部级别" style="width:110px" aria-label="告警级别"><el-option v-for="(label,value) in SEVERITY_LABELS" :key="value" :label="label" :value="value" /></el-select></div></template>
+          <div v-if="filteredIncidents.length" class="event-feed monitor-alarms"><button v-for="item in filteredIncidents" :key="item.incident_id" type="button" class="device-tree-item" @click="selectedId=item.device_id"><span class="device-tree-copy"><b>{{ item.device_name }}</b><small class="alarm-reason">{{ item.reason }}</small><small class="mono">{{ formatTime(item.detected_at) }}</small></span><el-tag class="device-tree-status" :type="['HIGH','CRITICAL'].includes(item.severity)?'danger':'warning'" effect="plain">{{ SEVERITY_LABELS[item.severity] || item.severity }}</el-tag></button></div><el-empty v-else :description="severity ? '当前列表中没有此级别告警' : '当前没有活动告警'" /><p v-if="incidentTotal > incidents.length" class="tree-note">当前显示最近 {{ incidents.length }} 条待处理告警。</p>
         </el-card>
       </div>
     </div>
+        <el-card class="table-card"><template #header><div class="table-toolbar"><b>监测日志流</b><span class="muted">当前设备 · 按序号增量更新</span></div></template>
+          <div v-if="events.length" class="event-feed"><article v-for="item in [...events].reverse()" :key="item.event_seq" class="event-item"><b>{{ EVENT_LABELS[item.event_type] || item.event_type || '设备事件' }}</b><p>{{ item.message }}</p><time>#{{ item.event_seq }} · {{ formatTime(item.occurred_at) }}</time></article></div><el-empty v-else description="暂无设备事件" />
+        </el-card>
+    <DeviceMaintenancePanel ref="maintenanceTasks" />
     <DeviceInformationPanel v-if="selectedId" :key="selectedId" purpose="monitor" :information="information" :loading="selectedLoading" :error="informationError" @refresh="loadSelected(true, true)" />
   </section>
 </template>
+
+<style scoped>
+.monitor-reference .monitor-layout { grid-template-columns: 245px minmax(0, 1fr) 320px; min-height: 0; align-items: start; }
+.monitor-reference .monitor-layout > .monitor-column:last-child { grid-column: auto; display: flex; }
+.monitor-reference .device-tree-list { max-height: 640px; }
+.device-type-group { padding-left: 8px; }
+.monitor-reference .state-hero { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.monitor-reference .state-hero article:last-child { grid-column: 1 / -1; }
+.monitor-reference .metric-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.monitor-reference .metric-values article { background: #fff; }
+.monitor-metric-tabs { margin-top: 16px; }
+.monitor-reference .monitor-alarms { max-height: 650px; }
+.monitor-reference .alarm-reason { white-space: normal; line-height: 1.6; }
+.monitor-alarms .device-tree-item { border-bottom: 1px solid #eef1f5; align-items: flex-start; padding: 12px 0; }
+@media (max-width: 1150px) { .monitor-reference .monitor-layout { grid-template-columns: 220px minmax(0,1fr); } .monitor-reference .monitor-layout > .monitor-column:last-child { grid-column: 1 / -1; display: block; } }
+@media (max-width: 720px) { .monitor-reference .monitor-layout { grid-template-columns: minmax(0,1fr); } .monitor-reference .monitor-layout > .monitor-column:last-child { grid-column: auto; } .monitor-reference .device-tree-list { max-height: 300px; } }
+</style>

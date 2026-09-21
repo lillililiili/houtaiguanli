@@ -6,6 +6,12 @@ public final class HandoffDtos {
     private HandoffDtos() { }
 
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
+    /** 统计与清单同一范围谓词、同一筛选；每个状态码固定出现，没有记录时计数为 0。 */
+    public record CountDto(String code, long count) { }
+    public record RecipientCountDto(String recipientId, String name, long count, long delivered) { }
+    public record DayCountDto(String date, long count, long delivered, long failed) { }
+    public record HandoffStatsDto(long total, List<CountDto> byDelivery, List<CountDto> byReceipt,
+            List<RecipientCountDto> byRecipient, List<DayCountDto> byDay, String trendFrom, String trendTo) { }
     public record RecipientDto(String recipientId, String displayName, String handoffType) { }
     public record RecipientListDto(List<RecipientDto> items) { }
     public record CreateRequest(String sourceKind, String sourceId, String handoffType, String recipientId, long expectedVersion) { }

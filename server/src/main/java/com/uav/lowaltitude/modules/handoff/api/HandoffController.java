@@ -16,6 +16,7 @@ import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.CreatedDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.DeliveryDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.HandoffDetailDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.HandoffDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.HandoffStatsDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.PageDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RecipientListDto;
 import com.uav.lowaltitude.modules.handoff.application.HandoffReadService;
@@ -51,6 +52,11 @@ public class HandoffController {
     @GetMapping("/handoffs")
     public ApiResponse<PageDto<HandoffDto>> list(@RequestParam MultiValueMap<String, String> parameters) {
         return ApiResponse.ok(read.list(parameters));
+    }
+
+    @GetMapping("/handoffs/stats")
+    public ApiResponse<HandoffStatsDto> stats(@RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(read.stats(parameters));
     }
 
     @GetMapping("/handoffs/{handoffId}")

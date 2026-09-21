@@ -7,6 +7,7 @@ export const navigationGroups = [
       { title: '设备管理', key: 'devices', path: '/operations/devices', permission: 'devices.read', icon: Cpu },
       { title: '设备实时监测', key: 'monitor', path: '/operations/monitor', permission: 'monitoring.read', icon: Monitor },
       { title: '设备接入调测', key: 'commission', path: '/operations/commission', permission: 'commissioning.read', icon: Connection },
+      { title: '接口配置', key: 'interfaces', path: '/operations/interfaces', permission: 'interfaces.read', icon: Connection },
       { title: '地图管理', key: 'maps', path: '/operations/maps', permission: 'maps.read', icon: MapLocation },
       { title: '报表管理', key: 'stats', path: '/operations/reports', permission: 'statistics.read', icon: DataAnalysis }
     ]

@@ -1,6 +1,11 @@
 package com.uav.lowaltitude.modules.handoff.application;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -19,6 +24,13 @@ import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.HandoffDetailDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.HandoffDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.MaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.PageDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.CountDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.DayCountDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.HandoffStatsDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RecipientCountDto;
+import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository.RecipientCount;
+import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository.TrendRow;
+import com.uav.lowaltitude.platform.time.AppClock;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RecipientDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RecipientListDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.ReferenceMaterialDto;
@@ -46,6 +58,13 @@ public class HandoffReadService {
     private static final Set<String> LIST_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
             "source_mode", "page", "size");
     private static final Set<String> PAGE_PARAMETERS = Set.of("page", "size");
+    private static final Set<String> STATS_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
+            "source_mode");
+    /** 统计输出的固定顺序；Set 常量无序，前端图例按这里的顺序展示。 */
+    private static final List<String> DELIVERY_ORDER = List.of("PENDING_DELIVERY", "SUBMITTED", "DELIVERED", "FAILED");
+    private static final List<String> RECEIPT_ORDER = List.of("NOT_EXPECTED", "PENDING", "ACKNOWLEDGED", "TIMEOUT");
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int DEFAULT_TREND_DAYS = 30, MAX_TREND_DAYS = 366, RECIPIENT_LIMIT = 8;
     private static final Set<String> RECIPIENT_PARAMETERS = Set.of("handoff_type");
     private final AccessControlService access;
     private final HandoffRepository repository;
@@ -53,10 +72,12 @@ public class HandoffReadService {
     private final RiskReadService riskRead;
     private final UavEventRepository events;
     private final ObjectMapper objectMapper;
+    private final AppClock clock;
 
     public HandoffReadService(AccessControlService access, HandoffRepository repository, RiskRepository risks,
-            RiskReadService riskRead, UavEventRepository events, ObjectMapper objectMapper,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
-        this.directory=directory;
+            RiskReadService riskRead, UavEventRepository events, ObjectMapper objectMapper,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
+            AppClock clock) {
+        this.directory=directory; this.clock = clock;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
         this.events = events; this.objectMapper = objectMapper;
     }
@@ -90,6 +111,54 @@ public class HandoffReadService {
         long total = repository.count(query, decision);
         return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(HandoffReadService::dto).toList(),
                 page.page, page.size, total);
+    }
+
+    /**
+     * 交接统计：与清单同一权限、同一范围谓词、同一筛选参数（不含分页）。
+     * 趋势默认最近 30 天；给了提交时间范围就按该范围逐日分桶，最长 366 天，超出部分只保留靠近结束的一段。
+     */
+    @Transactional(readOnly = true)
+    public HandoffStatsDto stats(MultiValueMap<String, String> values) {
+        AccessDecision decision = access.require(PermissionCode.HANDOFF_READ);
+        Request request = new Request(values, STATS_PARAMETERS);
+        TimeRange created = request.timeRange("created_from", "created_to");
+        HandoffQuery query = new HandoffQuery(request.enumerated("source_kind", HandoffRules.SOURCE_KINDS), request.optional("source_id", 36),
+                request.enumerated("delivery_status", HandoffRules.DELIVERY_STATUSES), created.from, created.to,
+                request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES));
+        long total = repository.count(query, decision);
+        List<CountDto> byDelivery = ordered(DELIVERY_ORDER, repository.countByDelivery(query, decision));
+        List<CountDto> byReceipt = ordered(RECEIPT_ORDER, repository.countByReceipt(query, decision));
+        List<RecipientCountDto> byRecipient = repository.countByRecipient(query, decision, RECIPIENT_LIMIT).stream()
+                .map(row -> new RecipientCountDto(row.recipientId(), row.displayName(), row.count(), row.delivered())).toList();
+
+        LocalDate end, start;
+        if (created.from != null) {
+            end = created.to.minusNanos(1).atZoneSameInstant(BUSINESS_ZONE).toLocalDate();
+            start = created.from.atZoneSameInstant(BUSINESS_ZONE).toLocalDate();
+            if (start.plusDays(MAX_TREND_DAYS - 1).isBefore(end)) start = end.minusDays(MAX_TREND_DAYS - 1);
+        } else {
+            end = clock.now().atZone(BUSINESS_ZONE).toLocalDate();
+            start = end.minusDays(DEFAULT_TREND_DAYS - 1);
+        }
+        Map<LocalDate, long[]> buckets = new LinkedHashMap<>();
+        for (LocalDate day = start; !day.isAfter(end); day = day.plusDays(1)) buckets.put(day, new long[3]);
+        OffsetDateTime windowFrom = start.atStartOfDay(BUSINESS_ZONE).toOffsetDateTime();
+        OffsetDateTime windowTo = end.plusDays(1).atStartOfDay(BUSINESS_ZONE).toOffsetDateTime();
+        for (TrendRow row : repository.trendRows(query, decision, windowFrom, windowTo)) {
+            if (row.createdAt() == null) continue;
+            long[] bucket = buckets.get(row.createdAt().atZoneSameInstant(BUSINESS_ZONE).toLocalDate());
+            if (bucket == null) continue;
+            bucket[0]++;
+            if ("DELIVERED".equals(row.deliveryStatus())) bucket[1]++;
+            if ("FAILED".equals(row.deliveryStatus())) bucket[2]++;
+        }
+        List<DayCountDto> byDay = new ArrayList<>();
+        buckets.forEach((day, bucket) -> byDay.add(new DayCountDto(day.toString(), bucket[0], bucket[1], bucket[2])));
+        return new HandoffStatsDto(total, byDelivery, byReceipt, byRecipient, byDay, start.toString(), end.toString());
+    }
+
+    private static List<CountDto> ordered(List<String> order, Map<String, Long> counts) {
+        return order.stream().map(code -> new CountDto(code, counts.getOrDefault(code, 0L))).toList();
     }
 
     @Transactional(readOnly = true)

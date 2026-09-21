@@ -4,6 +4,8 @@ import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus';
 import DevicesView from '@/views/operations/DevicesView.vue';
 import { deviceApi, integrationApi } from '@/api/devices.js';
 
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
+
 const permission = vi.hoisted(() => ({ allowed: true }));
 vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => permission.allowed }) }));
 vi.mock('@/api/devices.js', () => ({

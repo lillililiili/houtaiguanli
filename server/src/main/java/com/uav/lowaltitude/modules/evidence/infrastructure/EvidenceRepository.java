@@ -165,6 +165,56 @@ public class EvidenceRepository {
                 + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.params, EvidenceRepository::file);
     }
 
+    /* ---- 统计：与 count/list 共用 where()，保管状态与列表筛选同一 CASE 口径 ---- */
+
+    public Map<String, Long> countByKind(FileQuery query, AccessDecision access, boolean ingest) {
+        return groupCount("f.kind_code", query, access, ingest);
+    }
+
+    public Map<String, Long> countByStatus(FileQuery query, AccessDecision access, boolean ingest) {
+        return groupCount("f.status", query, access, ingest);
+    }
+
+    private Map<String, Long> groupCount(String column, FileQuery query, AccessDecision access, boolean ingest) {
+        Where where = where(query, access, ingest);
+        Map<String, Long> counts = new HashMap<>();
+        jdbc.query("SELECT " + column + " AS code,COUNT(*) AS n FROM evidence_file f" + where.sql + " GROUP BY " + column,
+                where.params, rs -> { counts.put(rs.getString("code"), rs.getLong("n")); });
+        return counts;
+    }
+
+    public Map<String, Long> countByCustody(FileQuery query, AccessDecision access, boolean ingest, Instant now) {
+        Where where = where(query, access, ingest);
+        // 与 where() 的保管筛选同一时刻：筛选“已到期”时统计里也只会出现“已到期”。
+        where.params.put("custody_now", java.sql.Timestamp.from(now));
+        where.params.put("custody_nearing", java.sql.Timestamp.from(now.plus(java.time.Duration.ofDays(
+                com.uav.lowaltitude.modules.evidence.domain.EvidenceRetention.NEARING_DAYS))));
+        String held = "EXISTS (SELECT 1 FROM evidence_hold eh WHERE eh.evidence_id=f.evidence_id AND eh.released_at IS NULL)";
+        Map<String, Long> counts = new HashMap<>();
+        jdbc.query("SELECT c.code,COUNT(*) AS n FROM (SELECT CASE WHEN " + held + " THEN 'HELD'"
+                + " WHEN f.retain_until IS NOT NULL AND f.retain_until<=:custody_now THEN 'DUE'"
+                + " WHEN f.retain_until IS NOT NULL AND f.retain_until<=:custody_nearing THEN 'NEARING' ELSE 'KEPT' END AS code"
+                + " FROM evidence_file f" + where.sql + ") c GROUP BY c.code", where.params,
+                rs -> { counts.put(rs.getString("code"), rs.getLong("n")); });
+        return counts;
+    }
+
+    public long sumSizeBytes(FileQuery query, AccessDecision access, boolean ingest) {
+        Where where = where(query, access, ingest);
+        Long total = jdbc.queryForObject("SELECT COALESCE(SUM(CASE WHEN f.status<>'DESTROYED' THEN f.size_bytes ELSE 0 END),0)"
+                + " FROM evidence_file f" + where.sql, where.params, Long.class);
+        return total == null ? 0 : total;
+    }
+
+    /** 趋势窗口内的取证时刻（缺则入库时刻）；按日分桶在服务层按业务时区完成。 */
+    public List<Instant> trendMoments(FileQuery query, AccessDecision access, boolean ingest, Instant from, Instant to) {
+        Where where = where(query, access, ingest);
+        where.sql.append(" AND COALESCE(f.captured_at,f.stored_at)>=:trend_from AND COALESCE(f.captured_at,f.stored_at)<:trend_to");
+        where.params.put("trend_from", java.sql.Timestamp.from(from)); where.params.put("trend_to", java.sql.Timestamp.from(to));
+        return jdbc.query("SELECT COALESCE(f.captured_at,f.stored_at) AS at FROM evidence_file f" + where.sql, where.params,
+                (rs, ignored) -> time(rs, "at"));
+    }
+
     public FileRow find(String evidenceId) {
         List<FileRow> rows = jdbc.query("SELECT " + FILE_COLUMNS + " FROM evidence_file f WHERE f.evidence_id=:id",
                 Map.of("id", evidenceId), EvidenceRepository::file);

@@ -159,6 +159,43 @@ public class HandoffRepository {
                 where.params, HandoffRepository::handoff);
     }
 
+    /* ---- 统计：与 count/list 共用 from()/where()，口径不漂移 ---- */
+
+    public Map<String, Long> countByDelivery(HandoffQuery query, AccessDecision access) {
+        return groupCount("d.delivery_status", query, access);
+    }
+
+    public Map<String, Long> countByReceipt(HandoffQuery query, AccessDecision access) {
+        return groupCount("d.receipt_status", query, access);
+    }
+
+    private Map<String, Long> groupCount(String column, HandoffQuery query, AccessDecision access) {
+        Where where = where(query, access);
+        Map<String, Long> counts = new HashMap<>();
+        jdbc.query("SELECT " + column + " AS code,COUNT(*) AS n" + from() + where.sql + " GROUP BY " + column, where.params,
+                rs -> { counts.put(rs.getString("code"), rs.getLong("n")); });
+        return counts;
+    }
+
+    public List<RecipientCount> countByRecipient(HandoffQuery query, AccessDecision access, int limit) {
+        Where where = where(query, access);
+        where.params.put("limit", limit);
+        return jdbc.query("SELECT h.recipient_id,COALESCE(h.recipient_name_snapshot,rc.display_name) AS display_name,COUNT(*) AS n,"
+                + "SUM(CASE WHEN d.delivery_status='DELIVERED' THEN 1 ELSE 0 END) AS delivered" + from() + where.sql
+                + " GROUP BY h.recipient_id,COALESCE(h.recipient_name_snapshot,rc.display_name)"
+                + " ORDER BY n DESC,h.recipient_id FETCH FIRST :limit ROWS ONLY", where.params,
+                (rs, ignored) -> new RecipientCount(rs.getString("recipient_id"), rs.getString("display_name"), rs.getLong("n"), rs.getLong("delivered")));
+    }
+
+    /** 趋势窗口内的提交时刻与最新送达状态；按日分桶在服务层按业务时区完成，避免两种数据库的日期截断差异。 */
+    public List<TrendRow> trendRows(HandoffQuery query, AccessDecision access, OffsetDateTime from, OffsetDateTime to) {
+        Where where = where(query, access);
+        where.sql.append(" AND h.created_at>=:trend_from AND h.created_at<:trend_to");
+        where.params.put("trend_from", from); where.params.put("trend_to", to);
+        return jdbc.query("SELECT h.created_at,d.delivery_status" + from() + where.sql, where.params,
+                (rs, ignored) -> new TrendRow(time(rs, "created_at"), rs.getString("delivery_status")));
+    }
+
     public HandoffRow find(String handoffId, AccessDecision access) {
         Where where = where(HandoffQuery.empty(), access);
         where.sql.append(" AND h.handoff_id=:handoff_id"); where.params.put("handoff_id", handoffId);
@@ -300,6 +337,8 @@ public class HandoffRepository {
         if (value instanceof LocalDateTime t) return t.atOffset(ZoneOffset.UTC); return OffsetDateTime.parse(value.toString());
     }
 
+    public record RecipientCount(String recipientId, String displayName, long count, long delivered) { }
+    public record TrendRow(OffsetDateTime createdAt, String deliveryStatus) { }
     private static final class Where { final StringBuilder sql = new StringBuilder(); final Map<String, Object> params = new HashMap<>(); }
     public record HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo,
             String sourceMode, String receiptStatus) {
