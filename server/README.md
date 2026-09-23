@@ -264,3 +264,7 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 ### 运行统计业务数据接通（2026-09-22）
 
 `/api/v1/stats/operations`、CSV 及旧式报表预览/XLSX 已统一读取实际 target、punishment_case 和当前设备台账；旧 report_* 样本表及历史保持原样。新增目标按首次发现归属，非法/高风险为生成时状态，处罚只使用有效决定，未知数值不补零。新增 `generated_at`、指标 `availability`，各源读取权限与数据范围分别校验，设备复用现有台账权限范围。界面/导出口径和隔离测试入口见[运行统计契约](../docs/运行统计接口契约.md)。本项无结构迁移。
+
+### 统一目标视频查询（2026-09-22）
+
+新增只读 `GET /api/v1/targets/{targetId}/video`，复用目标读取、devices.op 与关联设备业务范围。明确模拟的当前跟踪任务必须取得匹配的 Protocol C 成功回执才能返回 SIMULATED_CANVAS；真实流继续返回 NOT_INTEGRATED。接口不创建任务、不下发动作、不生成证据。视频状态、错误语义与验收入口见[目标视频查询契约](../docs/目标视频查询接口契约.md)。本项无结构迁移。

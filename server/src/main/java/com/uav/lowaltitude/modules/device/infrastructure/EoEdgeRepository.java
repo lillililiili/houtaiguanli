@@ -268,6 +268,15 @@ public class EoEdgeRepository {
                 ORDER BY created_at DESC FETCH FIRST 1 ROWS ONLY
                 """, targetId).stream().findFirst().orElse(null);
     }
+    /** Prefer the current task; otherwise retain the latest terminal state for video readers. */
+    public Map<String, Object> latestTaskByTarget(String targetId) {
+        return jdbc.queryForList("""
+                SELECT * FROM eo_tracking_task WHERE target_id=?
+                ORDER BY CASE WHEN status IN ('OPEN','ENDING') THEN 0 ELSE 1 END, created_at DESC, task_id DESC
+                FETCH FIRST 1 ROWS ONLY
+                """, targetId).stream().findFirst().orElse(null);
+    }
+
     public Binding idleDeviceById(String opsDeviceId, String org, String district) {
         return jdbc.query(BINDING_SELECT + """
                 WHERE m.ops_device_id=? AND s.owner_org_id=? AND s.district_id=? AND d.enabled=TRUE
