@@ -142,6 +142,15 @@ class AutoVoiceApiTest {
                 .andExpect(jsonPath("$.data.records.length()").value(2))
                 .andExpect(jsonPath("$.data.can_request_counter").value(false));
     }
+    @Test void unknownSmsDoesNotBorrowSuccessfulVoiceResultOrEnableResend()throws Exception {
+        doReturn(null).when(sms).simulate(anyString(),anyString(),anyString(),anyString());
+        automatic.process(eventId);voiceService.process(eventId);automatic.process(eventId);voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false))
+                .andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
+        verify(sms,times(1)).simulate(anyString(),anyString(),anyString(),anyString());
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
+    }
     @Test void playedFactSurvivesDisabledPolicyMissingRecordingAndExpiredObservation()throws Exception {
         voiceService.process(eventId);doReturn(false).when(voicePolicy).enabled();doReturn(null).when(recordings).current();
         jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(500)),targetId);

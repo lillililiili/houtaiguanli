@@ -1,6 +1,10 @@
 package com.uav.lowaltitude.modules.directory.application;
 
 import java.util.*;
+import com.uav.lowaltitude.modules.alarm.application.AutoSmsPolicy;
+import com.uav.lowaltitude.modules.alarm.application.AutoVoicePolicy;
+import com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording;
+import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.core.env.Environment;
@@ -24,12 +28,16 @@ import com.uav.lowaltitude.platform.time.AppClock;
 public class NotificationDirectoryService {
  public static final String SUPERIOR_RECIPIENT="fixed-superior-recipient";
  private static final Set<String> GLOBAL=Set.of("RISK_NOTICE","ADVISORY_SMS","ADVISORY_VOICE");
+ private final AutoSmsPolicy smsPolicy;private final AutoVoicePolicy voicePolicy;private final AdvisoryVoiceRecording recordings;
  private final DirectoryRepository repo;private final AccessService access;private final IdempotencyGuard idempotency;
  private final AppClock clock;private final AuditService audit;private final Environment env;private final HandoffChannelPort channel;
- public NotificationDirectoryService(DirectoryRepository repo,AccessService access,IdempotencyGuard idempotency,AppClock clock,AuditService audit,Environment env,HandoffChannelPort channel){this.repo=repo;this.access=access;this.idempotency=idempotency;this.clock=clock;this.audit=audit;this.env=env;this.channel=channel;}
+ public NotificationDirectoryService(DirectoryRepository repo,AccessService access,IdempotencyGuard idempotency,AppClock clock,AuditService audit,Environment env,HandoffChannelPort channel,AutoSmsPolicy smsPolicy,AutoVoicePolicy voicePolicy,AdvisoryVoiceRecording recordings){this.smsPolicy=smsPolicy;this.voicePolicy=voicePolicy;this.recordings=recordings;this.repo=repo;this.access=access;this.idempotency=idempotency;this.clock=clock;this.audit=audit;this.env=env;this.channel=channel;}
  @Transactional(readOnly=true) public Page<NotificationSetting> list(String purpose,int page,int size){access.require("notificationSettings.read");DirectoryService.pages(page,size);var rows=repo.settings(purpose,page,size,currentScope());return new Page<>(rows.items().stream().map(this::view).toList(),page,size,rows.total());}
  @Transactional(readOnly=true) public NotificationSetting get(String id){access.require("notificationSettings.read");var row=require(id);requireScope(row);return view(row);}
- @Transactional(readOnly=true) public Diagnostics diagnostics(String id){access.require("notificationSettings.read");var setting=require(id);requireScope(setting);var view=view(setting);return new Diagnostics(id,view.availability(),view.blockedReason(),view.historyCount(),repo.settingPending(id),setting.bindingId()==null?0:repo.bindingPlans(setting.bindingId()));}
+ @Transactional(readOnly=true) public Diagnostics diagnostics(String id){access.require("notificationSettings.read");var setting=require(id);requireScope(setting);var view=view(setting);String reason=view.blockedReason();
+  if(reason==null&&"ADVISORY_SMS".equals(setting.purpose())&&!smsPolicy.enabled())reason="后台自动短信服务尚未启用";
+  if(reason==null&&"ADVISORY_VOICE".equals(setting.purpose())){if(!voicePolicy.enabled())reason="后台电话录音通知服务尚未启用";else if(recordings.current()==null)reason="未配置有效的已有 WAV 录音文件、模板名称和文稿";}
+  return new Diagnostics(id,reason==null?view.availability():"UNAVAILABLE",reason,view.historyCount(),repo.settingPending(id),setting.bindingId()==null?0:repo.bindingPlans(setting.bindingId()));}
  @Transactional public NotificationSetting create(NotificationInput input,String key){access.require("notificationSettings.auth");if(GLOBAL.contains(input.purpose()))throw bad("此通知用途为全局唯一配置，请修改已有配置");var body=validate(input);idempotency.claim(key,"notification-create:"+repo.encode(body));String id=UUID.randomUUID().toString(),recipient=null;
   if("UAV_PUNISHMENT".equals(body.purpose())){recipient=UUID.randomUUID().toString();repo.insertRecipient(recipient,repo.organization(body.recipientOrgId()).name());}
   try{repo.insertSetting(id,routingKey(body),recipient,body,clock.nowMillis());}catch(DataIntegrityViolationException e){throw conflict("NOTIFICATION_DUPLICATE","此用途与接收对象已有配置，请修改现有记录");}audit("notification_setting_created",id,"purpose="+body.purpose()+"; enabled="+body.enabled());return view(require(id));
@@ -105,7 +113,9 @@ public class NotificationDirectoryService {
  @Transactional public void freezeMaintenance(String taskId,RecipientSnapshot target,DeliveryOutcome result){repo.maintenanceNotice(taskId,target,result);}
  public record MaintenanceOutcome(DeliveryOutcome result,String state) { }
  public DirectoryRepository.MaintenanceNotice maintenanceNotice(String taskId){return repo.maintenanceNotice(taskId);}
- public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null?DeliveryOutcome.notConnected():result;}catch(RuntimeException e){return DeliveryOutcome.notConnected();}}
+ public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null||result.deliveryStatus()==null||result.receiptStatus()==null
+    ||!HandoffRules.DELIVERY_STATUSES.contains(result.deliveryStatus())||!HandoffRules.RECEIPT_STATUSES.contains(result.receiptStatus())
+    ||"PENDING_DELIVERY".equals(result.deliveryStatus())?unknownDelivery():result;}catch(RuntimeException e){return unknownDelivery();}}
  @Transactional public void freezeHandoff(String id,RecipientSnapshot snapshot){repo.freeze("handoff",id,snapshot);}
  @Transactional public void freezeFeedback(String id,RecipientSnapshot snapshot){repo.freeze("flight_plan_feedback",id,snapshot);}
  public RecipientSnapshot handoffSnapshot(String id){return repo.decodeSnapshot(repo.snapshot("handoff",id));}
@@ -113,6 +123,7 @@ public class NotificationDirectoryService {
  private RecipientSnapshot snapshot(SettingRow row,String recipient,String name){String reason=reason(row);return new RecipientSnapshot(recipient,name,row.orgId(),row.orgName(),row.contactId(),row.contactName(),mask(row.phone()),row.channelType(),row.endpointRef(),row.id(),row.version(),reason==null,reason,clock.nowMillis(),template(row.purpose()),templateVersion(row.purpose()),receipt(row.purpose()),row.contactId()==null?null:repo.contact(row.contactId()).version());}
  private RecipientSnapshot missing(String id,String name,String reason){return new RecipientSnapshot(id,name,null,null,null,null,null,"NONE",null,null,null,false,reason,clock.nowMillis());}
  private RecipientSnapshot blocked(RecipientSnapshot s,String reason){return new RecipientSnapshot(s.recipientId(),s.recipientName(),s.orgId(),s.orgName(),s.contactId(),s.contactName(),s.contactHint(),s.channelType(),s.endpointRef(),s.settingId(),s.configVersion(),false,reason,s.capturedAt(),s.templateCode(),s.templateVersion(),s.receiptRequirement(),s.contactVersion());}
+ private DeliveryOutcome unknownDelivery(){return new DeliveryOutcome("SUBMITTED","PENDING",null,"DELIVERY_OUTCOME_UNKNOWN",null,null,null);}
  private DeliveryOutcome unavailable(String reason){return new DeliveryOutcome("PENDING_DELIVERY","NOT_EXPECTED",null,reason,null,null,null);}
  private boolean simulationEnvironment(){return env.acceptsProfiles(Profiles.of("local","test"))&&!env.acceptsProfiles(Profiles.of("prod","production"));}
  private static String contactRole(String purpose){return switch(purpose){case "PLAN_FEEDBACK"->"PLAN_LIAISON";case "DEVICE_MAINTENANCE"->"MAINTENANCE";default->"UNIT_LIAISON";};}

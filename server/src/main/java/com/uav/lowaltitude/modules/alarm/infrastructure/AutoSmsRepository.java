@@ -11,6 +11,9 @@ import org.springframework.stereotype.Repository;
 public class AutoSmsRepository {
     private final JdbcTemplate jdbc;
     public AutoSmsRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
+    public List<String> sendingCandidates() {
+        return jdbc.queryForList("SELECT event_id FROM uav_auto_sms_task WHERE status='SENDING' ORDER BY updated_at FETCH FIRST 200 ROWS ONLY",String.class);
+    }
     public List<String> candidates(long since) {
         return jdbc.queryForList("SELECT e.event_id FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id LEFT JOIN uav_auto_sms_task t ON t.event_id=e.event_id WHERE (t.status='SENDING' OR ((t.event_id IS NULL OR t.status IN ('WAITING','BLOCKED','UNAVAILABLE')) AND a.received_at>=?)) ORDER BY CASE WHEN t.status='SENDING' THEN 0 ELSE 1 END,COALESCE(t.updated_at,0),e.created_at ASC FETCH FIRST 200 ROWS ONLY",String.class,new Timestamp(since));
     }

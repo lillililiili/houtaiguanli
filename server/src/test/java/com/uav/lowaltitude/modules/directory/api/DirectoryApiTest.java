@@ -1,7 +1,8 @@
 package com.uav.lowaltitude.modules.directory.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 import java.util.*;
@@ -22,10 +23,36 @@ import com.fasterxml.jackson.databind.*;
 class DirectoryApiTest {
  @Autowired MockMvc mvc; @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc;
  @org.springframework.boot.test.mock.mockito.SpyBean com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService checks;
+ @org.springframework.boot.test.mock.mockito.SpyBean com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort channel;
+ @org.springframework.boot.test.mock.mockito.SpyBean com.uav.lowaltitude.modules.alarm.application.AutoSmsPolicy smsPolicy;
+ @org.springframework.boot.test.mock.mockito.SpyBean com.uav.lowaltitude.modules.alarm.application.AutoVoicePolicy voicePolicy;
+ @org.springframework.boot.test.mock.mockito.SpyBean com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording recordings;
+ @Autowired com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
  String session,org;
  @BeforeEach void login() throws Exception {
   session=json.readTree(mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText();
   org=jdbc.queryForObject("select org_id from app_org where org_code='ORG-DEV'",String.class);
+ }
+ @Test void advisoryDiagnosticsRequiresEnabledWorkerAndActualRecording() throws Exception {
+  jdbc.update("update notification_setting set enabled=true,channel_type='MOCK' where setting_id in ('advisory-sms','advisory-voice')");
+  doReturn(false).when(smsPolicy).enabled();
+  mvc.perform(auth(get("/api/v1/notification-settings/advisory-sms/diagnostics"))).andExpect(status().isOk())
+    .andExpect(jsonPath("$.data.availability").value("UNAVAILABLE"));
+  doReturn(true).when(voicePolicy).enabled();doReturn(null).when(recordings).current();
+  mvc.perform(auth(get("/api/v1/notification-settings/advisory-voice/diagnostics"))).andExpect(status().isOk())
+    .andExpect(jsonPath("$.data.availability").value("UNAVAILABLE"));
+ }
+ @Test void uncertainDirectorySendCannotBeReportedAsNotConnected() throws Exception {
+  jdbc.update("update notification_setting set enabled=true,channel_type='MOCK' where setting_id='risk-superior'");
+  doReturn(true).when(channel).simulated();doThrow(new IllegalStateException("transport interrupted")).when(channel).deliver(any());
+  var target=directory.forHandoff("RISK_NOTICE",null);
+  var dispatch=new com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.HandoffDispatch("isolated-notice","RISK","isolated-risk","RISK_NOTICE",target.recipientId(),target.recipientName(),"{}",java.time.OffsetDateTime.now());
+  var outcome=directory.deliver(target,"mock",dispatch);
+  assertThat(outcome.deliveryStatus()).isEqualTo("SUBMITTED");
+  assertThat(outcome.receiptStatus()).isEqualTo("PENDING");
+  assertThat(outcome.blockedReason()).isEqualTo("DELIVERY_OUTCOME_UNKNOWN");
+  doReturn(null).when(channel).deliver(any());
+  assertThat(directory.deliver(target,"mock",dispatch).blockedReason()).isEqualTo("DELIVERY_OUTCOME_UNKNOWN");
  }
  @Test void businessContactIsIndependentFromLoginAndPreservesOrganizationState() throws Exception {
   long users=jdbc.queryForObject("select count(*) from app_user",Long.class);
@@ -56,7 +83,12 @@ class DirectoryApiTest {
   JsonNode c=contact("UNIT_LIAISON");
   mvc.perform(write(patch("/api/v1/notification-settings/advisory-sms"),Map.of("purpose","ADVISORY_SMS","recipient_org_id",org,"contact_id",c.path("contact_id").asText(),"channel_type","SMS","enabled",true,"expected_version",0))).andExpect(status().isBadRequest());
  }
- @Test void planFeedbackFreezesActualUnitContactAndOldSnapshotDoesNotFollowEdits() throws Exception {
+ @Test void planFeedbackFreezesActualUnitContactAndOldSnapshotDoesNotFollowEdits() throws Exception {planFeedbackHistory(false);}
+ @Test void planFeedbackUnknownResultIsSavedAndDuplicateFeedbackIsBlocked() throws Exception {planFeedbackHistory(true);}
+ private void planFeedbackHistory(boolean uncertain) throws Exception {
+  doReturn(true).when(channel).simulated();
+  if(uncertain)doThrow(new IllegalStateException("transport outcome unknown")).when(channel).deliver(any());
+  else doAnswer(call->{var dispatch=(com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.HandoffDispatch)call.getArgument(0);return new com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome("DELIVERED","PENDING",null,null,dispatch.at(),dispatch.at(),null);}).when(channel).deliver(any());
   String plan=jdbc.queryForObject("select plan_id from flight_plan where source_id is not null order by plan_id fetch first 1 row only",String.class);
   String source=jdbc.queryForObject("select source_id from flight_plan where plan_id=?",String.class,plan);
   JsonNode binding=ok(write(post("/api/v1/plan-source-bindings"),Map.of("source_id",source,"external_org_code","FB-"+UUID.randomUUID(),"org_id",org,"enabled",true)));
@@ -67,12 +99,16 @@ class DirectoryApiTest {
   String verification=UUID.randomUUID().toString();String actor=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,session);
   jdbc.update("insert into flight_plan_verification(verification_id,plan_id,revision_no,conclusion,takeoff_status,evidence,note,handled_by,handled_by_name,handled_at) values(?,?,1,'CHECK_INCOMPLETE','UNKNOWN','隔离测试设备检查','起飞情况未知',?,'测试',1)",verification,plan,actor);
   JsonNode sent=ok(write(post("/api/v1/flight-plans/"+plan+"/verifications/feedback"),Map.of("verification_id",verification,"recipient_id",source)));
+  assertThat(sent.path("delivery_status").asText()).isEqualTo(uncertain?"SUBMITTED":"DELIVERED");
+  assertThat(sent.path("receipt_status").asText()).isEqualTo("PENDING");
+  if(uncertain)assertThat(sent.path("blocked_reason").asText()).isEqualTo("DELIVERY_OUTCOME_UNKNOWN");
   assertThat(sent.path("recipient_snapshot").path("contact_id").asText()).isEqualTo(cid);
   assertThat(sent.path("recipient_snapshot").path("setting_id").asText()).isEqualTo(setting.path("setting_id").asText());
   assertThat(sent.path("recipient_snapshot").path("contact_hint").asText()).isEqualTo("138****8000");
   ok(write(patch("/api/v1/contacts/"+cid),Map.of("org_id",org,"name","后续更名联系人","roles",List.of("PLAN_LIAISON"),"phone","13900139000","enabled",false,"expected_version",0)));
   mvc.perform(auth(get("/api/v1/flight-plans/"+plan+"/verifications"))).andExpect(status().isOk()).andExpect(jsonPath("$.data.feedback[0].recipient_snapshot.contact_name").value("业务联系人"));
   mvc.perform(write(post("/api/v1/flight-plans/"+plan+"/verifications/feedback"),Map.of("verification_id",verification,"recipient_id",source))).andExpect(status().isConflict());
+  verify(channel,times(1)).deliver(any());
  }
  @Test void riskSubmissionUsesOnlySuperiorAndFreezesRecipientEvenIfLegacyDirectoryChanges() throws Exception {
   String risk=UUID.randomUUID().toString();java.sql.Timestamp at=new java.sql.Timestamp(System.currentTimeMillis());

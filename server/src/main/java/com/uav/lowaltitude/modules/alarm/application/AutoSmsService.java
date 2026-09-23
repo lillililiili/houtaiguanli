@@ -45,8 +45,8 @@ public class AutoSmsService {
         this.tasks=tasks;this.events=events;this.records=records;this.policy=policy;this.sms=sms;this.clock=clock;this.json=json;this.audit=audit;this.tx=new TransactionTemplate(manager);
     }
     public void poll() {
-        if(!policy.enabled())return;
-        for(String id:tasks.candidates(clock.nowMillis()-policy.eventMillis())) {
+        var candidates=policy.enabled()?tasks.candidates(clock.nowMillis()-policy.eventMillis()):tasks.sendingCandidates();
+        for(String id:candidates) {
             try { process(id); } catch(RuntimeException failed) {
                 org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic SMS cycle failed for event {}; pending work will be reconciled",id);
             }
@@ -54,12 +54,11 @@ public class AutoSmsService {
     }
     /** 无 HTTP 调用、无用户身份即可执行；每个事件由数据库锁及稳定渠道键防重。 */
     public void process(String eventId) {
-        if(!policy.enabled())return;
         Claim claim=tx.execute(s->claim(eventId));
         if(claim==null)return;
         AdvisorySmsPort.Delivery delivery=null;
         try { delivery=sms.simulate(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey()); }
-        catch(RuntimeException failed) { /* 失败在下面独立事务持久化，不把提交失败当送达。 */ }
+        catch(RuntimeException failed) { /* 通道可能已受理，未知结果独立持久化，不能盲目重发。 */ }
         final AdvisorySmsPort.Delivery receipt=delivery;
         tx.executeWithoutResult(s->finish(claim,receipt));
     }
@@ -68,10 +67,10 @@ public class AutoSmsService {
         long now=clock.nowMillis();
         Task current=tasks.find(eventId);
         if(current!=null&&"SENDING".equals(current.status())) {
-            if(current.leaseUntil()!=null&&current.leaseUntil()<now) tasks.finish(eventId,current.token(),"FAILED","上次发送未取得明确结果，请核查后补发；补发沿用同一渠道幂等编号",null,now);
+            if(current.leaseUntil()!=null&&current.leaseUntil()<now) tasks.finish(eventId,current.token(),"UNKNOWN","上次发送未取得明确结果，须先向通道对账，禁止盲目补发",null,now);
             return null;
         }
-        if(current!=null&&Set.of("SIMULATED_DELIVERED","FAILED").contains(current.status()))return null;
+        if(!policy.enabled()||(current!=null&&Set.of("SIMULATED_DELIVERED","FAILED","UNKNOWN").contains(current.status())))return null;
         Eligibility eligible=eligible(event,now);
         tasks.initialize(eventId,now,AutoSmsPolicy.CODE);
         if(!eligible.allowed()) {tasks.block(eventId,eligible.status(),eligible.reason(),eligible.source(),eligible.evaluation(),eligible.observedAt(),now);return null;}
@@ -88,8 +87,9 @@ public class AutoSmsService {
         if(current==null||!claim.token().equals(current.token())||!"SENDING".equals(current.status()))return;
         long now=clock.nowMillis();
         if(delivery==null||!delivery.simulated()||!"SIMULATED_DELIVERED".equals(delivery.status())) {
-            tasks.finish(event.eventId(),claim.token(),"FAILED","模拟短信接口未返回有效送达结果，可在条件仍满足时补发",null,now);
-            audit.record(null,"AUTO_SMS","SYSTEM","alarm","auto_sms_failed","uav_event",event.eventId(),"policy="+AutoSmsPolicy.CODE,"FAILED","","");return;
+            boolean failed=delivery!=null&&delivery.simulated()&&"FAILED".equals(delivery.status());
+            tasks.finish(event.eventId(),claim.token(),failed?"FAILED":"UNKNOWN",failed?"模拟短信通道明确返回失败；当前条件仍满足时可申请补发":"短信发送结果未知，须先向通道对账，禁止盲目补发",null,now);
+            audit.record(null,"AUTO_SMS","SYSTEM","alarm",failed?"auto_sms_failed":"auto_sms_unknown","uav_event",event.eventId(),"policy="+AutoSmsPolicy.CODE,"FAILED","","");return;
         }
         String recordId=UUID.randomUUID().toString();
         if(events.update(event.eventId(),event.version(),event.state(),Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1)throw new IllegalStateException("Event version changed under lock");
@@ -107,7 +107,7 @@ public class AutoSmsService {
         if(task==null)return new AutoSms(true,e.allowed()?"WAITING":e.status(),e.reason(),null,null,false,0,AutoSmsPolicy.CODE,e.source(),e.evaluation()==null?null:e.evaluation().evaluatedAt(),e.observedAt(),target);
         boolean retry=mayRetry&&Set.of("FAILED","UNAVAILABLE","BLOCKED").contains(task.status())&&e.allowed();
         String reason=task.reason(),status=task.status();
-        if(!Set.of("SIMULATED_DELIVERED","SENDING").contains(status)) {
+        if(!Set.of("SIMULATED_DELIVERED","SENDING","FAILED","UNKNOWN").contains(status)) {
             if(!e.allowed()){status=e.status();reason=e.reason();}
             else if(Set.of("BLOCKED","UNAVAILABLE").contains(status)){status="WAITING";reason=e.reason();retry=false;}
         }

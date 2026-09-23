@@ -52,6 +52,26 @@ class AutoSmsPostgresTest extends AutoSmsApiTest {
             upgraded.validate();assertThat(upgraded.migrate().migrationsExecuted).isZero();
         } finally {jdbc.execute("drop schema "+schema+" cascade");}
     }
+    @Test void unknownResultUpgradePreservesDeliveredTaskAndRecord() {
+        String schema="auto_sms_result_upgrade_"+UUID.randomUUID().toString().replace("-","");
+        var jdbc=new JdbcTemplate(root());jdbc.execute("create schema "+schema);
+        try {
+            Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true)
+                .locations("classpath:db/migration","classpath:db/postgresql").target("202609200003").load().migrate();
+            var history=AdvisoryMigrationFixture.seed(jdbc,schema);
+            jdbc.update("INSERT INTO "+schema+".uav_auto_sms_task(event_id,status,policy_code,reason,updated_at,provider_key,delivery_record_id,attempt_count,triggered_at) VALUES('upgrade-event','SIMULATED_DELIVERED','LOCAL_AUTO_SMS_DEMO_V1','历史模拟送达',1700000000000,'auto-advisory:upgrade-event','upgrade-record',1,1700000000000)");
+            var task=jdbc.queryForMap("SELECT * FROM "+schema+".uav_auto_sms_task WHERE event_id='upgrade-event'");
+            var upgraded=Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true)
+                .locations("classpath:db/migration","classpath:db/postgresql").load();
+            assertThat(upgraded.migrate().migrationsExecuted).isPositive();
+            assertThat(AdvisoryMigrationFixture.snapshot(jdbc,schema)).isEqualTo(history);
+            assertThat(jdbc.queryForMap("SELECT * FROM "+schema+".uav_auto_sms_task WHERE event_id='upgrade-event'")).isEqualTo(task);
+            jdbc.update("UPDATE "+schema+".uav_auto_sms_task SET status='UNKNOWN',delivery_record_id=NULL WHERE event_id='upgrade-event'");
+            assertThatThrownBy(()->jdbc.update("UPDATE "+schema+".uav_auto_sms_task SET status='SIMULATED_DELIVERED' WHERE event_id='upgrade-event'"))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+            upgraded.validate();assertThat(upgraded.migrate().migrationsExecuted).isZero();
+        } finally {jdbc.execute("drop schema "+schema+" cascade");}
+    }
     @AfterAll static void cleanSchema(@org.springframework.beans.factory.annotation.Autowired org.springframework.context.ConfigurableApplicationContext context) {context.getBeansOfType(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class).values().forEach(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler::shutdown);if(created){new JdbcTemplate(root()).execute("drop schema "+SCHEMA+" cascade");created=false;}}
     static DataSource root(){return new DriverManagerDataSource(System.getenv("POSTGRES_TEST_URL"),System.getenv("POSTGRES_TEST_USER"),System.getenv("POSTGRES_TEST_PASSWORD"));}
 }
