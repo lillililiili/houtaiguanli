@@ -112,6 +112,8 @@ class DisposalRulesTest {
         assertThat(DisposalRules.allowedActions(DisposalRules.REQUESTED, DisposalRules.LINGYUN_B, "u-1", "u-2", ALL_PERMS))
                 .containsExactlyInAnyOrder("APPROVE", "REJECT", "CANCEL");
         assertThat(DisposalRules.allowedActions(DisposalRules.APPROVED, DisposalRules.LINGYUN_B, "u-1", "u-2", ALL_PERMS))
+                .containsExactlyInAnyOrder("EXECUTE", "CANCEL");
+        assertThat(DisposalRules.allowedActions(DisposalRules.APPROVED, DisposalRules.LINGYUN_B, "u-1", "u-1", ALL_PERMS))
                 .containsExactlyInAnyOrder("EXECUTE", "STOP", "CANCEL");
         // 只读用户在**每一个**状态下都不该拿到动作，否则前端会把按钮画成可点。
         // 只测 REQUESTED 是不够的：那个状态本来就到不了 EXECUTE/STOP，漏掉权限判断也照样是空集

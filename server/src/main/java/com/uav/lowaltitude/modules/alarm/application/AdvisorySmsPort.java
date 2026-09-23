@@ -8,5 +8,10 @@ public interface AdvisorySmsPort {
     default Delivery simulate(String sourceMode,String recipientName,String content,String idempotencyKey) {
         return simulate(sourceMode,recipientName,content);
     }
+    /** 自动短信在本地演示环境不看来源种类；回执仍必须标成模拟，不能写成真实送达。 */
+    default boolean automaticSimulationAvailable(String sourceMode) { return simulationAvailable(sourceMode); }
+    default Delivery simulateAutomatic(String sourceMode,String recipientName,String content,String idempotencyKey) {
+        return simulate(sourceMode,recipientName,content,idempotencyKey);
+    }
     record Delivery(boolean simulated, String status) { }
 }

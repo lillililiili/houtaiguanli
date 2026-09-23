@@ -1,14 +1,7 @@
 export const CATEGORIES = [
   { key: 'verify', label: '核实规则', noun: '核实' },
   { key: 'counter', label: '反制规则', noun: '反制' },
-  { key: 'dispose', label: '处置规则', noun: '处置' }
-]
-
-export const ACTION_OPTIONS = [
-  { value: 'notify', label: '通知上级' },
-  { value: 'evidence', label: '汇集证据' },
-  { value: 'track', label: '持续跟踪' },
-  { value: 'pilot', label: '飞手提醒（短信与电话录音分别记录回执）' }
+  { key: 'dispose', label: '通知处罚规则', noun: '通知处罚' }
 ]
 
 export const categoryMeta = key => CATEGORIES.find(item => item.key === key) || CATEGORIES[0]
@@ -33,11 +26,10 @@ export function scopeSummary(settings = {}) {
   return settings.airspace_names?.length ? settings.airspace_names.join('、') : '未选择空域'
 }
 
-export function actionSummary(category, settings = {}) {
+export function actionSummary(category) {
   if (category === 'verify') return '记录目标身份核实结论'
   if (category === 'counter') return '执行前仍需独立校验有效授权'
-  const labels = new Map(ACTION_OPTIONS.map(item => [item.value, item.label]))
-  return settings.actions?.length ? settings.actions.map(value => labels.get(value) || value).join('、') : '不执行处置动作'
+  return '通知处罚部门'
 }
 
 export function ruleDraft(rule, catalog = []) {

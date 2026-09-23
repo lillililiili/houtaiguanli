@@ -138,7 +138,7 @@ public class LegalityEvaluationReadService {
     private static boolean reviewRequired(EvaluationRow row, String code) {
         return "ACTIVE".equals(row.mode()) && !"NOT_APPLICABLE".equals(row.legalStatus())
                 && "PENDING_REVIEW".equals(row.reviewState()) && row.supersededByEvaluationId() == null
-                && (code == null || "INSUFFICIENT".equals(code));
+                && "INSUFFICIENT".equals(code);
     }
 
     /**

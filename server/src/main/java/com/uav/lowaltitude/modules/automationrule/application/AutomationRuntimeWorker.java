@@ -3,19 +3,23 @@ package com.uav.lowaltitude.modules.automationrule.application;
 import java.util.List;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import com.uav.lowaltitude.modules.alarm.application.AlarmRuleVerification;
 import com.uav.lowaltitude.modules.automationrule.infrastructure.*;
 import com.uav.lowaltitude.platform.time.AppClock;
 
-/** Background evaluation only. No physical or external action is dispatched here. */
+/** Evaluates alarm-flow rules. A passing verify rule confirms a pending alarm. It does not launch countermeasure or send punishment notice. */
 @Component
 public class AutomationRuntimeWorker {
     private final AutomationRuntimePolicy policy;
     private final AutomationRuntimeRepository runs;
     private final AutomationRuntimeFactsRepository facts;
     private final AutomationRuntimeService service;
+    private final AlarmRuleVerification verification;
     private final AppClock clock;
     public AutomationRuntimeWorker(AutomationRuntimePolicy policy,AutomationRuntimeRepository runs,AutomationRuntimeFactsRepository facts,
-            AutomationRuntimeService service,AppClock clock){this.policy=policy;this.runs=runs;this.facts=facts;this.service=service;this.clock=clock;}
+            AutomationRuntimeService service,AlarmRuleVerification verification,AppClock clock){
+        this.policy=policy;this.runs=runs;this.facts=facts;this.service=service;this.verification=verification;this.clock=clock;
+    }
     @Scheduled(fixedDelayString="${app.automation-rules.poll-ms:2000}")
     public void poll(){
         if(!policy.enabled())return;
@@ -27,7 +31,13 @@ public class AutomationRuntimeWorker {
                 if(candidates.isEmpty()){cursor="";break;}
                 for(String event:candidates){
                     for(String category:List.of("verify","counter","dispose")){
-                        try {service.evaluate(category,event);}
+                        try {
+                            service.evaluate(category,event);
+                            if("verify".equals(category)){
+                                var state=runs.state(category,event);
+                                if(state!=null&&"PASS".equals(state.status()))verification.confirmIfPassed(event,state.runId());
+                            }
+                        }
                         catch(RuntimeException failed){error="部分事件判定异常，需检查后台日志";org.slf4j.LoggerFactory.getLogger(getClass()).warn("Rule evaluation failed for {} / {}: {}",category,event,failed.getClass().getSimpleName());}
                     }
                     cursor=event;

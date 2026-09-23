@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
+import com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.AuthorizationRow;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -41,13 +42,15 @@ public class DisposalReceiptSync {
     private final AppClock clock;
     private final ObjectMapper json;
     private final DisposalJammingChain jammingChain;
+    private final HandoffSubmissionService handoffs;
     private final boolean scheduledEnabled;
 
     public DisposalReceiptSync(DisposalRepository repository, DeviceRepository devices, AppClock clock,
-            ObjectMapper json, DisposalJammingChain jammingChain,
+            ObjectMapper json, DisposalJammingChain jammingChain, HandoffSubmissionService handoffs,
             @Value("${app.disposal.receipt-sync.enabled:false}") boolean scheduledEnabled) {
         this.repository = repository; this.devices = devices; this.clock = clock; this.json = json;
         this.jammingChain = jammingChain;
+        this.handoffs = handoffs;
         this.scheduledEnabled = scheduledEnabled;
     }
 
@@ -89,6 +92,9 @@ public class DisposalReceiptSync {
                 write(Map.of("status", next)), at);
         if (DisposalRules.COMPLETED.equals(next) && DisposalRules.COUNTERMEASURE.equals(row.actionType())) {
             jammingChain.scheduleAfterComplete(row.authorizationId());
+        }
+        if (DisposalRules.COMPLETED.equals(next) && DisposalRules.JAMMING.equals(row.actionType())) {
+            handoffs.automaticAfterJamming(row.subjectId());
         }
     }
 

@@ -1,6 +1,5 @@
 package com.uav.lowaltitude.integration.mock;
 
-import java.util.Set;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpStatus;
@@ -20,7 +19,7 @@ public class LocalAdvisoryVoiceAdapter implements AdvisoryVoicePort {
         this.environment=environment;this.configuredRecording=recording;this.clock=clock;
     }
     public boolean simulationAvailable(String mode) {
-        return environment.acceptsProfiles(Profiles.of("!production & (local | test)"))&&mode!=null&&Set.of("mock","replay").contains(mode);
+        return environment.acceptsProfiles(Profiles.of("!production & (local | test)"))&&mode!=null&&!mode.isBlank();
     }
     public Delivery simulate(String mode,AdvisoryVoiceRecording.Recording recording,String key) {
         if(!simulationAvailable(mode)||recording==null||!recording.equals(configuredRecording.current()))

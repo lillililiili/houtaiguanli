@@ -16,7 +16,8 @@ public final class UavAdvisoryDtos {
     }
     public record Recipient(String name, String contactHint, String basis) { }
     public record Overview(String eventId, long eventVersion, String smsMode, boolean canWrite,
-            boolean canRequestCounter, boolean canDirectCounter, boolean canHandoff, String counterBlockReason, List<Record> records, Recipient recipient, AutoSms autoSms, String voiceMode, AutoVoice autoVoice) { }
+            boolean canRequestCounter, boolean canDirectCounter, boolean canHandoff, String counterBlockReason, List<Record> records, Recipient recipient, AutoSms autoSms, String voiceMode, AutoVoice autoVoice, boolean counterLaunchVisible, String notifyPhase, AutoHandoff autoHandoff) { }
+    public record AutoHandoff(boolean enabled, String status, String reason, String handoffId, String triggerSource, Long updatedAt) { }
     public record AutoSms(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,
             int attemptCount,String policyCode,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
     public record AutoVoice(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,

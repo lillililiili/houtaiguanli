@@ -23,7 +23,6 @@ const routes = [
       { path: 'operations/reports', name: 'Reports', component: () => import('@/views/operations/ReportsView.vue'), meta: { title: '报表管理', menuKey: 'stats', permission: 'statistics.read' } },
       { path: 'system/users', name: 'Users', component: () => import('@/views/system/UsersView.vue'), meta: { title: '用户管理', menuKey: 'users', permission: 'users.read' } },
       { path: 'system/organizations', name: 'Organizations', redirect: '/system/users' },
-      { path: 'system/notification-settings', name: 'NotificationSettings', component: () => import('@/views/system/NotificationSettingsView.vue'), meta: { title: '通知对象配置', menuKey: 'notificationSettings', permission: 'notificationSettings.read' } },
       { path: 'system/response-plans', name: 'ResponsePlans', component: () => import('@/views/system/rules/RuleManagementView.vue'), meta: { title: '规则管理', menuKey: 'responsePlans', permission: 'responsePlans.read' } },
       { path: 'system/response-plans/legacy', name: 'LegacyResponsePlans', component: () => import('@/views/system/ResponsePlansView.vue'), meta: { title: '原处置预案', menuKey: 'responsePlans', permission: 'responsePlans.read' } },
       { path: 'system/roles', name: 'Roles', component: () => import('@/views/system/RolesView.vue'), meta: { title: '角色管理', menuKey: 'roles', permission: 'roles.read' } },

@@ -10,4 +10,10 @@ public interface DisposalCompletionPort {
 
     /** 该主体是否存在状态为 COMPLETED 的处置授权。 */
     boolean completedExists(String subjectKind, String subjectId);
+
+    /** 干扰已完成、且还没有处罚交接的无人机事件。 */
+    java.util.List<String> jammingCompletedWithoutPunishment();
+
+    /** 该事件最新一条已完成干扰的申请人，用作自动交接的提交人外键。 */
+    String completedJammingRequester(String eventId);
 }

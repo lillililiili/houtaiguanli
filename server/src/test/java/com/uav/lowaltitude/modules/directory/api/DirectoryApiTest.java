@@ -33,14 +33,9 @@ class DirectoryApiTest {
   session=json.readTree(mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText();
   org=jdbc.queryForObject("select org_id from app_org where org_code='ORG-DEV'",String.class);
  }
- @Test void advisoryDiagnosticsRequiresEnabledWorkerAndActualRecording() throws Exception {
-  jdbc.update("update notification_setting set enabled=true,channel_type='MOCK' where setting_id in ('advisory-sms','advisory-voice')");
-  doReturn(false).when(smsPolicy).enabled();
-  mvc.perform(auth(get("/api/v1/notification-settings/advisory-sms/diagnostics"))).andExpect(status().isOk())
-    .andExpect(jsonPath("$.data.availability").value("UNAVAILABLE"));
-  doReturn(true).when(voicePolicy).enabled();doReturn(null).when(recordings).current();
-  mvc.perform(auth(get("/api/v1/notification-settings/advisory-voice/diagnostics"))).andExpect(status().isOk())
-    .andExpect(jsonPath("$.data.availability").value("UNAVAILABLE"));
+ @Test void withdrawnNotificationSettingsDiagnosticsAreUnavailable() throws Exception {
+  mvc.perform(auth(get("/api/v1/notification-settings/advisory-sms/diagnostics"))).andExpect(status().isNotFound());
+  mvc.perform(auth(get("/api/v1/notification-settings/advisory-voice/diagnostics"))).andExpect(status().isNotFound());
  }
  @Test void uncertainDirectorySendCannotBeReportedAsNotConnected() throws Exception {
   jdbc.update("update notification_setting set enabled=true,channel_type='MOCK' where setting_id='risk-superior'");
@@ -62,10 +57,6 @@ class DirectoryApiTest {
   mvc.perform(auth(get("/api/v1/contacts/"+c.path("contact_id").asText()))).andExpect(status().isOk()).andExpect(jsonPath("$.data.roles[0]").value("PILOT"));
   mvc.perform(auth(get("/api/v1/organization-profiles/"+org))).andExpect(status().isOk()).andExpect(jsonPath("$.data.contact_count").value(1));
  }
- @Test void superiorIsFixedAndCannotBeBoundToUnitOrDifferentRiskRecipient() throws Exception {
-  mvc.perform(auth(get("/api/v1/notification-settings/risk-superior"))).andExpect(status().isOk()).andExpect(jsonPath("$.data.recipient_name").value("上级"));
-  mvc.perform(write(patch("/api/v1/notification-settings/risk-superior"),Map.of("purpose","RISK_NOTICE","recipient_org_id",org,"channel_type","MOCK","enabled",true,"expected_version",0))).andExpect(status().isBadRequest());
- }
  @Test void sourceMappingAndPlanSubjectsAreExplicitAndPilotRoleIsMandatory() throws Exception {
   String plan=jdbc.queryForObject("select plan_id from flight_plan where source_id is not null order by plan_id fetch first 1 row only",String.class);
   String source=jdbc.queryForObject("select source_id from flight_plan where plan_id=?",String.class,plan);
@@ -79,10 +70,6 @@ class DirectoryApiTest {
   assertThat(subjects.path("pilot_contact_hint").asText()).doesNotContain("13800138000");
   mvc.perform(write(patch("/api/v1/flight-plans/"+plan+"/subjects"),Map.of("operator_org_id",org,"expected_version",version,"reason","旧版本"))).andExpect(status().isConflict());
  }
- @Test void globalSmsCannotBeConfiguredToSendToUnitLiaison() throws Exception {
-  JsonNode c=contact("UNIT_LIAISON");
-  mvc.perform(write(patch("/api/v1/notification-settings/advisory-sms"),Map.of("purpose","ADVISORY_SMS","recipient_org_id",org,"contact_id",c.path("contact_id").asText(),"channel_type","SMS","enabled",true,"expected_version",0))).andExpect(status().isBadRequest());
- }
  @Test void planFeedbackFreezesActualUnitContactAndOldSnapshotDoesNotFollowEdits() throws Exception {planFeedbackHistory(false);}
  @Test void planFeedbackUnknownResultIsSavedAndDuplicateFeedbackIsBlocked() throws Exception {planFeedbackHistory(true);}
  private void planFeedbackHistory(boolean uncertain) throws Exception {
@@ -95,7 +82,9 @@ class DirectoryApiTest {
   JsonNode c=contact("PLAN_LIAISON");String cid=c.path("contact_id").asText();
   long version=jdbc.queryForObject("select version from flight_plan where plan_id=?",Long.class,plan);
   ok(write(patch("/api/v1/flight-plans/"+plan+"/subjects"),Map.of("source_binding_id",binding.path("binding_id").asText(),"operator_org_id",org,"expected_version",version,"reason","核对报送单位")));
-  JsonNode setting=ok(write(post("/api/v1/notification-settings"),Map.of("purpose","PLAN_FEEDBACK","source_binding_id",binding.path("binding_id").asText(),"contact_id",cid,"channel_type","MOCK","enabled",true)));
+  String settingId=UUID.randomUUID().toString();
+  long now=System.currentTimeMillis();
+  jdbc.update("insert into notification_setting(setting_id,purpose,routing_key,recipient_org_id,contact_id,source_binding_id,channel_type,enabled,created_at,updated_at,version) values(?,?,?,?,?,?,'MOCK',true,?,?,0)",settingId,"PLAN_FEEDBACK","PLAN_FEEDBACK:"+binding.path("binding_id").asText(),org,cid,binding.path("binding_id").asText(),now,now);
   String verification=UUID.randomUUID().toString();String actor=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,session);
   jdbc.update("insert into flight_plan_verification(verification_id,plan_id,revision_no,conclusion,takeoff_status,evidence,note,handled_by,handled_by_name,handled_at) values(?,?,1,'CHECK_INCOMPLETE','UNKNOWN','隔离测试设备检查','起飞情况未知',?,'测试',1)",verification,plan,actor);
   JsonNode sent=ok(write(post("/api/v1/flight-plans/"+plan+"/verifications/feedback"),Map.of("verification_id",verification,"recipient_id",source)));
@@ -103,7 +92,7 @@ class DirectoryApiTest {
   assertThat(sent.path("receipt_status").asText()).isEqualTo("PENDING");
   if(uncertain)assertThat(sent.path("blocked_reason").asText()).isEqualTo("DELIVERY_OUTCOME_UNKNOWN");
   assertThat(sent.path("recipient_snapshot").path("contact_id").asText()).isEqualTo(cid);
-  assertThat(sent.path("recipient_snapshot").path("setting_id").asText()).isEqualTo(setting.path("setting_id").asText());
+  assertThat(sent.path("recipient_snapshot").path("setting_id").asText()).isEqualTo(settingId);
   assertThat(sent.path("recipient_snapshot").path("contact_hint").asText()).isEqualTo("138****8000");
   ok(write(patch("/api/v1/contacts/"+cid),Map.of("org_id",org,"name","后续更名联系人","roles",List.of("PLAN_LIAISON"),"phone","13900139000","enabled",false,"expected_version",0)));
   mvc.perform(auth(get("/api/v1/flight-plans/"+plan+"/verifications"))).andExpect(status().isOk()).andExpect(jsonPath("$.data.feedback[0].recipient_snapshot.contact_name").value("业务联系人"));
@@ -123,13 +112,15 @@ class DirectoryApiTest {
   var row=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(device,"隔离测试异常设备",true,java.math.BigDecimal.ONE,"OFFLINE","ERROR",1L,1L,true,true,List.of());
   var check=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","隔离测试",System.currentTimeMillis(),java.math.BigDecimal.TEN,true,0,List.of(row),false);
   doReturn(check).when(checks).read(plan);
-  JsonNode setting=ok(write(post("/api/v1/notification-settings"),Map.of("purpose","DEVICE_MAINTENANCE","recipient_org_id",org,"channel_type","MOCK","enabled",true)));
-  JsonNode task=ok(write(post("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks"),Map.of("device_id",device,"notification_setting_id",setting.path("setting_id").asText())));
+  String settingId=UUID.randomUUID().toString();
+  long now=System.currentTimeMillis();
+  jdbc.update("insert into notification_setting(setting_id,purpose,routing_key,recipient_org_id,channel_type,enabled,created_at,updated_at,version) values(?,?,?,?,'MOCK',true,?,?,0)",settingId,"DEVICE_MAINTENANCE","DEVICE_MAINTENANCE:"+org,org,now,now);
+  JsonNode task=ok(write(post("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks"),Map.of("device_id",device,"notification_setting_id",settingId)));
   assertThat(task.path("status").asText()).isEqualTo("PENDING");
-  assertThat(task.path("recipient_snapshot").path("setting_id").asText()).isEqualTo(setting.path("setting_id").asText());
+  assertThat(task.path("recipient_snapshot").path("setting_id").asText()).isEqualTo(settingId);
   assertThat(task.path("notification_delivery_status").asText()).isEqualTo("PENDING_DELIVERY");
   assertThat(task.path("handled_at").isMissingNode()).isTrue();
-  mvc.perform(auth(get("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks").param("device_id",device))).andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].recipient_snapshot.setting_id").value(setting.path("setting_id").asText()));
+  mvc.perform(auth(get("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks").param("device_id",device))).andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].recipient_snapshot.setting_id").value(settingId));
  }
  @Test void changingPhoneClearsPreviousVerificationEvenIfClientReusesIt() throws Exception {
   JsonNode c=contact("PILOT");

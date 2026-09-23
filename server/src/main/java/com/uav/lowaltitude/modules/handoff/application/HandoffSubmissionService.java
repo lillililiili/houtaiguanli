@@ -41,6 +41,7 @@ import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
+import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 import com.uav.lowaltitude.modules.risk.api.RiskDtos.RiskDto;
 import com.uav.lowaltitude.modules.risk.application.RiskNotificationService;
 import com.uav.lowaltitude.modules.risk.application.RiskReadService;
@@ -330,7 +331,39 @@ public class HandoffSubmissionService {
 
     private static ApiException alreadyExists() { return new ApiException(HttpStatus.CONFLICT, "HANDOFF_ALREADY_EXISTS", "该事项已向此接收方提交过交接"); }
 
+    private static final AccessDecision SYSTEM_SCOPE = new AccessDecision("system:auto-punishment-handoff", ScopeMode.ALL);
     private final HandoffChannelPort channel;
+
+    /** 干扰完成后自动建立处罚交接。同一事件已有交接则沿用，不重复创建，也不代替处罚决定。 */
+    @Transactional
+    public void automaticAfterJamming(String eventId) {
+        if (eventId == null || eventId.isBlank() || repository.existingPunishment(eventId) != null) return;
+        String submitter = disposals.completedJammingRequester(eventId);
+        if (submitter == null) return;
+        var recipients = repository.enabledRecipients("UAV_PUNISHMENT");
+        if (recipients.size() != 1) return;
+        UavEventRepository.EventRow event = events.lock(eventId, SYSTEM_SCOPE);
+        if (event == null || !"CONFIRMED".equals(event.state())) return;
+        if (repository.existingPunishment(eventId) != null) return;
+        RecipientRow recipient = recipients.get(0);
+        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        String handoffId = UUID.randomUUID().toString();
+        MaterialV2Dto material = materials.assemble(eventId, true);
+        try {
+            repository.insertHandoff(new HandoffInsert(handoffId, "UAV_EVENT", eventId, null, eventId, "UAV_PUNISHMENT",
+                    recipient.recipientId(), event.version(), event.ownerOrgId(), event.districtId(),
+                    materials.sourceMode(eventId), submitter, at));
+        } catch (DuplicateKeyException ignored) {
+            return;
+        }
+        String snapshot = json(material);
+        repository.insertSnapshot(handoffId, MATERIAL_SCHEMA_V2, snapshot, at);
+        DeliveryOutcome outcome = dispatch(handoffId, "UAV_EVENT", eventId, "UAV_PUNISHMENT", recipient, snapshot, at, materials.sourceMode(eventId));
+        repository.insertDelivery(delivery(handoffId, outcome, at));
+        if (outcome.receiptResult() != null) repository.updateReceiptResult(handoffId, outcome.receiptResult());
+        audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
+                "source_id=" + eventId + "; trigger=JAMMING_COMPLETED; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
+    }
 
     /** 渠道异常不吞：交接与快照已入库，投递记录如实写"待投递 · 未接通"，由后续人工或重试处理。 */
     private DeliveryOutcome dispatch(String handoffId, String sourceKind, String sourceId, String handoffType, RecipientRow recipient,

@@ -50,9 +50,11 @@ def run(batch, seconds, output):
     broker = next(b for b in api.data('GET', '/mqtt-brokers') if b['name'] == 'local-lingyun-replay')
     if broker['source_mode'] != 'replay' or broker['host'] not in ('127.0.0.1', 'localhost') or not broker['enabled']:
         raise ValueError('Enabled local replay broker required')
-    setting = api.data('GET', '/notification-settings/advisory-sms')
-    if setting['channel_type'] not in ('NONE', 'MOCK'):
+    setting_row = local_psql("SELECT channel_type || '|' || version FROM notification_setting WHERE setting_id='advisory-sms'")
+    channel_type, version = setting_row.split('|', 1)
+    if channel_type not in ('NONE', 'MOCK'):
         raise ValueError('Do not replace a real channel')
+    setting = {'setting_id': 'advisory-sms', 'channel_type': channel_type, 'version': int(version)}
     # Do not activate notifications for unrelated currently fresh alarms.
     if int(local_psql("SELECT count(*) FROM alarm WHERE received_at>now()-interval '5 minutes'")):
         raise ValueError('Other fresh alarms exist; do not change shared notification settings')
@@ -118,10 +120,11 @@ def run(batch, seconds, output):
         'device_no':radar_external, 'name':'通知流程模拟雷达 '+batch, 'vendor':'本机模拟',
         'model':'MQTT-NOTICE', 'longitude':118.005, 'latitude':37.001, 'altitude_m':10
     }, batch + '-radar')
-    api.data('PATCH', '/notification-settings/advisory-sms', {
-        'purpose':'ADVISORY_SMS', 'channel_type':'MOCK', 'enabled':True,
-        'valid_until': expires, 'expected_version':setting['version']
-    }, batch + '-sms-setting')
+    local_psql(
+        "UPDATE notification_setting SET channel_type='MOCK', enabled=TRUE, "
+        f"valid_until={int(expires)}, version=version+1, updated_at={millis()} "
+        "WHERE setting_id='advisory-sms' AND channel_type IN ('NONE','MOCK')"
+    )
     manifest = dict(batch=batch, ids=ids, pilot_contact_id=pilot['contact_id'],
                     device_id=device['device']['device_id'], radar_device_id=radar['device']['device_id'], broker_id=broker['broker_id'], sn=sn, started_at=millis(),
                     duration_seconds=seconds, expires_at=expires, source_mode='replay', channel='MOCK')

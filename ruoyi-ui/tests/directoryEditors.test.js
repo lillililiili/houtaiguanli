@@ -2,12 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import ElementPlus from 'element-plus'
 import DirectoryRecordEditor from '@/views/system/organization/DirectoryRecordEditor.vue'
-import NotificationSettingsView from '@/views/system/NotificationSettingsView.vue'
 import { directoryApi } from '@/api/organizationDirectory'
 
 vi.mock('@/api/organizationDirectory', () => ({ directoryApi: {
-  options: vi.fn(), bindings: vi.fn(), saveContact: vi.fn(), saveProfile: vi.fn(), saveBinding: vi.fn(),
-  settings: vi.fn(), setting: vi.fn(), diagnostics: vi.fn(), saveSetting: vi.fn()
+  options: vi.fn(), bindings: vi.fn(), saveContact: vi.fn(), saveProfile: vi.fn(), saveBinding: vi.fn()
 } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }))
 vi.mock('element-plus', async importOriginal => ({ ...await importOriginal(), ElMessage: { success: vi.fn() } }))
@@ -25,10 +23,6 @@ beforeEach(() => {
   directoryApi.options.mockResolvedValue({ items: [{ id: 'org-1', label: '关联单位' }], total: 1 })
   directoryApi.bindings.mockResolvedValue({ items: [], total: 0 })
   directoryApi.saveContact.mockResolvedValue({ ...contact, version: 5 })
-  const risk = { setting_id: 'risk-superior', purpose: 'RISK_NOTICE', recipient_name: '上级', channel_type: 'NONE', enabled: false, endpoint_ref: '', version: 1, availability: 'UNAVAILABLE', blocked_reason: '配置停用', history_count: 0 }
-  directoryApi.settings.mockResolvedValue({ items: [risk], total: 1 })
-  directoryApi.setting.mockResolvedValue(risk)
-  directoryApi.diagnostics.mockResolvedValue({ setting_id: risk.setting_id, availability: 'UNAVAILABLE', blocked_reason: '配置停用', pending_count: 0, history_count: 0, affected_plan_count: 0 })
 })
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = '' })
 
@@ -64,15 +58,5 @@ describe('单位联系人及通知配置表单', () => {
     expect(document.body.textContent).toContain('待发任务 2 项')
     expect(document.body.textContent).toContain('历史通知 3 项')
     expect(button('保存')).toBeUndefined()
-  })
-  it('通知上级不出现接收单位或联系人配置，诊断不触发写请求', async () => {
-    await mount(NotificationSettingsView)
-    expect(host.textContent).toContain('风险通知统一通知上级')
-    const labels = [...host.querySelectorAll('.settings-detail .el-form-item__label')].map(item => item.textContent)
-    expect(labels.some(label => /接收单位|联系人|区域|风险类型/.test(label))).toBe(false)
-    expect(host.textContent).toContain('当前不可用')
-    button('校验已保存配置').click(); await settle()
-    expect(directoryApi.diagnostics).toHaveBeenCalledTimes(2)
-    expect(directoryApi.saveSetting).not.toHaveBeenCalled()
   })
 })

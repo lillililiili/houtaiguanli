@@ -24,9 +24,9 @@ public final class AutomationRuleCatalog {
             riskLevel(), fixed("position", "目标位置状态", "目标当前位置有效", "位置已确认且仍有效", false, "最新定位及区域关系研判")),
         "dispose", List.of(
             fixed("riskActive", "风险状态", "当前风险仍有效", "未解除且未排除", false, "当前风险事件状态"),
-            number("disposeFreshness", "处置依据时效", "处置依据保持最新", "不超过", "秒", 1, 300, false, "当前风险对应的最新有效事实"),
+            number("disposeFreshness", "通知依据时效", "通知依据保持最新", "不超过", "秒", 1, 300, false, "当前风险对应的最新有效事实"),
             fixed("eventLink", "事件与目标关联", "事件关联目标明确", "风险与当前目标已关联", false, "风险事件和目标关联记录"),
-            riskLevel(), fixed("sourceKnown", "事实来源", "处置事实可追溯", "来源与采集时间齐全", false, "原始观测与证据元数据")));
+            riskLevel(), fixed("sourceKnown", "事实来源", "通知事实可追溯", "来源与采集时间齐全", false, "原始观测与证据元数据")));
 
     private static CatalogItem number(String code, String label, String name, String op, String unit,
             int min, int max, boolean hold, String source) {

@@ -14,10 +14,9 @@ describe('后台菜单权限', () => {
     expect(canAccessMenu(user, 'roles')).toBe(true)
   })
 
-  it('单位资料入口并入用户管理，通知对象配置仍独立', () => {
-    const user = { menu_keys: ['organizations', 'notificationSettings'], permission_codes: ['organizations.read', 'notificationSettings.read'] }
-    expect(accessibleItems(user).map(item => item.path)).toEqual(['/system/users', '/system/notification-settings'])
-    expect(canAccessMenu({ ...user, permission_codes: ['organizations.read'] }, 'notificationSettings')).toBe(false)
+  it('单位资料入口并入用户管理', () => {
+    const user = { menu_keys: ['organizations'], permission_codes: ['organizations.read'] }
+    expect(accessibleItems(user).map(item => item.path)).toEqual(['/system/users'])
     expect(canAccessMenu({ ...user, menu_keys: [] }, 'organizations')).toBe(false)
   })
 

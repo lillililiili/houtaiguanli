@@ -2,7 +2,6 @@ package com.uav.lowaltitude.modules.alarm.infrastructure;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -16,8 +15,9 @@ public class AutoVoiceRepository {
     public List<String> callingCandidates() {
         return jdbc.queryForList("SELECT event_id FROM uav_auto_voice_task WHERE status='CALLING' ORDER BY updated_at FETCH FIRST 200 ROWS ONLY",String.class);
     }
-    public List<String> candidates(long since) {
-        return jdbc.queryForList("SELECT e.event_id FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id LEFT JOIN uav_auto_voice_task t ON t.event_id=e.event_id WHERE (t.status='CALLING' OR ((t.event_id IS NULL OR t.status IN ('WAITING','BLOCKED','UNAVAILABLE')) AND a.received_at>=?)) ORDER BY CASE WHEN t.status='CALLING' THEN 0 ELSE 1 END,COALESCE(t.updated_at,0),e.created_at ASC FETCH FIRST 200 ROWS ONLY",String.class,new Timestamp(since));
+    /** 只跟已送达的飞手短信。已判定不拨打的任务不再重试。 */
+    public List<String> candidates() {
+        return jdbc.queryForList("SELECT e.event_id FROM uav_event e JOIN uav_auto_sms_task s ON s.event_id=e.event_id AND s.status='SIMULATED_DELIVERED' LEFT JOIN uav_auto_voice_task t ON t.event_id=e.event_id WHERE t.status='CALLING' OR t.event_id IS NULL OR t.status IN ('WAITING','UNAVAILABLE') ORDER BY CASE WHEN t.status='CALLING' THEN 0 ELSE 1 END,s.updated_at FETCH FIRST 200 ROWS ONLY",String.class);
     }
     public Task find(String id) {
         var rows=jdbc.query("SELECT * FROM uav_auto_voice_task WHERE event_id=?",(r,n)->new Task(r.getString("event_id"),r.getString("status"),r.getString("reason"),r.getString("trigger_source"),number(r,"evaluated_at"),number(r,"data_updated_at"),number(r,"triggered_at"),r.getLong("updated_at"),r.getInt("attempt_count"),number(r,"lease_until"),r.getString("claim_token"),r.getString("provider_key"),r.getString("recording_id"),r.getString("recording_name"),r.getString("recording_sha256"),r.getString("recording_transcript"),number(r,"answered_at"),number(r,"playback_completed_at")),id);

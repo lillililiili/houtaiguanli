@@ -173,9 +173,8 @@ public class AutomationRuleService {
         if("ALL".equals(b.scopeMode()) && !b.airspaceIds().isEmpty()) throw bad("全部范围不能同时指定空域");
         if("AIRSPACES".equals(b.scopeMode()) && b.airspaceIds().isEmpty()) throw bad("请至少选择一个适用空域");
         for(String id:b.airspaceIds()) if(!repo.airspaceExists(id)) throw bad("适用空域不存在，请重新选择");
-        if(!"dispose".equals(category) && !b.actions().isEmpty()) throw bad("此类型的执行动作由系统固定定义");
-        if("dispose".equals(category) && (b.actions().isEmpty() || !Set.of("notify","evidence","track","pilot").containsAll(b.actions()))) throw bad("请选择至少一个有效处置动作");
         if(new HashSet<>(b.actions()).size()!=b.actions().size()) throw bad("执行动作不能重复");
+        if(!b.actions().isEmpty()) throw bad("核实、反制和通知处罚的执行动作由系统固定，不能另行选择");
     }
     private List<String> ruleDiff(Rule old,Rule saved,CatalogItem item) {
         var details=new ArrayList<String>();

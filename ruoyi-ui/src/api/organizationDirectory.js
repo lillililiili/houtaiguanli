@@ -13,9 +13,5 @@ export const directoryApi = {
   saveBinding: (id, body) => mutation(id ? 'patch' : 'post', id ? path('/v1/plan-source-bindings', id) : '/v1/plan-source-bindings', body),
   options: params => list('/v1/directory-options', params),
   subjects: id => request({ url: `${path('/v1/flight-plans', id)}/subjects` }),
-  saveSubjects: (id, body) => mutation('patch', `${path('/v1/flight-plans', id)}/subjects`, body),
-  settings: params => list('/v1/notification-settings', params),
-  setting: id => request({ url: path('/v1/notification-settings', id) }),
-  saveSetting: (id, body) => mutation(id ? 'patch' : 'post', id ? path('/v1/notification-settings', id) : '/v1/notification-settings', body),
-  diagnostics: id => request({ url: `${path('/v1/notification-settings', id)}/diagnostics` })
+  saveSubjects: (id, body) => mutation('patch', `${path('/v1/flight-plans', id)}/subjects`, body)
 }

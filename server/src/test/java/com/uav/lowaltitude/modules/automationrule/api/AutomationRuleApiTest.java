@@ -100,10 +100,9 @@ class AutomationRuleApiTest {
         String id=jdbc.queryForObject("SELECT airspace_id FROM airspace ORDER BY airspace_id LIMIT 1",String.class);
         var b=settings(0);b.put("scope_mode","AIRSPACES");b.put("airspace_ids",List.of(id));
         var g=ok(write(put(BASE+"verify/settings"),b));assertThat(g.path("settings").path("airspace_ids").get(0).asText()).isEqualTo(id);
-        b=settings(0);mvc.perform(write(put(BASE+"dispose/settings"),b)).andExpect(status().isBadRequest());
-        b.put("actions",List.of("pilot","notify"));g=ok(write(put(BASE+"dispose/settings"),b));
-        assertThat(g.path("settings").path("actions").get(0).asText()).isEqualTo("pilot");
-        b=settings(1);b.put("actions",List.of("jamming"));mvc.perform(write(put(BASE+"dispose/settings"),b)).andExpect(status().isBadRequest());
+        g=ok(write(put(BASE+"dispose/settings"),settings(0)));
+        assertThat(g.path("settings").path("actions")).isEmpty();
+        b=settings(g.path("version").asLong());b.put("actions",List.of("notify"));mvc.perform(write(put(BASE+"dispose/settings"),b)).andExpect(status().isBadRequest());
         b=settings(0);b.put("actions",List.of("notify"));mvc.perform(write(put(BASE+"counter/settings"),b)).andExpect(status().isBadRequest());
     }
     @Test void anonymousReadOnlyAndScopedAccountsCannotMutateGlobalConfiguration() throws Exception {

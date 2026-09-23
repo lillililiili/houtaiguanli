@@ -52,6 +52,12 @@ class HandoffNotificationApiTest {
   if(id==null)return;
   jdbc.update("DELETE FROM handoff_delivery WHERE handoff_id=?",id);jdbc.update("DELETE FROM handoff_material_snapshot WHERE handoff_id=?",id);jdbc.update("DELETE FROM handoff WHERE handoff_id=?",id);jdbc.update("DELETE FROM handoff_recipient WHERE recipient_id=?",recipient);jdbc.update("DELETE FROM uav_event WHERE event_id=?",event);jdbc.update("DELETE FROM alarm WHERE alarm_id=?",alarm);
  }
+ @Test void missingChannelSettingStillNotifiesTheOriginalRecipient() throws Exception {
+  doCallRealMethod().when(directory).forHandoff("UAV_PUNISHMENT",recipient);
+  mvc.perform(get(url()).header("Authorization","Bearer "+session)).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_notify").value(true));
+  send(1,UUID.randomUUID().toString()).andExpect(status().isOk()).andExpect(jsonPath("$.data.delivery_status").value("DELIVERED"));
+  verify(channel,times(1)).deliver(any());
+ }
  @Test void sendsOriginalMaterialOnceAndRefreshNeverSends() throws Exception {
   String before=jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,id);
   mvc.perform(get(url()).header("Authorization","Bearer "+session)).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_notify").value(true));
@@ -95,6 +101,18 @@ class HandoffNotificationApiTest {
   doReturn(new RecipientSnapshot(recipient,"后来改名的部门",null,null,null,null,null,"NONE",null,null,2L,false,"已停用",System.currentTimeMillis())).when(directory).forHandoff("UAV_PUNISHMENT",recipient);
   mvc.perform(get(url()).header("Authorization","Bearer "+session)).andExpect(status().isOk()).andExpect(jsonPath("$.data.simulated").value(true)).andExpect(jsonPath("$.data.recipient_snapshot.recipient_name").value("测试处罚部门"));
   assertThat(jdbc.queryForObject("SELECT recipient_snapshot FROM handoff_delivery WHERE handoff_id=? AND attempt_no=1",String.class,id)).isNull();
+ }
+ @Test void enabledPunishNotifyRuleBlocksTheButtonUntilRemoved() throws Exception {
+  String ruleId="hn-rule-"+id;
+  jdbc.update("INSERT INTO automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) VALUES(?,'dispose',?,'riskActive','未解除且未排除',0,true,0,0,'handoff-notify-test')",ruleId,"通知处罚-"+id);
+  try {
+   mvc.perform(get(url()).header("Authorization","Bearer "+session)).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_notify").value(false)).andExpect(jsonPath("$.data.blocked_reason").value(org.hamcrest.Matchers.containsString("通知处罚")));
+   send(1,UUID.randomUUID().toString()).andExpect(status().isConflict());
+   verify(channel,never()).deliver(any());
+  } finally {
+   jdbc.update("DELETE FROM automation_rule_condition WHERE rule_id=?",ruleId);
+  }
+  mvc.perform(get(url()).header("Authorization","Bearer "+session)).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_notify").value(true));
  }
  @Test void permissionsAndScopeAreRequiredByBackend() throws Exception {
   String reader=limitedSession(false),outsider=limitedSession(true);
