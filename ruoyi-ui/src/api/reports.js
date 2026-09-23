@@ -1,6 +1,8 @@
 import { download, queryString, request } from '@/services/apiClient.js';
 
-const named = rows => (rows || []).map(item => ({ name: item.name, value: Number(item.value || 0) }));
+const number = value => value == null ? null : Number(value);
+
+const named = rows => (rows || []).map(item => ({ name: item.name, value: number(item.value) }));
 
 export function normalizeReportPreview(payload = {}) {
   const source = payload.report || {};
@@ -15,29 +17,31 @@ export function normalizeReportPreview(payload = {}) {
       to: source.to || '',
       sourceMode: source.source_mode || 'unknown',
       simulated: Boolean(source.simulated),
+      generatedAt: source.generated_at ?? payload.generated_at ?? null,
+      availability: source.availability || {},
       summary: {
-        total: Number(summary.total || 0), illegal: Number(summary.illegal || 0),
-        punish: Number(summary.punish || 0), highRisk: Number(summary.high_risk || 0),
-        uav: Number(summary.uav || 0), abnormal: Number(summary.abnormal || 0)
+        total: number(summary.total), illegal: number(summary.illegal),
+        punish: number(summary.punish), highRisk: number(summary.high_risk),
+        uav: number(summary.uav), abnormal: number(summary.abnormal)
       },
       devices: source.devices ? {
-        total: Number(source.devices.total || 0), online: Number(source.devices.online || 0),
+        total: number(source.devices.total), online: number(source.devices.online),
         onlineRate: source.devices.online_rate == null ? null : Number(source.devices.online_rate)
       } : null,
       days: (source.days || []).map(item => ({
-        date: item.date, md: item.md, total: Number(item.total || 0), illegal: Number(item.illegal || 0),
-        punish: Number(item.punish || 0), highRisk: Number(item.high_risk || 0)
+        date: item.date, md: item.md, total: number(item.total), illegal: number(item.illegal),
+        punish: number(item.punish), highRisk: number(item.high_risk)
       })),
       byRisk: named(source.by_risk), byType: named(source.by_type),
       byDuration: named(source.by_duration), byTrack: named(source.by_track),
-      altBands: named(source.alt_bands), altTotal: Number(source.alt_total || 0),
+      altBands: named(source.alt_bands), altTotal: number(source.alt_total),
       regions: (source.regions || []).map(item => ({
-        name: item.name, total: Number(item.total || 0), illegal: Number(item.illegal || 0),
-        punish: Number(item.punish || 0), highRisk: Number(item.high_risk || 0)
+        name: item.name, total: number(item.total), illegal: number(item.illegal),
+        punish: number(item.punish), highRisk: number(item.high_risk)
       })),
       byPenalty: named(source.by_penalty),
       partners: (source.partners || []).map(item => ({
-        name: item.name, caseCount: Number(item.case_count || 0), fine: Number(item.fine || 0)
+        name: item.name, caseCount: number(item.case_count), fine: number(item.fine)
       }))
     }
   };

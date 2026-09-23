@@ -39,6 +39,7 @@ class ReportingApiTest {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.mybatis.spring.SqlSessionTemplate sqlSession;
 
     @AfterEach
     void cleanCreatedFixtures() {
@@ -47,6 +48,82 @@ class ReportingApiTest {
         jdbc.update("delete from app_user where account like 'itest-stat-%'");
         jdbc.update("delete from app_role_permission where role_code in (select role_code from app_role where name like '统计测试角色%')");
         jdbc.update("delete from app_role where name like '统计测试角色%'");
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void repeatedAssessmentsAndRisksCountEachTargetOnceAndKeepHeightDatumsSeparate() throws Exception {
+        String token=login("admin1","changeme");
+        var at=java.time.OffsetDateTime.parse("2001-01-01T00:00:00+08:00");
+        String org="seed-stage3-org", district="seed-stage3-district", id="stats-dedup";
+        jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','mock',?,?,?,?)",id,id,at,at.plusHours(12),org,district,at,at);
+        jdbc.update("insert into target_latest_state(target_id,height_agl_m,observed_at,received_at,created_at,updated_at) values(?,150,?,?,?,?)",id,at,at,at,at);
+        for(int i=0;i<2;i++) {
+            jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) select ?,v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',1,1,0,0,'mock',? from rule_set_version v order by v.rule_set_version_id limit 1","stats-run-"+i,at,at,at);
+            jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at) select ?,r.run_id,r.rule_set_version_id,'ACTIVE','TARGET',?,r.as_of,r.started_at,'FRESH','FULL',?,60,'HIGH',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,'mock',? from rule_run r where r.run_id=?","stats-eval-"+i,id,i==0?"ABNORMAL":"ILLEGAL",org,district,at.plusMinutes(i),"stats-run-"+i);
+            jdbc.update("insert into flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,target_id,risk_type,severity,state_code,reason_code,reason_text,received_at,source_mode,owner_org_id,district_id,created_at,updated_at,version) values(?,'seed-stage3-source',?,'seed-stage3-plan-legal','seed-stage3-rv-legal',?,'AIRSPACE',?,'PENDING_VERIFICATION','PROHIBITED_AIRSPACE_OVERLAP','隔离统计测试',?,'mock',?,?,?,?,0)","stats-risk-"+i,"stats-risk-"+i,id,i==0?"LOW":"HIGH",at.plusMinutes(i),org,district,at,at);
+        }
+        JsonNode result=operations(token,"2001-01-01");
+        assertThat(result.path("summary").path("total").asInt()).isEqualTo(1);
+        assertThat(result.path("summary").path("illegal").asInt()).isEqualTo(1);
+        assertThat(result.path("summary").path("high_risk").asInt()).isEqualTo(1);
+        assertThat(result.path("alt_total").asInt()).isZero();
+        jdbc.update("update target_latest_state set altitude_amsl_m=0,observed_at=? where target_id=?",at.plusHours(1),id);
+        result=operations(token,"2001-01-01");
+        assertThat(result.path("summary").path("total").asInt()).isEqualTo(1);
+        assertThat(result.path("alt_total").asInt()).isEqualTo(1);
+        assertThat(sum(result.path("alt_bands"),"value")).isEqualTo(1);
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void scopeAndDomainPermissionsDoNotLeakOrFabricateZeros() throws Exception {
+        String token=login("admin1","changeme");
+        String user=jdbc.queryForObject("select user_id from app_user where account='admin1'",String.class);
+        var at=java.time.OffsetDateTime.parse("2002-01-01T00:00:00+08:00");
+        String org="seed-stage3-org", district="seed-stage3-district";
+        String other=jdbc.queryForObject("select district_id from app_district where district_id<>? and enabled=TRUE fetch first 1 row only",String.class,district);
+        for(String[] row:new String[][]{{"stats-visible",district},{"stats-hidden",other}})
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'replay',?,?,?,?)",row[0],row[0],at,at,org,row[1],at,at);
+        jdbc.update("update app_user set scope_mode='ASSIGNED' where user_id=?",user);
+        jdbc.update("delete from app_user_data_scope where user_id=?",user);
+        jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,?,?)",user,org,district);
+        JsonNode result=operations(token,"2002-01-01");
+        assertThat(result.path("summary").path("total").asInt()).isEqualTo(1);
+        jdbc.update("delete from app_role_permission where role_code='ROLE-ADMIN' and permission_code='target:read'");
+        sqlSession.clearCache();
+        result=operations(token,"2002-01-01");
+        assertThat(result.path("summary").path("total").isMissingNode()||result.path("summary").path("total").isNull()).isTrue();
+        assertThat(result.path("availability").path("total").path("status").asText()).isEqualTo("UNAVAILABLE");
+        assertThat(result.path("by_type").isEmpty()).isTrue();
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void onlyFiledCasesAndEffectiveDecisionsContributeNeverHandoffsOrDraftFines() throws Exception {
+        String token=login("admin1","changeme");
+        String caseId="seed-stage14-case-investigating",discretion="seed-stage14-discretion-draft";
+        String actor=jdbc.queryForObject("select user_id from app_user where account='admin1'",String.class);
+        var at=java.time.OffsetDateTime.parse("2003-01-01T00:00:00+08:00");
+        assertThat(jdbc.update("update punishment_case set filed_at=? where case_id=?",at,caseId)).isEqualTo(1);
+        jdbc.update("update handoff set created_at=? where handoff_id='seed-stage14-handoff-punish'",at.minusDays(1));
+        assertThat(operations(token,"2002-12-31").path("summary").path("punish").asInt()).isZero();
+        JsonNode result=operations(token,"2003-01-01");
+        assertThat(result.path("summary").path("punish").asInt()).isEqualTo(1);
+        assertThat(sum(result.path("by_penalty"),"value")).isZero();
+        assertThat(result.path("partners").get(0).path("fine").isMissingNode()||result.path("partners").get(0).path("fine").isNull()).isTrue();
+        jdbc.update("update penalty_discretion set status='CONFIRMED',fine_amount=12345,decided_by=?,decided_at=? where discretion_id=?",actor,at,discretion);
+        jdbc.update("insert into penalty_decision_document(document_id,document_no,case_id,discretion_id,template_version,status,fields,rendered_sha256,issued_by,issued_at,updated_at) values('stats-doc','STATS-DOC',?,?,'v1','ISSUED',CAST('{}' AS JSON),?,?,?,?)",caseId,discretion,"a".repeat(64),actor,at,at);
+        result=operations(token,"2003-01-01");
+        assertThat(sum(result.path("by_penalty"),"value")).isEqualTo(1);
+        assertThat(result.path("partners").get(0).path("fine").decimalValue()).isEqualByComparingTo("123.45");
+        jdbc.update("update penalty_decision_document set status='REVOKED',revoked_at=?,revoke_reason='隔离测试撤销' where document_id='stats-doc'",at.plusHours(1));
+        assertThat(sum(operations(token,"2003-01-01").path("by_penalty"),"value")).isZero();
+    }
+
+    private JsonNode operations(String token,String day) throws Exception {
+        return data(mvc.perform(get("/api/v1/stats/operations").param("from",day).param("to",day).header("Authorization",bearer(token)))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
     }
 
     @Test
@@ -66,12 +143,40 @@ class ReportingApiTest {
     }
 
     @Test
-    void operationsAggregatesSampleFactsAndDeviceCounts() throws Exception {
+    void businessTargetsUseFirstSeenAndExposeUnavailableMetrics() throws Exception {
+        String id = "stat-" + UUID.randomUUID().toString().substring(0, 20);
+        var tuple = jdbc.queryForMap("select o.org_id,d.district_id from app_org o cross join app_district d where o.enabled=TRUE and d.enabled=TRUE fetch first 1 row only");
+        var first = java.time.OffsetDateTime.parse("2040-01-01T15:59:59Z");
+        var last = java.time.OffsetDateTime.parse("2040-01-02T02:00:00Z");
+        jdbc.update("insert into target(target_id,target_no,object_type_code,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,?,'replay',?,?,?,?)",
+                id,id,"UAV",first,last,tuple.get("org_id"),tuple.get("district_id"),first,last);
+        try {
+            String token = login("admin1", "changeme");
+            JsonNode firstDay = data(mvc.perform(get("/api/v1/stats/operations")
+                    .param("from", "2040-01-01").param("to", "2040-01-01").header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            assertThat(firstDay.path("summary").path("total").asInt()).isEqualTo(1);
+            assertThat(firstDay.path("source_mode").asText()).isEqualTo("replay");
+            assertThat(firstDay.path("simulated").asBoolean()).isTrue();
+            assertThat(firstDay.path("generated_at").asLong()).isPositive();
+            assertThat(firstDay.path("availability").path("by_duration").path("status").asText()).isEqualTo("UNAVAILABLE");
+            assertThat(firstDay.path("by_duration").isEmpty()).isTrue();
+            assertThat(firstDay.path("alt_total").asInt()).isZero();
+            assertThat(firstDay.path("availability").path("alt_bands").path("missing_count").asInt()).isEqualTo(1);
+            JsonNode nextDay = data(mvc.perform(get("/api/v1/stats/operations")
+                    .param("from", "2040-01-02").param("to", "2040-01-02").header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            assertThat(nextDay.path("summary").path("total").asInt()).isZero();
+        } finally { jdbc.update("delete from target where target_id=?", id); }
+    }
+
+    @Test
+    void operationsAggregatesBusinessFactsAndDeviceCounts() throws Exception {
         String token = login("admin1", "changeme");
         JsonNode data = data(mvc.perform(get("/api/v1/stats/operations").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ok").value(true))
-                .andExpect(jsonPath("$.data.source_mode").value("mock"))
+
                 .andExpect(jsonPath("$.data.simulated").value(true))
                 .andReturn().getResponse().getContentAsString());
 
@@ -82,7 +187,7 @@ class ReportingApiTest {
         assertThat(total).isGreaterThan(0);
         assertThat(illegal).isBetween(0, total);
         assertThat(highRisk).isBetween(0, total);
-        assertThat(punish).isGreaterThan(0);
+        assertThat(punish).isGreaterThanOrEqualTo(0);
         assertThat(data.path("days").size()).isEqualTo(30);
         assertThat(sum(data.path("days"), "total")).isEqualTo(total);
         assertThat(sum(data.path("days"), "illegal")).isEqualTo(illegal);
@@ -91,16 +196,16 @@ class ReportingApiTest {
         assertThat(sum(data.path("regions"), "punish")).isEqualTo(punish);
         assertThat(sum(data.path("by_type"), "value")).isEqualTo(total);
         assertThat(sum(data.path("by_risk"), "value")).isEqualTo(total);
-        assertThat(sum(data.path("by_duration"), "value")).isEqualTo(total);
-        assertThat(sum(data.path("by_track"), "value")).isEqualTo(total);
+        assertThat(data.path("by_duration").isEmpty()).isTrue();
+        assertThat(data.path("by_track").isEmpty()).isTrue();
         assertThat(sum(data.path("alt_bands"), "value")).isEqualTo(data.path("alt_total").asInt());
-        assertThat(data.path("alt_total").asInt()).isEqualTo(total);
-        assertThat(sum(data.path("by_penalty"), "value")).isEqualTo(punish);
+        assertThat(data.path("alt_total").asInt()).isBetween(0,total);
+        assertThat(sum(data.path("by_penalty"), "value")).isLessThanOrEqualTo(punish);
         assertThat(data.path("by_risk").size()).isEqualTo(5);
-        assertThat(data.path("regions").size()).isEqualTo(6);
-        assertThat(data.path("partners").size()).isBetween(1, 5);
+        assertThat(data.path("regions").size()).isGreaterThanOrEqualTo(6);
+        assertThat(data.path("partners").size()).isBetween(0, 5);
 
-        int dbDevices = jdbc.queryForObject("select count(*) from ops_device", Integer.class);
+        int dbDevices = jdbc.queryForObject("select count(*) from ops_device where deleted_at is null", Integer.class);
         assertThat(data.path("devices").path("total").asInt()).isEqualTo(dbDevices);
         assertThat(data.path("devices").path("online").asInt()).isBetween(0, dbDevices);
     }
@@ -154,7 +259,7 @@ class ReportingApiTest {
                 .andExpect(header().string("Content-Disposition", "attachment; filename=\"operations-stats.csv\""))
                 .andReturn().getResponse().getContentAsString();
         assertThat(csv).contains("\"分类\",\"项目\",\"指标\",\"数值\"");
-        assertThat(csv).contains("\"总览\",\"合计\",\"飞行/目标总次数\",\"" + total + "\"");
+        assertThat(csv).contains("\"总览\",\"合计\",\"新增目标数\",\"" + total + "\"");
         assertThat(csv).contains("\"总览\",\"合计\",\"处罚案件数\",\"" + punish + "\"");
         assertThat(csv).contains("\"元数据\",\"统计区间\",\"开始日期\",\"" + from + "\"");
         assertThat(jdbc.queryForObject(

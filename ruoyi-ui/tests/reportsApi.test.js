@@ -18,6 +18,15 @@ describe('报表接口适配', () => {
     expect(reportFilename(result)).toBe('低空安全运行周报-20260302-20260304.xlsx')
   })
 
+  it('保留未知指标和有效零值', () => {
+    const result = normalizeReportPreview({ report: { summary: { total: 0, illegal: null }, availability: { illegal: { status: 'UNAVAILABLE', reason: '无权限' } }, generated_at: 7 } })
+    expect(result.report.summary.total).toBe(0)
+    expect(result.report.summary.illegal).toBeNull()
+    expect(result.report.summary.punish).toBeNull()
+    expect(result.report.availability.illegal.reason).toBe('无权限')
+    expect(result.report.generatedAt).toBe(7)
+  })
+
   it('只允许最新一次请求更新预览', () => {
     const guard = createLatestRequestGuard()
     const stale = guard.begin()

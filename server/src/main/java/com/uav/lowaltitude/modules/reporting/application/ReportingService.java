@@ -20,158 +20,143 @@ import com.uav.lowaltitude.modules.reporting.infrastructure.ReportingRepository;
 import com.uav.lowaltitude.modules.reporting.infrastructure.ReportingRepository.Scope;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
-import com.uav.lowaltitude.platform.config.AppProperties;
 import com.uav.lowaltitude.platform.security.AuthContext;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
+@org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
 public class ReportingService {
 
     public static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
-    static final List<String> OBJECT_TYPES = List.of("无人机", "鸟", "未知", "识别中", "船", "车");
     static final List<String> RISK_LEVELS = List.of("超高风险", "高风险", "中风险", "低风险", "未识别");
-    static final List<String> DURATION_BANDS = List.of("0-10", "10-30", "30-60", "60-120", "120以上");
-    static final List<String> TRACK_BANDS = List.of("0-1", "1-5", "5-10", "10-20", "20以上");
-    static final List<String> ALT_BANDS = List.of("0-50", "50-120", "120-300", "300-600", "600 以上");
+    static final List<String> ALT_BANDS = List.of("0 以下", "0-50", "50-120", "120-300", "300-600", "600 以上");
     static final List<String> DISTRICTS = List.of("东营区", "广饶县", "河口区", "垦利区", "利津县", "东营港经济区");
-    static final List<String> PENALTIES = List.of("警告", "罚款", "驱离");
-
-    private static final String DURATION_EXPR = """
-            CASE WHEN duration_min < 10 THEN '0-10'
-                 WHEN duration_min < 30 THEN '10-30'
-                 WHEN duration_min < 60 THEN '30-60'
-                 WHEN duration_min < 120 THEN '60-120'
-                 ELSE '120以上' END
-            """;
-    private static final String TRACK_EXPR = """
-            CASE WHEN track_km < 1 THEN '0-1'
-                 WHEN track_km < 5 THEN '1-5'
-                 WHEN track_km < 10 THEN '5-10'
-                 WHEN track_km < 20 THEN '10-20'
-                 ELSE '20以上' END
-            """;
-    private static final String ALT_EXPR = """
-            CASE WHEN altitude_amsl_m < 50 THEN '0-50'
-                 WHEN altitude_amsl_m < 120 THEN '50-120'
-                 WHEN altitude_amsl_m < 300 THEN '120-300'
-                 WHEN altitude_amsl_m < 600 THEN '300-600'
-                 ELSE '600 以上' END
-            """;
-    private static final String RISK_EXPR = """
-            CASE WHEN risk_level IS NULL OR risk_level='' THEN '未识别' ELSE risk_level END
-            """;
 
     private final AccessService access;
     private final ReportingRepository repository;
     private final AppClock clock;
-    private final AppProperties properties;
+    private final com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess;
+    private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository;
+    private final com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
     private final AuditService auditService;
     private final ReportPeriodResolver periodResolver;
     private final OperationsWorkbookWriter workbookWriter;
 
     public ReportingService(AccessService access, ReportingRepository repository, AppClock clock,
-            AppProperties properties, AuditService auditService, ReportPeriodResolver periodResolver,
+            com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess,
+            com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository,
+            com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository, AuditService auditService, ReportPeriodResolver periodResolver,
             OperationsWorkbookWriter workbookWriter) {
         this.access = access;
         this.repository = repository;
         this.clock = clock;
-        this.properties = properties;
+        this.domainAccess = domainAccess;
+        this.targetRepository = targetRepository;
+        this.deviceRepository = deviceRepository;
         this.auditService = auditService;
         this.periodResolver = periodResolver;
         this.workbookWriter = workbookWriter;
     }
 
+    @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public OperationsReport operations(String fromText, String toText) {
         access.requireBusinessData("statistics.read");
         AuthUser user = AuthContext.require();
         DateRange range = range(fromText, toText);
         Scope scope = new Scope("ALL".equals(user.scopeMode()), user.userId());
-
-        Map<String, Object> summaryRow = repository.targetSummary(range.from(), range.to(), scope);
-        int total = number(summaryRow, "total");
-        int punish = repository.caseCount(range.from(), range.to(), scope);
-        Summary summary = new Summary(total, number(summaryRow, "illegal"), punish,
-                number(summaryRow, "high_risk"), number(summaryRow, "uav"), number(summaryRow, "abnormal"));
-
-        Map<String, Integer> dayPunish = toIntMap(repository.casesByDay(range.from(), range.to(), scope), "occurred_on", "punish");
-        List<DayPoint> days = new ArrayList<>();
-        for (LocalDate day = range.from(); !day.isAfter(range.to()); day = day.plusDays(1)) {
-            days.add(new DayPoint(day.toString(), day.toString().substring(5), 0, 0, 0, 0));
+        boolean targetsAllowed = allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.TARGET_READ);
+        boolean legalityAllowed = targetsAllowed && allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.ASSESSMENT_READ);
+        boolean risksAllowed = targetsAllowed && allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.RISK_READ);
+        boolean casesAllowed = allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.PUNISHMENT_READ);
+        boolean devicesAllowed = access.permissionCodes(user.roleCode()).contains("devices.read");
+        var targets = targetsAllowed ? repository.targets(range.from(),range.to(),scope) : List.<ReportingRepository.TargetFact>of();
+        var cases = casesAllowed ? repository.cases(range.from(),range.to(),scope) : List.<ReportingRepository.CaseFact>of();
+        Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries = new java.util.HashMap<>();
+        for (int start=0; start<targets.size(); start+=500) {
+            summaries.putAll(targetRepository.summaries(targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList()));
         }
-        Map<String, Integer> dayIndex = new LinkedHashMap<>();
-        for (int i = 0; i < days.size(); i++) dayIndex.put(days.get(i).date(), i);
-        for (Map<String, Object> row : repository.targetsByDay(range.from(), range.to(), scope)) {
-            Integer index = dayIndex.get(dateKey(row.get("occurred_on")));
-            if (index == null) continue;
-            days.set(index, new DayPoint(days.get(index).date(), days.get(index).md(),
-                    number(row, "total"), number(row, "illegal"),
-                    dayPunish.getOrDefault(dateKey(row.get("occurred_on")), 0),
-                    number(row, "high_risk")));
-        }
-        for (Map.Entry<String, Integer> entry : dayPunish.entrySet()) {
-            Integer index = dayIndex.get(entry.getKey());
-            if (index == null) continue;
-            DayPoint current = days.get(index);
-            if (current.punish() == 0 && entry.getValue() != 0) {
-                days.set(index, new DayPoint(current.date(), current.md(), current.total(), current.illegal(),
-                        entry.getValue(), current.highRisk()));
+        Map<String,int[]> days = new LinkedHashMap<>();
+        for(LocalDate date=range.from();!date.isAfter(range.to());date=date.plusDays(1)) days.put(date.toString(),new int[4]);
+        Map<String,int[]> regions = new LinkedHashMap<>();
+        DISTRICTS.forEach(name -> regions.put(name,new int[4]));
+        Map<String,Integer> types=new LinkedHashMap<>(), risks=new LinkedHashMap<>(), altitudes=new LinkedHashMap<>(), penalties=new LinkedHashMap<>();
+        RISK_LEVELS.forEach(name -> risks.put(name,0)); ALT_BANDS.forEach(name -> altitudes.put(name,0));
+        var modes=new java.util.TreeSet<String>();
+        int illegal=0,highRisk=0,uav=0,abnormal=0,altTotal=0,unknownLegality=0,unknownRisk=0;
+        for(var target:targets) {
+            modes.add(target.sourceMode());
+            var state=summaries.get(target.id());
+            String legal=state==null||state.legality()==null?null:state.legality().legalStatus();
+            String risk=state==null||state.risk()==null?null:state.risk().severity();
+            boolean bad="ILLEGAL".equals(legal), high="HIGH".equals(risk)||"CRITICAL".equals(risk);
+            if(bad) illegal++; if(high) highRisk++;
+            if(legal==null||(!"LEGAL".equals(legal)&&!"ILLEGAL".equals(legal)&&!"ABNORMAL".equals(legal)&&!"NOT_APPLICABLE".equals(legal))) { unknownLegality++; }
+            if("ABNORMAL".equals(legal)) abnormal++;
+            if(risk==null || !List.of("LOW","MEDIUM","HIGH","CRITICAL").contains(risk)) unknownRisk++;
+            if("UAV".equalsIgnoreCase(target.type())) uav++;
+            increment(types,typeLabel(target.type())); increment(risks,riskLabel(risk));
+            var day=days.get(target.firstSeenAt().atZoneSameInstant(ZONE).toLocalDate().toString());
+            var region=regions.computeIfAbsent(target.region(),key->new int[4]);
+            for(var counts:List.of(day,region)) { counts[0]++;if(bad)counts[1]++;if(high)counts[3]++; }
+            if(target.altitude()!=null) {
+                double altitude=target.altitude().doubleValue();
+                increment(altitudes,altitude<0?"0 以下":altitude<50?"0-50":altitude<120?"50-120":altitude<300?"120-300":altitude<600?"300-600":"600 以上");altTotal++;
             }
         }
-
-        Map<String, Integer> regionPunish = toIntMap(repository.casesByRegion(range.from(), range.to(), scope), "name", "punish");
-        Map<String, Map<String, Object>> regionRows = new LinkedHashMap<>();
-        for (Map<String, Object> row : repository.targetsByRegion(range.from(), range.to(), scope)) {
-            regionRows.put(text(row, "name"), row);
+        Map<String,List<ReportingRepository.CaseFact>> parties=new LinkedHashMap<>();
+        int undecided=0;
+        for(var item:cases) {
+            modes.add(item.sourceMode());days.get(item.filedAt().atZoneSameInstant(ZONE).toLocalDate().toString())[2]++;
+            regions.computeIfAbsent(item.region(),key->new int[4])[2]++;
+            if(item.penaltyType()==null) undecided++; else increment(penalties,penaltyLabel(item.penaltyType()));
+            parties.computeIfAbsent(item.party(),key->new ArrayList<>()).add(item);
         }
-        List<RegionPoint> regions = new ArrayList<>();
-        for (String name : DISTRICTS) {
-            Map<String, Object> row = regionRows.getOrDefault(name, Map.of());
-            regions.add(new RegionPoint(name, number(row, "total"), number(row, "illegal"),
-                    regionPunish.getOrDefault(name, 0), number(row, "high_risk")));
-        }
-        regions.sort((a, b) -> Integer.compare(b.total(), a.total()));
-
-        List<NamedCount> byType = fill(OBJECT_TYPES, repository.namedCounts("object_type", range.from(), range.to(), scope));
-        List<NamedCount> byRisk = fill(RISK_LEVELS, repository.namedCounts(RISK_EXPR, range.from(), range.to(), scope));
-        List<NamedCount> byDuration = fill(DURATION_BANDS, repository.namedCounts(DURATION_EXPR, range.from(), range.to(), scope));
-        List<NamedCount> byTrack = fill(TRACK_BANDS, repository.namedCounts(TRACK_EXPR, range.from(), range.to(), scope));
-        List<NamedCount> altBands = fill(ALT_BANDS, repository.namedCounts(ALT_EXPR, range.from(), range.to(), scope));
-        List<NamedCount> byPenalty = fill(PENALTIES, repository.penaltyCounts(range.from(), range.to(), scope));
-
-        List<PartnerRank> partners = new ArrayList<>();
-        for (Map<String, Object> row : repository.partnerRanks(range.from(), range.to(), scope)) {
-            partners.add(new PartnerRank(text(row, "name"), number(row, "case_count"), number(row, "fine")));
-        }
-
-        Map<String, Object> source = repository.sourceSummary(range.from(), range.to(), scope);
-        int rows = number(source, "n");
-        String sourceMode;
-        boolean simulated;
-        if (rows == 0) {
-            sourceMode = properties.getSourceMode();
-            simulated = false;
-        } else {
-            int mock = number(source, "mock_n");
-            int live = number(source, "live_n");
-            sourceMode = live == 0 ? "mock" : mock == 0 && live == rows ? "live" : "mixed";
-            simulated = number(source, "simulated_n") == rows;
-        }
-
-        DeviceCounts devices = null;
-        if (scope.allScope()) {
-            Map<String, Object> deviceRow = repository.deviceCounts();
-            int deviceTotal = number(deviceRow, "total");
-            int online = number(deviceRow, "online");
-            Double rate = deviceTotal == 0 ? null : Math.round(online * 1000.0 / deviceTotal) / 10.0;
-            devices = new DeviceCounts(deviceTotal, online, rate);
-        }
-
-        return new OperationsReport(range.from().toString(), range.to().toString(), sourceMode, simulated,
-                summary, devices, days, byRisk, byType, byDuration, byTrack, altBands, total, regions, byPenalty,
-                partners);
+        List<PartnerRank> partners=parties.entrySet().stream().map(entry -> {
+            boolean complete=entry.getValue().stream().allMatch(item->item.fineCents()!=null);
+            java.math.BigDecimal fine=complete?entry.getValue().stream().map(ReportingRepository.CaseFact::fineCents).reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add).movePointLeft(2):null;
+            return new PartnerRank(entry.getKey(),entry.getValue().size(),fine);
+        }).sorted(java.util.Comparator.comparingInt(PartnerRank::caseCount).reversed().thenComparing(PartnerRank::name)).limit(5).toList();
+        Map<String,MetricAvailability> availability=new LinkedHashMap<>();
+        availability.put("total",metric(targetsAllowed,0,"按首次发现时间去重统计新增目标"));
+        availability.put("illegal",metric(legalityAllowed,unknownLegality,"按生成时最新研判统计明确非法目标；无明确结论的目标不计入"));
+        availability.put("high_risk",metric(risksAllowed,unknownRisk,"按生成时最新风险等级统计高风险及超高风险目标；无等级目标不计入"));
+        availability.put("punish",metric(casesAllowed,0,"按立案时间统计案件，移送及通知不计作立案"));
+        availability.put("by_type",metric(targetsAllowed,0,"生成时目标类型"));
+        availability.put("by_risk",metric(risksAllowed,unknownRisk,"无风险等级的目标归入未识别"));
+        availability.put("by_duration",new MetricAvailability("UNAVAILABLE","尚无可靠的飞行时长汇总，不能用观测时间跨度代替",null));
+        availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无排除断点及重复轨迹的可靠里程汇总",null));
+        availability.put("alt_bands",metric(targetsAllowed,targets.size()-altTotal,"仅统计最新状态中有效海拔高度，缺失海拔不以离地高度替代"));
+        availability.put("by_penalty",metric(casesAllowed,undecided,"仅统计有效决定书对应的已确认处罚结果；未形成有效结果的案件不计入"));
+        availability.put("partners",metric(casesAllowed,undecided,"金额单位为元；主体存在未形成有效处罚结果的案件时金额暂不可统计"));
+        availability.put("devices",metric(devicesAllowed,0,"当前权限范围设备台账与状态快照，排除已删除设备"));
+        DeviceCounts devices=null;
+        if(devicesAllowed) { var row=deviceRepository.overview();int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
+        List<DayPoint> dayPoints=days.entrySet().stream().map(e->new DayPoint(e.getKey(),e.getKey().substring(5),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
+        List<RegionPoint> regionPoints=regions.entrySet().stream().sorted((a,b)->Integer.compare(b.getValue()[0],a.getValue()[0])).map(e->new RegionPoint(e.getKey(),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
+        return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),
+            new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
+            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability);
     }
 
+    private boolean allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode permission) {
+        try { domainAccess.require(permission);return true; }
+        catch(ApiException ex) { if(ex.getStatus()!=HttpStatus.FORBIDDEN)throw ex;return false; }
+    }
+    private static Integer value(boolean available,int value) { return available?value:null; }
+    private static MetricAvailability metric(boolean allowed,int missing,String reason) {
+        return new MetricAvailability(!allowed?"UNAVAILABLE":missing>0?"PARTIAL":"AVAILABLE",!allowed?"当前账号无对应业务数据读取权限":reason,allowed?missing:null);
+    }
+    private static void increment(Map<String,Integer> values,String key) { values.merge(key,1,Integer::sum); }
+    private static List<NamedCount> counts(Map<String,Integer> values) { return values.entrySet().stream().map(e->new NamedCount(e.getKey(),e.getValue())).toList(); }
+    private static String typeLabel(String code) {
+        if(code==null)return "未知";
+        return switch(code.toUpperCase(java.util.Locale.ROOT)) { case "UAV" -> "无人机";case "BIRD" -> "鸟";case "BALLOON" -> "气球";case "KITE" -> "风筝";case "UNKNOWN" -> "未知";case "IDENTIFYING" -> "识别中";case "SHIP" -> "船";case "VEHICLE" -> "车";default -> code; };
+    }
+    private static String riskLabel(String code) { return code==null?"未识别":switch(code) { case "CRITICAL" -> "超高风险";case "HIGH" -> "高风险";case "MEDIUM" -> "中风险";case "LOW" -> "低风险";default -> "未识别"; }; }
+    private static String penaltyLabel(String code) { return switch(code) { case "WARNING" -> "警告";case "FINE" -> "罚款";case "WARNING_AND_FINE" -> "警告并罚款";default -> code; }; }
+
+    @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public CsvExport exportCsv(String fromText, String toText, String ip, String userAgent) {
         OperationsReport report = operations(fromText, toText);
         AuthUser actor = AuthContext.require();
@@ -188,6 +173,7 @@ public class ReportingService {
                 resolved.period().label(), resolved.generatedAt().toEpochMilli(), resolved.report());
     }
 
+    @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ExcelExport exportExcel(String reportType, String anchorDate, String ip, String userAgent) {
         ResolvedReport resolved = resolvedReport(reportType, anchorDate);
         byte[] body = workbookWriter.write(resolved.period(), resolved.report(), resolved.generatedAt());
@@ -204,7 +190,7 @@ public class ReportingService {
     private ResolvedReport resolvedReport(String reportType, String anchorDate) {
         ReportPeriod period = periodResolver.resolve(reportType, anchorDate);
         OperationsReport report = operations(period.from().toString(), period.to().toString());
-        return new ResolvedReport(period, clock.now(), report);
+        return new ResolvedReport(period, Instant.ofEpochMilli(report.generatedAt()), report);
     }
 
     private static String safeAgent(String userAgent) {
@@ -219,12 +205,14 @@ public class ReportingService {
         line(out, "元数据", "统计区间", "结束日期", report.to());
         line(out, "元数据", "数据来源", "source_mode", report.sourceMode());
         line(out, "元数据", "数据来源", "simulated", String.valueOf(report.simulated()));
+        line(out, "元数据", "生成时间", "generated_at", report.generatedAt());
+        report.availability().forEach((key,metric) -> line(out,"指标口径",key,metric.status(),metric.reason()));
         Summary summary = report.summary();
-        line(out, "总览", "合计", "飞行/目标总次数", summary.total());
-        line(out, "总览", "合计", "非法飞行次数", summary.illegal());
+        line(out, "总览", "合计", "新增目标数", summary.total());
+        line(out, "总览", "合计", "非法目标数", summary.illegal());
         line(out, "总览", "合计", "处罚案件数", summary.punish());
         line(out, "总览", "合计", "高风险目标数", summary.highRisk());
-        line(out, "总览", "合计", "无人机次数", summary.uav());
+        line(out, "总览", "合计", "新增无人机目标数", summary.uav());
         line(out, "总览", "合计", "异常目标数", summary.abnormal());
         DeviceCounts devices = report.devices();
         if (devices != null) {
@@ -233,13 +221,13 @@ public class ReportingService {
             if (devices.onlineRate() != null) line(out, "总览", "设备", "在线率%", devices.onlineRate());
         }
         for (DayPoint day : report.days()) {
-            line(out, "分日", day.date(), "目标总次数", day.total());
+            line(out, "分日", day.date(), "新增目标数", day.total());
             line(out, "分日", day.date(), "非法飞行", day.illegal());
             line(out, "分日", day.date(), "处罚案件", day.punish());
             line(out, "分日", day.date(), "高风险", day.highRisk());
         }
         for (RegionPoint region : report.regions()) {
-            line(out, "区域", region.name(), "目标总次数", region.total());
+            line(out, "区域", region.name(), "新增目标数", region.total());
             line(out, "区域", region.name(), "非法飞行", region.illegal());
             line(out, "区域", region.name(), "处罚案件", region.punish());
             line(out, "区域", region.name(), "高风险", region.highRisk());
@@ -260,7 +248,7 @@ public class ReportingService {
 
     private static void line(StringBuilder out, String category, String item, String metric, Object value) {
         out.append(csv(category)).append(',').append(csv(item)).append(',').append(csv(metric)).append(',')
-                .append(csv(value == null ? "" : String.valueOf(value))).append('\n');
+                .append(csv(value == null ? "暂不可统计" : String.valueOf(value))).append('\n');
     }
 
     private static String csv(String value) {
@@ -287,31 +275,6 @@ public class ReportingService {
         }
     }
 
-    private static List<NamedCount> fill(List<String> names, List<Map<String, Object>> rows) {
-        Map<String, Integer> values = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) values.put(text(row, "name"), number(row, "item_count"));
-        List<NamedCount> result = new ArrayList<>();
-        for (String name : names) result.add(new NamedCount(name, values.getOrDefault(name, 0)));
-        return result;
-    }
-
-    private static Map<String, Integer> toIntMap(List<Map<String, Object>> rows, String key, String value) {
-        Map<String, Integer> map = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            String name = key.equals("occurred_on") ? dateKey(row.get(key)) : text(row, key);
-            if (name != null) map.put(name, number(row, value));
-        }
-        return map;
-    }
-
-    private static String dateKey(Object value) {
-        if (value == null) return null;
-        if (value instanceof java.sql.Date date) return date.toLocalDate().toString();
-        if (value instanceof LocalDate date) return date.toString();
-        String text = String.valueOf(value);
-        return text.length() >= 10 ? text.substring(0, 10) : text;
-    }
-
     private static int number(Map<String, Object> row, String key) {
         Object value = row.get(key);
         return value instanceof Number n ? n.intValue() : 0;
@@ -319,7 +282,7 @@ public class ReportingService {
 
     private static String text(Map<String, Object> row, String key) {
         Object value = row.get(key);
-        return value == null ? "" : String.valueOf(value);
+        return value == null ? "暂不可统计" : String.valueOf(value);
     }
 
     private static ApiException bad(String code, String message) {
@@ -338,20 +301,22 @@ public class ReportingService {
     public record OperationsReport(String from, String to, String sourceMode, boolean simulated,
             Summary summary, DeviceCounts devices, List<DayPoint> days, List<NamedCount> byRisk,
             List<NamedCount> byType, List<NamedCount> byDuration, List<NamedCount> byTrack,
-            List<NamedCount> altBands, int altTotal, List<RegionPoint> regions, List<NamedCount> byPenalty,
-            List<PartnerRank> partners) { }
+            List<NamedCount> altBands, Integer altTotal, List<RegionPoint> regions, List<NamedCount> byPenalty,
+            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability) { }
 
-    public record Summary(int total, int illegal, int punish, int highRisk, int uav, int abnormal) { }
+    public record MetricAvailability(String status, String reason, Integer missingCount) { }
+
+    public record Summary(Integer total, Integer illegal, Integer punish, Integer highRisk, Integer uav, Integer abnormal) { }
 
     public record DeviceCounts(int total, int online, Double onlineRate) { }
 
-    public record DayPoint(String date, String md, int total, int illegal, int punish, int highRisk) { }
+    public record DayPoint(String date, String md, Integer total, Integer illegal, Integer punish, Integer highRisk) { }
 
     public record NamedCount(String name, int value) { }
 
-    public record RegionPoint(String name, int total, int illegal, int punish, int highRisk) { }
+    public record RegionPoint(String name, Integer total, Integer illegal, Integer punish, Integer highRisk) { }
 
-    public record PartnerRank(String name, int caseCount, int fine) { }
+    public record PartnerRank(String name, int caseCount, java.math.BigDecimal fine) { }
 
     public record CsvExport(String filename, String body) { }
 }
