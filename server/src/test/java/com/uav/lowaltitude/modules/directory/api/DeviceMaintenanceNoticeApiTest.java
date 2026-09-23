@@ -46,7 +46,8 @@ class DeviceMaintenanceNoticeApiTest {
         observe(true,now);
         when(channel.simulated()).thenReturn(true);
         when(channel.deliver(any())).thenAnswer(call->{var at=((HandoffChannelPort.HandoffDispatch)call.getArgument(0)).at();return new DeliveryOutcome("DELIVERED","PENDING",null,null,at,at,null);});
-        setting=data(write(post("/api/v1/notification-settings"),Map.of("purpose","DEVICE_MAINTENANCE","recipient_org_id",org,"channel_type","MOCK","enabled",true),UUID.randomUUID().toString())).path("setting_id").asText();
+        setting=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO notification_setting(setting_id,purpose,routing_key,recipient_org_id,channel_type,enabled,created_at,updated_at,version) VALUES(?,?,?,?,'MOCK',TRUE,?,?,0)",setting,"DEVICE_MAINTENANCE","DEVICE_MAINTENANCE:"+org,org,now,now);
     }
     @AfterEach void cleanCommittedFixture(){
         if(TransactionSynchronizationManager.isActualTransactionActive())return;

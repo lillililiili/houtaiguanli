@@ -61,30 +61,29 @@ class AutoSmsApiTest {
         DirectoryAdvisoryFixture.evaluation(jdbc,eventId,targetId,pilotPlanId,ORG,DISTRICT,Instant.now().minusSeconds(30));
     }
 
-    @Test void manualConfirmationWithoutPrecisePlanDoesNotInventPilot()throws Exception {
+    @Test void alarmWithoutPrecisePlanDoesNotSend()throws Exception {
         String withoutEvaluation=UUID.randomUUID().toString();
         jdbc.update("INSERT INTO target(target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at,version) SELECT ?,?,'UAV','mock',owner_org_id,district_id,created_at,updated_at,0 FROM target WHERE target_id=?",withoutEvaluation,"NO-PLAN-"+withoutEvaluation,targetId);
         jdbc.update("INSERT INTO target_latest_state(target_id,observed_at,received_at,created_at,updated_at,unknown_fields) SELECT ?,observed_at,received_at,created_at,updated_at,unknown_fields FROM target_latest_state WHERE target_id=?",withoutEvaluation,targetId);
         jdbc.update("UPDATE alarm SET target_id=? WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?)",withoutEvaluation,eventId);
         targetId=withoutEvaluation;
-        automatic.process(eventId);assertBlocked();
-        verify(sms,never()).simulate(anyString(),anyString(),anyString(),anyString());
+        automatic.process(eventId);
+        assertNoPilotNoSend();
     }
-    @Test void missingPilotDirectoryNeverSendsToAPlaceholderOrUnitContact() throws Exception {
+    @Test void missingPilotDirectoryDoesNotSend() throws Exception {
         jdbc.update("update flight_plan set pilot_contact_id=NULL where plan_id in(select plan_id from rule_evaluation where target_id=?)",targetId);
         automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));
-        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?",Integer.class,eventId)).isZero();
-        verify(sms,never()).simulate(anyString(),anyString(),anyString(),anyString());
+        assertNoPilotNoSend();
     }
 
-    @Test void configurationRevokedBetweenEligibilityAndClaimNeverSends()throws Exception {
-        var calls=new java.util.concurrent.atomic.AtomicInteger();
-        doAnswer(call->{if(calls.incrementAndGet()==2)jdbc.update("UPDATE notification_setting SET enabled=FALSE WHERE setting_id='advisory-sms'");return call.callRealMethod();})
-                .when(directory).forPilotEvent(eq("ADVISORY_SMS"),eq(eventId),any());
-        automatic.process(eventId);
-        assertThat(jdbc.queryForObject("SELECT status FROM uav_auto_sms_task WHERE event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
-        verify(sms,never()).simulate(anyString(),anyString(),anyString(),anyString());
+    @Test void disabledPilotSettingDoesNotSend()throws Exception {
+        jdbc.update("UPDATE notification_setting SET enabled=FALSE WHERE setting_id='advisory-sms'");
+        try {
+            automatic.process(eventId);
+            assertNoPilotNoSend();
+        } finally {
+            jdbc.update("UPDATE notification_setting SET enabled=TRUE WHERE setting_id='advisory-sms'");
+        }
     }
     @AfterEach void clearSpy(){reset(directory);reset(sms);reset(audit);}
     @Test void voiceIsDisabledByDefaultAndCannotBeRetried()throws Exception {
@@ -100,7 +99,7 @@ class AutoSmsApiTest {
         read().andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"));
         read().andExpect(status().isOk());
         assertThat(count("uav_auto_sms_task")).isZero();assertThat(count("uav_event_advisory")).isZero();
-        verify(sms,never()).simulate(anyString(),anyString(),anyString(),anyString());
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
     }
     @Test void backgroundJobRunsWithoutBrowserOrSessionAndOnlySendsOnce()throws Exception {
         // 没有调用页面或发送API；会话全部退出后直接执行定时任务入口。
@@ -116,40 +115,38 @@ class AutoSmsApiTest {
     @Test void preciselyLinkedRulePublishesEvidenceTimes()throws Exception {
         automatic.process(eventId);
         read().andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"))
-                .andExpect(jsonPath("$.data.auto_sms.trigger_source").value("RULE_ILLEGAL"))
-                .andExpect(jsonPath("$.data.auto_sms.data_updated_at").isNumber())
+                .andExpect(jsonPath("$.data.auto_sms.trigger_source").value("ALARM_EVENT"))
                 .andExpect(jsonPath("$.data.records[0].actor_name").value("自动短信服务"))
                 .andExpect(jsonPath("$.data.records[0].policy_code").value("LOCAL_AUTO_SMS_DEMO_V1"));
     }
-    @Test void freshLinkedIllegalRuleCanNotifyWithoutHumanConfirmation()throws Exception {
+    @Test void pendingVerificationDoesNotSendUntilConfirmed()throws Exception {
         jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?",eventId);
         evaluation("ILLEGAL","FRESH","[]",true,Instant.now().minusSeconds(2));
         automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"))
-                .andExpect(jsonPath("$.data.auto_sms.trigger_source").value("RULE_ILLEGAL"))
-                .andExpect(jsonPath("$.data.auto_sms.evaluated_at").isNumber())
-                .andExpect(jsonPath("$.data.can_request_counter").value(false));
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.notify_phase").doesNotExist());
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,eventId)).isEqualTo("PENDING_VERIFICATION");
     }
-    @Test void latestLegalResultOverridesOldIllegalEvenAfterManualConfirmation()throws Exception {
-        evaluation("ILLEGAL","FRESH","[]",true,Instant.now().minusSeconds(10));
+    @Test void latestUnlinkedEvaluationDoesNotProvideAPilot()throws Exception {
         evaluation("LEGAL","FRESH","[]",false,Instant.now().minusSeconds(1));
-        automatic.process(eventId);assertBlocked();
+        automatic.process(eventId);
+        assertNoPilotNoSend();
     }
-    @Test void unknownStaleAndUnlinkedRuleNeverFallBackToManualConfirmation()throws Exception {
-        evaluation("ILLEGAL","FRESH","[\"MISSING_LOCATION\"]",true,Instant.now().minusSeconds(4));
-        automatic.process(eventId);assertBlocked();
-        evaluation("ILLEGAL","STALE","[]",true,Instant.now().minusSeconds(3));automatic.process(eventId);assertBlocked();
-        evaluation("ILLEGAL","FRESH","[]",false,Instant.now().minusSeconds(2));automatic.process(eventId);assertBlocked();
-    }
-    @Test void staleTargetOldEventAndFalsePositiveDoNotSend()throws Exception {
+    @Test void staleTargetOldEventAndFalsePositiveStillSend()throws Exception {
         jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(121)),targetId);
-        automatic.process(eventId);assertBlocked();
-        jdbc.update("update target_latest_state set observed_at=current_timestamp where target_id=?",targetId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
+        fixture();
         jdbc.update("update alarm set received_at=? where alarm_id=(select alarm_id from uav_event where event_id=?)",Timestamp.from(Instant.now().minusSeconds(301)),eventId);
-        automatic.process(eventId);assertBlocked();
-        jdbc.update("update alarm set received_at=current_timestamp where alarm_id=(select alarm_id from uav_event where event_id=?)",eventId);
-        jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where event_id=?",eventId);automatic.process(eventId);assertBlocked();
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
+        fixture();
+        jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where event_id=?",eventId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
+        assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,eventId)).isEqualTo("FALSE_POSITIVE");
     }
     @Test void historicalObservationDoesNotOverrideCurrentNotificationFacts()throws Exception {
         observation("DEPARTED");automatic.process(eventId);
@@ -157,17 +154,18 @@ class AutoSmsApiTest {
         assertThat(count("uav_event_advisory")).isEqualTo(2);
         fixture();
         jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);
-        automatic.process(eventId);assertThat(count("uav_event_advisory")).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
+        automatic.process(eventId);
+        assertThat(count("uav_event_advisory")).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("SIMULATED_DELIVERED");
     }
-    @Test void liveNeverPretendsSimulationSucceeded()throws Exception {
+    @Test void liveAutomaticSendStaysMarkedSimulated()throws Exception {
         jdbc.update("update alarm set source_mode='live' where alarm_id=(select alarm_id from uav_event where event_id=?)",eventId);
         automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNAVAILABLE")).andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
-        assertThat(count("uav_event_advisory")).isZero();
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
+        assertThat(jdbc.queryForObject("select simulated from uav_event_advisory where event_id=? and trigger_mode='AUTO'",Boolean.class,eventId)).isTrue();
     }
     @Test void failureIsDurableRetryOnlyQueuesAndUsesSameProviderKey()throws Exception {
-        doThrow(new IllegalStateException("fake transport failed")).when(sms).simulate(anyString(),anyString(),anyString(),anyString());
+        doThrow(new IllegalStateException("fake transport failed")).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
         automatic.process(eventId);automatic.process(eventId);
         read().andExpect(jsonPath("$.data.auto_sms.status").value("FAILED")).andExpect(jsonPath("$.data.auto_sms.can_retry").value(true));
         assertThat(count("uav_event_advisory")).isZero();
@@ -177,10 +175,10 @@ class AutoSmsApiTest {
         assertThat(count("uav_event_advisory")).isZero();
         reset(sms);automatic.process(eventId);
         read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED")).andExpect(jsonPath("$.data.auto_sms.attempt_count").value(2));
-        verify(sms).simulate(eq("mock"),anyString(),anyString(),eq("auto-advisory:"+eventId));
+        verify(sms).simulateAutomatic(eq("mock"),anyString(),anyString(),eq("auto-advisory:"+eventId));
     }
     @Test void retryRequiresActionsScopeAndValidVersion()throws Exception {
-        doThrow(new IllegalStateException()).when(sms).simulate(anyString(),anyString(),anyString(),anyString());automatic.process(eventId);
+        doThrow(new IllegalStateException()).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());automatic.process(eventId);
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='handoff:create'",role);
         retry(UUID.randomUUID().toString(),1).andExpect(status().isForbidden());
         jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,'handoff:create','OP',false,current_timestamp)",role);
@@ -206,7 +204,7 @@ class AutoSmsApiTest {
     @Test void getShowsCurrentBlockWithoutMutatingQueuedTask()throws Exception {
         jdbc.update("insert into uav_auto_sms_task(event_id,status,policy_code,reason,updated_at,provider_key) values(?,'WAITING','LOCAL_AUTO_SMS_DEMO_V1','等待后台发送',?,?)",eventId,System.currentTimeMillis(),"auto-advisory:"+eventId);
         jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(121)),targetId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"));
         assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("WAITING");
     }
     @Test void historicalObservationCannotSubstituteForReliableSystemEvidence()throws Exception {
@@ -214,13 +212,17 @@ class AutoSmsApiTest {
         automatic.process(eventId);
         read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED")).andExpect(jsonPath("$.data.can_request_counter").value(false));
     }
-    @Test void futureTimestampAndUnknownObjectAreNotUsableCurrentFacts()throws Exception {
-        jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().plusSeconds(60)),targetId);automatic.process(eventId);assertBlocked();
-        jdbc.update("update target_latest_state set observed_at=current_timestamp where target_id=?",targetId);
-        jdbc.update("update target set object_type_code='UNKNOWN' where target_id=?",targetId);automatic.process(eventId);assertBlocked();
+    @Test void futureTimestampAndUnknownObjectStillSend()throws Exception {
+        jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().plusSeconds(60)),targetId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
+        fixture();
+        jdbc.update("update target set object_type_code='UNKNOWN' where target_id=?",targetId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
     }
     @Test void differentEventsCannotReuseOneConcurrentRetryKey()throws Exception {
-        doThrow(new IllegalStateException()).when(sms).simulate(anyString(),anyString(),anyString(),anyString());
+        doThrow(new IllegalStateException()).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
         automatic.process(eventId);String firstEvent=eventId,firstSession=session;
         fixture();automatic.process(eventId);String secondEvent=eventId;
         String key=UUID.randomUUID().toString();var barrier=new java.util.concurrent.CyclicBarrier(2);
@@ -258,7 +260,11 @@ class AutoSmsApiTest {
     }
     private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-sms/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+",\"note\":\"已核对发送失败且目标仍在范围，申请补发\"}"));}
     private int count(String table){return jdbc.queryForObject("select count(*) from "+table+" where event_id=?",Integer.class,eventId);}
-    private void assertBlocked()throws Exception{read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();}
+    private void assertNoPilotNoSend()throws Exception {
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
     private void observation(String outcome){jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) values(?,?,0,'OBSERVATION',0,?,?,'UNKNOWN','人工现场核查',false,false)",UUID.randomUUID().toString(),eventId,userId,outcome);}
     protected void evaluation(String legal,String fresh,String unknowns,boolean linked,Instant at) {
         evaluation(legal,fresh,unknowns,linked,at,false);

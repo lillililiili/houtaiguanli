@@ -79,17 +79,19 @@ public class FlightTrajectoryService {
         query.add("started_from","0");query.add("started_to",String.valueOf(to));
         var fused=targets.tracks(evaluation.targetId(),query).items();
         List<String> ids;
-        if(!fused.isEmpty())ids=List.of(fused.get(0).trackId());
-        else if(evaluation.trackId()!=null){
-            boolean found=false;
-            for(int page=1;;page++){
-                var batch=targets.tracks(evaluation.targetId(),params(page));
-                if(batch.items().stream().anyMatch(t->evaluation.trackId().equals(t.trackId()))){found=true;break;}
-                if((long)page*100>=batch.total())break;
-                if(batch.items().isEmpty())throw incomplete();
+        if(evaluation.trackId()!=null){
+            boolean found=fused.stream().anyMatch(t->evaluation.trackId().equals(t.trackId()));
+            if(!found){
+                for(int page=1;;page++){
+                    var batch=targets.tracks(evaluation.targetId(),params(page));
+                    if(batch.items().stream().anyMatch(t->evaluation.trackId().equals(t.trackId()))){found=true;break;}
+                    if((long)page*100>=batch.total())break;
+                    if(batch.items().isEmpty())throw incomplete();
+                }
             }
             ids=found?List.of(evaluation.trackId()):List.of();
-        }else ids=List.of();
+        }else if(!fused.isEmpty())ids=List.of(fused.get(0).trackId());
+        else ids=List.of();
         return compare(evaluation.targetId(),routeId,evaluations.trackGapMillis(evaluation.evaluationId()),
                 evaluation.paramStatus(),ids,0,to);
     }

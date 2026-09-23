@@ -262,6 +262,21 @@ public class DisposalRepository {
         return total != null && total > 0;
     }
 
+    /** 干扰已完成且尚未有处罚交接的事件。 */
+    public List<String> jammingCompletedWithoutPunishment() {
+        return jdbc.queryForList("SELECT DISTINCT a.subject_id FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
+                + " AND a.action_type='JAMMING' AND a.status='COMPLETED' AND NOT EXISTS (SELECT 1 FROM handoff h"
+                + " WHERE h.source_kind='UAV_EVENT' AND h.source_id=a.subject_id AND h.handoff_type='UAV_PUNISHMENT')"
+                + " FETCH FIRST 50 ROWS ONLY", Map.of(), String.class);
+    }
+
+    public String completedJammingRequester(String eventId) {
+        List<String> rows = jdbc.query("SELECT requested_by FROM disposal_authorization WHERE subject_kind='UAV_EVENT'"
+                + " AND subject_id=:id AND action_type='JAMMING' AND status='COMPLETED' ORDER BY requested_at DESC"
+                + " FETCH FIRST 1 ROW ONLY", Map.of("id", eventId), (r, n) -> r.getString(1));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     /** 该主体是否已有任一信号干扰授权（含手选），有则不再自动接。 */
     public boolean actionExists(String subjectKind, String subjectId, String actionType) {
         Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE subject_kind=:kind"

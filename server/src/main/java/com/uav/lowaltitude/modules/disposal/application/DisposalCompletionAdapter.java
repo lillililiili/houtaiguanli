@@ -17,4 +17,14 @@ public class DisposalCompletionAdapter implements DisposalCompletionPort {
     public boolean completedExists(String subjectKind, String subjectId) {
         return repository.completedExists(subjectKind, subjectId);
     }
+
+    @Override
+    public java.util.List<String> jammingCompletedWithoutPunishment() {
+        return repository.jammingCompletedWithoutPunishment();
+    }
+
+    @Override
+    public String completedJammingRequester(String eventId) {
+        return repository.completedJammingRequester(eventId);
+    }
 }

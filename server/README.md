@@ -193,7 +193,7 @@ POSTGRES_TEST_USER='<isolated-user>' POSTGRES_TEST_PASSWORD='<isolated-password>
 
 `app.advisory.auto-sms.enabled` 默认关闭，local 配置默认打开；实现再次校验 local/test 环境。策略 `LOCAL_AUTO_SMS_DEMO_V1` 是演示配置，不代表正式监管阈值：目标/研判120秒、事件及人工确认300秒，可分别用 `fresh-seconds`、`event-seconds` 配置。后台10秒轮询，关闭页面不影响执行；GET 绝不发送或创建任务。
 
-触发来自精确关联事件的最新 ACTIVE/FRESH/ILLEGAL 规则结果且无未知原因，**不要求全部先人工核实**。有最新规则结果时，人工确认不能覆盖后来合法/未知/过期的结果；完全没有规则结果时，仅近期人工确认+新鲜明确UAV观测可作为退路。误报、待补证、已飞离、现场未知、目标或事件过期、没有精确关联依据均阻断。来源 live 没接正式渠道时显示不可用，不模拟成功。
+2026-09-21 起，告警事件建立后即自动发送一条，不再检查核实结论、合法性研判、目标类型、观测或事件时效。同一事件只自动发送一次。只发给已核验的执行飞手；没有飞手、联系方式未核验或名册不可用时，短信和电话都不发送，不使用演示飞手或单位联系人。本地或测试环境对 mock、replay、live 都调用模拟通道，回执保持 `simulated=true` / `SIMULATED_DELIVERED`。生产环境策略关闭，不发送，也不把模拟回执写成真实送达。电话录音在执行飞手之外仍使用原资格校验。
 
 自动发送使用独立 SYSTEM 执行主体，actor_id 不借用任何用户，记录 trigger_mode=AUTO、policy_code；渠道返回明确 SIMULATED_DELIVERED 才追加送达记录并递增事件版本。后台不会修改人工核实状态、批准或执行反制、作出处罚决定。新的联系记录仍使之前的观察失效。
 
@@ -239,6 +239,8 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 ## 规则配置管理（2026-09-17）
 
 新增 `/api/v1/automation-rule-groups/{category}` 配置接口及追加迁移 `V202609170040`。三类配置独立保存、版本校验、幂等写入及审计。`V202609170050` 接入后台持续判定与 `/runs` 运行记录；`app.automation-rules.enabled=true` 启用判定，状态由调度心跳提供。当前部署能力仅判定与留痕，不自动派发反制、通知或跟踪动作。原处置预案 API 和人工动作保留。详见[规则判定运行说明](../docs/规则判定引擎接入-2026-09-17.md)；原配置阶段见[规则管理接口与验收](../docs/规则管理实现与验收-2026-09-17.md)。
+
+2026-09-23：分类 `dispose` 在管理端称为「通知处罚规则」，控制业务前台「通知处罚部门」。已启用条件全部满足后该按钮才可点击；没有已启用规则时仍按原交接条件办理。保存规则不会自动发送通知。
 
 2026-09-18：`GET /api/v1/legality-evaluations` 新增可选布尔筛选 `needs_attention`。为 true 时返回系统结论 `UNDETERMINED` 或既有 `needs_review=true` 的并集；同一条不重复计数，权限、目标类别、最新记录、分页及 total 共用数据库谓词。其他筛选继续取交集，为 false 时返回该并集的补集；不改变判定结果、人工复核状态或历史记录。业务前台默认待处理队列使用此参数，管理后台原调用不传参时不受影响。
 

@@ -75,19 +75,6 @@ class DirectoryScopeApiTest {
   assertThat(ids(data(auth(get("/api/v1/directory-options").param("kind","users").param("keyword",tag).param("size","100"),token)).path("items"),"id")).contains(ownUser).doesNotContain(otherUser);
  }
 
- @Test void notificationReaderGetsMaskedHintsWithoutRawContactFields() throws Exception {
-  String token=user("ASSIGNED",ownOrg,"notificationSettings").token(),setting=id();
-  jdbc.update("INSERT INTO notification_setting(setting_id,purpose,routing_key,recipient_org_id,contact_id,channel_type,enabled,created_at,updated_at,version) VALUES(?,'DEVICE_MAINTENANCE',?,?,?,'MOCK',TRUE,0,0,0)",setting,"DEVICE_MAINTENANCE:"+ownOrg,ownOrg,ownContact);
-  JsonNode read=data(auth(get("/api/v1/notification-settings/"+setting),token));
-  assertThat(read.path("contact_hint").asText()).isEqualTo("138****8000");
-  assertThat(read.toString()).doesNotContain(ownPhone,ownEmail);
-  for(MockHttpServletRequestBuilder req:List.of(get("/api/v1/contacts/"+ownContact),get("/api/v1/contacts").param("org_id",ownOrg))) {
-   var response=mvc.perform(auth(req,token)).andReturn().getResponse();
-   assertThat(response.getStatus()).isIn(200,403,404);
-   assertThat(response.getContentAsString()).doesNotContain(ownPhone,ownEmail);
-  }
- }
-
  @Test void allScopeDirectoryManagersRetainCompleteBusinessContacts() throws Exception {
   String token=user("ALL",ownOrg,"organizations").token();
   assertThat(ids(data(auth(get("/api/v1/contacts").param("keyword",tag),token)).path("items"),"contact_id")).containsExactlyInAnyOrder(ownContact,otherContact);

@@ -4,13 +4,12 @@ import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 import com.uav.lowaltitude.modules.directory.api.DirectoryDtos.*;
 import com.uav.lowaltitude.modules.directory.application.DirectoryService;
-import com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController @RequestMapping("/api/v1")
 public class DirectoryController {
- private final DirectoryService directory;private final NotificationDirectoryService notifications;
- public DirectoryController(DirectoryService directory,NotificationDirectoryService notifications){this.directory=directory;this.notifications=notifications;}
+ private final DirectoryService directory;
+ public DirectoryController(DirectoryService directory){this.directory=directory;}
  @GetMapping("/organization-profiles") public ApiResponse<Page<Organization>> organizations(@RequestParam(required=false) String keyword,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size){return ApiResponse.ok(directory.organizations(keyword,page,size));}
  @GetMapping("/organization-profiles/{id}") public ApiResponse<Organization> organization(@PathVariable String id){return ApiResponse.ok(directory.organization(id));}
  @PostMapping("/organization-profiles") public ApiResponse<Organization> createOrganization(@Valid @RequestBody OrganizationInput body,@RequestHeader("Idempotency-Key") String key){return ApiResponse.ok(directory.createOrganization(body,key));}
@@ -25,9 +24,4 @@ public class DirectoryController {
  @GetMapping("/directory-options") public ApiResponse<Page<Option>> options(@RequestParam String kind,@RequestParam(name="org_id",required=false) String org,@RequestParam(required=false) String keyword,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size){return ApiResponse.ok(directory.options(kind,org,keyword,page,size));}
  @GetMapping("/flight-plans/{id}/subjects") public ApiResponse<Subjects> subjects(@PathVariable String id){return ApiResponse.ok(directory.subjects(id));}
  @PatchMapping("/flight-plans/{id}/subjects") public ApiResponse<Subjects> updateSubjects(@PathVariable String id,@Valid @RequestBody SubjectInput body,@RequestHeader("Idempotency-Key") String key){return ApiResponse.ok(directory.updateSubjects(id,body,key));}
- @GetMapping("/notification-settings") public ApiResponse<Page<NotificationSetting>> settings(@RequestParam(required=false) String purpose,@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int size){return ApiResponse.ok(notifications.list(purpose,page,size));}
- @GetMapping("/notification-settings/{id}") public ApiResponse<NotificationSetting> setting(@PathVariable String id){return ApiResponse.ok(notifications.get(id));}
- @GetMapping("/notification-settings/{id}/diagnostics") public ApiResponse<Diagnostics> diagnostics(@PathVariable String id){return ApiResponse.ok(notifications.diagnostics(id));}
- @PostMapping("/notification-settings") public ApiResponse<NotificationSetting> createSetting(@Valid @RequestBody NotificationInput body,@RequestHeader("Idempotency-Key") String key){return ApiResponse.ok(notifications.create(body,key));}
- @PatchMapping("/notification-settings/{id}") public ApiResponse<NotificationSetting> updateSetting(@PathVariable String id,@Valid @RequestBody NotificationInput body,@RequestHeader("Idempotency-Key") String key){return ApiResponse.ok(notifications.update(id,body,key));}
 }

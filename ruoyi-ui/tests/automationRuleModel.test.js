@@ -17,11 +17,11 @@ describe('规则管理展示模型', () => {
     expect(enabledCount({ rules: [{ enabled: false }, { enabled: false }] })).toBe(0)
   })
 
-  it('完整展示指定空域、跨午夜时间和处置动作', () => {
-    const settings = { scope_mode: 'AIRSPACES', airspace_names: ['机场净空区', '港区'], schedule_mode: 'DAILY', start_time: '22:00', end_time: '06:00', actions: ['notify', 'pilot'] }
+  it('完整展示指定空域、跨午夜时间，通知处罚规则对应通知处罚部门', () => {
+    const settings = { scope_mode: 'AIRSPACES', airspace_names: ['机场净空区', '港区'], schedule_mode: 'DAILY', start_time: '22:00', end_time: '06:00', actions: [] }
     expect(scopeSummary(settings)).toBe('机场净空区、港区')
     expect(timeSummary(settings)).toBe('22:00 至 06:00（次日） · 北京时间')
-    expect(actionSummary('dispose', settings)).toContain('短信与电话录音分别记录回执')
+    expect(actionSummary('dispose', settings)).toBe('通知处罚部门')
   })
 
   it('反制规则文案不把配置开关表达为授权', () => {

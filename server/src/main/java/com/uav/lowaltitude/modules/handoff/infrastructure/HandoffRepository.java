@@ -55,6 +55,19 @@ public class HandoffRepository {
         return jdbc.query(sql + " ORDER BY recipient_id ASC", params, HandoffRepository::recipient);
     }
 
+    public String existingPunishment(String eventId) {
+        List<String> rows = jdbc.query("SELECT handoff_id FROM handoff WHERE source_kind='UAV_EVENT' AND source_id=:id"
+                + " AND handoff_type='UAV_PUNISHMENT' ORDER BY created_at FETCH FIRST 1 ROW ONLY",
+                Map.of("id", eventId), (r, n) -> r.getString(1));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public String latestDeliveryStatus(String handoffId) {
+        List<String> rows = jdbc.query("SELECT delivery_status FROM handoff_delivery WHERE handoff_id=:id ORDER BY attempt_no DESC FETCH FIRST 1 ROW ONLY",
+                Map.of("id", handoffId), (r, n) -> r.getString(1));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public boolean anyEnabledRecipient(String handoffType) {
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM handoff_recipient WHERE enabled=TRUE AND handoff_type=:type",
                 Map.of("type", handoffType), Long.class);
@@ -299,8 +312,8 @@ public class HandoffRepository {
         return "SELECT h.handoff_id,h.source_kind,h.source_id,h.handoff_type,h.recipient_id,COALESCE(h.recipient_name_snapshot,rc.display_name) AS display_name,h.source_version,h.owner_org_id,"
                 + "h.district_id,h.source_mode,h.submitted_by,h.created_at,h.receipt_result,d.delivery_status,d.receipt_status,d.blocked_reason,"
                 + "org_ref.name AS owner_org_name,dist_ref.name AS district_name,su.name AS submitted_by_name,"
-                // 来源业务编号：风险取来源风险编号，无人机事件取其告警的来源告警编号。
-                + "COALESCE(fr.source_risk_id,al.source_alarm_id) AS source_no";
+                // 来源业务编号：风险取来源风险编号；无人机事件优先用告警编号，没有再用来源键。
+                + "COALESCE(fr.source_risk_id,NULLIF(al.alarm_no,''),al.source_alarm_id) AS source_no";
     }
     private static String from() {
         // delivery_status 指最新一次尝试；列表、详情与 count 共用同一联接，避免口径漂移。

@@ -49,7 +49,7 @@ public class DirectoryService {
  private boolean active(Contact c){return c.enabled()&&(c.validUntil()==null||c.validUntil()>clock.nowMillis());}
  private AccessDecision subjectScope(){try{access.require("organizations.read");return currentScope();}catch(ApiException e){if(e.getStatus()!=HttpStatus.FORBIDDEN)throw e;return businessAccess.require(PermissionCode.FLIGHT_READ);}}
  private AccessDecision currentScope(){var actor=AuthContext.require();return new AccessDecision(actor.userId(),ScopeMode.valueOf(actor.scopeMode()));}
- private void read(){try{access.require("organizations.read");}catch(ApiException e){if(e.getStatus()!=HttpStatus.FORBIDDEN)throw e;access.require("notificationSettings.read");}}
+ private void read(){access.require("organizations.read");}
  private void claim(String key,String operation,Object body){idempotency.claim(key,operation+":"+repo.encode(body));}
  private void audit(String action,String id,String detail){var actor=AuthContext.require();audit.record(actor.userId(),actor.account(),actor.roleCode(),"organizations",action,"business_directory",id,detail,"SUCCESS","","");}
  private static String normalizePhone(String value){return value==null?null:value.replaceAll("[ ()-]", "");}

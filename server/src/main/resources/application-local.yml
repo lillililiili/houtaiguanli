@@ -27,7 +27,11 @@ app:
       enabled: ${APP_ADVISORY_AUTO_SMS_ENABLED:true}
       fresh-seconds: ${APP_ADVISORY_AUTO_SMS_FRESH_SECONDS:120}
       event-seconds: ${APP_ADVISORY_AUTO_SMS_EVENT_SECONDS:300}
-      poll-millis: ${APP_ADVISORY_AUTO_SMS_POLL_MILLIS:10000}
+      poll-millis: ${APP_ADVISORY_AUTO_SMS_POLL_MILLIS:2000}
+    auto-voice:
+      # 核实属实并短信送达后观察 10 秒；仍在告警空域才拨打。电话后再观察 10 秒。
+      enabled: ${APP_ADVISORY_AUTO_VOICE_ENABLED:true}
+      poll-millis: ${APP_ADVISORY_AUTO_VOICE_POLL_MILLIS:2000}
   fusion:
     # 本机 MQTT 回放必须消费融合 inbox，持续生成近期目标；仍可显式关闭。
     enabled: ${APP_FUSION_ENABLED:true}
@@ -52,6 +56,10 @@ app:
   flight:
     status-advance:
       enabled: ${APP_FLIGHT_STATUS_ADVANCE_ENABLED:true}
+  # 本地告警到处罚按三条预置规则判定。生产默认关闭，不在这里放开。
+  automation-rules:
+    enabled: true
+    fact-max-age-ms: 120000
   # 本地演示与验收同参：引擎开着、允许激活 DEMO 规则集、启动时回放阶段七与演示体量场景，合法性研判页才有记录可看。
   rule-engine:
     enabled: ${APP_RULE_ENGINE_ENABLED:true}

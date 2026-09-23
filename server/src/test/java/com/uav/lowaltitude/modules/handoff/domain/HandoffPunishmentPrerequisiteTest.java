@@ -26,6 +26,8 @@ class HandoffPunishmentPrerequisiteTest {
             asked.add(subjectKind + "/" + subjectId);
             return answer;
         }
+        @Override public java.util.List<String> jammingCompletedWithoutPunishment() { return java.util.List.of(); }
+        @Override public String completedJammingRequester(String eventId) { return null; }
     }
 
     @Test

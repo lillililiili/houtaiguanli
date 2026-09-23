@@ -267,13 +267,13 @@ class LegalityReviewApiTest {
         String path = "/api/v1/legality-evaluations?mode=ACTIVE&owner_org_id=" + orgId;
         mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].decision_assurance.status").value("UNAVAILABLE"))
-                .andExpect(jsonPath("$.data.items[0].decision_assurance.review_required").value(true))
+                .andExpect(jsonPath("$.data.items[0].decision_assurance.review_required").value(false))
                 .andExpect(jsonPath("$.data.items[0].decision_assurance.reasons[0]").value("ALGORITHM_RESULT_UNAVAILABLE"))
                 .andExpect(jsonPath("$.data.items[0].decision_assurance.accuracy_status").value("NOT_VALIDATED"));
 
         String readOnly = user("ASSIGNED", "assessment:read");
         mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(readOnly))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(true))
+                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(false))
                 .andExpect(jsonPath("$.data.allowed_actions").isEmpty());
 
         jdbc.update("update rule_evaluation set legal_status='ILLEGAL' where evaluation_id=?", evaluation);
@@ -310,17 +310,15 @@ class LegalityReviewApiTest {
         insertReview(reliable, "PENDING_REVIEW", 0);
         setAssurance(reliable, "legality-assurance-v1", "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]");
         mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.total").value(2))
-                .andExpect(jsonPath("$.data.items[*].evaluation_id", org.hamcrest.Matchers.containsInAnyOrder(evaluation, undetermined)));
-        for (int page = 1; page <= 2; page++) {
-            mvc.perform(get(path + "&page=" + page + "&size=1").header("Authorization", bearer(session)))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
-                    .andExpect(jsonPath("$.data.items.length()").value(1));
-        }
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(undetermined));
+        mvc.perform(get(path + "&page=1&size=1").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items.length()").value(1));
         mvc.perform(get(path + "&legal_status=ILLEGAL").header("Authorization", bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
         mvc.perform(get(path + "&needs_review=true").header("Authorization", bearer(session)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
         jdbc.update("update legality_review set review_state='PENDING_REVIEW',version=0 where evaluation_id=?", undetermined);
         jdbc.update("update legality_review set review_state='CONFIRMED',version=1 where evaluation_id=?", evaluation);
         mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())

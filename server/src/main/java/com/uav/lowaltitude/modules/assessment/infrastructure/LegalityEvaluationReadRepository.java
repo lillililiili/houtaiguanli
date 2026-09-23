@@ -185,7 +185,7 @@ public class LegalityEvaluationReadRepository {
         String reviewRequired = "e.mode='ACTIVE' AND e.legal_status<>'NOT_APPLICABLE'"
                 + " AND r.review_state='PENDING_REVIEW'"
                 + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation successor WHERE successor.supersedes_evaluation_id=e.evaluation_id)"
-                + " AND (e.decision_assurance_code IS NULL OR e.decision_assurance_code='INSUFFICIENT')";
+                + " AND e.decision_assurance_code='INSUFFICIENT'";
         if (query.needsReview() != null) {
             where.sql.append(" AND (CASE WHEN " + reviewRequired + " THEN TRUE ELSE FALSE END)=:needs_review");
             where.parameters.put("needs_review", query.needsReview());

@@ -19,7 +19,17 @@ const count = computed(() => enabledCount(group.value))
 const meta = computed(() => categoryMeta(category.value))
 const catalog = computed(() => (group.value?.catalog || []).map(item => ({ ...item, used: group.value?.rules?.some(rule => rule.item_code === item.code) })))
 const mayCreate = computed(() => canManage.value && catalog.value.some(item => !item.used))
-const policyText = computed(() => count.value ? '适用范围内，以下已启用规则须全部满足。' : `未启用规则，自动${meta.value.noun}配置已暂停。`)
+const policyText = computed(() => {
+  if (!count.value) {
+    if (category.value === 'verify') return '未启用规则时，告警仍等待人工核实。'
+    if (category.value === 'counter') return '未启用规则时，发起反制仍只检查原有授权条件。'
+    return '未启用规则时，「通知处罚部门」仍按交接状态、权限和通知渠道办理。'
+  }
+  if (category.value === 'verify') return '适用范围内，已启用规则全部满足后，待核实告警由系统核实属实，并进入飞手通知。'
+  if (category.value === 'counter') return '适用范围内，已启用规则全部满足后才可发起反制。反制仍由人工发起，并继续校验授权。'
+  return '适用范围内，已启用规则全部满足后，才可点击「通知处罚部门」。'
+})
+const emptyText = computed(() => category.value === 'dispose' ? '暂无通知处罚规则。未启用规则时，不限制「通知处罚部门」。' : '暂无规则；未启用任何规则时该分类处于暂停配置状态。')
 const executionType = computed(() => ({ CONNECTED: 'success', STARTING: 'warning', DISABLED: 'info', UNAVAILABLE: 'error' })[group.value?.execution_status] || 'warning')
 
 function openEditor(rule = null) { clearActionError(); editingRule.value = rule; editorVisible.value = true }
@@ -37,7 +47,7 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
 </script>
 <template>
   <div class="page-stack rules-page">
-    <PageHeader title="规则管理" description="配置核实、反制和处置的判定条件；配置状态与运行执行状态分别展示。" />
+    <PageHeader title="规则管理" description="这三类规则只用于前台告警到处罚。核实通过后系统核实属实；反制规则决定能否发起反制；通知处罚规则决定能否通知处罚部门。" />
     <el-alert v-if="group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
     <el-alert v-if="uncertain" :title="uncertain" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon><template #default><el-button :disabled="loading" @click="load(category)">重新读取</el-button></template></el-alert>
@@ -53,13 +63,13 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
           <el-table-column label="持续满足" min-width="100"><template #default="{ row }">{{ row.hold_seconds > 0 ? `连续 ${row.hold_seconds} 秒` : '即时判断' }}</template></el-table-column>
           <el-table-column label="配置状态" min-width="125"><template #default="{ row }"><el-switch :model-value="row.enabled" :disabled="!canManage || saving" inline-prompt active-text="已启用" inactive-text="已停用" @change="toggleRule(row, $event)" /></template></el-table-column>
           <el-table-column label="操作" min-width="80"><template #default="{ row }"><el-button text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button></template></el-table-column>
-          <template #empty><el-empty description="暂无规则；未启用任何规则时该分类处于暂停配置状态。" /></template>
+          <template #empty><el-empty :description="emptyText" /></template>
         </el-table>
-        <div v-loading="loading" class="rule-cards"><article v-for="row in group.rules" :key="row.rule_id"><div class="card-heading"><strong>{{ row.name }}</strong><el-switch :model-value="row.enabled" :disabled="!canManage || saving" inline-prompt active-text="已启用" inactive-text="已停用" @change="toggleRule(row, $event)" /></div><p>{{ conditionText(row, group.catalog) }}</p><p>{{ row.hold_seconds > 0 ? `持续满足：连续 ${row.hold_seconds} 秒` : '持续满足：即时判断' }}</p><small>更新于 {{ formatTime(row.updated_at) }}<template v-if="row.updated_by"> · {{ row.updated_by }}</template></small><el-button text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button></article><el-empty v-if="!group.rules.length" description="暂无规则；未启用任何规则时该分类处于暂停配置状态。" /></div>
+        <div v-loading="loading" class="rule-cards"><article v-for="row in group.rules" :key="row.rule_id"><div class="card-heading"><strong>{{ row.name }}</strong><el-switch :model-value="row.enabled" :disabled="!canManage || saving" inline-prompt active-text="已启用" inactive-text="已停用" @change="toggleRule(row, $event)" /></div><p>{{ conditionText(row, group.catalog) }}</p><p>{{ row.hold_seconds > 0 ? `持续满足：连续 ${row.hold_seconds} 秒` : '持续满足：即时判断' }}</p><small>更新于 {{ formatTime(row.updated_at) }}<template v-if="row.updated_by"> · {{ row.updated_by }}</template></small><el-button text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button></article><el-empty v-if="!group.rules.length" :description="emptyText" /></div>
         <footer class="table-foot">数据不足时继续补充 {{ group.settings.insufficient_wait_seconds }} 秒，仍无结论则转为异常处理，不自动通过。</footer><p v-if="!canManage" class="readonly-note">当前账号只能查看规则配置。</p>
       </template><el-skeleton v-else-if="loading" :rows="6" animated />
     </el-card>
-    <RuleEditorDialog v-model="editorVisible" :rule="editingRule" :catalog="catalog" :category-label="meta.label" :execution-status="group?.execution_status" :execution-message="group?.execution_message" :busy="saving" :server-error="actionError" @save="saveRule" />
+    <RuleEditorDialog v-model="editorVisible" :rule="editingRule" :catalog="catalog" :category="category" :category-label="meta.label" :execution-status="group?.execution_status" :execution-message="group?.execution_message" :busy="saving" :server-error="actionError" @save="saveRule" />
     <RuleSettingsDialog v-if="group" v-model="settingsVisible" :settings="group.settings" :category="category" :busy="saving" :server-error="actionError" @save="saveSettings" />
   </div>
 </template>

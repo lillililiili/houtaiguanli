@@ -59,6 +59,8 @@ public class EmergencyStopService {
             throw conflict("NO_ACTIVE_DISPOSAL","本事件没有正在执行或待执行的反制处置");
         }
         List<AuthorizationRow> current=current(rows);
+        if(revokeOnly(current)&&current.stream().anyMatch(r->!actorPending().equals(r.requestedBy())))
+            throw conflict("NOT_REQUESTER","只有发起人可以撤销尚未执行的反制");
         for(String device:current.stream().map(AuthorizationRow::deviceId).filter(Objects::nonNull).distinct().sorted().toList()) {
             stops.lockDevice(device);
             if(stops.shared(device,eventId)) throw conflict("SHARED_DEVICE_SCOPE_BLOCKED",sharedReason());
@@ -130,7 +132,8 @@ public class EmergencyStopService {
         String block=null;
         if(active) for(AuthorizationRow row:current) if(row.deviceId()!=null&&stops.shared(row.deviceId(),eventId)) {block=sharedReason();break;}
         if(!canStop) block="无停止处置权限";
-        List<String> actions=new ArrayList<>();if(active&&block==null&&canStop) actions.add("EMERGENCY_STOP");
+        boolean mayAct=canStop&&(!revokeOnly(current)||isRequester(current));
+        List<String> actions=new ArrayList<>();if(active&&block==null&&mayAct) actions.add("EMERGENCY_STOP");
         Map<String,Object> latest=stops.latest(eventId);Stop stop=null;
         if(latest!=null) {
             String id=text(latest,"stop_id");if(canStop) actions.add("ADD_NOTE");
@@ -204,6 +207,15 @@ public class EmergencyStopService {
         return result;
     }
     private boolean canStop() { try {access.require(PermissionCode.DISPOSAL_STOP);return true;}catch(ApiException denied){return false;} }
+    /** 还没下发到设备时，按钮是撤销，只给发起人。 */
+    private static boolean revokeOnly(List<AuthorizationRow> current) {
+        return !current.isEmpty()&&current.stream().allMatch(r->Set.of("REQUESTED","APPROVED").contains(r.status()));
+    }
+    private boolean isRequester(List<AuthorizationRow> current) {
+        String userId;try { userId=AuthContext.require().userId(); } catch(ApiException denied) { return false; }
+        return current.stream().allMatch(r->userId.equals(r.requestedBy()));
+    }
+    private static String actorPending() { return AuthContext.require().userId(); }
     private boolean replay(String key,String operation,String note) {
         if(key==null||key.isBlank()||key.length()<8||key.length()>128)throw new ApiException(HttpStatus.BAD_REQUEST,"IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
         Map<String,Object> old=stops.request(AuthContext.require().userId(),key);

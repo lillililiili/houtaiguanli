@@ -14,6 +14,10 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.*;
+import com.uav.lowaltitude.modules.alarm.domain.CounterLaunchVisibility;
+import com.uav.lowaltitude.modules.alarm.domain.NotifyFlow;
+import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
+import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
@@ -28,6 +32,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 public class UavAdvisoryService {
     private final AutoSmsService automatic;
     private final AutoVoiceService voice;
+    private final PilotDepartureWatch departure;
+    private final HandoffRepository handoffs;
     private final UavEventRepository events;
     private final UavAdvisoryRepository repository;
     private final AccessControlService access;
@@ -35,11 +41,14 @@ public class UavAdvisoryService {
     private final ObjectMapper json;
     private final AppClock clock;
     private final AuditService audit;
+    private final AutomationRuntimeEligibility rules;
     public UavAdvisoryService(UavEventRepository events,UavAdvisoryRepository repository,AccessControlService access,
-            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice) {
+            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs,AutomationRuntimeEligibility rules) {
         this.voice=voice;
         this.automatic=automatic;
-        this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;
+        this.departure=departure;
+        this.handoffs=handoffs;
+        this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;this.rules=rules;
     }
     @Transactional(readOnly=true)
     public Overview overview(String id) { return view(event(id,false)); }
@@ -129,7 +138,7 @@ public class UavAdvisoryService {
     public void requireCounter(String eventId, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {
         EventRow event=events.lock(eventId,scope);
         if(event==null) throw notFound();
-        String reason=repository.counterBlockReason(eventId);
+        String reason=counterReason(eventId);
         if(!reason.isEmpty()) throw conflict("ADVISORY_COUNTER_BLOCKED",reason);
     }
     private EventRow event(String id,boolean lock) {
@@ -139,19 +148,52 @@ public class UavAdvisoryService {
     }
     private Overview view(EventRow event) {
         var records=repository.records(event.eventId());
-        String reason=repository.counterBlockReason(event.eventId());
+        String reason=counterReason(event.eventId());
         boolean mode=sms.simulationAvailable(event.sourceMode());
         boolean request=allowed(PermissionCode.DISPOSAL_REQUEST);
         boolean direct=allowed(PermissionCode.DISPOSAL_DIRECT);
         var currentRecipient=automatic.currentRecipient(event);
+        var autoSms=automatic.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE));
+        var autoVoice=voice.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE));
+        var phase=notifyPhase(event,autoSms,autoVoice);
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
                 "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的计划执行飞手"),
-                automatic.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE)),
-                voice.mode(event),voice.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE)));
+                autoSms,voice.mode(event),autoVoice,CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event.eventId()));
+    }
+    private String counterReason(String eventId) {
+        String reason = repository.counterBlockReason(eventId);
+        if (!reason.isEmpty()) return reason;
+        String rule = rules.counterBlock(eventId);
+        return rule == null ? "" : rule;
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
+    private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
+        long now = clock.nowMillis();
+        Long smsAt = automatic.deliveredAt(event.eventId());
+        Long playedAt = voice == null ? null : voice.playbackCompletedAt() != null ? voice.playbackCompletedAt() : voice.updatedAt();
+        PilotDepartureWatch.Presence afterSms = null;
+        PilotDepartureWatch.Presence afterCall = null;
+        if (sms != null && "SIMULATED_DELIVERED".equals(sms.status()) && smsAt != null && now >= smsAt + NotifyFlow.WATCH_MILLIS && (voice == null || !"SIMULATED_PLAYED".equals(voice.status())))
+            afterSms = presence(event.eventId(), smsAt, now);
+        if (voice != null && "SIMULATED_PLAYED".equals(voice.status()) && playedAt != null && now >= playedAt + NotifyFlow.WATCH_MILLIS)
+            afterCall = presence(event.eventId(), playedAt, now);
+        return NotifyFlow.phase(event.state(), sms == null ? null : sms.status(), sms == null ? null : sms.reason(), smsAt,
+                voice == null ? null : voice.status(), voice == null ? null : voice.reason(), playedAt, now, afterSms, afterCall);
+    }
+    private String phaseName(NotifyFlow.Phase phase) { return phase == null ? null : phase.name(); }
+    private AutoHandoff autoHandoff(String eventId) {
+        String handoffId = handoffs.existingPunishment(eventId);
+        if (handoffId == null) return new AutoHandoff(true, "WAITING", "干扰完成后自动移送到处罚", null, null, null);
+        String delivery = handoffs.latestDeliveryStatus(handoffId);
+        String status = "FAILED".equals(delivery) ? "FAILED" : "SUBMITTED";
+        return new AutoHandoff(true, status, "FAILED".equals(status) ? "处罚交接投递失败" : null, handoffId, "JAMMING_COMPLETED", null);
+    }
+    private PilotDepartureWatch.Presence presence(String eventId, long since, long now) {
+        try { return departure.assess(eventId, since, now); }
+        catch (RuntimeException unavailable) { return PilotDepartureWatch.Presence.UNKNOWN; }
+    }
     private Action parse(String raw) {
         try(JsonParser parser=json.getFactory().createParser(raw==null?"":raw)) {
             parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);

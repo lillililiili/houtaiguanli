@@ -11,6 +11,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.AutoVoice;
 import com.uav.lowaltitude.modules.alarm.application.AdvisoryEligibilityService.Eligibility;
 import com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Recording;
+import com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository.Task;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
@@ -29,22 +30,24 @@ public class AutoVoiceService {
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private final AutoVoiceRepository tasks;
     private final UavEventRepository events;
-    private final AdvisoryEligibilityService eligibility;
+    private static final long WATCH_MILLIS=com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.WATCH_MILLIS;
+    private static final String TRIGGER="SMS_THEN_WATCH";
+    private final AutoSmsRepository smsTasks;
+    private final PilotDepartureWatch departure;
     private final AutoVoicePolicy policy;
-    private final AutoSmsPolicy freshness;
     private final AdvisoryVoiceRecording recordings;
     private final AdvisoryVoicePort voice;
     private final AppClock clock;
     private final AuditService audit;
     private final TransactionTemplate tx;
-    public AutoVoiceService(AutoVoiceRepository tasks,UavEventRepository events,AdvisoryEligibilityService eligibility,AutoVoicePolicy policy,
-            AutoSmsPolicy freshness,AdvisoryVoiceRecording recordings,AdvisoryVoicePort voice,AppClock clock,AuditService audit,PlatformTransactionManager manager,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+    public AutoVoiceService(AutoVoiceRepository tasks,UavEventRepository events,AutoSmsRepository smsTasks,PilotDepartureWatch departure,AutoVoicePolicy policy,
+            AdvisoryVoiceRecording recordings,AdvisoryVoicePort voice,AppClock clock,AuditService audit,PlatformTransactionManager manager,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
         this.directory=directory;
-        this.tasks=tasks;this.events=events;this.eligibility=eligibility;this.policy=policy;this.freshness=freshness;this.recordings=recordings;
+        this.tasks=tasks;this.events=events;this.smsTasks=smsTasks;this.departure=departure;this.policy=policy;this.recordings=recordings;
         this.voice=voice;this.clock=clock;this.audit=audit;this.tx=new TransactionTemplate(manager);
     }
     public void poll() {
-        var candidates=policy.enabled()?tasks.candidates(clock.nowMillis()-freshness.eventMillis()):tasks.callingCandidates();
+        var candidates=policy.enabled()?tasks.candidates():tasks.callingCandidates();
         for(String id:candidates) {
             try {process(id);} catch(RuntimeException failed) {org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic voice cycle failed for event {}; pending work requires reconciliation",id);}
         }
@@ -71,8 +74,8 @@ public class AutoVoiceService {
         Recording recording=recordings.current();Eligibility e=eligible(event,now,task,recording);
         tasks.initialize(id,now,AutoVoicePolicy.CODE);
         if(!e.allowed()){tasks.block(id,e,now);return null;}
-        var recipient=directory.forPilotEvent("ADVISORY_VOICE",id,e.evaluation()==null?null:e.evaluation().id());
-        if(!recipient.configured()){tasks.block(id,blocked(e,"BLOCKED",recipient.blockedReason()),now);return null;}
+        var recipient=requiredPilot(id);
+        if(recipient==null||!recipient.configured()){tasks.block(id,blocked(e,"BLOCKED",recipient==null||recipient.blockedReason()==null||recipient.blockedReason().isBlank()?"没有可通知的执行飞手，不能拨打电话":recipient.blockedReason()),now);return null;}
         String token=UUID.randomUUID().toString();tasks.claim(id,token,e,recording,now);
         directory.freezeAdvisoryTask("ADVISORY_VOICE",id,recipient);
         return new Claim(id,event.sourceMode(),token,tasks.find(id).providerKey(),recording,now,recipient);
@@ -107,7 +110,7 @@ public class AutoVoiceService {
     public AutoVoice overview(EventRow event,boolean mayRetry) {
         Task task=tasks.find(event.eventId());boolean enabled=policy.enabled();
         Recording recording=enabled?recordings.current():null;
-        if(task!=null&&(TERMINAL.contains(task.status())||"CALLING".equals(task.status()))) {
+        if(task!=null&&(TERMINAL.contains(task.status())||"CALLING".equals(task.status())||"BLOCKED".equals(task.status()))) {
             boolean retry=enabled&&mayRetry&&"FAILED".equals(task.status())&&eligible(event,clock.nowMillis(),task,recording).allowed();
             return view(event,enabled,task.status(),task.reason(),retry,task,recording,null);
         }
@@ -125,13 +128,30 @@ public class AutoVoiceService {
         tasks.queueRetry(event.eventId(),clock.nowMillis());
     }
     private Eligibility eligible(EventRow event,long now,Task task,Recording recording) {
-        Eligibility e=eligibility.evaluate(event,now,"VOICE_SIMULATED");if(!e.allowed())return e;
-        if(!voice.simulationAvailable(event.sourceMode()))return blocked(e,"UNAVAILABLE","正式电话录音通道尚未接入，真实来源不能冒充模拟接通或播放");
-        if(recording==null)return blocked(e,"UNAVAILABLE","未配置有效的已有 WAV 录音文件、模板名称和文稿，电话通知不能执行");
-        if(task!=null&&!task.recordingMatches(recording))return blocked(e,"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
-        return new Eligibility(true,"WAITING","触发条件与录音满足要求，等待后台模拟电话通知；模拟不会实际拨号或播放",e.source(),e.evaluation(),e.observedAt());
+        Long smsAt=smsTasks.deliveredAt(event.eventId());
+        if(smsAt==null)return waiting("飞手短信尚未送达，电话要等短信送达并观察 10 秒");
+        // 电话通道或录音不可用，也不能跳过短信送达后的 10 秒观察。
+        if(now<smsAt+WATCH_MILLIS)return waiting("短信已送达，正在用设备位置观察目标是否撤离。满 10 秒后，仍在告警空域才会拨打电话");
+        if(!voice.simulationAvailable(event.sourceMode()))return blocked(waiting("通道不可用"),"UNAVAILABLE","正式电话录音通道尚未接入，不能把模拟接通写成真实通话");
+        if(recording==null)return blocked(waiting("录音不可用"),"UNAVAILABLE","未配置有效的已有 WAV 录音文件、模板名称和文稿，电话通知不能执行");
+        PilotDepartureWatch.Presence presence;
+        try { presence=departure.assess(event.eventId(),smsAt,now); }
+        catch(RuntimeException unavailable) { presence=PilotDepartureWatch.Presence.UNKNOWN; }
+        if(presence==PilotDepartureWatch.Presence.LEFT)return blocked(waiting("已离开"),"BLOCKED","最新位置已离开短信发出时所处的告警空域，不拨打电话");
+        if(presence!=PilotDepartureWatch.Presence.STILL_PRESENT)return blocked(waiting("无法确认"),"BLOCKED","短信发出后没有新的位置，或无法判断是否仍在告警空域，不拨打电话，也不记为已撤离");
+        if(task!=null&&!task.recordingMatches(recording))return blocked(waiting("仍在"),"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
+        var pilot=requiredPilot(event.eventId());
+        if(pilot==null||!pilot.configured())return blocked(waiting("仍在"),"BLOCKED",pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能拨打电话");
+        return new Eligibility(true,"WAITING","短信送达已满 10 秒，目标仍在告警空域，等待后台拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);
     }
+    private Eligibility waiting(String reason){return new Eligibility(false,"WAITING",reason,TRIGGER,null,null);}
     private Eligibility blocked(Eligibility e,String status,String reason){return new Eligibility(false,status,reason,e.source(),e.evaluation(),e.observedAt());}
+    private com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot requiredPilot(String eventId) {
+        try {
+            var evaluation=smsTasks.latestEvaluation(eventId);
+            return directory.forPilotEvent("ADVISORY_VOICE",eventId,evaluation==null?null:evaluation.id());
+        } catch(ApiException unavailable) { return null; }
+    }
     private AutoVoice view(EventRow event,boolean enabled,String status,String reason,boolean retry,Task task,Recording recording,Eligibility e) {
         return new AutoVoice(enabled,status,reason,task==null?null:task.triggeredAt(),task==null?null:task.updatedAt(),retry,task==null?0:task.attempts(),AutoVoicePolicy.CODE,
                 e!=null?e.source():task==null?null:task.triggerSource(),e!=null&&e.evaluation()!=null?e.evaluation().evaluatedAt():task==null?null:task.evaluatedAt(),e!=null?e.observedAt():task==null?null:task.dataUpdatedAt(),

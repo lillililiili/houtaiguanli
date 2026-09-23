@@ -12,6 +12,7 @@ import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,6 +37,7 @@ class AutoVoiceApiTest {
     @SpyBean com.uav.lowaltitude.integration.mock.LocalAdvisoryVoiceAdapter voice;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoVoicePolicy voicePolicy;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording recordings;
+    @MockBean com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch departure;
     private static final java.nio.file.Path AUDIO=createAudio();
     @org.springframework.test.context.DynamicPropertySource
     static void recording(org.springframework.test.context.DynamicPropertyRegistry p) {
@@ -61,6 +63,8 @@ class AutoVoiceApiTest {
     protected String eventId,session,userId,role,targetId,pilotPlanId;
     private static final String ORG="seed-stage3-org", DISTRICT="seed-stage3-district";
     @BeforeEach void fixture() {
+        org.mockito.Mockito.lenient().when(departure.assess(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.STILL_PRESENT);
         String suffix=UUID.randomUUID().toString().substring(0,8);
         role="ROLE-ADV-"+suffix;userId=UUID.randomUUID().toString();session=UUID.randomUUID().toString();
         jdbc.update("insert into app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) values(?,?,'',false,true,0,0,0,false)",role,role);
@@ -82,6 +86,8 @@ class AutoVoiceApiTest {
         jdbc.update("INSERT INTO uav_event_verification(history_id,event_id,version,previous_state,resulting_state,conclusion,note,actor_id,created_at) VALUES(?,?,1,'PENDING_VERIFICATION','CONFIRMED','CONFIRMED','测试人工确认现场违规',?,?)",UUID.randomUUID().toString(),eventId,userId,at);
         pilotPlanId=DirectoryAdvisoryFixture.create(jdbc,ORG,DISTRICT);
         DirectoryAdvisoryFixture.evaluation(jdbc,eventId,targetId,pilotPlanId,ORG,DISTRICT,Instant.now().minusSeconds(30));
+        automatic.process(eventId);
+        jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=? AND status='SIMULATED_DELIVERED'",System.currentTimeMillis()-61_000L,eventId);
     }
 
     @Test void configurationRevokedBetweenEligibilityAndClaimNeverSends()throws Exception {
@@ -154,28 +160,51 @@ class AutoVoiceApiTest {
         read().andExpect(jsonPath("$.data.auto_voice.status").value("UNAVAILABLE"));
         verify(voice,never()).simulate(anyString(),any(),anyString());assertThat(count("uav_event_voice_advisory")).isZero();
         reset(recordings);jdbc.update("update alarm set source_mode='live' where alarm_id=(select alarm_id from uav_event where event_id=?)",eventId);
-        voiceService.process(eventId);read().andExpect(jsonPath("$.data.voice_mode").value("UNAVAILABLE"));
-        assertThat(count("uav_event_voice_advisory")).isZero();
+        voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
+        assertThat(jdbc.queryForObject("select simulated from uav_event_voice_advisory where event_id=?",Boolean.class,eventId)).isTrue();
     }
     @Test void currentRuleAndObservationGuardVoiceWithoutMandatoryManualStep()throws Exception {
         jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?",eventId);
         evaluation("ILLEGAL","FRESH","[]",true,Instant.now().minusSeconds(2));voiceService.process(eventId);
         read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"))
-                .andExpect(jsonPath("$.data.auto_voice.trigger_source").value("RULE_ILLEGAL"));
-        fixture();evaluation("LEGAL","FRESH","[]",true,Instant.now().minusSeconds(1));voiceService.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));assertThat(count("uav_event_voice_advisory")).isZero();
-        fixture();observation("UNKNOWN");voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
-    }
-    @Test void manualContactBlocksVoiceButDoesNotFabricatePlayback()throws Exception {
-        jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);
-        voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));
+                .andExpect(jsonPath("$.data.auto_voice.trigger_source").value("SMS_THEN_WATCH"));
+        fixture();
+        org.mockito.Mockito.when(departure.assess(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.LEFT);
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));
         assertThat(count("uav_event_voice_advisory")).isZero();
+        fixture();
+        org.mockito.Mockito.when(departure.assess(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.UNKNOWN);
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));
+        assertThat(count("uav_event_voice_advisory")).isZero();
+    }
+    @Test void manualContactDoesNotBlockTheFollowUpCall()throws Exception {
+        jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);
+        voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
+    }
+    @Test void callWaitsUntilSixtySecondsAfterSms()throws Exception {
+        jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=?",System.currentTimeMillis(),eventId);
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"));
+        verify(voice,never()).simulate(anyString(),any(),anyString());
+    }
+    @Test void missingRecordingStillWaitsOutTheSmsWatch()throws Exception {
+        jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=?",System.currentTimeMillis(),eventId);
+        doReturn(null).when(recordings).current();
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.notify_phase").value("WATCHING"))
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        verify(voice,never()).simulate(anyString(),any(),anyString());
     }
     @Test void clearFailureAllowsIdempotentQueueOnlyRetryUsingSameProviderKey()throws Exception {
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"FAILED",null,null,null)).when(voice).simulate(anyString(),any(),anyString());
         voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("FAILED"))
                 .andExpect(jsonPath("$.data.auto_voice.can_retry").value(true));
-        String key=UUID.randomUUID().toString();retry(key,1).andExpect(status().isOk());retry(key,1).andExpect(status().isOk());
+        String key=UUID.randomUUID().toString();retry(key,2).andExpect(status().isOk());retry(key,2).andExpect(status().isOk());
         assertThat(count("uav_event_voice_advisory")).isZero();
         verify(voice,times(1)).simulate(eq("mock"),any(),eq("auto-advisory-voice:"+eventId));
         reset(voice);voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
@@ -214,7 +243,7 @@ class AutoVoiceApiTest {
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"FAILED",null,null,null)).when(voice).simulate(anyString(),any(),anyString());
         voiceService.process(eventId);retry(UUID.randomUUID().toString(),0).andExpect(status().isConflict());
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='handoff:create'",role);
-        retry(UUID.randomUUID().toString(),1).andExpect(status().isForbidden());
+        retry(UUID.randomUUID().toString(),2).andExpect(status().isForbidden());
     }
     @Test void concurrentWorkersAndChannelsKeepOneVoiceRecordAndTwoContactFacts()throws Exception {
         var pool=java.util.concurrent.Executors.newFixedThreadPool(3);
@@ -237,7 +266,7 @@ class AutoVoiceApiTest {
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"FAILED",null,null,null)).when(voice).simulate(anyString(),any(),anyString());
         voiceService.process(eventId);var original=recordings.current();
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Recording(original.id(),"changed",original.transcript(),original.sha256())).when(recordings).current();
-        retry(UUID.randomUUID().toString(),1).andExpect(status().isConflict());
+        retry(UUID.randomUUID().toString(),2).andExpect(status().isConflict());
         read().andExpect(jsonPath("$.data.auto_voice.can_retry").value(false));
     }
     protected ResultActions read()throws Exception{return mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization","Bearer "+session));}

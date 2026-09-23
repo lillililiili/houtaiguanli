@@ -27,8 +27,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Service
 public class AutoSmsService {
     private static final AccessDecision SYSTEM_SCOPE=new AccessDecision("system:auto-advisory-sms",ScopeMode.ALL);
+    private static final String TRIGGER="ALARM_EVENT";
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
-    private final AdvisoryEligibilityService eligibility;
     private final AutoSmsRepository tasks;
     private final UavEventRepository events;
     private final UavAdvisoryRepository records;
@@ -39,14 +39,13 @@ public class AutoSmsService {
     private final AuditService audit;
     private final TransactionTemplate tx;
     public AutoSmsService(AutoSmsRepository tasks,UavEventRepository events,UavAdvisoryRepository records,AutoSmsPolicy policy,
-            AdvisorySmsPort sms,AppClock clock,ObjectMapper json,AuditService audit,PlatformTransactionManager manager,AdvisoryEligibilityService eligibility,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+            AdvisorySmsPort sms,AppClock clock,ObjectMapper json,AuditService audit,PlatformTransactionManager manager,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
         this.directory=directory;
-        this.eligibility=eligibility;
         this.tasks=tasks;this.events=events;this.records=records;this.policy=policy;this.sms=sms;this.clock=clock;this.json=json;this.audit=audit;this.tx=new TransactionTemplate(manager);
     }
     public void poll() {
         if(!policy.enabled())return;
-        for(String id:tasks.candidates(clock.nowMillis()-policy.eventMillis())) {
+        for(String id:tasks.candidates()) {
             try { process(id); } catch(RuntimeException failed) {
                 org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic SMS cycle failed for event {}; pending work will be reconciled",id);
             }
@@ -58,7 +57,7 @@ public class AutoSmsService {
         Claim claim=tx.execute(s->claim(eventId));
         if(claim==null)return;
         AdvisorySmsPort.Delivery delivery=null;
-        try { delivery=sms.simulate(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey()); }
+        try { delivery=sms.simulateAutomatic(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey()); }
         catch(RuntimeException failed) { /* 失败在下面独立事务持久化，不把提交失败当送达。 */ }
         final AdvisorySmsPort.Delivery receipt=delivery;
         tx.executeWithoutResult(s->finish(claim,receipt));
@@ -72,11 +71,11 @@ public class AutoSmsService {
             return null;
         }
         if(current!=null&&Set.of("SIMULATED_DELIVERED","FAILED").contains(current.status()))return null;
-        Eligibility eligible=eligible(event,now);
+        Eligibility eligible=eligible(event);
         tasks.initialize(eventId,now,AutoSmsPolicy.CODE);
         if(!eligible.allowed()) {tasks.block(eventId,eligible.status(),eligible.reason(),eligible.source(),eligible.evaluation(),eligible.observedAt(),now);return null;}
-        var recipient=directory.forPilotEvent("ADVISORY_SMS",eventId,eligible.evaluation()==null?null:eligible.evaluation().id());
-        if(!recipient.configured()){tasks.block(eventId,"BLOCKED",recipient.blockedReason(),eligible.source(),eligible.evaluation(),eligible.observedAt(),now);return null;}
+        var recipient=requiredPilot(eventId);
+        if(recipient==null||!recipient.configured()){tasks.block(eventId,"BLOCKED",pilotReason(recipient),eligible.source(),eligible.evaluation(),eligible.observedAt(),now);return null;}
         String token=UUID.randomUUID().toString();
         tasks.claim(eventId,token,eligible.source(),eligible.evaluation(),eligible.observedAt(),now);
         directory.freezeAdvisoryTask("ADVISORY_SMS",eventId,recipient);
@@ -103,11 +102,11 @@ public class AutoSmsService {
         Task task=tasks.find(event.eventId());
         var target=recipient(event);
         if(!policy.enabled())return task!=null&&task.attempts()>0?new AutoSms(false,task.status(),task.reason(),task.triggeredAt(),task.updatedAt(),false,task.attempts(),AutoSmsPolicy.CODE,task.triggerSource(),task.evaluatedAt(),task.dataUpdatedAt(),target):new AutoSms(false,"DISABLED","后台自动短信尚未启用；"+policy.description(),null,null,false,0,AutoSmsPolicy.CODE,null,null,null,target);
-        Eligibility e=eligible(event,clock.nowMillis());
+        Eligibility e=eligible(event);
         if(task==null)return new AutoSms(true,e.allowed()?"WAITING":e.status(),e.reason(),null,null,false,0,AutoSmsPolicy.CODE,e.source(),e.evaluation()==null?null:e.evaluation().evaluatedAt(),e.observedAt(),target);
         boolean retry=mayRetry&&Set.of("FAILED","UNAVAILABLE","BLOCKED").contains(task.status())&&e.allowed();
         String reason=task.reason(),status=task.status();
-        if(!Set.of("SIMULATED_DELIVERED","SENDING").contains(status)) {
+        if(!Set.of("SIMULATED_DELIVERED","SENDING","FAILED").contains(status)) {
             if(!e.allowed()){status=e.status();reason=e.reason();}
             else if(Set.of("BLOCKED","UNAVAILABLE").contains(status)){status="WAITING";reason=e.reason();retry=false;}
         }
@@ -120,11 +119,24 @@ public class AutoSmsService {
         tasks.queueRetry(event.eventId(),clock.nowMillis());
     }
     public boolean sending(String id){Task task=tasks.find(id);return task!=null&&"SENDING".equals(task.status());}
-    private Eligibility eligible(EventRow event,long now) {
-        Eligibility result=eligibility.evaluate(event,now,"SMS_SIMULATED");
-        if(!result.allowed())return result;
-        if(!sms.simulationAvailable(event.sourceMode()))return new Eligibility(false,"UNAVAILABLE","正式短信渠道尚未接入，真实来源不能冒充模拟送达",result.source(),result.evaluation(),result.observedAt());
-        return new Eligibility(true,"WAITING","触发条件满足，等待后台自动模拟发送；"+policy.description(),result.source(),result.evaluation(),result.observedAt());
+    public Long deliveredAt(String eventId){return tasks.deliveredAt(eventId);}
+    private Eligibility eligible(EventRow event) {
+        if("FALSE_POSITIVE".equals(event.state()))return new Eligibility(false,"BLOCKED","已核实为误报，不发送飞手短信",TRIGGER,null,null);
+        if(!"CONFIRMED".equals(event.state()))return new Eligibility(false,"WAITING","事件尚未核实属实，核实后自动发送短信",TRIGGER,null,null);
+        if(!sms.automaticSimulationAvailable(event.sourceMode()))return new Eligibility(false,"UNAVAILABLE","正式短信渠道尚未接入，不能把模拟送达写成真实通知",TRIGGER,null,null);
+        var pilot=requiredPilot(event.eventId());
+        if(pilot==null||!pilot.configured())return new Eligibility(false,"BLOCKED",pilotReason(pilot),TRIGGER,null,null);
+        return new Eligibility(true,"WAITING","告警已建立，等待后台自动模拟发送",TRIGGER,null,null);
+    }
+    /** 只接受已核验的执行飞手。没有飞手、联系方式未核验或名册不可用时不发送，也不改用单位联系人。 */
+    private com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot requiredPilot(String eventId) {
+        try {
+            Evaluation evaluation=tasks.latestEvaluation(eventId);
+            return directory.forPilotEvent("ADVISORY_SMS",eventId,evaluation==null?null:evaluation.id());
+        } catch(ApiException unavailable) { return null; }
+    }
+    private static String pilotReason(com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot pilot) {
+        return pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能发送短信";
     }
     private static String content(String id){return "【低空安全提醒·模拟】发现疑似违规飞行，请按现场管理要求停止违规飞行，安全飞离相关区域或降落，并配合核查。";}
     public com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot currentRecipient(EventRow event){return directory.currentPilotEvent("ADVISORY_SMS",event.eventId());}
