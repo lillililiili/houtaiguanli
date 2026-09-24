@@ -11,7 +11,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
-import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
 import com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot;
 import com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.DeliveryDto;
@@ -41,13 +40,12 @@ public class HandoffNotificationService {
  private final AuditService audit;
  private final ObjectMapper json;
  private final Environment environment;
- private final AutomationRuntimeEligibility punishRules;
  private final TransactionTemplate transaction;
  public HandoffNotificationService(HandoffRepository repository,UavEventRepository events,AccessControlService access,
    IdempotencyGuard idempotency,NotificationDirectoryService directory,HandoffChannelPort channel,AppClock clock,
-   AuditService audit,ObjectMapper json,Environment environment,AutomationRuntimeEligibility punishRules,PlatformTransactionManager manager){
+   AuditService audit,ObjectMapper json,Environment environment,PlatformTransactionManager manager){
   this.repository=repository;this.events=events;this.access=access;this.idempotency=idempotency;this.directory=directory;
-  this.channel=channel;this.clock=clock;this.audit=audit;this.json=json;this.environment=environment;this.punishRules=punishRules;this.transaction=new TransactionTemplate(manager);
+  this.channel=channel;this.clock=clock;this.audit=audit;this.json=json;this.environment=environment;this.transaction=new TransactionTemplate(manager);
  }
  public record StatusDto(String handoffId,boolean canNotify,String blockedReason,int expectedAttemptNo,
    String deliveryStatus,String receiptStatus,DeliveryDto latestDelivery,RecipientSnapshot recipientSnapshot,boolean simulated){}
@@ -65,10 +63,7 @@ public class HandoffNotificationService {
     var event=events.find(row.sourceId(),decision);
     if(event==null)reason="来源事件不存在或不在当前权限范围内";
     else if(!"CONFIRMED".equals(event.state()))reason="当前事件不再属于已核实属实的事件，请核对原交接";
-    else{
-     reason=punishRules.punishNotifyBlock(row.sourceId());
-     if(reason==null){target=notifyTarget(row);reason=channelBlocker(row,target);}
-    }
+    else{target=notifyTarget(row);reason=channelBlocker(row,target);}
    }catch(ApiException error){reason=error.getStatus()==HttpStatus.FORBIDDEN?"当前账号没有通知处罚部门所需权限":error.getMessage();}
   }
   return new StatusDto(row.handoffId(),reason==null,reason,latest==null?0:latest.attemptNo(),row.deliveryStatus(),row.receiptStatus(),
@@ -105,8 +100,6 @@ public class HandoffNotificationService {
   String reason=stateBlocker(row,latest);
   if(reason!=null)throw conflict("HANDOFF_NOTIFY_BLOCKED",reason);
   if(!"CONFIRMED".equals(source.state()))throw conflict("HANDOFF_NOTIFY_BLOCKED","当前事件不再属于已核实属实的事件");
-  String ruleBlock=punishRules.punishNotifyBlock(row.sourceId());
-  if(ruleBlock!=null)throw conflict("HANDOFF_NOTIFY_BLOCKED",ruleBlock);
   var target=notifyTarget(row);
   reason=channelBlocker(row,target);if(reason!=null)throw conflict("HANDOFF_CHANNEL_UNAVAILABLE",reason);
   var snapshot=repository.snapshot(row.handoffId());

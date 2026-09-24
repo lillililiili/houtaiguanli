@@ -16,13 +16,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.*;
 import com.uav.lowaltitude.modules.alarm.domain.CounterLaunchVisibility;
 import com.uav.lowaltitude.modules.alarm.domain.NotifyFlow;
-import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
 import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
+import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
+import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.security.AuthContext;
@@ -41,14 +42,13 @@ public class UavAdvisoryService {
     private final ObjectMapper json;
     private final AppClock clock;
     private final AuditService audit;
-    private final AutomationRuntimeEligibility rules;
     public UavAdvisoryService(UavEventRepository events,UavAdvisoryRepository repository,AccessControlService access,
-            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs,AutomationRuntimeEligibility rules) {
+            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs) {
         this.voice=voice;
         this.automatic=automatic;
         this.departure=departure;
         this.handoffs=handoffs;
-        this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;this.rules=rules;
+        this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;
     }
     @Transactional(readOnly=true)
     public Overview overview(String id) { return view(event(id,false)); }
@@ -133,12 +133,19 @@ public class UavAdvisoryService {
         catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","\u8be5\u8bf7\u6c42\u7f16\u53f7\u5df2\u7528\u4e8e\u5176\u4ed6\u64cd\u4f5c"); }
         return result;
     }
+    /** 规则引擎读取通知阶段。不校验当前登录人，也不创建授权。 */
+    public NotifyFlow.Phase phaseForAutomation(String eventId) {
+        EventRow event = events.find(eventId, new AccessDecision("system:auto-counter", ScopeMode.ALL));
+        if (event == null) return null;
+        return notifyPhase(event, automatic.overview(event, false), voice.overview(event, false));
+    }
+
     /** 调用方持有受限事件/授权范围；锁定事件并读取当前系统依据。 */
     @Transactional
     public void requireCounter(String eventId, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {
         EventRow event=events.lock(eventId,scope);
         if(event==null) throw notFound();
-        String reason=counterReason(eventId);
+        String reason=repository.counterBlockReason(eventId);
         if(!reason.isEmpty()) throw conflict("ADVISORY_COUNTER_BLOCKED",reason);
     }
     private EventRow event(String id,boolean lock) {
@@ -148,7 +155,7 @@ public class UavAdvisoryService {
     }
     private Overview view(EventRow event) {
         var records=repository.records(event.eventId());
-        String reason=counterReason(event.eventId());
+        String reason=repository.counterBlockReason(event.eventId());
         boolean mode=sms.simulationAvailable(event.sourceMode());
         boolean request=allowed(PermissionCode.DISPOSAL_REQUEST);
         boolean direct=allowed(PermissionCode.DISPOSAL_DIRECT);
@@ -162,12 +169,6 @@ public class UavAdvisoryService {
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的计划执行飞手"),
                 autoSms,voice.mode(event),autoVoice,CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event.eventId()));
     }
-    private String counterReason(String eventId) {
-        String reason = repository.counterBlockReason(eventId);
-        if (!reason.isEmpty()) return reason;
-        String rule = rules.counterBlock(eventId);
-        return rule == null ? "" : rule;
-    }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
     private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
         long now = clock.nowMillis();
@@ -175,9 +176,9 @@ public class UavAdvisoryService {
         Long playedAt = voice == null ? null : voice.playbackCompletedAt() != null ? voice.playbackCompletedAt() : voice.updatedAt();
         PilotDepartureWatch.Presence afterSms = null;
         PilotDepartureWatch.Presence afterCall = null;
-        if (sms != null && "SIMULATED_DELIVERED".equals(sms.status()) && smsAt != null && now >= smsAt + NotifyFlow.WATCH_MILLIS && (voice == null || !"SIMULATED_PLAYED".equals(voice.status())))
+        if (sms != null && "SIMULATED_DELIVERED".equals(sms.status()) && smsAt != null && now >= smsAt + NotifyFlow.SMS_WATCH_MILLIS && (voice == null || !"SIMULATED_PLAYED".equals(voice.status())))
             afterSms = presence(event.eventId(), smsAt, now);
-        if (voice != null && "SIMULATED_PLAYED".equals(voice.status()) && playedAt != null && now >= playedAt + NotifyFlow.WATCH_MILLIS)
+        if (voice != null && "SIMULATED_PLAYED".equals(voice.status()) && playedAt != null && now >= playedAt + NotifyFlow.CALL_WATCH_MILLIS)
             afterCall = presence(event.eventId(), playedAt, now);
         return NotifyFlow.phase(event.state(), sms == null ? null : sms.status(), sms == null ? null : sms.reason(), smsAt,
                 voice == null ? null : voice.status(), voice == null ? null : voice.reason(), playedAt, now, afterSms, afterCall);

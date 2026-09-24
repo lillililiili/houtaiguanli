@@ -27,6 +27,8 @@ import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.MaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.ReferenceMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RiskMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.VerificationMaterialDto;
+import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimePolicy;
+import com.uav.lowaltitude.modules.automationrule.infrastructure.AutomationRuntimeRepository;
 import com.uav.lowaltitude.modules.handoff.domain.DisposalCompletionPort;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
@@ -73,11 +75,17 @@ public class HandoffSubmissionService {
     private final HandoffMaterialAssembler materials;
     private final RiskNotificationService notifications;
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
+    private final AutomationRuntimePolicy rulePolicy;
+    private final AutomationRuntimeRepository ruleRuns;
+    static final String WAITING_RULES = "通知处罚规则尚未全部满足";
 
     public HandoffSubmissionService(AccessControlService access, HandoffRepository repository, RiskRepository risks, RiskReadService riskRead,
             IdempotencyGuard idempotency, AppClock clock, AuditService audit, ObjectMapper objectMapper,
             DisposalCompletionPort disposals, UavEventRepository events, HandoffMaterialAssembler materials, HandoffChannelPort channel,
-            RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+            RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
+            AutomationRuntimePolicy rulePolicy, AutomationRuntimeRepository ruleRuns) {
+        this.rulePolicy = rulePolicy;
+        this.ruleRuns = ruleRuns;
         this.directory=directory;
         this.channel = channel;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
@@ -334,10 +342,16 @@ public class HandoffSubmissionService {
     private static final AccessDecision SYSTEM_SCOPE = new AccessDecision("system:auto-punishment-handoff", ScopeMode.ALL);
     private final HandoffChannelPort channel;
 
-    /** 干扰完成后自动建立处罚交接。同一事件已有交接则沿用，不重复创建，也不代替处罚决定。 */
+    /** 干扰完成后自动建立处罚交接。引擎开启时，通知处罚规则全部满足才发出通知；未满足时保留交接，人工按钮仍可发送。 */
     @Transactional
     public void automaticAfterJamming(String eventId) {
-        if (eventId == null || eventId.isBlank() || repository.existingPunishment(eventId) != null) return;
+        if (eventId == null || eventId.isBlank()) return;
+        boolean send = automaticPunishmentSend(eventId);
+        String existing = repository.existingPunishment(eventId);
+        if (existing != null) {
+            if (send) sendWaitingPunishment(existing, eventId);
+            return;
+        }
         String submitter = disposals.completedJammingRequester(eventId);
         if (submitter == null) return;
         var recipients = repository.enabledRecipients("UAV_PUNISHMENT");
@@ -358,11 +372,46 @@ public class HandoffSubmissionService {
         }
         String snapshot = json(material);
         repository.insertSnapshot(handoffId, MATERIAL_SCHEMA_V2, snapshot, at);
+        if (!send) {
+            repository.insertDelivery(new DeliveryInsert(UUID.randomUUID().toString(), handoffId, 1, HandoffRules.PENDING_DELIVERY,
+                    HandoffRules.NOT_EXPECTED, WAITING_RULES, at, null, null, null));
+            audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
+                    "source_id=" + eventId + "; trigger=JAMMING_COMPLETED; delivery=WAITING_RULES; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
+            return;
+        }
         DeliveryOutcome outcome = dispatch(handoffId, "UAV_EVENT", eventId, "UAV_PUNISHMENT", recipient, snapshot, at, materials.sourceMode(eventId));
         repository.insertDelivery(delivery(handoffId, outcome, at));
         if (outcome.receiptResult() != null) repository.updateReceiptResult(handoffId, outcome.receiptResult());
         audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
                 "source_id=" + eventId + "; trigger=JAMMING_COMPLETED; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
+    }
+
+    private boolean automaticPunishmentSend(String eventId) {
+        if (!rulePolicy.enabled()) return true;
+        var state = ruleRuns.state("dispose", eventId);
+        return state != null && "PASS".equals(state.status());
+    }
+
+    /** 只补发仍停在“等待规则”的那一次。已经发出、失败或人工接管的记录不再自动重试。 */
+    private void sendWaitingPunishment(String handoffId, String eventId) {
+        var row = repository.lockNotification(handoffId, SYSTEM_SCOPE);
+        if (row == null || repository.hasDelivered(handoffId)) return;
+        var latest = repository.latestDelivery(handoffId);
+        if (latest == null || !WAITING_RULES.equals(latest.blockedReason()) || latest.submittedAt() != null) return;
+        var event = events.lock(eventId, SYSTEM_SCOPE);
+        if (event == null || !"CONFIRMED".equals(event.state())) return;
+        var snapshot = repository.snapshot(handoffId);
+        if (snapshot == null) return;
+        RecipientRow recipient = repository.findEnabledRecipient(row.recipientId(), row.handoffType());
+        if (recipient == null) return;
+        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        DeliveryOutcome outcome = dispatch(handoffId, row.sourceKind(), eventId, row.handoffType(), recipient, snapshot.json(), at, row.sourceMode());
+        repository.insertDelivery(new DeliveryInsert(UUID.randomUUID().toString(), handoffId, latest.attemptNo() + 1,
+                outcome.deliveryStatus(), outcome.receiptStatus(), outcome.blockedReason(), at,
+                outcome.submittedAt(), outcome.deliveredAt(), outcome.acknowledgedAt()));
+        if (outcome.receiptResult() != null) repository.updateReceiptResult(handoffId, outcome.receiptResult());
+        audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
+                "source_id=" + eventId + "; trigger=DISPOSE_RULES; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
     }
 
     /** 渠道异常不吞：交接与快照已入库，投递记录如实写"待投递 · 未接通"，由后续人工或重试处理。 */

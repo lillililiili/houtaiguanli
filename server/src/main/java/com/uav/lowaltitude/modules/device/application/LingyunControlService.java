@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,16 +36,17 @@ public class LingyunControlService {
     private final AppClock clock;
     private final AuditService audit;
     private final ObjectMapper json;
+    private final ApplicationEventPublisher events;
     private final long timeoutMillis;
     private final com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard;
 
     public LingyunControlService(DeviceAccessPolicy access, DeviceRepository devices, MqttRepository mqtt,
                                  LingyunControlRepository controls, ObjectProvider<MqttSessionSupervisor> sessions,
-                                 AppClock clock, AuditService audit, ObjectMapper json,
+                                 AppClock clock, AuditService audit, ObjectMapper json, ApplicationEventPublisher events,
                                  org.springframework.core.env.Environment environment,
                                  com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard) {
         this.access = access; this.devices = devices; this.mqtt = mqtt; this.controls = controls;
-        this.sessions = sessions; this.clock = clock; this.audit = audit; this.json = json;
+        this.sessions = sessions; this.clock = clock; this.audit = audit; this.json = json; this.events = events;
         this.disposalGuard = disposalGuard;
         this.timeoutMillis = Long.parseLong(environment.getProperty("app.lingyun-control.command-timeout-millis", "10000"));
     }
@@ -183,6 +185,7 @@ public class LingyunControlService {
                     next.equals("SUCCEEDED") ? "LINGYUN_CONTROL_SUCCEEDED" : "LINGYUN_CONTROL_FAILED",
                     next.equals("SUCCEEDED") ? "INFO" : "ERROR",
                     response.msg().isBlank() ? next : response.msg(), receivedAt, bool(command, "simulated"));
+            events.publishEvent(new DeviceCommandFinished(text(command, "command_id")));
         }
     }
 
@@ -190,9 +193,11 @@ public class LingyunControlService {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || terminal(text(command, "status"))) return;
         long now = clock.nowMillis();
-        if (controls.updateCommand(commandId, text(command, "status"), "TIMED_OUT", now, "ADAPTER_TIMEOUT", detail) == 1)
+        if (controls.updateCommand(commandId, text(command, "status"), "TIMED_OUT", now, "ADAPTER_TIMEOUT", detail) == 1) {
             controls.addEvent(text(command, "device_id"), "LINGYUN_CONTROL_TIMED_OUT", "ERROR", detail, now,
                     bool(command, "simulated"));
+            events.publishEvent(new DeviceCommandFinished(commandId));
+        }
     }
 
     private String write(Object value) {

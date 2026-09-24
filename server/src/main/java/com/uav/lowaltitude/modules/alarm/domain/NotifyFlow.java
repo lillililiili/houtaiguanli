@@ -2,9 +2,10 @@ package com.uav.lowaltitude.modules.alarm.domain;
 
 import com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch;
 
-/** 核实属实后的通知阶段。两段观察都是 10 秒，只根据这段时间里的新位置判断是否仍在告警空域。 */
+/** 核实属实后的通知阶段。短信送达后观察 3 秒，电话播放后再观察 10 秒。 */
 public final class NotifyFlow {
-    public static final long WATCH_MILLIS = 10_000L;
+    public static final long SMS_WATCH_MILLIS = 3_000L;
+    public static final long CALL_WATCH_MILLIS = 10_000L;
     public enum Phase { AUTO_SMS, WATCHING, AUTO_CALL, AWAIT_COUNTER }
     private NotifyFlow() { }
     public static Phase phase(String state, String smsStatus, String smsReason, Long smsAt, String voiceStatus, String voiceReason, Long playedAt, long now,
@@ -15,7 +16,7 @@ public final class NotifyFlow {
             if ("WAITING".equals(smsStatus) || "SENDING".equals(smsStatus) || "FAILED".equals(smsStatus)) return Phase.AUTO_SMS;
             return null;
         }
-        if (now < smsAt + WATCH_MILLIS) return Phase.WATCHING;
+        if (now < smsAt + SMS_WATCH_MILLIS) return Phase.WATCHING;
         if ("UNAVAILABLE".equals(voiceStatus) || "DISABLED".equals(voiceStatus)) return Phase.AWAIT_COUNTER;
         if (!"SIMULATED_PLAYED".equals(voiceStatus)) {
             if (afterSms == PilotDepartureWatch.Presence.STILL_PRESENT || "CALLING".equals(voiceStatus) || "WAITING".equals(voiceStatus))
@@ -23,7 +24,7 @@ public final class NotifyFlow {
             if (afterSms == PilotDepartureWatch.Presence.UNKNOWN || unconfirmed(voiceReason)) return Phase.AWAIT_COUNTER;
             return null;
         }
-        if (playedAt == null || now < playedAt + WATCH_MILLIS) return Phase.WATCHING;
+        if (playedAt == null || now < playedAt + CALL_WATCH_MILLIS) return Phase.WATCHING;
         if (afterCall == PilotDepartureWatch.Presence.LEFT) return null;
         return Phase.AWAIT_COUNTER;
     }

@@ -30,7 +30,7 @@ public class AutoVoiceService {
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private final AutoVoiceRepository tasks;
     private final UavEventRepository events;
-    private static final long WATCH_MILLIS=com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.WATCH_MILLIS;
+    private static final long WATCH_MILLIS=com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.SMS_WATCH_MILLIS;
     private static final String TRIGGER="SMS_THEN_WATCH";
     private final AutoSmsRepository smsTasks;
     private final PilotDepartureWatch departure;
@@ -129,9 +129,9 @@ public class AutoVoiceService {
     }
     private Eligibility eligible(EventRow event,long now,Task task,Recording recording) {
         Long smsAt=smsTasks.deliveredAt(event.eventId());
-        if(smsAt==null)return waiting("飞手短信尚未送达，电话要等短信送达并观察 10 秒");
-        // 电话通道或录音不可用，也不能跳过短信送达后的 10 秒观察。
-        if(now<smsAt+WATCH_MILLIS)return waiting("短信已送达，正在用设备位置观察目标是否撤离。满 10 秒后，仍在告警空域才会拨打电话");
+        if(smsAt==null)return waiting("飞手短信尚未送达，电话要等短信送达并观察 3 秒");
+        // 电话通道或录音不可用，也不能跳过短信送达后的 3 秒观察。
+        if(now<smsAt+WATCH_MILLIS)return waiting("短信已送达，正在用设备位置观察目标是否撤离。满 3 秒后，仍在告警空域才会拨打电话");
         if(!voice.simulationAvailable(event.sourceMode()))return blocked(waiting("通道不可用"),"UNAVAILABLE","正式电话录音通道尚未接入，不能把模拟接通写成真实通话");
         if(recording==null)return blocked(waiting("录音不可用"),"UNAVAILABLE","未配置有效的已有 WAV 录音文件、模板名称和文稿，电话通知不能执行");
         PilotDepartureWatch.Presence presence;
@@ -142,7 +142,7 @@ public class AutoVoiceService {
         if(task!=null&&!task.recordingMatches(recording))return blocked(waiting("仍在"),"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
         var pilot=requiredPilot(event.eventId());
         if(pilot==null||!pilot.configured())return blocked(waiting("仍在"),"BLOCKED",pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能拨打电话");
-        return new Eligibility(true,"WAITING","短信送达已满 10 秒，目标仍在告警空域，等待后台拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);
+        return new Eligibility(true,"WAITING","短信送达已满 3 秒，目标仍在告警空域，等待后台拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);
     }
     private Eligibility waiting(String reason){return new Eligibility(false,"WAITING",reason,TRIGGER,null,null);}
     private Eligibility blocked(Eligibility e,String status,String reason){return new Eligibility(false,status,reason,e.source(),e.evaluation(),e.observedAt());}

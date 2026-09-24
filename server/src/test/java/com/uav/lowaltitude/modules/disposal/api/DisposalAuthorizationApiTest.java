@@ -153,8 +153,8 @@ class DisposalAuthorizationApiTest {
         JsonNode detail = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}", id)
                 .header("Authorization", bearer(approver))).andExpect(status().isOk())).path("data");
         long from = detail.path("valid_from").asLong(), until = detail.path("valid_until").asLong();
-        // COUNTERMEASURE 在 demo-v1 里是 30 分钟；时限来自策略而不是代码。
-        assertThat(until - from).isEqualTo(30 * 60_000L);
+        // COUNTERMEASURE 在 demo-v1 里是 10 分钟；时限来自策略而不是代码。
+        assertThat(until - from).isEqualTo(10 * 60_000L);
     }
 
     @Test

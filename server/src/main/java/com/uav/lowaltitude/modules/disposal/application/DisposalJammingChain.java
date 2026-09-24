@@ -89,7 +89,11 @@ public class DisposalJammingChain {
         if (!"UAV_EVENT".equals(parent.subjectKind())) return;
         emergencyStops.lockEvent(parent.subjectId());
         // 续链重新检查当前系统依据；历史人工记录不参与资格判定。
-        if (!advisory.counterBlockReason(parent.subjectId()).isEmpty()) return;
+        String block = advisory.counterBlockReason(parent.subjectId());
+        if (!block.isEmpty()) {
+            log.info("countermeasure {} completed but jamming was not chained: {}", parentAuthorizationId, block);
+            return;
+        }
         if (emergencyStops.covered(parentAuthorizationId) || emergencyStops.unresolved(parent.subjectId())) return;
         // Reload after waiting for a concurrent stop; never use the pre-lock completion snapshot.
         parent = repository.findUnlocked(parentAuthorizationId);
@@ -98,12 +102,18 @@ public class DisposalJammingChain {
         if (repository.actionExists(parent.subjectKind(), parent.subjectId(), DisposalRules.JAMMING)) return;
 
         boolean direct = "DIRECT".equals(parent.authorizationMode());
-        if (direct && directAccess.eligibleRequester(parent, !DisposalRules.MANUAL.equals(parent.channel())) == null) return;
+        if (direct && directAccess.eligibleRequester(parent, !DisposalRules.MANUAL.equals(parent.channel())) == null) {
+            log.info("countermeasure {} completed but jamming was not chained: direct window or requester is no longer eligible", parentAuthorizationId);
+            return;
+        }
         DisposalPolicy policy = policies.active();
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(DisposalRules.JAMMING));
         if (direct && parent.validUntil().isBefore(until)) until = parent.validUntil();
-        if (!until.isAfter(at)) return;
+        if (!until.isAfter(at)) {
+            log.info("countermeasure {} completed but jamming was not chained: authorization window already ended", parentAuthorizationId);
+            return;
+        }
         String id = UUID.randomUUID().toString();
         String no = DisposalRules.authorizationNo(dayKey(at), repository.nextSequence(dayKey(at)));
         String reason = "反制完成后自动发起信号干扰（来源 " + parent.authorizationNo() + "）";

@@ -542,6 +542,37 @@ public class DeviceRepository {
         p.put(key, value);
     }
 
+    /** 同一机构区域内、已启用且在线的反制设备。协议码、凌云类型和是否只取模拟设备按调用方需要附加。 */
+    public List<String> operableCounterDevices(String typeCode, String sourceMode, String orgId, String districtId,
+            String protocolCode, String bindingAbbr, boolean simulatedOnly) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("type", typeCode);
+        params.put("mode", sourceMode);
+        params.put("org", orgId);
+        params.put("district", districtId);
+        StringBuilder sql = new StringBuilder("""
+                SELECT DISTINCT d.device_id FROM ops_device d
+                JOIN ops_device_state st ON st.device_id=d.device_id
+                JOIN device_business_scope scope ON scope.ops_device_id=d.device_id
+                LEFT JOIN ops_integration_source src ON src.source_id=d.source_id
+                LEFT JOIN mqtt_device_binding mqtt ON mqtt.ops_device_id=d.device_id
+                WHERE d.deleted_at IS NULL AND d.enabled=TRUE AND st.connectivity='ONLINE'
+                  AND d.device_type_code=:type AND d.source_mode=:mode
+                  AND scope.owner_org_id=:org AND scope.district_id=:district
+                """);
+        if (protocolCode != null) {
+            sql.append(" AND src.protocol_code=:protocol");
+            params.put("protocol", protocolCode);
+        }
+        if (bindingAbbr != null) {
+            sql.append(" AND mqtt.device_type_abbr=:abbr");
+            params.put("abbr", bindingAbbr);
+        }
+        if (simulatedOnly) sql.append(" AND d.simulated=TRUE");
+        sql.append(" ORDER BY d.device_id");
+        return named.query(sql.toString(), params, (rs, row) -> rs.getString(1));
+    }
+
     // Preserve legacy device visibility while enforcing explicit tuple scope for the new MQTT registrations.
     private String mqttScope(Map<String,Object> params) {
         var actor=com.uav.lowaltitude.platform.security.AuthContext.get();

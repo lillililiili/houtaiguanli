@@ -22,6 +22,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 把协作者 A 的 device_command 状态同步成处置授权的结局：SUCCEEDED→COMPLETED、FAILED/TIMED_OUT→FAILED。
  *
+ * 设备指令进入终态后立即结案。读时同步和定时扫描只兜住没发出完成事件的旧指令。
  * 采用"读时同步 + 定时兜底"（简报第 4 步二选一，选这个并记理由）：
  * - 读时同步保证有人真正在看这条授权时，看到的就是最新结局，不依赖任何调度是否开着；
  * - 定时兜底负责没人看的那些（例如夜里执行完、第二天才有人查），否则它们会一直挂在 EXECUTING。
@@ -59,6 +60,13 @@ public class DisposalReceiptSync {
     public void syncOne(AuthorizationRow row) {
         if (row == null || !DisposalRules.EXECUTING.equals(row.status()) || row.executionCommandId() == null) return;
         apply(row);
+    }
+
+    /** 设备指令刚进入终态时结案。调用时指令状态必须已经写入。 */
+    @Transactional
+    public void syncByCommand(String commandId) {
+        if (commandId == null || commandId.isBlank()) return;
+        apply(repository.findExecutingByCommand(commandId));
     }
 
     /** 定时兜底；缺省关闭，local/test 打开（生产是否开由部署决定）。 */

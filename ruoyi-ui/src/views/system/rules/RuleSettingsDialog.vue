@@ -32,7 +32,7 @@ function requestClose() { if (!props.busy) emit('update:modelValue', false) }
       <div v-if="form.schedule_mode === 'DAILY'" class="time-grid"><el-form-item label="开始时间"><el-time-select v-model="form.start_time" start="00:00" step="00:15" end="23:45" /></el-form-item><el-form-item label="结束时间"><el-time-select v-model="form.end_time" start="00:00" step="00:15" end="23:45" /></el-form-item></div>
       <p class="hint">时区固定为 Asia/Shanghai；结束时间早于开始时间时按跨午夜处理。</p>
       <el-form-item label="数据不足时继续等待"><el-select v-model="form.insufficient_wait_seconds"><el-option v-for="seconds in [0, 5, 15, 30]" :key="seconds" :label="`${seconds} 秒`" :value="seconds" /></el-select></el-form-item>
-      <el-alert v-if="category === 'dispose'" title="这些条件决定前台「移送与处罚」里的「通知处罚部门」能否点击。权限、交接状态和通知渠道仍单独校验。未启用任何规则时，该按钮仍按原交接条件办理。" type="info" :closable="false" />
+      <el-alert v-if="category === 'dispose'" title="这些条件全部满足后，系统自动通知处罚部门。规则不控制这个按钮能不能点。" type="info" :closable="false" />
       <el-alert v-if="category === 'counter'" title="规则开关不替代反制授权；执行前仍由后端独立校验授权对象、动作、范围与有效期。" type="info" :closable="false" />
     </el-form>
     <el-alert v-if="error.message || serverError" :title="error.message || serverError" type="error" :closable="false" />

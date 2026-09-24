@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,16 +40,18 @@ public class Countermeasure4ChControlService {
     private final AppClock clock;
     private final AuditService audit;
     private final ObjectMapper json;
+    private final ApplicationEventPublisher events;
     private final long timeoutMillis;
     private final com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard;
 
     public Countermeasure4ChControlService(DeviceAccessPolicy access, DeviceRepository devices,
                                            Countermeasure4ChControlRepository controls,
                                            DeviceAdapterRegistry adapters, AppClock clock, AuditService audit,
-                                           ObjectMapper json, org.springframework.core.env.Environment environment,
+                                           ObjectMapper json, ApplicationEventPublisher events,
+                                           org.springframework.core.env.Environment environment,
                                            com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard) {
         this.access = access; this.devices = devices; this.controls = controls; this.adapters = adapters;
-        this.clock = clock; this.audit = audit; this.json = json;
+        this.clock = clock; this.audit = audit; this.json = json; this.events = events;
         this.disposalGuard = disposalGuard;
         this.timeoutMillis = Long.parseLong(environment.getProperty(
                 "app.countermeasure-4ch.command-timeout-millis", "10000"));
@@ -168,11 +171,12 @@ public class Countermeasure4ChControlService {
                 controls.addEvent(text(command, "device_id"), "COUNTERMEASURE_4CH_SUCCEEDED", "INFO",
                         simulated ? "四通道模拟回码已接收，不代表射频已发射" : "四通道回码已接收，不代表射频已发射",
                         completed, simulated);
+                finished(commandId);
             }
-        } else {
-            controls.updateCommand(commandId, status, "FAILED", completed, result.resultCode(), result.detail());
+        } else if (controls.updateCommand(commandId, status, "FAILED", completed, result.resultCode(), result.detail()) == 1) {
             controls.addEvent(text(command, "device_id"), "COUNTERMEASURE_4CH_FAILED", "ERROR",
                     (simulated ? "四通道模拟设置失败：" : "四通道设置失败：") + result.detail(), completed, simulated);
+            finished(commandId);
         }
     }
 
@@ -180,10 +184,14 @@ public class Countermeasure4ChControlService {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || terminal(text(command, "status"))) return;
         long now = clock.nowMillis();
-        if (controls.updateCommand(commandId, text(command, "status"), "TIMED_OUT", now, "ADAPTER_TIMEOUT", detail) == 1)
+        if (controls.updateCommand(commandId, text(command, "status"), "TIMED_OUT", now, "ADAPTER_TIMEOUT", detail) == 1) {
             controls.addEvent(text(command, "device_id"), "COUNTERMEASURE_4CH_TIMED_OUT", "ERROR", detail, now,
                     bool(command, "simulated"));
+            finished(commandId);
+        }
     }
+
+    private void finished(String commandId) { events.publishEvent(new DeviceCommandFinished(commandId)); }
 
     private String configuration(Map<String, Object> device) {
         try {

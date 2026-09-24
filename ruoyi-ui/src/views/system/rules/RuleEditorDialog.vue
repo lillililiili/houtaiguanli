@@ -7,8 +7,8 @@ const emit = defineEmits(['update:modelValue', 'save'])
 const form = reactive(ruleDraft(null, [])), error = reactive({ message: '' })
 const selected = computed(() => props.catalog.find(item => item.code === form.item_code))
 const availableCatalog = computed(() => props.rule ? props.catalog : props.catalog.filter(item => !item.used))
-const saveNote = computed(() => props.category === 'dispose'
-  ? '保存后，前台「通知处罚部门」按当前已启用条件判断能否点击。本次保存不会自动发出通知。'
+const saveNote = computed(() => props.category === 'verify' || props.category === 'counter' || props.category === 'dispose'
+  ? '保存后用于后续自动执行。一类中的已启用规则全部满足时，系统自动完成该步骤。'
   : props.executionStatus === 'CONNECTED'
     ? '保存后用于下一轮自动判定；本次保存不会立即触发动作。'
     : props.executionMessage || '当前执行服务未连接，保存仅更新配置，不会触发运行时动作。')

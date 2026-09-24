@@ -4,6 +4,7 @@ import java.time.ZoneOffset;
 
 import org.springframework.stereotype.Component;
 
+import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.AuthorizationRow;
@@ -34,6 +35,8 @@ public class DirectDisposalAccess {
         var now = clock.now().atOffset(ZoneOffset.UTC);
         if (row.validFrom() == null || row.validUntil() == null
                 || now.isBefore(row.validFrom()) || !now.isBefore(row.validUntil())) return null;
+        // 规则发起人没有 disposal:direct，也不许登录。窗口内仍按系统依据和急停继续，不补审批人。
+        if (AutomationPrincipal.USER_ID.equals(row.requestedBy())) return authorizations.actor(row.requestedBy());
         var user = identity.findAdminUser(row.requestedBy(), clock.nowMillis());
         if (user == null || !"ACTIVE".equals(user.getStatus()) || user.isMustChangePassword()) return null;
         var role = identity.findRole(user.getRoleCode());

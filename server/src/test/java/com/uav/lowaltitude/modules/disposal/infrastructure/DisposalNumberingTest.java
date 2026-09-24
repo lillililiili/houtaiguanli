@@ -56,7 +56,8 @@ class DisposalNumberingTest {
         assertThat(policy.approvalRequired()).isTrue();
         assertThat(policy.twoPersonRule()).isTrue();
         assertThat(policy.maxActivePerSubject()).isEqualTo(1);
-        assertThat(policy.timeLimitMinutes("COUNTERMEASURE")).isEqualTo(30);
+        assertThat(policy.timeLimitMinutes("COUNTERMEASURE")).isEqualTo(10);
+        assertThat(policy.timeLimitMinutes("JAMMING")).isEqualTo(10);
         assertThat(policy.timeLimitMinutes("DISPERSAL")).isEqualTo(15);
         assertThat(policy.requiresConfirmedEvent("COUNTERMEASURE")).isTrue();
         assertThat(policy.requiresConfirmedEvent("DISPERSAL")).isFalse();

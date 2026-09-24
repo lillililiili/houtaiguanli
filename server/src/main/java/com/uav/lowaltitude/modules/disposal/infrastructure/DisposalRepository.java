@@ -378,7 +378,15 @@ public class DisposalRepository {
                 Map.of("now", now, "limit", limit), DisposalRepository::row);
     }
 
-    /** 执行中且经协议 B 下发的授权，供回执同步比对 A 的 device_command 状态。 */
+    /** 这条设备指令对应的、仍在执行中的处置授权。 */
+    public AuthorizationRow findExecutingByCommand(String commandId) {
+        List<AuthorizationRow> rows = jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a"
+                + " WHERE a.status='EXECUTING' AND a.execution_command_id=:command LIMIT 1",
+                Map.of("command", commandId), DisposalRepository::row);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 执行中且已下发设备指令的授权，供回执同步兜底。 */
     public List<AuthorizationRow> awaitingReceipt(int limit) {
         return jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a WHERE a.status='EXECUTING'"
                 + " AND a.execution_command_id IS NOT NULL ORDER BY a.updated_at ASC LIMIT :limit",

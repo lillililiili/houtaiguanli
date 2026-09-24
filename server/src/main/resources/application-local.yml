@@ -29,7 +29,7 @@ app:
       event-seconds: ${APP_ADVISORY_AUTO_SMS_EVENT_SECONDS:300}
       poll-millis: ${APP_ADVISORY_AUTO_SMS_POLL_MILLIS:2000}
     auto-voice:
-      # 核实属实并短信送达后观察 10 秒；仍在告警空域才拨打。电话后再观察 10 秒。
+      # 核实属实并短信送达后观察 3 秒；仍在告警空域才拨打。电话后再观察 10 秒。
       enabled: ${APP_ADVISORY_AUTO_VOICE_ENABLED:true}
       poll-millis: ${APP_ADVISORY_AUTO_VOICE_POLL_MILLIS:2000}
   fusion:
@@ -70,6 +70,10 @@ app:
     expiry:
       enabled: true
       poll-millis: 60000
+    # 没人打开授权详情时也要结案，否则自动反制的回执会拖过有效期，干扰接不上。
+    receipt-sync:
+      enabled: true
+      interval-millis: 15000
   # 本地演示按业务主流程自动引导光电；生产环境仍使用 application.yml 的安全默认值 false，需显式开启。
   eo-edge:
     auto-track-enabled: ${APP_EO_AUTO_TRACK_ENABLED:true}
