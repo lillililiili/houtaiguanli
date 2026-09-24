@@ -52,6 +52,27 @@ public class UavAdvisoryService {
     }
     @Transactional(readOnly=true)
     public Overview overview(String id) { return view(event(id,false)); }
+    /** Exposes the existing device-position assessment; reading never sends or confirms. */
+    @Transactional(readOnly=true)
+    public DepartureObservation observation(String id) {
+        var current = event(id, false); // Same alarm permission and data scope as overview.
+        long now = clock.nowMillis();
+        if (!"CONFIRMED".equals(current.state())) return new DepartureObservation(id, null, "NOT_STARTED", "UNKNOWN", null, null, now);
+        var sms = automatic.overview(current, false);
+        var call = voice.overview(current, false);
+        Long since = automatic.deliveredAt(id);
+        String channel = "SMS";
+        if (call != null && "SIMULATED_PLAYED".equals(call.status())) {
+            channel = "VOICE";
+            since = call.playbackCompletedAt() != null ? call.playbackCompletedAt() : call.updatedAt();
+        } else if (sms == null || !"SIMULATED_DELIVERED".equals(sms.status())) {
+            since = null;
+        }
+        if (since == null) return new DepartureObservation(id, channel, "NOT_STARTED", "UNKNOWN", null, null, now);
+        long deadline = since + NotifyFlow.WATCH_MILLIS;
+        if (now < deadline) return new DepartureObservation(id, channel, "WATCHING", "UNKNOWN", since, deadline, now);
+        return new DepartureObservation(id, channel, "ASSESSED", presence(id, since, now).name(), since, deadline, now);
+    }
     @Transactional
     public Overview act(String id,String raw,String key) {
         var read=access.require(PermissionCode.ALARM_READ);

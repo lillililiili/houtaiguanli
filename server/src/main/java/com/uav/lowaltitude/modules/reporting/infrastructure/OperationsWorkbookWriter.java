@@ -72,22 +72,25 @@ public class OperationsWorkbookWriter {
         for (int column = 3; column <= 4; column++) text(header, column, "", styles.header());
 
         Summary summary = report.summary();
-        rowIndex = metric(sheet, styles, rowIndex, "飞行/目标总次数", summary.total(), "统计窗口内目标事实总数");
-        rowIndex = metric(sheet, styles, rowIndex, "非法飞行次数", summary.illegal(), rate(summary.illegal(), summary.total()));
+        rowIndex = metric(sheet, styles, rowIndex, "新增目标数", summary.total(), "按首次发现时间去重统计");
+        rowIndex = metric(sheet, styles, rowIndex, "非法目标数", summary.illegal(), rate(summary.illegal(), summary.total()));
         rowIndex = metric(sheet, styles, rowIndex, "处罚案件数", summary.punish(), "统计窗口内立案数");
         rowIndex = metric(sheet, styles, rowIndex, "高风险目标数", summary.highRisk(), rate(summary.highRisk(), summary.total()));
         rowIndex = metric(sheet, styles, rowIndex, "无人机次数", summary.uav(), rate(summary.uav(), summary.total()));
         rowIndex = metric(sheet, styles, rowIndex, "异常目标数", summary.abnormal(), rate(summary.abnormal(), summary.total()));
         if (report.devices() != null) {
-            rowIndex = metric(sheet, styles, rowIndex, "接入设备总数", report.devices().total(), "仅 ALL 数据范围返回");
+            rowIndex = metric(sheet, styles, rowIndex, "接入设备总数", report.devices().total(), "当前权限范围设备快照，排除已删除设备");
             rowIndex = metric(sheet, styles, rowIndex, "在线设备数", report.devices().online(),
                     report.devices().onlineRate() == null ? "暂无在线率" : "在线率 " + report.devices().onlineRate() + "%");
         }
 
+        for (var entry : report.availability().entrySet()) {
+            rowIndex = metadata(sheet,styles,rowIndex,entry.getKey(),entry.getValue().status() + "：" + entry.getValue().reason());
+        }
         rowIndex++;
         Row note = sheet.createRow(rowIndex);
         text(note, 0, "口径说明", styles.section());
-        text(note, 1, "本文件与页面预览使用同一统计快照和当前账号数据范围；缺失设备摘要不代表设备数为零。", styles.text());
+        text(note, 1, "本文件与页面预览使用同一聚合口径和当前账号数据范围（状态截至各次生成时）；缺失设备摘要不代表设备数为零。", styles.text());
         sheet.addMergedRegion(new CellRangeAddress(rowIndex, rowIndex, 1, 4));
         sheet.createFreezePane(0, 2);
     }
@@ -96,7 +99,7 @@ public class OperationsWorkbookWriter {
         Sheet sheet = sheet(workbook, "每日趋势", new int[] { 16, 18, 18, 18, 18 });
         title(sheet, styles, period.label() + " · 每日趋势", 4);
         Row header = sheet.createRow(2);
-        String[] labels = { "日期", "目标总次数", "非法飞行", "处罚案件", "高风险目标" };
+        String[] labels = { "日期", "新增目标数", "非法飞行", "处罚案件", "高风险目标" };
         for (int i = 0; i < labels.length; i++) text(header, i, labels[i], styles.header());
         int rowIndex = 3;
         for (DayPoint day : days) {
@@ -134,7 +137,7 @@ public class OperationsWorkbookWriter {
         Sheet sheet = sheet(workbook, "区域与处置", new int[] { 22, 18, 18, 18, 18 });
         title(sheet, styles, period.label() + " · 区域与处置", 4);
         Row regionHeader = sheet.createRow(2);
-        String[] regionLabels = { "区域", "目标总次数", "非法飞行", "处罚案件", "高风险目标" };
+        String[] regionLabels = { "区域", "新增目标数", "非法飞行", "处罚案件", "高风险目标" };
         for (int i = 0; i < regionLabels.length; i++) text(regionHeader, i, regionLabels[i], styles.header());
         int rowIndex = 3;
         for (RegionPoint region : report.regions()) {
@@ -161,19 +164,19 @@ public class OperationsWorkbookWriter {
             text(row, 1, partner.name(), styles.text());
             number(row, 2, partner.caseCount(), styles.integer());
             number(row, 3, partner.fine(), styles.money());
-            text(row, 4, partner.name().contains("未知") ? "重点溯源对象" : "", styles.text());
+            text(row, 4, partner.fine() == null ? "尚无完整有效处罚金额" : "", styles.text());
         }
         sheet.createFreezePane(0, 3);
     }
 
     private static int distributionRows(Sheet sheet, Styles styles, int rowIndex, String category,
-            List<NamedCount> items, int denominator, String unit) {
+            List<NamedCount> items, Integer denominator, String unit) {
         for (NamedCount item : items) {
             Row row = sheet.createRow(rowIndex++);
             text(row, 0, category, styles.text());
             text(row, 1, item.name(), styles.text());
             number(row, 2, item.value(), styles.integer());
-            if (denominator > 0) decimal(row, 3, item.value() / (double) denominator, styles.percent());
+            if (denominator != null && denominator > 0) decimal(row, 3, item.value() / (double) denominator, styles.percent());
             else text(row, 3, "—", styles.text());
             text(row, 4, unit, styles.text());
         }
@@ -188,7 +191,7 @@ public class OperationsWorkbookWriter {
         return rowIndex;
     }
 
-    private static int metric(Sheet sheet, Styles styles, int rowIndex, String label, int value, String note) {
+    private static int metric(Sheet sheet, Styles styles, int rowIndex, String label, Integer value, String note) {
         Row row = sheet.createRow(rowIndex++);
         text(row, 0, label, styles.text());
         number(row, 1, value, styles.integer());
@@ -197,8 +200,8 @@ public class OperationsWorkbookWriter {
         return rowIndex;
     }
 
-    private static String rate(int value, int total) {
-        return total == 0 ? "暂无占比" : "占比 %.1f%%".formatted(value * 100.0 / total);
+    private static String rate(Integer value, Integer total) {
+        return value == null || total == null || total == 0 ? "暂无占比" : "占比 %.1f%%".formatted(value * 100.0 / total);
     }
 
     private static String sourceLabel(String value) {
@@ -232,9 +235,9 @@ public class OperationsWorkbookWriter {
         cell.setCellStyle(style);
     }
 
-    private static void number(Row row, int column, int value, CellStyle style) {
+    private static void number(Row row, int column, Number value, CellStyle style) {
         Cell cell = row.createCell(column);
-        cell.setCellValue(value);
+        if (value == null) cell.setCellValue("暂不可统计"); else cell.setCellValue(value.doubleValue());
         cell.setCellStyle(style);
     }
 
@@ -284,7 +287,7 @@ public class OperationsWorkbookWriter {
         CellStyle percent = base(workbook);
         percent.setDataFormat(workbook.createDataFormat().getFormat("0.0%"));
         CellStyle money = base(workbook);
-        money.setDataFormat(workbook.createDataFormat().getFormat("¥#,##0"));
+        money.setDataFormat(workbook.createDataFormat().getFormat("¥#,##0.00"));
         return new Styles(title, header, section, label, text, integer, percent, money);
     }
 

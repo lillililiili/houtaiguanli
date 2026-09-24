@@ -262,3 +262,38 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 - 旧人工观察不再阻断短信/电话，也不再决定列表进度或反制资格。通知仍检查原时效、当前规则结论、接收对象和独立渠道回执。
 - 反制申请、执行、排队下发及续链统一读取当前系统依据：已核实事件、当前 UAV 观测、有效 C03.fresh_seconds、关联本事件的最新 ACTIVE / ILLEGAL / FRESH 研判、SUFFICIENT 充分性及空未知原因。无依据或过期时明确阻断，删除空历史兼容放行。
 - 权限、审批、设备范围、授权时间窗及急停后的设备停机核查保持；此变更未实现自动飞离解除、自动反制或自动处罚。
+
+
+2026-09-22：合法性研判查询新增可选 `has_alarm` 布尔筛选，按引擎、合并成员与人工转告警历史关联，在分页前统一过滤列表和统计；业务前台用于“核实位置”。既有调用省略参数时不变，管理前端无此接口消费者。详见规则引擎接口文档的“核实位置筛选”；不改变核实状态和权限。
+
+### 运行统计业务数据接通（2026-09-22）
+
+`/api/v1/stats/operations`、CSV 及旧式报表预览/XLSX 已统一读取实际 target、punishment_case 和当前设备台账；旧 report_* 样本表及历史保持原样。新增目标按首次发现归属，非法/高风险为生成时状态，处罚只使用有效决定，未知数值不补零。新增 `generated_at`、指标 `availability`，各源读取权限与数据范围分别校验，设备复用现有台账权限范围。界面/导出口径和隔离测试入口见[运行统计契约](../docs/运行统计接口契约.md)。本项无结构迁移。
+
+### 统一目标视频查询（2026-09-22）
+
+新增只读 `GET /api/v1/targets/{targetId}/video`，复用目标读取、devices.op 与关联设备业务范围。明确模拟的当前跟踪任务必须取得匹配的 Protocol C 成功回执才能返回 SIMULATED_CANVAS；真实流继续返回 NOT_INTEGRATED。接口不创建任务、不下发动作、不生成证据。视频状态、错误语义与验收入口见[目标视频查询契约](../docs/目标视频查询接口契约.md)。本项无结构迁移。
+
+### 模拟通知内部闭环（2026-09-22）
+
+短信发送租约超时、适配器异常/空响应或无法确认的结果统一持久化 UNKNOWN；调度和人工 retry 均不盲目重投。此规则替代此前“超时核查后补发”的旧短信描述；明确 FAILED 仍按既有资格及幂等键重试。短信与电话历史结果独立于当前配置和时效。通知目录模拟适配器未知结果保存为 SUBMITTED/PENDING + DELIVERY_OUTCOME_UNKNOWN；计划反馈和通知上级前台如实显示，既有防重关系保留。配置诊断检查后台任务开关和实际 WAV 录音，不再只看目录是否填写。追加迁移 `V202609220001__automatic_sms_unknown_result` 仅扩大短信状态约束，不重写历史。隔离测试及五类链路边界见[模拟通知内部闭环](../docs/模拟通知内部闭环-2026-09-22.md)。正式通道与正式业务录音未接入；本批没有修改运行中开发库配置。
+
+
+2026-09-23 合法性读取优化：新增 `/api/v1/legality-evaluations/summary`，单次条件聚合替代业务前台五次串行列表统计，共用原列表权限、筛选及最新记录规则。无需数据库迁移，不修改历史。需同步部署业务前台及本后端，详细字段见 `../docs/backend-stage7/rule-engine-api-contract.md`。
+
+### 飞行计划当前风险读取（2026-09-23）
+
+`GET /api/v1/risks/current` 必填 `plan_id`，支持 `page`、`size`、`exclude_demo_samples`；先检查 `risk:read` 与 `flight:read`，复用原风险数据范围。响应包含 `items[{risk,current_status,current_reason}]`、`total`、`current_total`、`uncertain_total`、`as_of`。在只读事务中先按持续依据分类再分页，不以发生时间或通知状态替代风险持续性。EXCLUDED 不列入；气象有效期内 CURRENT，未到有效期不列入，过期及缺少持续依据 UNKNOWN。其他类型暂缺持续／解除契约，显示 UNKNOWN，不新增人工必经步骤。旧列表、历史与通知权限不变。业务前台已接入；管理端没有该接口的直接消费者。RiskReadApiTest 覆盖旧记录、通知独立性、排除、过期、未到期、50条跨页及权限。
+
+## 2026-09-23 五组 MQTT 样本续验
+
+融合管线现保存单源最近观测快照，在既有新鲜度内组合异步来源；无关设备帧不再清空新鲜观测，迟到帧不回退快照。规则引擎为融合目标读取 target_attribute_selection.identity_clue，使计划匹配与融合身份一致；组织和区域范围保持不变。没有新增接口字段或数据库迁移，旧快照没有 source_estimate 时不补造。
+
+本机最终批次 sim-0923035711-e377 已经实际 MQTT、规则、告警、模拟双通道通知、申请审批、本机 CM4 协议回执、关联干扰和自动处罚交接，送达及签收均为 MOCK。运行期间显式启用 app.advisory.auto-voice.enabled、app.rule-engine.c04.enabled 和 app.disposal.receipt-sync.enabled，并配置既有模拟录音；不是生产默认启用。临时通知设置已恢复，停止后的观测失效会阻止新反制，历史送达结果保留。未验收真实射频、短信、电话或处罚决定。
+
+18 项受影响测试、package 和隔离 PostgreSQL 临时表查询验证通过。完整样本分支、重启/重新登录证据、前一批次运维结果和缺少 BVLOS 严重度配置的边界见 [业务前台仓库续验报告](../../dongyiwurenji/docs/交付/信号模拟器五组样本-20260923/全流程模拟验收.md)。
+
+
+### 通知后的飞离观察只读查询（2026-09-24）
+
+`GET /api/v1/uav-events/{eventId}/advisory/observation` 复用 `alarm:read`、事件数据范围和 `PilotDepartureWatch`。返回 `event_id/channel/status/presence/started_at/deadline_at/evaluated_at`；时间为 epoch 毫秒，未开始时可空字段按既有 JSON 规则省略。`status` 为 NOT_STARTED、WATCHING、ASSESSED；只有 ASSESSED 的 LEFT/STILL_PRESENT 表示明确观察结论，UNKNOWN 表示新位置不足或读取异常。短信送达、电话播放完成后分别观察 10 秒，复用原窗口依据；读取不确认告警、不发送、不改事件或通知状态，不放宽反制资格。当前消费者为本机信号模拟器，业务前台和管理端既有 advisory 契约未改动。回归命令：`bash ./mvnw -Dtest=UavDepartureObservationTest,NotifyFlowTest,UavAdvisoryApiTest test`（22 项通过）。

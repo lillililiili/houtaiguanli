@@ -260,7 +260,7 @@ class FlightReadApiTest {
     }
 
     @Test
-    void mockForecastIsStableScopedExpiresAndNeverFallsBackFromLive() throws Exception {
+    void mockForecastIsStableScopedRemainsReadableAndNeverFallsBackFromLive() throws Exception {
         long published=System.currentTimeMillis()-1000;
         jdbc.update("UPDATE external_interface_config SET source_mode='mock',name='天气模拟',area_name='东营市',updated_at=? WHERE kind='WEATHER_FORECAST'",published);
         String url="/api/v1/flight-plans/"+planA+"/weather-forecast";
@@ -277,11 +277,16 @@ class FlightReadApiTest {
         assertThat(objectMapper.readTree(second).path("data")).isEqualTo(objectMapper.readTree(first).path("data"));
         mvc.perform(get("/api/v1/flight-plans/"+planOtherScope+"/weather-forecast").header("Authorization","Bearer "+sessionId))
             .andExpect(status().isNotFound());
-        long expired=published-86400000L;
-        jdbc.update("UPDATE external_interface_config SET updated_at=? WHERE kind='WEATHER_FORECAST'",expired);
+        long pastPublished=published-86400000L;
+        jdbc.update("UPDATE external_interface_config SET updated_at=? WHERE kind='WEATHER_FORECAST'",pastPublished);
         mvc.perform(get(url).header("Authorization","Bearer "+sessionId))
-            .andExpect(jsonPath("$.data.status").value("STALE"))
-            .andExpect(jsonPath("$.data.forecast.published_at").value(expired));
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("READY"))
+            .andExpect(jsonPath("$.data.message").doesNotExist())
+            .andExpect(jsonPath("$.data.forecast.published_at").value(pastPublished))
+            .andExpect(jsonPath("$.data.forecast.periods[0].from").value(pastPublished))
+            .andExpect(jsonPath("$.data.forecast.periods[5].to").value(pastPublished+86400000L));
+        assertThat(jdbc.queryForObject("SELECT updated_at FROM external_interface_config WHERE kind='WEATHER_FORECAST'",Long.class)).isEqualTo(pastPublished);
         jdbc.update("UPDATE external_interface_config SET source_mode='live' WHERE kind='WEATHER_FORECAST'");
         mvc.perform(get(url).header("Authorization","Bearer "+sessionId))
             .andExpect(jsonPath("$.data.status").value("AWAITING_ADAPTER"))

@@ -22,6 +22,7 @@ import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.Decisio
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvidenceRefDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.HitDetailDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.PageDto;
+import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.SummaryDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.ParamRefDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.ReviewDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.RevisionDto;
@@ -42,7 +43,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 public class LegalityEvaluationReadService {
     public static final String ACTION_REVIEW = "REVIEW", ACTION_RECOMPUTE = "RECOMPUTE", ACTION_ESCALATE = "ESCALATE";
     private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id", "object_type_code",
-            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "needs_attention", "page", "size");
+            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "needs_attention", "has_alarm", "page", "size");
     private static final Set<String> MODES = Set.of("ACTIVE", "SHADOW");
     private static final Set<String> LEGAL_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE");
     private static final Set<String> PLAN_MATCHES = Set.of("FULL", "PARTIAL", "NONE", "UNDETERMINED", "NOT_APPLICABLE");
@@ -61,22 +62,41 @@ public class LegalityEvaluationReadService {
 
     @Transactional(readOnly = true)
     public PageDto<EvaluationDto> list(MultiValueMap<String, String> values) {
+        AccessDecision decision = authorizeQuery(values);
+        Request request = new Request(values);
+        Page page = request.page();
+        EvaluationQuery query = evaluationQuery(request);
+        long total = repository.count(query, decision);
+        return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row, decision)).toList(), page.page, page.size, total);
+    }
+
+    @Transactional(readOnly = true)
+    public SummaryDto summary(MultiValueMap<String, String> values) {
+        AccessDecision decision = authorizeQuery(values);
+        Request request = new Request(values);
+        // 保留列表参数校验；分页不会缩小统计范围。
+        request.page().offset();
+        var counts = repository.summarize(evaluationQuery(request), decision);
+        return new SummaryDto(counts.total(), counts.legal(), counts.abnormal(), counts.illegal(), counts.undetermined(), counts.notApplicable());
+    }
+
+    private AccessDecision authorizeQuery(MultiValueMap<String, String> values) {
         // 鉴权必须先于参数解析，防止未授权调用者用 400/404 差异探测受保护接口。
         AccessDecision decision = access.require(PermissionCode.ASSESSMENT_READ);
         // 原始请求只要出现关联筛选就先要求关联读取动作；不能先解析其他坏参数泄露筛选能力。
         if (values.containsKey("target_id") || values.containsKey("object_type_code")) access.require(PermissionCode.TARGET_READ);
         if (values.containsKey("plan_id")) access.require(PermissionCode.FLIGHT_READ);
-        Request request = new Request(values);
-        Page page = request.page();
+        return decision;
+    }
+
+    private EvaluationQuery evaluationQuery(Request request) {
         TimeRange range = request.timeRange("from", "to");
-        EvaluationQuery query = new EvaluationQuery(request.enumerated("mode", MODES), request.bool("latest_only"),
+        return new EvaluationQuery(request.enumerated("mode", MODES), request.bool("latest_only"),
                 request.enumerated("legal_status", LEGAL_STATUSES), request.enumerated("plan_match", PLAN_MATCHES),
                 request.enumerated("review_state", REVIEW_STATES), request.enumerated("subject_kind", SUBJECTS),
                 request.optional("target_id", 36), request.optional("plan_id", 36), range.from, range.to,
                 request.optional("owner_org_id", 36), request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES),
-                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"), request.optionalBool("needs_attention"));
-        long total = repository.count(query, decision);
-        return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row, decision)).toList(), page.page, page.size, total);
+                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"), request.optionalBool("needs_attention"), request.optionalBool("has_alarm"));
     }
 
     @Transactional(readOnly = true)

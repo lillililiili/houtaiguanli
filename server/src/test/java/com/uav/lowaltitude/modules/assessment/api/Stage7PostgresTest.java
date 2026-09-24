@@ -556,6 +556,10 @@ class Stage7PostgresTest {
         AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
         EvaluationQuery latest = latestQuery(null, null);
         assertThat(evaluations.count(latest, access)).isEqualTo(5);
+        var summary = evaluations.summarize(latest, access);
+        assertThat(summary.total()).isEqualTo(5);
+        assertThat(summary.legal()).isEqualTo(3);
+        assertThat(summary.undetermined()).isEqualTo(2);
         assertThat(evaluations.list(latest, access, 0, 100)).extracting(r -> r.evaluationId())
                 .containsExactly(prefix + "-null-b", prefix + "-null-a", prefix + "-plan-z", prefix + "-shadow", prefix + "-z");
         assertThat(evaluations.count(latestQuery("ACTIVE", "ABNORMAL"), access)).isZero();
@@ -665,11 +669,48 @@ class Stage7PostgresTest {
             assertTimeout(Duration.ofSeconds(5), () -> {
                 assertThat(evaluations.count(latestQuery("ACTIVE", null), access)).isEqualTo(51);
                 assertThat(evaluations.list(latestQuery("ACTIVE", null), access, 0, 100)).hasSize(51);
+                var summary = evaluations.summarize(latestQuery("ACTIVE", null), access);
+                assertThat(summary.total()).isEqualTo(51);
+                assertThat(summary.legal()).isEqualTo(50);
             });
         } finally {
             jdbc.setQueryTimeout(previousTimeout);
         }
         assertThat(jdbc.queryForObject("select count(*) from rule_evaluation where owner_org_id=?", Long.class, org)).isEqualTo(before);
+    }
+
+    @Test
+    @Order(101)
+    void alarmLocationMatchesEngineMergeAndManualHistoryBeforePostgresPagination() {
+        String noAlarm = id(), manual = id(), member = id();
+        cloneLatestEvaluation(noAlarm, "TARGET", targetId, "ACTIVE", "UNDETERMINED", T0.plusSeconds(3));
+        cloneLatestEvaluation(manual, "TARGET", targetId, "ACTIVE", "ABNORMAL", T0.plusSeconds(2));
+        cloneLatestEvaluation(member, "TARGET", targetId, "ACTIVE", "ABNORMAL", T0.plusSeconds(1));
+        // 复用真实规则回放生成的告警与合并成员结构，夹具仅在隔离 schema 中追加。
+        new LocalStage7RuleEngineSeeder(jdbc).run(null);
+        runner.replay();
+        String alarm = jdbc.queryForObject("select alarm_id from alarm where source_id='rule-engine-legality-mock' order by alarm_id limit 1", String.class);
+        jdbc.update("insert into legality_review (evaluation_id,review_state,version,owner_org_id,district_id,created_at,updated_at) values (?,'PENDING_REVIEW',0,?,?,?,?)", manual, org, district, T0, T0);
+        jdbc.update("insert into legality_review_history (history_id,evaluation_id,version,previous_state,resulting_state,conclusion,status_before,status_after,note,actor_id,related_alarm_id,created_at) values (?,?,1,'PENDING_REVIEW','PENDING_REVIEW','ESCALATE','ABNORMAL','ABNORMAL','筛选夹具',?,?,?)",
+                id(), manual, userA, alarm, T0);
+        jdbc.update("insert into alarm_merge_member (member_id,evaluation_id,group_id,member_kind,alarm_id,severity_after,created_at) select ?,?,group_id,'MANUAL_ESCALATION',?,severity_after,created_at from alarm_merge_member where alarm_id=? limit 1",
+                id(), member, alarm, alarm);
+        // 引擎引用保持只增：通过 INSERT 复制一条带告警的新研判。
+        String engine = id();
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at) "
+                + "select ?,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,?,freshness_code,plan_match_code,legal_status,'[]','[]','[]','[]','{}',?,owner_org_id,district_id,source_mode,created_at from rule_evaluation where evaluation_id=?",
+                engine, T0.plusSeconds(4), alarm, evaluationId);
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        EvaluationQuery linked = new EvaluationQuery("ACTIVE", false, null, null, null, null,
+                null, null, null, null, org, district, null, "UAV", null, null, true);
+        EvaluationQuery unlinked = new EvaluationQuery("ACTIVE", false, null, null, null, null,
+                null, null, null, null, org, district, null, "UAV", null, null, false);
+        assertThat(evaluations.count(linked, access)).isEqualTo(3);
+        assertThat(evaluations.list(linked, access, 0, 1)).extracting(r -> r.evaluationId()).containsExactly(engine);
+        assertThat(evaluations.list(linked, access, 1, 1)).extracting(r -> r.evaluationId()).containsExactly(manual);
+        assertThat(evaluations.list(linked, access, 2, 1)).extracting(r -> r.evaluationId()).containsExactly(member);
+        assertThat(evaluations.count(unlinked, access)).isEqualTo(2);
+        assertThat(evaluations.list(unlinked, access, 0, 100)).extracting(r -> r.evaluationId()).containsExactly(noAlarm, evaluationId);
     }
 
     private EvaluationQuery latestQuery(String mode, String legalStatus) {

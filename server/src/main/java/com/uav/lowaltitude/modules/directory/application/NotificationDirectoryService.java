@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.directory.application;
 
 import java.util.*;
+import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.core.env.Environment;
@@ -69,7 +70,9 @@ public class NotificationDirectoryService {
  @Transactional public void freezeMaintenance(String taskId,RecipientSnapshot target,DeliveryOutcome result){repo.maintenanceNotice(taskId,target,result);}
  public record MaintenanceOutcome(DeliveryOutcome result,String state) { }
  public DirectoryRepository.MaintenanceNotice maintenanceNotice(String taskId){return repo.maintenanceNotice(taskId);}
- public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null?DeliveryOutcome.notConnected():result;}catch(RuntimeException e){return DeliveryOutcome.notConnected();}}
+ public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null||result.deliveryStatus()==null||result.receiptStatus()==null
+    ||!HandoffRules.DELIVERY_STATUSES.contains(result.deliveryStatus())||!HandoffRules.RECEIPT_STATUSES.contains(result.receiptStatus())
+    ||"PENDING_DELIVERY".equals(result.deliveryStatus())?unknownDelivery():result;}catch(RuntimeException e){return unknownDelivery();}}
  @Transactional public void freezeHandoff(String id,RecipientSnapshot snapshot){repo.freeze("handoff",id,snapshot);}
  @Transactional public void freezeFeedback(String id,RecipientSnapshot snapshot){repo.freeze("flight_plan_feedback",id,snapshot);}
  public RecipientSnapshot handoffSnapshot(String id){return repo.decodeSnapshot(repo.snapshot("handoff",id));}
@@ -77,6 +80,7 @@ public class NotificationDirectoryService {
  private RecipientSnapshot snapshot(SettingRow row,String recipient,String name){String reason=reason(row);return new RecipientSnapshot(recipient,name,row.orgId(),row.orgName(),row.contactId(),row.contactName(),mask(row.phone()),row.channelType(),row.endpointRef(),row.id(),row.version(),reason==null,reason,clock.nowMillis(),template(row.purpose()),templateVersion(row.purpose()),receipt(row.purpose()),row.contactId()==null?null:repo.contact(row.contactId()).version());}
  private RecipientSnapshot missing(String id,String name,String reason){return new RecipientSnapshot(id,name,null,null,null,null,null,"NONE",null,null,null,false,reason,clock.nowMillis());}
  private RecipientSnapshot blocked(RecipientSnapshot s,String reason){return new RecipientSnapshot(s.recipientId(),s.recipientName(),s.orgId(),s.orgName(),s.contactId(),s.contactName(),s.contactHint(),s.channelType(),s.endpointRef(),s.settingId(),s.configVersion(),false,reason,s.capturedAt(),s.templateCode(),s.templateVersion(),s.receiptRequirement(),s.contactVersion());}
+ private DeliveryOutcome unknownDelivery(){return new DeliveryOutcome("SUBMITTED","PENDING",null,"DELIVERY_OUTCOME_UNKNOWN",null,null,null);}
  private DeliveryOutcome unavailable(String reason){return new DeliveryOutcome("PENDING_DELIVERY","NOT_EXPECTED",null,reason,null,null,null);}
  private boolean simulationEnvironment(){return env.acceptsProfiles(Profiles.of("local","test"))&&!env.acceptsProfiles(Profiles.of("prod","production"));}
  private static String contactRole(String purpose){return switch(purpose){case "PLAN_FEEDBACK"->"PLAN_LIAISON";case "DEVICE_MAINTENANCE"->"MAINTENANCE";default->"UNIT_LIAISON";};}

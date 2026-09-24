@@ -254,6 +254,59 @@ class RiskReadApiTest {
         }
     }
 
+
+    @Test
+    void currentRisksSeparatePresenceFromNotificationAndDoNotCutOffOldRecords() throws Exception {
+        String plan = "current-risk-plan";
+        jdbc.update("insert into flight_plan (plan_id,plan_no,status_code,source_id,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version) select ?,?,'PENDING',source_id,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,0 from flight_plan where plan_id='seed-stage3-plan-legal'", plan, "CURRENT-TEST");
+        long now = System.currentTimeMillis();
+        for (int i=0; i<52; i++) {
+            insertRisk("current-old-"+i,"current-old-src-"+i,"HIGH","NOTIFIED",plan,
+                    "seed-stage3-rv-legal","seed-stage3-org","seed-stage3-district",1_000,2_000+i,null,null);
+        }
+        insertRisk("current-excluded","current-excluded-src","HIGH","EXCLUDED",plan,
+                "seed-stage3-rv-legal","seed-stage3-org","seed-stage3-district",1_000,4_000,null,null);
+        insertRisk("current-weather","current-weather-src","HIGH","ACKNOWLEDGED",plan,
+                "seed-stage3-rv-legal","seed-stage3-org","seed-stage3-district",1_000,5_000,null,null);
+        jdbc.update("update flight_risk set risk_type='WEATHER' where risk_id='current-weather'");
+        jdbc.update("insert into weather_risk_fact(risk_id,polygon_json,published_at,valid_from,valid_to) values ('current-weather','[[118,37],[119,37],[119,38],[118,37]]' format json,?,?,?)",ts(now-60_000),ts(now-30_000),ts(now+60_000));
+        String url="/api/v1/risks/current?plan_id="+plan+"&size=50";
+        mvc.perform(get(url).header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(1))
+                .andExpect(jsonPath("$.data.uncertain_total").value(52)).andExpect(jsonPath("$.data.total").value(53))
+                .andExpect(jsonPath("$.data.items.length()").value(50))
+                .andExpect(jsonPath("$.data.items[0].risk.risk_id").value("current-weather"))
+                .andExpect(jsonPath("$.data.items[0].risk.state").value("ACKNOWLEDGED"))
+                .andExpect(jsonPath("$.data.items[0].current_status").value("CURRENT"));
+        mvc.perform(get(url+"&page=2").header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(3))
+                .andExpect(jsonPath("$.data.items[0].current_status").value("UNKNOWN"));
+        jdbc.update("update weather_risk_fact set valid_to=? where risk_id='current-weather'",ts(now-1));
+        mvc.perform(get(url).header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(0))
+                .andExpect(jsonPath("$.data.uncertain_total").value(53));
+        jdbc.update("update weather_risk_fact set valid_from=?,valid_to=? where risk_id='current-weather'",ts(now+60_000),ts(now+120_000));
+        mvc.perform(get(url).header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(52));
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=?",Integer.class,plan)).isEqualTo(54);
+        mvc.perform(get("/api/v1/risks?plan_id="+plan).header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(54));
+    }
+
+    @Test
+    void currentRiskQueriesRequireBothReadPermissionsAndExactPlanScope() throws Exception {
+        String noFlight=reader("ALL",true,false), noRisk=reader("ALL",false,false);
+        for(String token:new String[]{noFlight,noRisk}) {
+            mvc.perform(get("/api/v1/risks/current?plan_id=seed-stage3-plan-legal&size=bad")
+                    .header("Authorization",bearer(token))).andExpect(status().isForbidden());
+        }
+        mvc.perform(get("/api/v1/risks/current?plan_id=seed-stage3-plan-cross-scope")
+                .header("Authorization",bearer(session))).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        for(String query:new String[]{"", "?plan_id=seed-stage3-plan-legal&occurred_from=1", "?plan_id=seed-stage3-plan-legal&plan_id=x"}) {
+            mvc.perform(get("/api/v1/risks/current"+query).header("Authorization",bearer(session))).andExpect(status().isBadRequest());
+        }
+    }
+
     private void filterRisk(String id, String source, String sourceRiskId, String mode, String type, long received) {
         jdbc.update("insert into flight_risk (risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,?,'seed-stage3-plan-legal','seed-stage3-rv-legal',?,'HIGH','PENDING_VERIFICATION','FILTER_TEST','筛选契约用例',?,?,'UNKNOWN',?,'seed-stage3-org','seed-stage3-district',?,?,0)",
                 id, source, sourceRiskId, type, ts(12_000), ts(received), mode, ts(received), ts(received));

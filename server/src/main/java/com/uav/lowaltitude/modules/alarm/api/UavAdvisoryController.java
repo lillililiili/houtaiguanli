@@ -11,6 +11,7 @@ public class UavAdvisoryController {
     private final UavAdvisoryService service;
     public UavAdvisoryController(UavAdvisoryService service) {this.service=service;}
     @GetMapping public ApiResponse<Overview> overview(@PathVariable String eventId) {return ApiResponse.ok(service.overview(eventId));}
+    @GetMapping("/observation") public ApiResponse<UavAdvisoryDtos.DepartureObservation> observation(@PathVariable String eventId) {return ApiResponse.ok(service.observation(eventId));}
     @PostMapping("/auto-sms/retry") public ApiResponse<Overview> retry(@PathVariable String eventId,
             @RequestBody(required=false) String body,@RequestHeader(value="Idempotency-Key",required=false) String key) {
         return ApiResponse.ok(service.retryAutomatic(eventId,body,key));

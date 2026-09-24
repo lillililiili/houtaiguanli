@@ -33,6 +33,7 @@ class AutoSmsApiTest {
     @Autowired AutoSmsService automatic;
     @Autowired AutoSmsJob job;
     @SpyBean LocalAdvisorySmsAdapter sms;
+    @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoSmsPolicy smsPolicy;
     @SpyBean com.uav.lowaltitude.platform.audit.AuditService audit;
     @SpyBean com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     protected String eventId,session,userId,role,targetId,pilotPlanId;
@@ -85,7 +86,7 @@ class AutoSmsApiTest {
             jdbc.update("UPDATE notification_setting SET enabled=TRUE WHERE setting_id='advisory-sms'");
         }
     }
-    @AfterEach void clearSpy(){reset(directory);reset(sms);reset(audit);}
+    @AfterEach void clearSpy(){reset(directory);reset(sms);reset(audit);reset(smsPolicy);}
     @Test void voiceIsDisabledByDefaultAndCannotBeRetried()throws Exception {
         read().andExpect(status().isOk()).andExpect(jsonPath("$.data.voice_mode").value("UNAVAILABLE"))
                 .andExpect(jsonPath("$.data.auto_voice.status").value("DISABLED"))
@@ -165,7 +166,7 @@ class AutoSmsApiTest {
         assertThat(jdbc.queryForObject("select simulated from uav_event_advisory where event_id=? and trigger_mode='AUTO'",Boolean.class,eventId)).isTrue();
     }
     @Test void failureIsDurableRetryOnlyQueuesAndUsesSameProviderKey()throws Exception {
-        doThrow(new IllegalStateException("fake transport failed")).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+        doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisorySmsPort.Delivery(true,"FAILED")).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
         automatic.process(eventId);automatic.process(eventId);
         read().andExpect(jsonPath("$.data.auto_sms.status").value("FAILED")).andExpect(jsonPath("$.data.auto_sms.can_retry").value(true));
         assertThat(count("uav_event_advisory")).isZero();
@@ -177,8 +178,34 @@ class AutoSmsApiTest {
         read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED")).andExpect(jsonPath("$.data.auto_sms.attempt_count").value(2));
         verify(sms).simulateAutomatic(eq("mock"),anyString(),anyString(),eq("auto-advisory:"+eventId));
     }
+    @Test void uncertainSendIsDurableAndNeverBlindlyRetried() throws Exception {
+        doReturn(null).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+        automatic.process(eventId); automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+        retry(UUID.randomUUID().toString(),1).andExpect(status().isConflict());
+        jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(121)),targetId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"));
+        assertThat(count("uav_event_advisory")).isZero();
+        verify(sms,times(1)).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
+    @Test void transportExceptionDoesNotProveSendingFailed() throws Exception {
+        doThrow(new IllegalStateException("transport outcome unknown")).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+    }
+    @Test void deliveredHistorySurvivesCurrentConfigurationAndEvidenceExpiry() throws Exception {
+        automatic.process(eventId);
+        jdbc.update("update notification_setting set enabled=false where setting_id='advisory-sms'");
+        jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(121)),targetId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"))
+                .andExpect(jsonPath("$.data.auto_sms.attempt_count").value(1));
+        assertThat(count("uav_event_advisory")).isEqualTo(1);
+    }
     @Test void retryRequiresActionsScopeAndValidVersion()throws Exception {
-        doThrow(new IllegalStateException()).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());automatic.process(eventId);
+        doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisorySmsPort.Delivery(true,"FAILED")).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());automatic.process(eventId);
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='handoff:create'",role);
         retry(UUID.randomUUID().toString(),1).andExpect(status().isForbidden());
         jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,'handoff:create','OP',false,current_timestamp)",role);
@@ -199,7 +226,23 @@ class AutoSmsApiTest {
         jdbc.update("insert into uav_auto_sms_task(event_id,status,policy_code,reason,updated_at,provider_key,claim_token,lease_until) values(?,'SENDING','LOCAL_AUTO_SMS_DEMO_V1','发送中',?,?,?,?)",eventId,System.currentTimeMillis(),"auto-advisory:"+eventId,UUID.randomUUID().toString(),System.currentTimeMillis()+60000);
         retry(UUID.randomUUID().toString(),1).andExpect(status().isConflict());
         jdbc.update("update uav_auto_sms_task set lease_until=0 where event_id=?",eventId);automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("FAILED"));assertThat(count("uav_event_advisory")).isZero();
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN")).andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));assertThat(count("uav_event_advisory")).isZero();
+        automatic.process(eventId);retry(UUID.randomUUID().toString(),1).andExpect(status().isConflict());
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
+    @Test void disabledPolicyReconcilesExpiredSendingWithoutNewTasksOrSending() throws Exception {
+        jdbc.update("insert into uav_auto_sms_task(event_id,status,policy_code,reason,updated_at,provider_key,claim_token,lease_until,attempt_count) values(?,'SENDING','LOCAL_AUTO_SMS_DEMO_V1','发送中',?,?,?,0,1)",eventId,System.currentTimeMillis(),"auto-advisory:"+eventId,UUID.randomUUID().toString());
+        doReturn(false).when(smsPolicy).enabled();
+        automatic.poll();
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.auto_sms.enabled").value(false))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+        assertThat(count("uav_event_advisory")).isZero();
+        assertThat(jdbc.queryForObject("select attempt_count from uav_auto_sms_task where event_id=?",Integer.class,eventId)).isEqualTo(1);
+        fixture();
+        automatic.poll();automatic.process(eventId);
+        assertThat(count("uav_auto_sms_task")).isZero();
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
     }
     @Test void getShowsCurrentBlockWithoutMutatingQueuedTask()throws Exception {
         jdbc.update("insert into uav_auto_sms_task(event_id,status,policy_code,reason,updated_at,provider_key) values(?,'WAITING','LOCAL_AUTO_SMS_DEMO_V1','等待后台发送',?,?)",eventId,System.currentTimeMillis(),"auto-advisory:"+eventId);
@@ -222,7 +265,7 @@ class AutoSmsApiTest {
         read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
     }
     @Test void differentEventsCannotReuseOneConcurrentRetryKey()throws Exception {
-        doThrow(new IllegalStateException()).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+        doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisorySmsPort.Delivery(true,"FAILED")).when(sms).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
         automatic.process(eventId);String firstEvent=eventId,firstSession=session;
         fixture();automatic.process(eventId);String secondEvent=eventId;
         String key=UUID.randomUUID().toString();var barrier=new java.util.concurrent.CyclicBarrier(2);

@@ -10,6 +10,9 @@ import org.springframework.stereotype.Repository;
 public class AutoSmsRepository {
     private final JdbcTemplate jdbc;
     public AutoSmsRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
+    public List<String> sendingCandidates() {
+        return jdbc.queryForList("SELECT event_id FROM uav_auto_sms_task WHERE status='SENDING' ORDER BY updated_at FETCH FIRST 200 ROWS ONLY",String.class);
+    }
     /** 告警事件建立后即进入自动短信，不再按接收时间把旧事件排除。已送达和已失败的任务留在原状态。 */
     public List<String> candidates() {
         return jdbc.queryForList("SELECT e.event_id FROM uav_event e LEFT JOIN uav_auto_sms_task t ON t.event_id=e.event_id WHERE t.status='SENDING' OR t.event_id IS NULL OR t.status IN ('WAITING','BLOCKED','UNAVAILABLE') ORDER BY CASE WHEN t.status='SENDING' THEN 0 ELSE 1 END,e.created_at DESC FETCH FIRST 200 ROWS ONLY",String.class);

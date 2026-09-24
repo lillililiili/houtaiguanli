@@ -137,6 +137,76 @@ class EoManualTrackApiTest {
                 .andExpect(jsonPath("$.error.code").value("TRACK_ALREADY_OPEN"));
     }
 
+    @Test void videoReadIsScopedAndDoesNotCreateWork() throws Exception {
+        String target = insertTarget(true);
+        long tasks = jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class);
+        long commands = jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class);
+        mvc.perform(get("/api/v1/targets/{id}/video", target)).andExpect(status().isUnauthorized());
+        video(target, "NO_TASK", "NONE");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class)).isEqualTo(tasks);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class)).isEqualTo(commands);
+        jdbc.update("UPDATE app_user SET scope_mode='NONE' WHERE account='admin1'");
+        try {
+            mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
+                    .andExpect(status().isForbidden());
+        } finally { jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE account='admin1'"); }
+        jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED' WHERE account='admin1'");
+        try {
+            mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
+                    .andExpect(status().isForbidden());
+        } finally { jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE account='admin1'"); }
+        String role = "ROLE-VIDEO-" + UUID.randomUUID().toString().substring(0, 8);
+        jdbc.update("INSERT INTO app_role (role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES (?,'视频只读测试','',FALSE,TRUE,0,0,0,FALSE)", role);
+        jdbc.update("INSERT INTO app_role_permission (role_code,permission_code,permission_level,menu_enabled) VALUES (?,'devices','READ',TRUE)", role);
+        jdbc.update("UPDATE app_user SET role_code=? WHERE account='admin1'", role);
+        try {
+            mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
+                    .andExpect(status().isForbidden());
+        } finally { jdbc.update("UPDATE app_user SET role_code='ROLE-ADMIN' WHERE account='admin1'"); }
+    }
+
+    @Test void videoRequiresMatchingSimulatedReceiptAndNeverPlaysLiveSources() throws Exception {
+        String target = insertTarget(true);
+        String command = UUID.randomUUID().toString(), task = UUID.randomUUID().toString();
+        long now = clock.nowMillis();
+        edges.insertCommand(command, "VIDEO-" + command.substring(0, 6), binding.opsDeviceId(), null,
+                "EO_BEGIN_TRACK", "video fixture", "replay", true, now + 10000, now);
+        edges.insertTask(task, target, null, binding.opsDeviceId(), command, "video fixture", "{}", now);
+        video(target, "QUEUED", "NONE");
+        edges.updateCommand(command, "QUEUED", "SENT", now, null, null);
+        video(target, "WAITING", "NONE");
+        edges.updateCommand(command, "SENT", "SUCCEEDED", now, "200", null);
+        video(target, "RECEIPT_UNAVAILABLE", "NONE");
+        String payload = mapper.writeValueAsString(java.util.Map.of("event", "BeginTracking", "edgeId", binding.edgeId(), "timestamp", now,
+                "metadata", java.util.Map.of("taskId", task, "deviceId", binding.externalDeviceId(), "codeStatus", 200)));
+        String inbox = edges.inbox(binding, EoEdgeEnvelope.decode(binding.reportingTopic(),
+                payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)), now);
+        edges.addReceipt(command, inbox, "200", now, payload);
+        video(target, "AVAILABLE", "SIMULATED_CANVAS");
+        jdbc.update("UPDATE command_receipt SET payload=? WHERE command_id=?", payload.replace(task, UUID.randomUUID().toString()), command);
+        video(target, "RECEIPT_UNAVAILABLE", "NONE");
+        jdbc.update("UPDATE command_receipt SET payload=? WHERE command_id=?", payload, command);
+        jdbc.update("UPDATE target SET source_mode='live' WHERE target_id=?", target);
+        video(target, "NOT_INTEGRATED", "NONE");
+        jdbc.update("UPDATE target SET source_mode='replay' WHERE target_id=?", target);
+        jdbc.update("UPDATE device_command SET simulated=FALSE WHERE command_id=?", command);
+        video(target, "NOT_INTEGRATED", "NONE");
+        jdbc.update("UPDATE device_command SET simulated=TRUE,status='TIMED_OUT' WHERE command_id=?", command);
+        video(target, "TIMED_OUT", "NONE");
+        jdbc.update("UPDATE device_command SET status='FAILED' WHERE command_id=?", command);
+        video(target, "FAILED", "NONE");
+        jdbc.update("UPDATE eo_tracking_task SET status='ENDED' WHERE task_id=?", task);
+        video(target, "ENDED", "NONE");
+    }
+
+    private void video(String target, String expected, String playback) throws Exception {
+        mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.target_id").value(target))
+                .andExpect(jsonPath("$.data.status").value(expected))
+                .andExpect(jsonPath("$.data.playback_type").value(playback))
+                .andExpect(jsonPath("$.data.checked_at").isNumber());
+    }
+
     private Binding register(String edgeId, String deviceId) {
         String opsId = configuration.register(new Registration(EoEdgeEnvelope.PROTOCOL, brokerId, null, deviceId, null,
                 "replay", org, district, "EO-" + UUID.randomUUID(), "光电夹具", null, null, null, edgeId), key());

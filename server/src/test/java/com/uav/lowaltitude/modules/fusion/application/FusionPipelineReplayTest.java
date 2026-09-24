@@ -50,6 +50,7 @@ class FusionPipelineReplayTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired FusionInboxRepository inbox;
     @Autowired FusionPipeline pipeline;
+    @Autowired com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository ruleFacts;
 
     /**
      * 回放只跑一次并把结果留在 FRAMES 里：种子已在上下文启动时摄取过一遍，这里把 inbox 复位后由本测试自己驱动管线，
@@ -94,6 +95,31 @@ class FusionPipelineReplayTest {
         assertThat(frames.get(0).estimates().get(0).accuracyM()).isNotNull().isPositive();
         assertThat(frames.get(0).estimates().get(0).schemaStatus()).isIn("CONFIRMED", "DEMO");
         assertThat(frames.get(0).configVersion()).isEqualTo("demo-v1");
+    }
+
+    @Test
+    void planMatcherReadsTheSameIdentitySelectedFromTdoa() {
+        String targetId = targetByExternal("D-T1");
+        // Recording writer does not persist E2 selections; reproduce that persisted input explicitly.
+        String clue = jdbc.queryForObject("select identity_clue from source_observation where external_target_id='D-T1' and identity_clue is not null fetch first 1 rows only", String.class);
+        assertThat(clue).isNotBlank();
+        jdbc.update("insert into target_attribute_selection(target_id,identity_clue,selected_at,config_version,manual_class_override,updated_at,version) values(?,?,CURRENT_TIMESTAMP,'demo-v1',false,CURRENT_TIMESTAMP,0)", targetId, clue);
+        assertThat(ruleFacts.findTarget(targetId).uavSn()).isEqualTo(clue);
+    }
+
+    @Test
+    void asynchronousSourcesAreCombinedInTheSameFusionResult() {
+        String targetId = targetByExternal("R-T1");
+        assertThat(framesOf(targetId)).anySatisfy(frame ->
+                assertThat(frame.estimates().stream().map(SourceEstimate::sourceType).distinct().toList())
+                        .contains("RADAR", "TDOA", "EO"));
+    }
+
+    @Test
+    void unrelatedFramesDoNotEraseAFreshTargetObservation() {
+        String targetId = targetByExternal("R-T1");
+        assertThat(framesOf(targetId)).filteredOn(frame -> frame.status() == com.uav.lowaltitude.modules.fusion.FusionContracts.TrackStatus.STABLE)
+                .allSatisfy(frame -> assertThat(frame.estimates()).isNotEmpty());
     }
 
     @Test

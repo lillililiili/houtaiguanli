@@ -35,6 +35,21 @@ public class LegalityEvaluationReadRepository {
         return total == null ? 0 : total;
     }
 
+    public record EvaluationCounts(long total, long legal, long abnormal, long illegal, long undetermined, long notApplicable) { }
+
+    public EvaluationCounts summarize(EvaluationQuery query, AccessDecision access) {
+        Where where = where(query, access);
+        return jdbc.queryForObject("SELECT COUNT(*) AS total,"
+                + " COALESCE(SUM(CASE WHEN e.legal_status='LEGAL' THEN 1 ELSE 0 END),0) AS legal,"
+                + " COALESCE(SUM(CASE WHEN e.legal_status='ABNORMAL' THEN 1 ELSE 0 END),0) AS abnormal,"
+                + " COALESCE(SUM(CASE WHEN e.legal_status='ILLEGAL' THEN 1 ELSE 0 END),0) AS illegal,"
+                + " COALESCE(SUM(CASE WHEN e.legal_status='UNDETERMINED' THEN 1 ELSE 0 END),0) AS undetermined,"
+                + " COALESCE(SUM(CASE WHEN e.legal_status='NOT_APPLICABLE' THEN 1 ELSE 0 END),0) AS not_applicable"
+                + from() + where.sql, where.parameters,
+                (rs, i) -> new EvaluationCounts(rs.getLong("total"), rs.getLong("legal"), rs.getLong("abnormal"),
+                        rs.getLong("illegal"), rs.getLong("undetermined"), rs.getLong("not_applicable")));
+    }
+
     public List<EvaluationRow> list(EvaluationQuery query, AccessDecision access, int offset, int size) {
         Where where = where(query, access);
         where.parameters.put("offset", offset); where.parameters.put("size", size);
@@ -196,6 +211,14 @@ public class LegalityEvaluationReadRepository {
                     + ") THEN TRUE ELSE FALSE END)=:needs_attention");
             where.parameters.put("needs_attention", query.needsAttention());
         }
+        if (query.hasAlarm() != null) {
+            // 与 EvaluationRow.alarmId() 同源：引擎、合并成员、人工转告警历史；分页与 total 共用。
+            String linked = "e.alarm_id IS NOT NULL OR m.alarm_id IS NOT NULL OR EXISTS ("
+                    + "SELECT 1 FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id"
+                    + " AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL)";
+            where.sql.append(" AND (CASE WHEN " + linked + " THEN TRUE ELSE FALSE END)=:has_alarm");
+            where.parameters.put("has_alarm", query.hasAlarm());
+        }
         if (query.from() != null) {
             where.sql.append(" AND e.evaluated_at>=:from AND e.evaluated_at<:to");
             where.parameters.put("from", query.from()); where.parameters.put("to", query.to());
@@ -289,7 +312,13 @@ public class LegalityEvaluationReadRepository {
 
     public record EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
             String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
-            String objectTypeCode, Boolean needsReview, Boolean needsAttention) {
+            String objectTypeCode, Boolean needsReview, Boolean needsAttention, Boolean hasAlarm) {
+        public EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
+                String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
+                String objectTypeCode, Boolean needsReview, Boolean needsAttention) {
+            this(mode, latestOnly, legalStatus, planMatch, reviewState, subjectKind, targetId, planId, from, to,
+                    ownerOrgId, districtId, sourceMode, objectTypeCode, needsReview, needsAttention, null);
+        }
         public EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
                 String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
                 String objectTypeCode, Boolean needsReview) {

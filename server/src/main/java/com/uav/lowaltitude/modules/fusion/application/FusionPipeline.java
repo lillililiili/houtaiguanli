@@ -196,7 +196,7 @@ public class FusionPipeline {
             observedByTarget.merge(targetId, observation.observedAt(), (a, b) -> a.isAfter(b) ? a : b);
         }
 
-        // ④ 状态推进：本帧命中的目标走 onHit，同分区其余活跃目标走 onFrame（可能转 SHORT_LOST/TERMINATED）。
+        // ④ 只由实际命中推进观测；其他来源的报文不构成该目标的失联证据。
         Map<String, TrackStatus> statuses = new LinkedHashMap<>();
         Map<String, Integer> missFrames = new LinkedHashMap<>();
         for (Map.Entry<String, List<SourceEstimate>> entry : estimatesByTarget.entrySet()) {
@@ -219,6 +219,8 @@ public class FusionPipeline {
         for (ActiveTarget candidate : active) {
             String targetId = candidate.target().targetId();
             if (estimatesByTarget.containsKey(targetId)) continue;
+            Instant lastObserved = candidate.status().state().lastObservedAt();
+            if (lastObserved != null && !frame.observedAt().isAfter(lastObserved.plusMillis(machine.shortLostAfterMillis()))) continue;
             Transition transition = machine.onFrame(candidate.status().state(), frame.observedAt());
             if (transition.changed() || transition.state().missFrames() != candidate.status().state().missFrames()) {
                 identities.updateStatus(targetId, transition.state(), candidate.status().primarySourceId(), receivedAt);
@@ -244,7 +246,8 @@ public class FusionPipeline {
         List<String> targetIds = new ArrayList<>();
         for (Map.Entry<String, List<SourceEstimate>> entry : estimatesByTarget.entrySet()) {
             targetIds.add(entry.getKey());
-            writer.write(new TargetFrameResult(entry.getKey(), domain, observedByTarget.get(entry.getKey()), entry.getValue(),
+            List<SourceEstimate> estimates = recentEstimates(entry.getKey(), observedByTarget.get(entry.getKey()), entry.getValue(), machine.shortLostAfterMillis());
+            writer.write(new TargetFrameResult(entry.getKey(), domain, observedByTarget.get(entry.getKey()), estimates,
                     statuses.getOrDefault(entry.getKey(), TrackStatus.TENTATIVE), missFrames.getOrDefault(entry.getKey(), 0), params.configVersion()));
         }
         return new FrameOutcome(parsed.size(), targetIds.size(), List.copyOf(targetIds));
@@ -292,13 +295,38 @@ public class FusionPipeline {
         // 显式装箱保留"没有位置"这件事，让它一路带到融合层，而不是在管线里炸掉整帧。
         Double estimateLongitude = state == null ? observation.longitude() : Double.valueOf(state.longitude());
         Double estimateLatitude = state == null ? observation.latitude() : Double.valueOf(state.latitude());
-        return new SourceEstimate(observation.sourceId(), observation.sourceCode(), observation.sourceType(), observation.schemaStatus(), linkId, trackId,
+        SourceEstimate estimate = new SourceEstimate(observation.sourceId(), observation.sourceCode(), observation.sourceType(), observation.schemaStatus(), linkId, trackId,
                 observation.observationId(), observation.observedAt(), estimateLongitude, estimateLatitude,
                 state == null ? null : state.accuracyM(), observation.altitudeAmslM(), observation.heightAglM(),
                 observation.speedMps() != null ? observation.speedMps() : (state == null ? null : state.speedMps()),
                 observation.headingDeg() != null ? observation.headingDeg() : (state == null ? null : state.headingDeg()),
                 observation.classCode(), observation.classConfidence(), observation.identityClue(), observation.identityConfidence(),
                 PointKind.MEAS, Map.copyOf(observation.quality()), observation.pilotLongitude(), observation.pilotLatitude(), observation.classSource());
+        // 持久化单源最近真实观测，进程重启后仍能组合异步来源。迟到帧不得回退快照。
+        if (state != null && (update == null || !update.outOfOrder())) {
+            Map<String, Object> snapshot = new LinkedHashMap<>(state.toMap());
+            snapshot.put("source_estimate", estimate);
+            rawTracks.updateFilterState(trackId, write(snapshot));
+        } else if (open != null && update != null && update.outOfOrder() && open.filterStateJson() != null) {
+            rawTracks.updateFilterState(trackId, open.filterStateJson());
+        }
+        return estimate;
+    }
+
+    private List<SourceEstimate> recentEstimates(String targetId, Instant at, List<SourceEstimate> current, long freshnessMillis) {
+        Map<String, SourceEstimate> bySource = new LinkedHashMap<>();
+        // 未命中的失联帧不能用缓存伪造新的实测点。
+        if (current.isEmpty()) return List.of();
+        for (LinkState link : rawTracks.linkStates(List.of(targetId))) {
+            if (link.filterStateJson() == null) continue;
+            Object saved = readMap(link.filterStateJson()).get("source_estimate");
+            if (saved == null) continue;
+            SourceEstimate estimate = json.convertValue(saved, SourceEstimate.class);
+            if (estimate.observedAt().isAfter(at) || estimate.observedAt().isBefore(at.minusMillis(freshnessMillis))) continue;
+            bySource.merge(estimate.sourceId(), estimate, (a, b) -> a.observedAt().isAfter(b.observedAt()) ? a : b);
+        }
+        for (SourceEstimate estimate : current) bySource.put(estimate.sourceId(), estimate);
+        return List.copyOf(bySource.values());
     }
 
     private Map<String, State> predictStates(AlphaBetaFilter filter, List<ActiveTarget> active, Instant at) {
