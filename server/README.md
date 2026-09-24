@@ -296,4 +296,4 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 ### 通知后的飞离观察只读查询（2026-09-24）
 
-`GET /api/v1/uav-events/{eventId}/advisory/observation` 复用 `alarm:read`、事件数据范围和 `PilotDepartureWatch`。返回 `event_id/channel/status/presence/started_at/deadline_at/evaluated_at`；时间为 epoch 毫秒，未开始时可空字段按既有 JSON 规则省略。`status` 为 NOT_STARTED、WATCHING、ASSESSED；只有 ASSESSED 的 LEFT/STILL_PRESENT 表示明确观察结论，UNKNOWN 表示新位置不足或读取异常。短信送达、电话播放完成后分别观察 10 秒，复用原窗口依据；读取不确认告警、不发送、不改事件或通知状态，不放宽反制资格。当前消费者为本机信号模拟器，业务前台和管理端既有 advisory 契约未改动。回归命令：`bash ./mvnw -Dtest=UavDepartureObservationTest,NotifyFlowTest,UavAdvisoryApiTest test`（22 项通过）。
+`GET /api/v1/uav-events/{eventId}/advisory/observation` 复用 `alarm:read`、事件数据范围和 `PilotDepartureWatch`。返回 `event_id/channel/status/presence/started_at/deadline_at/evaluated_at`；时间为 epoch 毫秒，未开始时可空字段按既有 JSON 规则省略。`status` 为 NOT_STARTED、WATCHING、ASSESSED；只有 ASSESSED 的 LEFT/STILL_PRESENT 表示明确观察结论，UNKNOWN 表示新位置不足或读取异常。短信送达后观察 3 秒，电话播放完成后观察 10 秒，复用各自窗口；读取不确认告警、不发送、不改事件或通知状态，不放宽反制资格。当前消费者为本机信号模拟器，业务前台和管理端既有 advisory 契约未改动。回归命令：`bash ./mvnw -Dtest=UavDepartureObservationTest,NotifyFlowTest,UavAdvisoryApiTest test`（22 项通过）。

@@ -69,7 +69,7 @@ public class UavAdvisoryService {
             since = null;
         }
         if (since == null) return new DepartureObservation(id, channel, "NOT_STARTED", "UNKNOWN", null, null, now);
-        long deadline = since + NotifyFlow.WATCH_MILLIS;
+        long deadline = since + ("VOICE".equals(channel) ? NotifyFlow.CALL_WATCH_MILLIS : NotifyFlow.SMS_WATCH_MILLIS);
         if (now < deadline) return new DepartureObservation(id, channel, "WATCHING", "UNKNOWN", since, deadline, now);
         return new DepartureObservation(id, channel, "ASSESSED", presence(id, since, now).name(), since, deadline, now);
     }
