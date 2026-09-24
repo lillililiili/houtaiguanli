@@ -15,6 +15,9 @@ public final class LegalityEvaluationDtos {
 
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
 
+    /** 与列表同源的全量统计，不受分页大小影响。 */
+    public record SummaryDto(long total, long legal, long abnormal, long illegal, long undetermined, long notApplicable) { }
+
     /** 复核头行快照；SHADOW 研判没有复核行时整个 review 为 null。 */
     public record ReviewDto(String state, String manualStatus, long version) { }
 

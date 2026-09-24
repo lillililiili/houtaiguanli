@@ -21,6 +21,8 @@ public class ExternalInterfaceService {
     private final AppClock clock;
     private final AuditService audit;
     private final com.uav.lowaltitude.integration.mock.MockWeatherForecast mockWeather;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private LocalForecastReadService localForecast;
     public ExternalInterfaceService(ExternalInterfaceRepository repository, DeviceAccessPolicy access,
             FlightReadService flights, AppClock clock, AuditService audit,
             com.uav.lowaltitude.integration.mock.MockWeatherForecast mockWeather) {
@@ -64,12 +66,15 @@ public class ExternalInterfaceService {
     public ForecastAvailability forecast(String planId) {
         // The existing plan reader enforces action permission, object existence and data scope first.
         var plan=flights.flightPlan(planId);
+        if (localForecast != null && java.util.Set.of("mock","replay").contains(plan.sourceMode())) {
+            var received=localForecast.read(planId);
+            if(received!=null) return received;
+        }
         Row row=required("WEATHER_FORECAST");
         if ("mock".equals(row.sourceMode()) && row.updatedAt()!=null) {
             if (!mockWeather.available()) return new ForecastAvailability(plan.planId(), "AWAITING_ADAPTER", "当前环境不允许天气模拟", null);
-            boolean stale=clock.nowMillis() >= row.updatedAt()+com.uav.lowaltitude.integration.mock.MockWeatherForecast.DURATION_MILLIS;
-            return new ForecastAvailability(plan.planId(), stale ? "STALE" : "READY",
-                stale ? "本批模拟预报已过期" : null, mockWeather.forecast(row.areaName(),row.updatedAt()));
+            return new ForecastAvailability(plan.planId(), "READY", null,
+                mockWeather.forecast(row.areaName(),row.updatedAt()));
         }
         return new ForecastAvailability(plan.planId(), status(row), row.updatedAt()==null
             ? "天气预报尚未接入" : "天气预报尚未接通，暂无预报数据", null);
@@ -84,13 +89,13 @@ public class ExternalInterfaceService {
     private String status(Row row) {
         if (row.updatedAt()==null) return "NOT_CONFIGURED";
         if ("mock".equals(row.sourceMode()) && mockWeather.available())
-            return clock.nowMillis() >= row.updatedAt()+com.uav.lowaltitude.integration.mock.MockWeatherForecast.DURATION_MILLIS ? "STALE" : "SIMULATED";
+            return "SIMULATED";
         return "AWAITING_ADAPTER";
     }
     private Configuration dto(Row r) { return new Configuration(r.kind(),r.name(),r.sourceCode(),r.direction(),
         r.endpoint(),r.credentialRef(),r.allowedCidrs(),r.areaName(),r.intervalMinutes(),r.validityMinutes(),r.version(),r.updatedAt(),
         status(r),"SIMULATED".equals(status(r)),r.updatedAt()==null ? "尚未配置"
-            : ("mock".equals(r.sourceMode()) ? "模拟预报批次有效期为 24 小时" : "配置已保存，待确认协议并接入适配器"),r.sourceMode()); }
+            : ("mock".equals(r.sourceMode()) ? "模拟预报覆盖发布时间起 24 小时" : "配置已保存，待确认协议并接入适配器"),r.sourceMode()); }
     private static String clean(String s) { return s==null || s.isBlank() ? null : s.trim(); }
     private static Input normalized(Input p) { return new Input(p.version(),clean(p.name()),clean(p.sourceCode()),clean(p.direction()),
         clean(p.endpoint()),clean(p.credentialRef()),clean(p.allowedCidrs()),clean(p.areaName()),p.intervalMinutes(),p.validityMinutes(),clean(p.sourceMode())==null ? "live" : clean(p.sourceMode())); }

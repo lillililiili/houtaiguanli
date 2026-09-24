@@ -224,6 +224,60 @@ class LegalityReviewApiTest {
     }
 
     @Test
+    void summaryMatchesListFiltersAndLatestSemantics() throws Exception {
+        String newer = "s7r-new-" + suffix;
+        insertEvaluation(newer, run, "LEGAL", "[]", null, null);
+        insertReview(newer, "PENDING_REVIEW", 0);
+        setAssurance(newer, "legality-assurance-v1", "SUFFICIENT", "[]");
+        jdbc.update("update rule_evaluation set evaluated_at=? where evaluation_id=?", ts(T0.plusSeconds(1)), newer);
+        String filters = "?mode=ACTIVE&object_type_code=UAV&owner_org_id=" + orgId;
+        assertSummaryMatchesLists(filters);
+        assertSummaryMatchesLists(filters + "&latest_only=true");
+        assertSummaryMatchesLists(filters + "&needs_attention=true");
+        assertSummaryMatchesLists(filters + "&needs_review=true");
+        assertSummaryMatchesLists(filters + "&review_state=CONFIRMED");
+        assertSummaryMatchesLists(filters + "&district_id=seed-stage7-other-district");
+        // 最新明确合法记录不能让旧待复核记录重新进入最新待处理队列。
+        mvc.perform(get("/api/v1/legality-evaluations/summary" + filters + "&latest_only=true&needs_attention=true")
+                        .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        escalate(session, evaluation, "统计关联测试", 0).andExpect(status().isCreated());
+        assertSummaryMatchesLists(filters + "&has_alarm=true");
+        assertSummaryMatchesLists(filters + "&has_alarm=false&needs_attention=true");
+        jdbc.update("update target set object_type_code='BIRD' where target_id=?", target);
+        assertSummaryMatchesLists(filters);
+    }
+
+    @Test
+    void summaryChecksPermissionsBeforeParametersAndHidesOtherScopes() throws Exception {
+        String path = "/api/v1/legality-evaluations/summary";
+        mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(get(path + "?wat=1").header("Authorization", bearer(user("ASSIGNED", "target:read"))))
+                .andExpect(status().isForbidden());
+        mvc.perform(get(path + "?object_type_code=UAV&wat=1").header("Authorization", bearer(user("ASSIGNED", "assessment:read"))))
+                .andExpect(status().isForbidden());
+        mvc.perform(get(path + "?plan_id=missing&wat=1").header("Authorization", bearer(user("ASSIGNED", "assessment:read"))))
+                .andExpect(status().isForbidden());
+        mvc.perform(get(path + "?has_alarm=invalid").header("Authorization", bearer(session))).andExpect(status().isBadRequest());
+        mvc.perform(get(path + "?owner_org_id=seed-stage7-other-org").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+    }
+
+    private void assertSummaryMatchesLists(String filters) throws Exception {
+        String body = mvc.perform(get("/api/v1/legality-evaluations/summary" + filters + "&page=3&size=1")
+                        .header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        JsonNode summary = json.readTree(body).path("data");
+        for (String state : List.of("", "LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE")) {
+            String result = mvc.perform(get("/api/v1/legality-evaluations" + filters + "&size=1" + (state.isEmpty() ? "" : "&legal_status=" + state))
+                            .header("Authorization", bearer(session))).andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(summary.path(state.isEmpty() ? "total" : state.toLowerCase(java.util.Locale.ROOT)).asLong(-1))
+                    .as("summary agrees with list for %s %s", filters, state).isEqualTo(json.readTree(result).path("data").path("total").asLong());
+        }
+    }
+
+    @Test
     void objectTypeFilterKeepsOnlyConfirmedUavTargetsAndCountsSameScope() throws Exception {
         String path = "/api/v1/legality-evaluations?mode=ACTIVE&latest_only=true&owner_org_id=" + orgId;
         mvc.perform(get(path + "&object_type_code=UAV").header("Authorization", bearer(session)))
@@ -326,6 +380,34 @@ class LegalityReviewApiTest {
         mvc.perform(get(path.replace("true", "invalid")).header("Authorization", bearer(session)))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(path).header("Authorization", bearer(user("ASSIGNED", "target:read"))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void alarmLocationFiltersHistoryLinksBeforePaginationWithoutLeakingAlarmIds() throws Exception {
+        String other = "s7r-unlinked-" + suffix;
+        insertEvaluation(other, run, "UNDETERMINED", "[]", null, null);
+        insertReview(other, "PENDING_REVIEW", 0);
+        escalate(session, evaluation, "筛选测试转告警", 0).andExpect(status().isCreated());
+        String path = "/api/v1/legality-evaluations?mode=ACTIVE&owner_org_id=" + orgId + "&size=1";
+        mvc.perform(get(path + "&has_alarm=true").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(evaluation));
+        mvc.perform(get(path + "&has_alarm=true&page=2").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items").isEmpty());
+        mvc.perform(get(path + "&has_alarm=false&needs_attention=true").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(other));
+        mvc.perform(get(path + "&has_alarm=true&legal_status=UNDETERMINED").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        String readOnly = user("ASSIGNED", "assessment:read");
+        mvc.perform(get(path + "&has_alarm=true").header("Authorization", bearer(readOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].alarm_id").doesNotExist());
+        mvc.perform(get(path + "&has_alarm=invalid").header("Authorization", bearer(session)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get(path + "&has_alarm=invalid").header("Authorization", bearer(user("ASSIGNED", "target:read"))))
                 .andExpect(status().isForbidden());
     }
 

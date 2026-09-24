@@ -14,6 +14,7 @@ public final class UavAdvisoryDtos {
             this(recordId,kind,createdAt,actorName,recipientName,contactBasis,content,outcome,danger,note,urgent,simulated,deliveryStatus,"MANUAL",null);
         }
     }
+    public record DepartureObservation(String eventId, String channel, String status, String presence, Long startedAt, Long deadlineAt, long evaluatedAt) { }
     public record Recipient(String name, String contactHint, String basis) { }
     public record Overview(String eventId, long eventVersion, String smsMode, boolean canWrite,
             boolean canRequestCounter, boolean canDirectCounter, boolean canHandoff, String counterBlockReason, List<Record> records, Recipient recipient, AutoSms autoSms, String voiceMode, AutoVoice autoVoice, boolean counterLaunchVisible, String notifyPhase, AutoHandoff autoHandoff) { }

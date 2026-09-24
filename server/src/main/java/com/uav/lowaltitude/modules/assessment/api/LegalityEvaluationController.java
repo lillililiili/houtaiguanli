@@ -16,6 +16,7 @@ import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.Escalat
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvaluateResultDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvaluationDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.PageDto;
+import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.SummaryDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.RevisionDto;
 import com.uav.lowaltitude.modules.assessment.application.LegalityEvaluationReadService;
 import com.uav.lowaltitude.modules.assessment.application.LegalityReviewService;
@@ -32,6 +33,9 @@ public class LegalityEvaluationController {
 
     @GetMapping
     public ApiResponse<PageDto<EvaluationDto>> list(@RequestParam MultiValueMap<String, String> parameters) { return ApiResponse.ok(read.list(parameters)); }
+
+    @GetMapping("/summary")
+    public ApiResponse<SummaryDto> summary(@RequestParam MultiValueMap<String, String> parameters) { return ApiResponse.ok(read.summary(parameters)); }
 
     @GetMapping("/{evaluationId}")
     public ApiResponse<EvaluationDto> detail(@PathVariable String evaluationId) { return ApiResponse.ok(read.detail(evaluationId)); }

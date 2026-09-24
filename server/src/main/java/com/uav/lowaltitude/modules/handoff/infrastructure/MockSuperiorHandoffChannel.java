@@ -17,10 +17,16 @@ import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
 @Component
 @ConditionalOnProperty(prefix = "app.handoff", name = "channel", havingValue = "mock")
 public class MockSuperiorHandoffChannel implements HandoffChannelPort {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.uav.lowaltitude.modules.integrationconfig.application.LocalInterfaceChannel localSimulator;
     @Override public boolean simulated() { return true; }
 
     @Override
     public DeliveryOutcome deliver(HandoffDispatch dispatch) {
+        if (localSimulator != null) {
+            DeliveryOutcome pending=localSimulator.offer(dispatch);
+            if(pending!=null) return pending;
+        }
         OffsetDateTime submitted = dispatch.at();
         if (HandoffRules.TYPE_RISK_NOTICE.equals(dispatch.handoffType()) || "PLAN_FEEDBACK".equals(dispatch.handoffType())) {
             return new DeliveryOutcome("DELIVERED", "PENDING", null, null,

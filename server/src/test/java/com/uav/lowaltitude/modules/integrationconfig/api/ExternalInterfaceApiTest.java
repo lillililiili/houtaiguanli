@@ -62,6 +62,11 @@ class ExternalInterfaceApiTest {
             .content("{\"version\":0,\"name\":\"天气演示\",\"source_mode\":\"mock\",\"area_name\":\"东营市\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.source_mode").value("mock"))
             .andExpect(jsonPath("$.data.status").value("SIMULATED")).andExpect(jsonPath("$.data.enabled").value(true));
+        long pastPublished=System.currentTimeMillis()-2*86400000L;
+        jdbc.update("UPDATE external_interface_config SET updated_at=? WHERE kind='WEATHER_FORECAST'",pastPublished);
+        mvc.perform(get(URL).header("Authorization",token)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.status").value("SIMULATED")).andExpect(jsonPath("$.data.enabled").value(true))
+            .andExpect(jsonPath("$.data.updated_at").value(pastPublished));
         mvc.perform(put(URL).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
             .content("{\"version\":1,\"name\":\"天气服务\",\"source_mode\":\"live\"}"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.enabled").value(false))

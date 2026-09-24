@@ -17,6 +17,9 @@ const isPlan = computed(() => kind.value === 'FLIGHT_PLAN');
 const fields = ['name', 'source_code', 'direction', 'endpoint', 'credential_ref', 'allowed_cidrs', 'area_name', 'interval_minutes', 'validity_minutes', 'source_mode'];
 const form = reactive({});
 const isMock = computed(() => !isPlan.value && form.source_mode === 'mock');
+const legacyMockForecast = computed(() => config.value?.source_mode === 'mock' && config.value?.status === 'STALE');
+const configurationStatus = computed(() => legacyMockForecast.value ? 'SIMULATED' : config.value?.status);
+const configurationEnabled = computed(() => legacyMockForecast.value || config.value?.enabled);
 let sequence = 0;
 function fill(row) { for (const field of fields) form[field] = row[field] ?? (field.endsWith('_minutes') ? undefined : ''); }
 async function load() {
@@ -80,9 +83,9 @@ onBeforeUnmount(() => { sequence++; });
       </el-card>
       <el-card v-if="config" class="interface-status">
         <template #header><b>接入状态</b></template>
-        <el-tag type="warning" effect="plain">{{ ({NOT_CONFIGURED:'未配置', SIMULATED:'模拟已启用', STALE:'模拟预报已过期'})[config.status] || '待接入' }}</el-tag>
-        <dl><dt>服务状态</dt><dd>{{ config.enabled ? '已启用（模拟）' : '未启用' }}</dd><template v-if="config.updated_at"><dt>配置更新</dt><dd>{{ formatTime(config.updated_at) }}</dd></template></dl>
-        <el-alert :title="config.source_mode === 'mock' ? '每次保存生成一批 24 小时模拟预报，到期后需重新保存。' : (isPlan ? '计划系统及输入协议待确认' : '天气服务商及接口协议待确认')" type="info" :closable="false" />
+        <el-tag type="warning" effect="plain">{{ ({NOT_CONFIGURED:'未配置', SIMULATED:'模拟已启用'})[configurationStatus] || '待接入' }}</el-tag>
+        <dl><dt>服务状态</dt><dd>{{ configurationEnabled ? '已启用（模拟）' : '未启用' }}</dd><template v-if="config.updated_at"><dt>配置更新</dt><dd>{{ formatTime(config.updated_at) }}</dd></template></dl>
+        <el-alert :title="config.source_mode === 'mock' ? '每次保存生成覆盖发布时间起 24 小时的模拟预报。' : (isPlan ? '计划系统及输入协议待确认' : '天气服务商及接口协议待确认')" type="info" :closable="false" />
       </el-card>
     </div>
   </section>

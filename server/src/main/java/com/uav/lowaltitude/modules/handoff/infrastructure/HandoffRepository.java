@@ -252,6 +252,14 @@ public class HandoffRepository {
         if(changed!=1)throw new IllegalStateException("通知结果已变化，不能覆盖原回执");
     }
 
+    /** Only a matching local simulator message may advance its pending delivery. Caller holds handoff lock. */
+    public void completeLocalSimulatorReceipt(String deliveryId, String marker, com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome outcome) {
+        Map<String,Object> p=new HashMap<>();
+        p.put("id",deliveryId);p.put("marker",marker);p.put("delivery",outcome.deliveryStatus());p.put("receipt",outcome.receiptStatus());p.put("reason",outcome.blockedReason());p.put("delivered",outcome.deliveredAt());p.put("acknowledged",outcome.acknowledgedAt());
+        int changed=jdbc.update("UPDATE handoff_delivery SET delivery_status=:delivery,receipt_status=:receipt,blocked_reason=:reason,delivered_at=:delivered,acknowledged_at=:acknowledged WHERE delivery_id=:id AND blocked_reason=:marker",p);
+        if(changed!=1)throw new IllegalStateException("模拟回执关联已变化");
+    }
+
     public SnapshotRow snapshot(String handoffId) {
         List<SnapshotRow> rows = jdbc.query("SELECT schema_version,CAST(snapshot AS VARCHAR) AS snapshot_text"
                 + " FROM handoff_material_snapshot WHERE handoff_id=:id", Map.of("id", handoffId),

@@ -22,15 +22,24 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 public class RiskController {
     private final RiskReadService read;
     private final RiskVerificationService verification;
+    private final com.uav.lowaltitude.modules.risk.application.CurrentRiskReadService current;
 
-    public RiskController(RiskReadService read, RiskVerificationService verification) {
+    public RiskController(RiskReadService read, RiskVerificationService verification,
+            com.uav.lowaltitude.modules.risk.application.CurrentRiskReadService current) {
         this.read = read;
         this.verification = verification;
+        this.current = current;
     }
 
     @GetMapping
     public ApiResponse<PageDto<RiskDto>> list(@RequestParam MultiValueMap<String, String> parameters) {
         return ApiResponse.ok(read.list(parameters));
+    }
+
+    @GetMapping("/current")
+    public ApiResponse<com.uav.lowaltitude.modules.risk.application.CurrentRiskReadService.CurrentPage> current(
+            @RequestParam MultiValueMap<String,String> parameters) {
+        return ApiResponse.ok(current.list(parameters));
     }
 
     /** 区域筛选项：与导出同理，必须排在 /{riskId} 之前。 */

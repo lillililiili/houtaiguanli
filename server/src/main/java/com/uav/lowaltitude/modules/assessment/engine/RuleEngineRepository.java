@@ -225,7 +225,8 @@ public class RuleEngineRepository {
     // ---- 主体输入 ----
 
     public TargetRow findTarget(String targetId) {
-        List<TargetRow> rows = jdbc.query("SELECT target_id,target_no,uav_sn,source_mode,owner_org_id,district_id FROM target WHERE target_id=:id", Map.of("id", targetId),
+        List<TargetRow> rows = jdbc.query("SELECT t.target_id,t.target_no,CASE WHEN t.unified THEN a.identity_clue ELSE t.uav_sn END AS uav_sn,t.source_mode,t.owner_org_id,t.district_id FROM target t"
+                + " LEFT JOIN target_attribute_selection a ON a.target_id=t.target_id WHERE t.target_id=:id", Map.of("id", targetId),
                 (rs, i) -> new TargetRow(rs.getString("target_id"), rs.getString("target_no"), rs.getString("uav_sn"), rs.getString("source_mode"),
                         rs.getString("owner_org_id"), rs.getString("district_id")));
         return rows.isEmpty() ? null : rows.get(0);
@@ -304,8 +305,9 @@ public class RuleEngineRepository {
     public TargetRow latestTargetBySn(String uavSn, String ownerOrgId, String districtId) {
         Map<String, Object> p = new HashMap<>();
         p.put("sn", uavSn); p.put("org", ownerOrgId); p.put("district", districtId);
-        List<TargetRow> rows = jdbc.query("SELECT t.target_id,t.target_no,t.uav_sn,t.source_mode,t.owner_org_id,t.district_id FROM target t"
-                + " JOIN target_latest_state s ON s.target_id=t.target_id WHERE t.uav_sn=:sn AND t.owner_org_id=:org AND t.district_id=:district"
+        List<TargetRow> rows = jdbc.query("SELECT t.target_id,t.target_no,CASE WHEN t.unified THEN a.identity_clue ELSE t.uav_sn END AS uav_sn,t.source_mode,t.owner_org_id,t.district_id FROM target t"
+                + " JOIN target_latest_state s ON s.target_id=t.target_id LEFT JOIN target_attribute_selection a ON a.target_id=t.target_id"
+                + " WHERE (CASE WHEN t.unified THEN a.identity_clue ELSE t.uav_sn END)=:sn AND t.owner_org_id=:org AND t.district_id=:district"
                 + " ORDER BY s.observed_at DESC,t.target_id ASC FETCH FIRST 1 ROWS ONLY", p,
                 (rs, i) -> new TargetRow(rs.getString("target_id"), rs.getString("target_no"), rs.getString("uav_sn"), rs.getString("source_mode"),
                         rs.getString("owner_org_id"), rs.getString("district_id")));
