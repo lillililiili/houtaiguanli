@@ -12,6 +12,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.integration.device.radar.RadarV300PayloadDecoder.PointBatch;
 import com.uav.lowaltitude.integration.device.radar.RadarV300PayloadDecoder.Rtk;
@@ -24,11 +25,13 @@ public class ProtocolDataRepository {
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate named;
     private final ObjectMapper mapper;
+    private final DeviceMonitoringEventRepository monitoring;
 
     public ProtocolDataRepository(JdbcTemplate jdbc, ObjectMapper mapper) {
         this.jdbc = jdbc;
         this.named = new NamedParameterJdbcTemplate(jdbc);
         this.mapper = mapper;
+        this.monitoring = new DeviceMonitoringEventRepository(jdbc);
     }
 
     public boolean insertInbox(String sourceId, String deviceId, String messageKey, byte[] raw, long now) {
@@ -57,7 +60,21 @@ public class ProtocolDataRepository {
                 """, now, truncate(reason), "live-device:" + deviceId, messageKey);
     }
 
+    /** Called after ingestion has rolled back. Never downgrades an independently committed message. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public void recordInboxFailure(String sourceId, String deviceId, String messageKey, byte[] raw, String reason, long now) {
+        String diagnosticId = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO inbox_message (inbox_id,source,source_msg_id,received_at,ops_source_id,
+                    protocol_message_key,payload_sha256,payload_bytes,processing_status,ops_processed_at,failure_reason)
+                VALUES (?,?,?,?,?,?,?,?, 'FAILED',?,?)
+                """, diagnosticId, "live-device:" + deviceId, "failure:" + diagnosticId, now, sourceId,
+                messageKey, sha256(raw), raw, now, truncate(reason));
+    }
+
+    @Transactional
     public void saveTrackBatch(String deviceId, String deviceNo, TrackBatch batch, long now) {
+        var before = monitoring.lockOrInitialize(deviceId,now);
         long observed = batch.uploadedAt() > 0 ? batch.uploadedAt() : now;
         for (TrackItem item : batch.items()) {
             String identity = deviceId + ":" + batch.radarBootMicros() + ":" + item.externalTrackId();
@@ -76,12 +93,15 @@ public class ProtocolDataRepository {
         }
         upsertRuntime(deviceId, "RADAR_TCP_V3_0_0", "ONLINE", "LOGGED_IN", null, now,
                 batch.payloadFrameId(), null, null, batch.items().size(), null, null, null);
-        updateDeviceState(deviceId, "ONLINE", now, Map.of(
+        updateDeviceState(deviceId, "ONLINE", now, before.simulated(), Map.of(
                 "active_track_count", metric("活动航迹数", batch.items().size(), "条", "RADAR_TCP_V3_0_0"),
                 "last_frame_id", metric("最近帧 ID", batch.payloadFrameId(), null, "RADAR_TCP_V3_0_0")));
+        monitoring.accepted(before, "SENSING", now);
     }
 
+    @Transactional
     public void savePointSummary(String deviceId, PointBatch batch, long now) {
+        var before = monitoring.lockOrInitialize(deviceId,now);
         String summary;
         try {
             summary = mapper.writeValueAsString(Map.of("scan_start_deg", batch.scanStartDeg(),
@@ -98,12 +118,15 @@ public class ProtocolDataRepository {
                 """, deviceId, batch.radarBootMicros(), batch.payloadFrameId(), batch.items().size(), now, now, summary);
         upsertRuntime(deviceId, "RADAR_TCP_V3_0_0", "ONLINE", "LOGGED_IN", null, now,
                 batch.payloadFrameId(), null, null, null, null, null, null);
-        updateDeviceState(deviceId, "ONLINE", now, Map.of(
+        updateDeviceState(deviceId, "ONLINE", now, before.simulated(), Map.of(
                 "latest_point_count", metric("最近点迹数", batch.items().size(), "点", "RADAR_TCP_V3_0_0"),
                 "last_frame_id", metric("最近帧 ID", batch.payloadFrameId(), null, "RADAR_TCP_V3_0_0")));
+        monitoring.accepted(before, "SENSING", now);
     }
 
+    @Transactional
     public void saveRtk(String deviceId, String frameId, Rtk rtk, long now) {
+        var before = monitoring.lockOrInitialize(deviceId,now);
         try {
             jdbc.update("""
                     INSERT INTO radar_rtk_sample (sample_id,device_id,frame_id,latitude_deg,longitude_deg,
@@ -121,12 +144,19 @@ public class ProtocolDataRepository {
         if (count >= 20) upsertReference(deviceId, aggregate, count, now);
         upsertRuntime(deviceId, "RADAR_TCP_V3_0_0", "ONLINE", "LOGGED_IN", null, now,
                 frameId, null, count >= 20 ? "READY_UNVERIFIED" : "COLLECTING", null, null, null, null);
-        updateDeviceState(deviceId, "ONLINE", now, Map.of(
+        updateDeviceState(deviceId, "ONLINE", now, before.simulated(), Map.of(
                 "rtk_satellite_count", metric("RTK 卫星数", rtk.satelliteCount(), "颗", "RADAR_TCP_V3_0_0")));
+        monitoring.accepted(before, "STATUS", now);
     }
 
+    @Transactional
     public void saveCountermeasureState(String deviceId, String encoding, long rawWord,
                                         Map<String, Boolean> channels, long now) {
+        var before = monitoring.lockOrInitialize(deviceId,now);
+        Map<String, Object> previous = runtime(deviceId);
+        String previousChannels = reportedChannels(previous == null ? null : previous.get("channel_state_json"));
+        DeviceTrendRepository.record(jdbc,deviceId,"report_status",1,now,before.simulated());
+        channels.forEach((band,on) -> DeviceTrendRepository.record(jdbc,deviceId,"channel_"+band.replace(".","_").toLowerCase(),on?1:0,now,before.simulated()));
         String json;
         try { json = mapper.writeValueAsString(channels); }
         catch (Exception ex) { throw new IllegalStateException(ex); }
@@ -137,24 +167,65 @@ public class ProtocolDataRepository {
                 metric(band + " 通道", on ? "ON" : "OFF", null, "COUNTERMEASURE_TCP_4CH_V2_0")));
         metrics.put("relay_status_word", metric("继电器状态字", Long.toUnsignedString(rawWord), null,
                 "COUNTERMEASURE_TCP_4CH_V2_0"));
-        updateDeviceState(deviceId, "ONLINE", now, metrics);
+        updateDeviceState(deviceId, "ONLINE", now, before.simulated(), metrics);
+        monitoring.accepted(before, "STATUS", now);
+        monitoring.workChanged(before, previousChannels, reportedChannels(json), now);
     }
 
+    @Transactional
     public void saveRadarRegisters(String deviceId, String frameId, Map<String, Object> registers, long now) {
+        var before = monitoring.lockOrInitialize(deviceId,now);
+        Map<String, Object> previous = runtime(deviceId);
+        String previousMode = reportedRadarMode(previous == null ? null : previous.get("radar_registers_json"));
+        if (registers.get("work_mode_code") instanceof Number mode)
+            DeviceTrendRepository.record(jdbc,deviceId,"reported_work_state",mode,now,before.simulated());
         upsertRuntime(deviceId, "RADAR_TCP_V3_0_0", "ONLINE", "LOGGED_IN", null, now,
                 frameId, null, null, null, null, null, null);
         try {
             jdbc.update("UPDATE protocol_runtime_state SET radar_registers_json=?,radar_registers_at=? WHERE device_id=?",
                     mapper.writeValueAsString(registers), now, deviceId);
         } catch (com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalStateException(ex); }
+        // Register responses previously only updated protocol runtime; preserve that online policy.
+        monitoring.accepted(before, "PARAMETERS", now);
+        String currentMode = registers.get("work_mode_code") instanceof Number mode ? "雷达工作模式码 " + mode : null;
+        monitoring.workChanged(before, previousMode, currentMode, now);
     }
 
+    private String reportedRadarMode(Object raw) {
+        if (raw == null) return null;
+        try {
+            var value = mapper.readTree(String.valueOf(raw));
+            var mode = value == null ? null : value.get("work_mode_code");
+            return mode != null && mode.isIntegralNumber() ? "雷达工作模式码 " + mode.asText() : null;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException malformed) { return null; }
+    }
+
+    private String reportedChannels(Object raw) {
+        if (raw == null) return null;
+        try {
+            var value = mapper.readTree(String.valueOf(raw));
+            if (value == null || !value.isObject() || value.isEmpty()) return null;
+            var channels = new java.util.TreeMap<String, String>();
+            var fields = value.fields();
+            while (fields.hasNext()) {
+                var field = fields.next();
+                if (!field.getValue().isBoolean()) return null;
+                channels.put(field.getKey(), field.getValue().booleanValue() ? "开" : "关");
+            }
+            return "继电器通道 " + channels;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException malformed) { return null; }
+    }
+
+    @Transactional
     public void markConnection(String deviceId, String protocol, String state, String loginState,
                                String blockingReason, long now, boolean reconnect) {
+        var before = monitoring.lockOrInitialize(deviceId,now);
         upsertRuntime(deviceId, protocol, state, loginState, null, state.equals("ONLINE") ? now : null,
                 null, null, null, null, null, null, blockingReason);
         if (reconnect) jdbc.update("UPDATE protocol_runtime_state SET reconnect_count=reconnect_count+1 WHERE device_id=?", deviceId);
-        if ("OFFLINE".equals(state) || "ERROR".equals(state)) updateDeviceState(deviceId, "OFFLINE", now, Map.of());
+        if ("OFFLINE".equals(state) || "ERROR".equals(state) || "DISCONNECTED".equals(state))
+            updateDeviceState(deviceId, "OFFLINE", now, before.simulated(), Map.of());
+        monitoring.changed(before, now);
     }
 
     public void addCrcErrors(String deviceId, long count, long now) {
@@ -350,33 +421,34 @@ public class ProtocolDataRepository {
                 rawWord, channels, blocking, now);
     }
 
-    private void updateDeviceState(String deviceId, String connectivity, long now, Map<String, Object> metrics) {
+    private void updateDeviceState(String deviceId, String connectivity, long now, boolean simulated, Map<String, Object> metrics) {
+        DeviceTrendRepository.record(jdbc,deviceId,"connection_state","ONLINE".equals(connectivity)?1:0,now,simulated);
         String json;
         try { json = metrics.isEmpty() ? null : mapper.writeValueAsString(metrics); }
         catch (Exception ex) { throw new IllegalStateException(ex); }
         int updated = jdbc.update("""
                 UPDATE ops_device_state SET connectivity=?,work_state_code=?,health_code=?,observed_at=?,received_at=?,
-                    last_heartbeat_at=?,metrics_json=COALESCE(?,metrics_json),unknown_reason=?,simulated=FALSE,
+                    last_heartbeat_at=?,metrics_json=COALESCE(?,metrics_json),unknown_reason=?,simulated=?,
                     version=version+1 WHERE device_id=?
                 """, connectivity, "ONLINE".equals(connectivity) ? "REPORTING" : "NO_RESPONSE",
                 "ONLINE".equals(connectivity) ? "GOOD" : "UNKNOWN", now, now,
                 "ONLINE".equals(connectivity) ? now : null, json,
-                "ONLINE".equals(connectivity) ? null : "协议会话未收到有效响应", deviceId);
+                "ONLINE".equals(connectivity) ? null : "协议会话未收到有效响应", simulated, deviceId);
         if (updated == 0) jdbc.update("""
                 INSERT INTO ops_device_state (device_id,connectivity,work_state_code,has_alarm,health_code,
                     observed_at,received_at,last_heartbeat_at,metrics_json,unknown_reason,simulated,version)
-                VALUES (?,?,?,FALSE,?,?,?,?,?,?,FALSE,0)
+                VALUES (?,?,?,FALSE,?,?,?,?,?,?,?,0)
                 """, deviceId, connectivity, "ONLINE".equals(connectivity) ? "REPORTING" : "NO_RESPONSE",
                 "ONLINE".equals(connectivity) ? "GOOD" : "UNKNOWN", now, now,
                 "ONLINE".equals(connectivity) ? now : null, json,
-                "ONLINE".equals(connectivity) ? null : "协议会话未收到有效响应");
+                "ONLINE".equals(connectivity) ? null : "协议会话未收到有效响应", simulated);
         if ("ONLINE".equals(connectivity)) metrics.forEach((code, raw) -> {
             if (!(raw instanceof Map<?, ?> metric) || !(metric.get("value") instanceof Number number)) return;
             jdbc.update("""
                     INSERT INTO ops_device_state_history (state_id,device_id,connectivity,observed_at,received_at,
-                        metric_code,metric_value,metric_unit,simulated) VALUES (?,?,?,?,?,?,?,?,FALSE)
+                        metric_code,metric_value,metric_unit,simulated) VALUES (?,?,?,?,?,?,?,?,?)
                     """, UUID.randomUUID().toString(), deviceId, connectivity, now, now, code,
-                    number, metric.get("unit"));
+                    number, metric.get("unit"), simulated);
         });
     }
 

@@ -49,7 +49,7 @@ class FusionInboxFreshSourceTest {
         when(router.prefixes()).thenReturn(List.of("lingyun:"));
         var properties = new FusionProperties();
         properties.setPrioritizeFreshSources(priority);
-        var inbox = new FusionInboxRepository(jdbc, router, properties);
+        var inbox = new FusionInboxRepository(jdbc, router, properties, new com.uav.lowaltitude.platform.config.SimulationPolicy(new org.springframework.mock.env.MockEnvironment().withProperty("spring.profiles.active","test")));
         var tx = new TransactionTemplate(new DataSourceTransactionManager(source));
         for (String expected : priority ? List.of("active-head", "active-tail", "historical")
                                         : List.of("historical", "active-head", "active-tail")) {
@@ -59,6 +59,14 @@ class FusionInboxFreshSourceTest {
         }
         assertThat(jdbc.queryForObject("SELECT status FROM inbox_message WHERE inbox_id='ops'", String.class)).isEqualTo("RECEIVED");
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inbox_message", Integer.class)).isEqualTo(4);
+        jdbc.execute("CREATE TABLE integration_source(source_id VARCHAR(36),source_mode VARCHAR(12))");
+        jdbc.update("INSERT INTO integration_source VALUES('lingyun:formal','live'),('lingyun:simulated','replay')");
+        insert(jdbc,"formal-live","lingyun:formal",now,5);
+        insert(jdbc,"formal-replay","lingyun:simulated",now,6);
+        var formal=new FusionInboxRepository(jdbc,router,properties,new com.uav.lowaltitude.platform.config.SimulationPolicy(new org.springframework.mock.env.MockEnvironment()));
+        var formalRows=tx.execute(status->formal.claim(now,10,30_000,5));
+        assertThat(formalRows).extracting(FusionInboxRepository.InboxRow::inboxId).containsExactly("formal-live");
+        assertThat(jdbc.queryForObject("SELECT status FROM inbox_message WHERE inbox_id='formal-replay'",String.class)).isEqualTo("RECEIVED");
     }
     private void insert(JdbcTemplate jdbc, String id, String code, long at, int seq) {
         jdbc.update("INSERT INTO inbox_message(inbox_id,source,source_msg_id,source_id,received_at,payload,status,ingest_seq) VALUES(?,?,?,?,?,CAST('{}' AS JSON),'RECEIVED',?)",

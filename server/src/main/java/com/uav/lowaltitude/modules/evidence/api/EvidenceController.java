@@ -93,8 +93,9 @@ public class EvidenceController {
     }
 
     @GetMapping("/{evidenceId}/preview")
-    public ResponseEntity<byte[]> preview(@PathVariable String evidenceId) {
-        return previewResponse(previews.open(evidenceId, false));
+    public ResponseEntity<byte[]> preview(@PathVariable String evidenceId,
+            @RequestParam(required = false) Integer page) {
+        return previewResponse(previews.open(evidenceId, false, page));
     }
 
     @GetMapping("/{evidenceId}/thumbnail")
@@ -103,13 +104,14 @@ public class EvidenceController {
     }
 
     private ResponseEntity<byte[]> previewResponse(EvidencePreviewService.Content content) {
-        return ResponseEntity.ok().contentType(MediaType.parseMediaType(content.contentType()))
+        var response = ResponseEntity.ok().contentType(MediaType.parseMediaType(content.contentType()))
                 .contentLength(content.bytes().length)
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
                 .header(HttpHeaders.CACHE_CONTROL, "no-store, private")
                 .header("X-Content-Type-Options", "nosniff")
-                .header("Content-Security-Policy", "sandbox; default-src 'none'")
-                .body(content.bytes());
+                .header("Content-Security-Policy", "sandbox; default-src 'none'");
+        if (content.pageCount() != null) response.header("X-Pdf-Page-Count", content.pageCount().toString());
+        return response.body(content.bytes());
     }
 
     @GetMapping("/{evidenceId}/access-logs")

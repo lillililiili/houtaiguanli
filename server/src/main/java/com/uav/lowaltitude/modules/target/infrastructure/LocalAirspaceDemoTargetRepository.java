@@ -8,7 +8,7 @@ import org.springframework.stereotype.Repository;
 
 /** Persistence for the bounded local monitor catalog; never called for live observations. */
 @Repository
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 public class LocalAirspaceDemoTargetRepository {
     private final JdbcTemplate jdbc;

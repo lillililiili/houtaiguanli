@@ -23,7 +23,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /** 版本差异：字段差在应用层比对；几何差只在 PostGIS 上算，H2 下如实标为暂不可用。 */
-@SpringBootTest(properties = "app.dev-seed.enabled=false")
+@SpringBootTest(properties = {"app.dev-seed.enabled=false", "app.airspace.legacy-write-enabled=true"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AirspaceDiffApiTest {

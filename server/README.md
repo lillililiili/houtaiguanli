@@ -2,6 +2,22 @@
 
 2026-09-28：补齐业务前台已使用的 `/api/v1/evidence-ledger` 只读接口，统一录像、图片、轨迹及设备指令的台账、筛选、统计、精确详情、关联材料和 CSV。复用现有文件权限与保管规则，不迁移或重写历史记录；原 `/evidence-files`、`/evidence-chains` 保持兼容。见[接口修复说明](../docs/证据台账接口修复-2026-09-28.md)。
 
+### 2026-09-28 第十轮续测修复
+
+- PDF 预览支持 `page`（从 1 开始），返回 PNG 和 `X-Pdf-Page-Count`；越界返回 `EVIDENCE_PAGE_OUT_OF_RANGE`。鉴权、来源范围、原件校验和审计仍适用，下载保留原始 PDF。
+- 运行统计及 CSV 支持可选 `owner_org_id`，单位选项只包含当前可见范围；无效或不可见单位拒绝，不静默扩大至全单位。
+- 合法性读取新增 `alarm_verification`；仅共享同事件、同范围且不早于研判的核实，已共享核实记录不重复进入待复核队列，不回写原研判结论。
+- 注册已被其他（包括退役）设备占用的身份返回 409 `DEVICE_IDENTITY_CONFLICT`，失败事务不留下新设备/来源。
+- `app.fusion.max-future-skew-millis` 默认 30000，允许 0～300000。观测时间超过入箱接收时间与该偏差之和时，以 `OBSERVATION_TIME_IN_FUTURE` 记录处理失败，不写目标/轨迹/融合结果；原始入箱消息保留。历史回放沿用原时刻，不改系统时钟，也不自动清理旧污染样本。
+- MQTT 入口在推进工参及感知水位前同样拒绝未来时间，并保留拒绝诊断。协议 A `workState=2` 显示 `ABNORMAL`；异常状态心跳超时仍转 `OFFLINE`，恢复心跳不补造 `GOOD` 健康结论。协议 C 的状态码不受此映射影响。
+- 审计列表/详情返回 `module_name`、`action_name`，保留 `object_type`、`object_id`；维护动态动作及证据预览/缩略图均有中文标签。
+
+本机完整回归期间使用 `target/qa-runtime/qa-server.jar` 独立运行副本，防止编译触发开发热重载中断业务。Windows Maven 测试如需本机 Unix socket/临时资源，使用已有可写 ASCII 临时路径并同时设置 `java.io.tmpdir` 与 `jdk.net.unixdomain.tmpdir`；不修改全局系统临时目录。普通测试的 PostgreSQL 条件跳过必须单列，相关 SQL/约束另在隔离 PostgreSQL 验证。
+
+2026-09-28：人工核实接口 `POST /api/v1/uav-events/{id}/verifications` 的 `note` 改为可选字符串，省略或空白时记录为空字符串，提供时仍限制为 1000 字。前台移除核实说明输入；结论、版本、权限、幂等和核实历史保持原有约束。
+
+2026-09-28 联合测试：可显式使用 `local,qa` profile 启用融合、研判和仅规则目录准备，管理员通过原接口激活 DEMO 规则。此模式不生成业务夹具、不启用自动短信、语音、反制或移送。新增四类材料台账接口与运行边界见[联合测试阻塞修复](../docs/联合测试阻塞修复-2026-09-28.md)。普通 `local` 默认设置保持不变。
+
 2026-09-17：飞行风险列表、CSV 与空间汇总支持可选 `exclude_demo_samples=true`，供业务前台隐藏预设气象与计划通知样例；默认查询、历史记录和 MQTT replay 规则结果保留。详见[风险接口契约](../docs/backend-stage4/alarm-risk-api-contract.md)。
 
 2026-09-14：旧工作区 `dongyiwurenji/server` 的目标查询、飞行航迹/系统核验、天气风险、空域提前结束与本地模拟改动已迁入本仓库；保留本仓库的地图管理、统计导出、设备删除和完整调测信息。迁移版本冲突以追加独立迁移处理，详见 [迁移记录](../docs/新后端迁移记录.md)。
@@ -299,3 +315,54 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 ### 通知后的飞离观察只读查询（2026-09-24）
 
 `GET /api/v1/uav-events/{eventId}/advisory/observation` 复用 `alarm:read`、事件数据范围和 `PilotDepartureWatch`。返回 `event_id/channel/status/presence/started_at/deadline_at/evaluated_at`；时间为 epoch 毫秒，未开始时可空字段按既有 JSON 规则省略。`status` 为 NOT_STARTED、WATCHING、ASSESSED；只有 ASSESSED 的 LEFT/STILL_PRESENT 表示明确观察结论，UNKNOWN 表示新位置不足或读取异常。短信送达后观察 3 秒，电话播放完成后观察 10 秒，复用各自窗口；读取不确认告警、不发送、不改事件或通知状态，不放宽反制资格。当前消费者为本机信号模拟器，业务前台和管理端既有 advisory 契约未改动。回归命令：`bash ./mvnw -Dtest=UavDepartureObservationTest,NotifyFlowTest,UavAdvisoryApiTest test`（22 项通过）。
+
+### 上级空域下发（2026-09-27）
+
+新增正式空域接收契约与 local/test 模拟入口，支持新增、版本更新、撤销及幂等回执；人工写入入口默认关闭，历史读取保留。正式入口必须配置来源与接收账号，尚未完成供应商联调。追加迁移仅建立接收记录及模拟来源元数据，不生成演示空域。真实业务仅查询 live 空域，模拟/回放业务可查询模拟空域。字段、权限、时间约束和启动说明见[上级空域下发接口](../docs/上级空域下发接口-2026-09-27.md)。
+
+### 验收清理与测试视频（2026-09-28）
+
+正式配置默认 live，禁用种子/回放/模拟适配；模拟环境必须显式 local+qa 或 test，且不能同时启用 prod/production。此限制替代上文仅 local 的旧启动说明。短信和录音电话不在本轮变更范围内。
+
+可选媒体服务、两组独立凭据、HLS 授权转发与临时流登记见 [视频接入说明](../docs/designs/acceptance-cleanup/video-integration.md)。媒体二进制须提前放在内网，不依赖 CDN；默认关闭，测试视频不可作为现场证据。本轮后端与两端页面行为、实际验证及部署限制见 [实施记录](../docs/designs/acceptance-cleanup/implementation-progress.md)。
+
+### 本地计划回放输入（2026-09-28）
+
+`POST /api/v1/local-interface-simulator/plans` 支持可选 `source_mode`：省略时保持 `mock`，显式 `replay` 用于与回放设备进行同来源联测；`live` 和其他值返回 400。此字段仅决定新计划来源，不修改已有计划，不改变模拟环境限制、接口操作权限、幂等与审计。设备检查继续隔离不同来源；不需要开启开发种子数据。
+
+可选 `status_code` 省略时为 `PENDING`，另支持 `EXECUTING`、`COMPLETED`、`CANCELLED`。执行中要求当前时间处于计划窗口，已完成要求结束时间不晚于当前时间；非法状态或时间返回 400。同一来源消息重放不能改写状态。此能力仅在受限模拟入口创建新计划，不修改旧计划、不启用全库状态推进，也不生成实际轨迹、研判或执行结果。2026-09-29 定向验证：H2 13 项、隔离 PostgreSQL 23 项、环境隔离 3 项全部通过。
+
+### 研判参数缺项诊断（2026-09-29）
+
+规则参数读取遇到缺项或数值格式错误时，返回 503 `RULE_CONFIGURATION_INVALID` 并指明参数键；不再仅显示内部错误，也不使用默认分数或写成业务“不可判定”。现有演示版本缺少 `C03.severity.BVLOS_EXCEEDED`，超视距触发评分时仍须由规则管理员确认并发布完整参数版本；本轮没有猜填权重或修改历史版本。21 项参数、决策、轨迹及异常处理定向测试通过。
+
+### 光电自动追踪一期（2026-09-28）
+
+后台按当前告警、合法性研判和非气象风险事实统一申请光电，同目标共用任务。新增只读状态、持久暂停和恢复接口；自动与人工共用设备占用、时效、范围、来源模式和回执检查。未确认的执行结果保留占用，不自动重试。当前协议支持 UAV/BIRD，UNDETERMINED 不因泛化信息缺口触发自动观察。业务前台三处复用公共状态及视频面板，管理端菜单不变。
+
+自动开关解析 `app.eo-edge.auto-track.enabled`，兼容既有 `app.eo-edge.auto-track-enabled` / `APP_EO_AUTO_TRACK_ENABLED`；同时要求 MQTT 启用，默认继续关闭。新增 `app.eo-edge.position-max-age-millis` 默认 15000、`demand-max-age-millis` 默认 300000（最新研判），设备心跳沿用 `heartbeat-timeout-millis`（application.yml 默认 3000）。这些是工程时效，不是硬件标定承诺。启动迁移追加 008/009，不改已应用脚本。
+
+接口见[统一光电状态契约](../docs/目标视频查询接口契约.md#2026-09-28-统一光电追踪状态与控制)，业务分工与本次实际验收见[一期方案](../docs/光电自动追踪一期方案-2026-09-28.md)。本地验证不代表真实光电及现场视频已接通。
+
+### 单事件通知异常模拟（local+qa，2026-09-29）
+
+仅在非prod/production且local+qa（或隔离test）、mock/replay来源下，可启用app.qa.advisory-scenario.enabled=true并指定event-id；默认关闭。sms-status允许SIMULATED_DELIVERED/SENT/FAILED/UNKNOWN，voice-status允许SIMULATED_PLAYED/NO_ANSWER/ANSWERED/FAILED/UNKNOWN。delay-ms为0至60000，仅延迟指定事件的模拟外部调用，不占业务事务。稳定通道key须与指定事件一致。没有新增供应商回调协议或手工改写业务结果接口。非法配置不回退成功；测完移除启动参数。
+
+60项通知相关回归和package通过。持久化 BLOCKED 电话不因位置恢复而重新显示自动拨号；UNKNOWN 电话保留结果未确认，不启动播放后的观察。实际场景验收进度见第十二轮报告，不以单元测试代替页面/服务恢复。
+
+### 气象风险测试输入（2026-09-29）
+
+新增默认关闭的 `POST /api/v1/local-interface-simulator/weather-risks`，仅 local+qa/test 且显式 `app.weather-risk.qa.enabled=true` 可用。经已有计划范围与接口操作权限校验，保存带模拟标识、无目标的气象风险及不可覆盖的范围/时段快照；支持同消息幂等。与天气预报输入独立，到期按当前风险规则显示待确认，不自动认定风险解除。参数及验收记录见[本地QA气象风险输入](../docs/qa-weather-risk-input.md)。
+# 隔离维护页面夹具
+
+`DeviceMaintenanceBrowserFixtureTest#serveBrowserFixture` 是显式启用的人工浏览器测试夹具，默认跳过。它固定使用独立 H2 内存库、回环随机端口和模拟通知，禁止指向现有业务库；不增加生产接口，也不代表真实设备验收。
+
+在 `server/` 运行：
+
+```powershell
+.\mvnw.cmd '-Dtest=DeviceMaintenanceBrowserFixtureTest#serveBrowserFixture' '-Dqa.maintenance.browser=true' test
+```
+
+启动信息写入 `target/maintenance-browser/manifest.json`，包含后端端口及待办/设备标识。管理前端可另开回环端口，通过 `ADMIN_API_PROXY_TARGET` 指向该端口，并将 `ADMIN_PUBLIC_ORIGIN` 设为测试页面 origin。测试账号沿用 `application-test.yml` 的开发夹具，通过正常登录进入页面。
+
+向同目录 `control.json` 原子写入 `{"id":"每次不同的编号","scenario":"场景名"}`，等待 manifest 的 `command_id` 匹配后再操作页面。场景仅改变该内存库中的测试前置条件，维护流程仍由实际 API 推进：`HEALTHY`、`DISABLED`、`OFFLINE`、`BAD`、`DEGRADED`、`ALARM`、`UNKNOWN`、`PRE_REPORT`、`STALE`、`FUTURE`、`WRONG_SOURCE`、`WRONG_SIMULATED`、`OPEN_INCIDENT`、`EXPIRED_PASS`、`ACTIVE_COMMISSION`/`CLOSED_COMMISSION`、`ACTIVE_COMMAND`/`CLOSED_COMMAND`、`ACTIVE_TRACKING`/`CLOSED_TRACKING`、`LEGACY`、`DELETED_DEVICE`/`RESTORED_DEVICE`。`NEW_TASK` 通过创建接口准备下一待办；`STOP` 正常退出，最长运行 30 分钟。结束后关闭专用前端并保留证据，不能把夹具结果标成现场恢复。

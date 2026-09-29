@@ -31,6 +31,51 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select count(*) from flight_plan where plan_id=?",Long.class,id)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?",String.class,id)).isEqualTo("PENDING");
  }
+ @Test void explicitReplayPlanKeepsSourceAndMessageIdentity() throws Exception {
+  var body=plan("input-plan-replay");body.put("source_mode","replay");
+  var first=send("/plans",body,200);String id=first.path("subject_id").asText();
+  assertThat(first.path("result").path("source_mode").asText()).isEqualTo("replay");
+  assertThat(jdbc.queryForObject("select source_mode from flight_plan where plan_id=?",String.class,id)).isEqualTo("replay");
+  assertThat(send("/plans",body,200).path("subject_id").asText()).isEqualTo(id);
+  body.put("source_mode","mock");send("/plans",body,409);
+  assertThat(jdbc.queryForObject("select source_mode from flight_plan where plan_id=?",String.class,id)).isEqualTo("replay");
+ }
+ @Test void explicitSimulatedPlanStatesPersistWithoutChangingOtherPlans() throws Exception {
+  String baseline=send("/plans",plan("status-baseline"),200).path("subject_id").asText();
+  long now=System.currentTimeMillis();
+  // Keep referenced versions immutable: create an isolated route whose validity covers past scenarios.
+  String route=UUID.randomUUID().toString(),version=UUID.randomUUID().toString();
+  Object template=plan("status-route").get("route_version_id");
+  var at=java.time.Instant.ofEpochMilli(now).atOffset(java.time.ZoneOffset.UTC);
+  jdbc.update("insert into route(route_id,route_no,name,enabled,source_id,source_mode,owner_org_id,district_id,created_at,updated_at,version) select ?,?,'QA state route',true,r.source_id,'mock',r.owner_org_id,r.district_id,?,?,0 from route r join route_version v on v.route_id=r.route_id where v.route_version_id=?",route,"QA-"+route,at,at,template);
+  jdbc.update("insert into route_version(route_version_id,route_id,version_no,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at) select ?,?,1,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,?,? from route_version where route_version_id=?",version,route,at.minusDays(1),at,template);
+  for(String state:List.of("PENDING","EXECUTING","COMPLETED","CANCELLED")){
+   var body=plan("status-"+state);body.put("source_mode","replay");body.put("status_code",state);
+   body.put("route_version_id",version);
+   if("EXECUTING".equals(state)){body.put("start_at",now-60000);body.put("end_at",now+3600000);}
+   if("COMPLETED".equals(state)){body.put("start_at",now-3600000);body.put("end_at",now-60000);}
+   var first=send("/plans",body,200);String id=first.path("subject_id").asText();
+   assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?",String.class,id)).isEqualTo(state);
+   mvc.perform(get("/api/v1/flight-plans/"+id).header("Authorization",token)).andExpect(status().isOk())
+    .andExpect(jsonPath("$.data.status_code").value(state)).andExpect(jsonPath("$.data.source_mode").value("replay"));
+   assertThat(send("/plans",body,200).path("subject_id").asText()).isEqualTo(id);
+  }
+  assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?",String.class,baseline)).isEqualTo("PENDING");
+ }
+ @Test void invalidSimulatedStateOrTimeIsRejectedAndStateReplayCannotOverwrite() throws Exception {
+  for(String state:List.of("OTHER","","APPROVED","EXECUTING","COMPLETED")){
+   var body=plan("invalid-status-"+state);body.put("status_code",state);send("/plans",body,400);
+  }
+  var body=plan("status-conflict");body.put("status_code","PENDING");
+  String id=send("/plans",body,200).path("subject_id").asText();
+  body.put("status_code","CANCELLED");send("/plans",body,409);
+  assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?",String.class,id)).isEqualTo("PENDING");
+ }
+ @Test void simulationInputCannotCreateLiveOrUnknownModePlans() throws Exception {
+  for(String mode:List.of("live","unknown","")){
+   var body=plan("input-plan-mode-"+mode);body.put("source_mode",mode);send("/plans",body,400);
+  }
+ }
  @Test void pastWeatherPeriodsRemainReadableWithoutRewritingPublicationTime() throws Exception {
   var plan=send("/plans",plan("weather-plan"),200);String id=plan.path("subject_id").asText();
   long published=System.currentTimeMillis()-2*86400000L;var period=Map.of("from",published,"to",published+3600000,"summary","模拟小雨","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",80,"humidity_pct",75);

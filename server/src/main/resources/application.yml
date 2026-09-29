@@ -41,7 +41,7 @@ app:
   flight-device-check:
     # 航线附近设备筛选距离（米），不代表已登记的实际监测覆盖范围。
     nearby-meters: ${FLIGHT_DEVICE_CHECK_NEARBY_METERS:5000}
-  source-mode: ${APP_SOURCE_MODE:mock}
+  source-mode: ${APP_SOURCE_MODE:live}
   evidence-dir: ${EVIDENCE_DIR:./data/evidence}
   map-package:
     data-dir: ${MAP_DATA_DIR:./data/map-data}
@@ -104,7 +104,7 @@ app:
       poll-millis: 60000
       # 调度回看窗口（分钟）；这是调度参数，不是规则阈值——规则阈值一律在 rule_param 里。
       window-minutes: 30
-    enabled: ${APP_RULE_ENGINE_ENABLED:false}
+    enabled: ${APP_RULE_ENGINE_ENABLED:true}
     poll-millis: ${APP_RULE_ENGINE_POLL_MILLIS:5000}
     batch-size: ${APP_RULE_ENGINE_BATCH_SIZE:50}
     lease-seconds: ${APP_RULE_ENGINE_LEASE_SECONDS:30}
@@ -114,7 +114,7 @@ app:
       run-on-start: ${APP_RULE_ENGINE_REPLAY_RUN_ON_START:false}
   # 阶段 8 融合引擎：默认关闭摄取调度；实测雷达提升与回放自启动默认关闭。
   fusion:
-    enabled: ${APP_FUSION_ENABLED:false}
+    enabled: ${APP_FUSION_ENABLED:true}
     poll-millis: ${APP_FUSION_POLL_MILLIS:500}
     batch-size: ${APP_FUSION_BATCH_SIZE:50}
     lease-millis: ${APP_FUSION_LEASE_MILLIS:30000}

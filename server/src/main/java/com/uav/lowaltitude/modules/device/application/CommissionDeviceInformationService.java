@@ -14,6 +14,7 @@ import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.ProtocolDataRepository;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.time.AppClock;
+import com.uav.lowaltitude.platform.config.SimulationPolicy;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import static com.uav.lowaltitude.integration.device.DeviceProtocolCodes.*;
 
@@ -26,12 +27,14 @@ public class CommissionDeviceInformationService {
     private final DeviceInformationAssembler assembler;
     private final ObjectMapper mapper;
     private final AppClock clock;
+    private final SimulationPolicy simulation;
 
     public CommissionDeviceInformationService(DeviceAccessPolicy access, DeviceRepository devices,
             DeviceInformationRepository information, ProtocolDataRepository protocolData,
-            DeviceInformationAssembler assembler, ObjectMapper mapper, AppClock clock) {
+            DeviceInformationAssembler assembler, ObjectMapper mapper, AppClock clock, SimulationPolicy simulation) {
         this.access = access; this.devices = devices; this.information = information;
         this.protocolData = protocolData; this.assembler = assembler; this.mapper = mapper; this.clock = clock;
+        this.simulation = simulation;
     }
 
     public Information get(String id) {
@@ -158,7 +161,7 @@ public class CommissionDeviceInformationService {
         if (!receipt.isEmpty()) add(sections, "control_receipt", "最近指令回执（历史）", "设备回执记录", "CATALOG", node(receipt),
                 millis(receipt, "occurred_at"), millis(receipt, "received_at"), now, "control_receipt");
         return new Information(id, text(device, "device_no"), text(device, "name"), protocol, text(device, "model"),
-                text(device, "source_mode"), Boolean.TRUE.equals(device.get("simulated")), now,
+                text(device, "source_mode"), Boolean.TRUE.equals(device.get("simulated")), now, simulation.allowed(),
                 !LINGYUN_MQTT_V8_6.equals(protocol) && !EO_EDGE_MQTT_20250826.equals(protocol), List.copyOf(sections), List.copyOf(samples), List.copyOf(notes));
     }
 
@@ -184,6 +187,6 @@ public class CommissionDeviceInformationService {
         }
     }
     public record Information(String deviceId, String deviceNo, String name, String protocolCode, String model,
-            String sourceMode, boolean simulated, long generatedAt, boolean taskSupported,
+            String sourceMode, boolean simulated, long generatedAt, boolean simulationAllowed, boolean taskSupported,
             List<DeviceInformationAssembler.Section> sections, List<DeviceInformationAssembler.Section> sampleSections, List<String> notes) { }
 }

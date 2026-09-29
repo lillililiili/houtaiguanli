@@ -148,11 +148,11 @@ public class AutomationRuntimeFactsRepository {
             TargetState targetState = new TargetState(b.target, null, b.sn, s.longitude(), s.latitude(), s.altitudeAmslM(),
                     s.heightAglM(), s.speedMps(), s.headingDeg(), s.classificationConfidence(), s.observedAt(), s.receivedAt());
             try {
-                known = !spatial.ambiguousEffectiveAirspaceVersion(at(now));
+                known = !spatial.ambiguousEffectiveAirspaceVersion(at(now), b.mode);
                 Set<String> scope = new LinkedHashSet<>(jdbc.queryForList(
                         "SELECT airspace_id FROM airspace WHERE owner_org_id=:org AND district_id=:district",
                         params(b), String.class));
-                for (var hit : spatial.airspaceHits(targetState, at(now))) {
+                for (var hit : spatial.airspaceHits(targetState, at(now), b.mode)) {
                     if (!scope.contains(hit.airspaceId())) continue;
                     if (hit.validFrom() == null || hit.validFrom().isAfter(at(now))
                             || (hit.validTo() != null && !at(now).isBefore(hit.validTo()))) { known = false; continue; }

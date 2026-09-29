@@ -26,6 +26,7 @@ import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
 @Service
 public class CommissionService {
 
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final CommissionRepository repository;
     private final DeviceRepository devices;
     private final DeviceAccessPolicy access;
@@ -37,7 +38,8 @@ public class CommissionService {
 
     public CommissionService(CommissionRepository repository, DeviceRepository devices, DeviceAccessPolicy access,
                              AppClock clock, AppProperties properties, AuditService audit, ObjectMapper objectMapper,
-                             DeviceAdapterRegistry adapters) {
+                             DeviceAdapterRegistry adapters, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.repository = repository;
         this.devices = devices;
         this.access = access;
@@ -49,30 +51,29 @@ public class CommissionService {
     }
 
     public TaskPage list(String deviceId, String status, int page, int size) {
-        access.requireCommissionRead();
+        AuthUser actor = access.requireCommissionRead();
         int safePage = Math.max(page, 1), safeSize = Math.min(Math.max(size, 1), 100);
-        List<Task> items = repository.listTasks(blank(deviceId), blank(status), (safePage - 1) * safeSize, safeSize)
+        List<Task> items = repository.listTasks(blank(deviceId), blank(status), (safePage - 1) * safeSize, safeSize, actor)
                 .stream().map(this::task).toList();
-        return new TaskPage(items, safePage, safeSize, repository.countTasks(blank(deviceId), blank(status)));
+        return new TaskPage(items, safePage, safeSize, repository.countTasks(blank(deviceId), blank(status), actor));
     }
 
     public Task get(String id) {
-        access.requireCommissionRead();
-        return required(id);
+        return required(id, access.requireCommissionRead());
     }
 
     @Transactional
     public Task create(String deviceId, String previousTaskId) {
         AuthUser user = access.requireCommissionOperate();
         Map<String, Object> device = devices.find(deviceId);
-        if (device == null) throw notFound("DEVICE_NOT_FOUND", "设备不存在");
+        if (device == null || !repository.deviceInScope(deviceId, user)) throw notFound("DEVICE_NOT_FOUND", "设备不存在或不在授权范围内");
         if (DeviceProtocolCodes.LINGYUN_MQTT_V8_6.equals(device.get("protocol_code"))
                 || DeviceProtocolCodes.EO_EDGE_MQTT_20250826.equals(device.get("protocol_code")))
             throw new ApiException(HttpStatus.CONFLICT,"PROTOCOL_UNSUPPORTED","MQTT 协议本轮不提供调测能力");
         if (!asBoolean(device.get("enabled")))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "停用设备不能发起调测");
         if (previousTaskId != null) {
-            Task previous = required(previousTaskId);
+            Task previous = required(previousTaskId, user);
             if (!deviceId.equals(previous.deviceId()))
                 throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "前次任务必须属于同一设备");
         }
@@ -85,6 +86,8 @@ public class CommissionService {
         p.put("device_id", deviceId);
         p.put("requested_by", user.userId());
         String sourceMode = text(device, "source_mode");
+        simulation.requireSourceMode(sourceMode);
+        if (asBoolean(device.get("simulated"))) simulation.requireSimulation();
         String protocolCode = text(device, "protocol_code");
         p.put("source_mode", sourceMode);
         p.put("protocol_code", protocolCode);
@@ -100,16 +103,18 @@ public class CommissionService {
         repository.addEvent(UUID.randomUUID().toString(), id, "CREATED", "INFO",
                 "调测任务已创建，等待建立连接", now, asBoolean(device.get("simulated")));
         audit.record(user.userId(), user.account(), "commission_create", "commission_task", id, deviceId, null);
-        return required(id);
+        return required(id, user);
     }
 
     @Transactional
     public Task connect(String id, long version) {
         AuthUser user = access.requireCommissionOperate();
-        Task before = required(id);
+        Task before = required(id, user);
         if (!"CREATED".equals(before.status())) throw illegal("任务仅可从 CREATED 发起连接");
         Map<String, Object> device = devices.find(before.deviceId());
         String sourceMode = text(device, "source_mode");
+        simulation.requireSourceMode(sourceMode);
+        if (asBoolean(device.get("simulated"))) simulation.requireSimulation();
         if (!adapters.supports(SourceMode.valueOf(sourceMode), text(device, "protocol_code")))
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "ADAPTER_UNAVAILABLE", "设备协议适配器不可用");
         long now = clock.nowMillis();
@@ -119,13 +124,13 @@ public class CommissionService {
                 now, before.simulated());
         devices.addOutbox(UUID.randomUUID().toString(), "commission.connect", id, now, now + 600L);
         audit.record(user.userId(), user.account(), "commission_connect", "commission_task", id, null, null);
-        return required(id);
+        return required(id, user);
     }
 
     @Transactional
     public Task saveConfiguration(String id, long version, ConnectionProfile configuration) {
         AuthUser user = access.requireCommissionOperate();
-        Task before = required(id);
+        Task before = required(id, user);
         if (!"CONNECTED".equals(before.status())) throw illegal("仅已连接任务可以保存配置");
         validate(configuration);
         long now = clock.nowMillis();
@@ -134,13 +139,15 @@ public class CommissionService {
         repository.addEvent(UUID.randomUUID().toString(), id, "READY", "INFO",
                 "连接参数快照已保存，任务可以开始", now, before.simulated());
         audit.record(user.userId(), user.account(), "commission_configuration", "commission_task", id, null, null);
-        return required(id);
+        return required(id, user);
     }
 
     @Transactional
     public Task start(String id, long version) {
         AuthUser user = access.requireCommissionOperate();
-        Task before = required(id);
+        Task before = required(id, user);
+        simulation.requireSourceMode(before.sourceMode());
+        if(before.simulated()) simulation.requireSimulation();
         if (!"READY".equals(before.status())) throw illegal("任务仅可从 READY 开始调测");
         long now = clock.nowMillis();
         if (repository.transition(id, version, "READY", "RUNNING", now) != 1) throw conflict();
@@ -150,24 +157,23 @@ public class CommissionService {
                 now, before.simulated());
         devices.addOutbox(UUID.randomUUID().toString(), "commission.run", id, now, now + 800L);
         audit.record(user.userId(), user.account(), "commission_start", "commission_task", id, null, null);
-        return required(id);
+        return required(id, user);
     }
 
     @Transactional
     public Task cancel(String id, long version) {
         AuthUser user = access.requireCommissionOperate();
-        Task before = required(id);
+        Task before = required(id, user);
         if (isTerminal(before.status())) throw illegal("终态任务不能取消");
         long now = clock.nowMillis();
         if (repository.cancel(id, version, now) != 1) throw conflict();
         repository.addEvent(UUID.randomUUID().toString(), id, "CANCELLED", "WARN", "调测任务已取消", now, before.simulated());
         audit.record(user.userId(), user.account(), "commission_cancel", "commission_task", id, null, null);
-        return required(id);
+        return required(id, user);
     }
 
     public EventBatch events(String id, long afterSeq, int limit) {
-        access.requireCommissionRead();
-        required(id);
+        required(id, access.requireCommissionRead());
         int safeLimit = Math.min(Math.max(limit, 1), 200);
         List<TaskEvent> items = repository.events(id, Math.max(afterSeq, 0), safeLimit).stream()
                 .map(r -> new TaskEvent(longNumber(r, "event_seq"), text(r, "event_id"), text(r, "stage_code"),
@@ -178,8 +184,7 @@ public class CommissionService {
     }
 
     public Report report(String id) {
-        access.requireCommissionRead();
-        Task task = required(id);
+        Task task = required(id, access.requireCommissionRead());
         if (!List.of("PASSED", "FAILED", "UNTESTABLE").contains(task.status()))
             throw illegal("任务尚未形成报告");
         return new Report(task.commissionId(), task.commissionNo(), task.deviceId(), task.deviceNo(), task.deviceName(),
@@ -196,9 +201,10 @@ public class CommissionService {
         return "协议链路调测结果";
     }
 
-    private Task required(String id) {
+    private Task required(String id, AuthUser actor) {
         Map<String, Object> row = repository.findTask(id);
-        if (row == null) throw notFound("COMMISSION_TASK_NOT_FOUND", "调测任务不存在");
+        if (row == null || !repository.deviceInScope(text(row, "device_id"), actor))
+            throw notFound("COMMISSION_TASK_NOT_FOUND", "调测任务不存在或不在授权范围内");
         return task(row);
     }
 

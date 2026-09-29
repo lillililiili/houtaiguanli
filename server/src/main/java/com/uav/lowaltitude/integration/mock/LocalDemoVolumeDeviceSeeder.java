@@ -30,7 +30,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 全部标记 source_mode='mock'、simulated=TRUE，来源为独立的模拟适配器记录，不与 test 夹具或阶段 2/7 的来源混用。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(52)
 @DependsOn({"localUserSeeder", "localStage5DeviceScopeSeeder"})

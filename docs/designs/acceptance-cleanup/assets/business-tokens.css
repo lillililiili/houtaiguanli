@@ -1,0 +1,223 @@
+/* 主题 token 唯一真源。Naive UI 通过 src/ui/theme.js 运行时读取这些变量。
+   不要在 Vue 主题配置或组件里手抄色值；新全局变量加在这里。 */
+:root{
+  /* 2026-09-27 用户纠正：地图恢复主题调整前的独立配色，不跟随页面宝蓝主题。
+     陆地、植被、城区与水面保留原明暗层级；业务标注和几何不变。 */
+  --map-background:#061a3d;
+  --map-land:#10295a;
+  --map-green:#0e3446;
+  --map-forest:#124238;
+  --map-wetland:#1e4150;
+  --map-urban:#234f92;
+  --map-urban-dense:#2d62b0;
+  --map-building:#3a78cc;
+  --map-water:#1a55b8;
+  --map-water-line:#3f8ff0;
+  --map-road:#3378c8;
+  --map-road-major:#62aef5;
+  --map-road-highway:#a6dcff;
+  --map-road-casing:#0a1e45;
+  --map-boundary:#2f63a8;
+  --map-label:#dbe9fb;        /* 市/区县名 */
+  --map-label-muted:#93b6df;  /* 乡镇名/道路名 */
+  --map-halo:#071a3c;         /* 文字底框色（宽 halo 当底框） */
+  --map-grid:rgba(57,112,152,.16);
+  --map-glow:rgba(80,160,240,.22);   /* 路网/城区光晕 */
+  --map-shade:rgba(3,10,36,.55);     /* 程序化山影的背光面 */
+  --map-highlight:rgba(150,200,255,.12); /* 程序化山影的受光面：压低，向光坡刷太多白会让整图发乌 */
+  /* 用户确认：无框鲜彩设备、目标、设施；类别色与状态、航迹色分离。 */
+  --icon-alarm: #ff243b;
+  --icon-radar:#00d982;
+  --icon-eo:#ff941a;
+  --icon-tdoa:#a64bff;
+  --icon-aoa:#9752ff;
+  --icon-5ga:#00baff;
+  --icon-spec:#00ccd9;
+  --icon-cm:#ff625c;
+  --icon-dec:#ffb300;
+  --icon-ifr:#ff4f40;
+  --icon-cv:#159eff;
+  --icon-isrs:#00c8c7;
+  --icon-dcd:#a24dff;
+  --icon-bsc:#ffc400;
+  --icon-rid:#00b5ff;
+  --icon-fusion:#168fff;
+  --icon-uav:#00b8ff;
+  --icon-bird:#00dba9;
+  --icon-balloon:#b958ff;
+  --icon-kite:#ff9a19;
+  --icon-lantern:#ffc43a;
+  --icon-nest:#139eff;
+  --icon-unknown:#b067ff;
+  --icon-unknown-device:#20c9fa;
+
+  /* 参考图宝蓝/青蓝色相：深靛蓝背景留白、较亮宝蓝承载分区，青色聚焦关键数据；地图独立。 */
+  --canvas:#080f3d;
+  --surface-1:#0a1953;
+  --surface-2:#0c2268;
+  --surface-3:#123381;
+  --surface-hover:#143d91;
+  --input-bg:#09194f;
+  --surface-selected:#154da5;
+  --nav-selected:linear-gradient(100deg,#125ec4,#124399);
+  --control-line:#2855a0;
+  --action-hover:#2785f1;
+  --action-pressed:#1554b8;
+  --action-text:#ffffff;
+  --focus-ring:0 0 0 2px rgba(76,157,255,.25);
+  --bg-0:var(--canvas);
+  --bg-1:var(--surface-1);
+  --bg-2:var(--surface-2);
+  --bg-3:var(--surface-3);
+  --panel:var(--surface-2);
+  --panel-2:var(--surface-2);
+  --line:#234780;
+  --line-2:#1a356a;
+  --txt:#edf6ff;
+  --txt-2:#c0d8f4;
+  --txt-3:#91b0d8;
+  --blue:#379eff;
+  --cyan:#37dfed;
+  --green:#36edac;
+  --amber:#ffcf52;
+  --orange:#ff9b45;
+  --red:#ff647e;
+  --purple:#b58aff;
+  --pink:#ff7bc8;
+  --indigo:#939bff;
+  --gray:#95a8c4;
+  --action-blue:#146de1;
+  --action-red:#ba2949;
+  --page-accent:var(--blue);
+  --shadow:0 8px 24px rgba(0,5,32,.22);
+  --shadow-soft:none;
+  /* 保留旧展示变量名称以兼容消费者；面板保留轻微蓝色明暗，操作面用实色，不参与业务状态判定。 */
+  --highlight:transparent;
+  --glow-blue:transparent;
+  --glow-cyan:transparent;
+  --surface-gradient:linear-gradient(135deg,#103080,#0b2164 75%);
+  --header-gradient:linear-gradient(100deg,#104fba 0%,#0d348a 45%,#0a1e61 100%);
+  --brand-gradient:none;
+  --kpi-art-overlay:none;
+  --action-gradient:var(--action-blue);
+  --table-head-gradient:linear-gradient(180deg,#113281,#102b70);
+  --ambient-gradient:none;
+  --chart-grid:rgba(121,173,236,.13);
+  --chart-axis:rgba(121,173,236,.3);
+  --chart-tooltip:#0b2466;
+  --login-overlay:linear-gradient(100deg,rgba(4,13,33,.42),rgba(4,13,33,.18) 48%,rgba(4,13,33,.68)),radial-gradient(ellipse at 75% 45%,rgba(38,229,255,.14),transparent 58%);
+  --r:5px;
+  --header-h:64px;
+  --nav-w:176px;
+  --gap:12px;
+  /* 用户裁定（2026-09-06）：表格正文 16px 过大，收紧到 13px；细节文字与紧凑密度同步下调。 */
+  --table-font-size:13px;
+  --table-compact-font-size:12.25px;
+  --table-detail-font-size:11.5px;
+  /* 登录与修改密码沿用独立变量，与业务页共用深蓝高光色系。 */
+  --login-card:var(--surface-gradient);
+  --login-input:rgba(4,19,43,.72);
+  --login-line:rgba(80,200,255,.52);
+  --login-text:#f3f7fd;
+  --login-muted:#c0d8f2;
+  --login-action:#0865e8;
+  --login-action-hover:#247cf4;
+  --login-action-pressed:#0954bb;
+  --login-link:#66deff;
+  --login-error:#ffb8bd;
+  --login-shadow:var(--shadow);
+}
+
+/* 路由标识来自 router.afterEach；图表与组件均读取同一个根节点色值。 */
+:root:has(body[data-page="bigscreen"]){
+  /* 仅数据大屏使用参考图样式：深靛蓝底、宝蓝面板与青蓝高亮；状态与地图色独立保留。 */
+  --canvas:#011165;
+  --surface-1:#021a86;
+  --surface-2:#031f9c;
+  --surface-3:#0035bd;
+  --surface-hover:#104ad0;
+  --input-bg:#071d75;
+  --surface-selected:#0a4fcc;
+  --nav-selected:linear-gradient(90deg,#087fea,#0a3cba 58%,#092890);
+  --control-line:#298df1;
+  --action-hover:#2374ed;
+  --action-pressed:#104cb5;
+  --action-text:#f3faff;
+  --focus-ring:0 0 0 2px rgba(41,222,255,.30);
+  --bg-0:var(--canvas);
+  --bg-1:var(--surface-1);
+  --bg-2:var(--surface-2);
+  --bg-3:var(--surface-3);
+  --panel:var(--surface-2);
+  --panel-2:var(--surface-2);
+  --line:#0572e8;
+  --line-2:#073baa;
+  /* 大屏面板轮廓：参考图的浅亮蓝，仅用于边框与标题细带。 */
+  --bs-panel-outline:#075adc;
+  --bs-panel-highlight:#7cf9ff;
+  --bs-panel-ribbon:#007aff;
+  --bs-risk-ring:#004bd6;
+  --bs-screen-grid:linear-gradient(rgba(0,99,255,.23) 1px,transparent 1px),linear-gradient(90deg,rgba(0,99,255,.23) 1px,transparent 1px);
+  --bs-header-fill:linear-gradient(90deg,#001165,#0035df 50%,#001165);
+  --bs-panel-fill:linear-gradient(115deg,#011a91 0%,#03167e 70%,#021c9e);
+  --bs-kpi-fill:linear-gradient(90deg,#073bba,#00147c 18%,#00147c 82%,#073bba);
+  --bs-summary-fill:linear-gradient(110deg,#002aa4,#001379);
+  --bs-orbit-fill:radial-gradient(ellipse at 50% 82%,#038feb,transparent 60%),linear-gradient(145deg,#005ee9,#00218c 65%,#0145cc);
+  --txt:#edf8ff;
+  --txt-2:#c5e3ff;
+  --txt-3:#a9c9ff;
+  --blue:#00baff;
+  --cyan:#00eeff;
+  --green:#36edac;
+  --amber:#ffdf25;
+  --orange:#ff9b45;
+  --red:#ff246a;
+  --purple:#b58aff;
+  --pink:#ff7bc8;
+  --indigo:#939bff;
+  --gray:#95a8c4;
+  --action-blue:#1262d6;
+  --action-red:#ba2949;
+  --page-accent:var(--blue);
+  --shadow:0 8px 24px rgba(0,4,42,.38),0 0 14px rgba(0,126,255,.16);
+  --shadow-soft:none;
+  --highlight:rgba(48,224,255,.32);
+  --glow-blue:rgba(0,117,255,.16);
+  --glow-cyan:rgba(38,232,255,.2);
+  --surface-gradient:linear-gradient(135deg,#0b36b2 0%,#092b9e 42%,#071c79 100%);
+  --header-gradient:linear-gradient(180deg,#0760ed 0%,#0644d0 54%,#082594 100%);
+  --panel-header-gradient:linear-gradient(90deg,#087fde 0%,#0642bc 24%,#092b98 68%,#081f80 100%);
+  --panel-heading-shadow:none;
+  --panel-edge:linear-gradient(90deg,var(--cyan),#148cff 34%,transparent 85%);
+  --grid-pattern:linear-gradient(rgba(41,143,255,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(41,143,255,.09) 1px,transparent 1px);
+  --kpi-gradient:radial-gradient(ellipse at 50% 110%,rgba(0,154,255,.38),transparent 65%),var(--surface-gradient);
+  --brand-gradient:none;
+  --kpi-art-overlay:none;
+  --action-gradient:linear-gradient(180deg,#087df0,#084dc9);
+  --table-head-gradient:linear-gradient(180deg,#0a46bc,#092e98);
+  --ambient-gradient:radial-gradient(ellipse at 50% 0%,rgba(0,100,255,.28),transparent 65%);
+  --chart-grid:rgba(95,172,255,.18);
+  --chart-axis:rgba(95,172,255,.38);
+  --chart-tooltip:#0b247f;
+  --login-overlay:linear-gradient(100deg,rgba(5,21,104,.78),rgba(5,35,139,.62) 48%,rgba(5,17,85,.88)),radial-gradient(ellipse at 75% 45%,rgba(38,229,255,.2),transparent 58%);
+  --r:3px;
+  --header-h:64px;
+  --nav-w:176px;
+  --gap:12px;
+  /* 用户裁定（2026-09-06）：表格正文 16px 过大，收紧到 13px；细节文字与紧凑密度同步下调。 */
+  --table-font-size:13px;
+  --table-compact-font-size:12.25px;
+  --table-detail-font-size:11.5px;
+  /* 登录与修改密码沿用独立变量，与业务页共用深蓝高光色系。 */
+  --login-card:var(--surface-gradient);
+  --login-input:var(--input-bg);
+  --login-line:rgba(80,200,255,.52);
+  --login-text:#f3f7fd;
+  --login-muted:#c0d8f2;
+  --login-action:#0865e8;
+  --login-action-hover:#247cf4;
+  --login-action-pressed:#0954bb;
+  --login-link:#66deff;
+  --login-error:#ffb8bd;
+  --login-shadow:var(--shadow);
+}

@@ -68,6 +68,7 @@ public class FusionPipeline {
     public static final String ALGO_VERSION = "fusion-e1-v1";
     private static final Logger log = LoggerFactory.getLogger(FusionPipeline.class);
 
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final ObservationRepository observations;
     private final RawTrackRepository rawTracks;
     private final IdentityRepository identities;
@@ -78,13 +79,16 @@ public class FusionPipeline {
     private final ObjectMapper json;
     private final LineageRepository lineages;
     private final FusionEventEmitter events;
+    private final FusionProperties properties;
 
     public FusionPipeline(ObservationRepository observations, RawTrackRepository rawTracks, IdentityRepository identities,
             AssociationPendingRepository pendings, FusionConfigLoader configLoader, ObjectProvider<FusedLayerWriter> fusedLayerWriter,
-            InboxSourceRouter router, ObjectMapper json, LineageRepository lineages, FusionEventEmitter events) {
+            InboxSourceRouter router, ObjectMapper json, LineageRepository lineages, FusionEventEmitter events, FusionProperties properties, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.observations = observations; this.rawTracks = rawTracks; this.identities = identities; this.pendings = pendings;
         this.configLoader = configLoader; this.fusedLayerWriter = fusedLayerWriter; this.router = router; this.json = json;
         this.lineages = lineages; this.events = events;
+        this.properties = properties;
     }
 
     public record FrameOutcome(int observationCount, int targetCount, List<String> targetIds) { }
@@ -97,9 +101,13 @@ public class FusionPipeline {
 
         SourceMeta source = observations.findSource(inbox.sourceId());
         if (source == null || !source.enabled()) throw new IllegalStateException("回放来源不存在或已停用: " + inbox.sourceId());
+        simulation.requireSourceMode(source.sourceMode());
         DeviceMeta device = observations.findDeviceForSource(inbox.sourceId());
         Frame frame = router.map(inbox);
         Instant receivedAt = Instant.ofEpochMilli(inbox.receivedAtMillis());
+        if (frame.observedAt().isAfter(receivedAt.plusMillis(properties.getMaxFutureSkewMillis()))) {
+            throw new IllegalStateException("OBSERVATION_TIME_IN_FUTURE: observed_at exceeds received_at and permitted clock skew");
+        }
         FusionDomainKey domain = new FusionDomainKey(source.sourceMode(), device == null ? null : device.ownerOrgId(), device == null ? null : device.districtId());
 
         List<SourceObservation> parsed = new ArrayList<>();

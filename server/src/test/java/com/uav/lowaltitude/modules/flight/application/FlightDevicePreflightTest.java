@@ -66,6 +66,27 @@ class FlightDevicePreflightTest {
         state("UNKNOWN","UNKNOWN");
         assertThat(service.read("future-plan").conclusion()).isEqualTo("CHECK_INCOMPLETE");
     }
+    @Test void lingyunWorkingStateDoesNotReplaceUnknownHealth() {
+        var sensor=devices.list(null,1,100,"device_no_asc").items().get(0);
+        when(sensor.protocolCode()).thenReturn("LINGYUN_MQTT_V8_6");
+        state("ONLINE","UNKNOWN");
+        var result=service.read("future-plan");
+        assertThat(result.rows().get(0).healthCode()).isEqualTo("UNKNOWN");
+        assertThat(result.rows().get(0).complete()).isFalse();
+        assertThat(result.conclusion()).isEqualTo("CHECK_INCOMPLETE");
+        when(plan.startAt()).thenReturn(now.minusSeconds(3600).atOffset(ZoneOffset.UTC));
+        assertThat(service.read("future-plan").conclusion()).isEqualTo("CHECK_INCOMPLETE");
+    }
+    @Test void lingyunExplicitFaultStillCountsAsAbnormal() {
+        var sensor=devices.list(null,1,100,"device_no_asc").items().get(0);
+        when(sensor.protocolCode()).thenReturn("LINGYUN_MQTT_V8_6");
+        long at=now.minusSeconds(5).toEpochMilli();
+        when(devices.state("sensor")).thenReturn(new DeviceState("sensor","ONLINE","2",false,"UNKNOWN",at,at,at,null,List.of(),true));
+        var result=service.read("future-plan");
+        assertThat(result.rows().get(0).abnormal()).isTrue();
+        assertThat(result.rows().get(0).healthCode()).isEqualTo("BAD");
+        assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_ABNORMAL");
+    }
     @Test void startedPlanKeepsExistingTakeoffCheck() {
         when(plan.startAt()).thenReturn(now.minusSeconds(3600).atOffset(ZoneOffset.UTC));
         assertThat(service.read("future-plan").conclusion()).isEqualTo("SUSPECTED_NOT_TAKEN_OFF");

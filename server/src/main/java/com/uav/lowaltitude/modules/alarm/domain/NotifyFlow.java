@@ -17,7 +17,11 @@ public final class NotifyFlow {
             return null;
         }
         if (now < smsAt + SMS_WATCH_MILLIS) return Phase.WATCHING;
-        if ("UNAVAILABLE".equals(voiceStatus) || "DISABLED".equals(voiceStatus)) return Phase.AWAIT_COUNTER;
+        if (cannotNotify(voiceStatus, voiceReason)) return Phase.AWAIT_COUNTER;
+        // BLOCKED 已停止自动拨号；新位置恢复也不能把持久化终止任务显示为自动外呼。
+        if ("BLOCKED".equals(voiceStatus)) return afterSms == PilotDepartureWatch.Presence.LEFT ? null : Phase.AWAIT_COUNTER;
+        // 未知结果等待对账，不代表仍在外呼，也不能开始播完后的观察。
+        if ("UNKNOWN".equals(voiceStatus)) return null;
         if (!"SIMULATED_PLAYED".equals(voiceStatus)) {
             if (afterSms == PilotDepartureWatch.Presence.STILL_PRESENT || "CALLING".equals(voiceStatus) || "WAITING".equals(voiceStatus))
                 return Phase.AUTO_CALL;

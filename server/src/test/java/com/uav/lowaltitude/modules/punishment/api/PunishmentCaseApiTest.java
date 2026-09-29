@@ -136,7 +136,7 @@ class PunishmentCaseApiTest {
         String leadId = detail.path("open_leads").get(0).path("lead_id").asText();
         mvc.perform(post("/api/v1/punishment-cases/{id}/leads/{lead}/resolve", caseId, leadId)
                         .header("Authorization", bearer(officer)).header("Idempotency-Key", key())
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"已补齐\",\"expected_version\":2}"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"\",\"expected_version\":2}"))
                 .andExpect(status().isOk());
         assertThat(detail(caseId, officer).path("open_leads")).isEmpty();
         assertThat(eventKinds(caseId)).contains("LEAD_ADDED", "LEAD_RESOLVED");

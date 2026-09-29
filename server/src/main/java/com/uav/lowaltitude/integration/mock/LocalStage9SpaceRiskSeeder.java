@@ -30,7 +30,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 来源校验与幂等，让"种子数据"和"引擎数据"在库里形状不同，后续对账无从谈起。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(90)
 public class LocalStage9SpaceRiskSeeder implements ApplicationRunner {

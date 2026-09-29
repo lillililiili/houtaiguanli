@@ -1,7 +1,6 @@
 package com.uav.lowaltitude.modules.airspace.api;
 
 import org.springframework.http.HttpStatus;
-import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -17,6 +16,7 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 
 /** GeoJSON 导入：暂存、查看、确认、放弃。确认前不产生任何空域版本。 */
 @RestController
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "app.airspace.legacy-write-enabled", havingValue = "true")
 @RequestMapping("/api/v1")
 public class AirspaceImportController {
     private final AirspaceImportService service;
@@ -28,11 +28,6 @@ public class AirspaceImportController {
     public ApiResponse<ImportBatchDto> stage(@RequestBody(required = false) String request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey) {
         return ApiResponse.ok(service.stage(request, idempotencyKey));
-    }
-
-    @GetMapping("/airspaces/import-batches/{batchId}")
-    public ApiResponse<ImportBatchDto> batch(@PathVariable String batchId) {
-        return ApiResponse.ok(service.batch(batchId));
     }
 
     @PostMapping("/airspaces/import-batches/{batchId}/confirm")

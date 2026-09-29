@@ -5,7 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app")
 public class AppProperties {
 
-    private String sourceMode = "mock";
+    private String sourceMode = "live";
     private String evidenceDir = "./data/evidence";
     private final Login login = new Login();
     private final Session session = new Session();

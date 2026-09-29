@@ -9,13 +9,17 @@ import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.*;
 import com.uav.lowaltitude.integration.mqtt.LingyunEnvelope;
 
 @Repository
 public class MqttRepository {
+    private static final com.fasterxml.jackson.databind.ObjectMapper TREND_JSON = new com.fasterxml.jackson.databind.ObjectMapper();
     private final JdbcTemplate jdbc;
-    public MqttRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final DeviceMonitoringEventRepository monitoring;
+    public MqttRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; this.monitoring = new DeviceMonitoringEventRepository(jdbc); }
+    public DeviceMonitoringEventRepository monitoringEvents() { return monitoring; }
     private static final String BROKER_SELECT = """
             SELECT b.*, l.connection_state,l.last_error FROM mqtt_broker b
             JOIN mqtt_session_lease l ON l.broker_id=b.broker_id
@@ -150,7 +154,7 @@ public class MqttRepository {
     public int updateDevice(Binding b, Registration p, long now) {
         int changed=jdbc.update("""
                 UPDATE ops_device SET name=?,vendor=?,model=?,longitude=COALESCE(?,longitude),
-                    latitude=COALESCE(?,latitude),coordinate_system=CASE WHEN ? IS NULL THEN coordinate_system ELSE 'WGS-84' END,
+                    latitude=COALESCE(?,latitude),coordinate_system=CASE WHEN CAST(? AS NUMERIC) IS NULL THEN coordinate_system ELSE 'WGS-84' END,
                     altitude_m=COALESCE(?,altitude_m),version=version+1,updated_at=?
                 WHERE device_id=? AND version=? AND deleted_at IS NULL
                 """, p.name(),p.vendor(),p.model(),p.longitude(),p.latitude(),p.longitude(),p.altitudeM(),
@@ -210,6 +214,10 @@ public class MqttRepository {
                 """,uuid(),b.source(),key,b.sourceId(),m.hash(),m.json(),received,b.source(),key)==1;
     }
     public void sense(Binding b,LingyunEnvelope m,long received) {
+        try {
+            var objects = TREND_JSON.readTree(m.json()).path("objects");
+            if (objects.isArray()) DeviceTrendRepository.record(jdbc,b.opsDeviceId(),"sensing_target_count",objects.size(),received,"replay".equals(b.sourceMode()));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalArgumentException("Invalid accepted SenseData",ex); }
         boolean newer=b.lastPtTime()==null || m.ptTime()>b.lastPtTime() || (m.ptTime().equals(b.lastPtTime()) && m.msgCnt()>b.lastMsgCnt());
         if(newer) {
             boolean gap=b.lastMsgCnt()!=null && m.msgCnt()!=((b.lastMsgCnt()+1)%2_147_483_648L);
@@ -220,12 +228,14 @@ public class MqttRepository {
         }
     }
     public void heartbeat(Binding b,LingyunEnvelope m,long received) {
+        DeviceTrendRepository.record(jdbc,b.opsDeviceId(),"connection_state",1,received,"replay".equals(b.sourceMode()));
+        DeviceTrendRepository.record(jdbc,b.opsDeviceId(),"reported_work_state",m.workState(),received,"replay".equals(b.sourceMode()));
         jdbc.update("UPDATE mqtt_device_binding SET last_static_at=?,last_static_pt_time=COALESCE(?,last_static_pt_time) WHERE ops_device_id=?",
                 received,m.ptTime(),b.opsDeviceId());
         jdbc.update("""
-                UPDATE ops_device_state SET connectivity='ONLINE',work_state_code=?,observed_at=?,received_at=?,
+                UPDATE ops_device_state SET connectivity=?,work_state_code=?,observed_at=?,received_at=?,
                     last_heartbeat_at=?,unknown_reason=NULL,metrics_json=?,version=version+1 WHERE device_id=?
-                """,String.valueOf(m.workState()),m.ptTime(),received,received,m.json(),b.opsDeviceId());
+                """,m.workState()==2?"ABNORMAL":"ONLINE",String.valueOf(m.workState()),m.ptTime(),received,received,m.json(),b.opsDeviceId());
         if (m.longitude() != null && m.latitude() != null) {
             jdbc.update("""
                     UPDATE ops_device SET longitude=?, latitude=?, coordinate_system='WGS-84',
@@ -256,12 +266,23 @@ public class MqttRepository {
                 """,device));
         return result;
     }
+    @Transactional
     public void expire(long now) {
-        jdbc.update("""
+        var ids=jdbc.queryForList("""
+                SELECT device_id FROM ops_device_state WHERE connectivity IN ('ONLINE','ABNORMAL') AND last_heartbeat_at<=?
+                AND device_id IN (SELECT ops_device_id FROM mqtt_device_binding) ORDER BY device_id
+                """,String.class,now-30_000);
+        for (String id:ids) {
+            var before=monitoring.lock(id);
+            int changed=jdbc.update("""
                 UPDATE ops_device_state SET connectivity='OFFLINE',unknown_reason='30 秒未收到有效工参',version=version+1
-                WHERE connectivity='ONLINE' AND last_heartbeat_at<=?
-                AND device_id IN (SELECT ops_device_id FROM mqtt_device_binding)
-                """,now-30_000);
+                WHERE device_id=? AND connectivity IN ('ONLINE','ABNORMAL') AND last_heartbeat_at<=?
+                """,id,now-30_000);
+            if (changed==1) {
+                DeviceTrendRepository.record(jdbc,id,"connection_state",0,now,before.simulated());
+                monitoring.changed(before,now);
+            }
+        }
     }
     private static String uuid() { return UUID.randomUUID().toString(); }
 }

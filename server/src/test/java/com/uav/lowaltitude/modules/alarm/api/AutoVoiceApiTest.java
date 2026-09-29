@@ -96,6 +96,9 @@ class AutoVoiceApiTest {
                 .when(directory).forPilotEvent(eq("ADVISORY_VOICE"),eq(eventId),any());
         voiceService.process(eventId);
         assertThat(jdbc.queryForObject("SELECT status FROM uav_auto_voice_task WHERE event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
+        read().andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"))
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(true))
+                .andExpect(jsonPath("$.data.can_request_counter").value(false));
         verify(voice,never()).simulate(anyString(),any(),anyString());
     }
     @Test void legacyTaskWithoutSnapshotIsNotBackfilledFromCurrentDirectory()throws Exception {
@@ -282,7 +285,7 @@ class AutoVoiceApiTest {
         read().andExpect(jsonPath("$.data.auto_voice.can_retry").value(false));
     }
     protected ResultActions read()throws Exception{return mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization","Bearer "+session));}
-    private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-voice/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+",\"note\":\"已核对发送失败且目标仍在范围，申请补发\"}"));}
+    private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-voice/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+"}"));}
     private int count(String table){return jdbc.queryForObject("select count(*) from "+table+" where event_id=?",Integer.class,eventId);}
     private void observation(String outcome){jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) values(?,?,0,'OBSERVATION',0,?,?,'UNKNOWN','人工现场核查',false,false)",UUID.randomUUID().toString(),eventId,userId,outcome);}
     protected void evaluation(String legal,String fresh,String unknowns,boolean linked,Instant at) {

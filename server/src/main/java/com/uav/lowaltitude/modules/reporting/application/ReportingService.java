@@ -61,10 +61,25 @@ public class ReportingService {
 
     @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public OperationsReport operations(String fromText, String toText) {
+        return operations(fromText, toText, null);
+    }
+
+    public record OrganizationOption(String orgId, String name) { }
+    public List<OrganizationOption> organizations() {
+        access.requireBusinessData("statistics.read");
+        AuthUser user = AuthContext.require();
+        return repository.organizations(new Scope("ALL".equals(user.scopeMode()), user.userId())).stream()
+                .map(row -> new OrganizationOption(row.orgId(), row.name())).toList();
+    }
+
+    public OperationsReport operations(String fromText, String toText, String ownerOrgId) {
         access.requireBusinessData("statistics.read");
         AuthUser user = AuthContext.require();
         DateRange range = range(fromText, toText);
-        Scope scope = new Scope("ALL".equals(user.scopeMode()), user.userId());
+        if (ownerOrgId != null && (ownerOrgId.isBlank() || ownerOrgId.length() > 36
+                || organizations().stream().noneMatch(option -> option.orgId().equals(ownerOrgId))))
+            throw bad("INVALID_ORGANIZATION", "单位不存在或不在当前权限范围内");
+        Scope scope = new Scope("ALL".equals(user.scopeMode()), user.userId(), ownerOrgId);
         boolean targetsAllowed = allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.TARGET_READ);
         boolean legalityAllowed = targetsAllowed && allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.ASSESSMENT_READ);
         boolean risksAllowed = targetsAllowed && allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.RISK_READ);
@@ -73,7 +88,11 @@ public class ReportingService {
         var targets = targetsAllowed ? repository.targets(range.from(),range.to(),scope) : List.<ReportingRepository.TargetFact>of();
         var cases = casesAllowed ? repository.cases(range.from(),range.to(),scope) : List.<ReportingRepository.CaseFact>of();
         Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries = new java.util.HashMap<>();
+        var formalEvaluations=new java.util.HashSet<String>(); var formalRisks=new java.util.HashSet<String>();
         for (int start=0; start<targets.size(); start+=500) {
+            var batchIds=targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList();
+            formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
+            formalRisks.addAll(repository.formalRiskIds(batchIds));
             summaries.putAll(targetRepository.summaries(targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList()));
         }
         Map<String,int[]> days = new LinkedHashMap<>();
@@ -87,8 +106,8 @@ public class ReportingService {
         for(var target:targets) {
             modes.add(target.sourceMode());
             var state=summaries.get(target.id());
-            String legal=state==null||state.legality()==null?null:state.legality().legalStatus();
-            String risk=state==null||state.risk()==null?null:state.risk().severity();
+            String legal=state==null||state.legality()==null||!formalEvaluations.contains(state.legality().evaluationId())?null:state.legality().legalStatus();
+            String risk=state==null||state.risk()==null||!formalRisks.contains(state.risk().riskId())?null:state.risk().severity();
             boolean bad="ILLEGAL".equals(legal), high="HIGH".equals(risk)||"CRITICAL".equals(risk);
             if(bad) illegal++; if(high) highRisk++;
             if(legal==null||(!"LEGAL".equals(legal)&&!"ILLEGAL".equals(legal)&&!"ABNORMAL".equals(legal)&&!"NOT_APPLICABLE".equals(legal))) { unknownLegality++; }
@@ -131,12 +150,12 @@ public class ReportingService {
         availability.put("partners",metric(casesAllowed,undecided,"金额单位为元；主体存在未形成有效处罚结果的案件时金额暂不可统计"));
         availability.put("devices",metric(devicesAllowed,0,"当前权限范围设备台账与状态快照，排除已删除设备"));
         DeviceCounts devices=null;
-        if(devicesAllowed) { var row=deviceRepository.overview();int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
+        if(devicesAllowed) { var row=deviceRepository.overview(ownerOrgId,true);int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
         List<DayPoint> dayPoints=days.entrySet().stream().map(e->new DayPoint(e.getKey(),e.getKey().substring(5),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         List<RegionPoint> regionPoints=regions.entrySet().stream().sorted((a,b)->Integer.compare(b.getValue()[0],a.getValue()[0])).map(e->new RegionPoint(e.getKey(),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),
             new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
-            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability);
+            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId);
     }
 
     private boolean allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode permission) {
@@ -151,18 +170,23 @@ public class ReportingService {
     private static List<NamedCount> counts(Map<String,Integer> values) { return values.entrySet().stream().map(e->new NamedCount(e.getKey(),e.getValue())).toList(); }
     private static String typeLabel(String code) {
         if(code==null)return "未知";
-        return switch(code.toUpperCase(java.util.Locale.ROOT)) { case "UAV" -> "无人机";case "BIRD" -> "鸟";case "BALLOON" -> "气球";case "KITE" -> "风筝";case "UNKNOWN" -> "未知";case "IDENTIFYING" -> "识别中";case "SHIP" -> "船";case "VEHICLE" -> "车";default -> code; };
+        return switch(code.toUpperCase(java.util.Locale.ROOT)) { case "UAV" -> "无人机";case "BIRD" -> "鸟";case "BALLOON" -> "气球";case "KITE" -> "风筝";case "UNKNOWN" -> "未知";case "IDENTIFYING" -> "识别中";case "SHIP" -> "船";case "VEHICLE" -> "车";case "PERSON" -> "人员";case "REMOTE_CONTROLLER" -> "遥控器";default -> code; };
     }
     private static String riskLabel(String code) { return code==null?"未识别":switch(code) { case "CRITICAL" -> "超高风险";case "HIGH" -> "高风险";case "MEDIUM" -> "中风险";case "LOW" -> "低风险";default -> "未识别"; }; }
     private static String penaltyLabel(String code) { return switch(code) { case "WARNING" -> "警告";case "FINE" -> "罚款";case "WARNING_AND_FINE" -> "警告并罚款";default -> code; }; }
 
     @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public CsvExport exportCsv(String fromText, String toText, String ip, String userAgent) {
-        OperationsReport report = operations(fromText, toText);
+        return exportCsv(fromText, toText, null, ip, userAgent);
+    }
+
+    @org.springframework.transaction.annotation.Transactional(isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public CsvExport exportCsv(String fromText, String toText, String ownerOrgId, String ip, String userAgent) {
+        OperationsReport report = operations(fromText, toText, ownerOrgId);
         AuthUser actor = AuthContext.require();
         auditService.recordStandalone(actor.userId(), actor.account(), actor.roleCode(), "statistics",
                 "stats_export_requested", "stats", "CSV",
-                "from=" + report.from() + "; to=" + report.to() + "; simulated=" + report.simulated(),
+                "from=" + report.from() + "; to=" + report.to() + "; owner_org_id=" + ownerOrgId + "; simulated=" + report.simulated(),
                 "SUCCESS", ip, safeAgent(userAgent));
         return new CsvExport("operations-stats.csv", toCsv(report));
     }
@@ -203,6 +227,7 @@ public class ReportingService {
         out.append(csv("分类")).append(',').append(csv("项目")).append(',').append(csv("指标")).append(',').append(csv("数值")).append('\n');
         line(out, "元数据", "统计区间", "开始日期", report.from());
         line(out, "元数据", "统计区间", "结束日期", report.to());
+        line(out, "元数据", "单位范围", "owner_org_id", report.ownerOrgId() == null ? "当前权限内全部单位" : report.ownerOrgId());
         line(out, "元数据", "数据来源", "source_mode", report.sourceMode());
         line(out, "元数据", "数据来源", "simulated", String.valueOf(report.simulated()));
         line(out, "元数据", "生成时间", "generated_at", report.generatedAt());
@@ -302,7 +327,7 @@ public class ReportingService {
             Summary summary, DeviceCounts devices, List<DayPoint> days, List<NamedCount> byRisk,
             List<NamedCount> byType, List<NamedCount> byDuration, List<NamedCount> byTrack,
             List<NamedCount> altBands, Integer altTotal, List<RegionPoint> regions, List<NamedCount> byPenalty,
-            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability) { }
+            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability, String ownerOrgId) { }
 
     public record MetricAvailability(String status, String reason, Integer missingCount) { }
 

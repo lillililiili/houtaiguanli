@@ -156,6 +156,55 @@ class AirspaceReadPostgresApiTest {
         }
     }
 
+    @Test
+    void conflictsAndVersionAmbiguityRespectBusinessSourceMode() throws Exception {
+        assertSafeSchema();
+        DataSource rootSource = new DriverManagerDataSource(required("POSTGRES_TEST_URL"), required("POSTGRES_TEST_USER"), required("POSTGRES_TEST_PASSWORD"));
+        JdbcTemplate root = new JdbcTemplate(rootSource);
+        root.execute("create schema " + SCHEMA);
+        try {
+            Flyway.configure().dataSource(rootSource).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false).cleanDisabled(true)
+                    .locations("classpath:db/migration", "classpath:db/postgresql").load().migrate();
+            DataSource scopedSource = new DriverManagerDataSource(schemaUrl(required("POSTGRES_TEST_URL")), required("POSTGRES_TEST_USER"), required("POSTGRES_TEST_PASSWORD"));
+            JdbcTemplate jdbc = new JdbcTemplate(scopedSource);
+            seed(jdbc);
+            String polygon = "POLYGON((118.005 36.9999,118.006 36.9999,118.006 37.0001,118.005 37.0001,118.005 36.9999))";
+            airspace(jdbc, "live", polygon);
+            airspace(jdbc, "replay", polygon);
+            jdbc.update("update airspace set source_mode='live' where airspace_id='a-live'");
+            jdbc.update("update airspace set source_mode='replay' where airspace_id='a-replay'");
+            AirspaceReadRepository repository = new AirspaceReadRepository(jdbc, scopedSource);
+            AccessDecision access = new AccessDecision("postgres-reader", ScopeMode.ALL);
+            OffsetDateTime now = jdbc.queryForObject("select current_timestamp", OffsetDateTime.class);
+            for (String mode : java.util.Arrays.asList("live", "unknown", null, "mock", "replay")) {
+                PlanRow plan = sourcePlan(mode, now);
+                var facts = repository.conflicts(plan, access);
+                assertThat(facts).anyMatch(row -> row.airspaceVersionId().equals("av-live"));
+                if ("mock".equals(mode) || "replay".equals(mode)) {
+                    assertThat(facts).anyMatch(row -> row.airspaceVersionId().equals("av-hit"));
+                    assertThat(facts).anyMatch(row -> row.airspaceVersionId().equals("av-replay"));
+                } else {
+                    assertThat(facts).noneMatch(row -> row.airspaceVersionId().equals("av-hit") || row.airspaceVersionId().equals("av-replay"));
+                }
+                assertThat(repository.hasAmbiguousEffectiveVersion(plan, access)).isFalse();
+            }
+            jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at) select 'av-mock-overlap',airspace_id,2,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at from airspace_version where airspace_version_id='av-hit'");
+            for (String mode : java.util.Arrays.asList("live", "unknown", null, "mock", "replay")) {
+                assertThat(repository.hasAmbiguousEffectiveVersion(sourcePlan(mode, now), access))
+                        .isEqualTo("mock".equals(mode) || "replay".equals(mode));
+            }
+            jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at) select 'av-live-overlap',airspace_id,2,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at from airspace_version where airspace_version_id='av-live'");
+            assertThat(repository.hasAmbiguousEffectiveVersion(sourcePlan("live", now), access)).isTrue();
+        } finally {
+            root.execute("drop schema " + SCHEMA + " cascade");
+        }
+    }
+
+    private static PlanRow sourcePlan(String mode, OffsetDateTime now) {
+        return new PlanRow("plan-1", "P-1", "PENDING", null, null, mode, null, now.minusMinutes(1), now.plusMinutes(1),
+                "org-1", "district-1", "rv-1", "route-1", "R-1", "Route", 1, null, now, now, 0, null, null, null);
+    }
+
     private static void seed(JdbcTemplate jdbc) {
         jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values ('org-1','ORG-1','Org',true,0,0,0)");
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values ('district-1','DIST-1','District',true,0,0,0)");

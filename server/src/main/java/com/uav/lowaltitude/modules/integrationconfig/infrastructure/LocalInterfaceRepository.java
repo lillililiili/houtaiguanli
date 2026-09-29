@@ -14,6 +14,12 @@ public class LocalInterfaceRepository {
  public record Row(String id,String externalId,String kind,String direction,String subjectId,String actor,String state,String payload,String result,long createdAt,long version){}
  private static final org.springframework.jdbc.core.RowMapper<Row> ROW=(r,n)->new Row(r.getString("message_id"),r.getString("external_id"),r.getString("kind"),r.getString("direction"),r.getString("subject_id"),r.getString("created_by"),r.getString("state"),r.getString("payload"),r.getString("result"),r.getLong("created_at"),r.getLong("version"));
  public void actorLock(String actor){jdbc.queryForObject("SELECT user_id FROM app_user WHERE user_id=? FOR UPDATE",String.class,actor);}
+ public void ensurePlanSource(long now){
+  // Serialize first registration across operators without modifying an existing source or its enabled flag.
+  jdbc.queryForObject("SELECT kind FROM external_interface_config WHERE kind='FLIGHT_PLAN' FOR UPDATE",String.class);
+  String id=com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.SIMULATOR_SOURCE_ID;
+  jdbc.update("INSERT INTO integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) SELECT ?,?, ?,TRUE,'mock',?,?,0 WHERE NOT EXISTS(SELECT 1 FROM integration_source WHERE source_id=?)",id,"LOCAL_FLIGHT_PLAN_SIMULATOR",com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.SIMULATOR_SOURCE_NAME,new java.sql.Timestamp(now),new java.sql.Timestamp(now),id);
+ }
  public Row existing(String actor,String kind,String external){return first(jdbc.query("SELECT * FROM local_interface_message WHERE created_by=? AND kind=? AND external_id=?",ROW,actor,kind,external));}
  public Row lock(String id){return first(jdbc.query("SELECT * FROM local_interface_message WHERE message_id=? FOR UPDATE",ROW,id));}
  public Row find(String id){return first(jdbc.query("SELECT * FROM local_interface_message WHERE message_id=?",ROW,id));}

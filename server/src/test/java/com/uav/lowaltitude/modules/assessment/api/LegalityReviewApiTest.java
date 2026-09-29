@@ -99,6 +99,7 @@ class LegalityReviewApiTest {
         jdbc.update("delete from alarm_merge_member where evaluation_id in (select evaluation_id from rule_evaluation where owner_org_id=?)", orgId);
         jdbc.update("delete from alarm_merge_group where owner_org_id=?", orgId);
         jdbc.update("delete from legality_review where owner_org_id=?", orgId);
+        jdbc.update("delete from uav_event_verification where event_id in (select event_id from uav_event where owner_org_id=?)", orgId);
         jdbc.update("delete from uav_event where owner_org_id=?", orgId);
         jdbc.update("update rule_evaluation set alarm_id=null where owner_org_id=?", orgId);
         jdbc.update("delete from alarm where owner_org_id=?", orgId);
@@ -153,6 +154,15 @@ class LegalityReviewApiTest {
         assertThat(jdbc.queryForObject("select legal_status from rule_evaluation where evaluation_id=?", String.class, overridden)).isEqualTo("UNDETERMINED");
         // 已复核的研判不能再复核。
         revise(session, overridden, "CONFIRM", null, "重复复核", 1).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"", ",\"note\":null", ",\"note\":\"\"", ",\"note\":\"   \""})
+    void optionalReviewNoteStillRecordsConclusionAndActor(String noteJson) throws Exception {
+        mvc.perform(write("/api/v1/legality-evaluations/" + evaluation + "/revisions", session,
+                "optional-" + UUID.randomUUID(), "{\"conclusion\":\"CONFIRM\",\"expected_version\":0" + noteJson + "}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select note from legality_review_history where evaluation_id=?", String.class, evaluation)).isEmpty();
     }
 
     @Test
@@ -341,7 +351,6 @@ class LegalityReviewApiTest {
         mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.legal_status").value("ILLEGAL"))
                 .andExpect(jsonPath("$.data.decision_assurance.review_required").value(false));
-
         jdbc.update("update rule_evaluation set legal_status='LEGAL',score=null,grade=null where evaluation_id=?", evaluation);
         setAssurance(evaluation, "legality-assurance-v1", "INSUFFICIENT", "[\"MISSING_IDENTITY\"]");
         mvc.perform(get(path + "&needs_review=true&page=1&size=1").header("Authorization", bearer(session))).andExpect(status().isOk())
@@ -480,6 +489,37 @@ class LegalityReviewApiTest {
     }
 
     @Test
+    void linkedAlarmVerificationIsSharedWithoutRewritingLegalityOrTakingOlderHistory() throws Exception {
+        evaluation += "-shared";
+        insertEvaluation(evaluation, run, "ABNORMAL", "[]", "MEDIUM", new BigDecimal("40"), "INSUFFICIENT", T0, null);
+        insertReview(evaluation, "PENDING_REVIEW", 0);
+        JsonNode linked = json.readTree(escalate(session, evaluation, "核实共享测试", 0).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data");
+        String event = linked.path("event_id").asText();
+        String operator = user("ASSIGNED", "alarm:read", "alarm:verify");
+        mvc.perform(write("/api/v1/uav-events/" + event + "/verifications", operator, UUID.randomUUID().toString(),
+                "{\"conclusion\":\"FALSE_POSITIVE\",\"note\":\"测试核实误报\",\"expected_version\":0}"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.alarm_verification.conclusion").value("FALSE_POSITIVE"))
+                .andExpect(jsonPath("$.data.alarm_verification.event_id").value(event))
+                .andExpect(jsonPath("$.data.review.state").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.legal_status").value("ABNORMAL"))
+                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(false));
+        mvc.perform(get("/api/v1/legality-evaluations").param("target_id", target).param("needs_review", "true")
+                .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        String reader = user("ASSIGNED", "assessment:read", "target:read");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(reader)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.alarm_verification").doesNotExist());
+        evaluation += "-new";
+        insertEvaluation(evaluation, run, "ABNORMAL", "[]", "MEDIUM", new BigDecimal("40"), "INSUFFICIENT", now().plusMinutes(1), linked.path("alarm_id").asText());
+        insertReview(evaluation, "PENDING_REVIEW", 0);
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.alarm_verification").doesNotExist())
+                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(true));
+    }
+
+    @Test
     void recomputeSupersedesOldReviewAndCreatesPendingReviewForNewEvaluation() throws Exception {
         MvcResult result = mvc.perform(post("/api/v1/legality-evaluations/" + evaluation + "/recompute").header("Authorization", bearer(session))
                         .header("Idempotency-Key", "recompute-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
@@ -592,9 +632,14 @@ class LegalityReviewApiTest {
     }
 
     private void insertEvaluation(String id, String runId, String legalStatus, String violations, String grade, BigDecimal score) {
+        insertEvaluation(id, runId, legalStatus, violations, grade, score, null, T0, null);
+    }
+
+    private void insertEvaluation(String id, String runId, String legalStatus, String violations, String grade, BigDecimal score,
+            String assurance, OffsetDateTime evaluatedAt, String alarmId) {
         String hits = "[{\"rule_code\":\"C01\",\"rule_version_id\":\"seed-stage7-rule-C01\",\"result_code\":\"FAIL\",\"reason_code\":\"NO_PLAN_CANDIDATE\",\"facts\":{\"plan_match_code\":\"NONE\"},\"params\":[{\"key\":\"time_window_min\",\"value\":\"10\",\"status\":\"DEMO\"}],\"evidence\":[],\"message\":\"没有可匹配的飞行计划；参数为 DEMO 演示值\"}]";
-        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,supersedes_evaluation_id,assessment_id,alarm_outcome,alarm_id,owner_org_id,district_id,source_mode,created_at) values (?,?,?,'ACTIVE','TARGET',?,null,null,null,?,?,?,'FRESH','NONE',?,?,?,CAST(? AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('[{\"kind\":\"target\",\"id\":\"" + target + "\"}]' AS JSON),CAST('{}' AS JSON),null,null,null,null,?,?,'mock',?)",
-                id, runId, LocalStage7RuleEngineSeeder.VERSION_1, target, ts(T0), ts(T0), ts(T0), legalStatus, score, grade, violations, hits, orgId, district, ts(T0));
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,supersedes_evaluation_id,assessment_id,alarm_outcome,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons) values (?,?,?,'ACTIVE','TARGET',?,null,null,null,?,?,?,'FRESH','NONE',?,?,?,CAST(? AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('[{\"kind\":\"target\",\"id\":\"" + target + "\"}]' AS JSON),CAST('{}' AS JSON),null,null,null,?,?,?,'mock',?,?,?,CAST(? AS JSON))",
+                id, runId, LocalStage7RuleEngineSeeder.VERSION_1, target, ts(T0), ts(T0), ts(evaluatedAt), legalStatus, score, grade, violations, hits, alarmId, orgId, district, ts(T0), assurance == null ? null : "test-v1", assurance, assurance == null ? null : "[]");
     }
 
     private void insertReview(String id, String state, long version) {

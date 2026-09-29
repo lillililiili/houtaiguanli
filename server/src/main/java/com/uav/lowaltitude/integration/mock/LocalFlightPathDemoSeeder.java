@@ -20,7 +20,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 用户要求的飞行轨迹演示：独立日期/场景标识，只新增模拟观测，不补写旧历史。 */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true")
 @Order(96)
 public class LocalFlightPathDemoSeeder implements ApplicationRunner {

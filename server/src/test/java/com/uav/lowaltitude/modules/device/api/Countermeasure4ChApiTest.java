@@ -16,6 +16,8 @@ import java.util.concurrent.TimeUnit;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -44,6 +46,52 @@ class Countermeasure4ChApiTest {
     @Autowired ObjectMapper mapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired OutboxWorker outboxWorker;
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void receivedButUnconfirmedCommandNeverCreatesSuccessReceiptOrAutomaticResend(boolean mismatchedReply) throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())) {
+            server.setSoTimeout(5000);
+            CompletableFuture<String> seen = CompletableFuture.supplyAsync(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(5000);
+                    String request = new String(readUntilNewline(socket), StandardCharsets.US_ASCII);
+                    if (mismatchedReply) {
+                        // Valid frame and checksum, but all channels remain ON after an all-OFF command.
+                        socket.getOutputStream().write("22 01 13 00 00 00 0F 45\r\n".getBytes(StandardCharsets.US_ASCII));
+                        socket.getOutputStream().flush();
+                    } else {
+                        Thread.sleep(1300);
+                        socket.getOutputStream().write("22 01 13 00 00 00 00 36\r\n".getBytes(StandardCharsets.US_ASCII));
+                        socket.getOutputStream().flush();
+                    }
+                    return request;
+                } catch (Exception ex) { throw new RuntimeException(ex); }
+            });
+            String deviceId = insertFourCh(server.getLocalPort()), token = login();
+            String idem = key(), body = "{\"authorization_id\":\"AUTH-4CH\",\"action\":\"SET_MASK\",\"mask\":0,\"reason\":\"本机模拟全关回码异常\"}";
+            JsonNode command = mapper.readTree(mvc.perform(post("/api/v1/devices/{id}/commands/countermeasure-4ch", deviceId)
+                            .header("Authorization", bearer(token)).header("Idempotency-Key", idem)
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString()).path("data");
+            String id = command.path("command_id").asText();
+            outboxWorker.poll();
+            assertThat(seen.get(5, TimeUnit.SECONDS)).contains("55 01 13 00 00 00 00 69");
+            assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, id)).isEqualTo("FAILED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?", Integer.class, id)).isZero();
+            assertThat(jdbc.queryForObject("SELECT result_code FROM device_command WHERE command_id=?", String.class, id))
+                    .isEqualTo(mismatchedReply ? "COUNTERMEASURE_STATE_MISMATCH" : "ADAPTER_TIMEOUT");
+            JsonNode replay = mapper.readTree(mvc.perform(post("/api/v1/devices/{id}/commands/countermeasure-4ch", deviceId)
+                            .header("Authorization", bearer(token)).header("Idempotency-Key", idem)
+                            .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString()).path("data");
+            assertThat(replay.path("command_id").asText()).isEqualTo(id);
+            outboxWorker.poll();
+            server.setSoTimeout(150);
+            org.assertj.core.api.Assertions.assertThatThrownBy(server::accept).isInstanceOf(java.net.SocketTimeoutException.class);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?", Integer.class, deviceId)).isEqualTo(1);
+        }
+    }
 
     @Test
     void setMaskSucceedsOnLoopbackSimulatorAndRejectsRadarAndEmergencyStop() throws Exception {

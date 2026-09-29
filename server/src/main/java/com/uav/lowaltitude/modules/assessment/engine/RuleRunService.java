@@ -35,6 +35,7 @@ public class RuleRunService {
     private static final Set<String> TRIGGERS = Set.of("SCHEDULED", "MANUAL", "RECOMPUTE", "REPLAY");
     private static final int ERROR_SUMMARY_MAX = 2000;
     private static final Logger log = LoggerFactory.getLogger(RuleRunService.class);
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final RuleEngineRepository repository;
     private final LegalityEvaluationService evaluation;
     private final RuleParamLoader params;
@@ -46,7 +47,8 @@ public class RuleRunService {
     private final TransactionTemplate required;
 
     public RuleRunService(RuleEngineRepository repository, LegalityEvaluationService evaluation, RuleParamLoader params, RuleEngineHooks hooks,
-            AppClock clock, AppProperties app, PlatformTransactionManager transactionManager) {
+            AppClock clock, AppProperties app, PlatformTransactionManager transactionManager, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.repository = repository; this.evaluation = evaluation; this.params = params; this.hooks = hooks; this.clock = clock; this.app = app;
         this.perSubject = new TransactionTemplate(transactionManager);
         this.perSubject.setPropagationBehavior(TransactionDefinition.PROPAGATION_NESTED);
@@ -60,6 +62,7 @@ public class RuleRunService {
         if (mode == null) throw new IllegalArgumentException("运行模式不能为空");
         if (triggerKind == null || !TRIGGERS.contains(triggerKind)) throw new IllegalArgumentException("触发方式无效: " + triggerKind);
         boolean replay = "REPLAY".equals(triggerKind);
+        if(replay) simulation.requireSimulation();
         if (replay == (replayDatasetCode == null || replayDatasetCode.isBlank())) throw new IllegalArgumentException("回放必须且只有回放才带数据集编码");
         RuleSetRow set = repository.findRuleSetByCode(ruleSetCode == null ? "" : ruleSetCode.trim());
         if (set == null) throw new ApiException(HttpStatus.NOT_FOUND, "RULE_SET_NOT_FOUND", "规则集不存在");

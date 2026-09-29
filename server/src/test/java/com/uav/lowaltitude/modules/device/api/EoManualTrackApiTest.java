@@ -1,6 +1,8 @@
 package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doReturn;
+import static org.hamcrest.Matchers.hasItem;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -48,6 +50,9 @@ class EoManualTrackApiTest {
     @Autowired EoEdgeRepository edges;
     @Autowired MqttRepository mqtt;
     @Autowired AppClock clock;
+    @Autowired com.uav.lowaltitude.modules.device.application.EoTrackingScheduler scheduler;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository trackingRepository;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.uav.lowaltitude.modules.device.application.EoTrackingPolicy trackingPolicy;
     String org, district, token, owner, brokerId;
     Binding binding;
 
@@ -67,12 +72,135 @@ class EoManualTrackApiTest {
         binding = register("edge-man-" + UUID.randomUUID().toString().substring(0, 6), "eo-man-1");
         jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',last_heartbeat_at=? WHERE device_id=?",
                 clock.nowMillis(), binding.opsDeviceId());
+        jdbc.update("UPDATE eo_device_binding SET work_state=0,last_heartbeat_at=? WHERE ops_device_id=?",clock.nowMillis(),binding.opsDeviceId());
     }
 
     @AfterEach void cleanup() {
         jdbc.update("UPDATE mqtt_broker SET enabled=FALSE");
         jdbc.update("UPDATE outbox_event SET processed_at=? WHERE processed_at IS NULL AND topic LIKE 'eo.%'", clock.nowMillis());
         AuthContext.clear();
+    }
+
+    @Test void unifiedStatusIsReadOnlyAndPauseSurvivesRepeatedRequests() throws Exception {
+        String target = insertTarget(true);
+        long before = jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class);
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status", target).header("Authorization", bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_enabled").value(false));
+        String key = key();
+        for (int i = 0; i < 2; i++) mvc.perform(post("/api/v1/targets/{id}/eo-tracking-pause", target)
+                .header("Authorization", bearer()).header("Idempotency-Key", key))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_paused").value(true));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class)).isEqualTo(before);
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-resume", target)
+                .header("Authorization", bearer()).header("Idempotency-Key", key()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_enabled").value(false))
+                .andExpect(jsonPath("$.data.auto_paused").value(false));
+    }
+
+    @Test void unknownClassAndExpiredPositionCannotSteerCamera() throws Exception {
+        String target = insertTarget(true);
+        jdbc.update("UPDATE target SET object_type_code='UNKNOWN' WHERE target_id=?", target);
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", target)
+                .header("Authorization", bearer()).header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("EO_CLASS_UNSUPPORTED"));
+        jdbc.update("UPDATE target SET object_type_code='UAV' WHERE target_id=?", target);
+        jdbc.update("UPDATE target_latest_state SET observed_at=TIMESTAMP '2020-01-01 00:00:00' WHERE target_id=?", target);
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", target)
+                .header("Authorization", bearer()).header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("TARGET_POSITION_STALE"));
+    }
+
+    @Test void automaticAndManualRaceShareOneTaskAndPauseSurvivesManualBegin() throws Exception {
+        doReturn(true).when(trackingPolicy).enabled();
+        String target=insertTarget(true);
+        String alarm=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) "
+                + "VALUES (?,?,?,?,'UAV_INTRUSION','HIGH',CURRENT_TIMESTAMP,'replay',?,?,CURRENT_TIMESTAMP)",alarm,target,binding.sourceId(),alarm,org,district);
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) "
+                + "VALUES (?,?,'PENDING_VERIFICATION',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",UUID.randomUUID().toString(),alarm,org,district);
+        var executor=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var auto=executor.submit(() -> scheduler.poll());
+            var manual=executor.submit(() -> mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target)
+                    .header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{}")).andReturn().getResponse().getStatus());
+            auto.get(10,java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(manual.get(10,java.util.concurrent.TimeUnit.SECONDS)).isIn(202,409);
+        } finally {executor.shutdownNow();}
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task WHERE target_id=?",Long.class,target)).isOne();
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-pause",target).header("Authorization",bearer()).header("Idempotency-Key",key()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_paused").value(true));
+        String task=String.valueOf(edges.openTaskByTarget(target).get("task_id"));
+        edges.updateTask(task,"ENDING","ENDED",null,clock.nowMillis());
+        scheduler.poll();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task WHERE target_id=?",Long.class,target)).isOne();
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target).header("Authorization",bearer())
+                .header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted());
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target).header("Authorization",bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_paused").value(true))
+                .andExpect(jsonPath("$.data.allowed_actions").value(hasItem("PAUSE")));
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-pause",target).header("Authorization",bearer()).header("Idempotency-Key",key()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("ENDING"))
+                .andExpect(jsonPath("$.data.auto_paused").value(true));
+    }
+
+    @Test void pausedReadAndWriteRequireCurrentPermissionsAndQueuedStateNeverClaimsTracking() throws Exception {
+        String target=insertTarget(true);
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target).header("Authorization",bearer())
+                .header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted());
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target).header("Authorization",bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("STARTING"));
+        jdbc.update("UPDATE app_user SET scope_mode='NONE' WHERE account='admin1'");
+        try {
+            mvc.perform(post("/api/v1/targets/{id}/eo-tracking-pause",target).header("Authorization",bearer()).header("Idempotency-Key",key()))
+                    .andExpect(status().isForbidden());
+        } finally {jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE account='admin1'");}
+    }
+
+    @Test void manualIllegalReviewIsScheduledWithoutAlarmOrRisk() {
+        doReturn(true).when(trackingPolicy).enabled();
+        String target=insertTarget(true), run=UUID.randomUUID().toString(), evaluation=UUID.randomUUID().toString();
+        assertThat(jdbc.update("""
+                INSERT INTO rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,source_mode,created_at)
+                SELECT ?,rule_set_id,rule_set_version_id,'ACTIVE','MANUAL',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,'DONE','replay',CURRENT_TIMESTAMP
+                FROM rule_set_version ORDER BY rule_set_version_id FETCH FIRST 1 ROW ONLY
+                """,run)).isOne();
+        jdbc.update("""
+                INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,
+                freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,
+                owner_org_id,district_id,source_mode,created_at)
+                SELECT ?,run_id,rule_set_version_id,'ACTIVE','TARGET',?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,
+                'REPLAY','UNDETERMINED','UNDETERMINED',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),
+                ?,?,'replay',CURRENT_TIMESTAMP FROM rule_run WHERE run_id=?
+                """,evaluation,target,org,district,run);
+        assertThat(trackingRepository.candidates(clock.nowMillis()-15000,clock.nowMillis(),20)).doesNotContain(target);
+        jdbc.update("INSERT INTO legality_review(evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) "
+                + "VALUES (?,'OVERRIDDEN','ILLEGAL',1,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",evaluation,org,district);
+        assertThat(trackingRepository.candidates(clock.nowMillis()-15000,clock.nowMillis(),20)).contains(target);
+        scheduler.poll();
+        assertThat(edges.openTaskByTarget(target)).isNotNull();
+    }
+
+    @Test void legacyFailedButSentTimeoutBlocksTargetAndDeviceUntilExplicitStop() throws Exception {
+        String target=insertTarget(true), command=UUID.randomUUID().toString(), task=UUID.randomUUID().toString();
+        long now=clock.nowMillis();
+        edges.insertCommand(command,"OLD-"+command.substring(0,6),binding.opsDeviceId(),null,"EO_BEGIN_TRACK","old","replay",true,now+1000,now);
+        edges.insertTask(task,target,null,binding.opsDeviceId(),command,"old","{}",now);
+        edges.updateCommand(command,"QUEUED","SENT",now,null,null);
+        edges.updateCommand(command,"SENT","TIMED_OUT",now,"OLD_TIMEOUT","unknown");
+        edges.updateTask(task,"OPEN","FAILED",null,now);
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target).header("Authorization",bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("LOST"))
+                .andExpect(jsonPath("$.data.allowed_actions").value(hasItem("PAUSE")));
+        assertThat(edges.idleDeviceForMode(org,district,null,"replay",now-30000,clock.nowMillis())).isNull();
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target).header("Authorization",bearer())
+                .header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("EO_RESULT_UNKNOWN"));
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-pause",target).header("Authorization",bearer()).header("Idempotency-Key",key()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("ENDING"));
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
     }
 
     @Test void beginRequiresLoginThenPositionThenIdleCamera() throws Exception {
@@ -165,7 +293,7 @@ class EoManualTrackApiTest {
         } finally { jdbc.update("UPDATE app_user SET role_code='ROLE-ADMIN' WHERE account='admin1'"); }
     }
 
-    @Test void videoRequiresMatchingSimulatedReceiptAndNeverPlaysLiveSources() throws Exception {
+    @Test void videoRequiresMatchingReceiptAndDoesNotManufactureCanvasVideo() throws Exception {
         String target = insertTarget(true);
         String command = UUID.randomUUID().toString(), task = UUID.randomUUID().toString();
         long now = clock.nowMillis();
@@ -182,7 +310,8 @@ class EoManualTrackApiTest {
         String inbox = edges.inbox(binding, EoEdgeEnvelope.decode(binding.reportingTopic(),
                 payload.getBytes(java.nio.charset.StandardCharsets.UTF_8)), now);
         edges.addReceipt(command, inbox, "200", now, payload);
-        video(target, "AVAILABLE", "SIMULATED_CANVAS");
+        edges.trackingReport(task,now,now);
+        video(target, "TRACKING", "NONE");
         jdbc.update("UPDATE command_receipt SET payload=? WHERE command_id=?", payload.replace(task, UUID.randomUUID().toString()), command);
         video(target, "RECEIPT_UNAVAILABLE", "NONE");
         jdbc.update("UPDATE command_receipt SET payload=? WHERE command_id=?", payload, command);

@@ -6,7 +6,7 @@ import com.uav.lowaltitude.modules.integrationconfig.api.LocalInterfaceDtos.Weat
 import com.uav.lowaltitude.modules.integrationconfig.api.ExternalInterfaceDtos.*;
 import com.uav.lowaltitude.modules.integrationconfig.infrastructure.LocalInterfaceRepository;
 /** Called only after the normal plan reader has authorized the plan. */
-@Service @Profile("(local | test) & !prod & !production")
+@Service @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class LocalForecastReadService {
  private final LocalInterfaceRepository repository;private final ObjectMapper json;
  public LocalForecastReadService(LocalInterfaceRepository repository,ObjectMapper json){this.repository=repository;this.json=json;}

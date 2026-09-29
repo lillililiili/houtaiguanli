@@ -18,6 +18,12 @@ public class DeviceAccessPolicy {
     public AuthUser requireDevicesRead() { return require("devices.read"); }
     public AuthUser requireDevicesOperate() { return require("devices.op"); }
     public AuthUser requireMonitoringRead() { return require("monitoring.read"); }
+    public AuthUser requireOverviewRead() {
+        AuthUser actor = AuthContext.require();
+        String permission = accessService.permissionCodes(actor.roleCode()).contains("devices.read")
+                ? "devices.read" : "monitoring.read";
+        return require(permission);
+    }
     public AuthUser requireMonitoringOperate() { return require("monitoring.op"); }
     public AuthUser requireCommissionRead() { return require("commissioning.read"); }
     public AuthUser requireCommissionOperate() { return require("commissioning.op"); }

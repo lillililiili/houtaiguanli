@@ -22,7 +22,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 也不会按设备名称猜测归属；真实设备的归属资料到位后由受控迁移/配置导入。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(50)
 public class LocalStage5DeviceScopeSeeder implements ApplicationRunner {

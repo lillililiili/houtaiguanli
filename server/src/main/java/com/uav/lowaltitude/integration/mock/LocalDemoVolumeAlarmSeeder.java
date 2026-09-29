@@ -22,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 全部写入都是 WHERE NOT EXISTS：重跑幂等，不 UPDATE 任何已存在的行，不覆盖人工核实结果。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 // 必须排在 RuleReplayRunner(70) / RuleDemoVolumeReplayRunner(71) 之后：回放回归断言 merge 目标"恰一条告警"，
 // 演示告警若先于回归落库，全新库首启会被断言拦下（协作者 B 2026-09-09 报告，决策 15-60）。

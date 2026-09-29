@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.mockito.Mockito.doReturn;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -43,8 +44,9 @@ import io.moquette.broker.Server;
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:mqtt_p3;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
         "app.mqtt.enabled=false", "app.fusion.enabled=false", "app.rule-engine.enabled=false",
-        "app.eo-edge.heartbeat-timeout-millis=3000"})
+        "app.eo-edge.heartbeat-timeout-millis=3000", "app.device-monitor-events.enabled=false"})
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(DeviceMonitoringPostgresFixture.NoScheduledJobs.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 class EoEdgeMqttTest {
     @Autowired MqttConfigurationService configuration;
@@ -52,6 +54,7 @@ class EoEdgeMqttTest {
     @Autowired EoEdgeRepository edges;
     @Autowired MqttRepository mqtt;
     @Autowired EoAutoTrackService autoTrack;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.uav.lowaltitude.modules.device.application.EoTrackingPolicy trackingPolicy;
     @Autowired MqttNetworkPolicy network;
     @Autowired EnvironmentCredentialResolver credentials;
     @Autowired AppClock clock;
@@ -84,12 +87,93 @@ class EoEdgeMqttTest {
         assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId()))
                 .isEqualTo("0");
         assertThat(inboxCount()).isZero();
-        receive(heartbeat(binding, 1, "task-open"), 2, false);
+        receive(heartbeat(binding, 1, "task-open").replace("1731731424000", "1731731425000"), 2, false);
         assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId()))
                 .isEqualTo("1");
         edges.expire(clock.nowMillis() + 4_000, 3_000);
         assertThat(jdbc.queryForObject("SELECT connectivity FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId()))
                 .isEqualTo("OFFLINE");
+    }
+
+    @Test void staleHeartbeatAndRedeliveryCannotRefreshLivenessOrWorkState() {
+        long now = clock.nowMillis();
+        String first = heartbeat(binding, 1, null);
+        ingress.receive(brokerId, owner, binding.reportingTopic(), first.getBytes(StandardCharsets.UTF_8),
+                61, 1, false, false, now);
+        ingress.receive(brokerId, owner, binding.reportingTopic(), first.getBytes(StandardCharsets.UTF_8),
+                61, 1, false, true, now + 1_000);
+        receive(heartbeat(binding, 0, null).replace("1731731424000", "1731731423000"), 62, false);
+        assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?",
+                Long.class, binding.opsDeviceId())).isEqualTo(now);
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?",
+                String.class, binding.opsDeviceId())).isEqualTo("1");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM mqtt_receive_diagnostic WHERE ops_device_id=? AND reason='STALE_HEARTBEAT'",
+                Long.class, binding.opsDeviceId())).isOne();
+    }
+
+    @Test void cameraStatusNeverInventsHeartbeatOrOnlineStateAndRejectsOldStatus() {
+        receive(cameraReport(binding), 71, false);
+        assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM protocol_runtime_state WHERE device_id=?",
+                Long.class, binding.opsDeviceId())).isNull();
+        assertThat(jdbc.queryForObject("SELECT connection_state FROM protocol_runtime_state WHERE device_id=?",
+                String.class, binding.opsDeviceId())).isEqualTo("DISCONNECTED");
+        receive(cameraReport(binding).replace("1731731424000", "1731731423000").replace("\"workState\":0", "\"workState\":1"), 72, false);
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?",
+                String.class, binding.opsDeviceId())).isEqualTo("0");
+    }
+
+    @Test void monitoringSeparatesHeartbeatCameraAndTrackingFromCommandReceipts() {
+        receive(heartbeat(binding, 0, null), 81, false);
+        receive(heartbeat(binding, 0, null), 82, false);
+        receive(cameraReport(binding).replace("1731731424000", "1731731425000"), 83, false);
+        receive(cameraReport(binding).replace("1731731424000", "1731731425000"), 84, false);
+        String taskId = openTask("SENT");
+        receive(beginReport(binding, taskId, 200, 1731731306000L, "drone"), 85, false);
+        receive(beginReport(binding, taskId, 200, 1731731306000L, "drone"), 86, false);
+        // An unseen older key remains available for historical fusion, but is not fresh monitoring activity.
+        receive(beginReport(binding, taskId, 200, 1731731305000L, "drone"), 88, false);
+        receive(endReport(binding, taskId), 87, false);
+        assertThat(jdbc.queryForObject("SELECT SUM(heartbeat_count) FROM device_report_window WHERE device_id=?", Long.class, binding.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT SUM(status_count) FROM device_report_window WHERE device_id=?", Long.class, binding.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT SUM(sensing_count) FROM device_report_window WHERE device_id=?", Long.class, binding.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type='REPORTING_STARTED'", Long.class, binding.opsDeviceId())).isOne();
+        edges.expire(clock.nowMillis() + 4_000, 3_000);
+        edges.expire(clock.nowMillis() + 4_000, 3_000);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type='DISCONNECTED'", Long.class, binding.opsDeviceId())).isOne();
+    }
+
+    @Test void cameraOlderThanHeartbeatCompletesReplyWithoutRegressingOrCountingState() {
+        receive(heartbeat(binding, 1, null), 111, false);
+        String commandId = UUID.randomUUID().toString();
+        edges.insertCommand(commandId, "EO-CAM-" + commandId, binding.opsDeviceId(), null,
+                "EO_CAMERA_STATUS", "test", "replay", true, clock.nowMillis() + 10_000, clock.nowMillis());
+        edges.updateCommand(commandId, "QUEUED", "SENT", 1731731305000L, null, null);
+        receive(cameraReport(binding).replace("1731731424000", "1731731423000")
+                .replace("\"zoomIndex\":32", "\"zoomIndex\":99"), 112, false);
+        assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, commandId)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("1");
+        assertThat(jdbc.queryForObject("SELECT camera_status_json FROM eo_device_binding WHERE ops_device_id=?", String.class, binding.opsDeviceId())).contains("\"zoomIndex\":32");
+        assertThat(jdbc.queryForObject("SELECT SUM(status_count) FROM device_report_window WHERE device_id=?", Long.class, binding.opsDeviceId())).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type='STATE_CHANGED'", Long.class, binding.opsDeviceId())).isZero();
+    }
+
+    @Test void heartbeatBehindCameraRefreshesLivenessWithoutReplacingNewerState() {
+        long received = clock.nowMillis();
+        ingress.receive(brokerId, owner, binding.reportingTopic(), heartbeat(binding, 0, null).getBytes(StandardCharsets.UTF_8),
+                121, 1, false, false, received);
+        receive(cameraReport(binding).replace("1731731424000", "1731731426000")
+                .replace("\"workState\":0", "\"workState\":1").replace("\"zoomIndex\":32", "\"zoomIndex\":99"), 122, false);
+        ingress.receive(brokerId, owner, binding.reportingTopic(), heartbeat(binding, 0, null)
+                        .replace("1731731424000", "1731731425000").getBytes(StandardCharsets.UTF_8),
+                123, 1, false, false, received + 2_000);
+        assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?", Long.class, binding.opsDeviceId())).isEqualTo(received + 2_000);
+        assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM protocol_runtime_state WHERE device_id=?", Long.class, binding.opsDeviceId())).isEqualTo(received + 2_000);
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("1");
+        assertThat(jdbc.queryForObject("SELECT work_state FROM protocol_runtime_state WHERE device_id=?", Integer.class, binding.opsDeviceId())).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT camera_status_json FROM eo_device_binding WHERE ops_device_id=?", String.class, binding.opsDeviceId())).contains("\"zoomIndex\":99");
+        assertThat(jdbc.queryForObject("SELECT camera_status_json FROM protocol_runtime_state WHERE device_id=?", String.class, binding.opsDeviceId())).contains("\"zoomIndex\":99");
+        assertThat(jdbc.queryForObject("SELECT SUM(heartbeat_count) FROM device_report_window WHERE device_id=?", Long.class, binding.opsDeviceId())).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type='STATE_CHANGED'", Long.class, binding.opsDeviceId())).isOne();
     }
 
     @Test void beginTrackingReportWritesInboxAndEndTrackingStopsFurtherReports() {
@@ -115,19 +199,93 @@ class EoEdgeMqttTest {
         assertThat(inboxCount()).isEqualTo(afterEnd);
     }
 
+    @Test void endCommandKeepsProtocolReceiptWithoutFeedingFusionAndDeduplicates() {
+        String taskId = openTask("SENT");
+        String commandId = UUID.randomUUID().toString();
+        long now = 1731731305000L;
+        edges.insertCommand(commandId, "EO-END-" + commandId.substring(0, 6), binding.opsDeviceId(), null,
+                "EO_END_TRACK", "test", "replay", true, now + 10_000, now);
+        edges.updateCommand(commandId, "QUEUED", "SENT", now, null, null);
+        edges.updateTask(taskId, "OPEN", "ENDING", commandId, now);
+        String payload = endReport(binding, taskId);
+        receive(payload, 71, false);
+        receive(payload, 72, false);
+        assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, commandId)).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?", Long.class, commandId)).isOne();
+        assertThat(jdbc.queryForObject("SELECT CAST(payload AS VARCHAR) FROM command_receipt WHERE command_id=?", String.class, commandId)).contains("EndTracking", taskId);
+        assertThat(inboxCount()).isZero();
+    }
+
     @Test void codeStatus400FailsCommandWithoutInbox() {
         String taskId = openTask("SENT");
         receive(beginReport(binding, taskId, 400, 1731731306000L, "drone"), 9, false);
         assertThat(inboxCount()).isZero();
         assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=(SELECT begin_command_id FROM eo_tracking_task WHERE task_id=?)",
                 String.class, taskId)).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=(SELECT begin_command_id FROM eo_tracking_task WHERE task_id=?)",
+                Long.class, taskId)).isOne();
+    }
+
+    @Test void lateBeginReceiptReconcilesTimeoutWithoutCreatingAnotherTask() {
+        String taskId=openTask("SENT");
+        String command=String.valueOf(edges.task(taskId).get("begin_command_id"));
+        edges.updateCommand(command,"SENT","TIMED_OUT",clock.nowMillis(),"TIMEOUT","unknown");
+        String body=beginReport(binding,taskId,200,1731731306000L,"drone");
+        receive(body,181,false);receive(body,182,false);
+        assertThat(String.valueOf(edges.command(command).get("status"))).isEqualTo("SUCCEEDED");
+        assertThat(String.valueOf(edges.task(taskId).get("status"))).isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?",Long.class,command)).isOne();
+    }
+
+    @Test void lateEndReceiptReconcilesTimeoutAndOldTaskCannotCompleteNewEndCommand() {
+        String taskId=openTask("SENT"), command=UUID.randomUUID().toString();
+        edges.insertCommand(command,"END-"+command.substring(0,6),binding.opsDeviceId(),null,"EO_END_TRACK","test","replay",true,1731731400000L,1731731305000L);
+        edges.updateCommand(command,"QUEUED","SENT",1731731305000L,null,null);
+        edges.updateCommand(command,"SENT","TIMED_OUT",clock.nowMillis(),"TIMEOUT","unknown");
+        edges.updateTask(taskId,"OPEN","ENDING",command,clock.nowMillis());
+        receive(endReport(binding,taskId),183,false);
+        assertThat(String.valueOf(edges.command(command).get("status"))).isEqualTo("SUCCEEDED");
+        assertThat(String.valueOf(edges.task(taskId).get("status"))).isEqualTo("ENDED");
+        String later=openTask("SENT"), newer=UUID.randomUUID().toString();
+        edges.insertCommand(newer,"END-"+newer.substring(0,6),binding.opsDeviceId(),null,"EO_END_TRACK","test","replay",true,clock.nowMillis()+10000,clock.nowMillis());
+        edges.updateTask(later,"OPEN","ENDING",newer,clock.nowMillis());
+        receive(endReport(binding,taskId),184,false);
+        assertThat(String.valueOf(edges.command(newer).get("status"))).isEqualTo("QUEUED");
+    }
+
+    @Test void failedEndTrackingCannotChangeReportedWorkState() {
+        receive(heartbeat(binding, 1, null), 91, false);
+        String taskId = openTask("SENT");
+        receive(endReport(binding, taskId).replace("\"codeStatus\":200", "\"codeStatus\":400")
+                .replace("1731731400000", "1731731430000"), 92, false);
+        assertThat(jdbc.queryForObject("SELECT status FROM eo_tracking_task WHERE task_id=?", String.class, taskId)).isEqualTo("OPEN");
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("1");
+    }
+
+    @Test void repeatedTerminalEndTrackingCannotOverwriteLaterHeartbeat() {
+        receive(heartbeat(binding, 1, null), 93, false);
+        String taskId = openTask("SENT");
+        String ended = endReport(binding, taskId).replace("1731731400000", "1731731430000");
+        receive(ended, 94, false);
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("0");
+        receive(heartbeat(binding, 1, null).replace("1731731424000", "1731731440000"), 95, false);
+        receive(ended, 96, false);
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("1");
+    }
+
+    @Test void lateSuccessfulEndTrackingCompletesTaskButDoesNotRegressFreshHeartbeat() {
+        receive(heartbeat(binding, 1, null), 97, false);
+        String taskId = openTask("SENT");
+        receive(endReport(binding, taskId), 98, false);
+        assertThat(jdbc.queryForObject("SELECT status FROM eo_tracking_task WHERE task_id=?", String.class, taskId)).isEqualTo("ENDED");
+        assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("1");
     }
 
     @Test void cameraStatusUpdatesRuntimeWithoutInbox() {
         String commandId = UUID.randomUUID().toString();
         edges.insertCommand(commandId, "EO-CAM", binding.opsDeviceId(), null, "EO_CAMERA_STATUS", "test",
                 "replay", true, clock.nowMillis() + 10_000, clock.nowMillis());
-        edges.updateCommand(commandId, "QUEUED", "SENT", clock.nowMillis(), null, null);
+        edges.updateCommand(commandId, "QUEUED", "SENT", 1731731305000L, null, null);
         receive(cameraReport(binding), 10, false);
         assertThat(inboxCount()).isZero();
         assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, commandId)).isEqualTo("SUCCEEDED");
@@ -148,6 +306,7 @@ class EoEdgeMqttTest {
     }
 
     @Test void fusionEventWithAlarmEnqueuesTrackingAndMissingFieldsDoNot() {
+        doReturn(true).when(trackingPolicy).enabled();
         String targetId = insertTarget();
         receive(heartbeat(binding, 0, null), 100, false);
         insertOpenAlarm(targetId);
@@ -162,6 +321,7 @@ class EoEdgeMqttTest {
     }
 
     @Test void automaticTrackingWaitsForAnOnlineCameraAndRetriesTheSameStableEvent() {
+        doReturn(true).when(trackingPolicy).enabled();
         String targetId = insertTarget();
         insertOpenAlarm(targetId);
         insertStable(targetId, "{\"class_code\":\"UAV\",\"latest_state\":{\"longitude\":104.0,\"latitude\":30.5}}");
@@ -183,7 +343,7 @@ class EoEdgeMqttTest {
         configuration.enable(brokerId, 1, false, key()); mqtt.release(brokerId, owner, clock.nowMillis());
         brokerId = configuration.create(input(port), key()).brokerId(); configuration.enable(brokerId, 0, true, key());
         binding = register("edge-live-" + UUID.randomUUID().toString().substring(0, 6), "eo-dev-mqtt");
-        MqttSessionSupervisor supervisor = new MqttSessionSupervisor(mqtt, new com.uav.lowaltitude.modules.device.application.MqttIngressService(mqtt, clock),
+        MqttSessionSupervisor supervisor = new MqttSessionSupervisor(mqtt, new com.uav.lowaltitude.modules.device.application.MqttIngressService(mqtt, clock, new com.uav.lowaltitude.modules.fusion.application.FusionProperties()),
                 configuration, network, credentials, clock, ingress, edges, 3000);
         MqttClient edge = new MqttClient("tcp://127.0.0.1:" + port, "edge-" + key(), new org.eclipse.paho.client.mqttv3.persist.MemoryPersistence());
         AtomicInteger commands = new AtomicInteger();
@@ -229,7 +389,7 @@ class EoEdgeMqttTest {
     private String openTask(String commandStatus) {
         String taskId = UUID.randomUUID().toString();
         String commandId = UUID.randomUUID().toString();
-        long now = clock.nowMillis();
+        long now = 1731731305000L;
         edges.insertCommand(commandId, "EO-" + commandId.substring(0, 6), binding.opsDeviceId(), null, "EO_BEGIN_TRACK",
                 "test", "replay", true, now + 10_000, now);
         if ("SENT".equals(commandStatus)) edges.updateCommand(commandId, "QUEUED", "SENT", now, null, null);
@@ -247,6 +407,9 @@ class EoEdgeMqttTest {
         String id = UUID.randomUUID().toString();
         jdbc.update("INSERT INTO target(target_id,target_no,source_mode,owner_org_id,district_id,created_at,updated_at,version) VALUES (?,?,'replay',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",
                 id, "EO-T-" + id.substring(0, 8), org, district);
+        jdbc.update("UPDATE target SET object_type_code='UAV' WHERE target_id=?",id);
+        jdbc.update("INSERT INTO target_latest_state(target_id,location,observed_at,received_at,created_at,updated_at,version) "
+                + "VALUES (?,GEOMETRY 'SRID=4326;POINT (104 30.5)',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",id);
         return id;
     }
     private void insertStable(String targetId, String payload) {

@@ -78,7 +78,7 @@ public class UavEventVerificationService {
         String id = id(eventId);
         VerifyRequest request = request(rawBody);
         String conclusion = requiredConclusion(request);
-        String note = requiredNote(request);
+        String note = optionalNote(request);
         long expectedVersion = requiredVersion(request);
         EventRow event = repository.lock(id, read);
         if (event == null) throw notFound();
@@ -124,14 +124,14 @@ public class UavEventVerificationService {
                 else if ("note".equals(field)) { if (value != JsonToken.VALUE_STRING) throw new IllegalArgumentException(); note = parser.getText(); }
                 else { if (!value.isNumeric() || !parser.isExpectedNumberIntToken()) throw new IllegalArgumentException(); version = parser.getLongValue(); }
             }
-            if (parser.nextToken() != null || seen.size() != 3) throw new IllegalArgumentException();
+            if (parser.nextToken() != null || !seen.containsAll(Set.of("conclusion", "expected_version"))) throw new IllegalArgumentException();
             return new VerifyRequest(conclusion, note, version);
         } catch (Exception ex) { throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "请求参数格式不正确"); }
     }
     private static long millis(OffsetDateTime value) { return value.toInstant().toEpochMilli(); }
     private static ApiException notFound() { return new ApiException(HttpStatus.NOT_FOUND, "UAV_EVENT_NOT_FOUND", "无人机事件不存在"); }
     private static String requiredConclusion(VerifyRequest request) { if (request == null || request.conclusion() == null || request.conclusion().trim().isEmpty()) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CONCLUSION", "核实结论无效"); return request.conclusion().trim(); }
-    private static String requiredNote(VerifyRequest request) { String note = request == null || request.note() == null ? "" : request.note().trim(); if (note.isEmpty() || note.length() > 1000) throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "核实说明长度必须为1至1000"); return note; }
+    private static String optionalNote(VerifyRequest request) { String note = request == null || request.note() == null ? "" : request.note().trim(); if (note.length() > 1000) throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "核实说明不能超过1000字"); return note; }
     private static long requiredVersion(VerifyRequest request) { if (request == null || request.expectedVersion() == null || request.expectedVersion() < 0) throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "expected_version 无效"); return request.expectedVersion(); }
     private static int page(MultiValueMap<String, String> values, String name, int fallback) { if (!values.containsKey(name)) return fallback; if (values.size() > 2 || values.get(name) == null || values.get(name).size() != 1) throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "分页参数无效"); try { return Integer.parseInt(values.getFirst(name)); } catch (RuntimeException ex) { throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "分页参数无效"); } }
     private static int offset(int page, int size) { try { return Math.multiplyExact(page - 1, size); } catch (ArithmeticException ex) { throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "分页参数无效"); } }

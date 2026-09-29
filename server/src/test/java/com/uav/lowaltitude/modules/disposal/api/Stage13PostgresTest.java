@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.disposal.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
@@ -71,6 +72,28 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_PASSWORD", matches = ".*",
         disabledReason = "未验证：缺少 POSTGRES_TEST_PASSWORD，Stage13PostgresTest 未在真实 PostgreSQL 上执行")
 class Stage13PostgresTest {
+
+    @Test
+    void rejectionRecordsReviewerWithoutCreatingAnExecutionWindow() throws Exception {
+        String applicant = session("disposal:request", "alarm:read");
+        String reviewer = session("disposal:approve", "alarm:read");
+        String authorization = createAuthorization(applicant, confirmedEvent());
+        MvcResult result = mvc.perform(post("/api/v1/disposal-authorizations/{id}/reject", authorization)
+                .header("Authorization", "Bearer " + reviewer).header("Idempotency-Key", UUID.randomUUID())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"expected_version\":0,\"note\":\"测试驳回，无执行授权\"}")).andReturn();
+        assertThat(result.getResponse().getStatus()).as(result.getResponse().getContentAsString()).isEqualTo(200);
+        var row = jdbc.queryForMap("select status,approved_by,approved_at,valid_from,valid_until from disposal_authorization where authorization_id=?", authorization);
+        assertThat(row.get("status")).isEqualTo("REJECTED");
+        assertThat(row.get("approved_by")).isNotNull();
+        assertThat(row.get("approved_at")).isNotNull();
+        assertThat(row.get("valid_from")).isNull();
+        assertThat(row.get("valid_until")).isNull();
+        assertThat(eventCount(authorization, "REJECT")).isEqualTo(1);
+        assertThatThrownBy(() -> jdbc.update(
+                "update disposal_authorization set status='APPROVED' where authorization_id=?", authorization))
+                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+    }
 
     private static final String SCHEMA_PREFIX = "stage456_";
     private static final String SCHEMA = SCHEMA_PREFIX + UUID.randomUUID().toString().replace("-", "");

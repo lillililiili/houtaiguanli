@@ -122,7 +122,7 @@ class AutomationRuntimePostgresTest {
         service.evaluate("verify",eventId);
         var state=runtime.state("verify",eventId);
         assertThat(state.status()).isEqualTo("REVIEW");assertThat(state.runId()).isNotEqualTo(first);assertThat(state.holds()).isEqualTo("{}");assertThat(state.unknownSince()).isNotNull();
-        assertThat(runtime.run(state.runId()).conditions()).contains("UNKNOWN").contains("缺少当前判定依据");
+        assertThat(runtime.run(state.runId()).conditions()).contains("UNKNOWN").contains("当前条件缺少可用判定依据");
     }
 
     @Test void disablingRuleAdvancesVersionAndResetsDecisionToPaused(){

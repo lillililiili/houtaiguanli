@@ -90,9 +90,18 @@ public final class RuleContracts {
     public interface SpatialFactPort {
         List<AirspaceHit> airspaceHits(TargetState state, OffsetDateTime asOf);
 
+        /** Production consumers pass the business source mode; old test ports retain their fixture behavior. */
+        default List<AirspaceHit> airspaceHits(TargetState state, OffsetDateTime asOf, String sourceMode) {
+            return airspaceHits(state, asOf);
+        }
+
         RouteDistance distanceToRoute(TargetState state, String routeVersionId);
 
         boolean ambiguousEffectiveAirspaceVersion(OffsetDateTime asOf);
+
+        default boolean ambiguousEffectiveAirspaceVersion(OffsetDateTime asOf, String sourceMode) {
+            return ambiguousEffectiveAirspaceVersion(asOf);
+        }
     }
 
     /** 规则参数读取；缺参数是部署错误，抛 IllegalStateException 而不是当成业务未知。 */

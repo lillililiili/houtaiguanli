@@ -60,6 +60,7 @@ public class RuleSetManagementService {
     private static final Set<String> MODES = Set.of("ACTIVE", "SHADOW");
     private static final Set<String> TRIGGERS = Set.of("SCHEDULED", "MANUAL", "RECOMPUTE", "REPLAY");
     private static final int NOTE_MAX = 1000, CODE_MAX = 64, ID_MAX = 36, PAGE_DEFAULT = 20, PAGE_MAX = 100;
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final AccessControlService access;
     private final RuleEngineRepository repository;
     private final RuleEngineProperties properties;
@@ -69,7 +70,8 @@ public class RuleSetManagementService {
     private final ObjectMapper json;
 
     public RuleSetManagementService(AccessControlService access, RuleEngineRepository repository, RuleEngineProperties properties,
-            IdempotencyGuard idempotency, AuditService audit, AppClock clock, ObjectMapper json) {
+            IdempotencyGuard idempotency, AuditService audit, AppClock clock, ObjectMapper json, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.access = access; this.repository = repository; this.properties = properties; this.idempotency = idempotency;
         this.audit = audit; this.clock = clock; this.json = json;
     }
@@ -143,7 +145,7 @@ public class RuleSetManagementService {
         requireVersion(set, request.expectedVersion());
         VersionRow version = requirePublishedVersion(set, request.ruleSetVersionId());
         // DEMO 参数只能做影子验证；生产（allow-demo-active=false）不允许成为生效规则。
-        if (PARAM_STATUS_DEMO.equals(version.paramStatus()) && !properties.isAllowDemoActive()) {
+        if (!"CONFIRMED".equals(version.paramStatus()) && (!simulation.allowed() || !properties.isAllowDemoActive())) {
             throw new ApiException(HttpStatus.CONFLICT, "DEMO_PARAMS_NOT_ALLOWED", "演示参数版本不允许激活");
         }
         if (version.ruleSetVersionId().equals(set.activeVersionId())) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "该版本已是生效版本");
@@ -162,7 +164,7 @@ public class RuleSetManagementService {
         requireVersion(set, request.expectedVersion());
         if (set.previousActiveVersionId() == null) throw new ApiException(HttpStatus.CONFLICT, "NO_PREVIOUS_VERSION", "没有可回滚的上一生效版本");
         VersionRow previous = requirePublishedVersion(set, set.previousActiveVersionId());
-        if (PARAM_STATUS_DEMO.equals(previous.paramStatus()) && !properties.isAllowDemoActive()) {
+        if (!"CONFIRMED".equals(previous.paramStatus()) && (!simulation.allowed() || !properties.isAllowDemoActive())) {
             throw new ApiException(HttpStatus.CONFLICT, "DEMO_PARAMS_NOT_ALLOWED", "上一版本为演示参数，不允许回滚为生效版本");
         }
         String shadow = previous.ruleSetVersionId().equals(set.shadowVersionId()) ? null : set.shadowVersionId();

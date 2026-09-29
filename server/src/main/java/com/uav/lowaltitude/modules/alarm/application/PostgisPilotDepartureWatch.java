@@ -46,11 +46,13 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
         Object[] args = afterExclusive == null
                 ? new Object[]{eventId, new Timestamp(untilInclusive)}
                 : new Object[]{eventId, new Timestamp(afterExclusive), new Timestamp(untilInclusive)};
-        var rows = jdbc.query("SELECT p.observed_at, ST_X(p.location), ST_Y(p.location) FROM track_point p"
+        var rows = jdbc.query("SELECT p.observed_at, ST_X(p.location), ST_Y(p.location), p.point_kind FROM track_point p"
                 + " JOIN track t ON t.track_id=p.track_id JOIN alarm a ON a.target_id=t.target_id"
                 + " JOIN uav_event e ON e.alarm_id=a.alarm_id WHERE e.event_id=? AND p.location IS NOT NULL AND p.observed_at IS NOT NULL" + window
                 + " ORDER BY p.observed_at DESC FETCH FIRST 1 ROW ONLY",
-                (r, n) -> new Point(r.getTimestamp(1).getTime(), r.getBigDecimal(2), r.getBigDecimal(3)), args);
+                (r, n) -> "MEAS".equals(r.getString(4))
+                        ? new Point(r.getTimestamp(1).getTime(), r.getBigDecimal(2), r.getBigDecimal(3)) : null, args);
+        // 看最新点再判断可信性，不能跳过预测点后复用更早的实测点冒充当前观测。
         return rows.isEmpty() ? null : rows.get(0);
     }
     private Set<String> covered(String eventId, Point point, long at) {
@@ -65,10 +67,13 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
                   CASE WHEN ST_Touches(av.boundary,pt.geom) THEN 'TOUCHES'
                        WHEN ST_Covers(av.boundary,pt.geom) THEN 'COVERS' ELSE 'OTHER' END AS relation
                 FROM uav_event e
+                JOIN alarm event_alarm ON event_alarm.alarm_id=e.alarm_id
                 JOIN airspace a ON a.owner_org_id=e.owner_org_id AND a.district_id=e.district_id
                 JOIN airspace_version av ON av.airspace_id=a.airspace_id
                 CROSS JOIN (SELECT ST_SetSRID(ST_MakePoint(?,?),4326) AS geom) pt
                 WHERE e.event_id=? AND av.boundary IS NOT NULL
+                  AND (a.source_mode='live'
+                       OR (event_alarm.source_mode IN ('mock','replay') AND a.source_mode IN ('mock','replay')))
                   AND av.valid_from<=? AND (av.valid_to IS NULL OR ?<av.valid_to)
                   AND av.boundary && pt.geom AND ST_Intersects(av.boundary,pt.geom)
                 """, (r, n) -> new Hit(r.getString(1), r.getString(2)),

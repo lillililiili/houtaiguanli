@@ -1,20 +1,24 @@
 package com.uav.lowaltitude.modules.evidence.api;
 
 import java.util.List;
-import java.util.Map;
-import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.CountDto;
+import com.fasterxml.jackson.databind.JsonNode;
 
-/** Read models for existing files, observed tracks and actual device commands. */
 public final class EvidenceLedgerDtos {
     private EvidenceLedgerDtos() { }
     public record Entry(String sourceKind, String sourceId, String category, String evidenceNo,
-            String originalName, String kindCode, String status, Long occurredAt, Long sizeBytes,
-            Long retainUntil, String custody, String sourceMode, String layer, Long startedAt,
-            Long endedAt, Long pointCount) { }
-    public record Link(String subjectKind, String subjectId, String subjectNo) { }
-    public record Detail(Entry entry, Object command, List<Entry> attachments, List<Link> links) { }
-    public record Stats(long total, List<CountDto> byKind, List<CountDto> byStatus, List<CountDto> byCustody) { }
-    public record Coverage(String status, long count, boolean truncated) { }
-    public record Material(String recordType, String recordId, Long occurredAt, String availability, Entry summary) { }
-    public record Materials(String subjectKind, String subjectId, Map<String, Coverage> coverage, List<Material> records) { }
+            String originalName, String kindCode, String status, Long capturedAt, Long storedAt,
+            String sourceMode, String layer, Long startedAt, Long endedAt, Long sizeBytes,
+            boolean held, String custody, int linkCount, Long retainUntil, Long pointCount) {
+        @com.fasterxml.jackson.annotation.JsonProperty("occurred_at")
+        public Long occurredAt() { return capturedAt == null ? storedAt : capturedAt; }
+    }
+    public record Detail(Entry entry, List<EvidenceDtos.LinkDto> links,
+            Command command, List<Entry> attachments) { }
+    public record Command(String commandId, String commandNo, String deviceName, String deviceNo,
+            String commandType, String reason, String status, Long createdAt, Long issuedAt,
+            Long completedAt, String resultDetail, List<Receipt> receipts) { }
+    public record Receipt(String receiptId, String receiptKind, String deviceResultCode,
+            Long occurredAt, Long receivedAt, JsonNode payload) { }
+    public record Stats(long total, List<EvidenceDtos.CountDto> byKind,
+            List<EvidenceDtos.CountDto> byStatus, List<EvidenceDtos.CountDto> byCustody) { }
 }

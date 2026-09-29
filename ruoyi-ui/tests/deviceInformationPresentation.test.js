@@ -22,6 +22,57 @@ async function tab(label) { [...host.querySelectorAll('[role="tab"]')].find(item
 afterEach(() => { app?.unmount(); host?.remove(); });
 
 describe('设备信息按页面用途展示', () => {
+  it('监测收起原始状态码和收发时间，异常筛选仍包含折叠字段', async () => {
+    await mount('monitor', { ...information, sections: [{ code: 'link', title: '连接与数据时效', fields: [
+      field('connectivity', '设备连接状态', 'UNKNOWN', 'CONFIGURED'),
+      field('work_state_code', '设备工作状态码', null, 'NOT_CONFIGURED'),
+      field('received_at', '平台接收时间', 100, 'CONFIGURED')
+    ] }] });
+    expect(host.textContent).toContain('设备连接状态');
+    expect(host.textContent).not.toContain('设备工作状态码');
+    expect(host.textContent).not.toContain('平台接收时间');
+    expect(host.textContent).not.toContain('已登记');
+    expect([...host.querySelectorAll('th')].map(el => el.textContent.trim())).toEqual(['信息项', '当前值']);
+    [...host.querySelectorAll('button')].find(el => el.textContent.includes('展开诊断详情')).click(); await settle();
+    expect(host.textContent).toContain('平台接收时间');
+    [...host.querySelectorAll('button')].find(el => el.textContent.includes('收起诊断详情')).click(); await settle();
+    host.querySelector('input[type="checkbox"]').click(); await settle();
+    expect(host.textContent).toContain('设备工作状态码');
+    expect(host.textContent).not.toContain('设备连接状态');
+    expect(host.textContent).not.toContain('平台接收时间');
+  });
+  it('监测按子页签展示分组，刷新保留选择，切换设备恢复默认分组', async () => {
+    const data = { ...information, sections: [
+      { code: 'link', title: '连接与数据时效', fields: [field('connectivity', '设备连接状态', 'OFFLINE', 'CONFIGURED')] },
+      ...information.sections,
+      { code: 'sensing', title: '最近感知报文', fields: [field('object_count', '本帧目标数', 0), field('ptTime', '报文时间', null, 'NOT_REPORTED')] }
+    ] };
+    await mount('monitor', data);
+    expect(host.textContent).toContain('设备连接状态');
+    expect(host.textContent).not.toContain('速度门限');
+    expect(host.textContent).not.toContain('本帧目标数');
+    await tab('设备工参');
+    expect(host.textContent).toContain('速度门限');
+    expect(host.textContent).toContain('已过期');
+    expect(host.textContent).not.toContain('设备连接状态');
+    props.information = { ...data, generated_at: 500 }; await settle();
+    expect(host.textContent).toContain('速度门限');
+    await tab('感知报文');
+    expect(host.textContent).toContain('本帧目标数');
+    expect(host.textContent).toContain('未上报');
+    expect(host.textContent).not.toContain('速度门限');
+    const checkbox = host.querySelector('input[type="checkbox"]'); checkbox.click(); await settle();
+    expect(host.textContent).toContain('报文时间');
+    expect(host.textContent).not.toContain('本帧目标数');
+    await tab('感知目标'); expect(host.textContent).toContain('目标速度');
+    await tab('运行参数'); expect(host.textContent).toContain('报文时间');
+    props.information = { ...data, device_id: 'B', name: '设备 B' }; await settle();
+    expect(host.textContent).toContain('设备连接状态');
+    expect(host.querySelector('input[type="checkbox"]').checked).toBe(false);
+    props.information = { ...props.information, sections: data.sections.filter(section => section.code !== 'sensing') }; await settle();
+    await tab('感知报文'); expect(host.textContent).toContain('暂无感知报文数据');
+  });
+
   it('监测只展示运行参数，保留零值与过期状态，不显示协议诊断和厂家档案', async () => {
     await mount('monitor');
     for (const text of ['当前运行信息', '速度门限', '已过期']) expect(host.textContent).toContain(text);

@@ -146,6 +146,7 @@ public class AirspaceImportService {
             } else {
                 // 编号已存在：同一片空域的新一版，走与人工追加版本相同的接替式写入，不覆盖旧版内容。
                 airspaceId = existingId;
+                writes.requireLegacyWritable(existingId);
                 VersionRow latest = airspaces.findLatestVersion(existingId);
                 if (latest == null || !item.validFrom().isAfter(latest.validFrom())) {
                     throw new ApiException(HttpStatus.CONFLICT, "VERSION_OVERLAP",

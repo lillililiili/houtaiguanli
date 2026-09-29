@@ -32,7 +32,7 @@ import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.I
  * 已写过同一数据集就跳过：重启不重复摄取，也不覆盖任何已有目标或人工修订。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(75)
 public class LocalStage8FusionReplaySeeder implements ApplicationRunner {

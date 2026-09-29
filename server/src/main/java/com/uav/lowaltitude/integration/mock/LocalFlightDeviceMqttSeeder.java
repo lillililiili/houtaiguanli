@@ -18,7 +18,7 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 
 /** 仅登记独立 MQTT 模拟设备；位置、故障及离线都由报文/超时生成，不直写状态。 */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true")
 @Order(53)
 public class LocalFlightDeviceMqttSeeder implements ApplicationRunner {

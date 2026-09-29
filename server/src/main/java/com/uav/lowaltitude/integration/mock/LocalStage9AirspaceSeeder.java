@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 不碰阶段 3/7 的种子空域——那些是既有研判的输入证据。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(85)
 public class LocalStage9AirspaceSeeder implements ApplicationRunner {

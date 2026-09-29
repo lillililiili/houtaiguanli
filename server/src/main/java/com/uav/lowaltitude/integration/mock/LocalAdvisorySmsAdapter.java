@@ -23,6 +23,8 @@ public class LocalAdvisorySmsAdapter implements AdvisorySmsPort {
     }
     public Delivery simulateAutomatic(String mode, String recipientName, String content, String idempotencyKey) {
         if (!automaticSimulationAvailable(mode)) throw new ApiException(HttpStatus.CONFLICT, "SMS_CHANNEL_UNAVAILABLE", "正式短信渠道尚未接入，不能把模拟送达写成真实通知");
+        var scenario=LocalAdvisoryScenario.read(environment,mode,idempotencyKey,false);
+        if(scenario!=null) { scenario.awaitResponse();return new Delivery(true,scenario.status()); }
         return new Delivery(true, "SIMULATED_DELIVERED");
     }
     private boolean development() { return environment.acceptsProfiles(Profiles.of("!production & (local | test)")); }

@@ -25,7 +25,7 @@ import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository;
  * 只在非 production 注册；是否在启动时写入由 app.fusion.replay.run-on-start 决定（默认 false），测试与种子直接调用 {@link #load}。
  */
 @Component
-@Profile("!production")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class FusionReplayRunner {
     private static final Logger log = LoggerFactory.getLogger(FusionReplayRunner.class);
 

@@ -14,6 +14,7 @@ import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
  * 提交当时立刻已回执会把这一步跳过去。处罚移送仍模拟签收（没有“接收方确认”这一环）。
  * 配置了 mock 不等于已对接真实上级接口。
  */
+@org.springframework.context.annotation.Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @Component
 @ConditionalOnProperty(prefix = "app.handoff", name = "channel", havingValue = "mock")
 public class MockSuperiorHandoffChannel implements HandoffChannelPort {

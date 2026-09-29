@@ -68,6 +68,15 @@ public class AirspaceWriteService {
 
     @Transactional
     public CreatedAirspaceDto create(String rawBody, String idempotencyKey) {
+        return createInternal(rawBody, idempotencyKey, null, "live");
+    }
+
+    @Transactional
+    public CreatedAirspaceDto createUpstream(String rawBody, String idempotencyKey, String sourceId, String sourceMode) {
+        return createInternal(rawBody, idempotencyKey, sourceId, sourceMode);
+    }
+
+    private CreatedAirspaceDto createInternal(String rawBody, String idempotencyKey, String sourceId, String sourceMode) {
         AccessDecision decision = requireManage();
         CreateRequest request = parseCreate(rawBody);
         requireScope(decision, request.ownerOrgId(), request.districtId());
@@ -79,7 +88,7 @@ public class AirspaceWriteService {
         Instant now = clock.now();
         String airspaceId = UUID.randomUUID().toString(), versionId = UUID.randomUUID().toString();
         try {
-            repository.insertAirspace(airspaceId, request.airspaceNo(), request.name(), request.ownerOrgId(), request.districtId(), now);
+            repository.insertAirspace(airspaceId, request.airspaceNo(), request.name(), request.ownerOrgId(), request.districtId(), now, sourceId, sourceMode);
         } catch (DataIntegrityViolationException duplicate) {
             // 上面的存在性预检挡不住并发：两个请求可能同时查到"编号不存在"再一起插入。
             // airspace_no 的唯一约束是最终保障，这里把它翻成契约的 409，而不是让调用方看到 500。
@@ -88,7 +97,7 @@ public class AirspaceWriteService {
         repository.insertVersion(new VersionRow(versionId, airspaceId, 1, request.kindCode(), request.minAltitudeM(), request.maxAltitudeM(),
                 request.altitudeDatum(), request.validFrom(), request.validTo(), request.changeReason(), now), request.boundaryEwkt());
         AuthUser actor = AuthContext.require();
-        repository.insertOrigin(UUID.randomUUID().toString(), versionId, "MANUAL", actor.userId(), null, null, now);
+        repository.insertOrigin(UUID.randomUUID().toString(), versionId, sourceId == null ? "MANUAL" : "UPSTREAM", actor.userId(), null, null, now);
         audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "airspace_created", OBJECT_TYPE, airspaceId,
                 "airspace_no=" + request.airspaceNo() + "; kind_code=" + request.kindCode(), "SUCCESS", "", "");
         return new CreatedAirspaceDto(airspaceId, versionId, 1, 0);
@@ -96,11 +105,21 @@ public class AirspaceWriteService {
 
     @Transactional
     public CreatedVersionDto addVersion(String airspaceId, String rawBody, String idempotencyKey) {
+        return addVersionInternal(airspaceId, rawBody, idempotencyKey, false);
+    }
+
+    @Transactional
+    public CreatedVersionDto addUpstreamVersion(String airspaceId, String rawBody, String idempotencyKey) {
+        return addVersionInternal(airspaceId, rawBody, idempotencyKey, true);
+    }
+
+    private CreatedVersionDto addVersionInternal(String airspaceId, String rawBody, String idempotencyKey, boolean upstream) {
         AccessDecision decision = requireManage();
         VersionRequest request = parseVersion(rawBody);
         String id = identifier(airspaceId);
         AirspaceHead head = repository.lockAirspace(id, scopeUser(decision));
         if (head == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "空域不存在或不可见");
+        if (!upstream) requireLegacyWritable(id);
         idempotency.claim(idempotencyKey, framed("airspace-version") + framed(id) + framed(request.kindCode())
                 + framed(Long.toString(request.validFrom().toEpochMilli())) + framed(request.changeReason())
                 + framed(Long.toString(request.expectedVersion())));
@@ -129,7 +148,7 @@ public class AirspaceWriteService {
                 request.maxAltitudeM(), request.altitudeDatum(), request.validFrom(), request.validTo(), request.changeReason(), now),
                 request.boundaryEwkt());
         AuthUser actor = AuthContext.require();
-        repository.insertOrigin(UUID.randomUUID().toString(), versionId, "MANUAL", actor.userId(), null, supersededId, now);
+        repository.insertOrigin(UUID.randomUUID().toString(), versionId, upstream ? "UPSTREAM" : "MANUAL", actor.userId(), null, supersededId, now);
         audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "airspace_version_created", OBJECT_TYPE, id,
                 "version_no=" + (latest.versionNo() + 1) + "; expected_version=" + request.expectedVersion(), "SUCCESS", "", "");
         return new CreatedVersionDto(id, versionId, latest.versionNo() + 1, head.version() + 1, supersededId, supersededValidTo);
@@ -140,6 +159,11 @@ public class AirspaceWriteService {
         AccessDecision decision = access.require(PermissionCode.AIRSPACE_READ);
         access.require(PermissionCode.AIRSPACE_MANAGE);
         return decision;
+    }
+
+    void requireLegacyWritable(String id) {
+        if (repository.upstreamManaged(id)) throw new ApiException(HttpStatus.CONFLICT,
+                "UPSTREAM_MANAGED", "上级下发空域只能由原来源更新或撤销");
     }
 
     static String scopeUser(AccessDecision decision) {
@@ -160,7 +184,7 @@ public class AirspaceWriteService {
     record VersionRequest(String kindCode, String boundaryEwkt, BigDecimal minAltitudeM, BigDecimal maxAltitudeM,
             String altitudeDatum, Instant validFrom, Instant validTo, String changeReason, long expectedVersion) { }
 
-    private CreateRequest parseCreate(String rawBody) {
+    CreateRequest parseCreate(String rawBody) {
         JsonNode node = strictObject(rawBody, CREATE_FIELDS);
         String airspaceNo = requiredText(node, "airspace_no", NO_MAX);
         String name = requiredText(node, "name", NAME_MAX);
@@ -235,7 +259,7 @@ public class AirspaceWriteService {
         }
     }
 
-    private JsonNode strictObject(String rawBody, Set<String> allowed) {
+    JsonNode strictObject(String rawBody, Set<String> allowed) {
         if (rawBody == null || rawBody.isBlank()) throw invalidRequest();
         try (JsonParser parser = json.getFactory().createParser(rawBody)) {
             parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
@@ -250,7 +274,7 @@ public class AirspaceWriteService {
         }
     }
 
-    private static String requiredText(JsonNode node, String field, int max) {
+    static String requiredText(JsonNode node, String field, int max) {
         String value = optionalText(node, field, max);
         if (value == null) throw validation(field + " 必填");
         return value;
@@ -273,7 +297,7 @@ public class AirspaceWriteService {
         return value.decimalValue();
     }
 
-    private static Instant requiredTime(JsonNode node, String field) {
+    static Instant requiredTime(JsonNode node, String field) {
         Instant value = optionalTime(node, field);
         if (value == null) throw validation(field + " 必填");
         return value;

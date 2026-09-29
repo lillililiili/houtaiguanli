@@ -10,6 +10,10 @@
 
 ## 通用约定
 
+### 2026-09-28 共享核实补充
+
+研判列表和详情可返回 `alarm_verification={event_id,conclusion,note,version,verified_at}`。仅在具备告警读取权限、关联告警和事件仍属同一目标/组织/区域/来源，且核实发生在本次研判形成之后时提供；关联按原引擎告警、合并成员、人工转告警历史的既有优先顺序解析，不读取同目标其他历史告警。共享已核实记录不再要求重复核实，也从 `needs_review=true` 结果中排除。新研判不得沿用形成之前的核实。原 `legal_status`、`review` 及历史事实不改写，已核实事件不代表算法准确性已验证或反制获准。有关联告警时不再返回本页 `REVIEW` 动作，前台进入该告警查看处理情况。
+
 沿用阶段 4/5：`{ok,data}`/`{ok:false,error:{code,message}}`、snake_case、字符串 ID、epoch 毫秒、`page,size → items/page/size/total`（默认 1/20，最大 100；未知/重复参数 400）、所有 GET/POST 先完成全部动作鉴权再解析 query/path/body、`ASSIGNED` 精确元组、`ALL` 仍要求目录启用、越权 404、缺动作 403、写请求 `Idempotency-Key`（8–128）+ `expected_version`、body 严格白名单（多余/重复字段 400 `UNKNOWN_FIELD`）、成功审计同事务、失败审计事务外。
 
 ## 权限

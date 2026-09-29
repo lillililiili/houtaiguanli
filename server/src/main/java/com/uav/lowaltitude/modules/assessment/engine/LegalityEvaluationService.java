@@ -63,6 +63,7 @@ public class LegalityEvaluationService {
     static final String PARAM_TIME_WINDOW_MIN = "time_window_min";
     static final String ALARM_SUPPRESSED_SHADOW = "SUPPRESSED_SHADOW";
     private final RuleEngineRepository repository;
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final RuleParamLoader params;
     private final SpatialFactPort spatial;
     private final PlanMatcher planMatcher;
@@ -74,7 +75,8 @@ public class LegalityEvaluationService {
     private final DecisionAssuranceAlgorithm assuranceAlgorithm = new DecisionAssuranceAlgorithm();
 
     public LegalityEvaluationService(RuleEngineRepository repository, RuleParamLoader params, SpatialFactPort spatial, PlanMatcher planMatcher,
-            List<RuleCheck> checks, RuleEngineHooks hooks, AppClock clock, ObjectMapper json) {
+            List<RuleCheck> checks, RuleEngineHooks hooks, AppClock clock, ObjectMapper json, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.repository = repository; this.params = params; this.spatial = spatial; this.planMatcher = planMatcher;
         this.checks = List.copyOf(checks); this.hooks = hooks; this.clock = clock; this.json = json;
     }
@@ -109,6 +111,7 @@ public class LegalityEvaluationService {
         for (MemberRow member : repository.members(run.ruleSetVersionId())) if (member.enabled()) members.put(member.ruleCode(), member);
 
         Resolved resolved = resolve(subject);
+        simulation.requireSourceMode(resolved.sourceMode());
         StateRow stateRow = resolved.targetId() == null ? null : repository.latestState(resolved.targetId());
         OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime effectiveAsOf = asOf == null ? now : asOf;
@@ -131,7 +134,7 @@ public class LegalityEvaluationService {
             candidateIds = candidates.stream().map(PlanFact::planId).toList();
             EvaluationContext collecting = new EvaluationContext(resolved.subject(), state, track, null, List.of(), effectiveAsOf, freshness, mode, resolved.sourceMode());
             if (members.containsKey(RuleCodes.C01)) planMatch = planMatcher.match(collecting, candidates, ruleParams);
-            airspaces = airspaces(state, effectiveAsOf);
+            airspaces = airspaces(state, effectiveAsOf, resolved.sourceMode());
             EvaluationContext context = new EvaluationContext(resolved.subject(), state, track, planMatch, airspaces, effectiveAsOf, freshness, mode, resolved.sourceMode());
             for (RuleCheck check : ordered(members)) {
                 HitDetail hit = check.evaluate(context, ruleParams);
@@ -149,6 +152,19 @@ public class LegalityEvaluationService {
         }
 
         DecisionAssuranceAlgorithm.Assurance assurance = assuranceAlgorithm.assess(context, hits, verdict, ruleParams);
+        var evaluatedVersion = repository.findVersion(run.ruleSetVersionId());
+        if ("live".equals(context.sourceMode()) && verdict.status() != LegalStatus.NOT_APPLICABLE
+                && (evaluatedVersion == null || !"CONFIRMED".equals(evaluatedVersion.paramStatus())
+                    || hits.stream().flatMap(hit -> (hit.params() == null ? List.<RuleContracts.ParamRef>of() : hit.params()).stream())
+                        .anyMatch(ref -> !"CONFIRMED".equals(ref.status())))) {
+            verdict = Decision.undetermined(java.util.Set.of("RULE_PARAMETERS_UNCONFIRMED"), List.of());
+            assurance = new DecisionAssuranceAlgorithm.Assurance(DecisionAssuranceAlgorithm.VERSION,
+                    DecisionAssuranceAlgorithm.INSUFFICIENT, List.of("RULE_PARAMETERS_UNCONFIRMED"));
+        }
+        if ("live".equals(context.sourceMode()) && assurance.reasons().stream().anyMatch(reason ->
+                "DEMO_RULE_PARAMETERS".equals(reason) || "PARAMETER_STATUS_UNKNOWN".equals(reason))) {
+            verdict = Decision.undetermined(new java.util.LinkedHashSet<>(assurance.reasons()), List.of());
+        }
         String evaluationId = UUID.randomUUID().toString();
         PlanFact plan = planMatch.plan();
         String planId = plan != null ? plan.planId() : resolved.planId();
@@ -249,13 +265,13 @@ public class LegalityEvaluationService {
     }
 
     /** 版本歧义是时间版本事实，先于几何：以 UNKNOWN/VERSION_AMBIGUOUS 行进入上下文，空域类检查据此直接给未知。 */
-    private List<AirspaceHit> airspaces(TargetState state, OffsetDateTime asOf) {
+    private List<AirspaceHit> airspaces(TargetState state, OffsetDateTime asOf, String sourceMode) {
         List<AirspaceHit> hits = new ArrayList<>();
-        if (spatial.ambiguousEffectiveAirspaceVersion(asOf)) {
+        if (spatial.ambiguousEffectiveAirspaceVersion(asOf, sourceMode)) {
             hits.add(new AirspaceHit(null, null, null, RuleCodes.RELATION_UNKNOWN, null, null, null, null, null, RuleCodes.VERSION_AMBIGUOUS));
         }
         if (state != null && state.longitude() != null && state.latitude() != null) {
-            List<AirspaceHit> found = spatial.airspaceHits(state, asOf);
+            List<AirspaceHit> found = spatial.airspaceHits(state, asOf, sourceMode);
             if (found != null) hits.addAll(found);
         }
         return List.copyOf(hits);

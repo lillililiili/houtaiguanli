@@ -90,11 +90,21 @@ public class AirspaceWriteRepository {
 
     /** 人工与导入的空域没有外部来源（决策 9-2）：source_id 为 NULL，source_mode 记 live。 */
     public void insertAirspace(String airspaceId, String airspaceNo, String name, String ownerOrgId, String districtId, Instant at) {
+        insertAirspace(airspaceId, airspaceNo, name, ownerOrgId, districtId, at, null, "live");
+    }
+
+    public void insertAirspace(String airspaceId, String airspaceNo, String name, String ownerOrgId, String districtId,
+            Instant at, String sourceId, String sourceMode) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", airspaceId); p.put("no", airspaceNo); p.put("name", name); p.put("org", ownerOrgId); p.put("district", districtId);
-        p.put("at", Timestamp.from(at));
+        p.put("at", Timestamp.from(at)); p.put("source", sourceId); p.put("mode", sourceMode);
         jdbc.update("INSERT INTO airspace (airspace_id,airspace_no,name,source_id,source_mode,owner_org_id,district_id,created_at,updated_at,version)"
-                + " VALUES (:id,:no,:name,NULL,'live',:org,:district,:at,:at,0)", p);
+                + " VALUES (:id,:no,:name,:source,:mode,:org,:district,:at,:at,0)", p);
+    }
+
+    public boolean upstreamManaged(String airspaceId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM airspace_delivery WHERE airspace_id=:id",
+                Map.of("id", airspaceId), Long.class) > 0;
     }
 
     public int bumpAirspaceVersion(String airspaceId, long expectedVersion, Instant at) {

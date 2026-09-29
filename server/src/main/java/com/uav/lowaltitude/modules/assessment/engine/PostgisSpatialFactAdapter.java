@@ -37,10 +37,16 @@ public class PostgisSpatialFactAdapter implements SpatialFactPort {
 
     @Override
     public List<AirspaceHit> airspaceHits(TargetState state, OffsetDateTime asOf) {
+        return airspaceHits(state, asOf, "live");
+    }
+
+    @Override
+    public List<AirspaceHit> airspaceHits(TargetState state, OffsetDateTime asOf, String sourceMode) {
         requirePostgis();
         if (state == null || state.longitude() == null || state.latitude() == null) return List.of();
         Map<String, Object> p = point(state);
         p.put("as_of", asOf);
+        p.put("include_simulated", "mock".equals(sourceMode) || "replay".equals(sourceMode));
         // 只返回 COVERS/TOUCHES/几何缺失的版本；DISJOINT 不是事实缺失，不必逐条返回。空域必须有完整归属元组（阶段 3 同一约束）。
         return jdbc.query("""
                 SELECT a.airspace_id,av.airspace_version_id,av.kind_code,av.min_altitude_m,av.max_altitude_m,av.altitude_datum,av.valid_from,av.valid_to,
@@ -53,6 +59,7 @@ public class PostgisSpatialFactAdapter implements SpatialFactPort {
                 FROM airspace_version av JOIN airspace a ON a.airspace_id=av.airspace_id
                 CROSS JOIN (SELECT ST_SetSRID(ST_MakePoint(:lon,:lat),4326) AS geom) pt
                 WHERE a.owner_org_id IS NOT NULL AND a.district_id IS NOT NULL
+                  AND (a.source_mode='live' OR (:include_simulated AND a.source_mode IN ('mock','replay')))
                   AND av.valid_from<=:as_of AND (av.valid_to IS NULL OR :as_of<av.valid_to)
                   AND (av.boundary IS NULL OR av.boundary && pt.geom)
                   AND (av.boundary IS NULL OR ST_Intersects(av.boundary,pt.geom))
@@ -87,13 +94,20 @@ public class PostgisSpatialFactAdapter implements SpatialFactPort {
     /** 同一空域两个版本在 as_of 同时生效即歧义（阶段 3 同判定，用时点代替计划窗）。 */
     @Override
     public boolean ambiguousEffectiveAirspaceVersion(OffsetDateTime asOf) {
+        return ambiguousEffectiveAirspaceVersion(asOf, "live");
+    }
+
+    @Override
+    public boolean ambiguousEffectiveAirspaceVersion(OffsetDateTime asOf, String sourceMode) {
         requirePostgis();
         Long count = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM airspace_version first_version JOIN airspace_version second_version
                   ON second_version.airspace_id=first_version.airspace_id AND first_version.airspace_version_id<second_version.airspace_version_id
+                JOIN airspace a ON a.airspace_id=first_version.airspace_id
                 WHERE first_version.valid_from<=:as_of AND (first_version.valid_to IS NULL OR :as_of<first_version.valid_to)
+                  AND (a.source_mode='live' OR (:include_simulated AND a.source_mode IN ('mock','replay')))
                   AND second_version.valid_from<=:as_of AND (second_version.valid_to IS NULL OR :as_of<second_version.valid_to)
-                """, Map.of("as_of", asOf), Long.class);
+                """, Map.of("as_of", asOf, "include_simulated", "mock".equals(sourceMode) || "replay".equals(sourceMode)), Long.class);
         return count != null && count > 0;
     }
 

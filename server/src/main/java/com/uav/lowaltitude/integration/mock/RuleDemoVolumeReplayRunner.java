@@ -31,7 +31,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleRunService.RunSummary;
  * 同数据集 + 同版本已跑过则跳过；评估失败只记日志，不阻断启动。开关与契约回放相同：app.rule-engine.replay.run-on-start。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(71)
 public class RuleDemoVolumeReplayRunner implements ApplicationRunner {

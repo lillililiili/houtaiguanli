@@ -1,0 +1,36 @@
+# Explicit local test overlay; never load this document in production.
+spring:
+  config:
+    activate:
+      on-profile: "local & qa & !production"
+
+app:
+  dev-seed:
+    enabled: false
+  fusion:
+    enabled: true
+    replay:
+      seed-enabled: false
+      run-on-start: false
+  rule-engine:
+    enabled: true
+    allow-demo-active: true
+    replay:
+      run-on-start: false
+  automation-rules:
+    enabled: false
+  advisory:
+    auto-sms:
+      enabled: false
+    auto-voice:
+      enabled: false
+  handoff:
+    channel: none
+  device:
+    mock-adapter:
+      enabled: false
+  eo-edge:
+    auto-track-enabled: false
+  flight:
+    status-advance:
+      enabled: false

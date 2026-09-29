@@ -6,6 +6,26 @@ import com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presenc
 import com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.Phase;
 
 class NotifyFlowTest {
+    @Test void unknownVoiceResultNeverClaimsAutomaticCallingOrStartsObservation() {
+        assertThat(NotifyFlow.phase("CONFIRMED","SIMULATED_DELIVERED","已送达",1000L,
+                "UNKNOWN","已接通但是否播完未知",null,10000L,Presence.STILL_PRESENT,null)).isNull();
+    }
+    @Test void blockedCallDoesNotBecomeAutomaticAgainWhenPositionsRecover() {
+        assertThat(NotifyFlow.phase("CONFIRMED","SIMULATED_DELIVERED","已送达",1000L,
+                "BLOCKED","短信发出后没有新的位置，或无法判断是否仍在告警空域，不拨打电话，也不记为已撤离",
+                null,10000L,Presence.STILL_PRESENT,null)).isEqualTo(Phase.AWAIT_COUNTER);
+        assertThat(NotifyFlow.phase("CONFIRMED","SIMULATED_DELIVERED","已送达",1000L,
+                "BLOCKED","录音配置与本任务原始内容不一致",null,10000L,Presence.STILL_PRESENT,null)).isEqualTo(Phase.AWAIT_COUNTER);
+    }
+    @Test void blockedVoiceConfigurationDoesNotRemainInAutomaticCall() {
+        long sms = 1_000L;
+        for (String reason : new String[] { "电话通知配置已过期", "没有可通知的执行飞手，不能拨打电话" }) {
+            assertThat(NotifyFlow.phase("CONFIRMED", "SIMULATED_DELIVERED", "已送达", sms,
+                    "BLOCKED", reason, null, sms + 2_999L, null, null)).isEqualTo(Phase.WATCHING);
+            assertThat(NotifyFlow.phase("CONFIRMED", "SIMULATED_DELIVERED", "已送达", sms,
+                    "BLOCKED", reason, null, sms + 3_000L, Presence.STILL_PRESENT, null)).isEqualTo(Phase.AWAIT_COUNTER);
+        }
+    }
     @Test void verifiedAlarmWalksSmsWatchCallWatchThenCounter() {
         long sms = 1_000L;
         assertThat(NotifyFlow.phase("PENDING_VERIFICATION", "WAITING", "尚未核实", null, "WAITING", null, null, sms, null, null)).isNull();

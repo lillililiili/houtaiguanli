@@ -82,7 +82,7 @@ public class LegalityReviewService {
         AccessDecision readAccess = access.require(PermissionCode.ASSESSMENT_READ);
         access.require(PermissionCode.ASSESSMENT_REVISE);
         String id = LegalityEvaluationReadService.id(evaluationId);
-        Body body = parse(rawBody, Set.of("conclusion", "override_status", "note", "expected_version"), Set.of("conclusion", "note", "expected_version"));
+        Body body = parse(rawBody, Set.of("conclusion", "override_status", "note", "expected_version"), Set.of("conclusion", "expected_version"));
         String conclusion = body.text("conclusion");
         if (conclusion == null || !CONCLUSIONS.contains(conclusion)) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_CONCLUSION", "复核结论无效");
         String overrideStatus = body.text("override_status");
@@ -124,7 +124,7 @@ public class LegalityReviewService {
         AccessDecision readAccess = access.require(PermissionCode.ASSESSMENT_READ);
         access.require(PermissionCode.ASSESSMENT_ESCALATE);
         String id = LegalityEvaluationReadService.id(evaluationId);
-        Body body = parse(rawBody, Set.of("note", "expected_version"), Set.of("note", "expected_version"));
+        Body body = parse(rawBody, Set.of("note", "expected_version"), Set.of("expected_version"));
         String note = body.note();
         long expectedVersion = body.version();
 
@@ -160,7 +160,7 @@ public class LegalityReviewService {
         AccessDecision readAccess = access.require(PermissionCode.ASSESSMENT_READ);
         access.require(PermissionCode.ASSESSMENT_EVALUATE);
         String id = LegalityEvaluationReadService.id(evaluationId);
-        Body body = parse(rawBody, Set.of("note", "expected_version"), Set.of("note", "expected_version"));
+        Body body = parse(rawBody, Set.of("note", "expected_version"), Set.of("expected_version"));
         String note = body.note();
         long expectedVersion = body.version();
 
@@ -272,8 +272,8 @@ public class LegalityReviewService {
         String text(String key) { Object value = values.get(key); if (value == null) return null; String text = value.toString().trim(); return text.isEmpty() ? null : text; }
         String note() {
             String note = text("note");
-            if (note == null || note.length() > NOTE_MAX) throw validation("说明长度必须为1至1000");
-            return note;
+            if (note != null && note.length() > NOTE_MAX) throw validation("说明不能超过1000字");
+            return note == null ? "" : note;
         }
         long version() {
             Object value = values.get("expected_version");

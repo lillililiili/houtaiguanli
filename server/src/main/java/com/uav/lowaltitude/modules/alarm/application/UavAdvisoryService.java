@@ -107,9 +107,9 @@ public class UavAdvisoryService {
         long version;String note;
         try(JsonParser parser=json.getFactory().createParser(raw==null?"":raw)) {
             parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);JsonNode n=json.readTree(parser);
-            if(n==null||!n.isObject()||parser.nextToken()!=null||n.size()!=2||!n.has("expected_version")||!n.get("expected_version").isIntegralNumber()||!n.get("expected_version").canConvertToLong())throw new IllegalArgumentException();
-            version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=text(n,"note",1000,true);
-        } catch(Exception bad){throw bad("VALIDATION_ERROR","补发需要有效版本与原因说明");}
+            if(n==null||!n.isObject()||parser.nextToken()!=null||n.size()<1||n.size()>2||(n.size()==2&&!n.has("note"))||!n.has("expected_version")||!n.get("expected_version").isIntegralNumber()||!n.get("expected_version").canConvertToLong())throw new IllegalArgumentException();
+            version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=optionalRetryNote(n);
+        } catch(Exception bad){throw bad("VALIDATION_ERROR","补发需要有效版本；说明选填，最多1000字");}
         if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
         EventRow event=events.lock(id,scope);if(event==null)throw notFound();var actor=AuthContext.require();
         String hash=hash("auto-sms-retry:"+id+":"+version+":"+note);var previous=repository.replay(actor.userId(),key.trim());
@@ -134,9 +134,9 @@ public class UavAdvisoryService {
         long version;String note;
         try(JsonParser parser=json.getFactory().createParser(raw==null?"":raw)) {
             parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);JsonNode n=json.readTree(parser);
-            if(n==null||!n.isObject()||parser.nextToken()!=null||n.size()!=2||!n.has("expected_version")||!n.get("expected_version").isIntegralNumber()||!n.get("expected_version").canConvertToLong())throw new IllegalArgumentException();
-            version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=text(n,"note",1000,true);
-        } catch(Exception bad){throw bad("VALIDATION_ERROR","补呼需要有效版本与原因说明");}
+            if(n==null||!n.isObject()||parser.nextToken()!=null||n.size()<1||n.size()>2||(n.size()==2&&!n.has("note"))||!n.has("expected_version")||!n.get("expected_version").isIntegralNumber()||!n.get("expected_version").canConvertToLong())throw new IllegalArgumentException();
+            version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=optionalRetryNote(n);
+        } catch(Exception bad){throw bad("VALIDATION_ERROR","补呼需要有效版本；说明选填，最多1000字");}
         if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
         EventRow event=events.lock(id,scope);if(event==null)throw notFound();var actor=AuthContext.require();
         String hash=hash("auto-voice-retry:"+id+":"+version+":"+note);var previous=repository.replay(actor.userId(),key.trim());
@@ -232,6 +232,12 @@ public class UavAdvisoryService {
             if(recipient==null||basis==null||content==null||outcome!=null||danger!=null||urgent) throw new IllegalArgumentException();
             return new Action(n.get("expected_version").longValue(),kind,recipient,basis,content,outcome,danger,note,urgent);
         } catch(ApiException ex) {throw ex;} catch(Exception ex) {throw bad("VALIDATION_ERROR","请填写接收对象、联系依据与劝离内容");}
+    }
+    private static String optionalRetryNote(JsonNode node) {
+        if (!node.hasNonNull("note")) return "";
+        if (!node.get("note").isTextual()) throw new IllegalArgumentException();
+        if (node.get("note").textValue().trim().isEmpty()) return "";
+        return text(node, "note", 1000, false);
     }
     private static String text(JsonNode n,String key,int max,boolean required) {
         if(!n.has(key)||n.get(key).isNull()) {if(required) throw new IllegalArgumentException();return null;}

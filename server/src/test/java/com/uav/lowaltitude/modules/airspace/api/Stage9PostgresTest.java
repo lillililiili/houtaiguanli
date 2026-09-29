@@ -115,6 +115,8 @@ class Stage9PostgresTest {
         registry.add("spring.datasource.password", () -> requiredEnvironment("POSTGRES_TEST_PASSWORD"));
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("app.dev-seed.enabled", () -> "false");
+        // These isolated legacy-write contract cases explicitly opt in; production remains read-only.
+        registry.add("app.airspace.legacy-write-enabled", () -> "true");
         registry.add("app.live-device.enabled", () -> "false");
         registry.add("app.rule-engine.enabled", () -> "false");
         registry.add("app.rule-engine.replay.run-on-start", () -> "false");

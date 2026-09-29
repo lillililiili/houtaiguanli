@@ -7,6 +7,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.integration.device.radar.RadarV300Codec;
 import com.uav.lowaltitude.integration.device.radar.RadarV300PayloadDecoder.TrackBatch;
+import com.uav.lowaltitude.integration.device.radar.RadarV300PayloadDecoder.PointBatch;
+import com.uav.lowaltitude.integration.device.radar.RadarV300PayloadDecoder.Rtk;
 import com.uav.lowaltitude.modules.device.infrastructure.ProtocolDataRepository;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.SourceObservationPort;
 
@@ -42,6 +44,31 @@ public class LiveRadarFrameIngestService {
         String envelopeDeviceId = sourceCode == null || sourceCode.isBlank() ? deviceNo : sourceCode.trim();
         port.accept(List.of(LiveRadarPromotionAssembler.frame(envelopeDeviceId, batch,
                 protocolData.derivedLonLat(opsDeviceId, batch.radarBootMicros()))));
+        protocolData.inboxProcessed(opsDeviceId, key, receivedAt);
+        return true;
+    }
+
+    @Transactional
+    public boolean ingestPoints(String sourceId,String deviceId,String key,PointBatch batch,byte[] raw,long receivedAt) {
+        if (!protocolData.insertInbox(sourceId,deviceId,key,raw,receivedAt)) return false;
+        protocolData.savePointSummary(deviceId,batch,receivedAt);
+        protocolData.inboxProcessed(deviceId,key,receivedAt);
+        return true;
+    }
+
+    @Transactional
+    public boolean ingestRtk(String sourceId,String deviceId,String key,String frameId,Rtk rtk,byte[] raw,long receivedAt) {
+        if (!protocolData.insertInbox(sourceId,deviceId,key,raw,receivedAt)) return false;
+        protocolData.saveRtk(deviceId,frameId,rtk,receivedAt);
+        protocolData.inboxProcessed(deviceId,key,receivedAt);
+        return true;
+    }
+
+    @Transactional
+    public boolean ingestRegisters(String sourceId,String deviceId,String key,String frameId,java.util.Map<String,Object> registers,byte[] raw,long receivedAt) {
+        if (!protocolData.insertInbox(sourceId,deviceId,key,raw,receivedAt)) return false;
+        protocolData.saveRadarRegisters(deviceId,frameId,registers,receivedAt);
+        protocolData.inboxProcessed(deviceId,key,receivedAt);
         return true;
     }
 }

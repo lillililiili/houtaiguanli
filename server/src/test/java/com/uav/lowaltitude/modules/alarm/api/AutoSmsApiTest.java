@@ -301,7 +301,7 @@ class AutoSmsApiTest {
         jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(7200)),targetId);
         read().andExpect(jsonPath("$.data.can_request_counter").value(false));
     }
-    private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-sms/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+",\"note\":\"已核对发送失败且目标仍在范围，申请补发\"}"));}
+    private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-sms/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+",\"note\":\"\"}"));}
     private int count(String table){return jdbc.queryForObject("select count(*) from "+table+" where event_id=?",Integer.class,eventId);}
     private void assertNoPilotNoSend()throws Exception {
         read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));

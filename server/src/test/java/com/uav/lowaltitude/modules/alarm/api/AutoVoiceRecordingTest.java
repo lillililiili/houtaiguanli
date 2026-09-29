@@ -26,6 +26,13 @@ class AutoVoiceRecordingTest {
         Path file=directory.resolve("fixture.wav");Files.write(file,complete);
         var recording=new AdvisoryVoiceRecording("fixture","隔离测试样本",file.toString(),"用于验证格式，不含业务语音");
         assertThat(recording.current()).isNotNull();
+        var env = new MockEnvironment();
+        env.setActiveProfiles("local");
+        var adapter = new LocalAdvisoryVoiceAdapter(env, recording, new AppClock());
+        var delivery = adapter.simulate("live", recording.current(), "isolated-test");
+        assertThat(delivery.simulated()).isTrue();
+        assertThat(delivery.status()).isEqualTo("SIMULATED_PLAYED");
+        assertThat(delivery.providerCallId()).startsWith("simulation:");
         Files.write(file,java.util.Arrays.copyOf(complete,44));assertThat(recording.current()).isNull();
         Files.write(file,java.util.Arrays.copyOf(complete,64));assertThat(recording.current()).isNull();
     }
@@ -38,7 +45,10 @@ class AutoVoiceRecordingTest {
             var adapter=new LocalAdvisoryVoiceAdapter(env,new AdvisoryVoiceRecording("","","",""),new AppClock());
             assertThat(adapter.simulationAvailable("mock")).isEqualTo(allowed);
             assertThat(adapter.simulationAvailable("replay")).isEqualTo(allowed);
-            assertThat(adapter.simulationAvailable("live")).isFalse();
+            // 本地演示自动通知已支持 live 来源，但投递回执始终标记为模拟；生产禁止。
+            assertThat(adapter.simulationAvailable("live")).isEqualTo(allowed);
+            assertThat(adapter.simulationAvailable(null)).isFalse();
+            assertThat(adapter.simulationAvailable(" ")).isFalse();
         }
     }
 }

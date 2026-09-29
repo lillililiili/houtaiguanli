@@ -26,11 +26,13 @@ public class FusionInboxRepository {
     public static final String REPLAY_SOURCE_PREFIX = "replay:";
     public static final String LIVE_RADAR_SOURCE_PREFIX = "live-radar:";
 
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final NamedParameterJdbcTemplate jdbc;
     private final InboxSourceRouter router;
     private final FusionProperties properties;
 
-    public FusionInboxRepository(JdbcTemplate jdbcTemplate, InboxSourceRouter router, FusionProperties properties) {
+    public FusionInboxRepository(JdbcTemplate jdbcTemplate, InboxSourceRouter router, FusionProperties properties, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
         this.router = router;
         this.properties = properties;
@@ -45,6 +47,7 @@ public class FusionInboxRepository {
     List<String> claimablePrefixes() {
         List<String> prefixes = new ArrayList<>();
         for (String prefix : router.prefixes()) {
+            if (REPLAY_SOURCE_PREFIX.equals(prefix) && !simulation.allowed()) continue;
             if (LIVE_RADAR_SOURCE_PREFIX.equals(prefix) && !properties.getLivePromotion().isEnabled()) continue;
             prefixes.add(prefix);
         }
@@ -59,7 +62,7 @@ public class FusionInboxRepository {
             if (i > 0) sql.append(" OR ");
             sql.append("source LIKE :prefix").append(i);
         }
-        return sql.append(")").toString();
+        return sql.append(")").toString() + (simulation.allowed() ? "" : " AND source_id IN (SELECT source_id FROM integration_source WHERE source_mode='live')");
     }
 
     private void putPrefixes(Map<String, Object> parameters, List<String> prefixes) {

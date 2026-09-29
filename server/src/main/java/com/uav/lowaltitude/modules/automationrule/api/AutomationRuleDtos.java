@@ -27,6 +27,8 @@ public final class AutomationRuleDtos {
 
     public record EnabledInput(@NotNull Boolean enabled, @NotNull @PositiveOrZero Long expectedVersion) { }
 
+    public record DeleteInput(@NotNull @PositiveOrZero Long expectedVersion) { }
+
     public record SettingsInput(@NotBlank String scopeMode,
             @NotNull @Size(max=100) List<@NotBlank @Size(max=36) String> airspaceIds,
             @NotBlank String scheduleMode, @NotBlank String startTime, @NotBlank String endTime,

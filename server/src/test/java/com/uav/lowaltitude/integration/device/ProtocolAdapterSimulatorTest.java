@@ -19,6 +19,8 @@ import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import com.uav.lowaltitude.integration.DeviceAdapterPort;
 import com.uav.lowaltitude.integration.device.countermeasure.Countermeasure4ChCodec;
@@ -28,8 +30,44 @@ import com.uav.lowaltitude.integration.device.radar.RadarV300Codec;
 
 class ProtocolAdapterSimulatorTest {
 
-    @Test
-    void radarCommissionReadsBothInformationRegistersWithoutWriteCommands() throws Exception {
+    @ParameterizedTest
+    @CsvSource({
+            "SET_MASK,0,15,false", "SET_MASK,15,0,false", "SET_MASK,13,15,false",
+            "CHANNEL_ON,1,8,false", "CHANNEL_OFF,1,15,false",
+            "SET_MASK,0,0,true", "SET_MASK,15,31,true", "SET_MASK,13,13,true",
+            "CHANNEL_ON,1,9,true", "CHANNEL_OFF,1,14,true"
+    })
+    void countermeasureReplyMustConfirmRequestedRelayState(String action,int requested,int actual,boolean expected) throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            server.setSoTimeout(5000);
+            CompletableFuture<Void> simulator = CompletableFuture.runAsync(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(5000);
+                    byte[] request = Countermeasure4ChCodec.decodeWire(readUntilNewline(socket),
+                            Countermeasure4ChCodec.WireEncoding.ASCII_HEX_SPACED);
+                    byte[] reply = {0x22, 1, request[2], 0, 0, 0, (byte) actual, 0};
+                    reply[7] = Countermeasure4ChCodec.checksum(reply, 0, 7);
+                    socket.getOutputStream().write(Countermeasure4ChCodec.encodeWire(reply,
+                            Countermeasure4ChCodec.WireEncoding.ASCII_HEX_SPACED));
+                    socket.getOutputStream().flush();
+                } catch (Exception ex) { throw new RuntimeException(ex); }
+            });
+            var adapter = new CountermeasureTcp4ChV20Adapter(new ObjectMapper(), allowedLoopbackPolicy());
+            var result = adapter.setRelays(new DeviceAdapterPort.RelayWork("cmd", "device",
+                    config(server.getLocalPort(), "{\"device_address\":1,\"wire_encoding\":\"ASCII_HEX_SPACED\"}"),
+                    action, "SET_MASK".equals(action) ? null : requested, "SET_MASK".equals(action) ? requested : null));
+            simulator.get(5, TimeUnit.SECONDS);
+            assertThat(result.success()).isEqualTo(expected);
+            if (!expected) {
+                assertThat(result.resultCode()).isEqualTo("COUNTERMEASURE_STATE_MISMATCH");
+                assertThat(result.detail()).contains("未确认", "0x" + Integer.toHexString(actual & 0x0F));
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 0x0401})
+    void radarCommissionReadsBothInformationRegistersWithoutWriteCommands(int workMode) throws Exception {
         try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             CompletableFuture<Void> simulator = CompletableFuture.runAsync(() -> {
                 try (Socket socket = server.accept()) {
@@ -44,7 +82,7 @@ class ProtocolAdapterSimulatorTest {
                     assertThat(query.command()).isEqualTo(RadarV300Codec.COMMAND_GET_REGISTER);
                     assertThat(query.payload()).containsExactly(0,0,0,2,0,0,4,0x40,0,0,4,1);
                     socket.getOutputStream().write(RadarV300Codec.encode(query.command(), query.frameId(),
-                            ByteBuffer.allocate(20).putInt(2).putInt(0x440).putInt(0x07030201).putInt(0x401).putInt(0x0401).array()));
+                            ByteBuffer.allocate(20).putInt(2).putInt(0x440).putInt(0x07030201).putInt(0x401).putInt(workMode).array()));
                     socket.getOutputStream().flush();
                     // Leave the data stage without targets: register acquisition must still be preserved.
                     assertThat(socket.getInputStream().read()).isEqualTo(-1);
@@ -55,9 +93,48 @@ class ProtocolAdapterSimulatorTest {
                     DeviceProtocolCodes.RADAR_TCP_V3_0_0, config(server.getLocalPort(), "{\"login_role\":\"DATA\"}")));
             assertThat(result.items()).anySatisfy(item -> {
                 assertThat(item.code()).isEqualTo("WORK_MODE");
-                assertThat(item.value()).contains("frequency_code", "scan_speed_deg_s", "360");
+                assertThat(item.value()).contains("frequency_code", "scan_speed_deg_s", workMode == 0 ? "待机" : "360");
+            });
+            assertThat(result.success()).isFalse();
+            assertThat(result.resultCode()).isEqualTo("RADAR_DATA_UNTESTABLE");
+            assertThat(result.items()).anySatisfy(item -> {
+                assertThat(item.code()).isEqualTo("DATA");
+                assertThat(item.result()).isEqualTo("UNTESTABLE");
             });
             simulator.get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void radarMonitorPreservesUploadCoalescedWithLoginResponse() throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            CompletableFuture<Void> simulator = CompletableFuture.runAsync(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(5000);
+                    var login = readRadar(socket);
+                    byte[] response = RadarV300Codec.encode(login.command(), login.frameId(), ByteBuffer.allocate(6).putInt(5).putShort((short) 0).array());
+                    byte[] data = RadarV300Codec.encode(RadarV300Codec.COMMAND_UPLOAD_TARGET_V3, 100, new byte[32]);
+                    byte[] combined = Arrays.copyOf(response, response.length + data.length);
+                    System.arraycopy(data, 0, combined, response.length, data.length);
+                    socket.getOutputStream().write(combined);
+                    assertThat(readRadar(socket).command()).isEqualTo(RadarV300Codec.COMMAND_GET_REGISTER);
+                    // Drain optional polling requests if the upload arrives in a later socket read.
+                    while (socket.getInputStream().read() != -1) { }
+                } catch (Exception ex) { throw new RuntimeException(ex); }
+            });
+            var received = new java.util.concurrent.atomic.AtomicInteger();
+            var adapter = new RadarTcpV300Adapter(new ObjectMapper(), allowedLoopbackPolicy(), new EnvironmentCredentialResolver());
+            adapter.monitor(config(server.getLocalPort(), "{\"login_role\":\"DATA\"}"), () -> received.get() == 0,
+                    () -> { }, new RadarTcpV300Adapter.LiveFrameListener() {
+                        public void online() { }
+                        public void invalidFrames(long count) { throw new AssertionError("unexpected invalid frame"); }
+                        public void frame(RadarV300Codec.RadarFrame frame, byte[] raw, long now) {
+                            assertThat(frame.command()).isEqualTo(RadarV300Codec.COMMAND_UPLOAD_TARGET_V3);
+                            received.incrementAndGet();
+                        }
+                    });
+            simulator.get(5, TimeUnit.SECONDS);
+            assertThat(received.get()).isEqualTo(1);
         }
     }
 
@@ -68,6 +145,48 @@ class ProtocolAdapterSimulatorTest {
         byte[] rest = socket.getInputStream().readNBytes(length);
         System.arraycopy(rest, 0, frame, 8, length);
         return RadarV300Codec.decode(frame, false);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"196609,0,false,false", "196610,0,false,false", "196609,32,true,false", "196610,40,true,false", "196609,32,true,true"})
+    void radarCommissionValidatesPayloadAndPreservesCoalescedBusinessFrames(int command, int payloadLength,
+                                                                           boolean expected, boolean coalesced) throws Exception {
+        try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            CompletableFuture<Void> simulator = CompletableFuture.runAsync(() -> {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(5000);
+                    var login = readRadar(socket);
+                    assertThat(login.command()).isEqualTo(RadarV300Codec.COMMAND_LOGIN);
+                    socket.getOutputStream().write(RadarV300Codec.encode(login.command(), login.frameId(), ByteBuffer.allocate(6).putInt(5).putShort((short) 0).array()));
+                    var heartbeat = readRadar(socket);
+                    assertThat(heartbeat.command()).isEqualTo(RadarV300Codec.COMMAND_HEARTBEAT);
+                    socket.getOutputStream().write(RadarV300Codec.encode(heartbeat.command(), heartbeat.frameId(), heartbeat.payload()));
+                    var query = readRadar(socket);
+                    assertThat(query.command()).isEqualTo(RadarV300Codec.COMMAND_GET_REGISTER);
+                    byte[] registers = RadarV300Codec.encode(query.command(), query.frameId(),
+                            ByteBuffer.allocate(20).putInt(2).putInt(0x440).putInt(0).putInt(0x401).putInt(0).array());
+                    byte[] data = RadarV300Codec.encode(command, 100, new byte[payloadLength]);
+                    if (coalesced) {
+                        byte[] combined = Arrays.copyOf(registers, registers.length + data.length);
+                        System.arraycopy(data, 0, combined, registers.length, data.length);
+                        socket.getOutputStream().write(combined);
+                    } else {
+                        socket.getOutputStream().write(registers);
+                        socket.getOutputStream().flush();
+                        Thread.sleep(150);
+                        socket.getOutputStream().write(data);
+                    }
+                    socket.getOutputStream().flush();
+                    assertThat(socket.getInputStream().read()).isEqualTo(-1);
+                } catch (Exception ex) { throw new RuntimeException(ex); }
+            });
+            var adapter = new RadarTcpV300Adapter(new ObjectMapper(), allowedLoopbackPolicy(), new EnvironmentCredentialResolver());
+            var result = adapter.commission(new DeviceAdapterPort.CommissionWork("task", "T-1", "device", "D-1",
+                    DeviceProtocolCodes.RADAR_TCP_V3_0_0, config(server.getLocalPort(), "{\"login_role\":\"DATA\"}")));
+            simulator.get(5, TimeUnit.SECONDS);
+            assertThat(result.success()).isEqualTo(expected);
+            if (!expected) assertThat(result.resultCode()).isEqualTo("PROTOCOL_FRAME_INVALID");
+        }
     }
 
     @Test
@@ -147,6 +266,7 @@ class ProtocolAdapterSimulatorTest {
                     "SET_MASK", null, 0x00));
             assertThat(result.success()).isFalse();
             assertThat(result.resultCode()).isIn("ADAPTER_TIMEOUT", "ADAPTER_UNAVAILABLE", "PROTOCOL_FRAME_INVALID");
+            assertThat(result.detail()).contains("本次设置结果未确认", "可能已动作");
             acceptor.get(5, TimeUnit.SECONDS);
         }
     }

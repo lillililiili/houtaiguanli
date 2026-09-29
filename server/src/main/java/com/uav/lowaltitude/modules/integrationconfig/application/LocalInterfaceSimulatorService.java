@@ -23,21 +23,36 @@ import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.time.AppClock;
 
-@Service @Profile("(local | test) & !prod & !production")
+@Service @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class LocalInterfaceSimulatorService {
  private final DeviceAccessPolicy interfaces;private final AccessControlService access;private final FlightReadService flights;
  private final LocalFlightPlanInputService input;private final LocalInterfaceRepository repository;
  private final RiskRepository risks;private final UavEventRepository events;private final HandoffRepository handoffs;
  private final ObjectMapper json;private final AppClock clock;private final AuditService audit;
- public LocalInterfaceSimulatorService(DeviceAccessPolicy interfaces,AccessControlService access,FlightReadService flights,LocalFlightPlanInputService input,LocalInterfaceRepository repository,RiskRepository risks,UavEventRepository events,HandoffRepository handoffs,ObjectMapper json,AppClock clock,AuditService audit){this.interfaces=interfaces;this.access=access;this.flights=flights;this.input=input;this.repository=repository;this.risks=risks;this.events=events;this.handoffs=handoffs;this.json=json;this.clock=clock;this.audit=audit;}
+ private final com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService filing;
+ public LocalInterfaceSimulatorService(DeviceAccessPolicy interfaces,AccessControlService access,FlightReadService flights,LocalFlightPlanInputService input,LocalInterfaceRepository repository,RiskRepository risks,UavEventRepository events,HandoffRepository handoffs,ObjectMapper json,AppClock clock,AuditService audit,com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService filing){this.interfaces=interfaces;this.access=access;this.flights=flights;this.input=input;this.repository=repository;this.risks=risks;this.events=events;this.handoffs=handoffs;this.json=json;this.clock=clock;this.audit=audit;this.filing=filing;}
  @Transactional public Message plan(PlanInput p){
   var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
   // Existing-message reads still recheck the original business object's visibility.
   Row previous=repository.existing(actor.userId(),"FLIGHT_PLAN",p.messageId());
   if(previous!=null)return replay(previous,p);
-  var result=input.create(p.routeVersionId(),p.uavSn(),p.startAt(),p.endAt());
+  var result=input.create(p.routeVersionId(),p.uavSn(),p.startAt(),p.endAt(),p.sourceMode(),p.statusCode());
+  if(p.filing()!=null){preparePlanSource(p.filing());filing.save(result.get("plan_id"),0,p.filing());}
   return save(p.messageId(),"FLIGHT_PLAN",result.get("plan_id"),actor.userId(),p,result);
  }
+ public com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Options planOptions(){interfaces.requireInterfacesRead();return filing.options();}
+ public com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Detail planFiling(String id){interfaces.requireInterfacesRead();return filing.detail(id);}
+ @Transactional public Message updatePlanFiling(String id,com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Update request){
+  var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
+  filing.detail(id);
+  var payload=Map.of("plan_id",id,"update",request);
+  var previous=repository.existing(actor.userId(),"PLAN_FILING",request.messageId());
+  if(previous!=null)return replay(previous,payload);
+  preparePlanSource(request.filing());
+  var result=filing.save(id,request.expectedVersion(),request.filing());
+  return save(request.messageId(),"PLAN_FILING",id,actor.userId(),payload,result);
+ }
+ private void preparePlanSource(com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing data){if(com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.SIMULATOR_SOURCE_ID.equals(data.sourceId()))repository.ensurePlanSource(clock.nowMillis());}
  @Transactional public Message weather(WeatherInput p){
   var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
   var plan=flights.flightPlan(p.planId());requireSimulated(plan.sourceMode());
@@ -92,7 +107,7 @@ public class LocalInterfaceSimulatorService {
   requireSimulated(mode);
  }
  private boolean visible(Row row){try{if("OUT".equals(row.direction())){var h=handoffs.find(row.subjectId(),access.require(PermissionCode.HANDOFF_READ));if(h==null)return false;source(h.sourceKind(),h.sourceId(),false);}else flights.flightPlan(row.subjectId());return true;}catch(ApiException e){if(e.getStatus()==HttpStatus.NOT_FOUND||e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e;}}
- private Message replay(Row row,Object input){if(!visible(row))throw missing();if(!tree(row.payload()).equals(json.valueToTree(input)))throw conflict("同一消息编号的内容已变化，请使用新编号");return dto(row);}
+ private Message replay(Row row,Object input){if(!visible(row))throw missing();if(!tree(row.payload()).equals(tree(encode(input))))throw conflict("同一消息编号的内容已变化，请使用新编号");return dto(row);}
  private Message save(String external,String kind,String subject,String actor,Object payload,Object result){String id=UUID.randomUUID().toString();Row row=new Row(id,external,kind,"IN",subject,actor,"ACCEPTED",encode(payload),encode(result),clock.nowMillis(),0);repository.insert(row);var user=com.uav.lowaltitude.platform.security.AuthContext.require();audit.record(user.userId(),user.account(),"local_interface_input","local_interface",id,"接收模拟"+kind+"; subject_id="+subject,null);return dto(row);}
  public Message dto(Row row){
   String state=row.state();var result=tree(row.result());

@@ -24,6 +24,23 @@ import org.junit.jupiter.api.Test;
  */
 class AuditLabelsCoverageTest {
 
+    @Test
+    void conditionalEvidencePreviewActionsHaveChineseLabels() {
+        assertThat(AuditLabels.action("evidence_preview")).isEqualTo("预览证据文件");
+        assertThat(AuditLabels.action("evidence_thumbnail")).isEqualTo("读取证据缩略图");
+    }
+
+    @Test
+    void dynamicallyNamedMaintenanceWorkflowActionsHaveChineseLabels() {
+        for (String action : List.of("START", "SAVE_PROGRESS", "SUBMIT_VERIFICATION", "VERIFY_RECOVERY",
+                "COMPLETE", "RESUME", "LINK_COMMISSION", "WORKFLOW_REJECTED")) {
+            String code = "device_maintenance_" + action.toLowerCase(java.util.Locale.ROOT);
+            assertThat(AuditLabels.action(code)).as("运维动作 %s 的中文标签", code)
+                    .isNotEqualTo(code).matches(".*[\\p{IsHan}].*");
+        }
+        assertThat(AuditLabels.module("devices")).isEqualTo("设备管理");
+    }
+
     /**
      * `record` 有两个重载，字面量的位置不同，混在一起扫会把动作码当成模块码：
      * 十一参的形状是 `record(id, account, roleCode, "模块", "动作", ...)`；

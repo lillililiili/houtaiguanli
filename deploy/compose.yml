@@ -18,6 +18,7 @@ services:
   # Loopback MQTT broker for Lingyun protocol A/C replay. Not a live field broker.
   # api does not depend on this service: local `spring-boot:run` connects to host 127.0.0.1:1883.
   mosquitto:
+    profiles: ["qa"]
     image: eclipse-mosquitto:2
     ports:
       - "127.0.0.1:1883:1883"
@@ -30,9 +31,9 @@ services:
       DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-houtaiguanli}
       DB_USER: ${DB_USER:-uav}
       DB_PASSWORD: ${DB_PASSWORD:-uav}
-      APP_SOURCE_MODE: mock
-      APP_DEV_SEED_ENABLED: "true"
-      APP_DEV_SEED_PASSWORD: ${APP_DEV_SEED_PASSWORD:-changeme}
+      SPRING_PROFILES_ACTIVE: production
+      APP_SOURCE_MODE: live
+      APP_DEV_SEED_ENABLED: "false"
       EVIDENCE_DIR: /data/evidence
       MAP_DATA_DIR: /data/map-data
     depends_on:
@@ -64,6 +65,7 @@ services:
       - "5175:80"
     depends_on:
       - api
+      - business-web
 
 volumes:
   pgdata: {}

@@ -102,6 +102,17 @@ public class AutomationRuleService {
     }
 
     @Transactional
+    public Group delete(String category, String id, DeleteInput input, String key) {
+        write(); Head head=requireHead(category,true);
+        claim(key,"delete:"+category+":"+id,input); requireVersion(head,input.expectedVersion());
+        Snapshot before=snapshot(head); Rule old=requireRule(before.rules(),id);
+        if(repo.delete(category,id)!=1) throw missing();
+        CatalogItem item=item(category,old.itemCode());
+        return commit(head,before,"删除「"+old.name()+"」",
+                List.of("判定项："+item.label(),"条件："+old.value()+item.unit(),"持续满足："+hold(old.holdSeconds())));
+    }
+
+    @Transactional
     public Group settings(String category, SettingsInput input, String key) {
         write(); Head head=requireHead(category,true);
         claim(key,"settings:"+category,input); requireVersion(head,input.expectedVersion());

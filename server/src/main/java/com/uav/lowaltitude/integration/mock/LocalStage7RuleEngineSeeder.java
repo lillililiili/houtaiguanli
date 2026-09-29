@@ -26,7 +26,7 @@ import com.uav.lowaltitude.modules.airspace.domain.AirspaceKind;
  * 只写事实不写研判：研判、复核与告警由 RuleReplayRunner/引擎产生；重启只补缺行，不重置已激活版本、复核或告警。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(65)
 public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
@@ -85,7 +85,7 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         Instant created = T0.minusSeconds(86_400);
         directories(created);
-        ruleSet(created);
+        prepareRuleCatalog(created, true);
         airspaces(created);
         scenarios(created);
     }
@@ -101,7 +101,8 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
         jdbc.update("update integration_source set name='合法性研判模拟源' where source_id=? and name<>'合法性研判模拟源'", SOURCE_ID);
     }
 
-    private void ruleSet(Instant at) {
+    /** Configuration only; local QA activates through the audited management API. */
+    void prepareRuleCatalog(Instant at, boolean activateInitialVersion) {
         for (int i = 0; i < RULE_CODES.length; i++) {
             String id = "seed-stage7-rule-" + RULE_CODES[i];
             jdbc.update("insert into rule_version (rule_version_id,rule_code,version_no,status_code,valid_from,source_mode,source_snapshot,created_at)"
@@ -123,7 +124,7 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
             param(VERSION_2, p[0], p[1], tolerance ? V2_C02_3_TOLERANCE : p[2], p[3], p[4]);
         }
         // 只在首次种入时激活 v1：运维通过接口激活/回滚后的选择在重启后必须保留。
-        jdbc.update("update rule_set set active_version_id=?,updated_at=? where rule_set_id=? and active_version_id is null and previous_active_version_id is null",
+        if (activateInitialVersion) jdbc.update("update rule_set set active_version_id=?,updated_at=? where rule_set_id=? and active_version_id is null and previous_active_version_id is null",
                 VERSION_1, ts(at), RULE_SET_ID);
     }
 

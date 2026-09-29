@@ -7,6 +7,7 @@ import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import com.uav.lowaltitude.platform.security.AuthUser;
 
 @Repository
 public class CommissionRepository {
@@ -45,7 +46,7 @@ public class CommissionRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public List<Map<String, Object>> listTasks(String deviceId, String status, int offset, int size) {
+    public List<Map<String, Object>> listTasks(String deviceId, String status, int offset, int size, AuthUser actor) {
         Map<String, Object> p = new HashMap<>();
         StringBuilder sql = new StringBuilder("""
                 SELECT t.*, d.device_no, d.name AS device_name, d.device_type_name, d.channel,
@@ -57,18 +58,41 @@ public class CommissionRepository {
                 """);
         add(sql, p, "t.device_id", "device_id", deviceId);
         add(sql, p, "t.status", "status", status);
+        sql.append(scope(p, actor));
         p.put("offset", offset); p.put("size", size);
         sql.append(" ORDER BY t.created_at DESC,t.commission_id OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY");
         return named.queryForList(sql.toString(), p);
     }
 
-    public long countTasks(String deviceId, String status) {
+    public long countTasks(String deviceId, String status, AuthUser actor) {
         Map<String, Object> p = new HashMap<>();
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM commission_task t WHERE 1=1");
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM commission_task t JOIN ops_device d ON d.device_id=t.device_id WHERE 1=1");
         add(sql, p, "t.device_id", "device_id", deviceId);
         add(sql, p, "t.status", "status", status);
+        sql.append(scope(p, actor));
         Long count = named.queryForObject(sql.toString(), p, Long.class);
         return count == null ? 0 : count;
+    }
+
+    public boolean deviceInScope(String deviceId, AuthUser actor) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("device_id", deviceId);
+        return named.queryForObject("SELECT COUNT(*) FROM ops_device d WHERE d.device_id=:device_id"
+                + scope(p, actor), p, Long.class) > 0;
+    }
+
+    private static String scope(Map<String, Object> p, AuthUser actor) {
+        if (actor == null) return " AND 1=0";
+        if ("ALL".equals(actor.scopeMode())) return "";
+        if (!"ASSIGNED".equals(actor.scopeMode())) return " AND 1=0";
+        p.put("scope_user", actor.userId());
+        return """
+                 AND EXISTS (SELECT 1 FROM device_business_scope bs
+                 JOIN app_user_data_scope us ON us.org_id=bs.owner_org_id AND us.district_id=bs.district_id
+                 JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE
+                 JOIN app_district district ON district.district_id=bs.district_id AND district.enabled=TRUE
+                 WHERE bs.ops_device_id=d.device_id AND us.user_id=:scope_user)
+                """;
     }
 
     public int transition(String id, long version, String from, String to, long now) {

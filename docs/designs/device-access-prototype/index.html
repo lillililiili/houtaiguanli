@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设备管理 · 统一接入设计</title>
+<link rel="stylesheet" href="design.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand"><span class="brand-mark">⌁</span><div><b>低空安全管理</b><small>ADMIN CONSOLE</small></div></div>
+  <div class="nav-group">运维管理 <span>⌄</span></div>
+  <div class="nav-item active">▣<span>设备管理</span></div>
+  <div class="nav-item">▤<span>设备维护</span></div>
+  <div class="nav-item">⇄<span>外部接口</span></div>
+  <div class="nav-group">系统管理 <span>›</span></div>
+  <div class="sidebar-bottom">沿用现有管理端布局</div>
+</aside>
+<div class="app">
+  <header class="topbar"><span>运维管理 <em>/</em> <b>设备管理</b></span><span class="account"><span class="avatar">管</span> 平台管理员</span></header>
+  <div class="page-tabs"><span>设备管理 <small>×</small></span></div>
+  <main>
+    <div class="preview-banner"><span><b>页面设计预览</b> · 示例资料，仅用于展示交互</span><button class="text-btn" id="preview-open">查看接入设计 →</button></div>
+    <div class="page-heading"><div><h1>设备管理</h1><p>设备台账、接入配置与运行状态统一管理。</p></div><button class="primary" id="add-device">＋ 接入设备</button></div>
+    <section class="metrics" id="metrics" aria-label="设备统计"></section>
+    <div class="workspace">
+      <section class="panel list-panel">
+        <div class="panel-heading"><h2>设备管理</h2><span class="muted">点击设备查看详情</span></div>
+        <div class="filters"><label>关键词<input id="search" placeholder="设备编号或名称"></label><label>设备类型<select id="filter-type"><option value="">全部类型</option><option>雷达</option><option>光电设备</option><option>反制设备</option><option>天气传感器</option><option>TDOA</option></select></label><label>连接状态<select id="filter-state"><option value="">全部状态</option><option>在线</option><option>离线</option><option>待接入</option></select></label><button class="primary" id="query">查询</button><button id="reset">重置</button></div>
+        <div class="table-heading"><b>设备台账 <span id="count" class="count"></span></b><span class="muted">设备与天气传感器统一维护</span></div>
+        <div class="table-scroll"><table><thead><tr><th>设备编号 / 名称</th><th>类型 / 接入方式</th><th>所属区域</th><th>连接状态</th><th>台账状态</th><th>操作</th></tr></thead><tbody id="device-rows"></tbody></table></div>
+        <div class="pagination"><span id="total-label"></span><span>10 条 / 页　 <button disabled aria-label="上一页">‹</button> <button class="page-number">1</button> <button disabled aria-label="下一页">›</button></span></div>
+      </section>
+      <aside class="panel detail-panel" id="detail"></aside>
+    </div>
+  </main>
+</div>
+<dialog id="device-dialog" aria-labelledby="dialog-title">
+  <form id="device-form">
+    <header class="dialog-header"><div><h2 id="dialog-title">接入设备</h2><p>选择设备类型，填写对应接入信息</p></div><button type="button" class="close" aria-label="关闭接入设备" data-close="device-dialog">×</button></header>
+    <div class="dialog-body">
+      <section class="form-section"><div class="section-title"><span class="step">1</span><h3>选择设备类型</h3><span class="muted">不同类型展示对应配置</span></div><div class="device-types" id="device-types"></div></section>
+      <section class="form-section"><div class="section-title"><span class="step">2</span><h3>设备基本资料</h3><span class="required-note">* 为必填项</span></div>
+        <div class="form-grid three"><label><span><i>*</i> 设备编号</span><input name="device_no" required maxlength="64" placeholder="请输入唯一设备编号"></label><label><span><i>*</i> 设备名称</span><input name="name" required maxlength="128" placeholder="请输入设备名称"></label><label>供应商<input name="vendor" placeholder="请输入供应商"></label><label>型号<input name="model" placeholder="请输入设备型号"></label><label><span><i>*</i> 所属单位 / 区域</span><select name="scope" required><option value="">请选择单位及区域</option><option value="东区">示例管理单位 / 东区</option><option value="西区">示例管理单位 / 西区</option></select></label><label>安装位置<input name="address" placeholder="例如：园区东门楼顶"></label></div>
+      </section>
+      <section class="form-section configuration"><div class="section-title"><span class="step">3</span><h3 id="config-title">接入配置</h3><span class="status-pill" id="protocol-badge">TCP 直连</span></div><div id="config-content"></div></section>
+    </div>
+    <footer class="dialog-footer"><span class="muted" id="submit-note">保存后需完成连接与数据验证。</span><div><button type="button" data-close="device-dialog">取消</button><button class="primary" type="submit" id="submit-device">保存接入配置</button></div></footer>
+  </form>
+</dialog>
+<dialog id="broker-dialog" class="broker-dialog" aria-labelledby="broker-title"><header class="dialog-header"><div><h2 id="broker-title">MQTT 连接管理</h2><p>同一单位及区域内，多个设备可复用一个连接。</p></div><button class="close" aria-label="关闭连接管理" data-close="broker-dialog">×</button></header><div class="dialog-body"><div class="connection-toolbar"><span class="muted">共享接入通道</span><button id="new-broker">＋ 新增连接</button></div><div id="broker-list"></div><form id="broker-form" hidden><h3>新增连接</h3><div class="form-grid"><label><span><i>*</i> 连接名称</span><input name="broker_name" required placeholder="请输入连接名称"></label><label><span><i>*</i> 服务器地址</span><input name="host" required placeholder="由设备提供方提供"></label><label>端口<input name="port" type="number" min="1" max="65535" value="8883" required></label><label>所属单位 / 区域<select name="scope"><option value="东区">示例管理单位 / 东区</option><option value="西区">示例管理单位 / 西区</option></select></label><label>用户名<input name="username" autocomplete="off" placeholder="由设备提供方提供"></label><label>密码凭据引用<input name="credential_ref" placeholder="env:MQTT_PASSWORD"></label><label class="wide">允许的服务器网段<input name="cidr" required placeholder="请输入允许访问的 CIDR 网段"></label></div><div class="connection-options"><label><input type="checkbox" name="tls" checked> 启用 TLS</label><span class="status-pill">真实来源</span></div><p class="muted">凭据由部署环境配置；新增连接默认停用，联调后启用。</p><div class="align-right"><button type="button" id="cancel-broker">取消新增</button><button class="primary">保存连接</button></div></form></div><footer class="dialog-footer"><span class="muted">连接可用不代表设备已在线。</span><button data-close="broker-dialog">完成</button></footer></dialog>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<script src="design.js"></script>
+</body></html>

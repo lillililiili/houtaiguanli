@@ -24,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 事件与告警都是本种子自建的，不去改阶段 4 的夹具——把别人的待核实事件改成已核实，会让他们的用例莫名其妙地变绿或变红。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @DependsOn({"localStage4AlarmSeeder"})
 @Order(100)

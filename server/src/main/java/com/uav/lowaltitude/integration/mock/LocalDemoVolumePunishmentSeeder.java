@@ -47,7 +47,7 @@ import com.uav.lowaltitude.modules.punishment.domain.PunishmentRules;
  * 种子一炸整个 Spring 上下文都起不来，表现是所有页面全红，排查方向会被带偏。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @DependsOn({"localStage14PunishmentSeeder", "localStage15DemoReviewerSeeder"})
 @Order(130)

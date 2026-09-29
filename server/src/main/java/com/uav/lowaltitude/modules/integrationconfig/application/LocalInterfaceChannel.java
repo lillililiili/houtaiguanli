@@ -8,7 +8,7 @@ import com.uav.lowaltitude.modules.integrationconfig.infrastructure.LocalInterfa
 import com.uav.lowaltitude.modules.integrationconfig.infrastructure.LocalInterfaceRepository.Row;
 import com.uav.lowaltitude.platform.time.AppClock;
 /** Durable pull inbox for the explicitly bound local external-system simulator. */
-@Service @Profile("(local | test) & !prod & !production")
+@Service @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class LocalInterfaceChannel {
  public static final String MARKER="LOCAL_SIMULATOR_WAITING:";
  private final LocalInterfaceRepository repository;private final ObjectMapper json;private final AppClock clock;

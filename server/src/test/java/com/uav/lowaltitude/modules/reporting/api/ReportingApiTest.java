@@ -41,6 +41,40 @@ class ReportingApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired org.mybatis.spring.SqlSessionTemplate sqlSession;
 
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void organizationFilterNarrowsFactsAndRejectsUnknownOrganization() throws Exception {
+        String token = login("admin1", "changeme");
+        String extraOrg = UUID.randomUUID().toString();
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)", extraOrg, extraOrg, "统计单位筛选测试");
+        var at = java.time.OffsetDateTime.parse("2004-01-01T00:00:00+08:00");
+        for (String owner : java.util.List.of("seed-stage3-org", extraOrg)) {
+            String id = UUID.randomUUID().toString();
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','live',?,'seed-stage3-district',?,?)", id, id, at, at, owner, at, at);
+        }
+        mvc.perform(get("/api/v1/stats/operations").param("from", "2004-01-01").param("to", "2004-01-01")
+                .param("owner_org_id", extraOrg).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.summary.total").value(1))
+                .andExpect(jsonPath("$.data.owner_org_id").value(extraOrg)).andExpect(jsonPath("$.data.devices.total").value(0));
+        mvc.perform(get("/api/v1/stats/operations").param("owner_org_id", "not-visible-or-missing").header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("INVALID_ORGANIZATION"));
+        mvc.perform(get("/api/v1/stats/operations/export.csv").param("owner_org_id", "not-visible-or-missing").header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest());
+        String exported = mvc.perform(get("/api/v1/stats/operations/export.csv").param("from", "2004-01-01").param("to", "2004-01-01")
+                .param("owner_org_id", extraOrg).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(exported).contains(extraOrg).contains("\"新增目标数\",\"1\"");
+        String userId = jdbc.queryForObject("select user_id from app_user where account='admin1'", String.class);
+        jdbc.update("update app_user set scope_mode='ASSIGNED' where user_id=?", userId);
+        jdbc.update("delete from app_user_data_scope where user_id=?", userId);
+        jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,'seed-stage3-org','seed-stage3-district')", userId);
+        mvc.perform(get("/api/v1/stats/operations").param("owner_org_id", extraOrg).header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("INVALID_ORGANIZATION"));
+        mvc.perform(get("/api/v1/stats/operations/organizations").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].org_id").value("seed-stage3-org"));
+    }
+
     @AfterEach
     void cleanCreatedFixtures() {
         jdbc.update("delete from app_session where user_id in (select user_id from app_user where account like 'itest-stat-%')");
@@ -56,7 +90,7 @@ class ReportingApiTest {
         String token=login("admin1","changeme");
         var at=java.time.OffsetDateTime.parse("2001-01-01T00:00:00+08:00");
         String org="seed-stage3-org", district="seed-stage3-district", id="stats-dedup";
-        jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','mock',?,?,?,?)",id,id,at,at.plusHours(12),org,district,at,at);
+        jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','live',?,?,?,?)",id,id,at,at.plusHours(12),org,district,at,at);
         jdbc.update("insert into target_latest_state(target_id,height_agl_m,observed_at,received_at,created_at,updated_at) values(?,150,?,?,?,?)",id,at,at,at,at);
         for(int i=0;i<2;i++) {
             jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) select ?,v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',1,1,0,0,'mock',? from rule_set_version v order by v.rule_set_version_id limit 1","stats-run-"+i,at,at,at);
@@ -65,8 +99,8 @@ class ReportingApiTest {
         }
         JsonNode result=operations(token,"2001-01-01");
         assertThat(result.path("summary").path("total").asInt()).isEqualTo(1);
-        assertThat(result.path("summary").path("illegal").asInt()).isEqualTo(1);
-        assertThat(result.path("summary").path("high_risk").asInt()).isEqualTo(1);
+        assertThat(result.path("summary").path("illegal").asInt()).isZero();
+        assertThat(result.path("summary").path("high_risk").asInt()).isZero();
         assertThat(result.path("alt_total").asInt()).isZero();
         jdbc.update("update target_latest_state set altitude_amsl_m=0,observed_at=? where target_id=?",at.plusHours(1),id);
         result=operations(token,"2001-01-01");
@@ -84,7 +118,7 @@ class ReportingApiTest {
         String org="seed-stage3-org", district="seed-stage3-district";
         String other=jdbc.queryForObject("select district_id from app_district where district_id<>? and enabled=TRUE fetch first 1 row only",String.class,district);
         for(String[] row:new String[][]{{"stats-visible",district},{"stats-hidden",other}})
-            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'replay',?,?,?,?)",row[0],row[0],at,at,org,row[1],at,at);
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'live',?,?,?,?)",row[0],row[0],at,at,org,row[1],at,at);
         jdbc.update("update app_user set scope_mode='ASSIGNED' where user_id=?",user);
         jdbc.update("delete from app_user_data_scope where user_id=?",user);
         jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,?,?)",user,org,district);
@@ -100,7 +134,7 @@ class ReportingApiTest {
 
     @Test
     @org.springframework.transaction.annotation.Transactional
-    void onlyFiledCasesAndEffectiveDecisionsContributeNeverHandoffsOrDraftFines() throws Exception {
+    void historicalSimulatedCasesAndDemoDecisionsNeverEnterFormalReports() throws Exception {
         String token=login("admin1","changeme");
         String caseId="seed-stage14-case-investigating",discretion="seed-stage14-discretion-draft";
         String actor=jdbc.queryForObject("select user_id from app_user where account='admin1'",String.class);
@@ -109,14 +143,14 @@ class ReportingApiTest {
         jdbc.update("update handoff set created_at=? where handoff_id='seed-stage14-handoff-punish'",at.minusDays(1));
         assertThat(operations(token,"2002-12-31").path("summary").path("punish").asInt()).isZero();
         JsonNode result=operations(token,"2003-01-01");
-        assertThat(result.path("summary").path("punish").asInt()).isEqualTo(1);
+        assertThat(result.path("summary").path("punish").asInt()).isZero();
         assertThat(sum(result.path("by_penalty"),"value")).isZero();
-        assertThat(result.path("partners").get(0).path("fine").isMissingNode()||result.path("partners").get(0).path("fine").isNull()).isTrue();
+        assertThat(result.path("partners").isEmpty()).isTrue();
         jdbc.update("update penalty_discretion set status='CONFIRMED',fine_amount=12345,decided_by=?,decided_at=? where discretion_id=?",actor,at,discretion);
         jdbc.update("insert into penalty_decision_document(document_id,document_no,case_id,discretion_id,template_version,status,fields,rendered_sha256,issued_by,issued_at,updated_at) values('stats-doc','STATS-DOC',?,?,'v1','ISSUED',CAST('{}' AS JSON),?,?,?,?)",caseId,discretion,"a".repeat(64),actor,at,at);
         result=operations(token,"2003-01-01");
-        assertThat(sum(result.path("by_penalty"),"value")).isEqualTo(1);
-        assertThat(result.path("partners").get(0).path("fine").decimalValue()).isEqualByComparingTo("123.45");
+        assertThat(sum(result.path("by_penalty"),"value")).isZero();
+        assertThat(result.path("partners").isEmpty()).isTrue();
         jdbc.update("update penalty_decision_document set status='REVOKED',revoked_at=?,revoke_reason='隔离测试撤销' where document_id='stats-doc'",at.plusHours(1));
         assertThat(sum(operations(token,"2003-01-01").path("by_penalty"),"value")).isZero();
     }
@@ -148,7 +182,7 @@ class ReportingApiTest {
         var tuple = jdbc.queryForMap("select o.org_id,d.district_id from app_org o cross join app_district d where o.enabled=TRUE and d.enabled=TRUE fetch first 1 row only");
         var first = java.time.OffsetDateTime.parse("2040-01-01T15:59:59Z");
         var last = java.time.OffsetDateTime.parse("2040-01-02T02:00:00Z");
-        jdbc.update("insert into target(target_id,target_no,object_type_code,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,?,'replay',?,?,?,?)",
+        jdbc.update("insert into target(target_id,target_no,object_type_code,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,?,'live',?,?,?,?)",
                 id,id,"UAV",first,last,tuple.get("org_id"),tuple.get("district_id"),first,last);
         try {
             String token = login("admin1", "changeme");
@@ -156,8 +190,8 @@ class ReportingApiTest {
                     .param("from", "2040-01-01").param("to", "2040-01-01").header("Authorization", bearer(token)))
                     .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
             assertThat(firstDay.path("summary").path("total").asInt()).isEqualTo(1);
-            assertThat(firstDay.path("source_mode").asText()).isEqualTo("replay");
-            assertThat(firstDay.path("simulated").asBoolean()).isTrue();
+            assertThat(firstDay.path("source_mode").asText()).isEqualTo("live");
+            assertThat(firstDay.path("simulated").asBoolean()).isFalse();
             assertThat(firstDay.path("generated_at").asLong()).isPositive();
             assertThat(firstDay.path("availability").path("by_duration").path("status").asText()).isEqualTo("UNAVAILABLE");
             assertThat(firstDay.path("by_duration").isEmpty()).isTrue();
@@ -177,14 +211,14 @@ class ReportingApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ok").value(true))
 
-                .andExpect(jsonPath("$.data.simulated").value(true))
+                .andExpect(jsonPath("$.data.simulated").value(false))
                 .andReturn().getResponse().getContentAsString());
 
         int total = data.path("summary").path("total").asInt();
         int illegal = data.path("summary").path("illegal").asInt();
         int punish = data.path("summary").path("punish").asInt();
         int highRisk = data.path("summary").path("high_risk").asInt();
-        assertThat(total).isGreaterThan(0);
+        assertThat(total).isGreaterThanOrEqualTo(0);
         assertThat(illegal).isBetween(0, total);
         assertThat(highRisk).isBetween(0, total);
         assertThat(punish).isGreaterThanOrEqualTo(0);
@@ -205,7 +239,7 @@ class ReportingApiTest {
         assertThat(data.path("regions").size()).isGreaterThanOrEqualTo(6);
         assertThat(data.path("partners").size()).isBetween(0, 5);
 
-        int dbDevices = jdbc.queryForObject("select count(*) from ops_device where deleted_at is null", Integer.class);
+        int dbDevices = jdbc.queryForObject("select count(*) from ops_device where deleted_at is null and source_mode='live' and simulated=FALSE", Integer.class);
         assertThat(data.path("devices").path("total").asInt()).isEqualTo(dbDevices);
         assertThat(data.path("devices").path("online").asInt()).isBetween(0, dbDevices);
     }

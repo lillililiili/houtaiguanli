@@ -12,6 +12,7 @@ import com.uav.lowaltitude.modules.device.infrastructure.*;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
+import com.uav.lowaltitude.platform.config.SimulationPolicy;
 
 class CommissionDeviceInformationServiceTest {
     private final DeviceAccessPolicy access = mock(DeviceAccessPolicy.class);
@@ -19,8 +20,9 @@ class CommissionDeviceInformationServiceTest {
     private final DeviceInformationRepository data = mock(DeviceInformationRepository.class);
     private final ProtocolDataRepository protocol = mock(ProtocolDataRepository.class);
     private final ObjectMapper mapper = new ObjectMapper();
+    private final SimulationPolicy simulation = mock(SimulationPolicy.class);
     private final CommissionDeviceInformationService service = new CommissionDeviceInformationService(access, devices, data,
-            protocol, new DeviceInformationAssembler(mapper), mapper, new AppClock(Clock.fixed(Instant.ofEpochMilli(100_000), ZoneOffset.UTC)));
+            protocol, new DeviceInformationAssembler(mapper), mapper, new AppClock(Clock.fixed(Instant.ofEpochMilli(100_000), ZoneOffset.UTC)), simulation);
     private void device(String code) {
         when(access.requireCommissionRead()).thenReturn(new AuthUser("user", "test", "测试", "role", 1, false, "ASSIGNED"));
         when(devices.find("device")).thenReturn(Map.of("device_id", "device", "protocol_code", code, "source_mode", "live"));
@@ -30,6 +32,14 @@ class CommissionDeviceInformationServiceTest {
         device("RADAR_TCP_V3_0_0"); when(data.inScope("device", "user", "ASSIGNED")).thenReturn(false);
         assertThatThrownBy(() -> service.get("device")).isInstanceOf(ApiException.class);
         verifyNoInteractions(protocol);
+    }
+    @Test void reportsSimulationPolicyWithoutInferringPermissionFromDeviceSource() {
+        device("COUNTERMEASURE_TCP_4CH_V2_0");
+        assertThat(service.get("device").simulationAllowed()).isFalse();
+        when(simulation.allowed()).thenReturn(true);
+        assertThat(service.get("device").simulationAllowed()).isTrue();
+        when(simulation.allowed()).thenReturn(false);
+        assertThat(service.get("device").simulationAllowed()).isFalse();
     }
     @Test void usesAcceptedMqttMessageIdentityAndShowsMissingWorkParameters() {
         device("LINGYUN_MQTT_V8_6");

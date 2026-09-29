@@ -18,7 +18,7 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 
 /** Completes only the explicitly imported local airspace examples; never manufactures live observations. */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true")
 @Order(1000)
 public class LocalAirspaceRiskDemoSeeder implements ApplicationRunner {

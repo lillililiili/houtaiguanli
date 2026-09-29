@@ -55,7 +55,7 @@ class BusinessReportingApiTest {
 
     @Test
     @org.springframework.transaction.annotation.Transactional
-    void mqttDeviceAndMaintenanceRequireTheirOwnSharedTuple() throws Exception {
+    void simulatedMqttDeviceAndMaintenanceStayExcludedEvenWithAllSharedTuples() throws Exception {
         String auth="Bearer "+token();
         String user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);
         var sourceDevice=jdbc.queryForMap("SELECT device_id,source_id,external_device_id FROM device"
@@ -92,7 +92,7 @@ class BusinessReportingApiTest {
         JsonNode visible=json.readTree(mvc.perform(get(uri).header("Authorization",auth)
                 .param("report_category","DEVICE_OPERATIONS").param("period_type","DAILY").param("anchor_date",today())
                 .param("section","maintenance")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
-        assertThat(visible.path("data").path("items").toString()).contains("report-task");
+        assertThat(visible.path("data").path("items").toString()).doesNotContain("report-task");
     }
 
     @Test

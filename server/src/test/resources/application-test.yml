@@ -11,6 +11,10 @@ spring:
 
 app:
   source-mode: mock
+  fusion:
+    enabled: false
+  rule-engine:
+    enabled: false
   evidence-dir: ./target/evidence-test
   map-package:
     data-dir: ./target/map-data-test

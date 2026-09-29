@@ -9,12 +9,14 @@ import java.util.Map;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.http.HttpStatus;
 
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
+import com.uav.lowaltitude.platform.api.ApiException;
 
 /**
  * 从 rule_param 加载某个规则集版本的全部参数并缓存在一次评估内（{@link LoadedRuleParams} 是不可变快照）。
- * 缺参数抛 IllegalStateException：参数目录随版本发布，缺项意味着部署/种子错误，不是业务上的"未知事实"，
+ * 参数缺失或格式错误返回明确的配置不可用错误；缺项意味着部署/种子错误，不是业务上的"未知事实"，
  * 不能降级成 UNDETERMINED 让一条研判悄悄通过或悄悄不通过。
  */
 @Component
@@ -76,13 +78,15 @@ public class RuleParamLoader {
         private Entry require(String ruleCode, String key) {
             Entry entry = values.get(RuleParamLoader.key(ruleCode, key));
             if (entry == null || entry.value() == null || entry.value().isBlank()) {
-                throw new IllegalStateException("规则参数缺失: " + ruleCode + "." + key + "（规则集版本 " + ruleSetVersionId + "）");
+                throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "RULE_CONFIGURATION_INVALID",
+                        "研判规则参数缺失，请联系管理员核对配置：" + ruleCode + "." + key);
             }
             return entry;
         }
 
-        private IllegalStateException malformed(String ruleCode, String key, String expected) {
-            return new IllegalStateException("规则参数格式无效: " + ruleCode + "." + key + " 应为 " + expected + "（规则集版本 " + ruleSetVersionId + "）");
+        private ApiException malformed(String ruleCode, String key, String expected) {
+            return new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "RULE_CONFIGURATION_INVALID",
+                    "研判规则参数格式无效，请联系管理员核对配置：" + ruleCode + "." + key + " 应为 " + expected);
         }
     }
 }

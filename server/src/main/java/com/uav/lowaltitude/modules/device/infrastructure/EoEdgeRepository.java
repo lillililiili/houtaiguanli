@@ -10,6 +10,7 @@ import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.integration.mqtt.EoEdgeEnvelope;
 import com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration.Binding;
@@ -17,13 +18,37 @@ import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Registration;
 
 @Repository
 public class EoEdgeRepository {
+    private static final String UNCERTAIN = """
+            t.status='FAILED' AND (ec.status IS NULL OR ec.status<>'SUCCEEDED') AND
+            ((bc.status='TIMED_OUT' AND bc.issued_at IS NOT NULL)
+             OR (ec.status IN ('FAILED','TIMED_OUT') AND ec.issued_at IS NOT NULL))
+            """;
     private static final String BINDING_SELECT = """
             SELECT m.*,d.enabled,s.owner_org_id,s.district_id FROM eo_device_binding m
             JOIN ops_device d ON d.device_id=m.ops_device_id
             JOIN device_business_scope s ON s.ops_device_id=d.device_id
             """;
     private final JdbcTemplate jdbc;
-    public EoEdgeRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final DeviceMonitoringEventRepository monitoring;
+    public EoEdgeRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; this.monitoring = new DeviceMonitoringEventRepository(jdbc); }
+    public DeviceMonitoringEventRepository monitoringEvents() { return monitoring; }
+
+    /** The ingress holds the binding row lock, making watermark checks and writes atomic. */
+    public boolean advanceReportWatermark(String deviceId, String event, long observedAt) {
+        String column = switch (event) {
+            case "HeartBeat" -> "last_heartbeat_observed_at";
+            case "CameraStatus", "EndTracking" -> "last_camera_observed_at";
+            case "BeginTracking" -> "last_report_observed_at";
+            default -> throw new IllegalArgumentException("Unsupported report watermark");
+        };
+        if ("EndTracking".equals(event) || "CameraStatus".equals(event)) return jdbc.update("""
+                UPDATE eo_device_binding SET last_camera_observed_at=? WHERE ops_device_id=?
+                AND (last_camera_observed_at IS NULL OR last_camera_observed_at<?)
+                AND (last_heartbeat_observed_at IS NULL OR last_heartbeat_observed_at<?)
+                """, observedAt, deviceId, observedAt, observedAt) == 1;
+        return jdbc.update("UPDATE eo_device_binding SET " + column + "=? WHERE ops_device_id=? AND ("
+                + column + " IS NULL OR " + column + "<?)", observedAt, deviceId, observedAt) == 1;
+    }
 
     public Binding binding(String opsDeviceId, boolean lock) {
         if (lock) jdbc.queryForList("SELECT ops_device_id FROM eo_device_binding WHERE ops_device_id=? FOR UPDATE", opsDeviceId);
@@ -108,7 +133,7 @@ public class EoEdgeRepository {
     public int updateDevice(Binding b, Registration p, long now) {
         int changed = jdbc.update("""
                 UPDATE ops_device SET name=?,vendor=?,model=?,longitude=COALESCE(?,longitude),
-                    latitude=COALESCE(?,latitude),coordinate_system=CASE WHEN ? IS NULL THEN coordinate_system ELSE 'WGS-84' END,
+                    latitude=COALESCE(?,latitude),coordinate_system=CASE WHEN CAST(? AS NUMERIC) IS NULL THEN coordinate_system ELSE 'WGS-84' END,
                     altitude_m=COALESCE(?,altitude_m),version=version+1,updated_at=?
                 WHERE device_id=? AND version=? AND deleted_at IS NULL
                 """, p.name(), p.vendor(), p.model(), p.longitude(), p.latitude(), p.longitude(), p.altitudeM(),
@@ -151,6 +176,21 @@ public class EoEdgeRepository {
                 ? id : null;
     }
     public void heartbeat(Binding b, EoEdgeEnvelope m, String cameraJson, long received) {
+        DeviceTrendRepository.record(jdbc,b.opsDeviceId(),"connection_state",1,received,"replay".equals(b.sourceMode()));
+        Long cameraObserved = jdbc.queryForObject("SELECT last_camera_observed_at FROM eo_device_binding WHERE ops_device_id=?",
+                Long.class, b.opsDeviceId());
+        if (cameraObserved != null && m.timestamp() <= cameraObserved) {
+            // A fresh heartbeat can prove liveness while carrying an older camera/work-state snapshot.
+            jdbc.update("UPDATE eo_device_binding SET last_heartbeat_at=?,heartbeat_json=? WHERE ops_device_id=?",
+                    received, m.json(), b.opsDeviceId());
+            jdbc.update("""
+                    UPDATE ops_device_state SET connectivity='ONLINE',received_at=?,last_heartbeat_at=?,
+                        unknown_reason=NULL,version=version+1 WHERE device_id=?
+                    """, received, received, b.opsDeviceId());
+            upsertRuntime(b, null, null, received, "ONLINE");
+            return;
+        }
+        DeviceTrendRepository.record(jdbc,b.opsDeviceId(),"reported_work_state",m.workState(),received,"replay".equals(b.sourceMode()));
         jdbc.update("""
                 UPDATE eo_device_binding SET last_heartbeat_at=?,work_state=?,camera_status_json=?,heartbeat_json=?,camera_received_at=? WHERE ops_device_id=?
                 """, received, m.workState(), cameraJson, m.json(), received, b.opsDeviceId());
@@ -167,7 +207,17 @@ public class EoEdgeRepository {
         if (workState != null)
             jdbc.update("UPDATE ops_device_state SET work_state_code=?,version=version+1 WHERE device_id=?",
                     String.valueOf(workState), b.opsDeviceId());
-        upsertRuntime(b, null, cameraJson, received, "ONLINE");
+        // A camera reply is not a heartbeat and cannot establish or prolong device liveness.
+        int updated = jdbc.update("""
+                UPDATE protocol_runtime_state SET work_state=COALESCE(?,work_state),
+                    camera_status_json=COALESCE(?,camera_status_json),updated_at=?,version=version+1
+                WHERE device_id=?
+                """, workState, cameraJson, received, b.opsDeviceId());
+        if (updated == 0) jdbc.update("""
+                INSERT INTO protocol_runtime_state(device_id,protocol_code,connection_state,work_state,camera_status_json,
+                    coordinate_reference_state,blocking_reason,updated_at,version)
+                VALUES (?,?,'DISCONNECTED',?,?,'UNAVAILABLE',NULL,?,0)
+                """, b.opsDeviceId(), EoEdgeEnvelope.PROTOCOL, workState, cameraJson, received);
     }
     public void report(Binding b, long received) {
         jdbc.update("UPDATE eo_device_binding SET last_report_at=? WHERE ops_device_id=?", received, b.opsDeviceId());
@@ -178,17 +228,27 @@ public class EoEdgeRepository {
             jdbc.update("UPDATE eo_device_binding SET " + column + "=" + column + "+1 WHERE ops_device_id=?", opsDeviceId);
         }
     }
+    @Transactional
     public void expire(long now, long timeoutMillis) {
-        jdbc.update("""
+        var ids = jdbc.queryForList("""
+                SELECT device_id FROM ops_device_state WHERE connectivity='ONLINE' AND last_heartbeat_at<=?
+                AND device_id IN (SELECT ops_device_id FROM eo_device_binding) ORDER BY device_id
+                """, String.class, now - timeoutMillis);
+        for (String id : ids) {
+            var before = monitoring.lock(id);
+            int changed = jdbc.update("""
                 UPDATE ops_device_state SET connectivity='OFFLINE',unknown_reason='心跳超时未收到 HeartBeat',version=version+1
-                WHERE connectivity='ONLINE' AND last_heartbeat_at<=?
-                AND device_id IN (SELECT ops_device_id FROM eo_device_binding)
-                """, now - timeoutMillis);
-        jdbc.update("""
+                WHERE device_id=? AND connectivity='ONLINE' AND last_heartbeat_at<=?
+                """, id, now - timeoutMillis);
+            if (changed == 1) {
+                DeviceTrendRepository.record(jdbc, id, "connection_state", 0, now, before.simulated());
+                jdbc.update("""
                 UPDATE protocol_runtime_state SET connection_state='OFFLINE',updated_at=?,version=version+1
-                WHERE connection_state='ONLINE' AND last_heartbeat_at<=?
-                AND device_id IN (SELECT ops_device_id FROM eo_device_binding)
-                """, now, now - timeoutMillis);
+                WHERE device_id=? AND connection_state='ONLINE' AND last_heartbeat_at<=?
+                """, now, id, now - timeoutMillis);
+                monitoring.changed(before, now);
+            }
+        }
     }
     public Map<String, Object> status(String device) {
         Map<String, Object> result = jdbc.queryForMap("""
@@ -233,6 +293,17 @@ public class EoEdgeRepository {
                 WHERE task_id=? AND status=?
                 """, status, endCommandId, status, now, taskId, expected);
     }
+    public void refreshBootstrap(String taskId,String bootstrap) {
+        jdbc.update("UPDATE eo_tracking_task SET bootstrap_json=? WHERE task_id=? AND status='OPEN'",bootstrap,taskId);
+    }
+    public void trackingReport(String taskId,long observed,long received) {
+        jdbc.update("UPDATE eo_tracking_task SET last_report_at=?,last_report_observed_at=? WHERE task_id=? "
+                + "AND (last_report_observed_at IS NULL OR last_report_observed_at<?)",received,observed,taskId,observed);
+    }
+    public boolean freshTrackingReport(Map<String,Object> task,long cutoff,long now) {
+        return task.get("last_report_at") instanceof Number received && received.longValue()>=cutoff && received.longValue()<=now
+                && task.get("last_report_observed_at") instanceof Number observed && observed.longValue()>=cutoff && observed.longValue()<=now;
+    }
     public Binding idleDevice(String org, String district) {
         return jdbc.query(BINDING_SELECT + """
                 WHERE s.owner_org_id=? AND s.district_id=? AND d.enabled=TRUE
@@ -245,22 +316,33 @@ public class EoEdgeRepository {
     }
     /** Manual tracking uses the target's source mode as well as its business scope. */
     public Binding idleDeviceForMode(String org, String district, String deviceId, String mode) {
+        return idleDeviceForMode(org,district,deviceId,mode,Long.MIN_VALUE,Long.MAX_VALUE);
+    }
+    public Binding idleDeviceForMode(String org, String district, String deviceId, String mode,long cutoff,long now) {
         return jdbc.query(BINDING_SELECT + """
                 WHERE s.owner_org_id=? AND s.district_id=? AND d.enabled=TRUE
                 AND m.source_mode=?
                 AND (CAST(? AS VARCHAR) IS NULL OR m.ops_device_id=?)
                 AND EXISTS (SELECT 1 FROM mqtt_broker b WHERE b.broker_id=m.broker_id AND b.enabled=TRUE)
                 AND EXISTS (SELECT 1 FROM ops_device_state ds WHERE ds.device_id=m.ops_device_id AND ds.connectivity='ONLINE')
-                AND (m.work_state IS NULL OR m.work_state=0)
+                AND m.work_state=0 AND m.last_heartbeat_at>=? AND m.last_heartbeat_at<=?
                 AND NOT EXISTS (SELECT 1 FROM eo_tracking_task t WHERE t.ops_device_id=m.ops_device_id AND t.status IN ('OPEN','ENDING'))
+                AND NOT EXISTS (SELECT 1 FROM eo_tracking_task t JOIN device_command bc ON bc.command_id=t.begin_command_id
+                    LEFT JOIN device_command ec ON ec.command_id=t.end_command_id WHERE t.ops_device_id=m.ops_device_id AND
+                """ + UNCERTAIN + ") " + """
                 ORDER BY m.ops_device_id FETCH FIRST 1 ROWS ONLY
-                """, this::binding, org, district, mode, deviceId, deviceId).stream().findFirst().orElse(null);
+                """, this::binding, org, district, mode, deviceId, deviceId,cutoff,now).stream().findFirst().orElse(null);
     }
 
     public boolean targetHasOpenTask(String targetId) {
         Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task WHERE target_id=? AND status IN ('OPEN','ENDING')",
                 Integer.class, targetId);
-        return count != null && count > 0;
+        return (count != null && count > 0) || uncertainTaskByTarget(targetId)!=null;
+    }
+    public Map<String,Object> uncertainTaskByTarget(String targetId) {
+        return jdbc.queryForList("SELECT t.* FROM eo_tracking_task t JOIN device_command bc ON bc.command_id=t.begin_command_id "
+                + "LEFT JOIN device_command ec ON ec.command_id=t.end_command_id WHERE t.target_id=? AND " + UNCERTAIN
+                + " ORDER BY t.created_at DESC FETCH FIRST 1 ROW ONLY",targetId).stream().findFirst().orElse(null);
     }
     public Map<String, Object> openTaskByTarget(String targetId) {
         return jdbc.queryForList("""
@@ -395,6 +477,16 @@ public class EoEdgeRepository {
                 INSERT INTO command_receipt(receipt_id,command_id,inbox_id,receipt_kind,device_result_code,occurred_at,received_at,payload)
                 VALUES (?,?,?,?,?,?,?,?)
                 """, uuid(), commandId, inboxId, "PROTOCOL_C", resultCode, now, now, payload);
+    }
+    /** Control responses retain provenance without entering the sensing/fusion inbox. */
+    public void addControlReceipt(String commandId, String resultCode, long occurredAt, long receivedAt, String payload) {
+        String inboxId = uuid();
+        jdbc.update("INSERT INTO inbox_message(inbox_id,source,source_msg_id,received_at) VALUES (?,?,?,?)",
+                inboxId, "eo-control-response:" + commandId, commandId, receivedAt);
+        jdbc.update("""
+                INSERT INTO command_receipt(receipt_id,command_id,inbox_id,receipt_kind,device_result_code,occurred_at,received_at,payload)
+                VALUES (?,?,?,?,?,?,?,?)
+                """, uuid(), commandId, inboxId, "PROTOCOL_C", resultCode, occurredAt, receivedAt, payload);
     }
     public void addEvent(String deviceId, String type, String level, String message, long now, boolean simulated) {
         jdbc.update("INSERT INTO device_event_log(event_id,device_id,event_type,level_code,message,occurred_at,simulated) VALUES (?,?,?,?,?,?,?)",

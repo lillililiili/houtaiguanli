@@ -41,17 +41,24 @@ public class ReportingController {
     @GetMapping("/operations")
     public ApiResponse<OperationsReport> operations(
             @RequestParam(required = false) String from,
-            @RequestParam(required = false) String to) {
-        return ApiResponse.ok(service.operations(from, to));
+            @RequestParam(required = false) String to,
+            @RequestParam(name = "owner_org_id", required = false) String ownerOrgId) {
+        return ApiResponse.ok(service.operations(from, to, ownerOrgId));
+    }
+
+    @GetMapping("/operations/organizations")
+    public ApiResponse<java.util.List<ReportingService.OrganizationOption>> organizations() {
+        return ApiResponse.ok(service.organizations());
     }
 
     @GetMapping("/operations/export.csv")
     public void exportCsv(
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
+            @RequestParam(name = "owner_org_id", required = false) String ownerOrgId,
             HttpServletRequest request,
             HttpServletResponse response) throws IOException {
-        CsvExport file = service.exportCsv(from, to, request.getRemoteAddr(), request.getHeader("User-Agent"));
+        CsvExport file = service.exportCsv(from, to, ownerOrgId, request.getRemoteAddr(), request.getHeader("User-Agent"));
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setContentType("text/csv;charset=UTF-8");
         response.setHeader("Content-Disposition", "attachment; filename=\"" + file.filename() + "\"");

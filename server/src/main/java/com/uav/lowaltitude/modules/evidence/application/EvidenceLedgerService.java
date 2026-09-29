@@ -1,208 +1,195 @@
 package com.uav.lowaltitude.modules.evidence.application;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
-import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
-import com.uav.lowaltitude.modules.device.application.DeviceService;
-import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.CountDto;
-import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.PageDto;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceDtos.*;
 import com.uav.lowaltitude.modules.evidence.api.EvidenceLedgerDtos.*;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceChainDtos.*;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository;
+import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository.*;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository;
+import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
+import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.platform.api.ApiException;
-import com.uav.lowaltitude.platform.export.CsvExport;
-import com.uav.lowaltitude.platform.time.AppClock;
 import com.uav.lowaltitude.platform.audit.AuditService;
+import com.uav.lowaltitude.platform.export.CsvExport;
 import com.uav.lowaltitude.platform.security.AuthContext;
+import com.uav.lowaltitude.platform.time.AppClock;
 
-/** One authorized selection for list, counts, export and precise record/context lookup. No state transitions. */
+/** Unified material index. Actual commands and measured tracks remain distinct from uploaded files. */
 @Service
-@Transactional(readOnly = true)
 public class EvidenceLedgerService {
-    private static final List<String> CATEGORIES = List.of("VIDEO", "TRACK", "IMAGE", "COMMAND");
-    private static final Set<String> SUBJECTS = Set.of("EVENT", "DEVICE", "TARGET", "PLAN", "COMMAND", "COMMISSION", "CASE", "AUTHORIZATION");
-    private final EvidenceAssociationService files;
+    private static final List<String> CATEGORIES=List.of("VIDEO","TRACK","IMAGE","COMMAND");
+    private static final Set<String> FILTERS=Set.of("category","status","custody","subject_kind","subject_id","q");
+    private final EvidenceLedgerRepository ledger;
     private final EvidenceRepository subjects;
-    private final EvidenceLedgerRepository repository;
+    private final EvidenceAssociationService files;
     private final AccessControlService access;
+    private final DeviceRepository devices;
     private final DeviceAccessPolicy deviceAccess;
-    private final DeviceService devices;
     private final AppClock clock;
     private final AuditService audit;
-
-    public EvidenceLedgerService(EvidenceAssociationService files, EvidenceRepository subjects,
-            EvidenceLedgerRepository repository, AccessControlService access, DeviceAccessPolicy deviceAccess,
-            DeviceService devices, AppClock clock, AuditService audit) {
-        this.files = files; this.subjects = subjects; this.repository = repository; this.access = access;
-        this.deviceAccess = deviceAccess; this.devices = devices; this.clock = clock; this.audit = audit;
+    private final ObjectMapper json;
+    public EvidenceLedgerService(EvidenceLedgerRepository ledger,EvidenceRepository subjects,EvidenceAssociationService files,
+            AccessControlService access,DeviceRepository devices,DeviceAccessPolicy deviceAccess,AppClock clock,AuditService audit,ObjectMapper json) {
+        this.ledger=ledger;this.subjects=subjects;this.files=files;this.access=access;this.devices=devices;this.deviceAccess=deviceAccess;
+        this.clock=clock;this.audit=audit;this.json=json;
     }
-
-    public PageDto<Entry> list(MultiValueMap<String, String> values) {
-        AccessDecision scope = access.require(PermissionCode.EVIDENCE_READ);
-        Query query = Query.parse(values);
-        List<Entry> rows = select(query, scope);
-        long offset = (long) (query.page - 1) * query.size;
-        int from = (int) Math.min(offset, rows.size());
-        return new PageDto<>(rows.subList(from, Math.min(from + query.size, rows.size())), query.page, query.size, rows.size());
+    @Transactional(readOnly=true)
+    public PageDto<Entry> list(MultiValueMap<String,String> params) {
+        AccessDecision decision=access.require(PermissionCode.EVIDENCE_READ);
+        Query query=query(params,true,false);int page=positive(params,"page",1,1000000),size=positive(params,"size",20,100);
+        if(!visible(query,decision))return new PageDto<>(List.of(),page,size,0);
+        Relation relation=relation(query,decision);
+        return new PageDto<>(entries(relation,(page-1)*size,size),page,size,ledger.count(relation));
     }
-
-    public Stats stats(MultiValueMap<String, String> values) {
-        AccessDecision scope = access.require(PermissionCode.EVIDENCE_READ);
-        List<Entry> rows = select(Query.parse(values), scope);
-        return new Stats(rows.size(), counts(rows, "category", CATEGORIES),
-                counts(rows.stream().filter(r -> r.sourceKind().equals("FILE")).toList(), "status", List.of("PENDING", "AVAILABLE", "MISSING", "CORRUPT", "DESTROYED")),
-                counts(rows.stream().filter(r -> r.sourceKind().equals("FILE")).toList(), "custody", List.of("KEPT", "NEARING", "DUE", "HELD")));
+    @Transactional(readOnly=true)
+    public Stats stats(MultiValueMap<String,String> params) {
+        AccessDecision decision=access.require(PermissionCode.EVIDENCE_READ);
+        Query query=query(params,false,false);
+        if(!visible(query,decision))return new Stats(0,counts(Map.of()),List.of(),List.of());
+        Relation relation=relation(query,decision);
+        return new Stats(ledger.count(relation),counts(ledger.counts(relation,"category")),
+                entries(ledger.counts(relation,"status")),entries(ledger.counts(relation,"custody")));
     }
-
-    public Detail record(String kind, String id, MultiValueMap<String, String> values) {
-        AccessDecision scope = access.require(PermissionCode.EVIDENCE_READ);
-        if (!Set.of("FILE", "TRACK", "COMMAND").contains(kind) || id == null || id.isBlank()) throw invalid();
-        List<Entry> rows = select(Query.parse(values), scope);
-        Entry entry = rows.stream().filter(r -> kind.equals(r.sourceKind()) && id.equals(r.sourceId())).findFirst().orElseThrow(EvidenceLedgerService::missing);
-        Object command = kind.equals("COMMAND") ? devices.command(id) : null;
-        List<Entry> attachments = kind.equals("COMMAND") ? select(new Query(1, 100, null, null, null, "COMMAND", id, null), scope)
-                .stream().filter(r -> r.sourceKind().equals("FILE")).toList() : List.of();
-        return new Detail(entry, command, attachments, links(entry, scope));
-    }
-
-    public Materials materials(String kind, String id) {
-        AccessDecision scope = access.require(PermissionCode.EVIDENCE_READ);
-        if (!SUBJECTS.contains(kind) || id == null || id.isBlank()) throw invalid();
-        if (!canSee(kind) || !subjects.subjectVisible(kind, id, scope)) throw missing();
-        List<Entry> rows = select(new Query(1, 100, null, null, null, kind, id, null), scope);
-        List<Entry> returned = new ArrayList<>();
-        Map<String, Coverage> coverage = new LinkedHashMap<>();
-        for (String category : CATEGORIES) {
-            long count = rows.stream().filter(r -> category.equals(r.category())).count();
-            boolean allowed = !category.equals("TRACK") || probe(PermissionCode.TARGET_READ);
-            if (category.equals("COMMAND")) allowed = canReadCommands();
-            coverage.put(category, new Coverage(count > 0 ? "PRESENT" : allowed ? "ABSENT" : "FORBIDDEN", count, count > 100));
-            returned.addAll(rows.stream().filter(r -> category.equals(r.category())).limit(100).toList());
-        }
-        List<Material> records = returned.stream().sorted(order().reversed()).map(r -> new Material(r.category(), r.sourceId(), r.occurredAt(),
-                Set.of("MISSING", "CORRUPT", "DESTROYED", "PENDING", "NO_POINTS").contains(r.status()) ? "UNAVAILABLE" : "PRESENT", r)).toList();
-        return new Materials(kind, id, coverage, records);
-    }
-
     @Transactional
-    public ResponseEntity<byte[]> export(MultiValueMap<String, String> values, String ip, String userAgent) {
-        AccessDecision scope = access.require(PermissionCode.EVIDENCE_READ);
-        List<Entry> rows = select(Query.parse(values), scope);
-        if (rows.size() > CsvExport.MAX_ROWS) throw new ApiException(HttpStatus.BAD_REQUEST, "EXPORT_TOO_LARGE", "导出记录超过上限，请缩小筛选范围");
-        var actor = AuthContext.require();
-        audit.record(actor.userId(), actor.account(), actor.roleCode(), "evidence", "evidence_exported",
-                "evidence_ledger", null, "count=" + rows.size(), "SUCCESS", ip, userAgent == null ? "" : userAgent);
-        return CsvExport.response(CsvExport.fileName("evidence-ledger", clock.now()),
-                List.of("编号", "名称", "类型", "来源类型", "状态", "发生时间", "保管状态"),
-                rows.stream().map(r -> java.util.Arrays.asList(r.evidenceNo(), r.originalName(), r.category(), r.sourceKind(),
-                        r.status(), r.occurredAt() == null ? "" : String.valueOf(r.occurredAt()), r.custody())).toList());
-    }
-
-    private List<Entry> select(Query query, AccessDecision scope) {
-        if (query.subjectKind != null && !canSee(query.subjectKind)) return List.of();
-        if (query.subjectId != null && !subjects.subjectVisible(query.subjectKind, query.subjectId, scope)) return List.of();
-        List<Entry> rows = new ArrayList<>();
-        // Reuse file visibility, retention and hidden-unlinked rules; do not bypass them with a second file query.
-        MultiValueMap<String, String> fileQuery = new LinkedMultiValueMap<>();
-        fileQuery.set("size", "100");
-        if (query.status != null) fileQuery.set("status", query.status);
-        if (query.custody != null) fileQuery.set("custody", query.custody);
-        if (query.q != null) fileQuery.set("q", query.q);
-        if (query.subjectId != null) { fileQuery.set("subject_kind", query.subjectKind); fileQuery.set("subject_id", query.subjectId); }
-        for (int page = 1; ; page++) {
-            fileQuery.set("page", String.valueOf(page));
-            var result = files.list(fileQuery);
-            for (var f : result.items()) {
-                String category = switch (f.kindCode()) {
-                    case "EO_VIDEO" -> "VIDEO";
-                    case "EO_STILL", "SCENE_PHOTO" -> "IMAGE";
-                    case "TRACK_SNAPSHOT" -> "TRACK";
-                    case "COMMAND_LOG" -> "COMMAND";
-                    default -> null;
-                };
-                if (category != null) rows.add(new Entry("FILE", f.evidenceId(), category, f.evidenceNo(), f.originalName(), f.kindCode(), f.status(),
-                        f.capturedAt() != null ? f.capturedAt() : f.storedAt(), f.sizeBytes(), f.retainUntil(), f.custody(), null, null, null, null, null));
+    public Detail detail(String kind,String id,MultiValueMap<String,String> params) {
+        AccessDecision decision=access.require(PermissionCode.EVIDENCE_READ);
+        if(!Set.of("FILE","TRACK","COMMAND").contains(kind))throw invalid();
+        identifier(id);Query context=query(params,false,true);
+        if(!visible(context,decision))throw missing();
+        Query query=new Query(null,null,null,context.subjectKind(),context.subjectId(),null,kind,id);
+        List<Entry> found=entries(relation(query,decision),0,1);
+        if(found.isEmpty())throw missing();
+        Entry entry=found.get(0);List<LinkDto> links=new ArrayList<>();
+        Command command=null;List<Entry> attachments=List.of();
+        if(kind.equals("FILE"))links=files.get(id).links();
+        if(kind.equals("TRACK")) {
+            for(Map<String,Object> row:ledger.trackLinks(id)) {
+                String subjectKind=string(row,"subject_kind"),subjectId=string(row,"subject_id");
+                if(canSeeLink(subjectKind)&&subjects.subjectVisible(subjectKind,subjectId,decision))
+                    links.add(new LinkDto(null,subjectKind,subjectId,subjects.findSubject(subjectKind,subjectId).no()));
             }
-            if ((long) page * 100 >= result.total()) break;
         }
-        // File status/retention filters do not invent a file lifecycle for raw observations or commands.
-        if (query.status == null && query.custody == null) {
-            if (probe(PermissionCode.TARGET_READ) && (query.category == null || query.category.equals("TRACK"))) rows.addAll(repository.tracks(scope));
-            if (canReadCommands() && (query.category == null || query.category.equals("COMMAND"))) rows.addAll(repository.commands(scope));
+        if(kind.equals("COMMAND")) {
+            Map<String,Object> row=devices.findCommand(id);if(row==null)throw missing();
+            for(SubjectLink link:ledger.commandLinks(id)) {
+                if(!canSeeLink(link.kind()))continue;
+                if(!subjects.subjectVisible(link.kind(),link.id(),decision))continue;
+                var subject=subjects.findSubject(link.kind(),link.id());
+                links.add(new LinkDto(null,link.kind(),link.id(),subject.no()));
+            }
+            List<Receipt> receipts=new ArrayList<>();
+            for(Map<String,Object> receipt:devices.commandReceipts(id)) {
+                Object payload=receipt.get("payload");
+                com.fasterxml.jackson.databind.JsonNode parsed=null;
+                try{parsed=payload==null?null:json.readTree(payload instanceof byte[] bytes?new String(bytes,java.nio.charset.StandardCharsets.UTF_8):payload.toString());}
+                catch(java.io.IOException e){throw new ApiException(HttpStatus.CONFLICT,"INVALID_RECEIPT_PAYLOAD","历史回执内容无法解析");}
+                receipts.add(new Receipt(string(receipt,"receipt_id"),string(receipt,"receipt_kind"),string(receipt,"device_result_code"),number(receipt,"occurred_at"),number(receipt,"received_at"),parsed));
+            }
+            command=new Command(id,string(row,"command_no"),string(row,"device_name"),string(row,"device_no"),string(row,"command_type"),string(row,"reason"),string(row,"status"),number(row,"created_at"),number(row,"issued_at"),number(row,"completed_at"),string(row,"result_detail"),receipts);
+            Relation attached=relation(new Query(null,null,null,"COMMAND",id,null,"FILE",null),decision);
+            if(ledger.count(attached)>1000)throw new ApiException(HttpStatus.CONFLICT,"TOO_MANY_ATTACHMENTS","附件过多，请从台账分页查看");
+            attachments=entries(attached,0,1000);
         }
-        Map<String, Set<String>> related = new LinkedHashMap<>();
-        if (query.subjectKind != null) for (String source : List.of("FILE", "TRACK", "COMMAND")) {
-            related.put(source, repository.relatedIds(source, query.subjectKind, query.subjectId, scope));
-        }
-        return rows.stream().filter(r -> query.category == null || query.category.equals(r.category()))
-                .filter(r -> query.q == null || (r.evidenceNo() + " " + r.originalName() + " " + r.sourceId()).toLowerCase(Locale.ROOT).contains(query.q.toLowerCase(Locale.ROOT)))
-                .filter(r -> query.subjectKind == null || related.get(r.sourceKind()).contains(r.sourceId()))
-                .sorted(order()).toList();
+        return new Detail(entry,links,command,attachments);
     }
-
-    private List<Link> links(Entry entry, AccessDecision scope) {
-        return repository.links(entry.sourceKind(), entry.sourceId()).stream()
-                .filter(l -> canSee(l.subjectKind()) && subjects.subjectVisible(l.subjectKind(), l.subjectId(), scope))
-                .map(l -> new Link(l.subjectKind(), l.subjectId(), subjects.findSubject(l.subjectKind(), l.subjectId()).no())).distinct().toList();
+    @Transactional(readOnly=true)
+    public ChainDto materials(String kind,String id,MultiValueMap<String,String> params) {
+        AccessDecision decision=access.require(PermissionCode.EVIDENCE_READ);
+        if(!params.isEmpty() || !EvidenceAssociationService.SUBJECTS.contains(kind))throw invalid();
+        identifier(id);Query query=new Query(null,null,null,kind,id,null,null,null);
+        if(!visible(query,decision))throw missing();
+        Relation relation=relation(query,decision);List<Entry> items=new ArrayList<>();
+        for(String category:CATEGORIES) items.addAll(entries(relation(new Query(category,null,null,kind,id,null,null,null),decision),0,100));
+        items.sort(java.util.Comparator.comparing(Entry::occurredAt,java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())).thenComparing(Entry::sourceKind).thenComparing(Entry::sourceId));
+        Map<String,Long> totals=ledger.counts(relation,"category");Map<String,CoverageDto> coverage=new LinkedHashMap<>();
+        for(String category:CATEGORIES) {
+            long count=totals.getOrDefault(category,0L);
+            long returned=items.stream().filter(e->e.category().equals(category)).count();
+            int broken=(int)items.stream().filter(e->e.category().equals(category)&&unavailable(e)).count();
+            coverage.put(category,new CoverageDto(count>0?"PRESENT":(category.equals("TRACK")&&!probe(PermissionCode.TARGET_READ)||category.equals("COMMAND")&&!canReadCommands())?"FORBIDDEN":"ABSENT",
+                    (int)Math.min(Integer.MAX_VALUE,count),broken,count>returned));
+        }
+        // Membership metadata is not a cryptographic verification of file bytes; no invented integrity verdict.
+        List<Entry> chronological=new ArrayList<>(items);java.util.Collections.reverse(chronological);
+        List<RecordDto> records=chronological.stream().map(e->new RecordDto(e.category(),e.sourceId(),e.capturedAt()==null?e.storedAt():e.capturedAt(),null,unavailable(e)?"UNAVAILABLE":"AVAILABLE",e)).toList();
+        var subject=subjects.findSubject(kind,id);
+        return new ChainDto(kind,id,subject.no(),kind.equals("TARGET")&&probe(PermissionCode.TARGET_READ)?id:null,null,coverage,null,records,null);
     }
-    private boolean canSee(String kind) {
-        return switch (kind) {
-            case "CASE" -> probe(PermissionCode.PUNISHMENT_READ);
-            case "AUTHORIZATION" -> probe(PermissionCode.DISPOSAL_READ);
+    @Transactional
+    public ResponseEntity<byte[]> export(MultiValueMap<String,String> params,String ip,String agent) {
+        AccessDecision decision=access.require(PermissionCode.EVIDENCE_READ);Query query=query(params,true,false);
+        positive(params,"page",1,1000000);positive(params,"size",20,100);
+        List<Entry> items=List.of();
+        if(visible(query,decision)) {
+            Relation relation=relation(query,decision);
+            if(ledger.count(relation)>CsvExport.MAX_ROWS)throw new ApiException(HttpStatus.BAD_REQUEST,"EXPORT_TOO_LARGE","导出超过5000条，请缩小筛选范围");
+            items=entries(relation,0,CsvExport.MAX_ROWS);
+        }
+        var actor=AuthContext.require();
+        audit.record(actor.userId(),actor.account(),actor.roleCode(),"evidence","evidence_exported","evidence_ledger",null,"导出材料台账 "+items.size()+" 条","SUCCESS",ip,agent);
+        List<List<String>> rows=items.stream().map(e->java.util.Arrays.asList(e.sourceKind(),e.sourceId(),e.category(),e.evidenceNo(),e.originalName(),e.status(),e.sourceMode(),e.custody())).toList();
+        return CsvExport.response(CsvExport.fileName("evidence-ledger",clock.now()),List.of("来源","记录ID","类别","编号","名称","状态","数据模式","保管状态"),rows);
+    }
+    private static boolean unavailable(Entry e){return Set.of("PENDING","MISSING","CORRUPT","DESTROYED","NO_POINTS").contains(e.status());}
+    private static String string(Map<String,Object> row,String key){Object value=row.get(key);return value==null?null:value.toString();}
+    private static Long number(Map<String,Object> row,String key){Object value=row.get(key);return value==null?null:((Number)value).longValue();}
+    private List<Entry> entries(Relation relation,int offset,int size){return ledger.list(relation,offset,size).stream().map(r->new Entry(r.sourceKind(),r.sourceId(),r.category(),r.evidenceNo(),r.originalName(),r.kindCode(),r.status(),r.capturedAt(),r.storedAt(),r.sourceMode(),r.layer(),r.startedAt(),r.endedAt(),r.sizeBytes(),r.held(),r.custody(),r.linkCount(),r.retainUntil(),r.pointCount())).toList();}
+    private Relation relation(Query query,AccessDecision decision){return ledger.relation(query,decision,probe(PermissionCode.EVIDENCE_INGEST),probe(PermissionCode.TARGET_READ),canReadCommands(),clock.now().toEpochMilli());}
+    private boolean visible(Query q,AccessDecision decision) {
+        if(q.subjectKind()==null)return true;
+        if(Set.of("DEVICE","COMMAND","COMMISSION").contains(q.subjectKind())&&!canReadCommands())return false;
+        if(q.subjectKind().equals("CASE")&&!probe(PermissionCode.PUNISHMENT_READ))return false;
+        if(q.subjectKind().equals("AUTHORIZATION")&&!probe(PermissionCode.DISPOSAL_READ))return false;
+        return q.subjectId()==null||subjects.subjectVisible(q.subjectKind(),q.subjectId(),decision);
+    }
+    private boolean canSeeLink(String kind) {
+        return switch(kind) {
             case "TARGET" -> probe(PermissionCode.TARGET_READ);
             case "EVENT" -> probe(PermissionCode.ALARM_READ);
             case "PLAN" -> probe(PermissionCode.FLIGHT_READ);
-            case "COMMAND", "DEVICE", "COMMISSION" -> canReadCommands();
+            case "CASE" -> probe(PermissionCode.PUNISHMENT_READ);
+            case "AUTHORIZATION" -> probe(PermissionCode.DISPOSAL_READ);
+            case "DEVICE", "COMMAND", "COMMISSION" -> canReadCommands();
             default -> false;
         };
     }
-    private boolean probe(PermissionCode permission) {
-        try { access.require(permission); return true; }
-        catch (ApiException e) { if (e.getStatus() == HttpStatus.FORBIDDEN) return false; throw e; }
-    }
     private boolean canReadCommands() {
         try { deviceAccess.requireMonitoringRead(); return true; }
-        catch (ApiException e) { if (e.getStatus() == HttpStatus.FORBIDDEN) return false; throw e; }
+        catch(ApiException e) { if(e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e; }
     }
-    private static Comparator<Entry> order() {
-        return Comparator.comparing(Entry::occurredAt, Comparator.nullsLast(Comparator.reverseOrder())).thenComparing(Entry::sourceKind).thenComparing(Entry::sourceId);
+    private boolean probe(PermissionCode permission) {
+        try{access.require(permission);return true;}catch(ApiException e){if(e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e;}
     }
-    private static List<CountDto> counts(List<Entry> rows, String field, List<String> codes) {
-        return codes.stream().map(code -> new CountDto(code, rows.stream().filter(r -> code.equals(switch (field) {
-            case "category" -> r.category(); case "status" -> r.status(); default -> r.custody();
-        })).count())).toList();
+    private static Query query(MultiValueMap<String,String> p,boolean paged,boolean context) {
+        for(String key:p.keySet())if(p.get(key).size()!=1||!(context?Set.of("subject_kind","subject_id").contains(key):FILTERS.contains(key)||paged&&Set.of("page","size").contains(key)))throw invalid();
+        String category=choice(p,"category",Set.copyOf(CATEGORIES));
+        String status=text(p,"status");if(status!=null&&!Set.of("PENDING","AVAILABLE","MISSING","CORRUPT","DESTROYED","OBSERVED","NO_POINTS","QUEUED","SENT","ACCEPTED","SUCCEEDED","FAILED","TIMED_OUT","CANCELLED").contains(status))throw invalid();
+        String custody=choice(p,"custody",Set.of("KEPT","NEARING","DUE","HELD"));
+        String kind=choice(p,"subject_kind",EvidenceAssociationService.SUBJECTS),id=text(p,"subject_id");
+        if(id!=null&&kind==null||context&&((kind==null)!=(id==null)))throw invalid();
+        if(id!=null)identifier(id);String q=text(p,"q");if(q!=null&&q.length()>200)throw invalid();
+        return new Query(category,status,custody,kind,id,q,null,null);
     }
-    private static ApiException invalid() { return new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "证据筛选或定位参数无效"); }
-    private static ApiException missing() { return new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "记录不存在或不在当前可见范围内"); }
-    private record Query(int page, int size, String category, String status, String custody, String subjectKind, String subjectId, String q) {
-        static Query parse(MultiValueMap<String, String> p) {
-            if (p.keySet().stream().anyMatch(k -> !Set.of("page", "size", "category", "status", "custody", "subject_kind", "subject_id", "q").contains(k))
-                    || p.values().stream().anyMatch(v -> v.size() != 1 || v.get(0) == null || v.get(0).isBlank())) throw invalid();
-            String category = p.getFirst("category"), status = p.getFirst("status"), custody = p.getFirst("custody");
-            String kind = p.getFirst("subject_kind"), id = p.getFirst("subject_id"), q = p.getFirst("q");
-            if (category != null && !CATEGORIES.contains(category) || status != null && !EvidenceAssociationService.STATUSES.contains(status)
-                    || custody != null && !Set.of("KEPT", "NEARING", "DUE", "HELD").contains(custody)
-                    || kind != null && !SUBJECTS.contains(kind) || id != null && kind == null || q != null && q.length() > 200) throw invalid();
-            try {
-                int page = p.containsKey("page") ? Integer.parseInt(p.getFirst("page")) : 1;
-                int size = p.containsKey("size") ? Integer.parseInt(p.getFirst("size")) : 20;
-                if (page < 1 || size < 1 || size > 100) throw invalid();
-                return new Query(page, size, category, status, custody, kind, id, q);
-            } catch (NumberFormatException e) { throw invalid(); }
-        }
-    }
+    private static String text(MultiValueMap<String,String> p,String key){String value=p.getFirst(key);return value==null||value.isBlank()?null:value.trim();}
+    private static String choice(MultiValueMap<String,String> p,String key,Set<String> allowed){String value=text(p,key);if(value!=null&&!allowed.contains(value))throw invalid();return value;}
+    private static int positive(MultiValueMap<String,String> p,String key,int fallback,int max){try{String s=text(p,key);int n=s==null?fallback:Integer.parseInt(s);if(n<1||n>max)throw invalid();return n;}catch(NumberFormatException e){throw invalid();}}
+    private static void identifier(String id){if(id==null||id.isBlank()||id.length()>128)throw invalid();}
+    private static List<CountDto> counts(Map<String,Long> values){return CATEGORIES.stream().map(k->new CountDto(k,values.getOrDefault(k,0L))).toList();}
+    private static List<CountDto> entries(Map<String,Long> values){return values.entrySet().stream().sorted(Map.Entry.comparingByKey()).map(e->new CountDto(e.getKey(),e.getValue())).toList();}
+    private static ApiException invalid(){return new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","筛选参数无效");}
+    private static ApiException missing(){return new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","材料不存在或不可见");}
 }

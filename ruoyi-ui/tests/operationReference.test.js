@@ -12,7 +12,7 @@ async function mount(component, props) { host=document.createElement('div'); doc
 function button(text) { return [...host.querySelectorAll('button')].find(item=>item.textContent.includes(text)); }
 beforeEach(() => {
   vi.clearAllMocks();
-  deviceApi.list.mockResolvedValue({ items: [{device_id:'a',device_no:'A',name:'甲雷达',region_name:'东区'}, {device_id:'b',device_no:'B',name:'乙雷达',region_name:'西区'}],total:2 });
+  deviceApi.list.mockResolvedValue({ items: [{device_id:'a',device_no:'A',name:'甲雷达',region_name:'东区',source_mode:'live',simulated:false}, {device_id:'b',device_no:'B',name:'乙雷达',region_name:'西区',source_mode:'live',simulated:false}],total:2 });
   deviceApi.detail.mockResolvedValue({ connection: {host:'192.0.2.1',port:9001,transport:'TCP'} });
   commissionApi.information.mockImplementation(async id=>({device_id:id,name:id,task_supported:true,sections:[],sample_sections:[]}));
   commissionApi.list.mockImplementation(async params=>({items:[{commission_id:`task-${params.device_id}`,commission_no:`历史-${params.device_id}`,device_name:params.device_id,status:'PASSED',simulated:true,started_at:1000,finished_at:5000}],total:1}));
