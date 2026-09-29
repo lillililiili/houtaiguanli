@@ -1,6 +1,9 @@
 package com.uav.lowaltitude.modules.directory.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -12,6 +15,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome;
 
 /** Opt-in browser fixture. Only the disposable H2 test database is modified. */
 @EnabledIfSystemProperty(named = "qa.maintenance.browser", matches = "true")
@@ -28,6 +32,15 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
     private String activeCommission;
     private String activeCommand;
     private String activeTracking;
+    private String hiddenScopeOrg;
+
+    void verifyBrowserDatabase(String url) {
+        assertThat(url).startsWith("jdbc:h2:mem:maintenance_browser");
+    }
+
+    void prepareBrowserChecks() { }
+
+    String browserDatabaseLabel() { return "isolated H2 memory"; }
 
     @Override void cleanCommittedFixture() {
         // This whole in-memory database disappears with the opt-in JVM.
@@ -50,9 +63,31 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         assertThat(workflow().path("allowed_actions")).isEmpty();
     }
 
+    @Test void verifyNotificationFixtureConditions() throws Exception {
+        create();
+        applyScenario("NOTICE_SUBMITTED");
+        var submitted = resend(1, "隔离等待渠道结果", UUID.randomUUID().toString());
+        assertThat(submitted.path("notification_delivery_status").asText()).isEqualTo("SUBMITTED");
+        assertThat(submitted.path("can_resend_notification").asBoolean()).isFalse();
+        applyScenario("LEGACY");
+        applyScenario("NOTICE_DELIVERED");
+        applyScenario("NEW_TASK");
+        applyScenario("NOTICE_FAILED");
+        var failed = resend(1, "隔离失败场景", UUID.randomUUID().toString());
+        assertThat(failed.path("notification_delivery_status").asText()).isEqualTo("FAILED");
+        assertThat(failed.path("notification_attempts").get(1).path("delivery_status").asText()).isEqualTo("DELIVERED");
+        applyScenario("NOTICE_DELIVERED");
+        var delivered = resend(2, "隔离再次送达", UUID.randomUUID().toString());
+        assertThat(delivered.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
+        applyScenario("NOTICE_UNKNOWN");
+        var unknown = resend(3, "隔离结果未知", UUID.randomUUID().toString());
+        assertThat(unknown.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("UNKNOWN");
+        assertThat(unknown.path("can_resend_notification").asBoolean()).isFalse();
+    }
+
     @Test void serveBrowserFixture() throws Exception {
         try (var connection = jdbc.getDataSource().getConnection()) {
-            assertThat(connection.getMetaData().getURL()).startsWith("jdbc:h2:mem:maintenance_browser");
+            verifyBrowserDatabase(connection.getMetaData().getURL());
         }
         Path directory = Path.of("target", "maintenance-browser").toAbsolutePath();
         Files.createDirectories(directory);
@@ -61,6 +96,7 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         jdbc.update("UPDATE ops_device SET name='QA浏览器隔离模拟设备',source_mode='mock',simulated=TRUE WHERE device_id=?", device);
         create();
         healthy();
+        prepareBrowserChecks();
         String lastId = "initial";
         manifest(directory, lastId, "READY");
         long deadline = System.nanoTime() + java.time.Duration.ofMinutes(30).toNanos();
@@ -89,11 +125,16 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         Files.writeString(directory.resolve("manifest.json"), json.writeValueAsString(Map.of(
                 "port", port, "task_id", taskId, "device_id", device, "plan_id", plan,
                 "command_id", id, "scenario", scenario, "clock", now,
-                "database", "isolated H2 memory", "simulated", true)));
+                "database", browserDatabaseLabel(), "simulated", true)));
     }
 
     private void applyScenario(String scenario) throws Exception {
-        if ("NEW_TASK".equals(scenario)) { observe(true, now); create(); return; }
+        if ("TICK".equals(scenario)) { now += 1000; clock.setNow(Instant.ofEpochMilli(now)); return; }
+        if ("RESTORE_SCOPE".equals(scenario)) {
+            if (hiddenScopeOrg != null) jdbc.update("UPDATE app_org SET enabled=TRUE WHERE org_id=?", hiddenScopeOrg);
+            sqlSession.clearCache(); return;
+        }
+        if ("NEW_TASK".equals(scenario)) { observe(true, now); create(); prepareBrowserChecks(); return; }
         if ("RESTORED_DEVICE".equals(scenario)) {
             jdbc.update("UPDATE ops_device SET deleted_at=NULL,enabled=TRUE WHERE device_id=?", device);
             return;
@@ -102,6 +143,27 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         healthy();
         switch (scenario) {
             case "HEALTHY", "EXPIRED_PASS" -> { }
+            case "NOTICE_FAILED", "NOTICE_UNKNOWN", "NOTICE_SUBMITTED", "NOTICE_DELIVERED" -> {
+                now += 61000;
+                clock.setNow(Instant.ofEpochMilli(now));
+                jdbc.update("UPDATE ops_device_state SET health_code='BAD',observed_at=?,last_heartbeat_at=? WHERE device_id=?", now, now, device);
+                observe(true, now);
+                prepareBrowserChecks();
+                if ("NOTICE_UNKNOWN".equals(scenario)) {
+                    doThrow(new IllegalStateException("隔离模拟通知结果未知")).when(channel).deliver(any());
+                } else {
+                    String status = scenario.substring("NOTICE_".length());
+                    var at = clock.now().atOffset(java.time.ZoneOffset.UTC);
+                    doReturn(new DeliveryOutcome(status, "FAILED".equals(status) ? "NOT_EXPECTED" : "PENDING", null,
+                            "FAILED".equals(status) ? "隔离模拟渠道失败" : null,
+                            "FAILED".equals(status) ? null : at, "DELIVERED".equals(status) ? at : null, null))
+                            .when(channel).deliver(any());
+                }
+            }
+            case "HIDE_SCOPE" -> {
+                hiddenScopeOrg = jdbc.queryForObject("SELECT owner_org_id FROM ops_device_maintenance_task WHERE task_id=?", String.class, taskId);
+                jdbc.update("UPDATE app_org SET enabled=FALSE WHERE org_id=?", hiddenScopeOrg);
+            }
             case "DISABLED" -> jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?", device);
             case "OFFLINE" -> jdbc.update("UPDATE ops_device_state SET connectivity='OFFLINE' WHERE device_id=?", device);
             case "BAD", "DEGRADED", "UNKNOWN" -> jdbc.update("UPDATE ops_device_state SET health_code=? WHERE device_id=?", scenario, device);

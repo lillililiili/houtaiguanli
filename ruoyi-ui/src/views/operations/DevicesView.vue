@@ -50,6 +50,7 @@ const error = ref('');
 let alive = true;
 let detailSequence = 0;
 let listSequence = 0;
+let overviewSequence = 0;
 
 const rate = value => overview.value.total ? `${((value || 0) / overview.value.total * 100).toFixed(1)}%` : '—';
 const healthText = value => ({ GOOD: '良好', DEGRADED: '一般', BAD: '异常', UNKNOWN: '未知' })[value] || '未知';
@@ -94,8 +95,11 @@ function listParams() {
 }
 
 async function loadOverview() {
-  try { overview.value = await deviceApi.overview(); }
-  catch (e) { if (!error.value) error.value = e.message; }
+  const sequence = ++overviewSequence;
+  try {
+    const summary = await deviceApi.overview();
+    if (alive && sequence === overviewSequence) overview.value = summary;
+  } catch (e) { if (alive && sequence === overviewSequence && !error.value) error.value = e.message; }
 }
 
 async function loadDetail(id) {
@@ -112,9 +116,10 @@ async function loadDetail(id) {
   finally { if (sequence === detailSequence) detailLoading.value = false; }
 }
 
-async function loadList(keepSelection = true) {
+async function loadList(keepSelection = true, refreshOverview = true) {
   const sequence = ++listSequence;
   loading.value = true; error.value = '';
+  const summaryRequest = refreshOverview ? loadOverview() : Promise.resolve();
   try {
     let data = await deviceApi.list(listParams());
     if (!alive || sequence !== listSequence) return;
@@ -128,7 +133,7 @@ async function loadList(keepSelection = true) {
     if (!keepSelection || !data.items.some(item => item.device_id === selectedId.value)) selectedId.value = data.items[0]?.device_id || '';
     await loadDetail(selectedId.value);
   } catch (e) { if (alive && sequence === listSequence) error.value = e.message || '设备台账加载失败'; }
-  finally { if (sequence === listSequence) loading.value = false; }
+  finally { await summaryRequest; if (sequence === listSequence) loading.value = false; }
 }
 
 const route = useRoute();
@@ -136,15 +141,17 @@ if (route.query.type === 'weather_sensor') filters.type_code = 'weather_sensor';
 
 async function bootstrap() {
   loading.value = true; error.value = '';
+  const sequence = ++overviewSequence;
   try {
     const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), deviceApi.overview(), integrationApi.protocols()]);
     if (!alive) return;
-    options.value = filterOptions; overview.value = summary; protocols.value = protocolList;
-    await loadList(false);
+    options.value = filterOptions; protocols.value = protocolList;
+    if (sequence === overviewSequence) overview.value = summary;
+    await loadList(false, false);
   } catch (e) { error.value = e.message || '设备管理数据加载失败'; loading.value = false; }
 }
 
-function search() { table.page = 1; loadList(false); }
+function search() { table.page = 1; void loadList(false); }
 function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: '', sort: 'priority' }); search(); }
 function selectRow(row) { selectedId.value = row.device_id; loadDetail(row.device_id); }
 
@@ -284,7 +291,7 @@ async function saveDevice() {
     }
     selectedId.value = saved.device.device_id; deviceDialog.visible = false;
     ElMessage.success(isWeather.value ? '天气传感器档案已保存，待接入' : deviceDialog.editing ? '设备已更新' : '接入配置已保存，请确认设备连接及上报状态');
-    await Promise.all([loadList(true), loadOverview()]);
+    await loadList(true);
   } catch (e) { ElMessage.error(e.message); if (e.code === 'VERSION_CONFLICT') await loadList(); }
   finally { deviceDialog.saving = false; }
 }
@@ -294,7 +301,7 @@ async function toggleDevice(row) {
   try {
     const { value } = await ElMessageBox.prompt(`${row.enabled ? '停用后会断开协议连接，并拒绝新建调测任务。' : '启用后会按配置重新建立协议连接。'}请输入操作原因：`, `${row.enabled ? '停用' : '启用'}设备 · ${row.device_no}`, { inputType: 'textarea', inputValidator: value => value?.trim().length >= 2 || '原因至少填写 2 个字符', confirmButtonText: '确认', cancelButtonText: '取消' });
     await deviceApi.setEnabled(row.device_id, { enabled: !row.enabled, version: row.version, reason: value.trim() });
-    ElMessage.success(`设备已${row.enabled ? '停用' : '启用'}，审计记录已写入`); await Promise.all([loadList(), loadOverview()]);
+    ElMessage.success(`设备已${row.enabled ? '停用' : '启用'}，审计记录已写入`); await loadList();
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || String(e)); }
 }
 
@@ -314,11 +321,11 @@ async function deleteDevice(row) {
       await loadDetail('');
     }
     ElMessage.success('设备已删除，历史记录已保留');
-    await Promise.all([loadList(), loadOverview()]);
+    await loadList();
   } catch (e) {
     if (e !== 'cancel' && e !== 'close') {
       ElMessage.error(e.message || String(e));
-      if (['VERSION_CONFLICT', 'DEVICE_NOT_FOUND', 'IDEMPOTENCY_REPLAY'].includes(e.code)) await Promise.all([loadList(), loadOverview()]);
+      if (['VERSION_CONFLICT', 'DEVICE_NOT_FOUND', 'IDEMPOTENCY_REPLAY'].includes(e.code)) await loadList();
     }
   } finally { deletingId.value = ''; }
 }
