@@ -1,5 +1,7 @@
 # low-altitude-server
 
+2026-09-28：补齐业务前台已使用的 `/api/v1/evidence-ledger` 只读接口，统一录像、图片、轨迹及设备指令的台账、筛选、统计、精确详情、关联材料和 CSV。复用现有文件权限与保管规则，不迁移或重写历史记录；原 `/evidence-files`、`/evidence-chains` 保持兼容。见[接口修复说明](../docs/证据台账接口修复-2026-09-28.md)。
+
 2026-09-17：飞行风险列表、CSV 与空间汇总支持可选 `exclude_demo_samples=true`，供业务前台隐藏预设气象与计划通知样例；默认查询、历史记录和 MQTT replay 规则结果保留。详见[风险接口契约](../docs/backend-stage4/alarm-risk-api-contract.md)。
 
 2026-09-14：旧工作区 `dongyiwurenji/server` 的目标查询、飞行航迹/系统核验、天气风险、空域提前结束与本地模拟改动已迁入本仓库；保留本仓库的地图管理、统计导出、设备删除和完整调测信息。迁移版本冲突以追加独立迁移处理，详见 [迁移记录](../docs/新后端迁移记录.md)。

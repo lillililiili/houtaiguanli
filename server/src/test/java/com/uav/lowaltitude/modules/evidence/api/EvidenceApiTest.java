@@ -407,6 +407,84 @@ class EvidenceApiTest {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void ledgerListStatsAndExportUseSameAuthorizedFourCategoryRecords() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:read", "evidence:ingest", "target:read");
+        JsonNode image = ingestFile(token, "ledger.jpg", org, district, "TARGET", targetId);
+        ingestFile(token, "ledger.mp4", org, district, "TARGET", targetId, "EO_VIDEO", null);
+        ingestFile(token, "historical.txt", org, district, "TARGET", targetId, "NOTICE_RECEIPT", null);
+        String auth = bearer(token);
+        mvc.perform(get("/api/v1/evidence-ledger?size=1").header("Authorization", auth))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].source_kind").value("FILE"));
+        for (String path : new String[]{"/evidence-ledger", "/evidence-ledger/stats"}) {
+            mvc.perform(get("/api/v1" + path + "?category=IMAGE&subject_kind=TARGET").header("Authorization", auth))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        }
+        mvc.perform(get("/api/v1/evidence-ledger/stats?category=IMAGE").header("Authorization", auth))
+                .andExpect(jsonPath("$.data.by_kind[2].count").value(1));
+        mvc.perform(get("/api/v1/evidence-ledger/records/FILE/" + image.get("evidence_id").asText()).header("Authorization", auth))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.entry.source_id").value(image.get("evidence_id").asText()));
+        mvc.perform(get("/api/v1/evidence-ledger/materials/TARGET/" + targetId).header("Authorization", auth))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.coverage.IMAGE.count").value(1));
+        String csv = mvc.perform(get("/api/v1/evidence-ledger/export.csv?category=IMAGE").header("Authorization", auth))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(csv).contains("ledger.jpg").doesNotContain("ledger.mp4", "historical.txt");
+        // Original types and files remain accessible; this adapter never rewrites history.
+        mvc.perform(get("/api/v1/evidence-files").header("Authorization", auth)).andExpect(jsonPath("$.data.total").value(3));
+    }
+
+    @Test
+    void ledgerProtectsScopeUnlinkedFilesAndRawTrackPermission() throws Exception {
+        String owner = reader("ASSIGNED", org, district);
+        grantAction(owner, "evidence:read", "evidence:ingest", "target:read");
+        JsonNode image = ingestFile(owner, "private-ledger.jpg", org, district, null, null);
+        String track = UUID.randomUUID().toString();
+        jdbc.update("insert into track (track_id,target_id,external_track_id,layer,started_at,created_at) values (?,?,?,'FUSED',current_timestamp,current_timestamp)", track, targetId, track);
+        String reader = reader("ASSIGNED", org, district);
+        grantAction(reader, "evidence:read");
+        mvc.perform(get("/api/v1/evidence-ledger").header("Authorization", bearer(reader))).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        String trackReader = reader("ASSIGNED", org, district);
+        grantAction(trackReader, "evidence:read", "target:read");
+        mvc.perform(get("/api/v1/evidence-ledger?category=TRACK").header("Authorization", bearer(trackReader)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1)).andExpect(jsonPath("$.data.items[0].status").value("NO_POINTS"));
+        mvc.perform(get("/api/v1/evidence-ledger/records/TRACK/" + track).header("Authorization", bearer(trackReader)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.entry.source_id").value(track));
+        String outsider = reader("ASSIGNED", otherOrg, otherDistrict);
+        grantAction(outsider, "evidence:read", "evidence:ingest", "target:read");
+        for (String path : new String[]{"/evidence-ledger", "/evidence-ledger/stats"}) {
+            mvc.perform(get("/api/v1" + path).header("Authorization", bearer(outsider)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        }
+        for (String path : new String[]{"/records/TRACK/" + track, "/records/FILE/" + image.get("evidence_id").asText(), "/materials/TARGET/" + targetId}) {
+            mvc.perform(get("/api/v1/evidence-ledger" + path).header("Authorization", bearer(outsider))).andExpect(status().isNotFound());
+        }
+        mvc.perform(get("/api/v1/evidence-ledger")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/evidence-ledger?category=NOPE").header("Authorization", bearer(owner))).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void ledgerCommandDetailsKeepActualStateAndRespectDeviceScope() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:read", "monitoring");
+        String device = UUID.randomUUID().toString(), command = UUID.randomUUID().toString();
+        String user = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
+        jdbc.update("insert into ops_device (device_id,device_no,name,device_type_name,channel,source_mode,created_at,updated_at) values (?,?,?,'光电','mock','mock',0,0)", device, device, "证据接口测试设备");
+        jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at) values (?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", device, org, district);
+        jdbc.update("insert into device_command (command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,created_at,updated_at) values (?,?,?,?,'EO_BEGIN_TRACK','测试只读','QUEUED','mock',0,0)", command, command, device, user);
+        mvc.perform(get("/api/v1/evidence-ledger?category=COMMAND").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        mvc.perform(get("/api/v1/evidence-ledger/records/COMMAND/" + command).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("QUEUED"))
+                .andExpect(jsonPath("$.data.command.receipts.length()").value(0));
+        String outsider = reader("ASSIGNED", otherOrg, otherDistrict);
+        grantAction(outsider, "evidence:read", "monitoring");
+        mvc.perform(get("/api/v1/evidence-ledger/records/COMMAND/" + command).header("Authorization", bearer(outsider)))
+                .andExpect(status().isNotFound());
+    }
+
     private JsonNode ingestFile(String token, String filename, String orgId, String districtId,
             String subjectKind, String subjectId) throws Exception {
         return ingestFile(token, filename, orgId, districtId, subjectKind, subjectId, "EO_STILL", null);
