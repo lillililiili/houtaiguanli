@@ -103,6 +103,9 @@ Java 根包保持 `com.uav.lowaltitude`。保留现有 `modules/identity`、`mod
 ### 本地开发数据环境（2026-09-26 用户确认）
 
 - 本地演示/模拟数据已默认关闭：`application-local.yml` 中 `app.dev-seed.enabled=false`，并同步关闭 fusion、rule-engine（含 replay）、automation-rules、状态推进、自动短信/语音、handoff（none）、mock-adapter、MQTT demo、EO 自动跟踪。业务数据只通过界面录入、设备真实接入（MQTT/直连）或外部接口推送进入；不要手动往库插数据（绕过来源校验、权限与审计）。
+- 本地库实际在 docker 容器 `deploy-db-1`（127.0.0.1:25432）的 `houtaiguanli` 库（uav/uav），不是 `application-local.yml` 默认的 5432——5432 被另一项目 inspection 的 `backend-postgis-1` 占用。启动后端必须带 `DB_URL=jdbc:postgresql://127.0.0.1:25432/houtaiguanli`；IDE 运行配置若已有该变量保持不动。
+- 空库自举登录账号：`app.bootstrap-admin.enabled=true`（application-local.yml），仅在 `app_user` 为空时创建 `admin1`（ROLE-ADMIN，首次登录强制改密，临时密码见该文件）。`dev-seed` 关闭后 `LocalUserSeeder` 不再建演示账号，删库后必须靠它才能登录。
+- 重建干净库：`docker exec deploy-db-1 psql -U uav -d postgres -c "DROP DATABASE IF EXISTS houtaiguanli" -c "CREATE DATABASE houtaiguanli OWNER uav"`，再依次 `CREATE EXTENSION`（fuzzystrmatch、postgis、postgis_tiger_geocoder、postgis_topology），重启后端由 Flyway 建表。恢复演示数据：把上述开关改回 true 后重建库。
 
 - 当前 `AuthApiTest` 使用 `@ActiveProfiles("test")` 和 H2；这不是自动检测 Docker 后切换数据库。普通 `test` 会发现该类。交付时核对 `target/surefire-reports`。
 - 新增普通测试使用默认可发现的 `*Test` 命名；若引入 `*IT` 生命周期，必须在获准的测试配置变更中明确绑定和验收命令。报告列出命令、实际用例数量、失败/跳过及环境，不能只报进程退出码。

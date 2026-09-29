@@ -93,6 +93,19 @@ describe('运维待办深链到既有调测页',()=>{
     deviceMaintenanceApi.workflow.mockRejectedValue(new Error('无权查看待办')); await mount();
     expect(host.textContent).toContain('无权查看待办'); expect(commissionApi.information).not.toHaveBeenCalled();
   });
+  it('已打开待办失去范围后清除缓存设备树，重新授权后恢复同一目标',async()=>{
+    await mount();
+    expect(host.textContent).toContain('乙设备');
+    deviceMaintenanceApi.workflow.mockRejectedValue(Object.assign(new Error('运维任务不存在或不可见'),{status:404}));
+    [...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='刷新待办').click();await settle();
+    expect(host.textContent).toContain('运维任务不存在或不可见');
+    expect(host.textContent).not.toContain('乙设备');expect(host.textContent).not.toContain('甲设备');
+    expect(commissionApi.create).not.toHaveBeenCalled();
+    deviceMaintenanceApi.workflow.mockResolvedValue(flow());
+    [...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='重新加载').click();await settle();
+    expect(host.textContent).toContain('乙设备');expect(host.textContent).not.toContain('甲设备');
+    expect(commissionApi.information).not.toHaveBeenCalledWith('a');
+  });
   it('接手成功后才启用调测，MQTT 不支持调测时继续显示诊断信息',async()=>{
     commissionApi.information.mockImplementation(async id=>({device_id:id,task_supported:false,sections:[],sample_sections:[]}));
     deviceMaintenanceApi.act.mockResolvedValue({...flow(),state:'PROCESSING',version:2,allowed_actions:['SAVE_PROGRESS','SUBMIT_VERIFICATION']});

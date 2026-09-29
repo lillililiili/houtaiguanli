@@ -203,6 +203,31 @@ class MqttIngressTest {
         assertThat(jdbc.queryForObject(count, Long.class, b.opsDeviceId())).isEqualTo(2);
     }
 
+    @Test void heartbeatDedupDoesNotMergeAnotherOpenIncidentType() {
+        Binding b=register("radar");
+        String other=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO device_incident(incident_id,device_id,incident_no,incident_type,severity,stage,detected_at,reason,simulated) VALUES(?,?,?,'LINK_DEGRADED','LOW','PENDING',?,'隔离异类异常夹具',TRUE)",
+                other,b.opsDeviceId(),"INC-"+other,clock.nowMillis());
+        receive(b,heartbeat("radar",0,clock.nowMillis()),false,1,false,false);
+        jdbc.update("UPDATE ops_device_state SET last_heartbeat_at=? WHERE device_id=?",clock.nowMillis()-31_000,b.opsDeviceId());
+        repository.expire(clock.nowMillis());
+        var job=new MqttConnectivityIncidentJob(deviceRepository,clock);
+        String heartbeatId=null;
+        for(int cycle=0;cycle<4;cycle++) {
+            new TransactionTemplate(transactions).executeWithoutResult(s -> job.reconcile());
+            var rows=jdbc.queryForList("SELECT incident_id,incident_type,stage FROM device_incident WHERE device_id=? ORDER BY incident_type",b.opsDeviceId());
+            assertThat(rows).hasSize(2);
+            assertThat(rows.get(0)).containsEntry("incident_id",other).containsEntry("incident_type","LINK_DEGRADED").containsEntry("stage","PENDING");
+            assertThat(rows.get(1)).containsEntry("incident_type","MQTT_HEARTBEAT_TIMEOUT").containsEntry("stage","PENDING");
+            String current=(String)rows.get(1).get("incident_id");
+            if(heartbeatId==null)heartbeatId=current;
+            else assertThat(current).isEqualTo(heartbeatId);
+        }
+        assertThat(eventCount(b,"INCIDENT_OPENED")).isOne();
+        assertThat(incidents.get(other).allowedActions()).contains("REBOOT");
+        assertThat(incidents.get(heartbeatId).allowedActions()).containsExactly("VERIFY_RECOVERY");
+    }
+
     @Test void threeTypesCreateBothIdentitiesAndReceiveOnlyTargetsIntoInbox() {
         for(String type:List.of("radar","5ga","tdoa","aoa","dcd","rid")) {
             Binding b=register(type);

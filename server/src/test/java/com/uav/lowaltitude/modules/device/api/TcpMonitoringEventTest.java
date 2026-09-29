@@ -46,6 +46,23 @@ class TcpMonitoringEventTest {
                 "live-device:"+id,key)));
     }
     long events(String type) { return jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type=?",Long.class,id,type); }
+    @Test void successiveRadarFramesUpdateOneTargetAndAppendDistinctPoints() {
+        var item=new TrackItem("31",BigDecimal.valueOf(100),BigDecimal.valueOf(200),BigDecimal.valueOf(80),
+                BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.ZERO,BigDecimal.valueOf(15),
+                new BigDecimal("0.01"),new BigDecimal("0.01"),3,"UAV",false);
+        var first=new TrackBatch(31000000,"101",31000,BigDecimal.ZERO,BigDecimal.ONE,1,0,List.of(item));
+        var second=new TrackBatch(31000000,"102",32000,BigDecimal.ZERO,BigDecimal.ONE,1,0,List.of(item));
+        assertThat(ingest.ingestTrack(source,id,"DEV-MOCK-001",null,first,new byte[]{1},31000)).isTrue();
+        assertThat(ingest.ingestTrack(source,id,"DEV-MOCK-001",null,second,new byte[]{2},32000)).isTrue();
+        assertThat(ingest.ingestTrack(source,id,"DEV-MOCK-001",null,second,new byte[]{2},32001)).isFalse();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sensing_target WHERE primary_device_id=?",Long.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_target_source_link WHERE device_id=?",Long.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_track WHERE device_id=?",Long.class,id)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_track_point p JOIN ops_track t ON t.track_id=p.track_id WHERE t.device_id=?",Long.class,id)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT frame_id FROM ops_target_latest_state s JOIN sensing_target t ON t.target_id=s.target_id WHERE t.primary_device_id=?",String.class,id)).isEqualTo("102");
+        assertThat(jdbc.queryForObject("SELECT sensing_count FROM device_report_window WHERE device_id=?",Long.class,id)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inbox_message WHERE source=? AND processing_status='PROCESSED'",Long.class,"live-device:"+id)).isEqualTo(2);
+    }
     @Test void emptyRadarFramesAndRtkAndRegistersAreCategorizedAndDeduplicated() {
         var track=new TrackBatch(123,"monitor-1",31000,BigDecimal.ZERO,BigDecimal.ONE,0,0,List.of());
         assertThat(ingest.ingestTrack(source,id,"DEV-MOCK-001",null,track,new byte[]{1},31000)).isTrue();

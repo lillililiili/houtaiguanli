@@ -353,7 +353,8 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 ### 气象风险测试输入（2026-09-29）
 
 新增默认关闭的 `POST /api/v1/local-interface-simulator/weather-risks`，仅 local+qa/test 且显式 `app.weather-risk.qa.enabled=true` 可用。经已有计划范围与接口操作权限校验，保存带模拟标识、无目标的气象风险及不可覆盖的范围/时段快照；支持同消息幂等。与天气预报输入独立，到期按当前风险规则显示待确认，不自动认定风险解除。参数及验收记录见[本地QA气象风险输入](../docs/qa-weather-risk-input.md)。
-# 隔离维护页面夹具
+
+### 隔离维护页面夹具
 
 `DeviceMaintenanceBrowserFixtureTest#serveBrowserFixture` 是显式启用的人工浏览器测试夹具，默认跳过。它固定使用独立 H2 内存库、回环随机端口和模拟通知，禁止指向现有业务库；不增加生产接口，也不代表真实设备验收。
 
@@ -366,3 +367,32 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 启动信息写入 `target/maintenance-browser/manifest.json`，包含后端端口及待办/设备标识。管理前端可另开回环端口，通过 `ADMIN_API_PROXY_TARGET` 指向该端口，并将 `ADMIN_PUBLIC_ORIGIN` 设为测试页面 origin。测试账号沿用 `application-test.yml` 的开发夹具，通过正常登录进入页面。
 
 向同目录 `control.json` 原子写入 `{"id":"每次不同的编号","scenario":"场景名"}`，等待 manifest 的 `command_id` 匹配后再操作页面。场景仅改变该内存库中的测试前置条件，维护流程仍由实际 API 推进：`HEALTHY`、`DISABLED`、`OFFLINE`、`BAD`、`DEGRADED`、`ALARM`、`UNKNOWN`、`PRE_REPORT`、`STALE`、`FUTURE`、`WRONG_SOURCE`、`WRONG_SIMULATED`、`OPEN_INCIDENT`、`EXPIRED_PASS`、`ACTIVE_COMMISSION`/`CLOSED_COMMISSION`、`ACTIVE_COMMAND`/`CLOSED_COMMAND`、`ACTIVE_TRACKING`/`CLOSED_TRACKING`、`LEGACY`、`DELETED_DEVICE`/`RESTORED_DEVICE`。`NEW_TASK` 通过创建接口准备下一待办；`STOP` 正常退出，最长运行 30 分钟。结束后关闭专用前端并保留证据，不能把夹具结果标成现场恢复。
+
+需要真实空间设备检查时，使用 `DeviceMaintenanceBrowserPostgresFixtureTest#serveBrowserFixture`。它只接受数据库名以 `maintenance_browser_verify_` 开头的 `POSTGRES_TEST_URL`，凭据通过 `POSTGRES_TEST_USER` / `POSTGRES_TEST_PASSWORD` 注入。每次启动准备新的可丢弃 PostgreSQL/PostGIS 库及既有空间扩展；业务库不允许用于夹具。此版本把测试设备放到种子计划航线起点，并恢复真实设备检查服务；通知仍为模拟通道，控制文件和 30 分钟上限保持相同。已跑过页面流程的库保留证据，不重复运行创建夹具以免混入旧任务或通知配置。
+
+补充场景：`NOTICE_FAILED`、`NOTICE_UNKNOWN`、`NOTICE_SUBMITTED`、`NOTICE_DELIVERED`、`NOTICE_NOT_SENT` 准备下一次正常通知请求的渠道条件并推进测试时钟 61 秒；请求仍通过页面或正常 API 提交。`NOTICE_LATE_RECEIPT` 仅向当前任务第 1 次通知添加带模拟标识的迟到回执展示数据，用于验证旧回执不会覆盖最新通知；它不实现或验收供应商回调协议。`TICK` 只推进时钟 1 秒。`HIDE_SCOPE` / `RESTORE_SCOPE` 切换任务所属单位的启用状态。
+
+`SCOPE_EXACT` 把隔离 admin1 限制到当前任务的单位及区域组合；`SCOPE_CROSS` 配置两个各自合法、但不能拼成当前任务组合的授权；`SCOPE_NONE` 清空授权；`SCOPE_ALL` 恢复隔离账号全范围。这些场景只修改隔离库中的测试账号和设备范围，不改变真实账号。用它们核对列表、详情、操作及未读数。前置条件测试分别运行 `#verifyNotificationFixtureConditions` 和 `#verifyScopeFixtureConditions`，一次 Maven 调用仅选择一个夹具方法。
+
+Windows 启动该随机端口夹具时，若用户临时目录导致 JDK 回环连接失败，先建立短路径 `target/qa-tmp`，并追加 `-DargLine="-Djava.io.tmpdir=E:/houtaiguanlii/server/target/qa-tmp -Djdk.net.unixdomain.tmpdir=E:/houtaiguanlii/server/target/qa-tmp"`。路径按实际 checkout 调整；不要更改系统临时目录。
+
+PostgreSQL 夹具额外支持 `PLAN_DUE`：仅将隔离种子计划设置到当前执行时段、保留一个同源模拟传感器，并将种子旧设备异常放在计划窗口之前。随后可用 `HEALTHY` / `BAD` / `UNKNOWN` 比较“疑似未起飞”“设备异常”“资料不足”；前置条件回归为 `#duePlanDistinguishesNormalAbnormalAndUnknown`。这不是对业务库计划或设备事实的修正。
+
+雷达待机页面夹具使用 `RadarStandbyBrowserFixtureTest#serveBrowserFixture` 和显式开关 `-Dqa.radar.browser=true`。固定独立 H2 内存库，HTTP 与雷达端口都只绑定回环随机端口。读取 `target/radar-browser/manifest.json`，将专用管理前端代理指向该 HTTP 端口，正常登录后选择“隔离只读待机雷达”，依次创建任务、连接、保存、开始。模拟器只响应登录、心跳和两个已定义寄存器的读取，不发送业务帧或控制写入；预期最终不可判定。结束时在 `target/radar-browser/stop` 写入任意文本，等待测试正常退出，并保存 `protocol-evidence.json`。最长 30 分钟；没有实际调测命令也会使最终断言失败，不将仅启动算通过。
+
+同一隔离 PostgreSQL 浏览器库需要验证服务重启时，可附加 `-Dqa.maintenance.resume-task=<本库模拟待办UUID>`。仅允许 `maintenance_browser_verify_` 前缀库、种子计划及 simulated=true 的现有待办；不创建新待办、不刷新设备健康、不改已保存的恢复/完成结论。任务及历史保留供重登核对。
+
+### 本机 MQTT 心跳页面夹具
+
+`MqttHeartbeatBrowserFixtureTest#serveBrowserFixture` 需显式 `-Dqa.mqtt.browser=true`，并将 `POSTGRES_TEST_URL` 指向全新的 `mqtt_browser_verify_` 前缀 PostgreSQL/PostGIS 测试库；用户名、口令沿用上述环境变量注入。只在 test 配置启动，HTTP 与内置 MQTT broker 都绑定回环随机端口，无外部设备和通知渠道。生产的接入、融合、心跳过期与异常生成服务照常处理本机发布的模拟报文，未直接修改设备健康或异常结果。
+
+端口和模拟设备身份见 `target/mqtt-browser/manifest.json`；专用前后台代理指向其 HTTP 端口。向同目录 `control` 写一个场景名：`RUN` 持续工参与目标流，`TARGET_ONLY` 仅目标流，`HEARTBEAT_ONLY` 仅工参，`PAUSE` 停报，`FAULT` 报协议已定义的工作异常，`OLD` / `FUTURE` 单次旧工参/未来工参后停报，`STOP` 结束。每秒最多一组报文，心跳超时使用实际 30 秒规则，最长 30 分钟自动停；结束会停用专用 broker。协议未提供健康字段时继续显示未知，不能把在线或已接收报文写成健康良好。页面流程由正常登录和 API 推进，夹具通过只证明隔离模拟传输及入库，不代表整条验收流程或现场联调通过。
+
+
+### TCP 设备归属与连续航迹验证（2026-09-29）
+
+统一 TCP 接入 `POST /api/v1/devices/onboard` 必须提交有效且在操作者范围内的 `owner_org_id`、`district_id`。雷达同时建立同 ID 标准设备与明确业务归属；单位、区域名称由目录解析。既有无归属设备可通过管理端正常编辑补齐，绑定后不得通过改名或编辑迁移归属；停用和逻辑删除同步停用标准设备。历史无归属目标不会回填为其他单位，新协议帧按新明确归属进入融合。四通道仅维护业务归属，不伪装为雷达目标来源。
+
+`RadarLiveBrowserFixtureTest#serveBrowserFixture` 需显式 `-Dqa.radar.live.browser=true` 与独立 PostgreSQL URL `radar_browser_verify_*`。HTTP 和雷达端口仅监听回环，正常管理端登记 `QA-F31-TCP` 并创建、配置、启动调测。通过 `target/radar-live-browser/manifest.json` 读取端口，向同目录 `control` 写入 `RUN`、`HOLD`、`QUIET`、`CLOSE` 或 `STOP`。夹具只响应登录、心跳、工作模式寄存器和 RTK 查询，并发送持续 TCP 航迹；最长 40 分钟。它会显式标记该测试设备为 simulated，不能用于正式验收或真实射频动作。结束必须写入 STOP 并核对正常测试退出。原始 x/y/z 保留厂家坐标含义，未经验证的 RTK 不可替代 WGS-84/AGL 转换依据。
+
+连续航迹回归需同时运行 `TcpMonitoringEventTest` 和 `TcpMonitoringPostgresTest`：同一目标连续帧保持一个目标/链路/航迹，增加不同帧的点，重复帧不得重复插入。PG 重复键不得被吞掉后继续使用已中止事务。

@@ -25,6 +25,15 @@ import org.junit.jupiter.api.Test;
 class AuditLabelsCoverageTest {
 
     @Test
+    void conditionalDeviceAndBrokerEnablementActionsHaveChineseLabels() {
+        for (String code : List.of("device_enable", "device_disable", "device_delete",
+                "mqtt_broker_create", "mqtt_broker_update", "mqtt_broker_enable", "mqtt_broker_disable")) {
+            assertThat(AuditLabels.action(code)).as("设备运维动作 %s 的中文标签", code)
+                    .isNotEqualTo(code).matches(".*[\\p{IsHan}].*");
+        }
+    }
+
+    @Test
     void conditionalEvidencePreviewActionsHaveChineseLabels() {
         assertThat(AuditLabels.action("evidence_preview")).isEqualTo("预览证据文件");
         assertThat(AuditLabels.action("evidence_thumbnail")).isEqualTo("读取证据缩略图");

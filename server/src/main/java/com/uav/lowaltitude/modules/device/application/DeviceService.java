@@ -56,11 +56,13 @@ public class DeviceService {
     private final DeviceAdapterRegistry adapterRegistry;
     private final IntegrationSourceService sources;
     private final IdempotencyGuard idempotency;
+    private final TcpDeviceScopeService tcpScopes;
 
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
                          DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
-                         IdempotencyGuard idempotency, DeviceEventPublicationRepository publication) {
+                         IdempotencyGuard idempotency, DeviceEventPublicationRepository publication,
+                         TcpDeviceScopeService tcpScopes) {
         this.repository = repository;
         this.publication = publication;
         this.access = access;
@@ -71,6 +73,7 @@ public class DeviceService {
         this.adapterRegistry = adapterRegistry;
         this.sources = sources;
         this.idempotency = idempotency;
+        this.tcpScopes = tcpScopes;
     }
 
     public DevicePage list(DeviceFilter filter, int page, int size, String sort) {
@@ -202,6 +205,11 @@ public class DeviceService {
 
     @Transactional
     public DeviceDetail create(DeviceMutation mutation) {
+        return create(mutation,null,null);
+    }
+
+    @Transactional
+    public DeviceDetail create(DeviceMutation mutation,String ownerOrgId,String districtId) {
         AuthUser user = access.requireDevicesOperate();
         rejectWeatherMutation(mutation);
         validate(mutation);
@@ -216,6 +224,7 @@ public class DeviceService {
             repository.insertDevice(values);
             repository.upsertProfile(id, profileValues(mutation.connection()), now);
             repository.replaceProtocolProfile(id, source.protocolCode(), protocolValues(source.protocolCode(), mutation.protocolConfiguration()), now);
+            tcpScopes.bind(id,ownerOrgId,districtId,now);
         } catch (DataIntegrityViolationException ex) {
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号或来源设备编号已存在");
         }
@@ -227,6 +236,11 @@ public class DeviceService {
 
     @Transactional
     public DeviceDetail update(String id, long version, DeviceMutation mutation) {
+        return update(id,version,mutation,null,null);
+    }
+
+    @Transactional
+    public DeviceDetail update(String id,long version,DeviceMutation mutation,String ownerOrgId,String districtId) {
         AuthUser user = access.requireDevicesOperate();
         rejectWeatherMutation(mutation);
         if ("weather_sensor".equals(text(requiredDevice(id), "device_type_code")))
@@ -243,6 +257,7 @@ public class DeviceService {
                 throw conflict();
             repository.upsertProfile(id, profileValues(mutation.connection()), now);
             repository.replaceProtocolProfile(id, source.protocolCode(), protocolValues(source.protocolCode(), mutation.protocolConfiguration()), now);
+            tcpScopes.bind(id,ownerOrgId,districtId,now);
         } catch (DataIntegrityViolationException ex) {
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号或来源设备编号已存在");
         }
@@ -266,6 +281,7 @@ public class DeviceService {
             throw bad("PROTOCOL_UNSUPPORTED", "天气传感器协议尚未接入，不能启用");
         long now = clock.nowMillis();
         if (repository.setEnabled(id, version, enabled, now) != 1) throw conflict();
+        tcpScopes.enabled(id,enabled,now);
         repository.addEvent(UUID.randomUUID().toString(), id, enabled ? "DEVICE_ENABLED" : "DEVICE_DISABLED", "WARN",
                 (enabled ? "设备已启用：" : "设备已停用：") + reason.trim(), now, "mock".equals(properties.getSourceMode()));
         String sourceId = text(device, "source_id");
@@ -292,6 +308,7 @@ public class DeviceService {
         idempotency.claim(key, "device.delete:" + id + ":" + version + ":" + reason.trim());
         long now = clock.nowMillis();
         if (repository.markDeleted(id, version, now) != 1) throw conflict();
+        tcpScopes.enabled(id,false,now);
         if (repository.hasActiveWork(id))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_BUSY", "设备仍有关联的未完成指令或调测任务，请处理后重试");
         repository.addEvent(UUID.randomUUID().toString(), id, "CATALOG_DELETED", "WARN",
@@ -572,7 +589,7 @@ public class DeviceService {
                 bool(r, "simulated"), text(r, "source_mode"), text(r, "source_name"),
                 text(r, "protocol_code"), text(r, "protocol_version"),
                 decimal(r, "longitude"), decimal(r, "latitude"), text(r, "coordinate_system"),
-                text(r, "fusion_device_id"), coverage(r));
+                text(r, "fusion_device_id"), coverage(r),text(r,"owner_org_id"),text(r,"district_id"));
     }
 
     private Coverage coverage(Map<String, Object> row) {
@@ -731,7 +748,7 @@ public class DeviceService {
                                 Long lastHeartbeatAt, boolean simulated, String sourceMode, String sourceName,
                                 String protocolCode, String protocolVersion,
                                 BigDecimal longitude, BigDecimal latitude, String coordinateSystem,
-                                String fusionDeviceId, Coverage coverage) { }
+                                String fusionDeviceId, Coverage coverage, String ownerOrgId, String districtId) { }
     public record Coverage(String kind, String status, BigDecimal radiusM, BigDecimal rangeM,
                            BigDecimal azimuthDeg, BigDecimal fovDeg, String availabilityReason,
                            String sourceLabel, Long updatedAt, Long version) { }

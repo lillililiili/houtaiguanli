@@ -337,25 +337,29 @@ public class ProtocolDataRepository {
 
     private void insertTargetIfMissing(String id, String deviceId, String deviceNo, long boot,
                                        TrackItem item, long observed, long now) {
-        try { jdbc.update("""
+        // saveTrackBatch holds the device state lock. Existing identities are normal on every
+        // subsequent frame; catching a duplicate-key error would leave PostgreSQL aborted.
+        jdbc.update("""
                 INSERT INTO sensing_target (target_id,target_no,primary_device_id,radar_classification,
                     category_code,active,first_seen_at,last_seen_at,created_at,updated_at)
-                VALUES (?,?,?,?,?,TRUE,?,?,?,?)
+                SELECT ?,?,?,?,?,TRUE,?,?,?,?
+                WHERE NOT EXISTS (SELECT 1 FROM sensing_target WHERE target_id=?)
                 """, id, "RAD-" + deviceNo + "-" + Long.toUnsignedString(boot) + "-" + item.externalTrackId(),
-                deviceId, item.classification(), item.categoryCode(), observed, observed, now, now); }
-        catch (DataIntegrityViolationException ignored) { }
+                deviceId, item.classification(), item.categoryCode(), observed, observed, now, now, id);
     }
 
     private void insertLinkIfMissing(String id, String targetId, String deviceId, long boot, String externalId, long now) {
-        try { jdbc.update("INSERT INTO ops_target_source_link (link_id,target_id,device_id,radar_boot_micros,external_track_id,created_at) VALUES (?,?,?,?,?,?)",
-                id, targetId, deviceId, boot, externalId, now); }
-        catch (DataIntegrityViolationException ignored) { }
+        jdbc.update("""
+                INSERT INTO ops_target_source_link (link_id,target_id,device_id,radar_boot_micros,external_track_id,created_at)
+                SELECT ?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM ops_target_source_link WHERE link_id=?)
+                """, id, targetId, deviceId, boot, externalId, now, id);
     }
 
     private void insertTrackIfMissing(String id, String targetId, String deviceId, long boot, String externalId, long observed) {
-        try { jdbc.update("INSERT INTO ops_track (track_id,target_id,device_id,radar_boot_micros,external_track_id,started_at,last_point_at,active) VALUES (?,?,?,?,?,?,?,TRUE)",
-                id, targetId, deviceId, boot, externalId, observed, observed); }
-        catch (DataIntegrityViolationException ignored) { }
+        jdbc.update("""
+                INSERT INTO ops_track (track_id,target_id,device_id,radar_boot_micros,external_track_id,started_at,last_point_at,active)
+                SELECT ?,?,?,?,?,?,?,TRUE WHERE NOT EXISTS (SELECT 1 FROM ops_track WHERE track_id=?)
+                """, id, targetId, deviceId, boot, externalId, observed, observed, id);
     }
 
     private void upsertLatest(String targetId, String frameId, TrackItem item, long observed, long now) {
@@ -376,14 +380,14 @@ public class ProtocolDataRepository {
     }
 
     private void insertTrackPoint(String trackId, String frameId, TrackItem item, long observed, long now) {
-        try { jdbc.update("""
+        jdbc.update("""
                 INSERT INTO ops_track_point (track_point_id,track_id,frame_id,observed_at,received_at,raw_x_m,raw_y_m,
                     raw_z_m,velocity_x_mps,velocity_y_mps,velocity_z_mps,snr_db,rcs_legacy_m2,
-                    rcs_high_resolution_m2,derived) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,FALSE)
+                    rcs_high_resolution_m2,derived) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,FALSE
+                WHERE NOT EXISTS (SELECT 1 FROM ops_track_point WHERE track_id=? AND frame_id=?)
                 """, UUID.randomUUID().toString(), trackId, frameId, observed, now, item.xM(), item.yM(), item.zM(),
                 item.velocityXMps(), item.velocityYMps(), item.velocityZMps(), item.snrDb(), item.legacyRcsM2(),
-                item.highResolutionRcsM2()); }
-        catch (DataIntegrityViolationException ignored) { }
+                item.highResolutionRcsM2(), trackId, frameId);
     }
 
     private void upsertReference(String deviceId, Map<String, Object> aggregate, int count, long now) {

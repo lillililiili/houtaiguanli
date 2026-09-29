@@ -143,14 +143,17 @@ class DeviceProtocolApiTest {
     void onboardCreatesEnabledLiveDeviceAndRejectsLoopback() throws Exception {
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         String deviceNo = "RAD-OB-" + suffix;
+        String org = jdbc.queryForObject("SELECT org_id FROM app_org WHERE org_code='ORG-DEV'", String.class);
+        String district = jdbc.queryForObject("SELECT district_id FROM app_district ORDER BY district_id FETCH FIRST 1 ROW ONLY", String.class);
         try {
             String token = login();
             JsonNode created = mapper.readTree(mvc.perform(post("/api/v1/devices/onboard")
                             .header("Authorization", bearer(token)).contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"protocol_code":"RADAR_TCP_V3_0_0","device_no":"%s","name":"接入雷达",
-                                     "host":"192.0.2.88","port":5001,"allowed_cidrs":"192.0.2.0/24"}
-                                    """.formatted(deviceNo)))
+                                     "host":"192.0.2.88","port":5001,"allowed_cidrs":"192.0.2.0/24",
+                                     "owner_org_id":"%s","district_id":"%s"}
+                                    """.formatted(deviceNo,org,district)))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.data.device.source_mode").value("live"))
                     .andExpect(jsonPath("$.data.device.device_type_name").value("雷达"))
@@ -161,13 +164,17 @@ class DeviceProtocolApiTest {
             assertThat(jdbc.queryForObject("SELECT source_type FROM integration_source WHERE source_code=?", String.class, deviceNo)).isEqualTo("RADAR");
             assertThat(jdbc.queryForObject("SELECT enabled FROM integration_source WHERE source_code=?", Boolean.class, deviceNo)).isTrue();
             assertThat(created.path("device").path("channel").asText()).isEqualTo("雷达直连");
+            String id=created.path("device").path("device_id").asText();
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device d JOIN integration_source s ON s.source_id=d.source_id WHERE d.device_id=? AND d.owner_org_id=? AND d.district_id=? AND s.source_code=?",Long.class,id,org,district,deviceNo)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_business_scope WHERE ops_device_id=? AND owner_org_id=? AND district_id=?",Long.class,id,org,district)).isEqualTo(1);
 
             mvc.perform(post("/api/v1/devices/onboard").header("Authorization", bearer(token))
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"protocol_code":"COUNTERMEASURE_TCP_4CH_V2_0","device_no":"CM-OB-%s","name":"接入反制",
-                                     "host":"127.0.0.1","port":10006,"allowed_cidrs":"127.0.0.0/8"}
-                                    """.formatted(suffix)))
+                                     "host":"127.0.0.1","port":10006,"allowed_cidrs":"127.0.0.0/8",
+                                     "owner_org_id":"%s","district_id":"%s"}
+                                    """.formatted(suffix,org,district)))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error.code").value("NETWORK_TARGET_FORBIDDEN"));
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?", Long.class, "CM-OB-" + suffix)).isZero();
@@ -178,12 +185,57 @@ class DeviceProtocolApiTest {
     }
 
     private void cleanupOnboarded(String deviceNo) {
+        jdbc.update("DELETE FROM device_business_scope WHERE ops_device_id IN (SELECT device_id FROM ops_device WHERE device_no=?)",deviceNo);
+        jdbc.update("DELETE FROM device WHERE device_no=?",deviceNo);
         for (String table : List.of("device_event_log", "radar_v3_profile", "countermeasure_4ch_profile",
                 "device_connection_profile", "ops_device_state"))
             jdbc.update("DELETE FROM " + table + " WHERE device_id IN (SELECT device_id FROM ops_device WHERE device_no=?)", deviceNo);
         jdbc.update("DELETE FROM ops_device WHERE device_no=?", deviceNo);
         jdbc.update("DELETE FROM ops_integration_source WHERE source_code=?", deviceNo);
         jdbc.update("DELETE FROM integration_source WHERE source_code=?", deviceNo);
+    }
+
+    @Test void tcpOnboardRequiresExplicitValidScopeAndRollsBackInvalidTuple() throws Exception {
+        String token=login();
+        var body=mapper.createObjectNode().put("protocol_code","RADAR_TCP_V3_0_0")
+                .put("device_no","QA-SCOPE-INVALID").put("name","范围回归")
+                .put("host","192.0.2.88").put("port",5001).put("allowed_cidrs","192.0.2.0/24");
+        mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isBadRequest());
+        body.put("owner_org_id","missing-org").put("district_id","missing-district");
+        mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no='QA-SCOPE-INVALID'",Long.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM integration_source WHERE source_code='QA-SCOPE-INVALID'",Long.class)).isZero();
+    }
+
+    @Test void assignedOperatorCanRegisterInsideTupleButCannotRegisterOutside() throws Exception {
+        String token=login();
+        String user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);
+        String org=jdbc.queryForObject("SELECT org_id FROM app_org WHERE org_code='ORG-DEV'",String.class);
+        String district=jdbc.queryForObject("SELECT district_id FROM app_district ORDER BY district_id FETCH FIRST 1 ROW ONLY",String.class);
+        String other=jdbc.queryForObject("SELECT district_id FROM app_district WHERE district_id<>? ORDER BY district_id FETCH FIRST 1 ROW ONLY",String.class,district);
+        jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=?",user);
+        jdbc.update("INSERT INTO app_user_data_scope(user_id,org_id,district_id) VALUES (?,?,?)",user,org,district);
+        jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED' WHERE user_id=?",user);
+        var body=mapper.createObjectNode().put("protocol_code","RADAR_TCP_V3_0_0")
+                .put("device_no","QA-SCOPE-INSIDE").put("name","范围内雷达")
+                .put("host","192.0.2.88").put("port",5001).put("allowed_cidrs","192.0.2.0/24")
+                .put("owner_org_id",org).put("district_id",district);
+        JsonNode created=mapper.readTree(mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.device.owner_org_id").value(org))
+                .andReturn().getResponse().getContentAsString()).path("data");
+        String id=created.path("device").path("device_id").asText();
+        mvc.perform(patch("/api/v1/devices/"+id+"/enabled").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0,\"enabled\":false,\"reason\":\"范围内停用验证\"}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT enabled FROM device WHERE device_id=?",Boolean.class,id)).isFalse();
+        body.put("device_no","QA-SCOPE-OUTSIDE").put("district_id",other);
+        mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("DATA_SCOPE_FORBIDDEN"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no='QA-SCOPE-OUTSIDE'",Long.class)).isZero();
     }
 
     @Test

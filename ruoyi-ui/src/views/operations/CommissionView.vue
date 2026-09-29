@@ -33,9 +33,12 @@ const recordsLoading = ref(false);
 const recordsError = ref('');
 let recordsRequest = 0;
 const displayedReport = ref(null);
-const regions = computed(() => [...new Set(devices.value.map(item => item.region_name).filter(Boolean))]);
-const types = computed(() => [...new Set(devices.value.map(item => item.device_type_name).filter(Boolean))]);
-const deviceGroups = computed(() => Object.entries(devices.value.filter(item =>
+const visibleDevices = computed(() => maintenanceId.value
+  ? devices.value.filter(item => item.device_id === workflow.value?.task?.device_id)
+  : devices.value);
+const regions = computed(() => [...new Set(visibleDevices.value.map(item => item.region_name).filter(Boolean))]);
+const types = computed(() => [...new Set(visibleDevices.value.map(item => item.device_type_name).filter(Boolean))]);
+const deviceGroups = computed(() => Object.entries(visibleDevices.value.filter(item =>
   (!filters.region || item.region_name === filters.region) && (!filters.type || item.device_type_name === filters.type)
   && (!filters.keyword || `${item.device_no} ${item.name}`.toLowerCase().includes(filters.keyword.toLowerCase()))
 ).reduce((groups, item) => { (groups[item.region_name || '未登记区域'] ||= []).push(item); return groups; }, {})));
@@ -349,10 +352,10 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
     <el-card class="commission-steps"><el-steps :active="stepIndex" :process-status="active?.status==='FAILED'?'error':'process'" :finish-status="isSimulation || active?.status==='CANCELLED' ? 'wait' : 'success'" align-center><el-step v-for="(item,index) in steps" :key="item" :title="item" :description="['选择设备并创建任务','建立设备通信链路','保存本次调测参数','协议响应与数据校验','查看结果与调测报告'][index]" /></el-steps></el-card>
     <div v-loading="loading" class="commission-workspace">
       <div class="commission-column">
-        <el-card class="commission-selection"><template #header><div class="table-toolbar"><b>设备选择</b><span class="muted">{{ devices.length }} 台</span></div></template>
+        <el-card class="commission-selection"><template #header><div class="table-toolbar"><b>设备选择</b><span class="muted">{{ visibleDevices.length }} 台</span></div></template>
           <div class="tree-filters"><el-select v-model="filters.region" clearable placeholder="全部区域" aria-label="所属区域"><el-option v-for="item in regions" :key="item" :label="item" :value="item" /></el-select><el-select v-model="filters.type" clearable placeholder="全部类型" aria-label="设备类型"><el-option v-for="item in types" :key="item" :label="item" :value="item" /></el-select><el-input v-model="filters.keyword" clearable placeholder="搜索设备名称 / 编号" /></div>
           <div class="commission-device-list"><details v-for="[region,items] in deviceGroups" :key="region" open class="device-tree-group"><summary>{{ region }}<span>{{ items.length }}</span></summary><button v-for="item in items" :key="item.device_id" type="button" class="device-tree-item" :class="{active: item.device_id===selectedDeviceId}" :disabled="selectionLocked" @click="selectedDeviceId=item.device_id"><span class="device-tree-copy"><b>{{ item.name }}</b><small>{{ item.device_no }}</small></span></button></details><el-empty v-if="!deviceGroups.length" description="暂无匹配设备" :image-size="56" /></div>
-          <p v-if="maintenanceId" class="tree-note">已定位运维待办设备；返回待办列表可选择其他待办。</p><p v-else-if="selectionLocked" class="tree-note">当前任务结束或取消后可切换设备。</p>
+          <p v-if="maintenanceId && selectedDeviceId" class="tree-note">已定位运维待办设备；返回待办列表可选择其他待办。</p><p v-else-if="!maintenanceId && selectionLocked" class="tree-note">当前任务结束或取消后可切换设备。</p>
         </el-card>
         <el-card><template #header><b>设备信息</b></template><el-empty v-if="!currentDevice" description="暂无可调测设备" :image-size="56" /><dl v-else class="commission-details"><dt>设备名称</dt><dd>{{ currentDevice.name }}</dd><dt>设备类型</dt><dd>{{ display(currentDevice.device_type_name) }}</dd><dt>设备编号</dt><dd>{{ currentDevice.device_no }}</dd><dt>设备型号</dt><dd>{{ display(currentDevice.model) }}</dd><dt>所属区域</dt><dd>{{ display(currentDevice.region_name) }}</dd><dt>供应商</dt><dd>{{ display(currentDevice.vendor) }}</dd><dt>数据来源</dt><dd>{{ currentDevice.simulated?'模拟数据':({live:'真实链路',replay:'回放数据'})[currentDevice.source_mode] || '未登记' }}</dd></dl></el-card>
       </div>

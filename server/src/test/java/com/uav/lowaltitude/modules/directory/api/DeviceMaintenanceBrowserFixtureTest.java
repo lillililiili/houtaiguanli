@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -17,7 +21,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome;
 
-/** Opt-in browser fixture. Only the disposable H2 test database is modified. */
+/** Opt-in browser fixture. Only a guarded, disposable test database is modified. */
 @EnabledIfSystemProperty(named = "qa.maintenance.browser", matches = "true")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
         "server.address=127.0.0.1",
@@ -39,6 +43,15 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
     }
 
     void prepareBrowserChecks() { }
+
+    void prepareDuePlan() { throw new IllegalArgumentException("到时计划场景需要隔离PostgreSQL夹具"); }
+
+    @Override void healthy() {
+        jdbc.update("UPDATE ops_device SET enabled=TRUE,source_mode='mock',simulated=TRUE WHERE device_id=?",device);
+        jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',health_code='GOOD',has_alarm=FALSE,observed_at=?,last_heartbeat_at=? WHERE device_id=?",now,now,device);
+        // Preserve already closed history when switching current device conditions.
+        jdbc.update("UPDATE device_incident SET stage='RECOVERED',closed_at=? WHERE device_id=? AND stage<>'RECOVERED'",now,device);
+    }
 
     String browserDatabaseLabel() { return "isolated H2 memory"; }
 
@@ -69,20 +82,45 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         var submitted = resend(1, "隔离等待渠道结果", UUID.randomUUID().toString());
         assertThat(submitted.path("notification_delivery_status").asText()).isEqualTo("SUBMITTED");
         assertThat(submitted.path("can_resend_notification").asBoolean()).isFalse();
+        applyScenario("NOTICE_LATE_RECEIPT");
+        var late = workflow().path("task");
+        assertThat(late.path("notification_delivery_status").asText()).isEqualTo("SUBMITTED");
+        assertThat(late.path("notification_attempts").get(1).path("receipt_status").asText()).isEqualTo("ACKNOWLEDGED");
         applyScenario("LEGACY");
         applyScenario("NOTICE_DELIVERED");
         applyScenario("NEW_TASK");
+        applyScenario("NOTICE_NOT_SENT");
+        var notSent = resend(1, "隔离未接通场景", UUID.randomUUID().toString());
+        assertThat(notSent.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("NOT_SENT");
         applyScenario("NOTICE_FAILED");
-        var failed = resend(1, "隔离失败场景", UUID.randomUUID().toString());
+        var failed = resend(2, "隔离失败场景", UUID.randomUUID().toString());
         assertThat(failed.path("notification_delivery_status").asText()).isEqualTo("FAILED");
-        assertThat(failed.path("notification_attempts").get(1).path("delivery_status").asText()).isEqualTo("DELIVERED");
+        assertThat(failed.path("notification_attempts").get(2).path("delivery_status").asText()).isEqualTo("DELIVERED");
         applyScenario("NOTICE_DELIVERED");
-        var delivered = resend(2, "隔离再次送达", UUID.randomUUID().toString());
+        var delivered = resend(3, "隔离再次送达", UUID.randomUUID().toString());
         assertThat(delivered.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
         applyScenario("NOTICE_UNKNOWN");
-        var unknown = resend(3, "隔离结果未知", UUID.randomUUID().toString());
+        var unknown = resend(4, "隔离结果未知", UUID.randomUUID().toString());
         assertThat(unknown.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("UNKNOWN");
         assertThat(unknown.path("can_resend_notification").asBoolean()).isFalse();
+    }
+
+    @Test void verifyScopeFixtureConditions() throws Exception {
+        create();
+        applyScenario("SCOPE_EXACT");
+        mvc.perform(auth(get("/api/v1/device-maintenance-tasks/" + taskId + "/workflow"))).andExpect(status().isOk());
+        for (String scenario : java.util.List.of("SCOPE_CROSS", "SCOPE_NONE")) {
+            applyScenario(scenario);
+            mvc.perform(auth(get("/api/v1/device-maintenance-tasks/" + taskId + "/workflow"))).andExpect(status().isNotFound());
+            mvc.perform(auth(get("/api/v1/device-maintenance-tasks"))).andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+            mvc.perform(auth(get("/api/v1/device-maintenance-messages"))).andExpect(status().isOk()).andExpect(jsonPath("$.data.unread_count").value(0));
+            mvc.perform(write(post("/api/v1/device-maintenance-tasks/" + taskId + "/workflow/actions"),
+                    Map.of("action", "START", "expected_version", 1), UUID.randomUUID().toString())).andExpect(status().isNotFound());
+        }
+        applyScenario("SCOPE_ALL");
+        mvc.perform(auth(get("/api/v1/device-maintenance-tasks/" + taskId + "/workflow"))).andExpect(status().isOk());
+        mvc.perform(write(post("/api/v1/device-maintenance-tasks/" + taskId + "/workflow/actions"),
+                Map.of("action", "START", "expected_version", 1), UUID.randomUUID().toString())).andExpect(status().isOk());
     }
 
     @Test void serveBrowserFixture() throws Exception {
@@ -93,9 +131,11 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         Files.createDirectories(directory);
         Path control = directory.resolve("control.json");
         Files.deleteIfExists(control);
-        jdbc.update("UPDATE ops_device SET name='QA浏览器隔离模拟设备',source_mode='mock',simulated=TRUE WHERE device_id=?", device);
-        create();
-        healthy();
+        if (taskId == null) {
+            jdbc.update("UPDATE ops_device SET name='QA浏览器隔离模拟设备',source_mode='mock',simulated=TRUE WHERE device_id=?", device);
+            create();
+            healthy();
+        }
         prepareBrowserChecks();
         String lastId = "initial";
         manifest(directory, lastId, "READY");
@@ -129,7 +169,16 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
     }
 
     private void applyScenario(String scenario) throws Exception {
+        if ("PLAN_DUE".equals(scenario)) { prepareDuePlan(); return; }
+        if (scenario.startsWith("SCOPE_")) { applyScope(scenario); return; }
         if ("TICK".equals(scenario)) { now += 1000; clock.setNow(Instant.ofEpochMilli(now)); return; }
+        if ("NOTICE_LATE_RECEIPT".equals(scenario)) {
+            now += 61000;
+            clock.setNow(Instant.ofEpochMilli(now));
+            // Display fixture only: no supplier callback contract or production write endpoint is invented.
+            jdbc.update("UPDATE ops_device_maintenance_notice_attempt SET receipt_status='ACKNOWLEDGED',receipt_result='隔离模拟迟到回执：已收到通知',acknowledged_at=? WHERE task_id=? AND attempt_no=1", now, taskId);
+            sqlSession.clearCache(); return;
+        }
         if ("RESTORE_SCOPE".equals(scenario)) {
             if (hiddenScopeOrg != null) jdbc.update("UPDATE app_org SET enabled=TRUE WHERE org_id=?", hiddenScopeOrg);
             sqlSession.clearCache(); return;
@@ -143,13 +192,16 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         healthy();
         switch (scenario) {
             case "HEALTHY", "EXPIRED_PASS" -> { }
-            case "NOTICE_FAILED", "NOTICE_UNKNOWN", "NOTICE_SUBMITTED", "NOTICE_DELIVERED" -> {
+            case "NOTICE_FAILED", "NOTICE_UNKNOWN", "NOTICE_SUBMITTED", "NOTICE_DELIVERED", "NOTICE_NOT_SENT" -> {
                 now += 61000;
                 clock.setNow(Instant.ofEpochMilli(now));
                 jdbc.update("UPDATE ops_device_state SET health_code='BAD',observed_at=?,last_heartbeat_at=? WHERE device_id=?", now, now, device);
                 observe(true, now);
                 prepareBrowserChecks();
-                if ("NOTICE_UNKNOWN".equals(scenario)) {
+                doReturn(!"NOTICE_NOT_SENT".equals(scenario)).when(channel).simulated();
+                if ("NOTICE_NOT_SENT".equals(scenario)) {
+                    // The existing service records NOT_SENT without invoking the external channel.
+                } else if ("NOTICE_UNKNOWN".equals(scenario)) {
                     doThrow(new IllegalStateException("隔离模拟通知结果未知")).when(channel).deliver(any());
                 } else {
                     String status = scenario.substring("NOTICE_".length());
@@ -199,6 +251,28 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
             case "LEGACY" -> jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',workflow_state='LEGACY_HANDLED',active_key=NULL,handled_by=reported_by,handled_by_name=reported_by_name,handled_at=?,handling_note='隔离历史反馈，不补造恢复结论' WHERE task_id=?", now, taskId);
             case "DELETED_DEVICE" -> jdbc.update("UPDATE ops_device SET enabled=FALSE,deleted_at=? WHERE device_id=?", now, device);
             default -> throw new IllegalArgumentException("Unknown isolated fixture scenario: " + scenario);
+        }
+        sqlSession.clearCache();
+    }
+
+    private void applyScope(String scenario) {
+        String actor = jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'", String.class);
+        String owner = jdbc.queryForObject("SELECT owner_org_id FROM ops_device_maintenance_task WHERE task_id=?", String.class, taskId);
+        String district = jdbc.queryForObject("SELECT district_id FROM ops_device_maintenance_task WHERE task_id=?", String.class, taskId);
+        jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=?", actor);
+        jdbc.update("UPDATE app_user SET scope_mode=? WHERE user_id=?", "SCOPE_ALL".equals(scenario) ? "ALL" : "ASSIGNED", actor);
+        jdbc.update("DELETE FROM device_business_scope WHERE ops_device_id=?", device);
+        jdbc.update("INSERT INTO device_business_scope VALUES (?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", device, owner, district);
+        switch (scenario) {
+            case "SCOPE_EXACT" -> jdbc.update("INSERT INTO app_user_data_scope (user_id,org_id,district_id) VALUES (?,?,?)", actor, owner, district);
+            case "SCOPE_CROSS" -> {
+                String otherOrg = jdbc.queryForObject("SELECT org_id FROM app_org WHERE enabled=TRUE AND org_id<>? ORDER BY org_id FETCH FIRST 1 ROWS ONLY", String.class, owner);
+                String otherDistrict = jdbc.queryForObject("SELECT district_id FROM app_district WHERE enabled=TRUE AND district_id<>? ORDER BY district_id FETCH FIRST 1 ROWS ONLY", String.class, district);
+                jdbc.update("INSERT INTO app_user_data_scope (user_id,org_id,district_id) VALUES (?,?,?)", actor, owner, otherDistrict);
+                jdbc.update("INSERT INTO app_user_data_scope (user_id,org_id,district_id) VALUES (?,?,?)", actor, otherOrg, district);
+            }
+            case "SCOPE_NONE", "SCOPE_ALL" -> { }
+            default -> throw new IllegalArgumentException("Unknown isolated scope fixture: " + scenario);
         }
         sqlSession.clearCache();
     }

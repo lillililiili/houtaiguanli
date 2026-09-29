@@ -100,7 +100,7 @@ public class DeviceController {
 
     @PostMapping
     public ApiResponse<DeviceDetail> create(@Valid @RequestBody DeviceRequest request) {
-        return ApiResponse.ok(service.create(request.toMutation()));
+        return ApiResponse.ok(service.create(request.toMutation(),request.ownerOrgId(),request.districtId()));
     }
 
     @PutMapping("/{deviceId}")
@@ -114,7 +114,7 @@ public class DeviceController {
         if (request.version() == null) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "version 必填");
         }
-        return ApiResponse.ok(service.update(deviceId, request.version(), request.toMutation()));
+        return ApiResponse.ok(service.update(deviceId, request.version(), request.toMutation(),request.ownerOrgId(),request.districtId()));
     }
 
     @PatchMapping("/{deviceId}/enabled")
@@ -205,7 +205,9 @@ public class DeviceController {
             Long installedAt,
             ConnectionRequest connection,
             ProtocolConfiguration protocolConfiguration,
-            String allowedCidrs) {
+            String allowedCidrs,
+            String ownerOrgId,
+            String districtId) {
         DeviceMutation toMutation() {
             return new DeviceMutation(sourceId, externalDeviceId, deviceNo, name, deviceTypeCode, deviceTypeName,
                     channel, model, vendor, ownerName, regionName, address, longitude, latitude,

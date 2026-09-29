@@ -213,6 +213,7 @@ async function openDevice(row = null) {
       Object.assign(deviceForm, {
         protocol_code: current.protocol_code || '', device_no: current.device?.device_no || '', name: current.device?.name || '',
         vendor: current.vendor || '', region_name: current.region_name || '', model: current.model || '', address: current.address || '',
+        scope_key: current.device?.owner_org_id && current.device?.district_id ? `${current.device.owner_org_id}/${current.device.district_id}` : '',
         host: connection.host || '', port: connection.port ?? null, allowed_cidrs: current.allowed_cidrs || '',
         recognition_code_ref: protocol.recognition_code_ref || '', rtk_enabled: Boolean(protocol.rtk_enabled),
         coordinate_transform_enabled: Boolean(protocol.coordinate_transform_enabled), device_address: protocol.device_address || 1,
@@ -255,13 +256,14 @@ function mqttPayload(values, version) {
 async function saveDevice() {
   if (!canOperate.value || deviceDialog.saving || !selectedType.value) return;
   if (!isWeather.value && !availableProtocols.value.some(item => item.protocol_code === deviceForm.protocol_code)) return;
-  if ((isWeather.value || isMqttTransport.value) && deviceDialog.optionsError) return;
+  if (deviceDialog.optionsError) return;
   if (!await deviceFormRef.value.validate().catch(() => false) || deviceDialog.saving) return;
   deviceDialog.saving = true;
   const current = deviceDialog.current;
   const key = newIdempotencyKey('device-form');
   try {
     let saved;
+    const [tcpOrg, tcpDistrict] = deviceForm.scope_key.split('/');
     if (isWeather.value) {
       const [owner_org_id, district_id] = deviceForm.scope_key.split('/');
       const payload = { device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(), vendor: deviceForm.vendor?.trim() || null,
@@ -273,7 +275,7 @@ async function saveDevice() {
       saved = deviceDialog.editing ? await deviceApi.update(deviceDialog.row.device_id, payload, key) : await deviceApi.onboard(payload, key);
     } else if (deviceDialog.editing) {
       saved = await deviceApi.update(deviceDialog.row.device_id, {
-        version: current.device.version, source_id: current.source_id, external_device_id: current.external_device_id,
+        version: current.device.version, owner_org_id: tcpOrg, district_id: tcpDistrict, source_id: current.source_id, external_device_id: current.external_device_id,
         device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(), device_type_code: current.device.device_type_code,
         device_type_name: current.device.device_type_name, channel: current.device.channel, vendor: deviceForm.vendor || null,
         model: deviceForm.model || null, owner_name: current.owner_name || null, region_name: deviceForm.region_name || null,
@@ -283,7 +285,7 @@ async function saveDevice() {
           device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }
       }, key);
     } else {
-      saved = await deviceApi.onboard({ protocol_code: deviceForm.protocol_code, device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(),
+      saved = await deviceApi.onboard({ owner_org_id: tcpOrg, district_id: tcpDistrict, protocol_code: deviceForm.protocol_code, device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(),
         host: deviceForm.host.trim(), port: deviceForm.port, allowed_cidrs: deviceForm.allowed_cidrs.trim(), vendor: deviceForm.vendor || null,
         region_name: deviceForm.region_name || null, model: deviceForm.model || null, address: deviceForm.address || null, recognition_code_ref: deviceForm.recognition_code_ref || null,
         rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
@@ -431,11 +433,10 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
               <el-form-item label="设备名称" prop="name" :rules="[{required:true,whitespace:true,message:'请输入设备名称'}]"><el-input v-model="deviceForm.name" maxlength="128" placeholder="请输入设备名称" /></el-form-item>
               <el-form-item label="供应商"><el-input v-model="deviceForm.vendor" maxlength="128" placeholder="请输入供应商" /></el-form-item>
               <el-form-item label="型号"><el-input v-model="deviceForm.model" maxlength="128" placeholder="请输入设备型号" /></el-form-item>
-              <el-form-item v-if="isWeather || isMqttTransport" label="所属单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择所属单位及区域'}]"><el-select v-model="deviceForm.scope_key" :disabled="deviceDialog.editing" placeholder="请选择单位及区域"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
-              <el-form-item v-else label="所属区域"><el-input v-model="deviceForm.region_name" placeholder="请输入所属区域" /></el-form-item>
+              <el-form-item label="所属单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择所属单位及区域'}]"><el-select v-model="deviceForm.scope_key" :disabled="deviceDialog.editing && (isWeather || isMqttTransport || Boolean(deviceDialog.current?.device?.owner_org_id))" placeholder="请选择单位及区域"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
               <el-form-item v-if="!isMqttTransport" label="安装位置"><el-input v-model="deviceForm.address" maxlength="256" placeholder="例如：园区东门楼顶" /></el-form-item>
             </div>
-            <el-alert v-if="deviceDialog.optionsError && (isWeather || isMqttTransport)" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载连接及范围</el-button></el-alert>
+            <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载连接及范围</el-button></el-alert>
           </section>
           <section class="access-section">
             <div class="access-section-title"><span>3</span><h3>{{ isWeather ? '接入状态' : '接入配置' }}</h3><el-tag v-if="isWeather" type="warning" effect="plain">协议待确认</el-tag><el-tag v-else-if="deviceForm.protocol_code" effect="plain">{{ isMqttTransport ? '平台通道' : 'TCP 直连' }}</el-tag></div>
@@ -471,7 +472,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
         </template>
         <el-empty v-else description="请选择需要接入的设备类型" :image-size="65" />
       </el-form>
-      <template #footer><div class="access-footer"><span>{{ isWeather ? '仅保存设备档案，保持停用与待接入。' : '配置保存后，以实际连接与有效报文确认状态。' }}</span><div><el-button :disabled="deviceDialog.saving" @click="deviceDialog.visible=false">取消</el-button><el-button type="primary" :loading="deviceDialog.saving" :disabled="!selectedType || (!isWeather && !deviceForm.protocol_code) || Boolean(deviceDialog.optionsError && (isWeather || isMqttTransport)) || (isMqttTransport && !deviceDialog.editing && !availableChannels.length)" @click="saveDevice">{{ isWeather ? '保存档案' : deviceDialog.editing ? '保存' : '保存接入配置' }}</el-button></div></div></template>
+      <template #footer><div class="access-footer"><span>{{ isWeather ? '仅保存设备档案，保持停用与待接入。' : '配置保存后，以实际连接与有效报文确认状态。' }}</span><div><el-button :disabled="deviceDialog.saving" @click="deviceDialog.visible=false">取消</el-button><el-button type="primary" :loading="deviceDialog.saving" :disabled="!selectedType || (!isWeather && !deviceForm.protocol_code) || Boolean(deviceDialog.optionsError) || (isMqttTransport && !deviceDialog.editing && !availableChannels.length)" @click="saveDevice">{{ isWeather ? '保存档案' : deviceDialog.editing ? '保存' : '保存接入配置' }}</el-button></div></div></template>
     </el-dialog>
 
     <el-dialog v-model="brokerDialog.visible" title="MQTT 连接管理" width="min(820px, 94vw)" append-to-body>

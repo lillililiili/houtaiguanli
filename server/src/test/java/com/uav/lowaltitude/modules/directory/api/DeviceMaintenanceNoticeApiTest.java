@@ -129,6 +129,24 @@ class DeviceMaintenanceNoticeApiTest {
         JsonNode first=create();JsonNode repeat=create();assertThat(repeat.path("task_id")).isEqualTo(first.path("task_id"));
         assertThat(repeat.path("notification_attempts")).hasSize(1);verify(channel,times(1)).deliver(any());
     }
+    @Test void sameTimestampHistoryCannotHideActiveOrNewlyCompletedTask()throws Exception {
+        String first=create().path("task_id").asText();
+        jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',workflow_state='LEGACY_HANDLED',active_key=NULL,handled_by=reported_by,handled_by_name=reported_by_name,handled_at=?,handling_note='隔离旧反馈' WHERE task_id=?",now,first);
+        String second=create().path("task_id").asText();
+        String current=first.compareTo(second)<0?first:second;
+        String historical=current.equals(first)?second:first;
+        // Deliberately make the historical UUID sort first: creation chronology cannot be inferred from UUIDs.
+        jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',workflow_state='LEGACY_HANDLED',active_key=NULL,handled_by=reported_by,handled_by_name=reported_by_name,handled_at=?,handling_note='隔离旧反馈' WHERE task_id IN (?,?)",now,first,second);
+        jdbc.update("UPDATE ops_device_maintenance_task SET status='PENDING',workflow_state='PENDING',active_key=?,handled_by=NULL,handled_by_name=NULL,handled_at=NULL,handling_note=NULL WHERE task_id=?","order-fixture-"+UUID.randomUUID(),current);
+        String path="/api/v1/flight-plans/"+plan+"/device-maintenance-tasks";
+        var active=data(auth(get(path).param("device_id",device).param("size","1")));
+        assertThat(active.path("total").asInt()).isEqualTo(2);
+        assertThat(active.path("items").get(0).path("task_id").asText()).isEqualTo(current);
+        jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',workflow_state='COMPLETED',active_key=NULL,handled_by=reported_by,handled_by_name=reported_by_name,handled_at=?,handling_note='隔离新完成' WHERE task_id=?",now+1000,current);
+        var completed=data(auth(get(path).param("device_id",device)));
+        assertThat(completed.path("items").get(0).path("task_id").asText()).isEqualTo(current);
+        assertThat(completed.path("items").get(1).path("task_id").asText()).isEqualTo(historical);
+    }
     JsonNode create()throws Exception {JsonNode task=data(write(post("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks"),Map.of("device_id",device,"notification_setting_id",setting),UUID.randomUUID().toString()));taskId=task.path("task_id").asText();createdTaskIds.add(taskId);return task;}
     JsonNode resend(int expected,String reason,String key)throws Exception{return data(resendRequest(expected,reason,key));}
     MockHttpServletRequestBuilder resendRequest(int expected,String reason,String key)throws Exception {var body=new HashMap<String,Object>();body.put("expected_attempt_no",expected);if(reason!=null)body.put("reason",reason);return write(post("/api/v1/device-maintenance-tasks/"+taskId+"/notifications/resend"),body,key);}

@@ -151,11 +151,11 @@ it('MQTT 编辑保留原协议身份及模拟来源，不改为真实来源', as
   await mount(); await click('编辑'); await fill('设备名称', '修改名称'); await click('保存');
   expect(deviceApi.update).toHaveBeenCalledWith('m1', expect.objectContaining({ version: 3, protocol_code: 'LINGYUN_MQTT_V8_6', device_type_abbr: 'tdoa', source_mode: 'replay', external_device_id: 'external-old', provider_code: 'original', model: 'T1' }), expect.any(String));
 });
-it('接入范围加载失败时阻止档案提交，重试成功后恢复', async () => {
+it.each([['天气传感器', '保存档案'], ['雷达', '保存接入配置']])('接入范围加载失败时阻止 %s 提交，重试成功后恢复', async (type, save) => {
   mqttApi.scopes.mockRejectedValueOnce(new Error('范围读取失败'));
-  await mount(); await click('接入设备'); await click('天气传感器');
-  expect(dialog().textContent).toContain('范围读取失败'); expect(button('保存档案').disabled).toBe(true);
-  await click('重新加载连接及范围'); expect(button('保存档案').disabled).toBe(false);
+  await mount(); await click('接入设备'); await click(type);
+  expect(dialog().textContent).toContain('范围读取失败'); expect(button(save).disabled).toBe(true);
+  await click('重新加载连接及范围'); expect(button(save).disabled).toBe(false);
   expect(weatherSensorsApi.create).not.toHaveBeenCalled();
 });
 it('TCP 接入保存型号和安装位置，连续提交只调用一次', async () => {
@@ -164,8 +164,9 @@ it('TCP 接入保存型号和安装位置，连续提交只调用一次', async 
   await mount(); await click('接入设备'); await click('雷达');
   await fill('设备编号', 'RD-2'); await fill('设备名称', '雷达'); await fill('型号', 'R2'); await fill('安装位置', '东门楼顶');
   await fill('设备地址', '192.0.2.20'); await fill('端口', '5001'); await fill('允许网段', '192.0.2.0/24');
+  await choose('所属单位 / 区域', '单位 / 东区');
   button('保存接入配置').click(); button('保存接入配置').click(); await settle();
   expect(deviceApi.onboard).toHaveBeenCalledOnce();
-  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: 'RADAR_TCP_V3_0_0', model: 'R2', address: '东门楼顶', host: '192.0.2.20', port: 5001 }), expect.any(String));
+  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: 'RADAR_TCP_V3_0_0', model: 'R2', address: '东门楼顶', host: '192.0.2.20', port: 5001, owner_org_id: 'org1', district_id: 'd1' }), expect.any(String));
   complete({ device: { device_id: 'new-1' } }); await settle();
 });

@@ -204,7 +204,7 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
           <el-empty v-if="!state" description="请选择设备查看状态" />
           <template v-else>
             <div class="state-hero"><article><small>连接状态</small><strong>{{ statusText(state.connectivity) }}</strong></article><article><small>健康状态</small><strong>{{ healthText(state.health_code) }}</strong></article><article><small>最后心跳</small><strong class="mono">{{ formatTime(state.last_heartbeat_at) }}</strong></article></div>
-            <el-alert v-if="state.connectivity==='OFFLINE'" title="设备离线；曲线仅展示离线前的历史上报，不补零。" type="warning" :closable="false" />
+            <el-alert v-if="state.connectivity==='OFFLINE'" title="设备当前离线；曲线继续按实际接收的有效报文展示，缺失数据不补零。" type="warning" :closable="false" />
             <template v-if="state.connectivity!=='OFFLINE' && visibleMetrics.length">
               <div v-if="visibleMetrics.length" class="metric-values"><article v-for="item in visibleMetrics" :key="item.code"><small>{{ metricLabel(item) }}</small><b>{{ metricValue(item.value) }} {{ item.unit||'' }}</b><span class="muted">{{ SOURCE_LABELS[item.source] || '来源未声明' }}</span></article></div>
               <p v-else class="tree-note">设备协议尚未上报此类指标。</p>

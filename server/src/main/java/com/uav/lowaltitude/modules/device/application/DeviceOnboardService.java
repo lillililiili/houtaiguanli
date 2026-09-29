@@ -25,11 +25,14 @@ public class DeviceOnboardService {
     private final DeviceAccessPolicy access;
     private final DeviceService devices;
     private final IntegrationSourceService sources;
+    private final TcpDeviceScopeService scopes;
 
-    public DeviceOnboardService(DeviceAccessPolicy access, DeviceService devices, IntegrationSourceService sources) {
+    public DeviceOnboardService(DeviceAccessPolicy access, DeviceService devices, IntegrationSourceService sources,
+                                TcpDeviceScopeService scopes) {
         this.access = access;
         this.devices = devices;
         this.sources = sources;
+        this.scopes = scopes;
     }
 
     @Transactional
@@ -42,6 +45,9 @@ public class DeviceOnboardService {
         if (request.port() == null || request.port() < 1 || request.port() > 65535)
             throw bad("端口必须在 1 到 65535 之间");
         String cidrs = required(request.allowedCidrs(), "设备网络 CIDR");
+        String org = required(request.ownerOrgId(), "所属单位");
+        String district = required(request.districtId(), "所属区域");
+        scopes.validateTuple(org,district);
         Source source;
         try {
             source = sources.insertLive(new Mutation(deviceNo, name, request.protocolCode(), null,
@@ -73,7 +79,7 @@ public class DeviceOnboardService {
                 blank(request.firmwareVersion()), null, connection, protocol, cidrs);
         DeviceDetail created;
         try {
-            created = devices.create(mutation);
+            created = devices.create(mutation,org,district);
         } catch (DataIntegrityViolationException | ApiException ex) {
             throw ex instanceof ApiException api ? api
                     : new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号或接入编码已存在");
@@ -108,5 +114,6 @@ public class DeviceOnboardService {
                                  BigDecimal latitude, BigDecimal altitudeM, String altitudeDatum,
                                  String firmwareVersion, String loginRole, String recognitionCodeRef,
                                  Boolean rtkEnabled, Boolean coordinateTransformEnabled, Integer deviceAddress,
-                                 String wireEncoding, Integer pollIntervalMillis) { }
+                                 String wireEncoding, Integer pollIntervalMillis,
+                                 String ownerOrgId, String districtId) { }
 }

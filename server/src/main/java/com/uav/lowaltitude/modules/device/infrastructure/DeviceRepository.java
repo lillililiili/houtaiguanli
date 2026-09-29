@@ -34,12 +34,15 @@ public class DeviceRepository {
                    sensing.range_m AS coverage_range_m, sensing.azimuth_deg AS coverage_azimuth_deg,
                    sensing.fov_deg AS coverage_fov_deg, sensing.source_label AS coverage_source_label,
                    sensing.version AS coverage_version, sensing.updated_at AS coverage_updated_at,
-                   COALESCE(mqtt_binding.device_id, eo_binding.device_id) AS fusion_device_id
+                   COALESCE(mqtt_binding.device_id, eo_binding.device_id, tcp_device.device_id) AS fusion_device_id,
+                   business_scope.owner_org_id,business_scope.district_id
             FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id = d.device_id
             LEFT JOIN ops_integration_source src ON src.source_id=d.source_id
             LEFT JOIN device_sensing_profile sensing ON sensing.device_id=d.device_id
             LEFT JOIN mqtt_device_binding mqtt_binding ON mqtt_binding.ops_device_id=d.device_id
             LEFT JOIN eo_device_binding eo_binding ON eo_binding.ops_device_id=d.device_id
+            LEFT JOIN device tcp_device ON tcp_device.device_id=d.device_id AND src.protocol_code='RADAR_TCP_V3_0_0'
+            LEFT JOIN device_business_scope business_scope ON business_scope.ops_device_id=d.device_id
             """;
 
     private final JdbcTemplate jdbc;
