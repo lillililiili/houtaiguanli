@@ -87,6 +87,27 @@ class AuditApiTest {
         }
     }
 
+    @Test
+    void listAndDetailExposeChineseLabelsAndOriginalObjectReference() throws Exception {
+        String token = login("admin1");
+        String id = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("insert into audit_log(audit_id,account,action,object_type,object_id,detail,occurred_at,ip,module_code,role_code,result,user_agent) values (?,'admin1','external_interface_config_save','external_interface','fixture-interface','配置保存',1,'','system','ROLE-ADMIN','SUCCESS','test')", id);
+        try {
+            mvc.perform(get("/api/v1/audit-logs").header("Authorization", bearer(token)).param("objectId", "fixture-interface"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items[0].module_name").value("系统"))
+                    .andExpect(jsonPath("$.data.items[0].action_name").value("保存外部接口配置"))
+                    .andExpect(jsonPath("$.data.items[0].object_id").value("fixture-interface"));
+            mvc.perform(get("/api/v1/audit-logs/" + id).header("Authorization", bearer(token)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.action_name").value("保存外部接口配置"))
+                    .andExpect(jsonPath("$.data.object_type").value("external_interface"))
+                    .andExpect(jsonPath("$.data.object_id").value("fixture-interface"));
+        } finally {
+            jdbcTemplate.update("delete from audit_log where audit_id=?", id);
+        }
+    }
+
     private String login(String account) throws Exception {
         String body = mvc.perform(post("/api/v1/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)

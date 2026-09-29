@@ -27,6 +27,56 @@ class EmergencyStopPostgresTest extends EmergencyStopApiTest {
     private static final String SCHEMA = "stage456_" + UUID.randomUUID().toString().replace("-", "");
     private static boolean created;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"COMPLETED", "FAILED"})
+    void stopRequestedDuringDeviceReplySurvivesCompletionWhileWaitingForEventLock(String result) throws Exception {
+        String historicalDevice = fourChannel(), device = fourChannel();
+        String historical = authorization("COUNTERMEASURE", true);
+        jdbc.update("update disposal_authorization set status='COMPLETED',device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?",
+                historicalDevice, historical);
+        String current = authorization("COUNTERMEASURE", true);
+        jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?", device, current);
+        var locked = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var pid = new java.util.concurrent.atomic.AtomicInteger();
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        var delivery = executor.submit(() -> transaction.executeWithoutResult(tx -> {
+            pid.set(jdbc.queryForObject("select pg_backend_pid()", Integer.class));
+            jdbc.queryForList("select event_id from uav_event where event_id=? for update", eventId);
+            locked.countDown();
+            try { if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("release timeout"); }
+            catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException(ex); }
+            jdbc.update("update disposal_authorization set status=? where authorization_id=?", result, current);
+        }));
+        try {
+            assertThat(locked.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var stopping = executor.submit(() -> stop(operator, key()).andReturn());
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            boolean waiting = false;
+            while (System.nanoTime() < deadline) {
+                waiting = jdbc.queryForObject("select count(*) from pg_stat_activity where datname=current_database() and ?=any(pg_blocking_pids(pid))", Integer.class, pid.get()) > 0;
+                if (waiting) break;
+                Thread.sleep(20);
+            }
+            assertThat(waiting).as("stop request reached the held event lock").isTrue();
+            release.countDown();
+            delivery.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            var response = stopping.get(5, java.util.concurrent.TimeUnit.SECONDS).getResponse();
+            assertThat(response.getStatus()).as(response.getContentAsString()).isEqualTo(200);
+            assertThat(statusOf(current)).isEqualTo(result);
+            assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop_authorization where authorization_id=?", Integer.class, current)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select count(*) from device_command d join countermeasure_4ch_command c on c.command_id=d.command_id where d.device_id=? and c.mask=0", Integer.class, device)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, historicalDevice)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop_authorization where authorization_id=?", Integer.class, historical)).isZero();
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+            executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
     @Test
     void emergencyStopAuditEventsAreAppendOnlyOnPostgres() throws Exception {
         authorization("COUNTERMEASURE", true);

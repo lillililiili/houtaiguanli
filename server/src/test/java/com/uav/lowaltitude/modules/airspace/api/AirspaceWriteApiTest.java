@@ -32,7 +32,7 @@ import com.uav.lowaltitude.platform.audit.AuditService;
  * 空域写入：接替式版本、范围与权限、幂等与版本冲突、成功审计同事务。
  * 不套测试事务：回滚证明与"历史版本几何未变"都要求业务事务真正提交或真正回滚。
  */
-@SpringBootTest(properties = "app.dev-seed.enabled=false")
+@SpringBootTest(properties = {"app.dev-seed.enabled=false", "app.airspace.legacy-write-enabled=true"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AirspaceWriteApiTest {

@@ -24,7 +24,7 @@ const guard = createLatestRequestGuard();
 const datePickerType = computed(() => period.value === 'MONTHLY' ? 'month' : 'date');
 const dateFormat = computed(() => period.value === 'MONTHLY' ? 'YYYY-MM' : 'YYYY-MM-DD');
 const anchor = computed(() => { try { return normalizeAnchor(period.value, selectedDate.value); } catch { return ''; } });
-const params = computed(() => ({ report_category: category.value, period_type: period.value, anchor_date: anchor.value }));
+const params = computed(() => ({ report_category: category.value, period_type: period.value, anchor_date: anchor.value, source_mode: 'live' }));
 const queryKey = computed(() => JSON.stringify(params.value));
 const ready = computed(() => !loading.value && !error.value && preview.value &&
   preview.value.report_category === category.value && preview.value.period_type === period.value && preview.value.anchor_date === anchor.value);
@@ -92,6 +92,7 @@ async function loadPreview() {
   loading.value = true;
   try {
     const data = await businessReportApi.preview({ ...params.value });
+    if (data.simulated || data.source_mode !== 'live') throw new Error('返回数据不符合正式统计口径，已停止展示和导出。');
     if (guard.isCurrent(current)) { preview.value = data; refresh.value++; }
   } catch (e) { if (guard.isCurrent(current)) error.value = e.message || '报表加载失败，请重试。'; }
   finally { if (guard.isCurrent(current)) loading.value = false; }
@@ -128,6 +129,7 @@ watch(queryKey, loadPreview, { immediate: true, flush: 'post' });
         <div class="period-range"><el-icon><Calendar /></el-icon><div><strong>{{ preview?.period_label || '正在计算统计区间…' }}</strong><small>{{ preview ? preview.from + ' 至 ' + preview.to : '当前周期统计至今日' }}</small></div></div>
       </div>
     </section>
+    <el-alert title="正式统计仅纳入真实来源记录；模拟、回放及来源未知记录不计入。预览、明细和导出使用同一口径。" type="info" :closable="false" />
     <ErrorAlert :message="error" @retry="loadPreview" />
     <div v-loading="loading" class="report-content" :aria-busy="loading" element-loading-text="正在汇总业务数据…">
       <template v-if="ready">

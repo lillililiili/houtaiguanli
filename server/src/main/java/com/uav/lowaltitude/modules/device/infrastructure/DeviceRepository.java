@@ -19,7 +19,7 @@ public class DeviceRepository {
             + "s.connectivity AS state,d.device_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,d.region_name AS region,"
             + "CASE WHEN d.simulated=TRUE AND d.source_mode='live' THEN 'mock' ELSE d.source_mode END AS source_mode,"
             + "d.device_no AS related,s.health_code AS result,CAST(NULL AS VARCHAR) AS note"
-            + " FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id WHERE d.deleted_at IS NULL" + mqttScope(params);
+            + " FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id WHERE d.deleted_at IS NULL" + deviceScope(params);
         return new com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset(sql, params);
     }
 
@@ -87,7 +87,7 @@ public class DeviceRepository {
         Map<String,Object> params=new HashMap<>();
         params.put("device_id",deviceId);
         List<Map<String, Object>> rows = named.queryForList(
-                DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL" + mqttScope(params), params);
+                DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL" + deviceScope(params), params);
         return rows.isEmpty() ? null : rows.get(0);
     }
 
@@ -151,6 +151,13 @@ public class DeviceRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public List<Map<String,Object>> distinctTypes() {
+        Map<String,Object> params=new HashMap<>();
+        return named.queryForList("SELECT DISTINCT d.device_type_code,d.device_type_name FROM ops_device d"
+                + " WHERE d.deleted_at IS NULL AND d.device_type_code IS NOT NULL AND d.device_type_code<>''"
+                + deviceScope(params) + " ORDER BY d.device_type_name,d.device_type_code",params);
+    }
+
     public List<String> distinct(String column) {
         String safe = switch (column) {
             case "type" -> "device_type_name";
@@ -161,11 +168,22 @@ public class DeviceRepository {
         };
         Map<String,Object> params=new HashMap<>();
         return named.queryForList("SELECT DISTINCT " + safe + " FROM ops_device d WHERE " + safe
-                + " IS NOT NULL AND " + safe + "<>'' AND d.deleted_at IS NULL" + mqttScope(params) + " ORDER BY " + safe,params,String.class);
+                + " IS NOT NULL AND " + safe + "<>'' AND d.deleted_at IS NULL" + deviceScope(params) + " ORDER BY " + safe,params,String.class);
     }
 
     public Map<String, Object> overview() {
+        return overview(null);
+    }
+
+    public Map<String, Object> overview(String ownerOrgId) { return overview(ownerOrgId, false); }
+
+    public Map<String, Object> overview(String ownerOrgId, boolean formalOnly) {
         Map<String,Object> params=new HashMap<>();
+        String ownerFilter = "";
+        if (ownerOrgId != null) {
+            params.put("overview_org_id", ownerOrgId);
+            ownerFilter = " AND EXISTS (SELECT 1 FROM device_business_scope selected_scope WHERE selected_scope.ops_device_id=d.device_id AND selected_scope.owner_org_id=:overview_org_id)";
+        }
         return named.queryForMap("""
                 SELECT COUNT(*) AS total,
                        SUM(CASE WHEN s.connectivity='ONLINE' THEN 1 ELSE 0 END) AS online,
@@ -178,7 +196,7 @@ public class DeviceRepository {
                        ,SUM(CASE WHEN d.source_mode='live' THEN 1 ELSE 0 END) AS live_count
                        ,SUM(CASE WHEN d.simulated=TRUE THEN 1 ELSE 0 END) AS simulated_count
                 FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id
-                """ + " WHERE d.deleted_at IS NULL" + mqttScope(params),params);
+                """ + " WHERE d.deleted_at IS NULL" + deviceScope(params) + ownerFilter + (formalOnly ? " AND d.source_mode='live' AND d.simulated=FALSE" : ""),params);
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn) {
@@ -190,7 +208,7 @@ public class DeviceRepository {
                 + "SUM(CASE WHEN s.connectivity='ABNORMAL' THEN 1 ELSE 0 END) AS abnormal, "
                 + "SUM(CASE WHEN s.connectivity IS NULL OR s.connectivity='UNKNOWN' THEN 1 ELSE 0 END) AS unknown_count "
                 + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id "
-                + "WHERE d.deleted_at IS NULL" + mqttScope(params) + " GROUP BY " + safe + " ORDER BY " + safe,params);
+                + "WHERE d.deleted_at IS NULL" + deviceScope(params) + " GROUP BY " + safe + " ORDER BY " + safe,params);
     }
 
     public void insertDevice(Map<String, Object> values) {
@@ -313,12 +331,49 @@ public class DeviceRepository {
     }
 
     public List<Map<String, Object>> events(String deviceId, long afterSeq, int limit) {
+        return events(deviceId, afterSeq, limit, false);
+    }
+
+    public List<Map<String, Object>> events(String deviceId, long afterSeq, int limit, boolean latest) {
         Map<String, Object> p = new HashMap<>();
-        StringBuilder sql = new StringBuilder("SELECT e.*, d.device_no, d.name AS device_name FROM device_event_log e LEFT JOIN ops_device d ON d.device_id=e.device_id WHERE e.event_seq>:after_seq");
+        StringBuilder sql = new StringBuilder("""
+                SELECT publication.event_seq AS event_seq,e.event_id,e.device_id,e.event_type,e.level_code,
+                    e.message,e.occurred_at,e.simulated,d.device_no,d.name AS device_name
+                FROM device_event_log e JOIN device_event_publication publication ON publication.raw_event_seq=e.event_seq
+                JOIN ops_device d ON d.device_id=e.device_id
+                WHERE d.deleted_at IS NULL AND publication.event_seq>:after_seq
+                """);
         p.put("after_seq", afterSeq); p.put("limit", limit);
         add(sql, p, "e.device_id", "device_id", deviceId);
-        sql.append(" ORDER BY e.event_seq OFFSET 0 ROWS FETCH NEXT :limit ROWS ONLY");
-        return named.queryForList(sql.toString(), p);
+        sql.append(eventScope(p));
+        boolean recent = latest && afterSeq == 0;
+        sql.append(recent ? " ORDER BY publication.event_seq DESC" : " ORDER BY publication.event_seq");
+        sql.append(" OFFSET 0 ROWS FETCH NEXT :limit ROWS ONLY");
+        String query = recent ? "SELECT * FROM (" + sql + ") recent_events ORDER BY event_seq" : sql.toString();
+        return named.queryForList(query, p);
+    }
+
+    public boolean eventDeviceVisible(String deviceId) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("device_id", deviceId);
+        return named.queryForObject("SELECT COUNT(*) FROM ops_device d WHERE d.device_id=:device_id AND d.deleted_at IS NULL"
+                + eventScope(p), p, Long.class) > 0;
+    }
+
+    // Monitoring logs use the same explicit, enabled organization/district tuple as device information.
+    private String eventScope(Map<String, Object> params) {
+        var actor = com.uav.lowaltitude.platform.security.AuthContext.get();
+        if (actor == null) return " AND 1=0";
+        if ("ALL".equals(actor.scopeMode())) return "";
+        if (!"ASSIGNED".equals(actor.scopeMode())) return " AND 1=0";
+        params.put("event_scope_user", actor.userId());
+        return """
+                 AND EXISTS (SELECT 1 FROM device_business_scope bs
+                 JOIN app_user_data_scope us ON us.org_id=bs.owner_org_id AND us.district_id=bs.district_id
+                 JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE
+                 JOIN app_district district ON district.district_id=bs.district_id AND district.enabled=TRUE
+                 WHERE bs.ops_device_id=d.device_id AND us.user_id=:event_scope_user)
+                """;
     }
 
     public void addEvent(String eventId, String deviceId, String type, String level, String message, long now, boolean simulated) {
@@ -519,7 +574,7 @@ public class DeviceRepository {
     private SqlWhere where(DeviceQuery q) {
         Map<String, Object> p = new HashMap<>();
         StringBuilder sql = new StringBuilder(" WHERE d.deleted_at IS NULL");
-        sql.append(mqttScope(p));
+        sql.append(deviceScope(p));
         if (q.keyword != null && !q.keyword.isBlank()) {
             sql.append(" AND (LOWER(d.device_no) LIKE :keyword OR LOWER(d.name) LIKE :keyword)");
             p.put("keyword", "%" + q.keyword.toLowerCase() + "%");
@@ -573,16 +628,18 @@ public class DeviceRepository {
         return named.query(sql.toString(), params, (rs, row) -> rs.getString(1));
     }
 
-    // Preserve legacy device visibility while enforcing explicit tuple scope for the new MQTT registrations.
-    private String mqttScope(Map<String,Object> params) {
+    // All device protocols share the same explicit organization/district authorization tuple.
+    private String deviceScope(Map<String,Object> params) {
         var actor=com.uav.lowaltitude.platform.security.AuthContext.get();
         if(actor==null || "ALL".equals(actor.scopeMode())) return "";
-        params.put("mqtt_actor",actor.userId());
+        if(!"ASSIGNED".equals(actor.scopeMode())) return " AND 1=0";
+        params.put("device_scope_actor",actor.userId());
         return """
-                 AND ((COALESCE(d.device_type_code,'') <> 'weather_sensor' AND NOT EXISTS(SELECT 1 FROM mqtt_device_binding mb WHERE mb.ops_device_id=d.device_id))
-                 OR EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_user_data_scope us
+                 AND EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_user_data_scope us
                      ON us.org_id=bs.owner_org_id AND us.district_id=bs.district_id
-                     WHERE bs.ops_device_id=d.device_id AND us.user_id=:mqtt_actor))
+                     JOIN app_org org ON org.org_id=bs.owner_org_id AND org.enabled=TRUE
+                     JOIN app_district district ON district.district_id=bs.district_id AND district.enabled=TRUE
+                     WHERE bs.ops_device_id=d.device_id AND us.user_id=:device_scope_actor)
                 """;
     }
 

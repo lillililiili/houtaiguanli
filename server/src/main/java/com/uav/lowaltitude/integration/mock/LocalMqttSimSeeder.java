@@ -29,7 +29,7 @@ import com.uav.lowaltitude.platform.security.AuthUser;
  * S85R1 是凌云 MQTT 雷达回放，不是现场 T02 TCP。生产 profile 不注册。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(52)
 public class LocalMqttSimSeeder implements ApplicationRunner {

@@ -21,7 +21,7 @@ import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
  * source_mode=live 且 simulated=true；CIDR 仅 127.0.0.1/32。不写现场地址 192.168.0.7。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(53)
 public class LocalCountermeasure4ChSeeder implements ApplicationRunner {

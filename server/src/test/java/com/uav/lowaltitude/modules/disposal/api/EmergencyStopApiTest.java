@@ -364,13 +364,16 @@ class EmergencyStopApiTest {
 
     @Test
     void approvedOnlyStopCancelsExecutionWithoutInventingPhysicalConfirmationWork() throws Exception {
+        requester = user("disposal:read", "disposal:request", "disposal:stop");
         String historical = authorization("COUNTERMEASURE", false);
         jdbc.update("update disposal_authorization set status='STOPPED' where authorization_id=?", historical);
         String authorization = authorization("COUNTERMEASURE", false);
         JsonNode overview = data(mvc.perform(get(path()).header("Authorization", "Bearer " + operator)).andExpect(status().isOk()));
         assertThat(overview.path("requires_device_stop").isBoolean()).isTrue();
         assertThat(overview.path("requires_device_stop").asBoolean()).isFalse();
-        JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
+        stop(operator, key()).andExpect(status().isConflict());
+        assertThat(statusOf(authorization)).isEqualTo("APPROVED");
+        JsonNode latest = data(stop(requester, key()).andExpect(status().isOk())).path("latest_stop");
         assertThat(statusOf(authorization)).isIn("CANCELLED", "STOPPED");
         for (JsonNode device : latest.path("devices")) {
             assertThat(device.path("stop_status").asText()).isEqualTo("NOT_REQUIRED");

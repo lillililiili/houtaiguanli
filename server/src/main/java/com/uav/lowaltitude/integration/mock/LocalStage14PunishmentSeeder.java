@@ -25,7 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 表现是所有用例全红，排查方向会被带偏（阶段 13 已经吃过两次这个亏）。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @DependsOn({"localStage13DisposalSeeder"})
 @Order(110)

@@ -61,7 +61,7 @@ class AutomationRuntimeFactsRepositoryTest {
         jdbc.update("INSERT INTO target_latest_state VALUES('target',?)",at(NOW));
         states=mock(RuleEngineRepository.class); spatial=mock(SpatialFactPort.class);
         when(states.latestState("target")).thenReturn(state(NOW));
-        when(spatial.airspaceHits(any(),any())).thenReturn(List.of());
+        when(spatial.airspaceHits(any(),any(),any())).thenReturn(List.of());
         repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),30_000);
     }
 
@@ -107,7 +107,7 @@ class AutomationRuntimeFactsRepositoryTest {
         assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
     }
     @Test void h2WithoutSpatialSupportIsUnknown() {
-        when(spatial.ambiguousEffectiveAirspaceVersion(any())).thenThrow(new ApiException(HttpStatus.INTERNAL_SERVER_ERROR,"SPATIAL_BACKEND_UNAVAILABLE","unavailable"));
+        when(spatial.ambiguousEffectiveAirspaceVersion(any(),any())).thenThrow(new ApiException(HttpStatus.INTERNAL_SERVER_ERROR,"SPATIAL_BACKEND_UNAVAILABLE","unavailable"));
         assertThat(repository.read("event",NOW).airspaceKnown()).isFalse();
         assertThat(repository.read("event",NOW).facts().get("position").value()).isNull();
     }

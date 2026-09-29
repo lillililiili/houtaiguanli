@@ -56,11 +56,22 @@ public class CountermeasureTcp4ChV20Adapter implements DeviceAdapterPort {
             byte[] response = exchange(addresses.get(0), config.port(), config.timeoutMillis(), logical, encoding);
             RelayState state = Countermeasure4ChCodec.parseResponse(
                     Countermeasure4ChCodec.decodeWire(response, encoding), address, functionOf(work.action()));
+            int actual = (int) (state.rawStatusWord() & 0x0F);
+            boolean matches = switch (work.action()) {
+                case "SET_MASK" -> actual == requiredMask(work.mask());
+                case "CHANNEL_ON" -> (actual & requiredBit(work.channelBit())) != 0;
+                case "CHANNEL_OFF" -> (actual & requiredBit(work.channelBit())) == 0;
+                default -> false;
+            };
+            if (!matches) return new AdapterResult(false, "COUNTERMEASURE_STATE_MISMATCH",
+                    "回码继电器状态与请求不一致（低四位=0x" + Integer.toHexString(actual)
+                            + "），本次设置未确认；请核查设备实际状态");
             return new AdapterResult(true, "COUNTERMEASURE_SET_OK",
-                    "继电器设置回码已解析，低四位=" + Integer.toHexString(Byte.toUnsignedInt((byte) state.rawStatusWord()))
+                    "继电器设置回码已确认，低四位=" + Integer.toHexString(actual)
                             + "；不代表射频已发射");
         } catch (SocketTimeoutException ex) {
-            return new AdapterResult(false, "ADAPTER_TIMEOUT", safe(ex));
+            return new AdapterResult(false, "ADAPTER_TIMEOUT",
+                    "设备响应超时，本次设置结果未确认；设备可能已动作，请核查实际状态");
         } catch (ProtocolException ex) {
             return new AdapterResult(false, ex.code(), ex.getMessage());
         } catch (IOException ex) {

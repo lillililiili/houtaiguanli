@@ -15,7 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 /** Stage4 风险固定夹具只在显式 local/test 开关下存在；production 即使叠加 local 也不会注册。 */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true")
 // 风险样例引用阶段 3 计划/航线版本，必须排在 LocalStage3PlanningSeeder(35) 之后、交接种子(60) 之前。
 @Order(46)

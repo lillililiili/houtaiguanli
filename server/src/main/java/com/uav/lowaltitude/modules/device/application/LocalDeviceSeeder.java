@@ -17,7 +17,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 仅测试夹具。local/integration 运行库不再预置运维模拟设备。 */
 @Component
-@Profile("test")
+@Profile("test & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(20)
 public class LocalDeviceSeeder implements ApplicationRunner {

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Edit, Plus, Setting } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, Edit, Plus, Setting } from '@element-plus/icons-vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { automationRuleApi } from '@/api/automationRules'
 import { useAuthStore } from '@/stores/auth'
@@ -20,6 +20,7 @@ const meta = computed(() => categoryMeta(category.value))
 const catalog = computed(() => (group.value?.catalog || []).map(item => ({ ...item, used: group.value?.rules?.some(rule => rule.item_code === item.code) })))
 const mayCreate = computed(() => canManage.value && catalog.value.some(item => !item.used))
 const policyText = computed(() => {
+  if (group.value?.execution_status !== 'CONNECTED') return group.value?.execution_message || '当前执行服务未连接，规则配置不会触发自动动作。'
   if (!count.value) return `未启用规则时，不会自动${meta.value.noun}。`
   if (category.value === 'verify') return '适用范围内，已启用规则全部满足后，系统自动核实属实，并进入飞手通知。'
   if (category.value === 'counter') return '进入待反制且规则全部满足后，系统自动发起反制。证据、急停和唯一可用设备仍要过。没满足也不会关掉「发起反制」。'
@@ -37,6 +38,14 @@ async function saveRule(payload) {
   if (success) { editorVisible.value = false; ElMessage.success('规则配置已保存') }
 }
 async function toggleRule(rule, enabled) { if (!canManage.value) return; const success = await mutate(state => automationRuleApi.setRuleEnabled(category.value, rule.rule_id, { enabled, expected_version: state.version })); if (success) ElMessage.success(enabled ? '规则已启用' : '规则已停用') }
+async function removeRule(rule) {
+  if (!canManage.value) return
+  try {
+    await ElMessageBox.confirm(`删除后将不再参与自动判断，且无法恢复。确定删除“${rule.name}”？`, '删除规则', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning', confirmButtonClass: 'el-button--danger' })
+  } catch { return }
+  const success = await mutate(state => automationRuleApi.deleteRule(category.value, rule.rule_id, { expected_version: state.version }))
+  if (success) ElMessage.success('规则已删除')
+}
 async function saveSettings(payload) { const success = await mutate(state => automationRuleApi.updateSettings(category.value, { ...payload, expected_version: state.version })); if (success) { settingsVisible.value = false; ElMessage.success('生效设置已保存') } }
 onMounted(() => load())
 watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.value = false; editingRule.value = null })
@@ -58,10 +67,10 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
           <el-table-column label="条件要求" min-width="190"><template #default="{ row }">{{ conditionText(row, group.catalog) }}</template></el-table-column>
           <el-table-column label="持续满足" min-width="100"><template #default="{ row }">{{ row.hold_seconds > 0 ? `连续 ${row.hold_seconds} 秒` : '即时判断' }}</template></el-table-column>
           <el-table-column label="配置状态" min-width="125"><template #default="{ row }"><el-switch :model-value="row.enabled" :disabled="!canManage || saving" inline-prompt active-text="已启用" inactive-text="已停用" @change="toggleRule(row, $event)" /></template></el-table-column>
-          <el-table-column label="操作" min-width="80"><template #default="{ row }"><el-button class="rule-edit" text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button></template></el-table-column>
+          <el-table-column label="操作" min-width="130"><template #default="{ row }"><el-button class="rule-edit" text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button><el-button class="rule-edit" type="primary" :icon="Delete" :disabled="!canManage || saving" @click="removeRule(row)">删除</el-button></template></el-table-column>
           <template #empty><el-empty :description="emptyText" /></template>
         </el-table>
-        <div v-loading="loading" class="rule-cards"><article v-for="row in group.rules" :key="row.rule_id"><div class="card-heading"><strong>{{ row.name }}</strong><el-switch :model-value="row.enabled" :disabled="!canManage || saving" inline-prompt active-text="已启用" inactive-text="已停用" @change="toggleRule(row, $event)" /></div><p>{{ conditionText(row, group.catalog) }}</p><p>{{ row.hold_seconds > 0 ? `持续满足：连续 ${row.hold_seconds} 秒` : '持续满足：即时判断' }}</p><small>更新于 {{ formatTime(row.updated_at) }}<template v-if="row.updated_by"> · {{ row.updated_by }}</template></small><el-button class="rule-edit" text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button></article><el-empty v-if="!group.rules.length" :description="emptyText" /></div>
+        <div v-loading="loading" class="rule-cards"><article v-for="row in group.rules" :key="row.rule_id"><div class="card-heading"><strong>{{ row.name }}</strong><el-switch :model-value="row.enabled" :disabled="!canManage || saving" inline-prompt active-text="已启用" inactive-text="已停用" @change="toggleRule(row, $event)" /></div><p>{{ conditionText(row, group.catalog) }}</p><p>{{ row.hold_seconds > 0 ? `持续满足：连续 ${row.hold_seconds} 秒` : '持续满足：即时判断' }}</p><small>更新于 {{ formatTime(row.updated_at) }}<template v-if="row.updated_by"> · {{ row.updated_by }}</template></small><el-button class="rule-edit" text type="primary" :icon="Edit" :disabled="!canManage || saving" @click="openEditor(row)">编辑</el-button><el-button class="rule-edit" type="primary" :icon="Delete" :disabled="!canManage || saving" @click="removeRule(row)">删除</el-button></article><el-empty v-if="!group.rules.length" :description="emptyText" /></div>
         <footer class="table-foot">数据不足时继续补充 {{ group.settings.insufficient_wait_seconds }} 秒，仍无结论则转为异常处理，不自动通过。</footer><p v-if="!canManage" class="readonly-note">当前账号只能查看规则配置。</p>
       </template><el-skeleton v-else-if="loading" :rows="6" animated />
     </el-card>

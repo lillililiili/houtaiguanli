@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.*;
@@ -23,6 +24,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class MqttConfigurationService {
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final MqttRepository repository;
     private final EoEdgeRepository edges;
     private final DeviceAccessPolicy permissions;
@@ -35,7 +37,8 @@ public class MqttConfigurationService {
 
     public MqttConfigurationService(MqttRepository repository, EoEdgeRepository edges, DeviceAccessPolicy permissions,
             AccessService access, IdempotencyGuard idempotency, AuditService audit, AppClock clock,
-            MqttNetworkPolicy network, EnvironmentCredentialResolver credentials) {
+            MqttNetworkPolicy network, EnvironmentCredentialResolver credentials, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.repository=repository; this.edges=edges; this.permissions=permissions; this.access=access;
         this.idempotency=idempotency; this.audit=audit; this.clock=clock; this.network=network; this.credentials=credentials;
     }
@@ -92,6 +95,7 @@ public class MqttConfigurationService {
         return requiredBroker(id,false);
     }
     public void validateConnection(Broker broker) {
+        simulation.requireSourceMode(broker.sourceMode());
         network.resolve(broker);
         if(broker.sourceMode().equals("live") && (broker.username()==null || broker.username().isBlank()
                 || broker.credentialRef()==null || broker.credentialRef().isBlank()))
@@ -109,6 +113,8 @@ public class MqttConfigurationService {
         try {
             String id=eo(p)?edges.register(p,clock.nowMillis()):repository.register(p,clock.nowMillis());
             record("mqtt_device_register",id); return id;
+        } catch(DuplicateKeyException ex) {
+            throw conflict("DEVICE_IDENTITY_CONFLICT", "设备编号或接入身份已存在（包括退役记录），请核对后使用新的设备身份");
         } catch(IllegalArgumentException ex) {
             if("EDGE_IDENTITY_CONFLICT".equals(ex.getMessage())) throw bad("该 edgeId 已绑定到其他 MQTT 连接或组织区域");
             throw ex;
@@ -152,19 +158,20 @@ public class MqttConfigurationService {
         var eo=edges.binding(id,true);
         if(eo!=null) {
             Broker broker=requiredBroker(eo.brokerId(),true);
-            if(enabled && broker.sourceMode().equals("live")) validateConnection(broker);
+            if(enabled) validateConnection(broker);
             idempotency.claim(key,"mqtt.device.enable:"+id+":"+version+":"+enabled);
             if(edges.enableDevice(eo,version,enabled,clock.nowMillis())!=1) throw versionConflict();
             record(enabled?"mqtt_device_enable":"mqtt_device_disable",id); return;
         }
         Binding b=binding(id);
         Broker broker=requiredBroker(b.brokerId(),true); repository.binding(id,true);
-        if(enabled && broker.sourceMode().equals("live")) validateConnection(broker);
+        if(enabled) validateConnection(broker);
         idempotency.claim(key,"mqtt.device.enable:"+id+":"+version+":"+enabled);
         if(repository.enableDevice(b,version,enabled,clock.nowMillis())!=1) throw versionConflict();
         record(enabled?"mqtt_device_enable":"mqtt_device_disable",id);
     }
     public Map<String,Object> status(String id) {
+        var actor = permissions.requireMonitoringRead();
         var eo=edges.binding(id,false);
         if(eo!=null) {
             scope(eo.ownerOrgId(),eo.districtId());
@@ -179,9 +186,11 @@ public class MqttConfigurationService {
             status.put("edge_id",eo.edgeId());
             status.put("external_device_id",eo.externalDeviceId());
             status.put("broker_id",eo.brokerId());
-            return status;
+            return monitoringStatus(status, permissions.canOperateDevices(actor));
         }
-        Binding b=binding(id);
+        Binding b=repository.binding(id,false);
+        if(b==null) throw new ApiException(HttpStatus.NOT_FOUND,"DEVICE_NOT_FOUND","MQTT 设备不存在");
+        scope(b.ownerOrgId(),b.districtId());
         Map<String,Object> status=repository.status(id);
         if(((Number)status.get("lease_until")).longValue()<=clock.nowMillis() || !Boolean.TRUE.equals(status.get("broker_enabled"))) {
             status.put("connection_state","DISCONNECTED"); status.put("subscribed",false);
@@ -191,7 +200,21 @@ public class MqttConfigurationService {
         status.put("control_enabled", LingyunControlEnvelope.controllable(b.deviceTypeAbbr()));
         status.put("emergency_stop","设备协议未提供");
         status.put("source_label",b.sourceMode().equals("replay")?"模拟回放":"真实来源，待联调");
-        return status;
+        return monitoringStatus(status, permissions.canOperateDevices(actor));
+    }
+    private Map<String,Object> monitoringStatus(Map<String,Object> status, boolean connectionVisible) {
+        if (connectionVisible) return status;
+        // Monitoring permission exposes operational facts, not binding payloads, topics or raw connection errors.
+        Map<String,Object> visible = new java.util.LinkedHashMap<>();
+        for (String key : List.of("connection_state", "subscribed", "broker_enabled", "lease_until",
+                "last_heartbeat_at", "last_received_at", "last_static_received_at", "last_pt_time", "last_msg_cnt",
+                "control_enabled", "emergency_stop", "source_label", "source_mode")) {
+            if (status.containsKey(key)) visible.put(key, status.get(key));
+        }
+        Object error = status.get("last_error");
+        if (error != null && !String.valueOf(error).isBlank())
+            visible.put("last_error", "连接异常，详细诊断需设备操作权限");
+        return visible;
     }
     private Broker requiredBroker(String id,boolean lock) {
         Broker broker=repository.broker(id,lock);
@@ -228,7 +251,8 @@ public class MqttConfigurationService {
     private void segment(String value,int max) {
         required(value,max); if(value.matches(".*[/+#\\s\\x00].*")) throw bad("提供方和外部设备编号不能含 Topic 分隔符、通配符或空白");
     }
-    private void mode(String value) { if(!"live".equals(value) && !"replay".equals(value)) throw bad("来源须为 replay 或 live"); }
+    public boolean sourceAllowed(String value) { return simulation.includes(value); }
+    private void mode(String value) { simulation.requireSourceMode(value); if(!"live".equals(value) && !"replay".equals(value)) throw bad("来源须为 replay 或 live"); }
     private void required(String value,int max) { if(value==null || value.isBlank() || value.length()>max || !value.equals(value.trim())) throw bad("必填字段为空、超长或含首尾空格"); }
     private void record(String action,String id) { var actor=AuthContext.require(); audit.record(actor.userId(),actor.account(),action,"mqtt",id,"配置已更新",null); }
     private static ApiException bad(String message) { return new ApiException(HttpStatus.BAD_REQUEST,"MQTT_CONFIG_INVALID",message); }

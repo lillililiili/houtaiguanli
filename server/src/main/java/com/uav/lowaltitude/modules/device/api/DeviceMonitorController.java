@@ -79,7 +79,8 @@ public class DeviceMonitorController {
     public ApiResponse<DeviceService.EventBatch> events(
             @RequestParam(name = "device_id", required = false) String deviceId,
             @RequestParam(name = "after_seq", defaultValue = "0") long afterSeq,
-            @RequestParam(defaultValue = "100") int limit) {
-        return ApiResponse.ok(service.events(deviceId, afterSeq, limit));
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(defaultValue = "false") boolean latest) {
+        return ApiResponse.ok(service.events(deviceId, afterSeq, limit, latest));
     }
 }

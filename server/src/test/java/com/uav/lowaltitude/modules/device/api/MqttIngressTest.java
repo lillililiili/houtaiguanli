@@ -16,6 +16,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -34,7 +35,8 @@ import com.uav.lowaltitude.platform.security.*;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 @SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:mqtt_p1;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
-        "app.mqtt.enabled=false","app.fusion.enabled=false","app.rule-engine.enabled=false"})
+        "app.mqtt.enabled=false","app.fusion.enabled=false","app.rule-engine.enabled=false",
+        "app.device-monitor-events.enabled=false"})
 @ActiveProfiles("test")
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class MqttIngressTest {
@@ -93,6 +95,83 @@ class MqttIngressTest {
     }
     private long inboxCount(Binding b) { return jdbc.queryForObject("SELECT COUNT(*) FROM inbox_message WHERE source=?",Long.class,b.source()); }
     private static String key() { return UUID.randomUUID().toString(); }
+
+    @Test void futureClockCannotPoisonHeartbeatOrSensingWatermarks() {
+        Binding b = register("radar");
+        long now = clock.nowMillis();
+        long future = now + 86_400_000;
+        receive(b, heartbeat("radar", 1, future), false, 90, false, false);
+        receive(b, sense(future, 100), true, 91, false, false);
+        Binding rejected = repository.binding(b.opsDeviceId(), false);
+        assertThat(rejected.lastPtTime()).isNull();
+        assertThat(rejected.lastStaticPtTime()).isNull();
+        assertThat(inboxCount(b)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM mqtt_receive_diagnostic WHERE ops_device_id=? AND outcome='REJECTED' AND reason='OBSERVATION_TIME_IN_FUTURE'", Long.class, b.opsDeviceId())).isEqualTo(2);
+        receive(b, heartbeat("radar", 1, now), false, 92, false, false);
+        receive(b, sense(now, 1), true, 93, false, false);
+        Binding recovered = repository.binding(b.opsDeviceId(), false);
+        assertThat(recovered.lastPtTime()).isEqualTo(now);
+        assertThat(recovered.lastStaticPtTime()).isEqualTo(now);
+        assertThat(inboxCount(b)).isOne();
+    }
+
+    @Test void protocolAFaultIsVisibleAndRecoveryDoesNotInventGoodHealth() {
+        Binding b = register("radar");
+        receive(b, heartbeat("radar", 1, 1000L), false, 120, false, false);
+        assertThat(devices.state(b.opsDeviceId()).connectivity()).isEqualTo("ONLINE");
+        receive(b, heartbeat("radar", 2, 2000L), false, 121, false, false);
+        assertThat(devices.state(b.opsDeviceId()).connectivity()).isEqualTo("ABNORMAL");
+        assertThat(devices.state(b.opsDeviceId()).workStateCode()).isEqualTo("2");
+        repository.expire(clock.nowMillis() + 31_000);
+        assertThat(devices.state(b.opsDeviceId()).connectivity()).isEqualTo("OFFLINE");
+        receive(b, heartbeat("radar", 1, 3000L), false, 122, false, false);
+        assertThat(devices.state(b.opsDeviceId()).connectivity()).isEqualTo("ONLINE");
+        assertThat(devices.state(b.opsDeviceId()).healthCode()).isEqualTo("UNKNOWN");
+    }
+
+    @Test void retiredIdentityCannotBeRegisteredAgainAndLeavesNoPartialSources() {
+        Registration p = registration("radar");
+        String id = configuration.register(p, key());
+        configuration.enableDevice(id, 0, false, key());
+        devices.delete(id, 1, "测试退役设备身份保留", key());
+        long sources = jdbc.queryForObject("SELECT COUNT(*) FROM integration_source", Long.class);
+        assertThatThrownBy(() -> configuration.register(p, key()))
+                .isInstanceOf(com.uav.lowaltitude.platform.api.ApiException.class)
+                .satisfies(ex -> {
+                    var api = (com.uav.lowaltitude.platform.api.ApiException) ex;
+                    assertThat(api.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+                    assertThat(api.getCode()).isEqualTo("DEVICE_IDENTITY_CONFLICT");
+                });
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM integration_source", Long.class)).isEqualTo(sources);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?", Long.class, p.deviceNo())).isOne();
+        assertThat(jdbc.queryForObject("SELECT deleted_at FROM ops_device WHERE device_id=?", Long.class, id)).isNotNull();
+    }
+
+    @Test void monitoringCountsOnlyFreshReportsAndRecordsConnectivityTransitionsOnce() {
+        Binding b = register("radar");
+        receive(b, heartbeat("radar", 0, 2000L), false, 81, false, false);
+        receive(b, heartbeat("radar", 0, 2000L), false, 81, false, true);
+        receive(b, heartbeat("radar", 1, 1000L), false, 82, false, false);
+        receive(b, sense(2000, 1), true, 83, false, false);
+        receive(b, sense(2000, 1), true, 84, false, false);
+        receive(b, sense(1000, 0), true, 85, false, false);
+        assertThat(jdbc.queryForObject("SELECT SUM(parameters_count) FROM device_report_window WHERE device_id=?", Long.class, b.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT SUM(sensing_count) FROM device_report_window WHERE device_id=?", Long.class, b.opsDeviceId())).isOne();
+        assertThat(eventCount(b, "REPORTING_STARTED")).isOne();
+        assertThat(eventCount(b, "CONNECTED")).isOne();
+        repository.expire(clock.nowMillis() + 31_000);
+        repository.expire(clock.nowMillis() + 31_000);
+        assertThat(eventCount(b, "DISCONNECTED")).isOne();
+        receive(b, sense(3000, 2), true, 86, false, false);
+        assertThat(devices.state(b.opsDeviceId()).connectivity()).isEqualTo("OFFLINE");
+        receive(b, heartbeat("radar", 1, 4000L), false, 87, false, false);
+        assertThat(eventCount(b, "RECOVERED")).isOne();
+        receive(b, heartbeat("radar", 0, 5000L), false, 88, false, false);
+        assertThat(eventCount(b, "STATE_CHANGED")).isOne();
+    }
+    private long eventCount(Binding b, String type) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type=?", Long.class, b.opsDeviceId(), type);
+    }
 
     @Test void heartbeatOutageCreatesOneIncidentAndOnlyFreshHeartbeatCanRecoverIt() throws Exception {
         Binding b = register("radar");
@@ -233,7 +312,8 @@ class MqttIngressTest {
     @Test void registrationRollbackIdempotencyVersionAndPermissions() {
         var p=registration("radar"); configuration.register(p,key());
         long before=jdbc.queryForObject("SELECT COUNT(*) FROM integration_source",Long.class);
-        assertThatThrownBy(() -> configuration.register(p,key())).isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> configuration.register(p,key())).isInstanceOf(com.uav.lowaltitude.platform.api.ApiException.class)
+                .hasMessageContaining("接入身份已存在");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM integration_source",Long.class)).isEqualTo(before);
         assertThatThrownBy(() -> configuration.enable(brokerId,0,false,key())).hasMessageContaining("刷新");
         String repeat=key(); configuration.enable(brokerId,1,false,repeat);
@@ -278,8 +358,22 @@ class MqttIngressTest {
         assertThatThrownBy(() -> receive(b,sense(1000,1),true,8,false,false)).isInstanceOf(DataAccessResourceFailureException.class);
         assertThat(inboxCount(b)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM mqtt_delivery_receipt WHERE broker_id=?",Long.class,brokerId)).isZero();
+        assertThat(eventCount(b,"REPORTING_STARTED")).isZero();
         receive(b,sense(1000,1),true,8,false,true);
         assertThat(inboxCount(b)).isOne();
+    }
+
+    @Test void failureAfterMonitoringWriteRollsBackStateEventAndWindowTogether() {
+        Binding b=register("radar");
+        doThrow(new DataAccessResourceFailureException("injected diagnostic failure")).doCallRealMethod()
+                .when(repository).diagnostic(anyString(),anyString(),anyString(),anyString(),anyLong(),anyString(),anyString());
+        assertThatThrownBy(() -> receive(b,heartbeat("radar",0,1000L),false,91,false,false))
+                .isInstanceOf(DataAccessResourceFailureException.class);
+        assertThat(eventCount(b,"REPORTING_STARTED")).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_report_window WHERE device_id=?",Long.class,b.opsDeviceId())).isZero();
+        assertThat(devices.state(b.opsDeviceId()).connectivity()).isEqualTo("UNKNOWN");
+        receive(b,heartbeat("radar",0,1000L),false,91,false,true);
+        assertThat(eventCount(b,"REPORTING_STARTED")).isOne();
     }
     @Test void realMqttRedeliveryReconnectAndServiceRestartUsePersistentSession() throws Exception {
         int port;

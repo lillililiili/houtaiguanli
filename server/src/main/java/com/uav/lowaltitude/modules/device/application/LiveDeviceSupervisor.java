@@ -127,7 +127,7 @@ public class LiveDeviceSupervisor {
                     }
 
                     @Override public void frame(RadarV300Codec.RadarFrame frame, byte[] raw, long receivedAt) {
-                        handleRadarFrame(sourceId, deviceId, deviceNo, sourceCode, frame, raw, receivedAt);
+                        handleRadarFrame(sourceId, deviceId, deviceNo, sourceCode, token, frame, raw, receivedAt);
                     }
 
                     @Override public void invalidFrames(long count) {
@@ -136,7 +136,7 @@ public class LiveDeviceSupervisor {
                 });
     }
 
-    private void handleRadarFrame(String sourceId, String deviceId, String deviceNo, String sourceCode,
+    private void handleRadarFrame(String sourceId, String deviceId, String deviceNo, String sourceCode, String sessionToken,
                                   RadarV300Codec.RadarFrame frame, byte[] raw, long receivedAt) {
         String key = null;
         try {
@@ -147,26 +147,21 @@ public class LiveDeviceSupervisor {
             } else if (frame.command() == RadarV300Codec.COMMAND_UPLOAD_TARGET_V3) {
                 PointBatch batch = RadarV300PayloadDecoder.points(frame.payload());
                 key = messageKey(deviceId, batch.radarBootMicros(), frame.command(), batch.payloadFrameId());
-                if (!protocolData.insertInbox(sourceId, deviceId, key, raw, receivedAt)) return;
-                protocolData.savePointSummary(deviceId, batch, receivedAt);
+                if (!radarIngest.ingestPoints(sourceId, deviceId, key, batch, raw, receivedAt)) return;
             } else if (frame.command() == RadarV300Codec.COMMAND_UPLOAD_RTK) {
                 Rtk rtk = RadarV300PayloadDecoder.rtk(frame.payload());
-                key = deviceId + ":rtk:" + frame.frameId();
-                if (!protocolData.insertInbox(sourceId, deviceId, key, raw, receivedAt)) return;
-                protocolData.saveRtk(deviceId, Long.toUnsignedString(frame.frameId()), rtk, receivedAt);
+                key = deviceId + ":rtk:" + sessionToken + ":" + Long.toUnsignedString(frame.frameId());
+                if (!radarIngest.ingestRtk(sourceId, deviceId, key, Long.toUnsignedString(frame.frameId()), rtk, raw, receivedAt)) return;
             } else if (frame.command() == RadarV300Codec.COMMAND_GET_REGISTER) {
                 var registers = RadarV300PayloadDecoder.registers(frame.payload());
-                key = deviceId + ":registers:" + receivedAt + ":" + frame.frameId();
-                if (!protocolData.insertInbox(sourceId, deviceId, key, raw, receivedAt)) return;
-                protocolData.saveRadarRegisters(deviceId, Long.toUnsignedString(frame.frameId()), registers, receivedAt);
+                key = deviceId + ":registers:" + sessionToken + ":" + Long.toUnsignedString(frame.frameId());
+                if (!radarIngest.ingestRegisters(sourceId, deviceId, key, Long.toUnsignedString(frame.frameId()), registers, raw, receivedAt)) return;
             } else return;
-            protocolData.inboxProcessed(deviceId, key, receivedAt);
         } catch (Exception ex) {
             if (key == null) {
                 key = deviceId + ":invalid:" + frame.command() + ":" + frame.frameId();
-                protocolData.insertInbox(sourceId, deviceId, key, raw, receivedAt);
             }
-            protocolData.inboxFailed(deviceId, key, ex.getMessage(), receivedAt);
+            protocolData.recordInboxFailure(sourceId, deviceId, key, raw, ex.getMessage(), receivedAt);
         }
     }
 

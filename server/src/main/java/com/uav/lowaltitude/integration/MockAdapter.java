@@ -3,10 +3,11 @@ package com.uav.lowaltitude.integration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
+@org.springframework.context.annotation.Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @Component
 /* 全局 mock 模式，或 local 显式打开 app.device.mock-adapter.enabled（决策 15-59）：注册表只把它路由给 source_mode=mock 的设备，
    live 设备不受影响；不开它，本地演示种子里的模拟设备在调测/重启时会一律 503「设备协议适配器不可用」。 */
-@ConditionalOnExpression("'${app.source-mode:mock}'.equals('mock') or ${app.device.mock-adapter.enabled:false}")
+@ConditionalOnExpression("'${app.source-mode:live}'.equals('mock') or ${app.device.mock-adapter.enabled:false}")
 public class MockAdapter implements DeviceAdapterPort {
 
     @Override

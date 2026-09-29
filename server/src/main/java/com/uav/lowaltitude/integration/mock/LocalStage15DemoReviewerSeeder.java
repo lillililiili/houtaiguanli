@@ -28,7 +28,7 @@ import com.uav.lowaltitude.platform.config.AppProperties;
  * 双门禁（!production & (local|test) + app.dev-seed.enabled）；全部 `WHERE NOT EXISTS`，重跑幂等。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @DependsOn("localUserSeeder")
 @Order(120)

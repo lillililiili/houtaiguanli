@@ -45,6 +45,29 @@ class MqttP1PostgresTest {
 
     @Autowired JdbcTemplate jdbc;
 
+    @Test void mqttMetadataEditRetainsCoordinatesAndRejectsStaleVersion() { metadataEdit(false); }
+    @Test void edgeMetadataEditRetainsCoordinatesAndRejectsStaleVersion() { metadataEdit(true); }
+
+    private void metadataEdit(boolean edge) {
+        String id=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,longitude,latitude,altitude_m,coordinate_system,version,created_at,updated_at) VALUES (?,?,?,'雷达','测试',true,'replay',true,118.6,37.4,20,'WGS-84',0,0,0)",id,id,"before");
+        var mqtt=new com.uav.lowaltitude.modules.device.infrastructure.MqttRepository(jdbc);
+        var eo=new com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository(jdbc);
+        var mqttBinding=new com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Binding(id,id,null,null,null,null,null,null,"replay",true,null,null,null,null,null);
+        var eoBinding=new com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration.Binding(id,id,null,null,null,null,null,"replay",true,null,null,null,null);
+        var metadata=new com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Registration(null,null,null,null,null,"replay",null,null,null,"after","new-vendor","new-model",0L);
+        assertThat(edge?eo.updateDevice(eoBinding,metadata,1):mqtt.updateDevice(mqttBinding,metadata,1)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("118.6");
+        assertThat(jdbc.queryForObject("SELECT latitude FROM ops_device WHERE device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("37.4");
+        assertThat(jdbc.queryForObject("SELECT altitude_m FROM ops_device WHERE device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("20");
+        assertThat(jdbc.queryForObject("SELECT vendor FROM ops_device WHERE device_id=?",String.class,id)).isEqualTo("new-vendor");
+        assertThat(edge?eo.updateDevice(eoBinding,metadata,2):mqtt.updateDevice(mqttBinding,metadata,2)).isZero();
+        var coordinates=new com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Registration(null,null,null,null,null,"replay",null,null,null,"after","new-vendor","new-model",1L,null,new java.math.BigDecimal("118.7"),new java.math.BigDecimal("37.5"),null);
+        assertThat(edge?eo.updateDevice(eoBinding,coordinates,3):mqtt.updateDevice(mqttBinding,coordinates,3)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("118.7");
+        assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_id=?",String.class,id)).isEqualTo("WGS-84");
+    }
+
     @DynamicPropertySource
     static void postgresProperties(DynamicPropertyRegistry registry) {
         initializeSchema();

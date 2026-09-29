@@ -82,7 +82,7 @@ public class NotificationDirectoryService {
  private RecipientSnapshot blocked(RecipientSnapshot s,String reason){return new RecipientSnapshot(s.recipientId(),s.recipientName(),s.orgId(),s.orgName(),s.contactId(),s.contactName(),s.contactHint(),s.channelType(),s.endpointRef(),s.settingId(),s.configVersion(),false,reason,s.capturedAt(),s.templateCode(),s.templateVersion(),s.receiptRequirement(),s.contactVersion());}
  private DeliveryOutcome unknownDelivery(){return new DeliveryOutcome("SUBMITTED","PENDING",null,"DELIVERY_OUTCOME_UNKNOWN",null,null,null);}
  private DeliveryOutcome unavailable(String reason){return new DeliveryOutcome("PENDING_DELIVERY","NOT_EXPECTED",null,reason,null,null,null);}
- private boolean simulationEnvironment(){return env.acceptsProfiles(Profiles.of("local","test"))&&!env.acceptsProfiles(Profiles.of("prod","production"));}
+ private boolean simulationEnvironment(){return env.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))&&!env.acceptsProfiles(Profiles.of("prod","production"));}
  private static String contactRole(String purpose){return switch(purpose){case "PLAN_FEEDBACK"->"PLAN_LIAISON";case "DEVICE_MAINTENANCE"->"MAINTENANCE";default->"UNIT_LIAISON";};}
  private static int templateVersion(String purpose){return "UAV_PUNISHMENT".equals(purpose)?2:1;}
  private static String template(String purpose){return switch(purpose){case "PLAN_FEEDBACK"->"PLAN_DEVICE_CHECK_V1";case "RISK_NOTICE"->"RISK_SUPERIOR_NOTICE_V1";case "ADVISORY_SMS"->"PILOT_ADVISORY_SMS_V1";case "ADVISORY_VOICE"->"PILOT_EXISTING_RECORDING_V1";case "UAV_PUNISHMENT"->"UAV_PUNISHMENT_MATERIAL_V2";default->"DEVICE_MAINTENANCE_NOTICE_V1";};}

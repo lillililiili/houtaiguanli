@@ -6,7 +6,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.modules.device.api.TargetVideoController.TargetVideoDto;
 import com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration.Binding;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
@@ -14,6 +13,7 @@ import com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository;
 import com.uav.lowaltitude.modules.target.application.TargetReadService;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.time.AppClock;
+import com.uav.lowaltitude.modules.device.infrastructure.VideoMediaClient;
 
 /** A read never starts tracking, consumes evidence, or substitutes simulation for a live stream. */
 @Service
@@ -24,15 +24,52 @@ public class TargetVideoService {
     private final DeviceRepository devices;
     private final ObjectMapper mapper;
     private final AppClock clock;
+    private final VideoStreamRegistry streams;
+    private final VideoMediaClient media;
+    private final long reportMaxAge;
+    private final long heartbeatMaxAge;
 
     public TargetVideoService(DeviceAccessPolicy access, TargetReadService targets, EoEdgeRepository edges,
-                              DeviceRepository devices, ObjectMapper mapper, AppClock clock) {
+                              DeviceRepository devices, ObjectMapper mapper, AppClock clock,
+                              VideoStreamRegistry streams, VideoMediaClient media,
+                              @org.springframework.beans.factory.annotation.Value("${app.eo-edge.position-max-age-millis:15000}") long reportMaxAge,
+                              @org.springframework.beans.factory.annotation.Value("${app.eo-edge.heartbeat-timeout-millis:30000}") long heartbeatMaxAge) {
         this.access = access; this.targets = targets; this.edges = edges;
         this.devices = devices; this.mapper = mapper; this.clock = clock;
+        this.streams = streams; this.media = media;
+        this.reportMaxAge=reportMaxAge;
+        this.heartbeatMaxAge=heartbeatMaxAge;
     }
 
-    @Transactional(readOnly = true)
     public TargetVideoDto video(String targetId) {
+        TargetVideoDto tracking = tracking(targetId);
+        if (!"TRACKING".equals(tracking.status())) return tracking;
+        var stream = streams.find(tracking.taskId());
+        if (stream == null) return tracking;
+        boolean ready = media.ready(stream.streamPath());
+        if (ready) streams.observedReady(tracking.taskId());
+        return new TargetVideoDto(targetId, tracking.taskId(), tracking.deviceId(), tracking.commandId(),
+                clock.nowMillis(), tracking.status(), ready ? "HLS" : "NONE", true,
+                ready ? "测试视频已接入，不代表现场画面。" : "等待测试视频推流，或视频流已中断。",
+                ready ? "AVAILABLE" : stream.observedReady() ? "INTERRUPTED" : "WAITING", stream.sourceMode(), stream.streamId(),
+                ready ? "/api/v1/targets/" + targetId + "/video/streams/" + stream.streamId() + "/index.m3u8" : null);
+    }
+
+    public byte[] resource(String targetId, String streamId, String resource) {
+        return resource(targetId, streamId, resource, null);
+    }
+    public byte[] resource(String targetId, String streamId, String resource, String session) {
+        VideoMediaClient.validateResource(resource);
+        VideoMediaClient.validateSession(session);
+        TargetVideoDto tracking = tracking(targetId);
+        var stream = streams.find(tracking.taskId());
+        if (!"TRACKING".equals(tracking.status()) || stream == null || !stream.streamId().equals(streamId)
+                || !stream.targetId().equals(targetId) || !stream.deviceId().equals(tracking.deviceId()))
+            throw new ApiException(HttpStatus.NOT_FOUND, "VIDEO_STREAM_NOT_CURRENT", "当前任务没有该视频流");
+        return session == null ? media.resource(stream.streamPath(), resource) : media.resource(stream.streamPath(), resource, session);
+    }
+
+    private TargetVideoDto tracking(String targetId) {
         var user = access.requireDevicesOperate();
         var target = targets.target(targetId);
         Map<String, Object> task = edges.latestTaskByTarget(targetId);
@@ -60,14 +97,18 @@ public class TargetVideoService {
             default -> result(targetId, task, "RECEIPT_UNAVAILABLE", "跟踪回执状态未明确。");
         };
         Binding binding = edges.binding(deviceId, false);
-        if (!simulatedMode(target.sourceMode()) || !simulatedMode(text(command, "source_mode"))
-                || !Boolean.TRUE.equals(command.get("simulated")) || binding == null
-                || !simulatedMode(binding.sourceMode()))
-            return result(targetId, task, "NOT_INTEGRATED", "设备已确认跟踪，但实时视频流尚未接入。");
+        if (binding == null || !binding.enabled() || !sameSourceDomain(target.sourceMode(), binding.sourceMode())
+                || !Objects.equals(binding.sourceMode(), text(command, "source_mode"))
+                || (simulatedMode(target.sourceMode()) && !Boolean.TRUE.equals(command.get("simulated"))))
+            return result(targetId, task, "NOT_INTEGRATED", "当前目标、任务与设备来源不匹配，视频不可用。");
         boolean receipt = devices.commandReceipts(text(command, "command_id")).stream()
                 .anyMatch(row -> validReceipt(row, task, binding));
+        if(receipt && (!edges.freshTrackingReport(task,clock.nowMillis()-reportMaxAge,clock.nowMillis())
+                || binding.lastHeartbeatAt()==null || binding.lastHeartbeatAt()<clock.nowMillis()-heartbeatMaxAge
+                || target.latestState()==null || target.latestState().observedAt()<clock.nowMillis()-reportMaxAge))
+            return result(targetId,task,"LOST","光电实时跟踪回报已过期，不代表目标飞离。");
         return receipt
-                ? result(targetId, task, "AVAILABLE", "模拟跟踪已确认，可查看演示画面；不反映现场目标。")
+                ? result(targetId, task, "TRACKING", "设备已确认跟踪，视频源尚未配置。")
                 : result(targetId, task, "RECEIPT_UNAVAILABLE", "尚未取得当前跟踪任务的有效设备回执。");
     }
 
@@ -86,12 +127,17 @@ public class TargetVideoService {
     }
 
     private TargetVideoDto result(String targetId, Map<String, Object> task, String status, String reason) {
-        boolean simulated = "AVAILABLE".equals(status);
+        Binding binding = task == null ? null : edges.binding(text(task, "ops_device_id"), false);
+        String mode = binding == null ? null : binding.sourceMode();
+        boolean simulated = simulatedMode(mode);
         return new TargetVideoDto(targetId, text(task, "task_id"), text(task, "ops_device_id"),
                 text(task, "begin_command_id"), clock.nowMillis(), status,
-                simulated ? "SIMULATED_CANVAS" : "NONE", simulated, reason);
+                "NONE", simulated, reason, "NOT_CONFIGURED", mode, null, null);
     }
     private static boolean simulatedMode(String mode) { return "mock".equals(mode) || "replay".equals(mode); }
+    static boolean sameSourceDomain(String targetMode, String deviceMode) {
+        return ("live".equals(targetMode) && "live".equals(deviceMode)) || (simulatedMode(targetMode) && simulatedMode(deviceMode));
+    }
     private static String text(Map<String, Object> row, String key) {
         Object value = row == null ? null : row.get(key);
         return value == null ? null : value.toString();

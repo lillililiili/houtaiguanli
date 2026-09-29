@@ -1,0 +1,26 @@
+# Optional local QA service, never a dependency of the production API.
+# docker compose -f deploy/compose.qa-video.yml --profile qa-video up -d
+services:
+  qa-video:
+    image: bluenviron/mediamtx:1.21.1
+    profiles: [qa-video]
+    environment:
+      MTX_RTSPADDRESS: :8554
+      MTX_HLSADDRESS: :8888
+      MTX_APIADDRESS: :9997
+      MTX_AUTHINTERNALUSERS_0_USER: qa-publisher
+      MTX_AUTHINTERNALUSERS_0_PASS: ${QA_VIDEO_PUBLISH_PASSWORD:?Set a base64url publisher secret}
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_0_ACTION: publish
+      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_0_PATH: '~^qa/[a-f0-9-]{36}$$'
+      MTX_AUTHINTERNALUSERS_1_USER: qa-platform
+      MTX_AUTHINTERNALUSERS_1_PASS: ${QA_VIDEO_READ_PASSWORD:?Set a base64url platform secret}
+      MTX_AUTHINTERNALUSERS_1_PERMISSIONS_0_ACTION: read
+      MTX_AUTHINTERNALUSERS_1_PERMISSIONS_0_PATH: '~^qa/[a-f0-9-]{36}$$'
+      MTX_AUTHINTERNALUSERS_1_PERMISSIONS_1_ACTION: api
+    volumes:
+      - ./mediamtx-qa.yml:/mediamtx.yml:ro
+    ports:
+      - "127.0.0.1:8554:8554"
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:9997:9997"
+    restart: "no"

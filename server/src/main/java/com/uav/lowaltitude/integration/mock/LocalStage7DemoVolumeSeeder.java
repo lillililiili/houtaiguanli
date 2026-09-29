@@ -23,7 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 只补缺行，不 UPDATE 已存在的记录。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(66)
 @DependsOn("localStage7RuleEngineSeeder")

@@ -50,7 +50,7 @@ describe('调测设备信息', () => {
     await mount(CommissionView);
     expect(commissionApi.information).toHaveBeenCalledTimes(1);
     expect(host.textContent).not.toContain('创建新任务');
-    expect(host.textContent).toContain('接入诊断信息');
+    expect(host.textContent).toContain('连接状态');
     commissionApi.information.mockRejectedValue(new Error('采集服务暂不可用'));
     [...host.querySelectorAll('button')].find(b => b.textContent.includes('刷新信息')).click(); await settle();
     expect(host.textContent).toContain('采集服务暂不可用');

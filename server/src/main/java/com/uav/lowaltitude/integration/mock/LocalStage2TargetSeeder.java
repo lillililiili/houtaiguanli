@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(30)
 public class LocalStage2TargetSeeder implements ApplicationRunner {

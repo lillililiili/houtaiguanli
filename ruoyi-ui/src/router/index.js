@@ -63,7 +63,8 @@ router.beforeEach(async to => {
 });
 
 router.afterEach(to => {
-  document.title = `${to.meta.title || '后台管理'} - ${import.meta.env.VITE_APP_TITLE}`;
+  const appTitle = import.meta.env.VITE_APP_TITLE?.trim() || '无人机融合感知与低空安全管理平台';
+  document.title = `${to.meta.title || '后台管理'} - ${appTitle}`;
   NProgress.done();
 });
 

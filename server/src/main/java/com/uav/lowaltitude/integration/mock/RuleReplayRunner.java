@@ -35,7 +35,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleRunService.RunSummary;
  * 只在非 production 注册；启动时是否执行由 app.rule-engine.replay.run-on-start（默认 false）决定，测试直接调用 {@link #replay()}。
  */
 @Component
-@Profile("!production")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @Order(70)
 public class RuleReplayRunner implements ApplicationRunner {
     public static final String DATASET = "stage7-demo";

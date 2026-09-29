@@ -14,7 +14,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 仅 local/test 且显式开关开启的确定性 Stage3 演示夹具；production 永不注册。 */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 // 种子按阶段顺序执行：后阶段样例引用前阶段的计划/风险，靠明确 @Order 而不是 Bean 名称顺序。
 @Order(35)

@@ -20,9 +20,28 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 public class EoTrackingController {
 
     private final EoManualTrackService service;
+    private final com.uav.lowaltitude.modules.device.application.EoTrackingStatusService tracking;
 
-    public EoTrackingController(EoManualTrackService service) {
+    public EoTrackingController(EoManualTrackService service, com.uav.lowaltitude.modules.device.application.EoTrackingStatusService tracking) {
         this.service = service;
+        this.tracking = tracking;
+    }
+
+    @GetMapping("/targets/{targetId}/eo-tracking-status")
+    public ApiResponse<com.uav.lowaltitude.modules.device.application.EoTrackingStatusService.TrackingStatus> status(@PathVariable String targetId) {
+        return ApiResponse.ok(tracking.status(targetId));
+    }
+
+    @PostMapping("/targets/{targetId}/eo-tracking-pause")
+    public ApiResponse<com.uav.lowaltitude.modules.device.application.EoTrackingStatusService.TrackingStatus> pause(
+            @PathVariable String targetId,@RequestHeader("Idempotency-Key") String key) {
+        return ApiResponse.ok(tracking.control(targetId,true,key));
+    }
+
+    @PostMapping("/targets/{targetId}/eo-tracking-resume")
+    public ApiResponse<com.uav.lowaltitude.modules.device.application.EoTrackingStatusService.TrackingStatus> resume(
+            @PathVariable String targetId,@RequestHeader("Idempotency-Key") String key) {
+        return ApiResponse.ok(tracking.control(targetId,false,key));
     }
 
     @PostMapping("/targets/{targetId}/eo-tracking-tasks")

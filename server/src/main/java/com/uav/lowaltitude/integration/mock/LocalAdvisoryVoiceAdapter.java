@@ -24,6 +24,14 @@ public class LocalAdvisoryVoiceAdapter implements AdvisoryVoicePort {
     public Delivery simulate(String mode,AdvisoryVoiceRecording.Recording recording,String key) {
         if(!simulationAvailable(mode)||recording==null||!recording.equals(configuredRecording.current()))
             throw new ApiException(HttpStatus.CONFLICT,"VOICE_CHANNEL_UNAVAILABLE","电话通道或已配置录音不可用，不能模拟播放");
+        var scenario=LocalAdvisoryScenario.read(environment,mode,key,true);
+        if(scenario!=null) {
+            scenario.awaitResponse();
+            long respondedAt=clock.nowMillis();
+            boolean answered="ANSWERED".equals(scenario.status())||"SIMULATED_PLAYED".equals(scenario.status());
+            return new Delivery(true,scenario.status(),"simulation:"+key,answered?respondedAt:null,
+                    "SIMULATED_PLAYED".equals(scenario.status())?respondedAt:null);
+        }
         long now=clock.nowMillis();
         return new Delivery(true,"SIMULATED_PLAYED","simulation:"+key,now,now);
     }

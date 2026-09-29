@@ -33,7 +33,7 @@ import com.uav.lowaltitude.platform.config.AppProperties;
  * <p>与 {@code LocalStage15DemoReviewerSeeder} 同样的双门禁与幂等口径：只升不降，已有的高权限不会被这里降下去。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(130)
 public class LocalDemoRolesSeeder implements ApplicationRunner {

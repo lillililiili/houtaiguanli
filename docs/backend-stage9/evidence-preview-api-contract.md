@@ -12,6 +12,7 @@
 | --- | --- | --- |
 | `GET /api/v1/evidence-files/{id}` | `evidence:read` | 原元数据包装，增加下述可选采集出处字段 |
 | `GET /api/v1/evidence-files/{id}/preview` | `evidence:preview` | 实际文件字节和校验后的 Content-Type |
+| `GET /api/v1/evidence-files/{id}/preview?page=1` | `evidence:preview` | PDF 指定页由已有 PDFBox 渲染为 PNG，`X-Pdf-Page-Count` 返回总页数 |
 | `GET /api/v1/evidence-files/{id}/thumbnail` | `evidence:preview` | 解码并缩小到最长边 320 px 的 PNG |
 | `GET /api/v1/evidence-files/{id}/content` | `evidence:download` | 原件下载契约不变 |
 
@@ -22,6 +23,8 @@
 支持 PNG/JPEG/GIF（JDK 实际解码、格式相符、像素上限 4000 万）、WebP（RIFF/VP8 结构与尺寸校验）、PDF（头尾标记校验）、MP4（顶层 box 结构校验）、WebM（EBML头、文档类型、媒体段与轨道/帧簇标记校验）、UTF-8 纯文本及可解析 JSON。浏览器对 PDF、WebP和录像的实际解码仍可能失败，页面必须显示格式/编码不可显示信息，不能把存在元数据当作可播放。SVG、HTML、Office、未知类型不直接执行/嵌入。文本以转义正文显示。WebP 未新增解码依赖，缩略图返回不支持，页面显示预览卡，原图仍可预览。
 
 服务端和客户端均限制单次预览 32 MiB。文件须 AVAILABLE、真实对象存在且当前字节大小/SHA-256与台账一致。每次读取不改变原件、哈希、保管状态或历史交接材料；发现新哈希不符本次拒绝，原台账状态的更新仍由原校验动作负责。冻结或留存到期不等于禁止读取。
+
+2026-09-28：前台 PDF 预览改用 `page` 参数读取 PNG，不再依赖浏览器内置 PDF 插件。页码从 1 开始，越界返回 `400 EVIDENCE_PAGE_OUT_OF_RANGE`；最长渲染边不超过 1800 像素，保留原件和原件下载。权限、范围、哈希、大小校验与成功/拒绝审计继续执行；页面使用总页数提供翻页，解码失败明确提示。
 
 | 状态/问题 | HTTP | code |
 | --- | --- | --- |

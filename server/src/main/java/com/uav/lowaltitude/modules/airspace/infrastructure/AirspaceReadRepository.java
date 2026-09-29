@@ -105,6 +105,7 @@ public class AirspaceReadRepository {
     public List<ConflictRow> conflicts(PlanRow plan, AccessDecision access) {
         if (!postgis) throw new IllegalStateException("PostGIS is required for spatial conflict facts");
         Where where = where(new AirspaceQuery(null, null, null, null, null, null), access);
+        restrictBusinessSource(where, plan.sourceMode());
         where.parameters().put("route_version_id", plan.routeVersionId());
         where.parameters().put("plan_start", plan.startAt());
         where.parameters().put("plan_end", plan.endAt());
@@ -143,6 +144,7 @@ public class AirspaceReadRepository {
     public boolean hasAmbiguousEffectiveVersion(PlanRow plan, AccessDecision access) {
         if (plan.startAt() == null || plan.endAt() == null) return false;
         Where where = where(new AirspaceQuery(null, null, null, null, null, null), access);
+        restrictBusinessSource(where, plan.sourceMode());
         where.parameters().put("plan_start", plan.startAt());
         where.parameters().put("plan_end", plan.endAt());
         // 仅计划跨过相邻版本不构成歧义：必须两版本彼此半开相交，且该交集也落在计划窗内。
@@ -158,6 +160,14 @@ public class AirspaceReadRepository {
         return !roots.isEmpty();
     }
 
+
+    /** Unknown business modes follow the live-only boundary; simulation never contaminates live facts. */
+    private static void restrictBusinessSource(Where where, String sourceMode) {
+        boolean simulation = "mock".equals(sourceMode) || "replay".equals(sourceMode);
+        where.sql().append(simulation
+                ? " AND a.source_mode IN ('live','mock','replay')"
+                : " AND a.source_mode='live'");
+    }
 
     private static Where where(AirspaceQuery query, AccessDecision access) {
         StringBuilder sql = new StringBuilder(" WHERE a.owner_org_id IS NOT NULL AND a.district_id IS NOT NULL");

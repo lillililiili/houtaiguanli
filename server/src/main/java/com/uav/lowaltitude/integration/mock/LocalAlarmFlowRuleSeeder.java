@@ -15,7 +15,7 @@ import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipa
 
 /** 本地告警到处罚每类预置两条自动执行条件。重启时替换本预置，不改人工另建的规则。 */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(80)
 public class LocalAlarmFlowRuleSeeder implements ApplicationRunner {

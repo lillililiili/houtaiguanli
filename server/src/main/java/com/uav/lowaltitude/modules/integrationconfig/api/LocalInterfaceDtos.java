@@ -8,7 +8,10 @@ public final class LocalInterfaceDtos {
  private LocalInterfaceDtos(){}
  public record PlanInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @NotBlank @Size(max=36) String routeVersionId,@NotBlank @Size(max=128) String uavSn,
-  @NotNull @Positive Long startAt,@NotNull @Positive Long endAt){}
+  @NotNull @Positive Long startAt,@NotNull @Positive Long endAt,
+  @Valid com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing filing,
+  @Pattern(regexp="mock|replay") String sourceMode,
+  @Pattern(regexp="PENDING|EXECUTING|COMPLETED|CANCELLED") String statusCode){}
  public record WeatherInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @NotBlank @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
   @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods){}

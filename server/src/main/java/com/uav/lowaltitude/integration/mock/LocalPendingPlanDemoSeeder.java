@@ -22,7 +22,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 待执行计划通知演示。固定标识防重复，已通知风险和核验历史在重启后保持原样。 */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(95)
 public class LocalPendingPlanDemoSeeder implements ApplicationRunner {

@@ -26,7 +26,7 @@ import com.uav.lowaltitude.integration.device.countermeasure.Countermeasure4ChCo
  * 仅 local：在 127.0.0.1 应答四通道 0x10–0x13。不是现场射频，也不监听 192.168.0.7。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 public class LocalCountermeasure4ChSimulator implements SmartLifecycle {
 

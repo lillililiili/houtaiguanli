@@ -1,16 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
-import { newIdempotencyKey } from '@/services/apiClient.js';
 import { formatTime, statusText } from '@/utils/format.js';
+import { useAuthStore } from '@/stores/auth.js';
+import { maintenanceLocation, maintenanceMeta, maintenanceState } from './maintenance/useMaintenanceWorkflow.js';
 
-const items = ref([]), total = ref(0), page = ref(1), status = ref('PENDING');
-const loading = ref(false), error = ref(''), selected = ref(null), note = ref(''), saving = ref(false), saveError = ref('');
-const key = ref(null), open = ref(false);
+const router = useRouter(), auth = useAuthStore();
+const canOpen = computed(() => auth.hasMenu('commission') && auth.hasPermission('commissioning.read') && auth.hasPermission('devices.read'));
+const items = ref([]), total = ref(0), page = ref(1), status = ref('ACTIVE');
+const loading = ref(false), error = ref(''), selected = ref(null), open = ref(false);
 const pages = computed(() => Math.max(1, Math.ceil(total.value / 10)));
-const changedElsewhere = ref(false);
 const notificationAttempts = computed(() => Array.isArray(selected.value?.notification_attempts) ? selected.value.notification_attempts : []);
 const latestNotification = computed(() => notificationAttempts.value[0]);
 const previousDeliveries = computed(() => notificationAttempts.value.slice(1).filter(attempt => attempt.delivery_status === 'DELIVERED').length);
@@ -33,28 +34,9 @@ async function reload(force = false) {
 function filterChanged() { page.value = 1; void reload(true); }
 function changePage(value) { page.value = value; void reload(true); }
 function showTask(task) {
-  selected.value = task; note.value = ''; key.value = null; saveError.value = ''; changedElsewhere.value = false; open.value = true;
+  selected.value = task; open.value = true;
 }
-async function handle() {
-  if (!selected.value?.can_handle || saving.value || changedElsewhere.value) return;
-  if (note.value.trim().length < 2 || note.value.trim().length > 1000) { saveError.value = '请填写 2–1000 字的处理结果。'; return; }
-  key.value ||= newIdempotencyKey('maintenance-handle');
-  saving.value = true; saveError.value = '';
-  try {
-    const result = await deviceMaintenanceApi.handle(selected.value.task_id, { expected_version: selected.value.version, note: note.value.trim() }, key.value);
-    if (!alive) return;
-    selected.value = result; key.value = null; open.value = false;
-    ElMessage.success('处理结果已记录。'); await reload(true);
-  } catch (reason) {
-    if (!alive) return;
-    saveError.value = reason.message || '未确认提交结果，请使用原内容重试。';
-    if (reason.code === 'MAINTENANCE_TASK_CHANGED' || reason.code === 'IDEMPOTENCY_REPLAY') {
-      changedElsewhere.value = true;
-      saveError.value = '该待办已有处理记录，请关闭此窗口，在“已反馈”中查看。';
-    }
-    await reload(true);
-  } finally { if (alive) saving.value = false; }
-}
+function go(task) { if (canOpen.value) void router.push(maintenanceLocation(task)); }
 function notificationStatus(value, receipt = false) {
   const labels = receipt ? { NOT_EXPECTED: '本次无需回执', PENDING: '等待回执', ACKNOWLEDGED: '已确认收到', TIMEOUT: '回执超时' } : { PENDING_DELIVERY: '待投递', SUBMITTED: '已提交渠道', DELIVERED: '已送达', FAILED: '投递失败' };
   return labels[value] || value || '尚无记录';
@@ -78,7 +60,7 @@ function notificationChannel(snapshot) {
   return ({ NONE: '未配置', MOCK: '模拟通道', API: '系统接口', HTTP: '接口通知', SMS: '短信', VOICE: '语音电话',
     INTERNAL: '平台待办', SMS_SIMULATED: '模拟短信', VOICE_SIMULATED: '模拟语音' })[snapshot?.channel_type] || snapshot?.channel_type || '未记录';
 }
-function close(done) { if (!saving.value) done(); }
+onMounted(() => reload());
 onBeforeUnmount(() => { alive = false; generation++; });
 defineExpose({ reload });
 </script>
@@ -87,7 +69,7 @@ defineExpose({ reload });
   <el-card class="maintenance-panel">
     <template #header><div class="table-toolbar"><b>运维待办</b><div class="maintenance-tools">
       <el-select v-model="status" aria-label="待办状态" @change="filterChanged">
-        <el-option label="待处理" value="PENDING" /><el-option label="已反馈" value="HANDLED" /><el-option label="全部" value="ALL" />
+        <el-option label="未完成" value="ACTIVE" /><el-option label="待处理" value="NOT_STARTED" /><el-option label="处理中" value="PROCESSING" /><el-option label="待恢复核验" value="PENDING_VERIFICATION" /><el-option label="已完成" value="COMPLETED" /><el-option label="已反馈（含历史）" value="HANDLED" /><el-option label="全部" value="ALL" />
       </el-select><el-button :loading="loading" @click="reload(true)">刷新待办</el-button>
     </div></div></template>
     <ErrorAlert :message="error" @retry="reload(true)" />
@@ -96,11 +78,11 @@ defineExpose({ reload });
       <el-table-column label="异常设备" min-width="190"><template #default="{row}"><b>{{ row.device_name }}</b><div class="muted">{{ row.device_no }}</div><el-tag v-if="row.simulated" size="small" type="info">模拟设备</el-tag></template></el-table-column>
       <el-table-column prop="reason" label="异常说明" min-width="240" />
       <el-table-column label="上报时间" min-width="175"><template #default="{row}">{{ formatTime(row.reported_at) }}</template></el-table-column>
-      <el-table-column label="状态" width="95"><template #default="{row}"><el-tag :type="row.status==='PENDING'?'warning':'success'">{{ row.status==='PENDING'?'待处理':'已反馈' }}</el-tag></template></el-table-column>
-      <el-table-column label="操作" width="130"><template #default="{row}"><el-button link type="primary" @click="showTask(row)">{{ row.can_handle ? '记录处理结果' : '查看待办' }}</el-button></template></el-table-column>
+      <el-table-column label="状态" width="125"><template #default="{row}"><el-tag :type="maintenanceMeta(maintenanceState(row)).tone">{{ maintenanceMeta(maintenanceState(row)).label }}</el-tag></template></el-table-column>
+      <el-table-column label="操作" width="185"><template #default="{row}"><el-button v-if="canOpen" link type="primary" @click="go(row)">{{ ['COMPLETED','LEGACY_HANDLED'].includes(maintenanceState(row)) ? '查看结果' : maintenanceState(row)==='PENDING' ? '去处理' : '继续处理' }}</el-button><el-button link type="primary" @click="showTask(row)">上报详情</el-button></template></el-table-column>
     </el-table>
     <div class="maintenance-pager"><span class="muted">共 {{ total }} 条</span><el-pagination :current-page="page" :page-size="10" :total="total" layout="prev, pager, next" @current-change="changePage" /></div>
-    <el-dialog v-model="open" title="设备异常运维待办" width="min(680px, 94vw)" :before-close="close" :close-on-click-modal="!saving" :close-on-press-escape="!saving" :show-close="!saving" destroy-on-close>
+    <el-dialog v-model="open" title="设备异常运维待办" width="min(680px, 94vw)" destroy-on-close>
       <template v-if="selected">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="设备">{{ selected.device_name }} · {{ selected.device_no }}</el-descriptions-item>
@@ -144,15 +126,9 @@ defineExpose({ reload });
             </el-descriptions>
           </article>
         </details>
-        <template v-if="selected.can_handle && !changedElsewhere">
-          <p class="muted">记录已做的检查、处理及后续安排。提交后待办移至“已反馈”，设备是否恢复仍以实时监测和恢复核验为准。</p>
-          <el-input v-model="note" type="textarea" :rows="4" :maxlength="1000" show-word-limit :disabled="saving || !!key" placeholder="填写处理结果" aria-label="处理结果" />
-          <p v-if="key && !saving" class="muted">上次提交结果尚未确认，请保留原内容重试。</p>
-        </template>
-        <p v-else-if="selected.status==='PENDING' && !changedElsewhere" class="muted">当前账号只能查看；处理需要设备监测操作权限。</p>
-        <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" show-icon />
+        <p class="muted">上报状态为当时快照。请进入设备接入调测处理待办；历史已反馈不代表设备已恢复。</p>
       </template>
-      <template #footer><el-button :disabled="saving" @click="open=false">关闭</el-button><el-button v-if="selected?.can_handle && !changedElsewhere" type="primary" :loading="saving" @click="handle">{{ key ? '重试确认结果' : '提交处理结果' }}</el-button></template>
+      <template #footer><el-button @click="open=false">关闭</el-button><el-button v-if="selected && canOpen" type="primary" @click="go(selected)">进入设备接入调测</el-button></template>
     </el-dialog>
   </el-card>
 </template>

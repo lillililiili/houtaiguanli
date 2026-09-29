@@ -99,12 +99,11 @@ public class FlightDeviceCheckService {
     }
     private DeviceRow inspect(DeviceSummary device,BigDecimal distance,long from,long to,boolean preflight) {
         var state=devices.state(device.deviceId());
-        // 凌云协议 A：0 未工作、1 工作中、2 异常；协议 C 的 2 含义不同，不能共用。
+        // 协议 A 的 2 明确表示异常；1 仅表示工作中，不能补足缺失的健康指标。
+        // 协议 C 的 2 含义不同，不能共用。
         boolean lingyun="LINGYUN_MQTT_V8_6".equals(device.protocolCode());
         String health=state.healthCode();
-        if(lingyun && "UNKNOWN".equals(health))health=switch(String.valueOf(state.workStateCode())) {
-            case "1" -> "GOOD";case "2" -> "BAD";default -> "UNKNOWN";
-        };
+        if(lingyun && "UNKNOWN".equals(health) && "2".equals(state.workStateCode()))health="BAD";
         boolean abnormal=!device.enabled() || Set.of("OFFLINE","ABNORMAL","DEGRADED").contains(state.connectivity())
             || Set.of("BAD","DEGRADED").contains(health) || state.hasAlarm();
         List<Incident> incidents=new ArrayList<>();boolean historyComplete=false;int seen=0;

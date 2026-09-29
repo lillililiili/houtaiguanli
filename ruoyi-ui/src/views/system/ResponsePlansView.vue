@@ -16,7 +16,7 @@ let listSeq = 0, detailSeq = 0, bindingSeq = 0
 const status = value => ({ DRAFT: '草稿', PUBLISHED: '已发布', WITHDRAWN: '已停用' })[value] || '未知'
 const source = value => ({ live: '正式配置', mock: '模拟配置', replay: '回放配置' })[value] || '来源未知'
 const fields = [{ key: 'trigger_basis', label: '触发依据与时效要求' }, { key: 'action_steps', label: '处置行动说明' }, { key: 'manual_conditions', label: '人工介入与授权条件' }, { key: 'failure_handling', label: '失败、超时与未知情况处理' }]
-const blank = () => ({ airspace_id: '', name: '', trigger_basis: '', action_steps: '', manual_conditions: '', failure_handling: '', source_mode: '', valid_from: null, valid_to: null })
+const blank = () => ({ airspace_id: '', name: '', trigger_basis: '', action_steps: '', manual_conditions: '', failure_handling: '', source_mode: 'live', valid_from: null, valid_to: null })
 async function load() {
   const seq = ++listSeq; loading.value = true; error.value = ''
   try { const data = await api.list({ page: page.value, size: 20 }); if (seq === listSeq) { rows.value = data.items; total.value = data.total } }
@@ -35,11 +35,13 @@ async function open(row, versionId) {
 }
 function chooseVersion(id) { selected.value = versions.value.find(v => v.version_id === id); editing.value = ''; form.value = null; actionError.value = '' }
 function edit(mode) {
+  if (mode !== 'create' && selected.value?.source_mode !== 'live') return;
   actionError.value = ''; editing.value = mode
   if (mode === 'create') { detailSeq += 1; detailLoading.value = false; selected.value = null; versions.value = []; detailError.value = ''; form.value = blank() }
   else { form.value = Object.fromEntries(Object.keys(blank()).map(key => [key, selected.value[key] ?? null])); form.value.expected_version = selected.value.version }
 }
 async function save() {
+  if (form.value?.source_mode !== 'live') return;
   if (!form.value.airspace_id || !form.value.name?.trim() || fields.some(f => !form.value[f.key]?.trim()) || !form.value.source_mode || form.value.valid_from == null) { actionError.value = '请填写空域、名称、四项处置说明、来源及开始时间'; return }
   form.value.valid_from = Number(form.value.valid_from)
   form.value.valid_to = form.value.valid_to == null || form.value.valid_to === '' ? null : Number(form.value.valid_to)
@@ -52,6 +54,7 @@ async function save() {
   finally { busy.value = false }
 }
 async function change(action) {
+  if (selected.value?.source_mode !== 'live') return;
   const target = selected.value
   busy.value = true; actionError.value = ''
   try {
@@ -71,6 +74,7 @@ async function loadBinding() {
   finally { if (seq === bindingSeq) bindingLoading.value = false }
 }
 async function bind(unbind = false) {
+  if (!unbind && selected.value?.source_mode !== 'live') return;
   const target = selected.value, id = space.value, previous = bindings.value?.current?.binding_id || null
   busy.value = true; actionError.value = ''
   try {
@@ -103,7 +107,7 @@ onBeforeUnmount(() => { listSeq += 1; detailSeq += 1; bindingSeq += 1 })
     <el-card v-if="selected || editing">
       <div v-if="selected" class="actions">
         <el-select :model-value="selected.version_id" :disabled="busy || !!editing" aria-label="预案版本" @update:model-value="chooseVersion"><el-option v-for="v in versions" :key="v.version_id" :label="`第 ${v.revision} 版 · ${status(v.status)}`" :value="v.version_id" /></el-select>
-        <template v-if="canEdit && !editing">
+        <template v-if="canEdit && !editing && selected.source_mode === 'live'">
           <el-button v-if="selected.status === 'DRAFT'" :disabled="busy" @click="edit('update')">编辑草稿</el-button>
           <el-button v-if="selected.status === 'DRAFT'" type="primary" :disabled="busy" @click="change('publish')">发布版本</el-button>
           <el-button v-if="!versions.some(v => v.status === 'DRAFT')" :disabled="busy" @click="edit('copy')">创建新版本</el-button>
@@ -114,11 +118,12 @@ onBeforeUnmount(() => { listSeq += 1; detailSeq += 1; bindingSeq += 1 })
         <el-form-item label="归属空域（限制预案组织与区域范围）" required><ResponsePlanAirspaceSelect v-if="editing === 'create'" v-model="form.airspace_id" :disabled="busy" /><span v-else>{{ selected.airspace_name }}</span></el-form-item>
         <el-form-item label="预案名称" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
         <el-form-item v-for="field in fields" :key="field.key" :label="field.label" required><el-input v-model="form[field.key]" type="textarea" :rows="3" maxlength="4000" show-word-limit /></el-form-item>
-        <div class="form-grid"><el-form-item label="配置来源" required><el-select v-model="form.source_mode"><el-option label="正式配置" value="live" /><el-option label="模拟配置" value="mock" /><el-option label="回放配置" value="replay" /></el-select></el-form-item><el-form-item label="开始时间" required><el-date-picker v-model="form.valid_from" type="datetime" value-format="x" /></el-form-item><el-form-item label="结束时间（留空为长期）"><el-date-picker v-model="form.valid_to" type="datetime" value-format="x" /></el-form-item></div>
+        <div class="form-grid"><el-form-item label="配置来源" required><el-select v-model="form.source_mode"><el-option label="正式配置" value="live" /></el-select></el-form-item><el-form-item label="开始时间" required><el-date-picker v-model="form.valid_from" type="datetime" value-format="x" /></el-form-item><el-form-item label="结束时间（留空为长期）"><el-date-picker v-model="form.valid_to" type="datetime" value-format="x" /></el-form-item></div>
         <el-button type="primary" :loading="busy" @click="save">保存草稿</el-button><el-button :disabled="busy" @click="editing = ''; form = null">取消编辑</el-button>
       </el-form>
       <template v-else-if="selected">
         <h3>{{ selected.name }} <el-tag>{{ status(selected.status) }}</el-tag></h3><p>{{ source(selected.source_mode) }} · 第 {{ selected.revision }} 版</p>
+        <p v-if="selected.source_mode !== 'live'">历史测试版本只读保留，不作为正式处置依据。</p>
         <p>有效期：{{ formatTime(selected.valid_from) }} 至 {{ selected.valid_to ? formatTime(selected.valid_to) : '长期有效' }}</p>
         <p>更新时间：{{ formatTime(selected.updated_at) }}</p>
         <p v-if="selected.published_at">发布人：{{ selected.published_by }} · {{ formatTime(selected.published_at) }}</p>
@@ -135,7 +140,7 @@ onBeforeUnmount(() => { listSeq += 1; detailSeq += 1; bindingSeq += 1 })
       <template v-if="bindings">
         <p v-if="bindings.current">当前关联：{{ bindings.current.plan.name }} · 第 {{ bindings.current.plan.revision }} 版<br>{{ bindings.current.applicability_reason }}<br>关联人：{{ bindings.current.bound_by }} · {{ formatTime(bindings.current.bound_at) }}<br>关联依据：{{ bindings.current.reason }}</p>
         <p v-else>此空域尚未关联处置预案</p>
-        <div v-if="canEdit" class="actions"><el-button v-if="selected?.status === 'PUBLISHED'" type="primary" :disabled="busy || bindings.current?.plan.version_id === selected.version_id" @click="bind()">关联所选预案版本</el-button><el-button v-if="bindings.current" :disabled="busy" @click="bind(true)">解除当前关联</el-button></div>
+        <div v-if="canEdit" class="actions"><el-button v-if="selected?.status === 'PUBLISHED' && selected.source_mode === 'live'" type="primary" :disabled="busy || bindings.current?.plan.version_id === selected.version_id" @click="bind()">关联所选预案版本</el-button><el-button v-if="bindings.current" :disabled="busy" @click="bind(true)">解除当前关联</el-button></div>
         <h4>关联历史（{{ bindings.history.total }} 条）</h4>
         <p v-for="item in bindings.history.items" :key="item.binding_id">{{ item.plan.name }} · 第 {{ item.plan.revision }} 版<br>{{ formatTime(item.bound_at) }} 至 {{ formatTime(item.ended_at) }}<br>{{ item.bound_by }} 关联：{{ item.reason }}<br>{{ item.ended_by }} 解除：{{ item.end_reason }}</p>
         <el-pagination v-if="bindings.history.total > 10" v-model:current-page="historyPage" :page-size="10" :total="bindings.history.total" layout="prev, pager, next" :disabled="busy" @current-change="loadBinding" />

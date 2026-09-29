@@ -21,7 +21,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** Local, explicitly simulated monitor samples. No flight_risk or risk workflow is created. */
 @Service
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 public class LocalAirspaceDemoTargetService {
     // Same fixed sample catalog and seven frames as airspaceMonitorDemo.js.

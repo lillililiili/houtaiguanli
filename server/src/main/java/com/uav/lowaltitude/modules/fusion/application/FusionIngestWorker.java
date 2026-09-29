@@ -23,7 +23,6 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * @ConditionalOnProperty 默认关闭：生产不跑回放摄取；种子与测试直接调用 {@link #drain()} 同步驱动。
  */
 @Component
-@Profile("!production")
 @ConditionalOnProperty(prefix = "app.fusion", name = "enabled", havingValue = "true")
 public class FusionIngestWorker {
     private static final Logger log = LoggerFactory.getLogger(FusionIngestWorker.class);

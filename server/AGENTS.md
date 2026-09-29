@@ -100,6 +100,10 @@ Java 根包保持 `com.uav.lowaltitude`。保留现有 `modules/identity`、`mod
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
+### 本地开发数据环境（2026-09-26 用户确认）
+
+- 本地演示/模拟数据已默认关闭：`application-local.yml` 中 `app.dev-seed.enabled=false`，并同步关闭 fusion、rule-engine（含 replay）、automation-rules、状态推进、自动短信/语音、handoff（none）、mock-adapter、MQTT demo、EO 自动跟踪。业务数据只通过界面录入、设备真实接入（MQTT/直连）或外部接口推送进入；不要手动往库插数据（绕过来源校验、权限与审计）。
+
 - 当前 `AuthApiTest` 使用 `@ActiveProfiles("test")` 和 H2；这不是自动检测 Docker 后切换数据库。普通 `test` 会发现该类。交付时核对 `target/surefire-reports`。
 - 新增普通测试使用默认可发现的 `*Test` 命名；若引入 `*IT` 生命周期，必须在获准的测试配置变更中明确绑定和验收命令。报告列出命令、实际用例数量、失败/跳过及环境，不能只报进程退出码。
 - 后端 Java/资源/配置/依赖改动至少运行受影响测试和 `package`；身份、权限或共享安全改动显式跑当前认证测试。无法执行时报告具体缺失条件，不声称通过。

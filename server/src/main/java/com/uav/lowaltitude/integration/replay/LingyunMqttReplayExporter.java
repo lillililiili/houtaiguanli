@@ -40,7 +40,7 @@ import com.uav.lowaltitude.modules.fusion.ingest.LingyunSenseDataMapper;
  * 只在 local profile 且显式开开关时运行：它写的是仓库里的文档产物，不该在任何正常启动路径上被触发。
  */
 @Component
-@Profile("local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.replay.export", name = "enabled", havingValue = "true")
 public class LingyunMqttReplayExporter implements ApplicationRunner {
     private static final Logger log = LoggerFactory.getLogger(LingyunMqttReplayExporter.class);

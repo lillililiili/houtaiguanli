@@ -38,6 +38,10 @@ public class EvidencePreviewService {
 
     // 不包长事务；访问日志经独立事务提交，拒绝后抛错不会抹掉记录。
     public Content open(String evidenceId, boolean thumbnail) {
+        return open(evidenceId, thumbnail, null);
+    }
+
+    public Content open(String evidenceId, boolean thumbnail, Integer page) {
         String action = thumbnail ? "THUMBNAIL" : "PREVIEW";
         FileRow file = null;
         try {
@@ -64,6 +68,7 @@ public class EvidencePreviewService {
                 throw new ApiException(HttpStatus.CONFLICT, "EVIDENCE_CORRUPT", "原件与登记哈希不符，不能预览");
             }
             Content content = validated(bytes, file.contentType(), thumbnail);
+            if (page != null) content = renderPdfPage(content, page);
             audit.record(file.evidenceId(), action, "GRANTED", null);
             return content;
         } catch (ApiException ex) {
@@ -72,6 +77,26 @@ public class EvidencePreviewService {
         } catch (IOException | IllegalArgumentException ex) {
             audit.record(file == null ? null : file.evidenceId(), action, "DENIED", "EVIDENCE_PREVIEW_UNREADABLE");
             throw new ApiException(HttpStatus.CONFLICT, "EVIDENCE_PREVIEW_UNREADABLE", "文件内容读取失败，请重试");
+        }
+    }
+
+    private Content renderPdfPage(Content content, int page) throws IOException {
+        if (!"application/pdf".equals(content.contentType())) throw unsupported();
+        try (var document = org.apache.pdfbox.Loader.loadPDF(content.bytes())) {
+            int pages = document.getNumberOfPages();
+            if (page < 1 || page > pages) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "EVIDENCE_PAGE_OUT_OF_RANGE", "PDF页码超出范围");
+            }
+            var box = document.getPage(page - 1).getCropBox();
+            float edge = Math.max(box.getWidth(), box.getHeight());
+            if (!Float.isFinite(edge) || edge <= 0) throw unsupported();
+            float scale = Math.min(2f, 1800f / edge);
+            var renderer = new org.apache.pdfbox.rendering.PDFRenderer(document);
+            renderer.setSubsamplingAllowed(true);
+            var image = renderer.renderImage(page - 1, scale, org.apache.pdfbox.rendering.ImageType.RGB);
+            var output = new ByteArrayOutputStream();
+            ImageIO.write(image, "png", output);
+            return new Content(output.toByteArray(), "image/png", pages);
         }
     }
 
@@ -226,5 +251,7 @@ public class EvidencePreviewService {
     private static ApiException tooLarge() {
         return new ApiException(HttpStatus.PAYLOAD_TOO_LARGE, "EVIDENCE_PREVIEW_TOO_LARGE", "文件超过 32 MiB 预览上限，可按权限下载原件");
     }
-    public record Content(byte[] bytes, String contentType) { }
+    public record Content(byte[] bytes, String contentType, Integer pageCount) {
+        public Content(byte[] bytes, String contentType) { this(bytes, contentType, null); }
+    }
 }

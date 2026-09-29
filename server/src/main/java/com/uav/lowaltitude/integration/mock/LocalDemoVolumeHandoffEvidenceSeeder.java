@@ -54,7 +54,7 @@ import com.uav.lowaltitude.platform.storage.ObjectStoragePort;
  * 唯一例外：{@link #alignSubmittedRisks()} 把「待通知且已有未失败交接」的源风险补成已通知，与提交接口口径一致。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(115)
 @DependsOn({"localUserSeeder", "localStage5HandoffSeeder", "localStage7DemoVolumeSeeder", "localDemoVolumeAlarmSeeder",

@@ -97,12 +97,23 @@ class RiskVerificationApiTest {
     void invalidConclusionNoteAndVersionAreRejectedWithoutMutation() throws Exception {
         verify(riskId, "NOTIFIED", "非法直接通知", 0, "bad-conclusion-" + UUID.randomUUID())
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("INVALID_CONCLUSION"));
-        verify(riskId, "CONFIRMED", "   ", 0, "bad-note-" + UUID.randomUUID())
+        verify(riskId, "CONFIRMED", "长".repeat(1001), 0, "bad-note-" + UUID.randomUUID())
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
         verify(riskId, "CONFIRMED", "有效说明", -1, "bad-version-" + UUID.randomUUID())
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
         assertThat(state(riskId)).isEqualTo("PENDING_VERIFICATION");
         assertThat(jdbc.queryForObject("select count(*) from audit_log where module_code='risk' and result='FAILURE' and action like 'POST /api/v1/risks/%'",Long.class)).isGreaterThan(0L);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"", ",\"note\":null", ",\"note\":\"\"", ",\"note\":\"   \""})
+    void optionalNoteAcceptsMissingNullEmptyAndWhitespace(String noteJson) throws Exception {
+        mvc.perform(post("/api/v1/risks/{id}/verifications", riskId).header("Authorization", bearer(session))
+                .header("Idempotency-Key", "optional-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"conclusion\":\"CONFIRMED\",\"expected_version\":0" + noteJson + "}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("PENDING_NOTIFICATION"));
+        assertThat(jdbc.queryForObject("select note from flight_risk_verification where risk_id=?", String.class, riskId)).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where object_id=? and action='risk_verified'", Long.class, riskId)).isEqualTo(1L);
     }
 
     @Test

@@ -193,6 +193,34 @@ class EvidencePreviewApiTest {
         mvc.perform(get("/api/v1/evidence-files/" + fake + "/preview").header("Authorization", bearer(token))).andExpect(status().isUnsupportedMediaType());
     }
 
+    @Test
+    void pdfPagePreviewRendersPixelsAndRetainsPreviewPermissionAndOriginal() throws Exception {
+        String token = reader("ALL", org, district);
+        grantAction(token, "evidence:read", "evidence:ingest", "evidence:preview");
+        byte[] bytes;
+        try (var stream = getClass().getResourceAsStream("/evidence/preview-document.pdf")) { bytes = stream.readAllBytes(); }
+        String id = file(token, "document.pdf", "application/pdf", bytes);
+        var response = mvc.perform(get("/api/v1/evidence-files/" + id + "/preview").param("page", "1")
+                .header("Authorization", bearer(token))).andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(response.getContentType()).isEqualTo("image/png");
+        assertThat(response.getHeader("X-Pdf-Page-Count")).isEqualTo("1");
+        var image = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(response.getContentAsByteArray()));
+        assertThat(image.getWidth()).isGreaterThan(400).isLessThanOrEqualTo(1800);
+        boolean ink = false;
+        for (int y = 0; y < image.getHeight(); y++) for (int x = 0; x < image.getWidth(); x++) {
+            if ((image.getRGB(x, y) & 0xffffff) < 0x808080) ink = true;
+        }
+        assertThat(ink).as("PDF text must actually be rendered").isTrue();
+        mvc.perform(get("/api/v1/evidence-files/" + id + "/preview").param("page", "2")
+                .header("Authorization", bearer(token))).andExpect(status().isBadRequest());
+        var original = mvc.perform(get("/api/v1/evidence-files/" + id + "/preview")
+                .header("Authorization", bearer(token))).andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(original.getContentAsByteArray()).isEqualTo(bytes);
+        String denied = reader("ALL", org, district);
+        mvc.perform(get("/api/v1/evidence-files/" + id + "/preview").param("page", "1")
+                .header("Authorization", bearer(denied))).andExpect(status().isForbidden());
+    }
+
     private String file(String token, String name, String type, byte[] bytes) throws Exception {
         return json.readTree(mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", name, type, bytes))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district)

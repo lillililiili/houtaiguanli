@@ -104,6 +104,25 @@ public class LegalityEvaluationReadRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public record AlarmVerificationRow(String eventId, String conclusion, String note, long version, long verifiedAt) { }
+
+    public AlarmVerificationRow alarmVerification(EvaluationRow row) {
+        if (row.alarmId() == null) return null;
+        var rows = jdbc.query("SELECT u.event_id,h.conclusion,h.note,h.version,h.created_at FROM uav_event u JOIN alarm a ON a.alarm_id=u.alarm_id"
+                + " JOIN uav_event_verification h ON h.event_id=u.event_id"
+                + " WHERE u.alarm_id=:alarm AND a.target_id=:target AND u.owner_org_id=:org AND u.district_id=:district"
+                + " AND a.source_mode=:mode AND h.created_at>=:evaluated"
+                + " AND h.conclusion IN ('CONFIRMED','FALSE_POSITIVE') ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                        .addValue("alarm", row.alarmId()).addValue("target", row.targetId())
+                        .addValue("org", row.ownerOrgId()).addValue("district", row.districtId())
+                        .addValue("mode", row.sourceMode()).addValue("evaluated", row.evaluatedAt()),
+                (rs, i) -> new AlarmVerificationRow(
+                        rs.getString("event_id"), rs.getString("conclusion"), rs.getString("note"), rs.getLong("version"),
+                        rs.getTimestamp("created_at").toInstant().toEpochMilli()));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     // ---- 规则效果事实（v_rule_effect_fact） ----
 
     public long countFacts(FactQuery query, AccessDecision access) {
@@ -200,7 +219,14 @@ public class LegalityEvaluationReadRepository {
         String reviewRequired = "e.mode='ACTIVE' AND e.legal_status<>'NOT_APPLICABLE'"
                 + " AND r.review_state='PENDING_REVIEW'"
                 + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation successor WHERE successor.supersedes_evaluation_id=e.evaluation_id)"
-                + " AND e.decision_assurance_code='INSUFFICIENT'";
+                + " AND e.decision_assurance_code='INSUFFICIENT'"
+                + " AND NOT EXISTS (SELECT 1 FROM uav_event verified_event JOIN alarm verified_alarm ON verified_alarm.alarm_id=verified_event.alarm_id"
+                + " JOIN uav_event_verification verified_history ON verified_history.event_id=verified_event.event_id"
+                + " WHERE verified_event.alarm_id=COALESCE(e.alarm_id,m.alarm_id,(SELECT h.related_alarm_id FROM legality_review_history h"
+                + " WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY))"
+                + " AND verified_alarm.target_id=e.target_id AND verified_alarm.source_mode=e.source_mode"
+                + " AND verified_event.owner_org_id=e.owner_org_id AND verified_event.district_id=e.district_id"
+                + " AND verified_history.created_at>=e.evaluated_at AND verified_history.conclusion IN ('CONFIRMED','FALSE_POSITIVE'))";
         if (query.needsReview() != null) {
             where.sql.append(" AND (CASE WHEN " + reviewRequired + " THEN TRUE ELSE FALSE END)=:needs_review");
             where.parameters.put("needs_review", query.needsReview());

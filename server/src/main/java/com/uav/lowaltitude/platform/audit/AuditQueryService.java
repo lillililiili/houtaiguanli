@@ -77,7 +77,8 @@ public class AuditQueryService {
     private static AuditResponse toResponse(AuditLog log) {
         return new AuditResponse(log.getAuditId(), log.getUserId(), log.getAccount(), log.getRoleCode(),
                 log.getModuleCode(), log.getAction(), log.getObjectType(), log.getObjectId(), log.getDetail(),
-                log.getOccurredAt(), log.getIp(), log.getResult(), log.getUserAgent());
+                log.getOccurredAt(), log.getIp(), log.getResult(), log.getUserAgent(),
+                AuditLabels.module(log.getModuleCode()), AuditLabels.action(log.getAction()));
     }
 
     private static String clean(String value) {
@@ -96,6 +97,6 @@ public class AuditQueryService {
     public record AuditResponse(
             String auditId, String userId, String account, String roleCode, String moduleCode,
             String action, String objectType, String objectId, String detail, long occurredAt,
-            String ip, String result, String userAgent) {
+            String ip, String result, String userAgent, String moduleName, String actionName) {
     }
 }

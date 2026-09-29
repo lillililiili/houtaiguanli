@@ -51,7 +51,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 只补缺行：授权已存在（不论谁推进过）就整条连事件一起跳过，绝不 UPDATE 授权、绝不追加事件（事件表只增）。
  */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @DependsOn({"localStage13DisposalSeeder", "localStage15DemoReviewerSeeder", "localStage7RuleEngineSeeder"})
 @Order(125)

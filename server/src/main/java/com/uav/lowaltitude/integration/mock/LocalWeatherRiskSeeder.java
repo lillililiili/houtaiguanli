@@ -18,7 +18,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 独立气象预警演示源，经风险入库服务关联计划，不虚构目标或现场气象观测。 */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true")
 @Order(98)
 public class LocalWeatherRiskSeeder implements ApplicationRunner {

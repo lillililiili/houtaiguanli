@@ -20,7 +20,7 @@ import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.time.AppClock;
 import static com.uav.lowaltitude.modules.integrationconfig.application.LocalInterfaceSimulatorService.*;
 
-@Service @Profile("(local | test) & !prod & !production")
+@Service @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class LocalInterfaceReceiptService {
  private final LocalInterfaceRepository messages;private final HandoffRepository handoffs;private final DeviceAccessPolicy interfaces;
  private final AccessControlService access;private final LocalInterfaceSimulatorService simulator;private final ObjectMapper json;

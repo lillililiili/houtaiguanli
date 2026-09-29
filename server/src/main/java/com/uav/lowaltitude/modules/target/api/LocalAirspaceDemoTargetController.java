@@ -18,7 +18,7 @@ import com.uav.lowaltitude.modules.target.application.LocalAirspaceDemoTargetSer
 import com.uav.lowaltitude.modules.target.application.LocalAirspaceDemoTargetService.PreparedTarget;
 
 @RestController
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @RequestMapping("/api/v1/local/airspace-demo/targets/{targetId}")
 public class LocalAirspaceDemoTargetController {

@@ -30,7 +30,7 @@ public class ReportDatasetReader {
         p.put("report_start", range.start()); p.put("report_end", range.end());
         return new Dataset(sql + " AND " + time + ">=:report_start AND " + time + "<:report_end", p);
     }
-    private String from(Dataset data) { return " FROM (" + data.sql() + ") report_rows"; }
+    private String from(Dataset data) { return " FROM (SELECT * FROM (" + data.sql() + ") source_rows WHERE source_mode='live') report_rows"; }
     private long count(Dataset data) {
         Long n = jdbc.queryForObject("SELECT COUNT(*)" + from(data), data.parameters(), Long.class);
         return n == null ? 0 : n;

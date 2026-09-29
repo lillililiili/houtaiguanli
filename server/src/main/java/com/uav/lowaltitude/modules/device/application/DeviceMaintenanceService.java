@@ -96,7 +96,7 @@ public class DeviceMaintenanceService {
     @Transactional(readOnly=true)
     public Page list(String status,int page,int size) {
         AuthUser actor=deviceAccess.requireMonitoringRead();
-        if(!Set.of("PENDING","HANDLED","ALL").contains(status)||page<1||size<1||size>100
+        if(!Set.of("PENDING","HANDLED","ALL","ACTIVE","NOT_STARTED","PROCESSING","PENDING_VERIFICATION","COMPLETED").contains(status)||page<1||size<1||size>100
                 ||(long)(page-1)*size>Integer.MAX_VALUE)throw bad("待办筛选或分页参数无效");
         return new Page(tasks.list(status,page,size,actor).stream().map(row->dto(row,actor,false)).toList(),
                 page,size,tasks.count(status,actor));
@@ -119,15 +119,15 @@ public class DeviceMaintenanceService {
         String taskKey=id(taskId);
         Row task=tasks.find(taskKey,actor);
         if(task==null)throw missing();
-        if(body==null||body.expectedVersion()==null||body.expectedVersion()<1||body.note()==null
-                ||body.note().trim().length()<2||body.note().trim().length()>1000)throw bad("请填写 2–1000 字的处理结果");
-        String note=body.note().trim();
-        tasks.lockDevice(task.deviceId());
-        idempotency.claim(key(requestKey),"device-maintenance-handle:"+taskKey+":"+body.expectedVersion()+":"+note);
-        if(tasks.handle(taskKey,body.expectedVersion(),note,actor,clock.nowMillis())!=1)
-            throw conflict("MAINTENANCE_TASK_CHANGED","待办已被处理或更新，请刷新后查看");
-        audit.record(actor.userId(),actor.account(),"device_maintenance_handled","device_maintenance_task",taskKey,note,null);
-        return dto(tasks.find(taskKey,actor),actor,false);
+        throw conflict("MAINTENANCE_WORKFLOW_REQUIRED","请进入运维流程完成处理和恢复核验；填写反馈不能直接办结");
+    }
+
+    @Transactional(readOnly=true)
+    public Task detail(String taskId) {
+        AuthUser actor=deviceAccess.requireMonitoringRead();
+        Row task=tasks.find(id(taskId),actor);
+        if(task==null)throw missing();
+        return dto(task,actor,false);
     }
 
     private void remember(AuthUser actor,String key,String taskId) {
@@ -148,7 +148,7 @@ public class DeviceMaintenanceService {
                 r.status(),r.reportedByName(),r.reportedAt(),r.handledByName(),r.handledAt(),r.handlingNote(),r.version(),
                 "PENDING".equals(r.status())&&deviceAccess.canOperateMonitoring(actor),reused,latest==null?null:latest.recipientSnapshot(),
                 latest==null?null:latest.deliveryStatus(),latest==null?null:latest.receiptStatus(),latest==null?null:latest.blockedReason(),
-                history,latest==null?0:latest.attemptNo(),blocker==null,blocker,availableAt);
+                history,latest==null?0:latest.attemptNo(),blocker==null,blocker,availableAt,tasks.workflowState(r.taskId()));
     }
     @Transactional
     public Task resend(String taskId,ResendRequest body,String requestKey) {

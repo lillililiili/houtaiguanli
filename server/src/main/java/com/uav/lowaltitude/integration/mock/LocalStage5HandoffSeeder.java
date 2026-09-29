@@ -28,7 +28,7 @@ import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
  * 所有写入都是 WHERE NOT EXISTS：重跑幂等，不覆盖人工修改，也不覆盖人工提交的交接。
  */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @DependsOn({"localUserSeeder", "localStage4RiskSeeder"})
 // Runner 顺序：用户 10 → 阶段 3 计划 35 → 阶段 4 风险 45 → 阶段 5 设备映射 50 → 本种子 60；阶段 3/4 夹具已由前序 Runner 保证。

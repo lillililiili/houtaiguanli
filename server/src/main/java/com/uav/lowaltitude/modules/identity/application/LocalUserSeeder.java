@@ -18,7 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.platform.config.AppProperties;
 
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(10)
 public class LocalUserSeeder implements ApplicationRunner {

@@ -64,6 +64,7 @@ public class PunishmentCaseService {
     private static final Set<String> WITHDRAW_FIELDS = Set.of("reason", "expected_version");
     private static final String ISSUER_ORG = "东营市低空安全管理平台";
 
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final AccessControlService access;
     private final PunishmentRepository repository;
     private final PunishmentReadService read;
@@ -74,7 +75,8 @@ public class PunishmentCaseService {
 
     public PunishmentCaseService(AccessControlService access, PunishmentRepository repository,
             PunishmentReadService read, IdempotencyGuard idempotency, AppClock clock, AuditService audit,
-            ObjectMapper json) {
+            ObjectMapper json, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.access = access; this.repository = repository; this.read = read; this.idempotency = idempotency;
         this.clock = clock; this.audit = audit; this.json = json;
     }
@@ -170,7 +172,7 @@ public class PunishmentCaseService {
         AccessDecision decision = access.require(PermissionCode.PUNISHMENT_FILE);
         JsonNode body = strict(rawRequest, RESOLVE_FIELDS);
         long expected = version(body);
-        String note = text(body, "note", true, 500);
+        String note = text(body, "note", false, 500);
         CaseRow row = locked(caseId, decision);
         idempotency.claim(key, "punishment:lead-resolve:" + leadId + ":" + expected);
         requireVersion(row, expected);
@@ -202,6 +204,7 @@ public class PunishmentCaseService {
         PunishmentRules.requireTransition(PunishmentRules.DRAFT_DISCRETION, row.status());
         RuleRow rule = repository.rule(ruleCode);
         if (rule == null) throw notFound();
+        if (!"CONFIRMED".equals(rule.schemaStatus())) simulation.requireSimulation();
         if (!allowedPenaltyTypes(rule.penaltyTypes()).contains(penaltyType))
             throw bad("PENALTY_TYPE_NOT_ALLOWED", "该档位不支持这种处罚种类");
         // 区间来自 penalty_rule，代码里不写任何金额（决策 14-8/14-9）。
@@ -231,6 +234,10 @@ public class PunishmentCaseService {
         JsonNode body = strict(rawRequest, VERSION_ONLY);
         long expected = version(body);
         CaseRow row = locked(caseId, decision);
+        DiscretionRow draft = repository.discretion(discretionId, caseId);
+        if(draft == null) throw notFound();
+        RuleRow rule = repository.rule(draft.ruleCode());
+        if(rule == null || !"CONFIRMED".equals(rule.schemaStatus())) simulation.requireSimulation();
         idempotency.claim(key, "punishment:discretion-confirm:" + discretionId + ":" + expected);
         requireVersion(row, expected);
         PunishmentRules.requireTransition(PunishmentRules.CONFIRM_DISCRETION, row.status());
@@ -255,7 +262,7 @@ public class PunishmentCaseService {
         long expected = version(body);
         String conclusion = text(body, "conclusion", true, 16);
         PunishmentRules.requireKnown(conclusion, PunishmentRules.REVIEW_CONCLUSIONS, "复核结论无效");
-        String note = text(body, "note", true, 1000);
+        String note = text(body, "note", false, 1000);
         // 请求体的结构校验全部排在锁行/版本/状态之前（决策 14-33）：畸形的待补线索是**请求本身**的问题，
         // 让它因为"案件状态不对"先吃 409，会把调用者引去查案件状态，而真正错的是他刚发过来的那段 JSON。
         List<MissingLead> missingLeads = parseMissingLeads(body.get("missing_leads"));
@@ -296,6 +303,8 @@ public class PunishmentCaseService {
 
     @Transactional
     public DecisionDocumentDto issueDocument(String caseId, String rawRequest, String key) {
+        // The only installed template is demo-v1 and has no authority to issue formal decisions.
+        simulation.requireSimulation();
         AccessDecision decision = access.require(PermissionCode.PUNISHMENT_DECIDE);
         JsonNode body = strict(rawRequest, VERSION_ONLY);
         long expected = version(body);

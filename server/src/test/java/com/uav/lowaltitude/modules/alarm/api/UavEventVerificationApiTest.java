@@ -146,9 +146,29 @@ class UavEventVerificationApiTest {
     @Test
     void validatesNoteVersionConclusionAndIdempotencyKey() throws Exception {
         mvc.perform(verify("MAYBE", "说明", 0, "verify-key-7")).andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("INVALID_CONCLUSION"));
-        mvc.perform(verify("CONFIRMED", "   ", 0, "verify-key-8")).andExpect(status().isBadRequest());
+        mvc.perform(verify("CONFIRMED", "a".repeat(1001), 0, "verify-key-8")).andExpect(status().isBadRequest());
         mvc.perform(verify("CONFIRMED", "版本无效", -1, "verify-key-9")).andExpect(status().isBadRequest());
         mvc.perform(verify("CONFIRMED", "键无效", 0, "short")).andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_KEY_REQUIRED"));
+    }
+
+    @Test
+    void omittedNoteAllowsConfirmationAndPreservesHistory() throws Exception {
+        mvc.perform(post("/api/v1/uav-events/" + eventId + "/verifications")
+                        .header("Authorization", "Bearer " + sessionId).header("Idempotency-Key", "verify-without-note")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"conclusion\":\"CONFIRMED\",\"expected_version\":0}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("CONFIRMED"))
+                .andExpect(jsonPath("$.data.version").value(1));
+        assertThat(jdbc.queryForObject("select note from uav_event_verification where event_id=?", String.class, eventId)).isEmpty();
+    }
+
+    @Test
+    void emptyNoteAllowsFalsePositiveAndReplayDoesNotDuplicateHistory() throws Exception {
+        mvc.perform(verify("FALSE_POSITIVE", "", 0, "verify-empty-note"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("FALSE_POSITIVE"));
+        mvc.perform(verify("FALSE_POSITIVE", "   ", 0, "verify-empty-note"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_REPLAY"));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?", Long.class, eventId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select note from uav_event_verification where event_id=?", String.class, eventId)).isEmpty();
     }
 
     @Test
@@ -296,7 +316,7 @@ class UavEventVerificationApiTest {
     private void source(String id, String code) { sources.add(id); jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values (?,?,?,true,'mock',current_timestamp,current_timestamp,0)", id, code, "来源"); }
     private void alarm(String id, String source, String sourceAlarmId, String org, String district, Instant occurredAt, Instant receivedAt) {
         alarms.add(id);
-        jdbc.update("insert into alarm (alarm_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,'UAV','HIGH',?,?,'mock',?,?,current_timestamp)", id, source, sourceAlarmId, occurredAt, receivedAt, org, district);
+        jdbc.update("insert into alarm (alarm_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,'UAV','HIGH',?,?,'mock',?,?,current_timestamp)", id, source, sourceAlarmId, occurredAt == null ? null : java.sql.Timestamp.from(occurredAt), java.sql.Timestamp.from(receivedAt), org, district);
     }
     private void event(String id, String alarm, String org, String district) {
         eventIds.add(id);

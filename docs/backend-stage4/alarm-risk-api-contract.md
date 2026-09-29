@@ -104,12 +104,12 @@ PENDING_VERIFICATION → EXCLUDED
 
 ## 写请求、并发与审计
 
-写请求头必须携带 8–128 字符 `Idempotency-Key`。两个 POST 的 JSON 对象只允许下列三个键，每键必须且只能出现一次，不接受数组、额外键、重复键或尾随 JSON 内容：
+写请求头必须携带 8–128 字符 `Idempotency-Key`。两个 POST 的 JSON 对象只允许下列三个键，每键最多出现一次，必填性见表；不接受数组、额外键、重复键或尾随 JSON 内容：
 
 | 字段 | 类型/范围 | 无人机事件 | 飞行风险 |
 | --- | --- | --- | --- |
 | `conclusion` | string | `CONFIRMED/FALSE_POSITIVE` | `CONFIRMED/EXCLUDED` |
-| `note` | string，去首尾空白后 1–1000 字符 | 必填 | 必填 |
+| `note` | string，去首尾空白后最多 1000 字符 | 可省略或为空，记录为空字符串；前台不再输入 | 选填；省略、null、空白均记录为空字符串 |
 | `expected_version` | JSON integer，`>= 0` 且可装入 Java `long` | 必填 | 必填 |
 
 JSON 语法、结构、未知/重复/缺失键或字段类型错误返回 `INVALID_REQUEST`；已正确解析后的非法 conclusion 返回 `INVALID_CONCLUSION`，说明长度或版本取值错误返回 `VALIDATION_ERROR`。动作鉴权通过后，先完成 query/path/body 的纯语法与字段校验，再按范围锁对象并产生业务写入；对象可见后由 `IdempotencyGuard` 校验并占用幂等键。可观察的事务内顺序为：按范围锁对象、占用幂等键、检查版本与状态、条件更新一行、追加历史、成功审计、提交。

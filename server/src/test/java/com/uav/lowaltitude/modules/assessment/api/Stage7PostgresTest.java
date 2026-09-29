@@ -420,13 +420,13 @@ class Stage7PostgresTest {
         assertThatThrownBy(() -> jdbc.update(
                 "insert into legality_review_history (history_id,evaluation_id,version,previous_state,resulting_state,conclusion,status_before,status_after,note,actor_id,created_at) values (?,?,1,'PENDING_REVIEW','REJECTED','REJECT','ABNORMAL','ABNORMAL','重复版本',?,?)",
                 id(), evaluationId, userA, T0)).isInstanceOf(DataIntegrityViolationException.class);
-        // 结论枚举与备注长度由检查约束守住。
+        // 结论枚举由检查约束守住；当前契约允许不填写复核备注。
         assertThatThrownBy(() -> jdbc.update(
                 "insert into legality_review_history (history_id,evaluation_id,version,previous_state,resulting_state,conclusion,status_before,status_after,note,actor_id,created_at) values (?,?,2,'CONFIRMED','CONFIRMED','APPROVE','ABNORMAL','ABNORMAL','非法结论',?,?)",
                 id(), evaluationId, userA, T0)).isInstanceOf(DataIntegrityViolationException.class);
-        assertThatThrownBy(() -> jdbc.update(
+        assertThat(jdbc.update(
                 "insert into legality_review_history (history_id,evaluation_id,version,previous_state,resulting_state,conclusion,status_before,status_after,note,actor_id,created_at) values (?,?,2,'CONFIRMED','CONFIRMED','CONFIRM','ABNORMAL','ABNORMAL','   ',?,?)",
-                id(), evaluationId, userA, T0)).isInstanceOf(DataIntegrityViolationException.class);
+                id(), evaluationId, userA, T0)).isEqualTo(1);
         // 契约要求复核历史只增（R__stage7 的 E2 片段）：UPDATE/DELETE 必须被触发器拒绝。
         assertThatThrownBy(() -> jdbc.update("update legality_review_history set note='改写' where history_id=?", historyId))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -809,7 +809,7 @@ class Stage7PostgresTest {
     }
 
     private void insertEvaluation(String id, String run, String versionId, String mode, String legalStatus, String violations, String unknowns) {
-        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,supersedes_evaluation_id,assessment_id,alarm_outcome,alarm_id,owner_org_id,district_id,source_mode,created_at) values (?,?,?,?,'TARGET',?,null,?,?,?,?,?,'FRESH','FULL',?,null,null,cast(? as jsonb),cast('[]' as jsonb),cast(? as jsonb),cast('[]' as jsonb),cast('{}' as jsonb),null,null,null,null,?,?,'mock',?)",
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,supersedes_evaluation_id,assessment_id,alarm_outcome,alarm_id,owner_org_id,district_id,source_mode,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons,created_at) values (?,?,?,?,'TARGET',?,null,?,?,?,?,?,'FRESH','FULL',?,null,null,cast(? as jsonb),cast('[]' as jsonb),cast(? as jsonb),cast('[]' as jsonb),cast('{}' as jsonb),null,null,null,null,?,?,'mock','legality-assurance-v1','INSUFFICIENT',cast('[\"MISSING_IDENTITY\"]' as jsonb),?)",
                 id, run, versionId, mode, targetId, planId, routeVersionId, T0, T0, T0, legalStatus, violations, unknowns, org, district, T0);
     }
 

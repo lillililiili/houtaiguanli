@@ -29,17 +29,18 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @SpringBootTest(properties={"app.handoff.channel=none","app.flight.status-advance.enabled=false"})
 @AutoConfigureMockMvc @ActiveProfiles("test") @Transactional
+@org.springframework.context.annotation.Import(DeviceMaintenanceNoticeApiTest.ClockConfiguration.class)
 class DeviceMaintenanceNoticeApiTest {
     @Autowired MockMvc mvc; @Autowired ObjectMapper json; @Autowired JdbcTemplate jdbc;
     @Autowired org.mybatis.spring.SqlSessionTemplate sqlSession;
-    @SpyBean FlightDeviceCheckService checks; @SpyBean AppClock clock;
+    @SpyBean FlightDeviceCheckService checks; @Autowired MaintenanceTestClock clock;
     @MockBean HandoffChannelPort channel;
     String session,org,device,setting,taskId;
     final String plan="seed-stage3-plan-legal";
     long now;
     final Set<String> createdTaskIds=new HashSet<>();
     @BeforeEach void fixture()throws Exception {
-        now=System.currentTimeMillis();doReturn(Instant.ofEpochMilli(now)).when(clock).now();
+        now=System.currentTimeMillis();clock.setNow(Instant.ofEpochMilli(now));
         session=data(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).path("session_id").asText();
         org=jdbc.queryForObject("SELECT org_id FROM app_org WHERE org_code='ORG-DEV'",String.class);
         device=jdbc.queryForObject("SELECT device_id FROM ops_device WHERE deleted_at IS NULL ORDER BY device_id FETCH FIRST 1 ROW ONLY",String.class);
@@ -88,7 +89,7 @@ class DeviceMaintenanceNoticeApiTest {
     }
     @Test void handledTaskCannotSendAgain()throws Exception {
         create();advance();
-        data(write(post("/api/v1/device-maintenance-tasks/"+taskId+"/handling"),Map.of("expected_version",1,"note","已核对设备异常，继续现场处理"),UUID.randomUUID().toString()));
+        jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',workflow_state='LEGACY_HANDLED',active_key=NULL,handled_by=reported_by,handled_by_name=reported_by_name,handled_at=?,handling_note='历史处理反馈' WHERE task_id=?",now,taskId);
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_RESEND_BLOCKED"));
         verify(channel,times(1)).deliver(any());
     }
@@ -134,7 +135,18 @@ class DeviceMaintenanceNoticeApiTest {
     MockHttpServletRequestBuilder auth(MockHttpServletRequestBuilder request){return request.header("Authorization","Bearer "+session);}
     MockHttpServletRequestBuilder write(MockHttpServletRequestBuilder request,Object body,String key)throws Exception{return auth(request).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body));}
     JsonNode data(MockHttpServletRequestBuilder request)throws Exception {return json.readTree(mvc.perform(request).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");}
-    void advance(){now+=61000;doReturn(Instant.ofEpochMilli(now)).when(clock).now();observe(true,now);}
+    void advance(){now+=61000;clock.setNow(Instant.ofEpochMilli(now));observe(true,now);}
+    @org.springframework.boot.test.context.TestConfiguration
+    static class ClockConfiguration {
+        @org.springframework.context.annotation.Bean
+        @org.springframework.context.annotation.Primary
+        MaintenanceTestClock maintenanceTestClock(){return new MaintenanceTestClock();}
+    }
+    static class MaintenanceTestClock extends AppClock {
+        private volatile Instant current=Instant.now();
+        void setNow(Instant value){current=value;}
+        @Override public Instant now(){return current;}
+    }
     void observe(boolean abnormal,long observed){observe(abnormal,observed,abnormal?"OFFLINE":"ONLINE");}
     void observe(boolean abnormal,long observed,String connectivity){var row=new FlightDeviceCheckService.DeviceRow(device,"测试设备",true,BigDecimal.ONE,connectivity,abnormal?"BAD":"GOOD",observed,observed,abnormal,true,List.of());doReturn(new FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","设备检查",now,BigDecimal.TEN,true,0,List.of(row),false)).when(checks).read(plan);}
 }

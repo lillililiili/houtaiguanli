@@ -21,6 +21,9 @@ public final class LegalityEvaluationDtos {
     /** 复核头行快照；SHADOW 研判没有复核行时整个 review 为 null。 */
     public record ReviewDto(String state, String manualStatus, long version) { }
 
+    /** 同一关联事件在本次研判形成之后的实际核实，不替代合法性系统结论或复核历史。 */
+    public record AlarmVerificationDto(String eventId, String conclusion, String note, long version, long verifiedAt) { }
+
     /** 算法对单次结论是否足以自动定性的保存结果；review_required 与操作者权限无关。 */
     public record DecisionAssuranceDto(String algorithmVersion, String status, boolean reviewRequired, List<String> reasons,
             String accuracyStatus) { }
@@ -45,7 +48,8 @@ public final class LegalityEvaluationDtos {
             List<String> unknownReasons, List<EvidenceRefDto> evidenceReferences, List<HitDetailDto> hitDetails,
             ReviewDto review, List<String> allowedActions, String supersedesEvaluationId, String supersededByEvaluationId,
             String alarmId, String eventId, String alarmOutcomeKind, String assessmentId, String ownerOrgId, String ownerOrgName,
-            String districtId, String districtName, String sourceMode, String objectTypeCode, DecisionAssuranceDto decisionAssurance) { }
+            String districtId, String districtName, String sourceMode, String objectTypeCode, DecisionAssuranceDto decisionAssurance,
+            AlarmVerificationDto alarmVerification) { }
 
     /** 复核历史项；actor_id 只提供操作归属 ID，actor_name 仅用于展示。 */
     public record RevisionDto(String historyId, long version, String previousState, String resultingState, String conclusion,

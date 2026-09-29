@@ -13,7 +13,7 @@ import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 
 @Component
 // production 与 local/test 同时出现时仍由 !production 拒绝注册，防止部署 profile 组合把合成授权带入生产。
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 @Order(40)
 public class LocalStage2AccessSeeder implements ApplicationRunner {

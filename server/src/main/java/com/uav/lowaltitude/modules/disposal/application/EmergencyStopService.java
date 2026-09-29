@@ -49,16 +49,22 @@ public class EmergencyStopService {
     }
     @Transactional
     public Overview stop(String eventId,String key,String raw) {
+        // Remember only this request's visible active chain before waiting for the event lock.
+        // A device reply may complete it while we wait; that must not discard an already requested stop.
+        AccessDecision initialScope=access.require(PermissionCode.DISPOSAL_STOP);
+        if(events.find(eventId,initialScope)==null) throw missing();
+        Set<String> observed=new HashSet<>();
+        current(rows(eventId,false)).forEach(row->observed.add(row.authorizationId()));
         scope(eventId,true);
         String note=parse(raw,false);
         if(replay(key,"STOP:"+eventId,note)) return view(eventId);
         List<AuthorizationRow> rows=rows(eventId,true);
-        if(rows.stream().noneMatch(r->ACTIVE.contains(r.status())&&!stops.covered(r.authorizationId()))) {
+        List<AuthorizationRow> current=current(rows,observed);
+        if(current.isEmpty()) {
             Map<String,Object> existing=stops.latest(eventId);
             if(existing!=null) { remember(key,"STOP:"+eventId,note,text(existing,"stop_id"));return view(eventId); }
             throw conflict("NO_ACTIVE_DISPOSAL","本事件没有正在执行或待执行的反制处置");
         }
-        List<AuthorizationRow> current=current(rows);
         if(revokeOnly(current)&&current.stream().anyMatch(r->!actorPending().equals(r.requestedBy())))
             throw conflict("NOT_REQUESTER","只有发起人可以撤销尚未执行的反制");
         for(String device:current.stream().map(AuthorizationRow::deviceId).filter(Objects::nonNull).distinct().sorted().toList()) {
@@ -149,8 +155,13 @@ public class EmergencyStopService {
     }
     /** Only the active chain and its explicitly linked parent; old event history is never a control target. */
     private List<AuthorizationRow> current(List<AuthorizationRow> rows) {
+        return current(rows,Set.of());
+    }
+    private List<AuthorizationRow> current(List<AuthorizationRow> rows,Set<String> observed) {
         Set<String> selected=new HashSet<>();
-        for(AuthorizationRow row:rows) if(ACTIVE.contains(row.status())&&!stops.covered(row.authorizationId())) {
+        for(AuthorizationRow row:rows) if((ACTIVE.contains(row.status())
+                || (observed.contains(row.authorizationId())&&Set.of("COMPLETED","FAILED").contains(row.status())))
+                &&!stops.covered(row.authorizationId())) {
             selected.add(row.authorizationId());
             if("JAMMING".equals(row.actionType())) {
                 String parent=stops.parent(row.authorizationId());

@@ -25,6 +25,7 @@ import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.PageDto
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.SummaryDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.ParamRefDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.ReviewDto;
+import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.AlarmVerificationDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.RevisionDto;
 import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository;
 import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.EvaluationQuery;
@@ -130,6 +131,10 @@ public class LegalityEvaluationReadService {
         boolean planVisible = has(PermissionCode.FLIGHT_READ) && repository.planVisible(row.planId(), row.ownerOrgId(), row.districtId(), decision);
         String alarmId = row.alarmId();
         boolean alarmVisible = alarmId != null && has(PermissionCode.ALARM_READ) && repository.alarmVisible(alarmId, row.ownerOrgId(), row.districtId(), decision);
+        var verification = alarmVisible ? repository.alarmVerification(row) : null;
+        var assurance = assurance(row);
+        if (verification != null) assurance = new DecisionAssuranceDto(assurance.algorithmVersion(), assurance.status(), false,
+                assurance.reasons(), assurance.accuracyStatus());
         ReviewDto review = row.reviewState() == null ? null : new ReviewDto(row.reviewState(), row.manualStatus(), row.reviewVersion() == null ? 0 : row.reviewVersion());
         return new EvaluationDto(row.evaluationId(), row.runId(), row.ruleSetCode(), row.ruleSetVersionId(), row.ruleSetVersionNo(), row.paramStatus(),
                 row.mode(), row.triggerKind(), row.subjectKind(), targetVisible ? row.targetId() : null, targetVisible ? row.targetNo() : null,
@@ -140,7 +145,8 @@ public class LegalityEvaluationReadService {
                 review, allowedActions(row, alarmId != null), row.supersedesEvaluationId(), row.supersededByEvaluationId(),
                 alarmVisible ? alarmId : null, alarmVisible ? repository.eventIdOfAlarm(alarmId) : null, outcomeKind(row.alarmOutcome(), row.memberKind()),
                 row.assessmentId(), row.ownerOrgId(), row.ownerOrgName(), row.districtId(), row.districtName(), row.sourceMode(),
-                targetVisible ? row.objectTypeCode() : null, assurance(row));
+                targetVisible ? row.objectTypeCode() : null, assurance, verification == null ? null : new AlarmVerificationDto(
+                        verification.eventId(), verification.conclusion(), verification.note(), verification.version(), verification.verifiedAt()));
     }
 
     private DecisionAssuranceDto assurance(EvaluationRow row) {
@@ -169,7 +175,7 @@ public class LegalityEvaluationReadService {
         List<String> actions = new ArrayList<>();
         boolean active = "ACTIVE".equals(row.mode()) && row.reviewState() != null;
         boolean superseded = "SUPERSEDED".equals(row.reviewState());
-        if (active && "PENDING_REVIEW".equals(row.reviewState()) && has(PermissionCode.ASSESSMENT_REVISE)) actions.add(ACTION_REVIEW);
+        if (active && !linked && "PENDING_REVIEW".equals(row.reviewState()) && has(PermissionCode.ASSESSMENT_REVISE)) actions.add(ACTION_REVIEW);
         if (active && !superseded && has(PermissionCode.ASSESSMENT_EVALUATE) && has(subjectRead(row.subjectKind()))) actions.add(ACTION_RECOMPUTE);
         if (active && !superseded && !"LEGAL".equals(row.legalStatus()) && !linked && row.targetId() != null && has(PermissionCode.ASSESSMENT_ESCALATE)) actions.add(ACTION_ESCALATE);
         return List.copyOf(actions);

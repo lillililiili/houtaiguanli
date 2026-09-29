@@ -23,7 +23,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 对明确指定的补充演示批次追加数据；不移动计划时间，不重置风险办理或已有轨迹。 */
 @Component
-@Profile("!production & local")
+@Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true")
 @Order(99)
 public class LocalFlightPlanEnrichmentSeeder implements ApplicationRunner {

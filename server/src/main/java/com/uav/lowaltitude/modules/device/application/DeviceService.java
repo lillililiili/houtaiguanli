@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
+import com.uav.lowaltitude.modules.device.infrastructure.DeviceEventPublicationRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository.DeviceQuery;
 import com.uav.lowaltitude.integration.DeviceAdapterPort;
 import com.uav.lowaltitude.integration.DeviceAdapterRegistry;
@@ -46,6 +47,7 @@ public class DeviceService {
             Map.entry("last_heartbeat_desc", "s.last_heartbeat_at DESC,d.device_no ASC"));
 
     private final DeviceRepository repository;
+    private final DeviceEventPublicationRepository publication;
     private final DeviceAccessPolicy access;
     private final AppClock clock;
     private final AppProperties properties;
@@ -58,8 +60,9 @@ public class DeviceService {
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
                          DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
-                         IdempotencyGuard idempotency) {
+                         IdempotencyGuard idempotency, DeviceEventPublicationRepository publication) {
         this.repository = repository;
+        this.publication = publication;
         this.access = access;
         this.clock = clock;
         this.properties = properties;
@@ -85,11 +88,13 @@ public class DeviceService {
     public DeviceOptions options() {
         access.requireDevicesRead();
         return new DeviceOptions(repository.distinct("type"), repository.distinct("channel"),
-                repository.distinct("region"), repository.distinct("vendor"));
+                repository.distinct("region"), repository.distinct("vendor"),
+                repository.distinctTypes().stream().map(row -> new DeviceTypeOption(
+                        text(row,"device_type_code"),text(row,"device_type_name"))).toList());
     }
 
     public DeviceOverview overview() {
-        access.requireMonitoringRead();
+        access.requireOverviewRead();
         Map<String, Object> row = repository.overview();
         int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
         String mode = live == 0 ? "mock" : live == total ? "live" : "mixed";
@@ -173,10 +178,20 @@ public class DeviceService {
                 repository.countIncidents(blankToNull(deviceId), blankToNull(severity), blankToNull(stage)));
     }
 
+    @Transactional
     public EventBatch events(String deviceId, long afterSeq, int limit) {
+        return events(deviceId, afterSeq, limit, false);
+    }
+
+    @Transactional
+    public EventBatch events(String deviceId, long afterSeq, int limit, boolean latest) {
         access.requireMonitoringRead();
+        String selectedDevice = blankToNull(deviceId);
+        if (selectedDevice != null && !repository.eventDeviceVisible(selectedDevice))
+            throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
+        publication.publishCommitted();
         int safeLimit = Math.min(Math.max(limit, 1), 200);
-        List<DeviceEvent> items = repository.events(blankToNull(deviceId), Math.max(afterSeq, 0), safeLimit).stream()
+        List<DeviceEvent> items = repository.events(selectedDevice, Math.max(afterSeq, 0), safeLimit, latest).stream()
                 .map(r -> new DeviceEvent(longNumber(r, "event_seq"), text(r, "event_id"), text(r, "device_id"),
                         text(r, "device_no"), text(r, "device_name"), text(r, "event_type"),
                         text(r, "level_code"), text(r, "message"), longNumber(r, "occurred_at"), bool(r, "simulated")))
@@ -698,7 +713,9 @@ public class DeviceService {
     public record DeviceFilter(String keyword, String typeCode, String channel, String region,
                                String vendor, String connectivity, Boolean enabled) { }
     public record DevicePage(List<DeviceSummary> items, int page, int size, long total) { }
-    public record DeviceOptions(List<String> types, List<String> channels, List<String> regions, List<String> vendors) { }
+    public record DeviceTypeOption(String code, String name) { }
+    public record DeviceOptions(List<String> types, List<String> channels, List<String> regions, List<String> vendors,
+                                List<DeviceTypeOption> typeOptions) { }
     public record DeviceTree(List<DeviceSummary> items, long total, boolean truncated) { }
     public record DeviceOverview(int total, int online, int offline, int abnormal, int unknown, int alarm,
                                  int vendorCount, int modelCount, List<OverviewGroup> byChannel,

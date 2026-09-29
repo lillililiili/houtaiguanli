@@ -57,6 +57,14 @@ class PunishmentReviewTest {
     void tearDown() { fixture.cleanup(); }
 
     @Test
+    void reviewAcceptsMissingSupplementaryNote() throws Exception {
+        mvc.perform(post("/api/v1/punishment-cases/{id}/reviews", caseId)
+                .header("Authorization", bearer(reviewer)).header("Idempotency-Key", "optional-" + UUID.randomUUID())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"conclusion\":\"UPHELD\",\"expected_version\":3}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void officerMayNotReviewTheirOwnCase() throws Exception {
         // 复核的意义就在于换一双眼睛（决策 14-11）。
         review(officer, "UPHELD", null, 3).andExpect(status().isConflict())

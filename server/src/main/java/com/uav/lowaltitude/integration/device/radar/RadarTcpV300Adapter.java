@@ -6,6 +6,8 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
@@ -100,7 +102,11 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
                 RadarFrame data = waitForAny(session,
                         List.of(RadarV300Codec.COMMAND_UPLOAD_TARGET_V3, RadarV300Codec.COMMAND_UPLOAD_TRACK_V3),
                         Math.max(session.timeoutMillis(), 3000));
-                items.add(pass("DATA", "点迹/航迹接收", "command=0x" + Integer.toHexString(data.command()), "RADAR_V3_UPLOAD"));
+                int count = data.command() == RadarV300Codec.COMMAND_UPLOAD_TARGET_V3
+                        ? RadarV300PayloadDecoder.points(data.payload()).items().size()
+                        : RadarV300PayloadDecoder.track(data.payload()).items().size();
+                items.add(pass("DATA", "点迹/航迹接收", "command=0x" + Integer.toHexString(data.command())
+                        + ", targets=" + count, "RADAR_V3_UPLOAD"));
                 return new CommissionResult(true, "RADAR_COMMISSION_PASSED", "雷达协议链路调测通过", items);
             } catch (SocketTimeoutException ex) {
                 items.add(new CommissionItem("DATA", "点迹/航迹接收", "UNTESTABLE", "雷达可能处于待机，未收到业务数据", null, "RADAR_V3_UPLOAD"));
@@ -134,6 +140,10 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
                 write(session, RadarV300Codec.COMMAND_REQUEST_RTK, RadarV300Codec.enableRtkUploadPayload());
             listener.online();
             long lastValidAt = System.currentTimeMillis();
+            while (!session.pending().isEmpty()) {
+                RadarFrame frame = session.pending().removeFirst();
+                listener.frame(frame, RadarV300Codec.encode(frame.command(), frame.frameId(), frame.payload()), lastValidAt);
+            }
             long lastHeartbeatAt = 0;
             long lastInvalidCount = session.decoder().invalidFrameCount();
             byte[] chunk = new byte[64 * 1024];
@@ -198,16 +208,31 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
         long deadline = System.currentTimeMillis() + timeout;
         byte[] chunk = new byte[8192];
         while (System.currentTimeMillis() < deadline) {
+            var pending = session.pending().iterator();
+            while (pending.hasNext()) {
+                RadarFrame frame = pending.next();
+                if (commands.contains(frame.command())) { pending.remove(); return frame; }
+            }
             try {
                 int read = session.socket().getInputStream().read(chunk);
                 if (read < 0) throw new IOException("雷达关闭了 TCP 连接");
-                for (RadarFrame frame : session.decoder().feed(java.util.Arrays.copyOf(chunk, read)))
-                    if (commands.contains(frame.command())) return frame;
+                for (RadarFrame frame : session.decoder().feed(java.util.Arrays.copyOf(chunk, read))) {
+                    if (!commands.contains(frame.command()) && !isUpload(frame.command())) continue;
+                    if (session.pending().size() >= 64)
+                        throw new ProtocolException("PROTOCOL_FRAME_INVALID", "雷达待处理帧超过接收窗口");
+                    session.pending().addLast(frame);
+                }
             } catch (SocketTimeoutException ignored) {
                 // 小步超时用于检查总截止时间。
             }
         }
         throw new SocketTimeoutException("等待雷达响应超时");
+    }
+
+    private static boolean isUpload(int command) {
+        return command == RadarV300Codec.COMMAND_UPLOAD_TARGET_V3
+                || command == RadarV300Codec.COMMAND_UPLOAD_TRACK_V3
+                || command == RadarV300Codec.COMMAND_UPLOAD_RTK;
     }
 
     private static CommissionItem pass(String code, String label, String value, String basis) {
@@ -228,7 +253,10 @@ public class RadarTcpV300Adapter implements DeviceAdapterPort {
 
     private record LoginResult(boolean success, String detail) { }
     public record Session(Socket socket, StreamDecoder decoder, AdapterConfiguration configuration,
-                          int timeoutMillis) implements AutoCloseable {
+                          int timeoutMillis, Deque<RadarFrame> pending) implements AutoCloseable {
+        public Session(Socket socket, StreamDecoder decoder, AdapterConfiguration configuration, int timeoutMillis) {
+            this(socket,decoder,configuration,timeoutMillis,new ArrayDeque<>());
+        }
         @Override public void close() throws IOException { socket.close(); }
     }
     public interface LiveFrameListener {

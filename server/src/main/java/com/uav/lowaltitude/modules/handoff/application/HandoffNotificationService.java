@@ -138,14 +138,14 @@ public class HandoffNotificationService {
   return new RecipientSnapshot(row.recipientId(),name,null,null,null,null,null,"MOCK",null,null,null,true,null,clock.nowMillis());
  }
  private boolean localMock(HandoffRow row){
-  return channel.simulated()&&environment.acceptsProfiles(Profiles.of("local","test"))
+  return channel.simulated()&&environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))
     &&!environment.acceptsProfiles(Profiles.of("prod","production"))&&Set.of("mock","replay").contains(row.sourceMode());
  }
  private String channelBlocker(HandoffRow row,RecipientSnapshot target){
   if(repository.findEnabledRecipient(row.recipientId(),row.handoffType())==null)return "原处罚接收方已停用";
   if(target==null||!target.configured())return target==null||target.blockedReason()==null?"接收方通知配置不可用":target.blockedReason();
   if(!Objects.equals(target.recipientId(),row.recipientId()))return "通知接收方与原交接不一致";
-  if(!"MOCK".equals(target.channelType())||!environment.acceptsProfiles(Profiles.of("local","test"))
+  if(!"MOCK".equals(target.channelType())||!environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))
     ||environment.acceptsProfiles(Profiles.of("prod","production"))||!Set.of("mock","replay").contains(row.sourceMode())||!channel.simulated())return "真实通知渠道尚未接通，当前来源不能使用模拟投递";
   return null;
  }

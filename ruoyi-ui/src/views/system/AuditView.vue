@@ -24,6 +24,12 @@ const moduleLabels = {
   punishment: '处罚案件', evidence: '证据管理', airport: '机场基础数据', maps: '地图管理', system: '系统'
 }
 const actionLabels = {
+  device_maintenance_reported: '上报设备维护任务', device_maintenance_handled: '处理设备维护任务',
+  device_maintenance_notice_resent: '补发设备维护通知', device_maintenance_start: '开始处理设备运维任务',
+  device_maintenance_save_progress: '保存设备运维进展', device_maintenance_submit_verification: '提交设备运维恢复核验',
+  device_maintenance_verify_recovery: '核验设备运维恢复情况', device_maintenance_complete: '完成设备运维任务',
+  device_maintenance_resume: '继续处理设备运维任务', device_maintenance_link_commission: '关联设备运维调测任务',
+  device_maintenance_workflow_rejected: '拒绝设备运维流程操作',
   response_plan_draft_created: '新建预案草稿', response_plan_draft_updated: '修改预案草稿', response_plan_published: '发布预案', response_plan_withdrawn: '停用预案', response_plan_bound: '关联空域预案', response_plan_unbound: '解除空域预案关联',
   organization_profile_created: '创建单位档案', organization_profile_updated: '更新单位档案', business_contact_created: '创建联系人', business_contact_updated: '更新联系人',
   plan_source_binding_created: '创建来源映射', plan_source_binding_updated: '更新来源映射', plan_subjects_associated: '关联计划主体', notification_setting_created: '创建通知配置', notification_setting_updated: '更新通知配置',
@@ -116,8 +122,8 @@ onMounted(load)
       <div class="table-scroll"><el-table v-loading="loading" :data="rows" height="100%" empty-text="当前条件下暂无审计日志">
         <el-table-column label="时间" min-width="172"><template #default="{row}">{{ formatTime(row.occurred_at) }}</template></el-table-column>
         <el-table-column prop="account" label="账号" min-width="120" show-overflow-tooltip /><el-table-column label="角色" min-width="120"><template #default="{row}"><span :title="row.role_code">{{ roleText(row.role_code) }}</span></template></el-table-column>
-        <el-table-column label="模块" min-width="120"><template #default="{row}">{{ moduleText(row.module_code) }}</template></el-table-column>
-        <el-table-column label="动作" min-width="160" show-overflow-tooltip><template #default="{row}">{{ actionText(row.action) }}</template></el-table-column>
+        <el-table-column label="模块" min-width="120"><template #default="{row}">{{ row.module_name || moduleText(row.module_code) }}</template></el-table-column>
+        <el-table-column label="动作" min-width="160" show-overflow-tooltip><template #default="{row}">{{ row.action_name || actionText(row.action) }}</template></el-table-column>
         <el-table-column label="结果" width="82"><template #default="{row}"><el-tag :type="row.result==='SUCCESS'?'success':'danger'">{{ row.result==='SUCCESS'?'成功':'失败' }}</el-tag></template></el-table-column>
         <el-table-column label="IP" min-width="130"><template #default="{row}"><span :title="row.ip">{{ ipText(row.ip) }}</span></template></el-table-column>
         <el-table-column label="操作" width="80" fixed="right"><template #default="{row}"><el-button link type="primary" @click="openDetail(row)">详情</el-button></template></el-table-column>
@@ -129,7 +135,8 @@ onMounted(load)
       <div v-loading="detailDialog.loading"><el-descriptions v-if="detailDialog.row" :column="2" border>
         <el-descriptions-item label="时间">{{ formatTime(detailDialog.row.occurred_at) }}</el-descriptions-item><el-descriptions-item label="结果">{{ detailDialog.row.result==='SUCCESS'?'成功':'失败' }}</el-descriptions-item>
         <el-descriptions-item label="账号">{{ detailDialog.row.account || '—' }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row.role_code) }}</el-descriptions-item>
-        <el-descriptions-item label="模块">{{ moduleText(detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ actionText(detailDialog.row.action) }}</el-descriptions-item>
+        <el-descriptions-item label="模块">{{ detailDialog.row.module_name || moduleText(detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ detailDialog.row.action_name || actionText(detailDialog.row.action) }}</el-descriptions-item>
+        <el-descriptions-item label="对象类型">{{ detailDialog.row.object_type || '—' }}</el-descriptions-item><el-descriptions-item label="对象编号"><span class="audit-object-id">{{ detailDialog.row.object_id || '—' }}</span></el-descriptions-item>
         <el-descriptions-item label="IP">{{ ipText(detailDialog.row.ip) }}</el-descriptions-item><el-descriptions-item label="客户端">{{ detailDialog.row.user_agent || '—' }}</el-descriptions-item>
         <el-descriptions-item label="详情" :span="2"><span class="detail-text">{{ detailDialog.row.detail || '—' }}</span></el-descriptions-item>
       </el-descriptions></div>
@@ -139,6 +146,7 @@ onMounted(load)
 </template>
 
 <style scoped>
+.audit-object-id { overflow-wrap: anywhere; }
 .audit-card{display:flex;min-height:0;flex:1;flex-direction:column;padding:16px;border-radius:12px}.filter-bar{flex:none}.filter-bar .el-input,.filter-bar .el-select{width:170px}.audit-footer{display:flex;flex:none;align-items:center;justify-content:space-between;gap:20px;padding-top:16px;color:var(--admin-muted)}.detail-text{padding:12px;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-card-soft);white-space:pre-wrap;word-break:break-word}
 @media(max-width:900px){.audit-card{min-height:640px}.audit-footer{align-items:flex-start;flex-direction:column}.filter-bar .el-input,.filter-bar .el-select{width:220px}}
 </style>

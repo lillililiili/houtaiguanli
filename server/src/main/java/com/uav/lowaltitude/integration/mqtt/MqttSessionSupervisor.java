@@ -69,7 +69,7 @@ public class MqttSessionSupervisor {
             repository.expire(clock.nowMillis());
             if (eoEdges != null) eoEdges.expire(clock.nowMillis(), heartbeatTimeout);
             Map<String,Broker> desired=new HashMap<>();
-            for(Broker b:repository.brokers()) if(b.enabled()) desired.put(b.brokerId(),b);
+            for(Broker b:repository.brokers()) if(b.enabled() && configuration.sourceAllowed(b.sourceMode())) desired.put(b.brokerId(),b);
             for(String id:Set.copyOf(sessions.keySet())) {
                 if(!desired.containsKey(id)) { close(sessions.remove(id)); repository.release(id,owner,clock.nowMillis()); }
             }

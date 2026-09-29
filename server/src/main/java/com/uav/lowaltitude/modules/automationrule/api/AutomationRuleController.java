@@ -24,6 +24,10 @@ public class AutomationRuleController {
             @Valid @RequestBody EnabledInput body,@RequestHeader("Idempotency-Key") String key) {
         return ApiResponse.ok(service.enabled(category,id,body,key));
     }
+    @DeleteMapping("/rules/{id}") public ApiResponse<Group> delete(@PathVariable String category,@PathVariable String id,
+            @Valid @RequestBody DeleteInput body,@RequestHeader("Idempotency-Key") String key) {
+        return ApiResponse.ok(service.delete(category,id,body,key));
+    }
     @PutMapping("/settings") public ApiResponse<Group> settings(@PathVariable String category,
             @Valid @RequestBody SettingsInput body,@RequestHeader("Idempotency-Key") String key) {
         return ApiResponse.ok(service.settings(category,body,key));

@@ -14,7 +14,7 @@ public class MockWeatherForecast {
     private final Environment environment;
     public MockWeatherForecast(Environment environment) { this.environment=environment; }
     public boolean available() {
-        return environment.acceptsProfiles(Profiles.of("(local | test) & !prod & !production"));
+        return environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE));
     }
     public Forecast forecast(String areaName, long publishedAt) {
         if (!available()) throw new IllegalStateException("Weather simulation is disabled in this environment");

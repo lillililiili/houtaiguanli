@@ -1,0 +1,24 @@
+# Both this native configuration and compose host ports are loopback-only.
+logLevel: info
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtmp: false
+webrtc: false
+srt: false
+moq: false
+hls: true
+hlsAddress: 127.0.0.1:8888
+hlsVariant: fmp4
+hlsAlwaysRemux: true
+hlsSegmentDuration: 1s
+hlsSegmentCount: 7
+api: true
+apiAddress: 127.0.0.1:9997
+authMethod: internal
+# Deny by default. The launcher / compose inject separate publisher and platform credentials.
+authInternalUsers: []
+paths:
+  ~^qa/[a-f0-9-]{36}$:
+    source: publisher
+    overridePublisher: false

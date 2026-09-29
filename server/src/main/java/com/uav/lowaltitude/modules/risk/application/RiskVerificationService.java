@@ -80,12 +80,14 @@ public class RiskVerificationService {
         try(JsonParser parser=objectMapper.getFactory().createParser(rawRequest)){
             parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
             JsonNode node=objectMapper.readTree(parser);
-            if(node==null||!node.isObject()||node.size()!=3
-                    ||!node.has("conclusion")||!node.has("note")||!node.has("expected_version")
-                    ||!node.get("conclusion").isTextual()||!node.get("note").isTextual()
+            if(node==null||!node.isObject()||node.size()<2||node.size()>3
+                    ||!node.has("conclusion")||!node.has("expected_version")
+                    ||!node.get("conclusion").isTextual()
+                    ||(node.hasNonNull("note")&&!node.get("note").isTextual())
+                    ||(node.size()==3&&!node.has("note"))
                     ||!node.get("expected_version").isIntegralNumber()||!node.get("expected_version").canConvertToLong()
                     ||parser.nextToken()!=null)throw invalidRequest();
-            return new VerifyRequest(node.get("conclusion").textValue(),node.get("note").textValue(),node.get("expected_version").longValue());
+            return new VerifyRequest(node.get("conclusion").textValue(),node.path("note").asText(""),node.get("expected_version").longValue());
         }catch(java.io.IOException ex){throw invalidRequest();}
     }
 
@@ -97,7 +99,7 @@ public class RiskVerificationService {
         List<String> found=values.get(name);if(found==null||found.size()!=1||found.get(0)==null||found.get(0).isBlank())throw bad("分页参数无效");
         try{return Integer.parseInt(found.get(0));}catch(NumberFormatException ex){throw bad("分页参数无效");}}
     private static String conclusion(VerifyRequest request){String value=request==null||request.conclusion()==null?"":request.conclusion().trim();if(!Set.of("CONFIRMED","EXCLUDED").contains(value))throw new ApiException(HttpStatus.BAD_REQUEST,"INVALID_CONCLUSION","核验结论无效");return value;}
-    private static String note(VerifyRequest request){String value=request==null||request.note()==null?"":request.note().trim();if(value.isEmpty()||value.length()>1000)throw bad("核验说明长度必须为1至1000");return value;}
+    private static String note(VerifyRequest request){String value=request==null||request.note()==null?"":request.note().trim();if(value.length()>1000)throw bad("核验说明不能超过1000字");return value;}
     private static long version(VerifyRequest request){if(request==null||request.expectedVersion()==null||request.expectedVersion()<0)throw bad("expected_version 无效");return request.expectedVersion();}
     private static VerificationDto dto(VerificationRow row){return new VerificationDto(row.historyId(),row.version(),row.previousState(),
             row.resultingState(),row.conclusion(),row.note(),row.actorId(),row.createdAt().toInstant().toEpochMilli(),row.actorName());}

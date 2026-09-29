@@ -5,13 +5,17 @@ import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.integration.mqtt.LingyunEnvelope;
 import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Binding;
 import com.uav.lowaltitude.modules.device.infrastructure.MqttRepository;
+import com.uav.lowaltitude.modules.fusion.application.FusionProperties;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class MqttIngressService {
     private final MqttRepository repository;
     private final AppClock clock;
-    public MqttIngressService(MqttRepository repository,AppClock clock) { this.repository=repository; this.clock=clock; }
+    private final FusionProperties fusionProperties;
+    public MqttIngressService(MqttRepository repository,AppClock clock,FusionProperties fusionProperties) {
+        this.repository=repository; this.clock=clock; this.fusionProperties=fusionProperties;
+    }
 
     /** Return only after the Spring transaction commits; the MQTT callback acknowledges afterwards. */
     @Transactional
@@ -30,7 +34,11 @@ public class MqttIngressService {
             if(!binding.sourceMode().equals(config.sourceMode())) throw new LingyunEnvelope.Rejected("SOURCE_MODE_MISMATCH");
             if(retained) throw new LingyunEnvelope.Rejected("RETAINED_NOT_REALTIME");
             if(qos!=1) throw new LingyunEnvelope.Rejected("QOS1_REQUIRED");
+            // Reject before transport receipts, device watermarks or monitoring state can advance.
+            if(m.ptTime()!=null && m.ptTime()>receivedAt+fusionProperties.getMaxFutureSkewMillis())
+                throw new LingyunEnvelope.Rejected("OBSERVATION_TIME_IN_FUTURE");
             boolean repeated=repository.transportDuplicate(broker,packet,topic,m.hash(),duplicate);
+            var before=repository.monitoringEvents().lock(binding.opsDeviceId());
             if(m.sensing()) {
                 String key=m.ptTime()+":"+m.msgCnt();
                 String existing=repository.existingHash(binding.source(),key);
@@ -43,6 +51,9 @@ public class MqttIngressService {
                     reason=outcome.equals("DUPLICATE")?"SAME_MESSAGE":"KEY_PAYLOAD_CONFLICT";
                 } else {
                     repository.sense(binding,m,receivedAt);
+                    boolean fresh=binding.lastPtTime()==null || m.ptTime()>binding.lastPtTime()
+                            || (m.ptTime().equals(binding.lastPtTime()) && m.msgCnt()>binding.lastMsgCnt());
+                    if (fresh) repository.monitoringEvents().accepted(before,"SENSING",receivedAt);
                     outcome="ACCEPTED"; reason="INBOX_RECEIVED";
                 }
             } else if(repeated) { outcome="DUPLICATE"; reason="MQTT_REDELIVERY";
@@ -50,6 +61,7 @@ public class MqttIngressService {
                 outcome="IGNORED"; reason="STALE_STATIC";
             } else {
                 repository.heartbeat(binding,m,receivedAt); outcome="ACCEPTED"; reason="STATIC_UPDATED";
+                repository.monitoringEvents().accepted(before,"PARAMETERS",receivedAt);
             }
         } catch(LingyunEnvelope.Rejected ex) { reason=ex.getMessage(); }
         repository.diagnostic(broker,binding==null?null:binding.opsDeviceId(),topic,LingyunEnvelope.hash(bytes),receivedAt,outcome,reason);

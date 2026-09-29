@@ -13,7 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 指定批次的报备信息演示。不会生成飞手执照、实名登记或航线批准文号。 */
-@Component @Profile("!production & local")
+@Component @Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix="app.dev-seed",name="enabled",havingValue="true") @Order(100)
 public class LocalFlightPlanDetailsSeeder implements ApplicationRunner {
     private final JdbcTemplate jdbc;

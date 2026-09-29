@@ -10,6 +10,12 @@ async function mount(props = {}) { host = document.createElement('div'); documen
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = '' })
 
 describe('规则编辑弹窗', () => {
+  it.each(['verify', 'counter', 'dispose'].flatMap(category => ['DISABLED', 'STARTING', 'UNAVAILABLE'].map(executionStatus => [category, executionStatus])))('实际分类 %s 在服务 %s 时保留不可执行提示', async (category, executionStatus) => {
+    const executionMessage = '测试执行服务未就绪，当前配置不会触发自动动作。'
+    await mount({ category, executionStatus, executionMessage })
+    expect(document.querySelector('.save-note').textContent).toContain(executionMessage)
+    expect(document.querySelector('.save-note').textContent).not.toContain('系统自动完成该步骤')
+  })
   it('打开已有数字规则时保留服务端名称、值和持续时间', async () => { await mount({ rule: { rule_id: 'rule-1', name: '机场净空置信度', item_code: 'confidence', value: '87', hold_seconds: 6, enabled: true } }); const inputs = [...document.querySelectorAll('input')]; expect(inputs.some(input => input.value === '机场净空置信度')).toBe(true); expect(inputs.some(input => input.value === '87')).toBe(true); expect(inputs.some(input => input.value === '6')).toBe(true) })
   it('数字条件默认留空，填写前不能保存', async () => { let saved; await mount({ onSave: value => { saved = value } }); [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '保存').click(); await settle(); expect(document.body.textContent).toContain('请填写条件数值'); expect(saved).toBeUndefined() })
   it('只向父组件提交字符串 value 和可选持续时间', async () => { let saved; await mount({ onSave: value => { saved = value } }); const number = [...document.querySelectorAll('input')].find(input => input.type === 'number'); number.value = '95'; number.dispatchEvent(new Event('input')); await settle(); [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '保存').click(); await settle(); expect(saved).toMatchObject({ name: '识别置信度要求', item_code: 'confidence', value: '95', hold_seconds: 0, enabled: true }) })

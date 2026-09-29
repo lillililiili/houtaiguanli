@@ -17,7 +17,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 仅双门禁 local/test 生成演示来源；生产与 production,local 混合 profile 都不会注册。 */
 @Component
-@Profile("!production & (local | test)")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
 // 种子按阶段顺序执行：后阶段样例引用前阶段的计划/风险，靠明确 @Order 而不是 Bean 名称顺序。
 @Order(45)

@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>验收清理 · 页面修改对照稿</title><link rel="stylesheet" href="assets/business-tokens.css"><link rel="stylesheet" href="design.css"></head>
+<body>
+<header class="review-header"><div><div class="eyebrow">低空安全管理平台 / 页面设计评审</div><h1>验收清理<span>修改对照稿 · V1</span></h1></div><div class="scope">沿用现有页面，只调整受影响区域<br><b>短信、录音电话保持原样 · 未改业务系统</b></div></header>
+<nav id="page-nav" class="review-nav" aria-label="设计页面"></nav>
+<section class="review-toolbar"><div><b id="page-title"></b><span id="page-subtitle"></span></div><div class="review-actions"><div class="segments" role="group" aria-label="对照模式"><button data-mode="before">现状结构</button><button data-mode="after" class="active">修改后</button><button data-mode="compare">前后对照</button></div><label class="annotate"><input id="annotate" type="checkbox" checked>显示改动标注</label><button id="full-width">放大页面</button></div></section>
+<section class="scenario-bar"><label>查看状态 <select id="scenario" aria-label="查看设计状态"></select></label><span>仅为设计样例，不连接业务接口、不发送指令、不代表接入已完成。</span></section>
+<main class="review-workspace"><div id="screens" class="screens"></div><aside id="notes" class="notes" aria-label="本页修改说明"></aside></main>
+<footer class="review-footer"><span>现状结构按当前组件与主题重建，非运行截图。地图不在本轮视觉调整范围。</span><a href="README.md" target="_blank">查看页面范围与设计说明</a></footer>
+<div id="toast" role="status"></div><script src="design.js"></script>
+</body></html>

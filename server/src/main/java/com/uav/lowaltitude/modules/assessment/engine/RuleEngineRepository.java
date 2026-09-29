@@ -28,10 +28,12 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SubjectKind;
  */
 @Repository
 public class RuleEngineRepository {
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;
 
-    public RuleEngineRepository(JdbcTemplate jdbcTemplate, DataSource dataSource) {
+    public RuleEngineRepository(JdbcTemplate jdbcTemplate, DataSource dataSource, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.simulation=simulation;
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
         this.postgis = databaseIsPostgres(dataSource);
     }
@@ -322,7 +324,8 @@ public class RuleEngineRepository {
         p.put("mode", mode.name()); p.put("version", versionId); p.put("fresh_since", freshSince); p.put("limit", limit);
         return jdbc.query("SELECT t.target_id,t.owner_org_id,t.district_id,t.source_mode FROM target_latest_state s JOIN target t ON t.target_id=s.target_id"
                 + " JOIN app_org o ON o.org_id=t.owner_org_id AND o.enabled=TRUE JOIN app_district d ON d.district_id=t.district_id AND d.enabled=TRUE"
-                + " WHERE s.observed_at>=:fresh_since AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
+                + (simulation.allowed() ? "" : " WHERE t.source_mode='live'")
+                + (simulation.allowed() ? " WHERE" : " AND") + " s.observed_at>=:fresh_since AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
                 + " AND e.rule_set_version_id=:version AND e.observed_at IS NOT NULL AND e.observed_at>=s.observed_at)"
                 + " ORDER BY s.updated_at ASC,t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
                 (rs, i) -> new Subject(SubjectKind.TARGET, rs.getString("target_id"), rs.getString("owner_org_id"), rs.getString("district_id"), rs.getString("source_mode")));

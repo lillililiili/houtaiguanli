@@ -42,6 +42,9 @@ public class AutomationRuleRepository {
         return jdbc.update("UPDATE automation_rule_condition SET name=?,item_code=?,value_text=?,hold_seconds=?,enabled=?,updated_at=?,updated_by=? WHERE category=? AND rule_id=?",
             rule.name(), rule.itemCode(), rule.value(), rule.holdSeconds(), rule.enabled(), rule.updatedAt(), rule.updatedBy(), category, rule.ruleId());
     }
+    public int delete(String category, String ruleId) {
+        return jdbc.update("DELETE FROM automation_rule_condition WHERE category=? AND rule_id=?", category, ruleId);
+    }
     public void settings(String category, SettingsInput input, String actions) {
         jdbc.update("UPDATE automation_rule_group SET scope_mode=?,schedule_mode=?,start_time=?,end_time=?,wait_seconds=?,actions_json=? WHERE category=?",
             input.scopeMode(), input.scheduleMode(), input.startTime(), input.endTime(), input.insufficientWaitSeconds(), actions, category);

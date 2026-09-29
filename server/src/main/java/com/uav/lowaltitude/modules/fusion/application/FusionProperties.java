@@ -15,6 +15,8 @@ public class FusionProperties {
     private long leaseMillis = 30_000;
     /** 同一 inbox 行最多被领取的次数，超过即置 FAILED（毒帧不得无限重领）。 */
     private int maxAttempts = 5;
+    /** 超出接收时刻的最大时钟偏差；超过的原始信封保留为失败记录，不进入目标与轨迹。 */
+    private long maxFutureSkewMillis = 30_000;
     /** 本地回放可优先仍在上报的来源；不改变同一来源内部的摄取顺序。 */
     private boolean prioritizeFreshSources;
     private final LivePromotion livePromotion = new LivePromotion();
@@ -30,6 +32,11 @@ public class FusionProperties {
     public void setLeaseMillis(long value) { leaseMillis = value; }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int value) { maxAttempts = value; }
+    public long getMaxFutureSkewMillis() { return maxFutureSkewMillis; }
+    public void setMaxFutureSkewMillis(long value) {
+        if (value < 0 || value > 300_000) throw new IllegalArgumentException("max-future-skew-millis must be between 0 and 300000");
+        maxFutureSkewMillis = value;
+    }
     public boolean isPrioritizeFreshSources() { return prioritizeFreshSources; }
     public void setPrioritizeFreshSources(boolean value) { prioritizeFreshSources = value; }
     public LivePromotion getLivePromotion() { return livePromotion; }

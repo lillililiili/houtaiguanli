@@ -12,7 +12,7 @@ import com.uav.lowaltitude.integration.SourceMode;
  * 生产不注册（!production）：生产不生成也不消费回放数据。
  */
 @Component
-@Profile("!production")
+@Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class ReplayAdapterPort implements AdapterPort {
     @Override
     public SourceMode mode() { return SourceMode.replay; }

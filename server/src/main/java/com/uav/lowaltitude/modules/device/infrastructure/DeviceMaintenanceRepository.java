@@ -56,9 +56,10 @@ public class DeviceMaintenanceRepository {
         jdbc.update("""
                 INSERT INTO ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,plan_no,
                     device_no,device_name,reason,connectivity,health_code,observed_at,last_heartbeat_at,simulated,
-                    status,active_key,reported_by,reported_by_name,reported_at,version)
+                    status,active_key,reported_by,reported_by_name,reported_at,version,workflow_source_mode)
                 VALUES(:id,:plan,:device,:org,:district,:plan_no,:device_no,:name,:reason,:connectivity,:health,
-                    :observed,:heartbeat,:simulated,'PENDING',:active,:actor,:actor_name,:at,1)
+                    :observed,:heartbeat,:simulated,'PENDING',:active,:actor,:actor_name,:at,1,
+                    (SELECT source_mode FROM ops_device WHERE device_id=:device))
                 """,p);
     }
 
@@ -100,11 +101,16 @@ public class DeviceMaintenanceRepository {
 
     private static String status(String status, Map<String,Object> p) {
         if ("ALL".equals(status)) return "";
+        if ("ACTIVE".equals(status)) return " AND t.status='PENDING'";
+        if ("NOT_STARTED".equals(status)) return " AND t.workflow_state='PENDING'";
+        if (java.util.Set.of("PROCESSING","PENDING_VERIFICATION","COMPLETED").contains(status)) {
+            p.put("status",status); return " AND t.workflow_state=:status";
+        }
         p.put("status",status); return " AND t.status=:status";
     }
 
     // 待办按通知所属计划的组织/区域限制；MQTT 设备同时受既有设备归属范围约束。
-    private static String scope(AuthUser actor, Map<String,Object> p) {
+    static String scope(AuthUser actor, Map<String,Object> p) {
         String base = " WHERE d.deleted_at IS NULL"
                 + " AND EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=t.owner_org_id AND o.enabled=TRUE)"
                 + " AND EXISTS(SELECT 1 FROM app_district dd WHERE dd.district_id=t.district_id AND dd.enabled=TRUE)";
@@ -126,6 +132,9 @@ public class DeviceMaintenanceRepository {
     private Row one(String sql, Map<String,?> params) {
         List<Row> rows = jdbc.query(sql,params,DeviceMaintenanceRepository::row);
         return rows.isEmpty()?null:rows.get(0);
+    }
+    public String workflowState(String id) {
+        return jdbc.queryForObject("SELECT workflow_state FROM ops_device_maintenance_task WHERE task_id=:id",Map.of("id",id),String.class);
     }
     private static Long number(ResultSet r,String column) throws SQLException { long v=r.getLong(column);return r.wasNull()?null:v; }
     private static Row row(ResultSet r,int index) throws SQLException {

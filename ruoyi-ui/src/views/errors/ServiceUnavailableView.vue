@@ -39,7 +39,7 @@ async function retry() {
       <h1>后台服务暂不可用</h1>
       <p class="service-down__lead">管理端连不上平台接口。当前登录会话还在，服务恢复后点「重新连接」即可继续，不必重新登录。</p>
       <ul class="service-down__facts">
-        <li>确认本机 API 已启动（默认端口 8080）</li>
+        <li>请确认平台接口服务已启动，且当前部署的接口地址可访问</li>
         <li>会话尚未清除，重连后可回到刚才的页面</li>
       </ul>
       <p v-if="hint" class="service-down__hint">{{ hint }}</p>

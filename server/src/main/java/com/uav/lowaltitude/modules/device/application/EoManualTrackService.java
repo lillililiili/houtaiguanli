@@ -31,15 +31,20 @@ public class EoManualTrackService {
     private final EoEdgeCommandService commands;
     private final IdempotencyGuard idempotency;
     private final AuditService audit;
+    private final EoTrackingPolicy trackingPolicy;
+    private final com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository trackingRepository;
 
     public EoManualTrackService(DeviceAccessPolicy access, TargetReadService targets, EoEdgeRepository edges,
-                                EoEdgeCommandService commands, IdempotencyGuard idempotency, AuditService audit) {
+                                EoEdgeCommandService commands, IdempotencyGuard idempotency, AuditService audit,
+                                EoTrackingPolicy trackingPolicy, com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository trackingRepository) {
         this.access = access;
         this.targets = targets;
         this.edges = edges;
         this.commands = commands;
         this.idempotency = idempotency;
         this.audit = audit;
+        this.trackingPolicy=trackingPolicy;
+        this.trackingRepository=trackingRepository;
     }
 
     @Transactional
@@ -47,20 +52,24 @@ public class EoManualTrackService {
         AuthUser user = access.requireDevicesOperate();
         String id = pathId(targetId);
         idempotency.claim(idempotencyKey, "eo-track-begin:" + id + ":" + blank(deviceId) + ":" + blank(reason));
+        edges.lockCursor();
         TargetDetailDto target = targets.lockForTracking(id);
         TargetStateDto state = target.latestState();
         LocationDto location = state == null ? null : state.location();
         if (location == null || location.longitude() == null || location.latitude() == null)
             throw unprocessable("TARGET_POSITION_UNAVAILABLE", "目标没有可用经纬度，无法引导光电跟踪");
+        String block=trackingPolicy.block(trackingRepository.snapshot(id));
+        if(block!=null) throw unprocessable(block,EoTrackingStatusService.blockMessage(block));
         if (edges.targetHasOpenTask(id))
             throw new ApiException(HttpStatus.CONFLICT, "TRACK_ALREADY_OPEN", "该目标已有进行中的光电跟踪任务");
         if (target.ownerOrgId() == null || target.districtId() == null)
             throw unprocessable("EO_DEVICE_UNAVAILABLE", "目标没有组织区域，无法匹配空闲光电");
         Binding device = pickDevice(blank(deviceId), target);
-        if (device == null) throw unprocessable("EO_DEVICE_UNAVAILABLE", "当前范围没有空闲光电");
+        if (!trackingPolicy.deviceReady(device)) throw unprocessable("EO_DEVICE_UNAVAILABLE", "当前范围没有心跳有效且工作状态为空闲的光电");
         edges.binding(device.opsDeviceId(), true);
         // Another target may have claimed this device since the availability read.
         device = pickDevice(device.opsDeviceId(), target);
+        if (!trackingPolicy.deviceReady(device)) throw unprocessable("EO_DEVICE_UNAVAILABLE", "光电已不可用");
         String notes = notes(state, target.objectTypeCode());
         Map<String, Object> bootstrap = bootstrap(id, target.objectTypeCode(), state, location);
         String commandId = commands.enqueueBegin(device, UUID.randomUUID().toString(), id, null, notes, bootstrap,
@@ -86,6 +95,8 @@ public class EoManualTrackService {
         access.requireDevicesOperate();
         String id = pathId(targetId);
         TargetDetailDto target = targets.target(id);
+        String block=trackingPolicy.block(trackingRepository.snapshot(id));
+        if(block!=null) return new EoTrackingAvailability(false,EoTrackingStatusService.blockMessage(block));
         LocationDto location = target.latestState() == null ? null : target.latestState().location();
         if (location == null || location.longitude() == null || location.latitude() == null)
             return new EoTrackingAvailability(false, "目标位置尚未提供，无法引导光电追踪");
@@ -94,7 +105,7 @@ public class EoManualTrackService {
         if (target.ownerOrgId() == null || target.districtId() == null)
             return new EoTrackingAvailability(false, "目标所属范围尚未提供，无法匹配光电设备");
         Binding device = pickDevice(null, target);
-        return new EoTrackingAvailability(device != null, device == null ? "当前范围无空闲可追踪设备" : null);
+        return new EoTrackingAvailability(trackingPolicy.deviceReady(device), trackingPolicy.deviceReady(device) ? null : "当前范围无心跳有效的空闲可追踪设备");
     }
 
     @Transactional
@@ -102,15 +113,24 @@ public class EoManualTrackService {
         AuthUser user = access.requireDevicesOperate();
         String id = pathId(taskId);
         idempotency.claim(idempotencyKey, "eo-track-end:" + id);
+        edges.lockCursor();
         Map<String, Object> task = edges.task(id);
         if (task == null) throw new ApiException(HttpStatus.NOT_FOUND, "EO_TRACK_NOT_FOUND", "跟踪任务不存在");
         String status = text(task, "status");
         if (!"OPEN".equals(status) && !"ENDING".equals(status))
             throw new ApiException(HttpStatus.CONFLICT, "TRACK_NOT_OPEN", "跟踪任务已结束");
         String targetId = text(task, "target_id");
-        if (targetId != null && !targetId.isBlank()) targets.target(targetId);
+        if (targetId != null && !targetId.isBlank()) {
+            targets.lockForTracking(targetId);
+            trackingRepository.pause(targetId,true,user.userId(),trackingPolicy.now());
+        }
         Binding device = edges.binding(text(task, "ops_device_id"), true);
         if (device == null) throw unprocessable("EO_DEVICE_UNAVAILABLE", "光电设备不可用");
+        if (!trackingRepository.deviceScope(device.opsDeviceId(),user.userId(),user.scopeMode()))
+            throw new ApiException(HttpStatus.FORBIDDEN,"DEVICE_SCOPE_FORBIDDEN","无权操作关联光电设备");
+        var current=edges.openTask(device.opsDeviceId());
+        if(current==null || !id.equals(text(current,"task_id")))
+            throw new ApiException(HttpStatus.CONFLICT,"TRACK_NOT_OPEN","原任务已结束，请刷新当前任务");
         String commandId = commands.enqueue(device, EoEdgeCommandService.END, EoEdgeCommandService.TOPIC_END,
                 END_REASON, user.userId());
         audit.record(user.userId(), user.account(), "eo_track_ended", "eo_tracking_task", id, null, null);
@@ -127,7 +147,9 @@ public class EoManualTrackService {
             default -> null;
         };
         if (mode == null) return null;
-        Binding specified = edges.idleDeviceForMode(org, district, deviceId, mode);
+        Binding specified = edges.idleDeviceForMode(org, district, deviceId, mode,trackingPolicy.heartbeatCutoff(),trackingPolicy.now());
+        var user=com.uav.lowaltitude.platform.security.AuthContext.require();
+        if(specified!=null && !trackingRepository.deviceScope(specified.opsDeviceId(),user.userId(),user.scopeMode())) return null;
         if (specified != null || deviceId == null) return specified;
         Binding existing = edges.binding(deviceId, false);
         if (existing == null || !org.equals(existing.ownerOrgId()) || !district.equals(existing.districtId()))

@@ -66,10 +66,75 @@ class EvidenceApiTest {
     }
 
     @Test
+    void unifiedLedgerListsAuthorizedFilesAndUsesSameStatistics() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:ingest", "evidence:read", "evidence:link");
+        JsonNode file = ingestFile(token, "ledger.jpg", org, district, "TARGET", targetId);
+        mvc.perform(get("/api/v1/evidence-ledger?category=IMAGE&size=1").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].source_kind").value("FILE"))
+                .andExpect(jsonPath("$.data.items[0].source_id").value(file.get("evidence_id").asText()));
+        mvc.perform(get("/api/v1/evidence-ledger/stats?category=IMAGE").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        String outsider = reader("ASSIGNED", otherOrg, otherDistrict);
+        grantAction(outsider, "evidence:read", "evidence:ingest");
+        mvc.perform(get("/api/v1/evidence-ledger").header("Authorization", bearer(outsider)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        mvc.perform(get("/api/v1/evidence-ledger/records/FILE/" + file.get("evidence_id").asText())
+                .header("Authorization", bearer(outsider))).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void unifiedLedgerRejectsConflictingContextAndUnknownParameters() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:ingest", "evidence:read", "evidence:link", "target:read");
+        JsonNode file = ingestFile(token, "exact.jpg", org, district, "TARGET", targetId);
+        String url = "/api/v1/evidence-ledger/records/FILE/" + file.get("evidence_id").asText();
+        mvc.perform(get(url + "?subject_kind=TARGET&subject_id=" + targetId).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.entry.source_id").value(file.get("evidence_id").asText()));
+        mvc.perform(get(url + "?subject_kind=TARGET&subject_id=missing").header("Authorization", bearer(token)))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/evidence-ledger?unexpected=1").header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/evidence-ledger")).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void unauthenticatedRequestIsRejected() throws Exception {
         mvc.perform(get("/api/v1/evidence-files"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("UNAUTHENTICATED"));
+    }
+
+    @Test
+    void unifiedLedgerUsesExactMeasuredTrackAndDoesNotInventCommandReceipts() throws Exception {
+        String token=reader("ASSIGNED",org,district);
+        grantAction(token,"evidence:read","target:read");
+        String track="ledger-tr-"+suffix,device="ledger-dev-"+suffix,command="ledger-cmd-"+suffix;
+        jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,current_timestamp,current_timestamp,'FUSED')",track,targetId,track);
+        mvc.perform(get("/api/v1/evidence-ledger/records/TRACK/"+track).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.entry.status").value("NO_POINTS"))
+                .andExpect(jsonPath("$.data.entry.source_id").value(track));
+        jdbc.update("INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at) VALUES (?,?,0,current_timestamp,current_timestamp,CAST('SRID=4326;POINT(118.6 37.4)' AS GEOMETRY),current_timestamp)","ledger-point-"+suffix,track);
+        mvc.perform(get("/api/v1/evidence-ledger/materials/TARGET/"+targetId).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.coverage.TRACK.count").value(1))
+                .andExpect(jsonPath("$.data.records[0].summary.source_id").value(track))
+                .andExpect(jsonPath("$.data.records[0].summary.status").value("OBSERVED"));
+        String user=jdbc.queryForObject("SELECT user_id FROM app_session WHERE session_id=?",String.class,token);
+        jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at) VALUES (?,?,?,'雷达','融合感知箱',true,'mock',true,0,0,0)",device,device,"测试设备");
+        jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES (?,?,?,current_timestamp,current_timestamp)",device,org,district);
+        jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at) VALUES (?,?,?,?,'EO_BEGIN_TRACK','测试夹具','SENT','mock',true,0,0)",command,command,device,user);
+        mvc.perform(get("/api/v1/evidence-ledger/records/COMMAND/"+command).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("SENT"))
+                .andExpect(jsonPath("$.data.command.receipts.length()").value(0));
+        String outsider=reader("ASSIGNED",otherOrg,otherDistrict);grantAction(outsider,"evidence:read","target:read");
+        for(String path:java.util.List.of("TRACK/"+track,"COMMAND/"+command))mvc.perform(get("/api/v1/evidence-ledger/records/"+path).header("Authorization",bearer(outsider))).andExpect(status().isNotFound());
+        String evidenceOnly=reader("ASSIGNED",org,district);grantAction(evidenceOnly,"evidence:read");
+        mvc.perform(get("/api/v1/evidence-ledger/records/TRACK/"+track).header("Authorization",bearer(evidenceOnly))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/evidence-ledger/materials/TARGET/"+targetId).header("Authorization",bearer(evidenceOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.coverage.TRACK.status").value("FORBIDDEN"));
+        mvc.perform(get("/api/v1/evidence-ledger/export.csv?category=TRACK&page=2&size=1").header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(result->assertThat(result.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).contains(track).doesNotContain(command));
     }
 
     @Test
@@ -304,8 +369,8 @@ class EvidenceApiTest {
         grantAction(ingest, "evidence:ingest", "evidence:read", "evidence:link");
         JsonNode created = ingestFile(ingest, "case.jpg", org, district, "TARGET", targetId);
         String evidenceId = created.get("evidence_id").asText();
-        String caseId = insertCase(org, district);
-        String authId = insertAuthorization(org, district);
+        String caseId = insertCase(ingest, org, district);
+        String authId = insertAuthorization(ingest, org, district);
 
         mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/links")
                         .header("Authorization", bearer(ingest)).header("Idempotency-Key", "link-case-deny-" + suffix)
@@ -431,9 +496,9 @@ class EvidenceApiTest {
         return json.readTree(body).get("data");
     }
 
-    private String insertCase(String orgId, String districtId) {
+    private String insertCase(String token, String orgId, String districtId) {
         Timestamp at = Timestamp.from(Instant.now());
-        String admin = jdbc.queryForObject("select user_id from app_user where account='admin1'", String.class);
+        String admin = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
         String alarmId = "ev-al-" + suffix, eventId = "ev-evt-" + suffix, handoffId = "ev-ho-" + suffix;
         String recipientId = "ev-rc-" + suffix, caseId = "ev-case-" + suffix;
         jdbc.update("""
@@ -463,9 +528,9 @@ class EvidenceApiTest {
         return caseId;
     }
 
-    private String insertAuthorization(String orgId, String districtId) {
+    private String insertAuthorization(String token, String orgId, String districtId) {
         Timestamp at = Timestamp.from(Instant.now());
-        String admin = jdbc.queryForObject("select user_id from app_user where account='admin1'", String.class);
+        String admin = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
         String id = "ev-auth-" + suffix;
         jdbc.update("""
                 insert into disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,target_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at)

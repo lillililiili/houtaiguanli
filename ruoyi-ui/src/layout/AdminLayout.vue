@@ -5,6 +5,7 @@ import { ArrowDown, Expand, Fold, SwitchButton, User } from '@element-plus/icons
 import { navigationGroups } from '@/config/navigation.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { useTagsStore } from '@/stores/tags.js';
+import MaintenanceMessages from '@/components/MaintenanceMessages.vue';
 
 const auth = useAuthStore();
 const tags = useTagsStore();
@@ -71,6 +72,7 @@ function closeTag(item) {
         <button type="button" class="mobile-menu" aria-label="打开导航" @click="mobileOpen=true"><el-icon><Expand /></el-icon></button>
         <el-breadcrumb separator="/"><el-breadcrumb-item v-for="item in breadcrumbs" :key="item">{{ item }}</el-breadcrumb-item></el-breadcrumb>
         <div class="topbar-spacer" />
+        <MaintenanceMessages v-if="auth.hasPermission('monitoring.read') && auth.hasPermission('monitoring.op')" />
         <el-dropdown trigger="click" @command="userCommand">
           <button type="button" class="user-trigger">
             <span class="user-avatar">{{ (auth.user?.name || auth.user?.account || '管').slice(0, 1) }}</span>

@@ -55,7 +55,7 @@ describe('业务报表', () => {
     expect(button('下载 PDF').disabled).toBe(false);
     button('下载 PDF').click(); await settle();
     expect(businessReportApi.exportFile).toHaveBeenCalledWith(
-      expect.objectContaining({ report_category: 'DEVICE_OPERATIONS', period_type: 'MONTHLY' }),
+      expect.objectContaining({ report_category: 'DEVICE_OPERATIONS', period_type: 'MONTHLY', source_mode: 'live' }),
       'pdf', expect.stringContaining('设备运维月报'));
     expect(businessReportApi.exportFile.mock.calls[0][2]).not.toContain('旧综合');
   });
@@ -67,6 +67,15 @@ describe('业务报表', () => {
     pending[1].resolve(makePreview(pending[1].params)); await settle();
     expect(host.textContent).not.toContain('没有风险读取权限');
     expect(button('导出 Excel').disabled).toBe(false);
+  });
+  it('正式预览拒绝测试来源，不能导出或把异常当作零记录', async () => {
+    await mount();
+    expect(pending[0].params.source_mode).toBe('live');
+    pending[0].resolve({ ...makePreview(pending[0].params), simulated: true, source_mode: 'mixed' });
+    await settle();
+    expect(host.textContent).toContain('返回数据不符合正式统计口径');
+    expect(host.textContent).not.toContain('当前统计范围暂无业务记录');
+    expect(button('导出 Excel').disabled).toBe(true);
   });
   it('文件名同时包含类型、周期和区间', () => {
     expect(businessReportFilename({ title: '事件处置', period_type: 'WEEKLY', from: '2025-12-29', to: '2026-01-04' }, 'xlsx'))

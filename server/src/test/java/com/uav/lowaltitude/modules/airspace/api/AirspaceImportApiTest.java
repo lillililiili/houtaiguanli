@@ -24,7 +24,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /** GeoJSON 导入：暂存的问题清单、确认只建可接受项、重复决定被拒、放弃不建任何东西。 */
-@SpringBootTest(properties = "app.dev-seed.enabled=false")
+@SpringBootTest(properties = {"app.dev-seed.enabled=false", "app.airspace.legacy-write-enabled=true"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AirspaceImportApiTest {
