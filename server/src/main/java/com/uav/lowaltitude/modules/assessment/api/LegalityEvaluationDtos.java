@@ -49,7 +49,7 @@ public final class LegalityEvaluationDtos {
             ReviewDto review, List<String> allowedActions, String supersedesEvaluationId, String supersededByEvaluationId,
             String alarmId, String eventId, String alarmOutcomeKind, String assessmentId, String ownerOrgId, String ownerOrgName,
             String districtId, String districtName, String sourceMode, String objectTypeCode, DecisionAssuranceDto decisionAssurance,
-            AlarmVerificationDto alarmVerification) { }
+            AlarmVerificationDto alarmVerification, String originalLegalStatus) { }
 
     /** 复核历史项；actor_id 只提供操作归属 ID，actor_name 仅用于展示。 */
     public record RevisionDto(String historyId, long version, String previousState, String resultingState, String conclusion,

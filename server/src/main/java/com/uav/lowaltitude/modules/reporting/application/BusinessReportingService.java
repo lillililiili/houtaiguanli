@@ -62,7 +62,11 @@ public class BusinessReportingService {
         }
         var modes = sections.stream().flatMap(s -> s.sources().stream()).filter(s -> s.value() > 0)
                 .map(Count::name).distinct().toList();
-        String mode = modes.isEmpty() ? "unknown" : modes.size() == 1 ? modes.get(0) : "mixed";
+        // The dataset reader always filters to live. An empty formal report still has that scope;
+        // only actual non-empty rows with missing provenance must remain unknown.
+        boolean empty = sections.stream().filter(Summary::accessible)
+                .allMatch(s -> s.total() != null && s.total() == 0);
+        String mode = modes.isEmpty() ? (empty ? "live" : "unknown") : modes.size() == 1 ? modes.get(0) : "mixed";
         boolean simulated = modes.stream().anyMatch(m -> m.equals("mock") || m.equals("replay"));
         return new Preview(category.name(), category.title, period.type().name(), period.anchor().toString(),
                 period.label(), period.from().toString(), period.to().toString(), clock.now().toEpochMilli(),

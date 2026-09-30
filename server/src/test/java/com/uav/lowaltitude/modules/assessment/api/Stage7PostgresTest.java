@@ -1,5 +1,7 @@
 package com.uav.lowaltitude.modules.assessment.api;
 
+import org.junit.jupiter.api.Assertions;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -68,7 +70,7 @@ import com.uav.lowaltitude.integration.mock.RuleReplayRunner.ReplayReport;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("postgres-test")
+@ActiveProfiles({"test", "postgres-test"})
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = ".+",
@@ -78,6 +80,48 @@ import com.uav.lowaltitude.integration.mock.RuleReplayRunner.ReplayReport;
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_PASSWORD", matches = ".*",
         disabledReason = "未验证：缺少 POSTGRES_TEST_PASSWORD，Stage7PostgresTest 未在真实 PostgreSQL 上执行")
 class Stage7PostgresTest {
+
+    @Autowired com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository recognitionWriter;
+    @Autowired com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository recognitionEngine;
+    @Autowired com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository recognitionReads;
+
+    @Test
+    void fusionRecognitionRevisionAndHistoricalSnapshotUseRealPostgres() {
+        jdbc.update("UPDATE target SET unified=TRUE WHERE target_id=?", targetId);
+        String config = jdbc.queryForObject("SELECT config_version FROM fusion_config WHERE status='ACTIVE'", String.class);
+        recognitionWriter.upsertSelection(targetId, null, null, null, null, "UAV", null, null, T0, config, false, T0);
+        assertThat(recognitionEngine.recognition(targetId).classCode()).isEqualTo("UAV");
+        assertThat(recognitionEngine.recognition(targetId).revision()).isZero();
+        jdbc.update("INSERT INTO target_latest_state(target_id,observed_at,received_at,unknown_fields,created_at,updated_at,version) VALUES(?,?,?,'[]',?,?,0)",
+                targetId, T0, T0, T0, T0);
+        String snapshot = id();
+        jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at,recognition_class_code,recognition_revision)"
+                + " VALUES(?,?,?,'ACTIVE','TARGET',?,?,?,?,'FRESH','NONE','UNDETERMINED','[]','[]','[]','[]','{}',?,?,'mock',?,'UAV',0)",
+                snapshot, runId, publishedVersionId, targetId, T0, T0, T0.plusSeconds(1), org, district, T0.plusSeconds(1));
+        var query = new com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.EvaluationQuery(
+                "ACTIVE", true, null, null, null, null, targetId, null, null, null, null, null, null, "UAV", null);
+        var scope = new com.uav.lowaltitude.modules.identity.domain.AccessDecision("test", com.uav.lowaltitude.modules.identity.domain.ScopeMode.ALL);
+        assertThat(recognitionReads.count(query, scope)).isEqualTo(1);
+        assertThat(recognitionEngine.pendingSubjects(com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RunMode.ACTIVE, publishedVersionId, T0.minusSeconds(1), 1000))
+                .extracting(com.uav.lowaltitude.modules.assessment.engine.RuleContracts.Subject::subjectId).doesNotContain(targetId);
+        recognitionWriter.upsertSelection(targetId, null, null, null, null, "UAV", null, null, T0, config, false, T0.plusSeconds(1));
+        assertThat(recognitionEngine.recognition(targetId).revision()).isZero();
+        recognitionWriter.upsertSelection(targetId, null, null, null, null, "BIRD", null, null, T0, config, false, T0.plusSeconds(2));
+        assertThat(recognitionEngine.recognition(targetId).revision()).isEqualTo(1);
+        assertThat(recognitionReads.count(query, scope)).isZero();
+        assertThat(recognitionReads.summarize(query, scope).total()).isZero();
+        assertThat(recognitionReads.find(snapshot, scope).objectTypeCode()).isEqualTo("UAV");
+        recognitionWriter.upsertSelection(targetId, null, null, null, null, "UAV", null, null, T0, config, false, T0.plusSeconds(3));
+        assertThat(recognitionEngine.recognition(targetId).revision()).isEqualTo(2);
+        assertThat(recognitionReads.count(query, scope)).isZero();
+        assertThat(recognitionEngine.pendingSubjects(com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RunMode.ACTIVE, publishedVersionId, T0.minusSeconds(1), 1000))
+                .extracting(com.uav.lowaltitude.modules.assessment.engine.RuleContracts.Subject::subjectId).contains(targetId);
+        assertThat(jdbc.queryForObject("SELECT recognition_class_code FROM rule_evaluation WHERE evaluation_id=?", String.class, evaluationId)).isNull();
+        Assertions.assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> jdbc.update("UPDATE rule_evaluation SET recognition_class_code='BIRD' WHERE evaluation_id=?", snapshot));
+        Assertions.assertThrows(org.springframework.dao.DataAccessException.class,
+                () -> jdbc.update("UPDATE rule_evaluation SET recognition_revision=99 WHERE evaluation_id=?", snapshot));
+    }
 
     private static final String SCHEMA_PREFIX = "stage456_";
     private static final String SCHEMA = SCHEMA_PREFIX + UUID.randomUUID().toString().replace("-", "");
@@ -104,9 +148,9 @@ class Stage7PostgresTest {
 
     private static final List<Scenario> SCENARIOS = List.of(
             new Scenario("legal", "LEGAL", "FULL", List.of(), List.of(), false, null),
-            new Scenario("deviation", "ABNORMAL", "FULL", List.of("ROUTE_DEVIATION"), List.of(), true, "CREATED"),
+            new Scenario("deviation", "ILLEGAL", "FULL", List.of("ROUTE_DEVIATION"), List.of(), true, "CREATED"),
             new Scenario("airspace-limit", "ILLEGAL", "FULL", List.of("AIRSPACE_ALTITUDE_EXCEEDED"), List.of(), true, "CREATED"),
-            new Scenario("plan-altitude", "ABNORMAL", "FULL", List.of("PLAN_ALTITUDE_EXCEEDED"), List.of(), true, "CREATED"),
+            new Scenario("plan-altitude", "ILLEGAL", "FULL", List.of("PLAN_ALTITUDE_EXCEEDED"), List.of(), true, "CREATED"),
             new Scenario("boundary", "UNDETERMINED", "FULL", List.of(), List.of("BOUNDARY_POLICY_UNKNOWN"), false, null),
             new Scenario("no-plan", "ILLEGAL", "NONE", List.of("NO_AUTHORIZATION"), List.of(), true, "CREATED"),
             new Scenario("degraded", "UNDETERMINED", "FULL", List.of(), List.of("LOW_CONFIDENCE", "TRACK_BRIDGED"), false, null),
@@ -136,6 +180,7 @@ class Stage7PostgresTest {
     static void postgresProperties(DynamicPropertyRegistry registry) {
         initializeSchema();
         registry.add("spring.datasource.url", () -> schemaUrl(requiredEnvironment("POSTGRES_TEST_URL")));
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
         registry.add("spring.datasource.username", () -> requiredEnvironment("POSTGRES_TEST_USER"));
         registry.add("spring.datasource.password", () -> requiredEnvironment("POSTGRES_TEST_PASSWORD"));
         registry.add("spring.flyway.enabled", () -> "false");
@@ -715,6 +760,19 @@ class Stage7PostgresTest {
 
     private EvaluationQuery latestQuery(String mode, String legalStatus) {
         return new EvaluationQuery(mode, true, legalStatus, null, null, null, null, null, null, null, org, district, null, null, null);
+    }
+
+    @Test
+    void historicalAbnormalCountsAsUndeterminedWithoutChangingStoredSnapshot() {
+        AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
+        EvaluationQuery query = latestQuery("ACTIVE", "UNDETERMINED");
+        assertThat(evaluations.count(query, access)).isEqualTo(1);
+        assertThat(evaluations.list(query, access, 0, 1)).hasSize(1);
+        var summary = evaluations.summarize(query, access);
+        assertThat(summary.total()).isEqualTo(1);
+        assertThat(summary.undetermined()).isEqualTo(1);
+        assertThat(summary.abnormal()).isZero();
+        assertThat(jdbc.queryForObject("select legal_status from rule_evaluation where evaluation_id=?", String.class, evaluationId)).isEqualTo("ABNORMAL");
     }
 
     private void cloneLatestEvaluation(String id, String kind, String target, String mode, String status, OffsetDateTime at) {

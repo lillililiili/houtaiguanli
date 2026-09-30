@@ -1,10 +1,14 @@
 # AGENTS.md
 
+- 2026-09-29 用户确认：合法性不再新增 ABNORMAL 结论。明确行为违规通过规则与证据充分性校验后判 ILLEGAL，并沿用告警流程；依据不足为 UNDETERMINED。历史 ABNORMAL 不回写，合法性读取、筛选、分页与统计归入 UNDETERMINED，详情保留 original_legal_status。内部非适用状态及历史告警兼容保持，不借此更改通知或反制授权。
+
 本文件适用于 `server/` 及其子目录，补充[仓库级规则](../AGENTS.md)。业务范围、当前实现与待确认问题以[后端开发基线](../docs/后端开发基线.md)为入口；启动说明见 [README.md](README.md)。
 
 这些是后续开发必须遵守的规则，不表示当前骨架已全部满足。基线中的 G1–G7 是待验证/加固事项，不得照搬为新增代码的标准；只在用户授权的任务范围内修复。
 
 ## 1. 技术与范围
+
+- 2026-09-29 用户确认：合法性研判以同一目标的当前统一识别类别为准，有无计划的明确无人机都参与；有效来源类别冲突或未知不得回退为首个设备的无人机标签。类别改变需使当前队列与后续研判同步，新研判保存当次类别，历史和原告警不因类别变化而删除或自动解除。识别置信度不等于合法性可靠程度，本次不改变自动核实的 80% 条件。
 
 - 保持同仓库 `server/`、Java 17、Spring Boot 3.4.5、MyBatis Starter 3.0.4、Maven Wrapper（Maven 3.9.9）、Flyway、PostgreSQL 16/PostGIS 3.5。版本以 `pom.xml`、Wrapper 配置和部署文件为实际依据，不以旧方案推测。
 - 不引入新的生产或测试依赖、基础设施、构建工具，不升级版本，除非任务明确授权。不要因某种架构习惯自动引入 Lombok、JPA、Redis、消息中间件或工作流引擎。
@@ -102,7 +106,7 @@ Java 根包保持 `com.uav.lowaltitude`。保留现有 `modules/identity`、`mod
 
 ### 本地开发数据环境（2026-09-26 用户确认）
 
-- 本地演示/模拟数据已默认关闭：`application-local.yml` 中 `app.dev-seed.enabled=false`，并同步关闭 fusion、rule-engine（含 replay）、automation-rules、状态推进、自动短信/语音、handoff（none）、mock-adapter、MQTT demo、EO 自动跟踪。业务数据只通过界面录入、设备真实接入（MQTT/直连）或外部接口推送进入；不要手动往库插数据（绕过来源校验、权限与审计）。
+- 本地演示/模拟数据已默认关闭：`application-local.yml` 中 `app.dev-seed.enabled=false`。2026-09-29 用户后续要求开启自动研判，`fusion.enabled` 与 `rule-engine.enabled` 默认开启，替代此前对这两个开关的关闭约定；replay、automation-rules、状态推进、自动短信/语音、handoff（none）、mock-adapter、MQTT demo、EO 自动跟踪仍保持关闭。业务数据只通过界面录入、设备真实接入（MQTT/直连）或外部接口推送进入；不要手动往库插数据（绕过来源校验、权限与审计）。未确认规则参数不因开启自动调度而变为已确认。
 - 本地库实际在 docker 容器 `deploy-db-1`（127.0.0.1:25432）的 `houtaiguanli` 库（uav/uav），不是 `application-local.yml` 默认的 5432——5432 被另一项目 inspection 的 `backend-postgis-1` 占用。启动后端必须带 `DB_URL=jdbc:postgresql://127.0.0.1:25432/houtaiguanli`；IDE 运行配置若已有该变量保持不动。
 - 空库自举登录账号：`app.bootstrap-admin.enabled=true`（application-local.yml），仅在 `app_user` 为空时创建 `admin1`（ROLE-ADMIN，首次登录强制改密，临时密码见该文件）。`dev-seed` 关闭后 `LocalUserSeeder` 不再建演示账号，删库后必须靠它才能登录。
 - 重建干净库：`docker exec deploy-db-1 psql -U uav -d postgres -c "DROP DATABASE IF EXISTS houtaiguanli" -c "CREATE DATABASE houtaiguanli OWNER uav"`，再依次 `CREATE EXTENSION`（fuzzystrmatch、postgis、postgis_tiger_geocoder、postgis_topology），重启后端由 Flyway 建表。恢复演示数据：把上述开关改回 true 后重建库。

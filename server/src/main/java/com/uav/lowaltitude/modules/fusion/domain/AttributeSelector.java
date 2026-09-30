@@ -41,9 +41,16 @@ public final class AttributeSelector {
         if (speed == null) unknown.add(new UnknownField("speed_mps", REASON_NOT_REPORTED));
         if (heading == null) unknown.add(new UnknownField("heading_deg", REASON_NOT_REPORTED));
 
-        Optional<SourceEstimate> classSource = estimates.stream().filter(e -> e.classCode() != null && effectiveWeight(e, ATTR_CLASS, params) > 0)
+        List<SourceEstimate> classEvidence = estimates.stream()
+                .filter(e -> e.classCode() != null && !"UNKNOWN".equals(e.classCode()) && effectiveWeight(e, ATTR_CLASS, params) > 0)
+                .filter(e -> e.quality() == null || !Boolean.TRUE.equals(e.quality().get("class_association_ambiguous")))
+                .toList();
+        boolean classConflict = classEvidence.stream().map(SourceEstimate::classCode).distinct().count() > 1;
+        Optional<SourceEstimate> classSource = classEvidence.stream().filter(e -> !classConflict)
                 .max(Comparator.comparingDouble((SourceEstimate e) -> effectiveWeight(e, ATTR_CLASS, params)).thenComparing(SourceEstimate::sourceId, Comparator.reverseOrder()));
         String classCode = classSource.map(SourceEstimate::classCode).orElse(null);
+        if (classConflict) unknown.add(new UnknownField("object_type_code", "CLASS_CONFLICT"));
+        else if (classCode == null) unknown.add(new UnknownField("object_type_code", REASON_NOT_REPORTED));
         // 类别置信度只来自 EO：雷达六值类别与融合箱类别没有置信度语义，不能把权重当置信度上报。
         Double classConfidence = classSource.filter(e -> TYPE_EO.equals(e.sourceType())).map(SourceEstimate::classConfidence).orElse(null);
         if (classConfidence == null) unknown.add(new UnknownField("classification_confidence", REASON_NOT_REPORTED));

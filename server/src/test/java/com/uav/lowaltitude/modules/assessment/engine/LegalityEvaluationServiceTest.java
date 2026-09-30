@@ -56,6 +56,89 @@ class LegalityEvaluationServiceTest {
     @Autowired ObjectMapper json;
     @Autowired StubSpatialFacts spatial;
     @Autowired RecordingHooks hooks;
+    @Autowired RuleEngineRepository engineRepository;
+    @Autowired com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository recognitionRepository;
+    @Autowired com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository readRepository;
+
+    private void recognize(String category) {
+        jdbc.update("UPDATE target SET unified=TRUE WHERE target_id=?", targetId);
+        String config = jdbc.queryForObject("SELECT config_version FROM fusion_config WHERE status='ACTIVE'", String.class);
+        recognitionRepository.upsertSelection(targetId, null, null, null, null, category, null, null,
+                observedAt, config, false, now());
+    }
+
+    private List<Subject> pending(String version) {
+        return engineRepository.pendingSubjects(RunMode.ACTIVE, version, observedAt.minusSeconds(1), 10000);
+    }
+
+    @Test
+    void recognitionChangeWithUnchangedPositionTriggersOnceAndKeepsHistory() {
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
+        recognize("UAV");
+        var first = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).doesNotContain(targetId);
+        recognize("UAV"); // duplicate recognition must not dirty the evaluation
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).doesNotContain(targetId);
+        recognize("BIRD");
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).doesNotContain(targetId);
+        var access = new com.uav.lowaltitude.modules.identity.domain.AccessDecision("test", com.uav.lowaltitude.modules.identity.domain.ScopeMode.ALL);
+        assertThat(readRepository.find(first.evaluationId(), access).objectTypeCode()).isEqualTo("UAV");
+        var query = new com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.EvaluationQuery(
+                "ACTIVE", true, null, null, null, null, targetId, null, null, null, null, null, null, "UAV", null);
+        assertThat(readRepository.count(query, access)).isZero();
+        assertThat(readRepository.summarize(query, access).total()).isZero();
+        recognize("UAV");
+        assertThat(readRepository.count(query, access)).isZero(); // old cycle is not a fresh conclusion
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).contains(targetId);
+        var second = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
+        assertThat(second.evaluationId()).isNotEqualTo(first.evaluationId());
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).doesNotContain(targetId);
+        assertThat(readRepository.count(query, access)).isEqualTo(1);
+        assertThat(readRepository.summarize(query, access).total()).isEqualTo(1);
+        assertThat(readRepository.find(first.evaluationId(), access).objectTypeCode()).isEqualTo("UAV");
+    }
+
+    @Test
+    void fusedBirdAndUnknownNeverFallBackToFirstSensorUav() {
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
+        recognize("BIRD");
+        assertThat(service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId()).legalStatus())
+                .isEqualTo(RuleContracts.LegalStatus.NOT_APPLICABLE);
+        recognize(null);
+        assertThat(engineRepository.recognition(targetId).classCode()).isEqualTo("UNKNOWN");
+        assertThat(service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId()).legalStatus())
+                .isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).doesNotContain(targetId);
+    }
+
+    @Test
+    void unifiedTargetWithoutRecognitionCannotUseItsInitialCategory() {
+        jdbc.update("UPDATE target SET unified=TRUE WHERE target_id=?", targetId);
+        assertThat(engineRepository.recognition(targetId).classCode()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void laterSourceFreeStateCannotMakeOldRecognitionFreshAgain() {
+        recognize("UAV");
+        jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?", ts(observedAt.plusSeconds(5)), targetId);
+        assertThat(engineRepository.recognition(targetId).classCode()).isEqualTo("UNKNOWN");
+    }
+
+    @Test
+    void newlyRecognizedUavWithoutPlanIsEvaluatedButStaleObservationIsNotScheduled() {
+        jdbc.update("UPDATE target SET object_type_code='UNKNOWN',uav_sn=NULL WHERE target_id=?", targetId);
+        jdbc.update("UPDATE flight_plan SET start_at=?,end_at=? WHERE owner_org_id='seed-stage3-org' AND district_id='seed-stage3-district'",
+                ts(observedAt.minusDays(3)), ts(observedAt.minusDays(2)));
+        recognize("UAV");
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).contains(targetId);
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
+        assertThat(result.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(jdbc.queryForObject("SELECT recognition_class_code FROM rule_evaluation WHERE evaluation_id=?", String.class, result.evaluationId())).isEqualTo("UAV");
+        recognize("BIRD"); recognize("UAV");
+        jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?", ts(observedAt.minusHours(1)), targetId);
+        assertThat(pending(run.ruleSetVersionId())).extracting(Subject::subjectId).doesNotContain(targetId);
+    }
 
     private String code, targetId, planId, routeVersionId, c03RuleVersion;
     private OffsetDateTime observedAt;
@@ -102,6 +185,28 @@ class LegalityEvaluationServiceTest {
         jdbc.update("insert into flight_plan (plan_id,plan_no,status_code,source_id,source_mode,uav_sn,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'APPROVED','seed-stage3-source','mock',?,?,?,?,'seed-stage3-org','seed-stage3-district',?,?,0)",
                 planId, "E1-P-" + suffix, "E1-SN-" + suffix, ts(observedAt.minusMinutes(10)), ts(observedAt.plusMinutes(50)), routeVersionId, at, at);
         c03RuleVersion = ruleSet(suffix, at);
+    }
+
+    @Test
+    void planAltitudeViolationIsIllegalAndEligibleForAlarmWhenEvidenceIsSufficient() {
+        jdbc.update("update target_latest_state set altitude_amsl_m=130 where target_id=?", targetId);
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isTrue();
+        assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).isEqualTo("SUFFICIENT");
+    }
+
+    @Test
+    void planAltitudeViolationWithUnverifiedIdentityStaysUndeterminedAndDoesNotCreateAlarm() {
+        jdbc.update("update target_latest_state set altitude_amsl_m=130 where target_id=?", targetId);
+        jdbc.update("update target set uav_sn=null where target_id=?", targetId);
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+        assertThat(jdbc.queryForObject("select violation_reasons from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).contains("PLAN_ALTITUDE_EXCEEDED");
+        assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).isEqualTo("INSUFFICIENT");
     }
 
     @Test

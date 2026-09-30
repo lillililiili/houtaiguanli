@@ -178,6 +178,7 @@ public class FusionPipeline {
             for (Associator.Match match : association.matches()) assignedTarget[unlinked.get(match.observationIndex())] = match.targetId();
             for (Associator.Ambiguity ambiguity : association.ambiguities()) {
                 SourceObservation observation = subset.get(ambiguity.observationIndex());
+                observation.quality().put("class_association_ambiguous", true);
                 recordPending(domain, observation, ambiguity.candidateTargetIds(), "GATE_AMBIGUOUS", frame.observedAt());
             }
         }

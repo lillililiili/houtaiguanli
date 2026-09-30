@@ -43,9 +43,9 @@ public class RuleReplayRunner implements ApplicationRunner {
     /** 契约十个场景的期望：四态、必须出现的违规原因码、必须出现的未知原因码。 */
     static final List<Expectation> EXPECTATIONS = List.of(
             new Expectation("legal", "LEGAL", List.of(), List.of()),
-            new Expectation("deviation", "ABNORMAL", List.of("ROUTE_DEVIATION"), List.of()),
+            new Expectation("deviation", "ILLEGAL", List.of("ROUTE_DEVIATION"), List.of()),
             new Expectation("airspace-limit", "ILLEGAL", List.of("AIRSPACE_ALTITUDE_EXCEEDED"), List.of()),
-            new Expectation("plan-altitude", "ABNORMAL", List.of("PLAN_ALTITUDE_EXCEEDED"), List.of()),
+            new Expectation("plan-altitude", "ILLEGAL", List.of("PLAN_ALTITUDE_EXCEEDED"), List.of()),
             new Expectation("boundary", "UNDETERMINED", List.of(), List.of("BOUNDARY_POLICY_UNKNOWN")),
             new Expectation("no-plan", "ILLEGAL", List.of("NO_AUTHORIZATION"), List.of()),
             new Expectation("degraded", "UNDETERMINED", List.of(), List.of("LOW_CONFIDENCE", "TRACK_BRIDGED")),

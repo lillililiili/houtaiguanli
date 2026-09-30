@@ -36,8 +36,8 @@ app:
       enabled: ${APP_ADVISORY_AUTO_VOICE_ENABLED:false}
       poll-millis: ${APP_ADVISORY_AUTO_VOICE_POLL_MILLIS:2000}
   fusion:
-    # 本机 MQTT 回放必须消费融合 inbox，持续生成近期目标；仍可显式关闭。
-    enabled: ${APP_FUSION_ENABLED:false}
+    # 2026-09-29 用户开启自动研判：持续处理接入观测，仍受来源模式校验约束。
+    enabled: ${APP_FUSION_ENABLED:true}
     batch-size: 5
     prioritize-fresh-sources: true
   flight-device-check:
@@ -63,9 +63,9 @@ app:
   automation-rules:
     enabled: false
     fact-max-age-ms: 120000
-  # 本地演示与验收同参：引擎开着、允许激活 DEMO 规则集、启动时回放阶段七与演示体量场景，合法性研判页才有记录可看。
+  # 自动研判有效的新鲜无人机观测；启动不生成演示数据、不回放历史。
   rule-engine:
-    enabled: ${APP_RULE_ENGINE_ENABLED:false}
+    enabled: ${APP_RULE_ENGINE_ENABLED:true}
     allow-demo-active: ${APP_RULE_ENGINE_ALLOW_DEMO_ACTIVE:false}
     replay:
       run-on-start: ${APP_RULE_ENGINE_REPLAY_RUN_ON_START:false}

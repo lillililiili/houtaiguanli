@@ -54,13 +54,15 @@ class WeightedFuserTest {
     }
 
     @Test
-    void classificationComesFromEoAndConfidenceOnlyFromEo() {
+    void conflictingClassificationIsUnknownAndSingleSourceConfidenceRemainsHonest() {
         SourceEstimate radar = estimate("radar", "RADAR", LON, LAT, 15.0, null, null, null, null, "BIRD", null, null);
         SourceEstimate eo = estimate("eo", "EO", LON, LAT, 25.0, null, null, null, null, "UAV", 0.9, null);
         FusedState fused = new WeightedFuser().fuse(List.of(radar, eo), MapParams.demo(), null);
-        assertThat(fused.classCode()).isEqualTo("UAV");
-        assertThat(fused.classConfidence()).isEqualTo(0.9);
-        assertThat(fused.selection().classSourceId()).isEqualTo("eo");
+        assertThat(fused.classCode()).isNull();
+        assertThat(fused.classConfidence()).isNull();
+        assertThat(fused.selection().classSourceId()).isNull();
+        assertThat(fused.unknownFields()).contains(new AttributeSelector.UnknownField("object_type_code", "CLASS_CONFLICT"));
+        assertThat(new WeightedFuser().fuse(List.of(eo), MapParams.demo(), null).classConfidence()).isEqualTo(0.9);
 
         FusedState radarOnly = new WeightedFuser().fuse(List.of(radar), MapParams.demo(), null);
         assertThat(radarOnly.classCode()).isEqualTo("BIRD");

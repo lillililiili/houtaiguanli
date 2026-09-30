@@ -69,7 +69,7 @@ class C03DecisionTest {
         assertThat(illegal.grade()).isNotNull();
         Decision abnormal = decision.decide(context(Freshness.FRESH, state("0.99"), goodTrack(), none), List.of(pass("C02-1")),
                 TestRuleParams.demoCatalog().put("C03", "no_plan_status", "ABNORMAL"));
-        assertThat(abnormal.status()).isEqualTo(LegalStatus.ABNORMAL);
+        assertThat(abnormal.status()).isEqualTo(LegalStatus.UNDETERMINED);
         PlanMatch ambiguous = new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS"));
         Decision undetermined = decision.decide(context(Freshness.FRESH, state("0.99"), goodTrack(), ambiguous), List.of(fail("C02-3", "ROUTE_DEVIATION")), params);
         assertThat(undetermined.status()).isEqualTo(LegalStatus.UNDETERMINED);
@@ -89,10 +89,10 @@ class C03DecisionTest {
     }
 
     @Test
-    void behaviourFailuresAreAbnormalAndScoredByParameters() {
+    void behaviourFailuresAreIllegalAndScoredByParameters() {
         // 违规 ROUTE_DEVIATION 严重度 0.6、计划 FULL、无限制空域命中、无桥接、置信度 0.9：100*(0.4*0.6+0.1*0.1)=25 → LOW。
         Decision abnormal = decision.decide(context(Freshness.FRESH, state("0.90"), goodTrack(), full()), List.of(pass("C02-1"), fail("C02-3", "ROUTE_DEVIATION")), params);
-        assertThat(abnormal.status()).isEqualTo(LegalStatus.ABNORMAL);
+        assertThat(abnormal.status()).isEqualTo(LegalStatus.ILLEGAL);
         assertThat(abnormal.score()).isEqualByComparingTo("25.00");
         assertThat(abnormal.grade()).isEqualTo("LOW");
         // 违规 INSIDE_RESTRICTED_AIRSPACE 1.0、计划 NONE、限制空域命中、置信度 0.9：100*(0.4+0.25+0.15+0.01)=81 → HIGH。

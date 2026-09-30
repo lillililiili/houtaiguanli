@@ -66,11 +66,15 @@ public class LiveRadarFrameMapper implements FrameMapper {
             putIfPresent(quality, "snr_db", number(item, "snr_db"));
             putIfPresent(quality, "rcs_m2", number(item, "rcs_m2"));
             String classification = text(item, "classification");
-            // 雷达分类码的取值表尚未确认，原样留痕而不映射成我们的类别字典。
+            // The TCP decoder has already normalized the documented device codes. Preserve the raw label too.
             if (classification != null) quality.put("classification_raw", classification);
+            String classCode = switch (classification == null ? "" : classification) {
+                case "UAV", "BIRD", "PERSON", "VEHICLE" -> classification;
+                default -> null;
+            };
 
             parsed.add(new Item(externalTrackId, externalTrackId, number(item, "longitude"), number(item, "latitude"),
-                    null, null, null, null, null, null, null, null, null, null, null, CLASS_SOURCE, quality));
+                    null, null, null, null, null, classCode, null, null, null, null, null, CLASS_SOURCE, quality));
         }
         // 一帧一个会话键：雷达重启后 boot_micros 归零，把它并进会话键才不会把重启前后的轨迹号当成同一条。
         String sessionKey = (deviceId == null ? inbox.source() : deviceId) + ":" + bootMicros;

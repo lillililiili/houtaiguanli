@@ -54,7 +54,7 @@ public class LegalityReviewService {
     static final String STATE_PENDING = "PENDING_REVIEW", STATE_CONFIRMED = "CONFIRMED", STATE_REJECTED = "REJECTED",
             STATE_OVERRIDDEN = "OVERRIDDEN", STATE_SUPERSEDED = "SUPERSEDED";
     private static final Set<String> CONCLUSIONS = Set.of("CONFIRM", "REJECT", "OVERRIDE");
-    private static final Set<String> OVERRIDE_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED");
+    private static final Set<String> OVERRIDE_STATUSES = Set.of("LEGAL", "ILLEGAL", "UNDETERMINED");
     private static final int NOTE_MAX = 1000;
     private final AccessControlService access;
     private final LegalityReviewRepository reviews;
@@ -102,11 +102,13 @@ public class LegalityReviewService {
         if (review.version() != expectedVersion) throw conflict();
         if (STATE_SUPERSEDED.equals(review.reviewState())) throw superseded();
         if (!STATE_PENDING.equals(review.reviewState())) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "当前复核状态不允许该结论");
+        requireCurrentRecognition(id);
 
         String nextState = switch (conclusion) { case "CONFIRM" -> STATE_CONFIRMED; case "REJECT" -> STATE_REJECTED; default -> STATE_OVERRIDDEN; };
         // 确认即采纳系统结论；驳回表示系统误判、没有人工结论；改判以人工结论为准。
-        String manualStatus = switch (conclusion) { case "CONFIRM" -> review.legalStatus(); case "REJECT" -> null; default -> overrideStatus; };
-        if ("OVERRIDE".equals(conclusion) && overrideStatus.equals(review.legalStatus())) throw validation("改判结论与系统结论相同，请使用确认");
+        String currentStatus = com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.current(review.legalStatus());
+        String manualStatus = switch (conclusion) { case "CONFIRM" -> currentStatus; case "REJECT" -> null; default -> overrideStatus; };
+        if ("OVERRIDE".equals(conclusion) && overrideStatus.equals(currentStatus)) throw validation("改判结论与系统结论相同，请使用确认");
         OffsetDateTime at = now();
         // 条件更新为 0 行代表竞争写入，绝不追加一条与实际状态不一致的复核历史。
         if (reviews.transition(id, expectedVersion, STATE_PENDING, nextState, manualStatus, at) != 1) throw conflict();
@@ -135,6 +137,7 @@ public class LegalityReviewService {
         if (STATE_SUPERSEDED.equals(review.reviewState())) throw superseded();
         if ("LEGAL".equals(review.legalStatus())) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "系统结论为合法的研判不能转告警");
         if (review.targetId() == null) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "研判没有关联目标，无法生成来源告警");
+        requireCurrentRecognition(id);
         // 已有告警关联（引擎回填、合并成员或此前人工转告警）就不能再建第二条；这里读未脱敏的行，不受操作者 alarm:read 影响。
         EvaluationRow linked = evaluations.find(id, readAccess);
         if (review.engineAlarmId() != null || (linked != null && linked.alarmId() != null)) throw alreadyLinked();
@@ -172,6 +175,7 @@ public class LegalityReviewService {
         if (review.version() != expectedVersion) throw conflict();
         if (STATE_SUPERSEDED.equals(review.reviewState())) throw superseded();
         if (!RunMode.ACTIVE.name().equals(review.mode())) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "只有生效模式的研判可以重算");
+        requireCurrentRecognition(id);
         AuthUser actor = AuthContext.require();
         OffsetDateTime at = now();
         String subjectId = "PLAN".equals(review.subjectKind()) ? review.planId() : review.targetId();
@@ -185,6 +189,11 @@ public class LegalityReviewService {
         audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "legality_evaluation_recomputed", OBJECT_TYPE, id,
                 "new_evaluation_id=" + result.evaluationId() + "; run_id=" + run.runId() + "; version=" + (expectedVersion + 1), "SUCCESS", "", "");
         return read.detail(result.evaluationId(), readAccess);
+    }
+
+    private void requireCurrentRecognition(String evaluationId) {
+        if (!evaluations.recognitionCurrent(evaluationId)) throw new ApiException(HttpStatus.CONFLICT,
+                "TARGET_RECOGNITION_CHANGED", "目标类别已变化或尚未明确为无人机，请查看最新识别结果；本次研判保留为历史记录");
     }
 
     /**

@@ -14,7 +14,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.*;
  * 只使用本次快照，不读库、不产生通知、不代替动作授权。
  */
 public final class DecisionAssuranceAlgorithm {
-    public static final String VERSION = "EVIDENCE_SUFFICIENCY_V1";
+    public static final String VERSION = "EVIDENCE_SUFFICIENCY_V2";
     public static final String SUFFICIENT = "SUFFICIENT", INSUFFICIENT = "INSUFFICIENT", NOT_APPLICABLE = "NOT_APPLICABLE";
     private static final List<String> REQUIRED_CHECKS = List.of("C01", "C02-1", "C02-2", "C02-3", "C02-4", "C02-5", "C02-6", "C02-7", "C02-8");
     private static final Set<String> AIRSPACE_REASONS = Set.of(RuleCodes.INSIDE_RESTRICTED_AIRSPACE,
@@ -89,7 +89,10 @@ public final class DecisionAssuranceAlgorithm {
         if (!present.containsAll(REQUIRED_CHECKS)) reasons.add("RULE_CHECKS_INCOMPLETE");
         if (verdict.status() == LegalStatus.ABNORMAL) reasons.add("BINARY_CONCLUSION_UNRESOLVED");
         if (verdict.status() == LegalStatus.UNDETERMINED) reasons.addAll(verdict.unknownReasons());
-        if (verdict.status() != LegalStatus.LEGAL && reasons.isEmpty()) reasons.add("DECISIVE_EVIDENCE_MISSING");
+        boolean explicitBehaviourViolation = verdict.status() == LegalStatus.ILLEGAL && details.stream()
+                .anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode()) && hit.resultCode() == ResultCode.FAIL
+                        && hit.reasonCode() != null && !hit.reasonCode().isBlank());
+        if (verdict.status() != LegalStatus.LEGAL && !explicitBehaviourViolation && reasons.isEmpty()) reasons.add("DECISIVE_EVIDENCE_MISSING");
         // 即使调用方给出了 LEGAL，也不能接受与单项 FAIL 冲突的结论。
         if (verdict.status() == LegalStatus.LEGAL && details.stream().anyMatch(hit -> hit.resultCode() == ResultCode.FAIL)) reasons.add("DECISIVE_EVIDENCE_MISSING");
         return reasons.isEmpty() ? sufficient() : insufficient(reasons);

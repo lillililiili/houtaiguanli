@@ -140,13 +140,14 @@ public class LegalityEvaluationReadService {
                 row.mode(), row.triggerKind(), row.subjectKind(), targetVisible ? row.targetId() : null, targetVisible ? row.targetNo() : null,
                 targetVisible ? row.trackId() : null, planVisible ? row.planId() : null, planVisible ? row.planNo() : null,
                 planVisible ? row.routeVersionId() : null, millis(row.observedAt()), requiredMillis(row.asOf()), requiredMillis(row.evaluatedAt()),
-                row.freshnessCode(), row.planMatchCode(), row.legalStatus(), row.score(), row.grade(), strings(row.violationReasons()),
+                row.freshnessCode(), row.planMatchCode(), com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.current(row.legalStatus()), row.score(), row.grade(), strings(row.violationReasons()),
                 strings(row.unknownReasons()), evidence(row.evidenceReferences()), row.hitDetails() == null ? null : hits(row.hitDetails()),
                 review, allowedActions(row, alarmId != null), row.supersedesEvaluationId(), row.supersededByEvaluationId(),
                 alarmVisible ? alarmId : null, alarmVisible ? repository.eventIdOfAlarm(alarmId) : null, outcomeKind(row.alarmOutcome(), row.memberKind()),
                 row.assessmentId(), row.ownerOrgId(), row.ownerOrgName(), row.districtId(), row.districtName(), row.sourceMode(),
                 targetVisible ? row.objectTypeCode() : null, assurance, verification == null ? null : new AlarmVerificationDto(
-                        verification.eventId(), verification.conclusion(), verification.note(), verification.version(), verification.verifiedAt()));
+                        verification.eventId(), verification.conclusion(), verification.note(), verification.version(), verification.verifiedAt()),
+                "ABNORMAL".equals(row.legalStatus()) ? row.legalStatus() : null);
     }
 
     private DecisionAssuranceDto assurance(EvaluationRow row) {
@@ -172,6 +173,7 @@ public class LegalityEvaluationReadService {
      * ESCALATE：ACTIVE、结论 ≠ LEGAL、尚无任何告警关联、有目标且有 escalate。动作权限缺失时不给出误导入口。
      */
     private List<String> allowedActions(EvaluationRow row, boolean linked) {
+        if (!repository.recognitionCurrent(row.evaluationId())) return List.of();
         List<String> actions = new ArrayList<>();
         boolean active = "ACTIVE".equals(row.mode()) && row.reviewState() != null;
         boolean superseded = "SUPERSEDED".equals(row.reviewState());

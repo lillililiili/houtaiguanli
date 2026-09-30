@@ -1,5 +1,7 @@
 package com.uav.lowaltitude.modules.assessment.engine;
 
+import com.uav.lowaltitude.modules.fusion.infrastructure.TargetRecognitionSql;
+
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -234,10 +236,14 @@ public class RuleEngineRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    public String objectType(String targetId) {
-        return jdbc.queryForObject("SELECT object_type_code FROM target WHERE target_id=:id",
-                Map.of("id", targetId), String.class);
+    public Recognition recognition(String targetId) {
+        return jdbc.queryForObject("SELECT " + TargetRecognitionSql.type("t", "c") + " AS class_code,"
+                + TargetRecognitionSql.revision("t", "c") + " AS revision FROM target t"
+                + " LEFT JOIN target_attribute_selection c ON c.target_id=t.target_id WHERE t.target_id=:id",
+                Map.of("id", targetId), (rs, i) -> new Recognition(rs.getString("class_code"), rs.getLong("revision")));
     }
+
+    public record Recognition(String classCode, long revision) { }
 
     public StateRow latestState(String targetId) {
         List<StateRow> rows = jdbc.query("SELECT " + locationColumns("s.location", "") + "," + locationColumns("s.pilot_location", "pilot_")
@@ -323,10 +329,14 @@ public class RuleEngineRepository {
         Map<String, Object> p = new HashMap<>();
         p.put("mode", mode.name()); p.put("version", versionId); p.put("fresh_since", freshSince); p.put("limit", limit);
         return jdbc.query("SELECT t.target_id,t.owner_org_id,t.district_id,t.source_mode FROM target_latest_state s JOIN target t ON t.target_id=s.target_id"
+                + " LEFT JOIN target_attribute_selection c ON c.target_id=t.target_id"
                 + " JOIN app_org o ON o.org_id=t.owner_org_id AND o.enabled=TRUE JOIN app_district d ON d.district_id=t.district_id AND d.enabled=TRUE"
                 + (simulation.allowed() ? "" : " WHERE t.source_mode='live'")
-                + (simulation.allowed() ? " WHERE" : " AND") + " s.observed_at>=:fresh_since AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
-                + " AND e.rule_set_version_id=:version AND e.observed_at IS NOT NULL AND e.observed_at>=s.observed_at)"
+                + (simulation.allowed() ? " WHERE" : " AND") + " " + TargetRecognitionSql.type("t", "c") + "='UAV'"
+                + " AND s.observed_at>=:fresh_since AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
+                + " AND e.rule_set_version_id=:version AND e.observed_at IS NOT NULL AND e.observed_at>=s.observed_at"
+                + " AND e.recognition_class_code=" + TargetRecognitionSql.type("t", "c")
+                + " AND e.recognition_revision=" + TargetRecognitionSql.revision("t", "c") + ")"
                 + " ORDER BY s.updated_at ASC,t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
                 (rs, i) -> new Subject(SubjectKind.TARGET, rs.getString("target_id"), rs.getString("owner_org_id"), rs.getString("district_id"), rs.getString("source_mode")));
     }
@@ -343,12 +353,13 @@ public class RuleEngineRepository {
         p.put("evidence", e.evidenceJson()); p.put("snapshot", e.inputSnapshotJson()); p.put("supersedes", e.supersedesEvaluationId());
         p.put("assurance_version", e.decisionAlgorithmVersion()); p.put("assurance_code", e.decisionAssuranceCode()); p.put("assurance_reasons", e.decisionAssuranceReasonsJson());
         p.put("alarm_outcome", e.alarmOutcomeJson()); p.put("org", e.ownerOrgId()); p.put("district", e.districtId()); p.put("source_mode", e.sourceMode());
+        p.put("recognition_class", e.recognition().classCode()); p.put("recognition_revision", e.recognition().revision());
         jdbc.update("INSERT INTO rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,"
                 + "evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,"
-                + "supersedes_evaluation_id,alarm_outcome,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons)"
+                + "supersedes_evaluation_id,alarm_outcome,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons,recognition_class_code,recognition_revision)"
                 + " VALUES (:id,:run,:version,:mode,:kind,:target,:track,:plan,:route,:observed,:as_of,:evaluated,:freshness,:plan_match,:legal,:score,:grade,"
                 + "CAST(:violations AS JSON),CAST(:hits AS JSON),CAST(:unknowns AS JSON),CAST(:evidence AS JSON),CAST(:snapshot AS JSON),:supersedes,"
-                + "CAST(:alarm_outcome AS JSON),:org,:district,:source_mode,:evaluated,:assurance_version,:assurance_code,CAST(:assurance_reasons AS JSON))", p);
+                + "CAST(:alarm_outcome AS JSON),:org,:district,:source_mode,:evaluated,:assurance_version,:assurance_code,CAST(:assurance_reasons AS JSON),:recognition_class,:recognition_revision)", p);
     }
 
     /**
@@ -495,7 +506,7 @@ public class RuleEngineRepository {
             String freshness, String planMatchCode, String legalStatus, BigDecimal score, String grade, String violationReasonsJson,
             String hitDetailsJson, String unknownReasonsJson, String evidenceJson, String inputSnapshotJson, String supersedesEvaluationId,
             String alarmOutcomeJson, String ownerOrgId, String districtId, String sourceMode,
-            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasonsJson) { }
+            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasonsJson, Recognition recognition) { }
     public record AssessmentInsert(String assessmentId, String planId, String targetId, String trackId, String routeVersionId, String ruleVersionId,
             OffsetDateTime assessedAt, String conclusionCode, String checksJson, String unknownReasonsJson, String evidenceJson, String sourceMode,
             String evaluationId, String ruleSetVersionId, String supersedesAssessmentId) { }

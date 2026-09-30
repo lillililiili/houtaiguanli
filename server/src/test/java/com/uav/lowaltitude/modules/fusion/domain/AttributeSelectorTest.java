@@ -16,6 +16,41 @@ class AttributeSelectorTest {
     private final AttributeSelector selector = new AttributeSelector();
 
     @Test
+    void ambiguousAssociationCannotIdentifyTheTargetEvenWithHighConfidence() {
+        var e = WeightedFuserTest.estimate("eo", "EO", LON, LAT, 25.0, null, null, null, null, "UAV", 0.99, null);
+        var ambiguous = new SourceEstimate(e.sourceId(), e.sourceCode(), e.sourceType(), e.schemaStatus(), e.linkId(),
+                e.rawTrackId(), e.observationId(), e.observedAt(), e.longitude(), e.latitude(), e.accuracyM(),
+                e.altitudeAmslM(), e.heightAglM(), e.speedMps(), e.headingDeg(), e.classCode(), e.classConfidence(),
+                e.identityClue(), e.identityConfidence(), e.kind(), java.util.Map.of("class_association_ambiguous", true));
+        assertThat(selector.select(List.of(ambiguous), MapParams.demo(), null).classCode()).isNull();
+    }
+
+    @Test
+    void contradictoryUsableSourcesDoNotBecomeACertainUav() {
+        var eo = WeightedFuserTest.estimate("eo", "EO", LON, LAT, 25.0, null, null, null, null, "UAV", 0.99, null);
+        var radar = WeightedFuserTest.estimate("radar", "RADAR", LON, LAT, 15.0, null, null, null, null, "BIRD", null, null);
+        var result = selector.select(List.of(eo, radar), MapParams.demo(), null);
+        assertThat(result.classCode()).isNull();
+        assertThat(result.classConfidence()).isNull();
+        assertThat(result.unknownFields()).contains(new AttributeSelector.UnknownField("object_type_code", "CLASS_CONFLICT"));
+    }
+
+    @Test
+    void oneExplicitSourceSufficesAndUnknownDoesNotOutvoteIt() {
+        var eo = WeightedFuserTest.estimate("eo", "EO", LON, LAT, 25.0, null, null, null, null, "UNKNOWN", 0.99, null);
+        var radar = WeightedFuserTest.estimate("radar", "RADAR", LON, LAT, 15.0, null, null, null, null, "UAV", null, null);
+        assertThat(selector.select(List.of(radar), MapParams.demo(), null).classCode()).isEqualTo("UAV");
+        assertThat(selector.select(List.of(eo, radar), MapParams.demo(), null).classCode()).isEqualTo("UAV");
+    }
+
+    @Test
+    void agreeingSourcesKeepTheSelectedSourcesConfidenceWithoutInventingAnAggregate() {
+        var eo = WeightedFuserTest.estimate("eo", "EO", LON, LAT, 25.0, null, null, null, null, "UAV", 0.7, null);
+        var radar = WeightedFuserTest.estimate("radar", "RADAR", LON, LAT, 15.0, null, null, null, null, "UAV", null, null);
+        assertThat(selector.select(List.of(eo, radar), MapParams.demo(), null).classConfidence()).isEqualTo(0.7);
+    }
+
+    @Test
     void identityComesFromTdoaEvenWhenEoAlsoReportsAClue() {
         SourceEstimate eo = WeightedFuserTest.estimate("eo", "EO", LON, LAT, 25.0, null, null, null, null, "UAV", 0.7, "EO-ID");
         SourceEstimate tdoa = WeightedFuserTest.estimate("tdoa", "TDOA", LON, LAT, 60.0, null, null, null, null, null, null, "RF-77");

@@ -22,7 +22,7 @@ class DecisionAssuranceAlgorithmTest {
         var result = assess(context("mock", Freshness.FRESH, full(), "0.95", goodTrack()), checks());
         assertThat(result.status()).isEqualTo("SUFFICIENT");
         assertThat(result.reasons()).isEmpty();
-        assertThat(result.algorithmVersion()).isEqualTo("EVIDENCE_SUFFICIENCY_V1");
+        assertThat(result.algorithmVersion()).isEqualTo("EVIDENCE_SUFFICIENCY_V2");
     }
 
     @Test void explicitAirspaceViolationAllowsAutomaticIllegalDecisionWithUnrelatedUnknown() {
@@ -88,11 +88,19 @@ class DecisionAssuranceAlgorithmTest {
         assertThat(result.reasons()).contains("DEMO_RULE_PARAMETERS");
     }
 
-    @Test void abnormalRiskDoesNotSilentlyBecomeBinaryIllegal() {
+    @Test void explicitBehaviourViolationWithCompleteEvidenceIsReliable() {
         var result = assess(context("mock", Freshness.FRESH, full(), "0.95", goodTrack()),
                 replace(checks(), hit("C02-3", ResultCode.FAIL, "ROUTE_DEVIATION")));
-        assertThat(result.status()).isEqualTo("INSUFFICIENT");
-        assertThat(result.reasons()).contains("BINARY_CONCLUSION_UNRESOLVED");
+        assertThat(result.status()).isEqualTo("SUFFICIENT");
+        assertThat(result.reasons()).isEmpty();
+    }
+
+    @Test void behaviourViolationStillRequiresIdentityAndConfirmedParameters() {
+        var hits = replace(checks(), hit("C02-3", ResultCode.FAIL, "ROUTE_DEVIATION"));
+        var partial = new PlanMatch(PlanMatchCode.PARTIAL, full().plan(), Map.of(), List.of("IDENTITY_CLUE_MISSING"));
+        assertThat(assess(context("mock", Freshness.FRESH, partial, "0.95", goodTrack()), hits).status()).isEqualTo("INSUFFICIENT");
+        assertThat(assess(context("live", Freshness.FRESH, full(), "0.95", goodTrack()), hits).reasons()).contains("DEMO_RULE_PARAMETERS");
+        assertThat(assess(context("mock", Freshness.FRESH, full(), "0.10", goodTrack()), hits).status()).isEqualTo("INSUFFICIENT");
     }
 
     @Test void staleAndMissingObservationsRemainNotApplicable() {

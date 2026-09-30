@@ -47,7 +47,8 @@ public class DegradationRepository {
         p.put("t", targetId); p.put("pos", positionSourceId); p.put("cls", classSourceId); p.put("idn", identitySourceId); p.put("mot", motionSourceId);
         p.put("code", classCode); p.put("conf", classConfidence); p.put("clue", identityClue); p.put("selected", selectedAt); p.put("cfg", configVersion); p.put("override", manualOverride); p.put("updated", updatedAt);
         int updated = jdbc.update("UPDATE target_attribute_selection SET position_source_id=:pos, class_source_id=:cls, identity_source_id=:idn, motion_source_id=:mot, class_code=:code, class_confidence=:conf,"
-                + " identity_clue=:clue, selected_at=:selected, config_version=:cfg, manual_class_override=:override, updated_at=:updated WHERE target_id=:t", p);
+                + " identity_clue=:clue, selected_at=:selected, config_version=:cfg, manual_class_override=:override, updated_at=:updated,"
+                + " version=version+CASE WHEN COALESCE(class_code,'UNKNOWN')<>COALESCE(:code,'UNKNOWN') THEN 1 ELSE 0 END WHERE target_id=:t", p);
         if (updated == 0) {
             jdbc.update("INSERT INTO target_attribute_selection (target_id,position_source_id,class_source_id,identity_source_id,motion_source_id,class_code,class_confidence,identity_clue,selected_at,config_version,manual_class_override,updated_at,version)"
                     + " VALUES (:t,:pos,:cls,:idn,:mot,:code,:conf,:clue,:selected,:cfg,:override,:updated,0)", p);

@@ -66,6 +66,18 @@ class LegalityReviewApiTest {
 
     protected String suffix, orgId, district, target, run, evaluation, session;
 
+    @Test
+    void changedRecognitionKeepsHistoryReadableButRejectsOldReview() throws Exception {
+        jdbc.update("UPDATE target SET unified=TRUE WHERE target_id=?", target);
+        // Missing unified recognition is unknown, even when the first device reported UAV.
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", "Bearer " + session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowed_actions").isEmpty());
+        revise(session, evaluation, "CONFIRM", null, "", 0)
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("TARGET_RECOGNITION_CHANGED"));
+        assertThat(jdbc.queryForObject("SELECT review_state FROM legality_review WHERE evaluation_id=?", String.class, evaluation))
+                .isEqualTo("PENDING_REVIEW");
+    }
+
     @TestConfiguration
     static class Stubs {
         @Bean @Primary SpatialFactPort stubSpatialFacts() {
@@ -128,10 +140,10 @@ class LegalityReviewApiTest {
     void confirmRejectAndOverrideEachWriteOneHistoryAndOneSuccessAudit() throws Exception {
         revise(session, evaluation, "CONFIRM", null, "现场核对属实", 0).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.review.state").value("CONFIRMED"))
-                .andExpect(jsonPath("$.data.review.manual_status").value("ABNORMAL"))
+                .andExpect(jsonPath("$.data.review.manual_status").value("UNDETERMINED"))
                 .andExpect(jsonPath("$.data.review.version").value(1))
                 .andExpect(jsonPath("$.data.allowed_actions").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("REVIEW"))));
-        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=? and conclusion='CONFIRM' and status_before='ABNORMAL' and status_after='ABNORMAL' and version=1", Long.class, evaluation)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=? and conclusion='CONFIRM' and status_before='ABNORMAL' and status_after='UNDETERMINED' and version=1", Long.class, evaluation)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where module_code='assessment' and action='legality_evaluation_revised' and object_id=? and result='SUCCESS'", Long.class, evaluation)).isEqualTo(1L);
 
         String rejected = "s7r-eval-rej-" + suffix;
@@ -273,12 +285,32 @@ class LegalityReviewApiTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
     }
 
+    @Test
+    void historicalAbnormalProjectsToUndeterminedWithoutRewritingHistory() throws Exception {
+        String filters = "?owner_org_id=" + orgId + "&latest_only=true&object_type_code=UAV";
+        mvc.perform(get("/api/v1/legality-evaluations" + filters + "&legal_status=UNDETERMINED&size=1")
+                        .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].legal_status").value("UNDETERMINED"))
+                .andExpect(jsonPath("$.data.items[0].original_legal_status").value("ABNORMAL"));
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.legal_status").value("UNDETERMINED"))
+                .andExpect(jsonPath("$.data.original_legal_status").value("ABNORMAL"));
+        mvc.perform(get("/api/v1/legality-evaluations/summary" + filters + "&needs_attention=true")
+                        .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.undetermined").value(1)).andExpect(jsonPath("$.data.abnormal").value(0));
+        revise(session, evaluation, "OVERRIDE", "ABNORMAL", "不再新增异常结论", 0).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("select legal_status from rule_evaluation where evaluation_id=?", String.class, evaluation)).isEqualTo("ABNORMAL");
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=?", Long.class, evaluation)).isZero();
+    }
+
     private void assertSummaryMatchesLists(String filters) throws Exception {
         String body = mvc.perform(get("/api/v1/legality-evaluations/summary" + filters + "&page=3&size=1")
                         .header("Authorization", bearer(session))).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         JsonNode summary = json.readTree(body).path("data");
-        for (String state : List.of("", "LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE")) {
+        for (String state : List.of("", "LEGAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE")) {
             String result = mvc.perform(get("/api/v1/legality-evaluations" + filters + "&size=1" + (state.isEmpty() ? "" : "&legal_status=" + state))
                             .header("Authorization", bearer(session))).andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
@@ -392,10 +424,10 @@ class LegalityReviewApiTest {
         insertReview(reliable, "PENDING_REVIEW", 0);
         setAssurance(reliable, "legality-assurance-v1", "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]");
         mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.total").value(1))
-                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(undetermined));
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items[*].evaluation_id").value(org.hamcrest.Matchers.hasItem(undetermined)));
         mvc.perform(get(path + "&page=1&size=1").header("Authorization", bearer(session)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
                 .andExpect(jsonPath("$.data.items.length()").value(1));
         mvc.perform(get(path + "&legal_status=ILLEGAL").header("Authorization", bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
@@ -404,7 +436,7 @@ class LegalityReviewApiTest {
         jdbc.update("update legality_review set review_state='PENDING_REVIEW',version=0 where evaluation_id=?", undetermined);
         jdbc.update("update legality_review set review_state='CONFIRMED',version=1 where evaluation_id=?", evaluation);
         mvc.perform(get(path).header("Authorization", bearer(session))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.total").value(1)).andExpect(jsonPath("$.data.items[0].evaluation_id").value(undetermined));
+                .andExpect(jsonPath("$.data.total").value(2)).andExpect(jsonPath("$.data.items[*].evaluation_id").value(org.hamcrest.Matchers.hasItem(undetermined)));
         mvc.perform(get(path.replace("true", "invalid")).header("Authorization", bearer(session)))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(path).header("Authorization", bearer(user("ASSIGNED", "target:read"))))
@@ -428,7 +460,7 @@ class LegalityReviewApiTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.items[0].evaluation_id").value(other));
         mvc.perform(get(path + "&has_alarm=true&legal_status=UNDETERMINED").header("Authorization", bearer(session)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
         String readOnly = user("ASSIGNED", "assessment:read");
         mvc.perform(get(path + "&has_alarm=true").header("Authorization", bearer(readOnly)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
@@ -522,7 +554,7 @@ class LegalityReviewApiTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.alarm_verification.conclusion").value("FALSE_POSITIVE"))
                 .andExpect(jsonPath("$.data.alarm_verification.event_id").value(event))
                 .andExpect(jsonPath("$.data.review.state").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.legal_status").value("ABNORMAL"))
+                .andExpect(jsonPath("$.data.legal_status").value("UNDETERMINED"))
                 .andExpect(jsonPath("$.data.decision_assurance.review_required").value(false));
         mvc.perform(get("/api/v1/legality-evaluations").param("target_id", target).param("needs_review", "true")
                 .header("Authorization", bearer(session)))

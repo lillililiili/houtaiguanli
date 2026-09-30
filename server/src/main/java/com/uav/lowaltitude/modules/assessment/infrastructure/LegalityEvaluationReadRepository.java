@@ -18,6 +18,7 @@ import org.springframework.stereotype.Repository;
 
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
+import com.uav.lowaltitude.modules.fusion.infrastructure.TargetRecognitionSql;
 
 /**
  * 引擎研判、复核历史与规则效果事实的只读查询。范围谓词以研判行自带的 (owner_org_id, district_id) 为真源，
@@ -28,6 +29,18 @@ public class LegalityEvaluationReadRepository {
     private final NamedParameterJdbcTemplate jdbc;
 
     public LegalityEvaluationReadRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }
+
+    /** Call only after the caller has established the evaluation's data scope. */
+    public boolean recognitionCurrent(String evaluationId) {
+        String currentType = TargetRecognitionSql.type("t", "c");
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM rule_evaluation e JOIN target t ON t.target_id=e.target_id"
+                + " AND t.owner_org_id=e.owner_org_id AND t.district_id=e.district_id AND t.source_mode=e.source_mode"
+                + " LEFT JOIN target_attribute_selection c ON c.target_id=t.target_id WHERE e.evaluation_id=:id"
+                + " AND " + currentType + "='UAV' AND (e.recognition_revision IS NULL OR (e.recognition_class_code=" + currentType
+                + " AND e.recognition_revision=" + TargetRecognitionSql.revision("t", "c") + "))",
+                Map.of("id", evaluationId), Long.class);
+        return count != null && count > 0;
+    }
 
     public long count(EvaluationQuery query, AccessDecision access) {
         Where where = where(query, access);
@@ -41,9 +54,9 @@ public class LegalityEvaluationReadRepository {
         Where where = where(query, access);
         return jdbc.queryForObject("SELECT COUNT(*) AS total,"
                 + " COALESCE(SUM(CASE WHEN e.legal_status='LEGAL' THEN 1 ELSE 0 END),0) AS legal,"
-                + " COALESCE(SUM(CASE WHEN e.legal_status='ABNORMAL' THEN 1 ELSE 0 END),0) AS abnormal,"
+                + " 0 AS abnormal,"
                 + " COALESCE(SUM(CASE WHEN e.legal_status='ILLEGAL' THEN 1 ELSE 0 END),0) AS illegal,"
-                + " COALESCE(SUM(CASE WHEN e.legal_status='UNDETERMINED' THEN 1 ELSE 0 END),0) AS undetermined,"
+                + " COALESCE(SUM(CASE WHEN " + LegalityStatusProjection.sql("e.legal_status") + "='UNDETERMINED' THEN 1 ELSE 0 END),0) AS undetermined,"
                 + " COALESCE(SUM(CASE WHEN e.legal_status='NOT_APPLICABLE' THEN 1 ELSE 0 END),0) AS not_applicable"
                 + from() + where.sql, where.parameters,
                 (rs, i) -> new EvaluationCounts(rs.getLong("total"), rs.getLong("legal"), rs.getLong("abnormal"),
@@ -180,6 +193,7 @@ public class LegalityEvaluationReadRepository {
         return " FROM rule_evaluation e JOIN rule_set_version v ON v.rule_set_version_id=e.rule_set_version_id JOIN rule_set rs ON rs.rule_set_id=v.rule_set_id"
                 + " JOIN rule_run run ON run.run_id=e.run_id LEFT JOIN legality_review r ON r.evaluation_id=e.evaluation_id"
                 + " LEFT JOIN alarm_merge_member m ON m.evaluation_id=e.evaluation_id LEFT JOIN target tg ON tg.target_id=e.target_id"
+                + " LEFT JOIN target_attribute_selection recognition ON recognition.target_id=tg.target_id"
                 + " LEFT JOIN flight_plan p ON p.plan_id=e.plan_id LEFT JOIN app_org org_ref ON org_ref.org_id=e.owner_org_id"
                 + " LEFT JOIN app_district dist_ref ON dist_ref.district_id=e.district_id";
     }
@@ -193,19 +207,28 @@ public class LegalityEvaluationReadRepository {
                 + "e.alarm_id AS engine_alarm_id,m.alarm_id AS member_alarm_id,"
                 // 人工转告警不回写只增的研判行，其告警引用只存在于复核历史。
                 + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
-                + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,tg.object_type_code,"
+                + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,"
+                + "COALESCE(e.recognition_class_code," + TargetRecognitionSql.type("tg", "recognition") + ") AS object_type_code,"
                 + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons";
     }
 
     private static Where where(EvaluationQuery query, AccessDecision access) {
         Where where = scope(access, "e");
         add(where, "e.mode", "mode", query.mode());
-        add(where, "e.legal_status", "legal_status", query.legalStatus());
+        // The old ABNORMAL filter remains available for historical API clients only.
+        add(where, "ABNORMAL".equals(query.legalStatus()) ? "e.legal_status" : LegalityStatusProjection.sql("e.legal_status"), "legal_status", query.legalStatus());
         add(where, "e.plan_match_code", "plan_match", query.planMatch());
         add(where, "e.subject_kind", "subject_kind", query.subjectKind());
         if (query.objectTypeCode() != null) {
             // 目标类别与详情引用遵守同一可见元组；列表和 total 在分页前共同过滤。
-            add(where, "tg.object_type_code", "object_type_code", query.objectTypeCode());
+            String currentType = TargetRecognitionSql.type("tg", "recognition");
+            add(where, query.latestOnly() ? currentType : "COALESCE(e.recognition_class_code," + currentType + ")",
+                    "object_type_code", query.objectTypeCode());
+            if (query.latestOnly()) {
+                // Do not display a previous recognition cycle as the new current conclusion while re-evaluation is pending.
+                where.sql.append(" AND (e.recognition_revision IS NULL OR (e.recognition_revision="
+                        + TargetRecognitionSql.revision("tg", "recognition") + " AND e.recognition_class_code=" + currentType + "))");
+            }
             where.sql.append(" AND tg.owner_org_id=e.owner_org_id AND tg.district_id=e.district_id");
         }
         add(where, "e.target_id", "target_id", query.targetId());
@@ -233,7 +256,7 @@ public class LegalityEvaluationReadRepository {
         }
         if (query.needsAttention() != null) {
             // 并集在权限、最新记录筛选和分页前执行；同一条同时满足两项也只计一次。
-            where.sql.append(" AND (CASE WHEN e.legal_status='UNDETERMINED' OR (" + reviewRequired
+            where.sql.append(" AND (CASE WHEN " + LegalityStatusProjection.sql("e.legal_status") + "='UNDETERMINED' OR (" + reviewRequired
                     + ") THEN TRUE ELSE FALSE END)=:needs_attention");
             where.parameters.put("needs_attention", query.needsAttention());
         }

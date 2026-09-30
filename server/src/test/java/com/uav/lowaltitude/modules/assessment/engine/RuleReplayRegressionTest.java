@@ -72,9 +72,9 @@ class RuleReplayRegressionTest {
 
     static final List<Expectation> DECISION_TABLE = List.of(
             new Expectation("legal", "LEGAL", "FULL", List.of(), List.of(), false, null),
-            new Expectation("deviation", "ABNORMAL", "FULL", List.of("ROUTE_DEVIATION"), List.of(), true, "CREATED"),
+            new Expectation("deviation", "ILLEGAL", "FULL", List.of("ROUTE_DEVIATION"), List.of(), true, "CREATED"),
             new Expectation("airspace-limit", "ILLEGAL", "FULL", List.of("AIRSPACE_ALTITUDE_EXCEEDED"), List.of(), true, "CREATED"),
-            new Expectation("plan-altitude", "ABNORMAL", "FULL", List.of("PLAN_ALTITUDE_EXCEEDED"), List.of(), true, "CREATED"),
+            new Expectation("plan-altitude", "ILLEGAL", "FULL", List.of("PLAN_ALTITUDE_EXCEEDED"), List.of(), true, "CREATED"),
             new Expectation("boundary", "UNDETERMINED", "FULL", List.of(), List.of("BOUNDARY_POLICY_UNKNOWN"), false, null),
             new Expectation("no-plan", "ILLEGAL", "NONE", List.of("NO_AUTHORIZATION"), List.of(), true, "CREATED"),
             new Expectation("degraded", "UNDETERMINED", "FULL", List.of(), List.of("LOW_CONFIDENCE", "TRACK_BRIDGED"), false, null),

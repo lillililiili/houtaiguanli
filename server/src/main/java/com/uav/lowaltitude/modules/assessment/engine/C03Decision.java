@@ -25,7 +25,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TrackQuality;
  * 2. 质量门（置信度、轨迹点数、相邻间隔）任一不达标 → UNDETERMINED。
  * 3. C01 NONE → C03.no_plan_status；C01 UNDETERMINED → UNDETERMINED。
  * 4. 空域类（C02-1/2/8）任一 FAIL → ILLEGAL；任一 UNDETERMINED（无 FAIL）→ UNDETERMINED。
- * 5. 行为类（C02-3/4/5/7）任一 FAIL → ABNORMAL。
+ * 5. 行为类（C02-3/4/5/7）任一 FAIL → ILLEGAL；应用服务再校验证据充分性。
  * 6. 其余检查有 UNDETERMINED（排除 ignore_undetermined_rules）→ UNDETERMINED；否则 LEGAL。
  * 评分只在 ILLEGAL/ABNORMAL 给出，权重、严重度、等级阈值全部来自参数。
  */
@@ -115,7 +115,7 @@ public final class C03Decision {
         // 步骤 5：行为类。
         if (behaviourFail) {
             unknowns.addAll(allUnknowns);
-            return scored(LegalStatus.ABNORMAL, context, match, violations, unknowns, false, bridged, params);
+            return scored(LegalStatus.ILLEGAL, context, match, violations, unknowns, false, bridged, params);
         }
         // 步骤 6：其余未知（忽略列表内的规则不阻断 LEGAL，但原因码仍保留给页面）。
         List<String> ignored = params.list(RULE_CODE, PARAM_IGNORE_UNDETERMINED);
@@ -129,6 +129,8 @@ public final class C03Decision {
         String value = params.string(RULE_CODE, PARAM_NO_PLAN_STATUS);
         try {
             LegalStatus status = LegalStatus.valueOf(value);
+            // Legacy policy cannot turn an unresolved abnormal result into a violation.
+            if (status == LegalStatus.ABNORMAL) return LegalStatus.UNDETERMINED;
             if (status == LegalStatus.NOT_APPLICABLE) throw new IllegalArgumentException(value);
             return status;
         } catch (IllegalArgumentException ex) {

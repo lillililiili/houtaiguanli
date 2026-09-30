@@ -127,7 +127,9 @@ public class LegalityEvaluationService {
         List<HitDetail> hits = new ArrayList<>();
         List<String> candidateIds = List.of();
         boolean usable = freshness == Freshness.FRESH || freshness == Freshness.REPLAY;
-        String objectType = resolved.targetId() == null ? null : repository.objectType(resolved.targetId());
+        RuleEngineRepository.Recognition recognition = resolved.targetId() == null
+                ? new RuleEngineRepository.Recognition("UNKNOWN", 0) : repository.recognition(resolved.targetId());
+        String objectType = recognition.classCode();
         boolean uav = "UAV".equals(objectType);
         if (usable && uav) {
             List<PlanFact> candidates = candidates(resolved, ruleParams, effectiveAsOf, members);
@@ -152,18 +154,28 @@ public class LegalityEvaluationService {
         }
 
         DecisionAssuranceAlgorithm.Assurance assurance = assuranceAlgorithm.assess(context, hits, verdict, ruleParams);
+        // Behaviour deviations require an established plan identity and sufficient evidence.
+        // Keep decisive airspace violations on the existing independent evidence path.
+        boolean behaviourViolation = hits.stream().anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode())
+                && hit.resultCode() == RuleContracts.ResultCode.FAIL);
+        boolean airspaceViolation = hits.stream().anyMatch(hit -> RuleCodes.AIRSPACE_CHECKS.contains(hit.ruleCode())
+                && hit.resultCode() == RuleContracts.ResultCode.FAIL);
+        if (verdict.status() == LegalStatus.ILLEGAL && behaviourViolation && !airspaceViolation
+                && !DecisionAssuranceAlgorithm.SUFFICIENT.equals(assurance.status())) {
+            verdict = Decision.undetermined(new java.util.LinkedHashSet<>(assurance.reasons()), verdict.violationReasons());
+        }
         var evaluatedVersion = repository.findVersion(run.ruleSetVersionId());
         if ("live".equals(context.sourceMode()) && verdict.status() != LegalStatus.NOT_APPLICABLE
                 && (evaluatedVersion == null || !"CONFIRMED".equals(evaluatedVersion.paramStatus())
                     || hits.stream().flatMap(hit -> (hit.params() == null ? List.<RuleContracts.ParamRef>of() : hit.params()).stream())
                         .anyMatch(ref -> !"CONFIRMED".equals(ref.status())))) {
-            verdict = Decision.undetermined(java.util.Set.of("RULE_PARAMETERS_UNCONFIRMED"), List.of());
+            verdict = Decision.undetermined(java.util.Set.of("RULE_PARAMETERS_UNCONFIRMED"), verdict.violationReasons());
             assurance = new DecisionAssuranceAlgorithm.Assurance(DecisionAssuranceAlgorithm.VERSION,
                     DecisionAssuranceAlgorithm.INSUFFICIENT, List.of("RULE_PARAMETERS_UNCONFIRMED"));
         }
         if ("live".equals(context.sourceMode()) && assurance.reasons().stream().anyMatch(reason ->
                 "DEMO_RULE_PARAMETERS".equals(reason) || "PARAMETER_STATUS_UNKNOWN".equals(reason))) {
-            verdict = Decision.undetermined(new java.util.LinkedHashSet<>(assurance.reasons()), List.of());
+            verdict = Decision.undetermined(new java.util.LinkedHashSet<>(assurance.reasons()), verdict.violationReasons());
         }
         String evaluationId = UUID.randomUUID().toString();
         PlanFact plan = planMatch.plan();
@@ -175,7 +187,7 @@ public class LegalityEvaluationService {
                 planId, routeVersionId, stateRow == null ? null : stateRow.observedAt(), effectiveAsOf, now, freshness.name(), planMatch.code().name(),
                 verdict.status().name(), verdict.score(), verdict.grade(), write(verdict.violationReasons()), write(hits), write(verdict.unknownReasons()),
                 write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness)), supersedesEvaluationId, shadowOutcome,
-                resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons())));
+                resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons()), recognition));
 
         String assessmentId = null;
         boolean projectable = mode == RunMode.ACTIVE && plan != null && (planMatch.code() == PlanMatchCode.FULL || planMatch.code() == PlanMatchCode.PARTIAL);
