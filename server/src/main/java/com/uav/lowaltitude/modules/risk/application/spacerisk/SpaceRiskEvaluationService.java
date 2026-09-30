@@ -54,13 +54,14 @@ public class SpaceRiskEvaluationService {
     private final com.uav.lowaltitude.modules.assessment.engine.RuleEngineProperties ruleEngine;
     private final AppClock clock;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
+    private final com.uav.lowaltitude.modules.risk.application.RiskPresenceService presence;
 
     public SpaceRiskEvaluationService(SpaceRiskSpatialPort spatial, SpaceRiskRepository repository,
             RiskIngestionService ingestion, RuleParamLoader paramLoader,
             com.uav.lowaltitude.modules.assessment.engine.RuleEngineProperties ruleEngine, AppClock clock,
-            com.fasterxml.jackson.databind.ObjectMapper json) {
+            com.fasterxml.jackson.databind.ObjectMapper json, com.uav.lowaltitude.modules.risk.application.RiskPresenceService presence) {
         this.spatial = spatial; this.repository = repository; this.ingestion = ingestion;
-        this.paramLoader = paramLoader; this.ruleEngine = ruleEngine; this.clock = clock; this.json = json;
+        this.paramLoader = paramLoader; this.ruleEngine = ruleEngine; this.clock = clock; this.json = json; this.presence = presence;
     }
 
     /**
@@ -121,6 +122,7 @@ public class SpaceRiskEvaluationService {
                     from, to, clock.now().atOffset(ZoneOffset.UTC)));
             created++;
         }
+        presence.recordC04Clearances();
         return finish(runId, STATUS_SUCCESS, targetsSeen.size(), created, deduplicated, null);
     }
 

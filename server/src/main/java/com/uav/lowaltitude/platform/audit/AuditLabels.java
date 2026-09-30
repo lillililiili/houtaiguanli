@@ -12,6 +12,7 @@ final class AuditLabels {
             Map.entry("roles", "角色管理"),
             Map.entry("audit", "审计日志"),
             Map.entry("devices", "设备管理"),
+            Map.entry("integration", "接口接入"),
             Map.entry("alarms", "告警事件"),
             // 阶段 4/5：风险、交接、工作台是独立模块，失败审计与列表展示都按各自模块归档。
             Map.entry("risk", "飞行风险"),
@@ -46,6 +47,9 @@ final class AuditLabels {
             Map.entry("local_interface_input", "接收本地模拟输入"),
             Map.entry("local_weather_risk_input", "接收模拟气象风险"),
             Map.entry("local_interface_receipt", "接收本地模拟回执"),
+            Map.entry("notification_simulator_connected", "连接通知模拟器"),
+            Map.entry("simulator_notification_receipt", "接收模拟通知回执"),
+            Map.entry("simulator_receipt_projection", "同步模拟回执业务结果"),
             Map.entry("local_qa_notification_prepare", "准备限时模拟通知通道"),
             Map.entry("local_qa_device_prepare", "准备本机模拟反制设备"),
             Map.entry("weather_sensor_create", "登记天气传感器"),

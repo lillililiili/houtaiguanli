@@ -13,9 +13,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import com.uav.lowaltitude.Application;
 
 /**
- * production 必须压过 local：阶段 5 的设备归属映射与交接演示夹具不允许因部署 profile 组合泄入生产。
- * 故意打开 app.dev-seed.enabled，证明仅靠 profile 门禁就足以阻止两个 seeder 注册和写表；
- * 生产也不得由启动器自动插入任何交接接收方。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage5SeedIsolationTest {
     @Test void productionNeverRegistersStage5Seeders() { assertIsolated("production"); }
@@ -27,7 +26,7 @@ class ProductionStage5SeedIsolationTest {
                 // 命令行参数优先级高于 application-local.yml，production,local 组合也只会连到这个隔离 H2。
                 "--spring.datasource.url=jdbc:h2:mem:stage5_seed_" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
-                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=true", "--app.live-device.enabled=false",
+                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--spring.main.banner-mode=off")) {
             assertThat(context.containsBean("localStage5DeviceScopeSeeder")).isFalse();
             assertThat(context.containsBean("localStage5HandoffSeeder")).isFalse();

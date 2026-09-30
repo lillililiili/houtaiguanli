@@ -254,6 +254,23 @@ class AutoVoiceApiTest {
         voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("UNKNOWN"));
         assertThat(count("uav_event_voice_advisory")).isZero();
     }
+    @Test void latePlaybackAfterLeaseReconciliationCannotOverwriteUnknownOrDuplicateContact() throws Exception {
+        long version = jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId);
+        doAnswer(call -> {
+            voiceService.process(eventId);
+            jdbc.update("update uav_auto_voice_task set lease_until=0 where event_id=?", eventId);
+            voiceService.process(eventId);
+            return call.callRealMethod();
+        }).when(voice).simulate(anyString(), any(), eq("auto-advisory-voice:" + eventId));
+        voiceService.process(eventId);
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.auto_voice.can_retry").value(false))
+                .andExpect(jsonPath("$.data.auto_voice.playback_completed_at").doesNotExist());
+        assertThat(count("uav_event_voice_advisory")).isZero();
+        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId)).isEqualTo(version);
+        verify(voice, times(1)).simulate(anyString(), any(), eq("auto-advisory-voice:" + eventId));
+    }
     @Test void retryChecksPermissionScopeAndVersion()throws Exception {
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"FAILED",null,null,null)).when(voice).simulate(anyString(),any(),anyString());
         voiceService.process(eventId);retry(UUID.randomUUID().toString(),0).andExpect(status().isConflict());

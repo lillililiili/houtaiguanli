@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.MultiValueMap;
 
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository;
+import com.uav.lowaltitude.modules.fusion.application.FusionConfigService;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.DegradationRow;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.SelectionRow;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusedTrackRepository;
@@ -85,6 +86,7 @@ public class TargetReadService {
     private final DegradationRepository degradations;
     private final FusedTrackRepository fusedTracks;
     private final ObjectMapper objectMapper;
+    private final FusionConfigService fusionConfig;
 
     public TargetReadService(
             AccessControlService accessControl,
@@ -92,13 +94,15 @@ public class TargetReadService {
             LineageRepository lineages,
             DegradationRepository degradations,
             FusedTrackRepository fusedTracks,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            FusionConfigService fusionConfig) {
         this.accessControl = accessControl;
         this.repository = repository;
         this.lineages = lineages;
         this.degradations = degradations;
         this.fusedTracks = fusedTracks;
         this.objectMapper = objectMapper;
+        this.fusionConfig = fusionConfig;
     }
 
     @Transactional(readOnly = true)
@@ -119,8 +123,9 @@ public class TargetReadService {
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
         Map<String, TargetSummariesRow> summaries = repository.summaries(rows.stream().map(TargetRow::targetId).toList());
+        long mapLifetimeMs = rows.isEmpty() ? 0 : fusionConfig.params(null).integer("identity", "terminate_after_ms");
         List<TargetSummaryDto> items = rows.stream()
-                .map(row -> summary(row, summaries.get(row.targetId())))
+                .map(row -> summary(row, summaries.get(row.targetId()), mapLifetimeMs))
                 .toList();
         return new PageDto<>(items, page.page, page.size, total);
     }
@@ -215,12 +220,14 @@ public class TargetReadService {
         return new RecentTracksDto(observed.to.toInstant().toEpochMilli(), items);
     }
 
-    private TargetSummaryDto summary(TargetRow row, TargetSummariesRow summaries) {
+    private TargetSummaryDto summary(TargetRow row, TargetSummariesRow summaries, long mapLifetimeMs) {
         return new TargetSummaryDto(
                 row.targetId(), row.targetNo(), millis(row.firstSeenAt()), millis(row.lastSeenAt()),
                 row.objectTypeCode(), row.subtype(), row.uavSn(), row.sourceMode(), row.ownerOrgId(),
                 row.districtId(), state(row, summaries), row.ownerOrgName(), row.districtName(),
-                riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries));
+                riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries),
+                row.stateObservedAt() == null || mapLifetimeMs <= 0 ? null
+                        : row.stateObservedAt().toInstant().toEpochMilli() + mapLifetimeMs);
     }
 
     private TargetStateDto state(TargetRow row, TargetSummariesRow summaries) {

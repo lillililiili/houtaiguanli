@@ -12,6 +12,9 @@ import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 
 @Repository
 public class DirectoryRepository {
+ public int activateSimulatorChannels(long now){
+  return jdbc.update("UPDATE notification_setting SET channel_type='API',endpoint_ref='local-data-simulator',valid_until=NULL,updated_at=?,version=version+1 WHERE channel_type='MOCK' AND endpoint_ref='local-qa-expiring-mock' AND enabled=TRUE",now);
+ }
  private final JdbcTemplate jdbc; private final ObjectMapper json;
  public DirectoryRepository(JdbcTemplate jdbc,ObjectMapper json){this.jdbc=jdbc;this.json=json;}
  private static final String ORG="SELECT o.*,COALESCE(p.organization_type,'OTHER') AS organization_type,p.address,p.credit_code,p.remarks,p.responsibilities,parent.name AS parent_name,(SELECT COUNT(*) FROM business_contact c WHERE c.org_id=o.org_id) AS contact_count,(SELECT COUNT(*) FROM flight_plan f WHERE f.operator_org_id=o.org_id OR f.source_binding_id IN(SELECT binding_id FROM plan_source_binding b WHERE b.org_id=o.org_id)) AS plan_count FROM app_org o LEFT JOIN organization_profile p ON p.org_id=o.org_id LEFT JOIN app_org parent ON parent.org_id=o.parent_id";

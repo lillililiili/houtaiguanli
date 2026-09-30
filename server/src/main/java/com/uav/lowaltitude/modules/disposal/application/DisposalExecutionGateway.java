@@ -91,6 +91,8 @@ public class DisposalExecutionGateway {
         if (device != null && !operable(device)) {
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，暂不能下发处置指令");
         }
+        if (command.operationType()!=0 && knownFault(device)) return fault();
+        if (command.operationType()!=0 && devices.hasActiveWork(deviceId)) return busy();
         String commandId = control.enqueue(deviceId, idempotencyKey, authorizationId, command.operationType(),
                 command.operationCmd(), operationParams, reason);
         return new Accepted(commandId);
@@ -111,6 +113,8 @@ public class DisposalExecutionGateway {
         if (device != null && !operable(device)) {
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，暂不能下发处置指令");
         }
+        if (command.operationType()!=0 && knownFault(device)) return fault();
+        if (command.operationType()!=0 && devices.hasActiveWork(deviceId)) return busy();
         String commandId = control.enqueueUnchecked(user, deviceId, idempotencyKey, authorizationId,
                 command.operationType(), command.operationCmd(), operationParams, reason);
         return new Accepted(commandId);
@@ -132,6 +136,8 @@ public class DisposalExecutionGateway {
             return noCapability(DisposalRules.COUNTERMEASURE_4CH);
         if (!operable(device))
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，暂不能下发处置指令");
+        if (knownFault(device)) return fault();
+        if (devices.hasActiveWork(deviceId)) return busy();
         int mask = DisposalRules.JAMMING.equals(actionType)
                 ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
         String commandId = countermeasure.enqueue(deviceId, idempotencyKey, authorizationId,
@@ -151,6 +157,8 @@ public class DisposalExecutionGateway {
             return noCapability(DisposalRules.COUNTERMEASURE_4CH);
         if (!operable(device))
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，暂不能下发处置指令");
+        if (knownFault(device)) return fault();
+        if (devices.hasActiveWork(deviceId)) return busy();
         int mask = DisposalRules.JAMMING.equals(actionType)
                 ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
         String commandId = countermeasure.enqueueUnchecked(user, deviceId, idempotencyKey, authorizationId,
@@ -177,6 +185,18 @@ public class DisposalExecutionGateway {
         Object enabled = device.get("enabled");
         boolean on = enabled instanceof Boolean b ? b : enabled != null && Boolean.parseBoolean(String.valueOf(enabled));
         return on && "ONLINE".equals(String.valueOf(device.get("connectivity")));
+    }
+
+    private static boolean knownFault(Map<String,Object> device) {
+        return device!=null && "BAD".equals(device.get("health_code"));
+    }
+
+    private static Rejected busy() {
+        return new Rejected("DEVICE_BUSY", "DEVICE_BUSY", "设备仍有未完成的指令或调测任务，本次未下发；请等待设备任务结束后重试");
+    }
+
+    private static Rejected fault() {
+        return new Rejected("DEVICE_FAULT","DEVICE_NOT_OPERABLE","设备已上报故障，不能下发启动指令");
     }
 
     /** 所选设备不能走该通道自动执行。 */

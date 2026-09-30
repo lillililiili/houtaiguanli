@@ -3,6 +3,10 @@ spring:
     url: ${POSTGRES_TEST_URL}
     username: ${POSTGRES_TEST_USER}
     password: ${POSTGRES_TEST_PASSWORD}
+    hikari:
+      minimum-idle: 0
+      maximum-pool-size: 4
+      idle-timeout: 10000
   flyway:
     enabled: false
 

@@ -10,13 +10,14 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 @RequestMapping("/api/v1/local-interface-simulator")
 public class LocalInterfaceSimulatorController {
  private final LocalInterfaceSimulatorService service;private final LocalInterfaceReceiptService receipts;
+ @org.springframework.beans.factory.annotation.Autowired private com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport transport;
  public LocalInterfaceSimulatorController(LocalInterfaceSimulatorService service,LocalInterfaceReceiptService receipts){this.service=service;this.receipts=receipts;}
- @GetMapping("/context") public ApiResponse<Context> context(){return ApiResponse.ok(service.context());}
+ @GetMapping("/context") public ApiResponse<Context> context(){return ApiResponse.ok(service.context().withReceiverMessages(transport.pending()));}
  @PostMapping("/plans") public ApiResponse<Message> plan(@Valid @RequestBody PlanInput input){return ApiResponse.ok(service.plan(input));}
  @GetMapping("/plan-options") public ApiResponse<com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Options> planOptions(){return ApiResponse.ok(service.planOptions());}
  @GetMapping("/plans/{id}/filing") public ApiResponse<com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Detail> planFiling(@PathVariable String id){return ApiResponse.ok(service.planFiling(id));}
  @PostMapping("/plans/{id}/filing") public ApiResponse<Message> updatePlanFiling(@PathVariable String id,@Valid @RequestBody com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Update input){return ApiResponse.ok(service.updatePlanFiling(id,input));}
  @PostMapping("/weather") public ApiResponse<Message> weather(@Valid @RequestBody WeatherInput input){return ApiResponse.ok(service.weather(input));}
- @PostMapping("/bindings") public ApiResponse<Binding> binding(@Valid @RequestBody BindingInput input){return ApiResponse.ok(service.bind(input));}
- @PostMapping("/messages/{id}/receipt") public ApiResponse<Message> receipt(@PathVariable String id,@Valid @RequestBody ReceiptInput input){return ApiResponse.ok(receipts.accept(id,input));}
+ @PostMapping("/bindings") public ApiResponse<Binding> binding(@Valid @RequestBody BindingInput input){return ApiResponse.ok("NOTIFICATION_CHANNEL".equals(input.sourceKind())?transport.connect(input):service.bind(input));}
+ @PostMapping("/messages/{id}/receipt") public ApiResponse<Message> receipt(@PathVariable String id,@Valid @RequestBody ReceiptInput input){return ApiResponse.ok(id.startsWith("simn-")?transport.receipt(id,input):receipts.accept(id,input));}
 }

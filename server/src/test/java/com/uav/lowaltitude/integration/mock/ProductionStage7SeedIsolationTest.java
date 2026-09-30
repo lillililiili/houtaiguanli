@@ -15,11 +15,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import com.uav.lowaltitude.Application;
 
 /**
- * production 必须压过 local：阶段 7 的 DEMO 规则集种子与回放 Runner 不允许因部署 profile 组合泄入生产。
- * 故意打开 app.dev-seed.enabled 与 app.rule-engine.replay.run-on-start，证明仅靠 profile 门禁就足以阻止
- * 两个 Runner 注册和写表。生产默认没有 ACTIVE 规则集版本（引擎空转），也没有任何研判行；
- * 但迁移 040 登记的三条 rule-engine-legality-* 来源行必须存在——它们是引擎在生产生成来源告警的外键前提，
- * 属于结构性目录而不是演示数据。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage7SeedIsolationTest {
     @Test void productionNeverRegistersStage7SeederOrReplayRunner() { assertIsolated("production"); }
@@ -31,8 +28,8 @@ class ProductionStage7SeedIsolationTest {
                 // 命令行参数优先级高于 application-local.yml，production,local 组合也只会连到这个隔离 H2。
                 "--spring.datasource.url=jdbc:h2:mem:stage7_seed_" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
-                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=true", "--app.live-device.enabled=false",
-                "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=true",
+                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
+                "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
                 "--spring.main.banner-mode=off")) {
             // 按 Bean 名称断言，不引用种子类型：即使类被重命名，这里也不会因为编译依赖而“默认通过”。
             assertThat(context.containsBean("localStage7RuleEngineSeeder")).isFalse();

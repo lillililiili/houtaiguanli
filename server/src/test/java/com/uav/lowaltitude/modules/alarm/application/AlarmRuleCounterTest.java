@@ -54,13 +54,14 @@ class AlarmRuleCounterTest {
     @Mock EmergencyStopRepository emergencyStops;
     @Mock DeviceRepository devices;
     @Mock AuditService audit;
+    @Mock com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility eligibility;
 
     private AlarmRuleCounter counter;
 
     @BeforeEach
     void setup() {
         counter = new AlarmRuleCounter(events, advisory, phases, repository, policies, gateway, emergencyStops, devices,
-                audit, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), new ObjectMapper());
+                audit, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), new ObjectMapper(), eligibility);
     }
 
     @Test
@@ -139,10 +140,29 @@ class AlarmRuleCounterTest {
     }
 
     private void ready() {
+        when(eligibility.allowsRun("counter", "event-1", "run-1")).thenReturn(true);
         when(repository.actor(AutomationPrincipal.USER_ID)).thenReturn(new AuthUser(AutomationPrincipal.USER_ID,
                 AutomationPrincipal.ACCOUNT, "自动规则", AutomationPrincipal.ROLE, 0, false, "ALL"));
         when(events.lock(eq("event-1"), any(AccessDecision.class))).thenReturn(EVENT);
         when(advisory.counterBlockReason("event-1")).thenReturn("");
+    }
+
+    @Test void revokedOrUnrelatedPassCannotCreateAnAuthorization() {
+        counter.launchIfPassed("event-1", "run-1");
+        org.mockito.Mockito.verifyNoInteractions(repository, gateway, events, audit);
+    }
+
+    @Test void rulesChangedWhileWaitingForDeviceLockCannotCreateAnAuthorization() {
+        ready();
+        when(eligibility.allowsRun("counter", "event-1", "run-1")).thenReturn(true, false);
+        when(phases.phaseForAutomation("event-1")).thenReturn(NotifyFlow.Phase.AWAIT_COUNTER);
+        when(policies.active()).thenReturn(policy());
+        when(devices.operableCounterDevices(eq("ifr"), eq("mock"), eq("org"), eq("district"), isNull(), eq("ifr"), eq(false)))
+                .thenReturn(List.of("dev-1"));
+        counter.launchIfPassed("event-1", "run-1");
+        verify(emergencyStops).lockDevice("dev-1");
+        verify(repository, never()).insert(any());
+        org.mockito.Mockito.verifyNoInteractions(gateway, audit);
     }
 
     private static DisposalPolicy policy() {

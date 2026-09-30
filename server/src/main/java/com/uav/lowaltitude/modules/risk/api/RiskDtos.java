@@ -20,7 +20,7 @@ public final class RiskDtos {
             /* 阶段 9 追加：空中异物风险的判定依据；其它风险类型没有这一段，字段整体缺省。 */
             SpaceRiskDtos.SpaceFactDto spaceFact,
             /* 页面上的风险编号：平台编号优先，没有就用来源编号（F11）。 */
-            String riskNo) { }
+            String riskNo, String currentStatus, String currentReason, Long currentObservedAt) { }
     public record VerificationDto(String historyId, long version, String previousState, String resultingState,
             String conclusion, String note, String actorId, long createdAt, String actorName) { }
     public record VerifyRequest(String conclusion, String note, Long expectedVersion) { }

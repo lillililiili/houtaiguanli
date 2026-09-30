@@ -10,6 +10,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 
 /** 明示模拟接收端，不调用短信网关、不采集手机号。人工发送仍只接受模拟/回放来源；自动发送在本地演示环境接受全部来源，但回执保持模拟。 */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(prefix="app.notifications",name="transport",havingValue="mock",matchIfMissing=true)
 public class LocalAdvisorySmsAdapter implements AdvisorySmsPort {
     private final Environment environment;
     public LocalAdvisorySmsAdapter(Environment environment) { this.environment = environment; }

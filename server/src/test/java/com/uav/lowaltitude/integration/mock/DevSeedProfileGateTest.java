@@ -32,7 +32,7 @@ class DevSeedProfileGateTest {
                 if (!text.contains("implements ApplicationRunner")) return;
                 if (!text.contains("app.dev-seed")) return;
                 if (!text.contains("@ConditionalOnProperty")) return;
-                boolean excludesProduction = text.contains("!production") || hasTestOnlyProfile(text);
+                boolean excludesProduction = excludesFormalProfiles(root, path);
                 if (!excludesProduction) offenders.add(root.relativize(path).toString().replace('\\', '/'));
             });
         }
@@ -41,7 +41,20 @@ class DevSeedProfileGateTest {
                 .isEmpty();
     }
 
-    private static boolean hasTestOnlyProfile(String text) {
-        return text.contains("@Profile(\"test\")") || text.contains("@Profile({\"test\"})");
+    private static boolean excludesFormalProfiles(Path root, Path path) {
+        String name = root.relativize(path).toString().replace('\\', '.').replace('/', '.').replaceAll("\\.java$", "");
+        try {
+            var profile = Class.forName(name).getAnnotation(org.springframework.context.annotation.Profile.class);
+            if (profile == null) return false;
+            var expression = org.springframework.core.env.Profiles.of(profile.value());
+            for (var active : List.of(java.util.Set.of("production"), java.util.Set.of("prod"),
+                    java.util.Set.of("local"), java.util.Set.of("local", "qa", "production"),
+                    java.util.Set.of("test", "prod"), java.util.Set.of("test", "production"))) {
+                if (expression.matches(active::contains)) return false;
+            }
+            return true;
+        } catch (ClassNotFoundException error) {
+            throw new IllegalStateException(name, error);
+        }
     }
 }

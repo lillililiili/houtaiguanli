@@ -43,9 +43,9 @@ class HandoffPunishmentMaterialsApiTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
 
-    private String submitter;
-    private String eventId;
-    private String recipientId;
+    protected String submitter;
+    protected String eventId;
+    protected String recipientId;
 
     @BeforeEach
     void fixture() {
@@ -301,7 +301,7 @@ class HandoffPunishmentMaterialsApiTest {
 
     /* ---- 辅助 ---- */
 
-    private ResultActions submit(String token, String event) throws Exception {
+    protected ResultActions submit(String token, String event) throws Exception {
         long version = jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, event);
         return mvc.perform(post("/api/v1/handoffs").header("Authorization", bearer(token))
                 .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
@@ -313,11 +313,11 @@ class HandoffPunishmentMaterialsApiTest {
                 + "\"recipient_id\":\"" + recipientId + "\",\"expected_version\":" + version + "}";
     }
 
-    private JsonNode detail(String handoffId, String token) throws Exception {
+    protected JsonNode detail(String handoffId, String token) throws Exception {
         return body(mvc.perform(get("/api/v1/handoffs/{id}", handoffId).header("Authorization", bearer(token)))).path("data");
     }
 
-    private JsonNode body(ResultActions actions) throws Exception {
+    protected JsonNode body(ResultActions actions) throws Exception {
         return objectMapper.readTree(actions.andReturn().getResponse().getContentAsString());
     }
 
@@ -356,7 +356,7 @@ class HandoffPunishmentMaterialsApiTest {
                 + "status,result_code,result_detail,policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at)"
                 + " values (?,?,'COUNTERMEASURE','UAV_EVENT',?,null,null,'MANUAL','演示处置',?,?,?,?,?,?,?,'MANUAL_SUCCEEDED',"
                 + "'演示：人工反制完成','demo-v1',?,?,'mock',1,?,?)",
-                UUID.randomUUID().toString(), "AUTH-20260908-" + (8000 + (int) (Math.random() * 999)), eventId,
+                UUID.randomUUID().toString(), "AUTH-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24), eventId,
                 admin, at, admin, at, at, Timestamp.from(Instant.parse("2026-09-08T02:40:00Z")), status,
                 ORG, DISTRICT, at, at);
     }

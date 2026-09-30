@@ -22,15 +22,18 @@ public final class LocalInterfaceDtos {
   @NotNull @Min(0) @Max(360) Integer windDirectionDeg,
   @NotNull @Min(0) @Max(100) Integer precipitationProbabilityPct,
   @NotNull @Min(0) @Max(100) Integer humidityPct){}
- public record BindingInput(@Pattern(regexp="RISK|UAV_EVENT") @NotNull String sourceKind,
+ public record BindingInput(@Pattern(regexp="RISK|UAV_EVENT|NOTIFICATION_CHANNEL") @NotNull String sourceKind,
   @NotBlank @Size(max=36) String sourceId,@NotNull Boolean enabled){}
  public record Binding(String sourceKind,String sourceId,boolean enabled,long expiresAt){}
  public record ReceiptInput(@NotNull @Min(0) Long expectedVersion,
-  @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT") @NotNull String outcome){}
+  @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT|ANSWERED|PLAYED") @NotNull String outcome){}
  public record Message(String messageId,String kind,String direction,String subjectId,String state,long version,
   long createdAt,JsonNode payload,JsonNode result){}
  public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo){}
  public record PlanOption(String planId,String planNo,Long startAt,Long endAt){}
  public record SourceOption(String sourceKind,String sourceId,String label){}
- public record Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections){}
+ public record Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections,List<Message> receiverMessages){
+  public Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections){this(routes,plans,bindings,messages,sources,unavailableSections,List.of());}
+  public Context withReceiverMessages(List<Message> receiverMessages){return new Context(routes,plans,bindings,messages,sources,unavailableSections,receiverMessages);}
+ }
 }

@@ -1,4 +1,5 @@
 <script setup>
+import { userFacingMessage } from '@/utils/userMessages';
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import PageHeader from '@/components/PageHeader.vue'
@@ -138,7 +139,7 @@ onBeforeUnmount(() => { listSeq += 1; detailSeq += 1; bindingSeq += 1 })
       <el-alert v-if="bindingError" :title="bindingError" type="error" :closable="false" />
       <el-button v-if="space" :disabled="busy || bindingLoading" @click="loadBinding">刷新关联</el-button>
       <template v-if="bindings">
-        <p v-if="bindings.current">当前关联：{{ bindings.current.plan.name }} · 第 {{ bindings.current.plan.revision }} 版<br>{{ bindings.current.applicability_reason }}<br>关联人：{{ bindings.current.bound_by }} · {{ formatTime(bindings.current.bound_at) }}<br>关联依据：{{ bindings.current.reason }}</p>
+        <p v-if="bindings.current">当前关联：{{ bindings.current.plan.name }} · 第 {{ bindings.current.plan.revision }} 版<br>{{ userFacingMessage(bindings.current.applicability_reason) }}<br>关联人：{{ bindings.current.bound_by }} · {{ formatTime(bindings.current.bound_at) }}<br>关联依据：{{ bindings.current.reason }}</p>
         <p v-else>此空域尚未关联处置预案</p>
         <div v-if="canEdit" class="actions"><el-button v-if="selected?.status === 'PUBLISHED' && selected.source_mode === 'live'" type="primary" :disabled="busy || bindings.current?.plan.version_id === selected.version_id" @click="bind()">关联所选预案版本</el-button><el-button v-if="bindings.current" :disabled="busy" @click="bind(true)">解除当前关联</el-button></div>
         <h4>关联历史（{{ bindings.history.total }} 条）</h4>

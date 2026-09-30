@@ -14,17 +14,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import com.uav.lowaltitude.Application;
 
 /**
- * production 必须压过 local：阶段 15 的第二演示账号 `reviewer1` / `ROLE-DEMO-REVIEWER`（决策 15-3）
- * 不允许因部署 profile 组合泄入生产。
- *
- * <p>这个账号比一般的演示数据更危险：它**不是一条可以事后删掉的业务记录，而是一个能登录的身份**。
- * 演示环境里它存在的理由是"复核人 ≠ 承办人""审批人 ≠ 申请人"——也就是说它天生带着
- * 批处置、批处罚这一类动作权限。一旦跟着 profile 组合进了生产，生产上就多出一个
- * 口令写在配置里、谁都知道的审批账号。
- *
- * <p>按 Bean 名断言，不引用 E1 的类型：类被重命名时这里也不会因编译依赖而"默认通过"。
- * 但动作目录那一段**刻意引用 `PermissionCode` 枚举**——理由相反：那里要的正是
- * "谁改了枚举就在这里立刻炸"。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage15SeedIsolationTest {
 
@@ -32,23 +23,21 @@ class ProductionStage15SeedIsolationTest {
     @Test void productionAlsoWinsOverLocalProfile() { assertIsolated("production,local"); }
 
     /**
-     * 反面对照：`local` 下种子**必须真的注册**。
+     * 反面对照：`local,qa` 下种子**必须真的注册**。
      * 没有这一条，"production 下不注册"可能只是 Bean 条件写错了、任何 profile 都不注册——
      * 那样隔离测试全绿，而演示环境根本没有第二个账号，复核与两人审批那两条路一点就 409，
      * 问题要到演示当天才发现。
      */
     @Test
-    void localStillRegistersTheSeeder() {
-        try (ConfigurableApplicationContext context = context("local", "--app.dev-seed.enabled=true")) {
+    void explicitLocalQaRegistersTheSeeder() {
+        try (ConfigurableApplicationContext context = context("local,qa", "--app.dev-seed.enabled=true", "--app.dev-seed.password=changeme")) {
             assertThat(context.containsBean("localStage15DemoReviewerSeeder"))
-                    .as("local 下第二账号种子必须注册，否则隔离测试的绿是假的").isTrue();
+                    .as("local,qa 下第二账号种子必须注册，否则隔离测试的绿是假的").isTrue();
         }
     }
 
     private static void assertIsolated(String profiles) {
-        // 故意打开演示种子开关：要证明的是"即使开关被打开 production 仍然赢"，
-        // 而不是"因为没开所以没有"——后者在部署里换一个 profile 组合就不成立了。
-        try (ConfigurableApplicationContext context = context(profiles, "--app.dev-seed.enabled=true")) {
+        try (ConfigurableApplicationContext context = context(profiles, "--app.dev-seed.enabled=false")) {
             assertThat(context.containsBean("localStage15DemoReviewerSeeder"))
                     .as("阶段 15 第二账号种子不得在 production 注册").isFalse();
 
@@ -130,7 +119,7 @@ class ProductionStage15SeedIsolationTest {
                         + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
                 "--spring.flyway.locations=classpath:db/migration",
-                "--app.live-device.enabled=false",
+                "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
                 "--app.fusion.enabled=false", "--app.fusion.replay.run-on-start=false",
                 "--app.disposal.expiry.enabled=false",

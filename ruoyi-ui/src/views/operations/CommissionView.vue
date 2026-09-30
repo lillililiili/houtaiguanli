@@ -28,6 +28,7 @@ const canOperate = computed(() => auth.hasPermission('commissioning.op') && (!ma
   && !maintenance.error.value && !maintenance.loading.value && !maintenanceBusy.value && !maintenancePending.value && !incidentBusy.value && !incidentPending.value)));
 const devices = ref([]);
 const filters = reactive({ keyword: '', region: '', type: '' });
+const filtersExpanded = ref(true);
 const records = reactive({ items: [], page: 1, size: 10, total: 0 });
 const recordsLoading = ref(false);
 const recordsError = ref('');
@@ -352,8 +353,8 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
     <el-card class="commission-steps"><el-steps :active="stepIndex" :process-status="active?.status==='FAILED'?'error':'process'" :finish-status="isSimulation || active?.status==='CANCELLED' ? 'wait' : 'success'" align-center><el-step v-for="(item,index) in steps" :key="item" :title="item" :description="['选择设备并创建任务','建立设备通信链路','保存本次调测参数','协议响应与数据校验','查看结果与调测报告'][index]" /></el-steps></el-card>
     <div v-loading="loading" class="commission-workspace">
       <div class="commission-column">
-        <el-card class="commission-selection"><template #header><div class="table-toolbar"><b>设备选择</b><span class="muted">{{ visibleDevices.length }} 台</span></div></template>
-          <div class="tree-filters"><el-select v-model="filters.region" clearable placeholder="全部区域" aria-label="所属区域"><el-option v-for="item in regions" :key="item" :label="item" :value="item" /></el-select><el-select v-model="filters.type" clearable placeholder="全部类型" aria-label="设备类型"><el-option v-for="item in types" :key="item" :label="item" :value="item" /></el-select><el-input v-model="filters.keyword" clearable placeholder="搜索设备名称 / 编号" /></div>
+        <el-card class="commission-selection" :class="{ 'filters-collapsed': !filtersExpanded }"><template #header><div class="table-toolbar"><b>设备选择</b><div class="commission-selection-actions"><span class="muted">{{ visibleDevices.length }} 台</span><el-button link type="primary" size="small" :aria-expanded="filtersExpanded" aria-controls="commission-device-filters" @click="filtersExpanded = !filtersExpanded">{{ filtersExpanded ? '收起筛选' : '展开筛选' }}</el-button></div></div></template>
+          <div id="commission-device-filters" v-show="filtersExpanded" class="tree-filters"><el-select v-model="filters.region" clearable placeholder="全部区域" aria-label="所属区域"><el-option v-for="item in regions" :key="item" :label="item" :value="item" /></el-select><el-select v-model="filters.type" clearable placeholder="全部类型" aria-label="设备类型"><el-option v-for="item in types" :key="item" :label="item" :value="item" /></el-select><el-input v-model="filters.keyword" clearable placeholder="搜索设备名称 / 编号" /></div>
           <div class="commission-device-list"><details v-for="[region,items] in deviceGroups" :key="region" open class="device-tree-group"><summary>{{ region }}<span>{{ items.length }}</span></summary><button v-for="item in items" :key="item.device_id" type="button" class="device-tree-item" :class="{active: item.device_id===selectedDeviceId}" :disabled="selectionLocked" @click="selectedDeviceId=item.device_id"><span class="device-tree-copy"><b>{{ item.name }}</b><small>{{ item.device_no }}</small></span></button></details><el-empty v-if="!deviceGroups.length" description="暂无匹配设备" :image-size="56" /></div>
           <p v-if="maintenanceId && selectedDeviceId" class="tree-note">已定位运维待办设备；返回待办列表可选择其他待办。</p><p v-else-if="!maintenanceId && selectionLocked" class="tree-note">当前任务结束或取消后可切换设备。</p>
         </el-card>
@@ -403,12 +404,15 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
 </template>
 
 <style scoped>
-.commission-workspace { display: grid; grid-template-columns: 220px minmax(360px, 1fr) 320px; gap: 12px; align-items: stretch; }
+.commission-workspace { display: grid; grid-template-columns: 253px minmax(360px, 1fr) 320px; gap: 12px; align-items: stretch; }
 .commission-column { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-width: 0; }
 .commission-workspace > .el-card { min-width: 0; }
 .commission-steps :deep(.el-step__title) { font-size: 14px; }
 .commission-steps :deep(.el-step__description) { font-size: 12px; }
 .commission-device-list { max-height: 150px; overflow: auto; }
+.commission-selection-actions { display: flex; align-items: center; gap: 8px; }
+.commission-selection-actions .muted { font-size: 12px; white-space: nowrap; }
+.commission-selection.filters-collapsed .commission-device-list { max-height: 234px; }
 .commission-selection .tree-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .commission-selection .tree-filters > .el-input { grid-column: 1 / -1; }
 .commission-details { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px 12px; font-size: 12px; line-height: 1.6; margin: 0; }
@@ -433,6 +437,6 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
 .commission-log time { display: block; color: #8995a5; margin-bottom: 5px; }
 .commission-log p { line-height: 1.7; margin-bottom: 0; }
 .commission-log :deep(.el-empty) { padding: 14px 0; }
-@media (max-width: 1250px) { .commission-workspace { grid-template-columns: 230px minmax(0,1fr); } .commission-results { grid-column: 1 / -1; } }
+@media (max-width: 1250px) { .commission-workspace { grid-template-columns: 264.5px minmax(0,1fr); } .commission-results { grid-column: 1 / -1; } }
 @media (max-width: 720px) { .commission-form { grid-template-columns: minmax(0, 1fr); } .commission-workspace { grid-template-columns: minmax(0,1fr); } .commission-results { grid-column: auto; } .commission-steps { overflow: auto; } .commission-steps :deep(.el-steps) { min-width: 600px; } }
 </style>

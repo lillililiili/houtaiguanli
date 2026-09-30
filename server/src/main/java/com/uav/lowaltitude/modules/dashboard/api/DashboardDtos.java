@@ -58,7 +58,8 @@ public final class DashboardDtos {
 
     public record MapTargetDto(String targetId, String targetNo, String objectTypeCode, String subtype,
             BigDecimal longitude, BigDecimal latitude, String coordinateSystem, BigDecimal altitudeAmslM,
-            BigDecimal speedMps, BigDecimal headingDeg, BigDecimal fusionConfidence, String legalStatus, String grade) { }
+            BigDecimal speedMps, BigDecimal headingDeg, BigDecimal fusionConfidence, String legalStatus, String grade,
+            long observedAt, Long mapExpiresAt) { }
 
     public record MapDeviceDto(String deviceId, String deviceNo, String name, String deviceTypeName, String channel,
             String connectivity, boolean hasAlarm, BigDecimal longitude, BigDecimal latitude, String coordinateSystem) { }

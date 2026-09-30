@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.disposal.application;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.UUID;
 
@@ -107,7 +108,8 @@ public class DisposalJammingChain {
             return;
         }
         DisposalPolicy policy = policies.active();
-        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        // 与数据库时间戳的微秒精度对齐，避免四舍五入后的 valid_from 比立即复核的当前时刻更晚。
+        OffsetDateTime at = clock.now().truncatedTo(ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
         OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(DisposalRules.JAMMING));
         if (direct && parent.validUntil().isBefore(until)) until = parent.validUntil();
         if (!until.isAfter(at)) {

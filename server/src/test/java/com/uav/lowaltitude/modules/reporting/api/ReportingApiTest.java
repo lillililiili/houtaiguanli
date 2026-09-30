@@ -86,6 +86,53 @@ class ReportingApiTest {
 
     @Test
     @org.springframework.transaction.annotation.Transactional
+    void shanghaiDateBoundariesIncludeFirstInstantAndExcludeNextDayForTargetsAndCases() throws Exception {
+        String token = login("admin1", "changeme");
+        var start = java.time.OffsetDateTime.parse("2024-12-31T00:00:00+08:00");
+        var instants = java.util.List.of(start.minusNanos(1_000_000), start,
+                start.plusDays(1).minusNanos(1_000_000), start.plusDays(1),
+                start.plusDays(2).minusNanos(1_000_000), start.plusDays(2));
+        String org = UUID.randomUUID().toString();
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",
+                org, org, "隔离跨年统计边界");
+        for (var at : instants) {
+            String id = UUID.randomUUID().toString();
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','live',?,'seed-stage3-district',?,?)",
+                    id, id, at, start.plusDays(4), org, at, start.plusDays(4));
+        }
+        // This rollback-only fixture exercises the live-source filter. It is not a real filing or penalty result.
+        String caseId = "seed-stage14-case-investigating";
+        jdbc.update("update punishment_case set source_mode='live',owner_org_id=? where case_id=?", org, caseId);
+        jdbc.update("update handoff set created_at=? where handoff_id='seed-stage14-handoff-punish'", start.minusDays(10));
+        for (int index = 0; index < instants.size(); index++) {
+            jdbc.update("update punishment_case set filed_at=? where case_id=?", instants.get(index), caseId);
+            for (int day = 0; day < 2; day++) {
+                String date = start.plusDays(day).toLocalDate().toString();
+                int expectedCases = index == day * 2 + 1 || index == day * 2 + 2 ? 1 : 0;
+                JsonNode result = data(mvc.perform(get("/api/v1/stats/operations").param("from", date).param("to", date)
+                        .param("owner_org_id", org).header("Authorization", bearer(token)))
+                        .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+                assertThat(result.path("summary").path("total").asInt()).isEqualTo(2);
+                assertThat(result.path("summary").path("punish").asInt()).isEqualTo(expectedCases);
+                assertThat(sum(result.path("days"), "total")).isEqualTo(2);
+                assertThat(sum(result.path("days"), "punish")).isEqualTo(expectedCases);
+                assertThat(sum(result.path("by_penalty"), "value")).isZero();
+            }
+        }
+        JsonNode range = data(mvc.perform(get("/api/v1/stats/operations").param("from", "2024-12-31").param("to", "2025-01-01")
+                .param("owner_org_id", org).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(range.path("summary").path("total").asInt()).isEqualTo(4);
+        assertThat(range.path("summary").path("punish").asInt()).isZero();
+        assertThat(range.path("days").size()).isEqualTo(2);
+        String csv = mvc.perform(get("/api/v1/stats/operations/export.csv").param("from", "2024-12-31").param("to", "2025-01-01")
+                .param("owner_org_id", org).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(csv).contains("\"新增目标数\",\"4\"").contains("2024-12-31").contains("2025-01-01");
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
     void repeatedAssessmentsAndRisksCountEachTargetOnceAndKeepHeightDatumsSeparate() throws Exception {
         String token=login("admin1","changeme");
         var at=java.time.OffsetDateTime.parse("2001-01-01T00:00:00+08:00");

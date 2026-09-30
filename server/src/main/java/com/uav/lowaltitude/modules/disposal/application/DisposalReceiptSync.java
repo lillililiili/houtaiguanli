@@ -78,6 +78,7 @@ public class DisposalReceiptSync {
     }
 
     private void apply(AuthorizationRow row) {
+        if (row == null) return; // Standalone device commands have no disposal authorization to settle.
         Map<String, Object> command = devices.findCommand(row.executionCommandId());
         if (command == null) return;
         String commandStatus = String.valueOf(command.get("status"));

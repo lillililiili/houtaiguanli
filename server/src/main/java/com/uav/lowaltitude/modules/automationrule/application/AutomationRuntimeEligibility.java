@@ -33,6 +33,15 @@ public class AutomationRuntimeEligibility {
         if(!"dispose".equals(category))return true;
         try{return Arrays.asList(json.readValue(config.head(category,false).actions(),String[].class)).contains(code);}catch(Exception bad){return false;}
     }
+    /** A queued worker invocation must still refer to this event's current passing decision. */
+    public boolean allowsRun(String category,String eventId,String runId){
+        if(runId==null||runId.isBlank())return false;
+        var before=runs.state(category,eventId);
+        if(before==null||!runId.equals(before.runId())||!"PASS".equals(before.status()))return false;
+        if(!"PASS".equals(check(category,eventId).status()))return false;
+        var after=runs.state(category,eventId);
+        return after!=null&&runId.equals(after.runId())&&before.version()==after.version()&&"PASS".equals(after.status());
+    }
     /** Existing jobs retain their previous deployment behavior until this engine is explicitly enabled. */
     public boolean legacyActionAllowed(String eventId,String code){return !policy.enabled()||allows("dispose",eventId,code);}
     /** No enabled rule leaves the existing alarm flow unchanged. A passing rule is the only automatic go-ahead. */

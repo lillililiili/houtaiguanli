@@ -82,6 +82,38 @@ class DisposalExecutionGatewayTest {
         assertThat(dispatch(gateway, OPENED)).isEqualTo(new DisposalExecutionGateway.Accepted("cmd-1"));
     }
 
+    @Test void knownFaultIsRejectedBeforeTransactionalControlEnqueue() {
+        DisposalExecutionGateway gateway = gateway(true,true,true,DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0);
+        when(devices.find(anyString())).thenReturn(Map.of("enabled",true,"connectivity","ONLINE","health_code","BAD",
+                "protocol_code",DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0));
+        var expected = new DisposalExecutionGateway.Rejected("DEVICE_FAULT",
+                "DEVICE_NOT_OPERABLE","设备已上报故障，不能下发启动指令");
+        var actor = mock(com.uav.lowaltitude.platform.security.AuthUser.class);
+        assertThat(dispatch(gateway,OPENED)).isEqualTo(expected);
+        assertThat(gateway.dispatchAs(actor,"dev-1","key","auth",policy(OPENED),"COUNTERMEASURE",Map.of(),"隔离故障")).isEqualTo(expected);
+        assertThat(gateway.dispatch4ch("dev-1","key","auth","COUNTERMEASURE","隔离故障")).isEqualTo(expected);
+        assertThat(gateway.dispatch4chAs(actor,"dev-1","key","auth","COUNTERMEASURE","隔离故障")).isEqualTo(expected);
+        org.mockito.Mockito.verifyNoInteractions(control,countermeasure);
+    }
+
+    @Test void occupiedDeviceBlocksAllStartEntrypointsButAllowsAllOff() {
+        DisposalExecutionGateway gateway = gateway(true,true,true,DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0);
+        when(devices.hasActiveWork("dev-1")).thenReturn(true);
+        var actor = mock(com.uav.lowaltitude.platform.security.AuthUser.class);
+        for (var result : java.util.List.of(dispatch(gateway,OPENED),
+                gateway.dispatchAs(actor,"dev-1","key","auth",policy(OPENED),"COUNTERMEASURE",Map.of(),"占用测试"),
+                gateway.dispatch4ch("dev-1","key","auth","COUNTERMEASURE","占用测试"),
+                gateway.dispatch4chAs(actor,"dev-1","key","auth","COUNTERMEASURE","占用测试"))) {
+            assertThat(result).isInstanceOf(DisposalExecutionGateway.Rejected.class);
+            assertThat(((DisposalExecutionGateway.Rejected) result).eventKind()).isEqualTo("DEVICE_BUSY");
+        }
+        org.mockito.Mockito.verifyNoInteractions(control,countermeasure);
+        assertThat(gateway.stop4ch(actor,"dev-1","stop","auth","停止"))
+                .isInstanceOf(DisposalExecutionGateway.Accepted.class);
+        verify(countermeasure).enqueueUnchecked(actor,"dev-1","stop","auth",
+                Countermeasure4ChControlService.ACTION_MASK,null,0,"停止");
+    }
+
     @Test
     void unopenedCommandCodeIsProtocolNotOpenedAndNeverReachesA() {
         DisposalExecutionGateway gateway = gateway(true, true, true);

@@ -232,6 +232,47 @@ class EoManualTrackApiTest {
                 .andExpect(jsonPath("$.data").doesNotExist());
     }
 
+    @Test void busyDeviceAndMissingPositionCannotCreateCommands() throws Exception {
+        String located = insertTarget(true), noLocation = insertTarget(false);
+        long tasks = jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class);
+        long commands = jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class);
+        jdbc.update("UPDATE eo_device_binding SET work_state=1 WHERE ops_device_id=?", binding.opsDeviceId());
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-availability", located).header("Authorization", bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.available").value(false))
+                .andExpect(jsonPath("$.data.block_reason").value("当前范围无心跳有效的空闲可追踪设备"));
+        for (String body : new String[]{"{}", "{\"device_id\":\"" + binding.opsDeviceId() + "\"}"}) {
+            mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", located)
+                    .header("Authorization", bearer()).header("Idempotency-Key", key())
+                    .contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("EO_DEVICE_UNAVAILABLE"));
+        }
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", noLocation)
+                .header("Authorization", bearer()).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("TARGET_POSITION_UNAVAILABLE"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class)).isEqualTo(tasks);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class)).isEqualTo(commands);
+    }
+
+    @Test void deviceReadPermissionCannotBeginTrackingOrProbeAvailability() throws Exception {
+        String target = insertTarget(true), role = "ROLE-TRACK-READ-" + UUID.randomUUID().toString().substring(0, 8);
+        long tasks = jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class);
+        long commands = jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class);
+        jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES (?,'跟踪只读测试','',FALSE,TRUE,0,0,0,FALSE)", role);
+        jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES (?,'devices','READ',TRUE),(?,'target:read','READ',FALSE)", role, role);
+        jdbc.update("UPDATE app_user SET role_code=? WHERE account='admin1'", role);
+        try {
+            mvc.perform(get("/api/v1/targets/{id}/eo-tracking-availability", target).header("Authorization", bearer()))
+                    .andExpect(status().isForbidden());
+            mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", target)
+                    .header("Authorization", bearer()).header("Idempotency-Key", key())
+                    .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isForbidden());
+        } finally { jdbc.update("UPDATE app_user SET role_code='ROLE-ADMIN' WHERE account='admin1'"); }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class)).isEqualTo(tasks);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class)).isEqualTo(commands);
+    }
+
     @Test void operatorBeginThenGetThenSecondBeginConflictsThenEndReleases() throws Exception {
         String targetId = insertTarget(true);
         JsonNode created = mapper.readTree(mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", targetId)
@@ -342,7 +383,7 @@ class EoManualTrackApiTest {
         return edges.binding(opsId, false);
     }
 
-    private String insertTarget(boolean withLocation) {
+    protected String insertTarget(boolean withLocation) {
         String id = UUID.randomUUID().toString();
         jdbc.update("""
                 INSERT INTO target(target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at,version)
@@ -352,8 +393,8 @@ class EoManualTrackApiTest {
             jdbc.update("""
                     INSERT INTO target_latest_state
                         (target_id,location,altitude_amsl_m,speed_mps,heading_deg,observed_at,received_at,created_at,updated_at,version)
-                    VALUES (?,GEOMETRY 'SRID=4326;POINT (118.5 37.4)',40,12,90,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)
-                    """, id);
+                    VALUES (?,GEOMETRY 'SRID=4326;POINT (118.5 37.4)',40,12,90,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)
+                    """, id, new java.sql.Timestamp(clock.nowMillis()-1), new java.sql.Timestamp(clock.nowMillis()-1));
         }
         return id;
     }

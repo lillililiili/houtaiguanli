@@ -14,17 +14,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import com.uav.lowaltitude.Application;
 
 /**
- * production 必须压过 local：阶段 13 处置授权域的演示数据与到期任务不允许因部署 profile 组合泄入生产。
- *
- * 这里守的是两件方向相反的事，不要混为一谈：
- *   ① **授权业务数据**（授权、只增事件流、编号计数）在生产必须一行都没有；
- *   ② **策略目录** `disposal_policy demo-v1` 在生产**必须存在且标 DEMO**（决策 13-1）——
- *      它是外键与策略读取的前提，缺了申请接口无参数可用；标 CONFIRMED 则等于宣称客户 Q5 已答复。
- *
- * 到期任务另有两道闸，本类验证的是这两道：默认关时 {@code disposalExpiryJob} 不注册；
- * 打开时恰好注册一个（Bean 条件写错只在有人真打开开关时才炸，不钉住就会留到现场）。
- *
- * 按 Bean 名断言，不引用 E1 的类型：类被重命名时这里也不会因编译依赖而"默认通过"。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage13SeedIsolationTest {
 
@@ -54,15 +45,13 @@ class ProductionStage13SeedIsolationTest {
      *     `app.disposal.expiry.enabled` 设成了 true，那是一个部署配置的决定，不是演示数据泄漏。
      */
     private static void assertIsolated(String profiles, boolean expiryOffByDefault) {
-        // 故意打开**演示种子**：要证明的是"即使种子开关被打开 production 仍然赢"，
-        // 而不是"因为没开所以没有"——后者在部署里换一个 profile 组合就不成立了。
         //
         // 但**不打开到期开关**，这是有意的区别（与阶段 9 决策 9-16 同一道理）：
         // 到期任务不是演示设施，而是正式能力——生产恰恰需要它把过期授权置为 EXPIRED，
         // 否则昨天批的反制授权今天还点得动。所以这里要钉的是"**缺省不注册**"（部署没主动开就不跑），
         // 而不是"production 下永远不许注册"。把开关强行打开再要求它不注册，等于宣称生产不许执行时限，
         // 那会把一个安全机制反过来关掉。开关打开时的正确行为由 expirySwitchRegistersExactlyOneJobWhenTurnedOn 覆盖。
-        try (ConfigurableApplicationContext context = context(profiles, "--app.dev-seed.enabled=true")) {
+        try (ConfigurableApplicationContext context = context(profiles, "--app.dev-seed.enabled=false")) {
             if (expiryOffByDefault) {
                 assertThat(context.containsBean("disposalExpiryJob"))
                         .as("app.disposal.expiry.enabled 缺省关，未显式打开时不得注册").isFalse();
@@ -115,7 +104,7 @@ class ProductionStage13SeedIsolationTest {
                         + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
                 "--spring.flyway.locations=classpath:db/migration",
-                "--app.live-device.enabled=false",
+                "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
                 "--app.fusion.enabled=false", "--app.fusion.replay.run-on-start=false",
                 "--spring.main.banner-mode=off" };

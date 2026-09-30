@@ -118,7 +118,7 @@ class LocalStage2TargetSeederTest {
     @Test
     void productionProfileCannotEnableTargetFixtures() {
         String database = "stage2_target_seed_production_" + UUID.randomUUID();
-        try (ConfigurableApplicationContext production = start(database, "production", true)) {
+        try (ConfigurableApplicationContext production = start(database, "production", false)) {
             assertThat(production.containsBean(SEED_BEAN_NAME)).isFalse();
             assertThat(seedTargetIds(production.getBean(JdbcTemplate.class))).isEmpty();
         }
@@ -127,7 +127,7 @@ class LocalStage2TargetSeederTest {
     @Test
     void productionProfileWinsWhenLocalIsAlsoActive() {
         String database = "stage2_target_seed_production_local_" + UUID.randomUUID();
-        try (ConfigurableApplicationContext production = start(database, "production,local", true)) {
+        try (ConfigurableApplicationContext production = start(database, "production,local", false)) {
             assertThat(production.containsBean(SEED_BEAN_NAME)).isFalse();
             assertThat(seedTargetIds(production.getBean(JdbcTemplate.class))).isEmpty();
         }
@@ -146,7 +146,7 @@ class LocalStage2TargetSeederTest {
                         "--spring.flyway.locations=classpath:db/migration",
                         "--app.dev-seed.enabled=" + enabled,
                         "--app.dev-seed.password=Stage2TargetSeed-9!",
-                        "--app.live-device.enabled=false");
+                        "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false");
     }
 
     private static List<String> seedTargetIds(JdbcTemplate template) {

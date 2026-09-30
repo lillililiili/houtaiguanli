@@ -15,16 +15,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import com.uav.lowaltitude.Application;
 
 /**
- * production 必须压过 local：阶段 9 的空域演示种子与空间风险种子不允许因部署 profile 组合泄入生产。
- *
- * C04/C05 定时评估（SpaceRiskEvaluationJob）按决策 9-16 是**正式能力**，不用 profile 排除生产，
- * 因此这里不断言它是否注册。生产安全改由两道闸保证，本类验证的正是这两道闸：
- *   ① 迁移不把 DEMO 规则集置为 ACTIVE（激活只发生在 local/test 的种子里）——没有 ACTIVE 版本，Job 空转；
- *   ② 即使 Job 注册并被属性打开，也不会产生任何 C04 行。
- * 故意打开 app.dev-seed.enabled 与 app.rule-engine.c04.enabled，就是为了证明这两道闸单独成立。
- *
- * 迁移登记的结构性目录（权限码、异物细类字典、规则引擎来源行、SPACE-RISK-DEMO 规则集与 DEMO 参数）必须存在——
- * 它们是引擎与外键的前提，不是演示数据。按 Bean 名断言，不引用 E1/E2 的类型：类被重命名时这里也不会因编译依赖而“默认通过”。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage9SeedIsolationTest {
     @Test void productionNeverRegistersStage9SeedersAndLeavesDemoRuleSetInactive() { assertIsolated("production"); }
@@ -36,7 +28,7 @@ class ProductionStage9SeedIsolationTest {
                 // 命令行参数优先级高于 application-local.yml，production,local 组合也只会连到这个隔离 H2。
                 "--spring.datasource.url=jdbc:h2:mem:stage9_seed_" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
-                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=true", "--app.live-device.enabled=false",
+                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
                 "--app.fusion.enabled=false", "--app.fusion.replay.run-on-start=false",
                 "--app.rule-engine.c04.enabled=true",

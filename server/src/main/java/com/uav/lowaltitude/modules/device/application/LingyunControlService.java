@@ -39,15 +39,19 @@ public class LingyunControlService {
     private final ApplicationEventPublisher events;
     private final long timeoutMillis;
     private final com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard;
+    private final org.springframework.transaction.support.TransactionTemplate transactions;
 
     public LingyunControlService(DeviceAccessPolicy access, DeviceRepository devices, MqttRepository mqtt,
                                  LingyunControlRepository controls, ObjectProvider<MqttSessionSupervisor> sessions,
                                  AppClock clock, AuditService audit, ObjectMapper json, ApplicationEventPublisher events,
                                  org.springframework.core.env.Environment environment,
-                                 com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard) {
+                                 com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard,
+                                 org.springframework.transaction.PlatformTransactionManager transactionManager) {
         this.access = access; this.devices = devices; this.mqtt = mqtt; this.controls = controls;
         this.sessions = sessions; this.clock = clock; this.audit = audit; this.json = json; this.events = events;
         this.disposalGuard = disposalGuard;
+        this.transactions = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        this.transactions.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         this.timeoutMillis = Long.parseLong(environment.getProperty("app.lingyun-control.command-timeout-millis", "10000"));
     }
 
@@ -91,6 +95,8 @@ public class LingyunControlService {
         if (device == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
         if (!bool(device, "enabled") || !"ONLINE".equals(text(device, "connectivity")))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "仅已启用且在线的设备可下发控制");
+        if (operationType != 0 && "BAD".equals(text(device,"health_code")))
+            throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "设备已上报故障，不能下发启动指令");
         Map<String, Object> protocolParams;
         try {
             protocolParams = LingyunControlEnvelope.protocolParams(params);
@@ -127,37 +133,77 @@ public class LingyunControlService {
         return commandId;
     }
 
-    @Transactional
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public void dispatch(String commandId) {
+        PreparedDispatch prepared = transactions.execute(transaction -> prepareDispatch(commandId));
+        if (prepared == null) return;
+        transactions.executeWithoutResult(transaction -> {
+            // Keep the event -> authorization -> command lock order shared by emergency stop.
+            Map<String, Object> initial = controls.control(commandId);
+            if (initial == null || !"SENT".equals(text(initial,"status"))) return;
+            boolean allowed = ((Number)initial.get("operation_type")).intValue()==0
+                    || disposalGuard.mayStart(text(initial,"control_authorization_id"));
+            controls.lockCommand(commandId);
+            Map<String,Object> current = controls.control(commandId);
+            if (current == null || !"SENT".equals(text(current,"status"))) return;
+            if (!dispatchAllowed(current, allowed)) return;
+            try {
+                prepared.supervisor().publish(prepared.brokerId(), prepared.topic(), prepared.payload());
+            } catch (RuntimeException uncertain) {
+                // Publication may have reached the device. A failed acknowledgment must not cause another start.
+                controls.updateCommand(commandId,"SENT","TIMED_OUT",clock.nowMillis(),"PUBLISH_RESULT_UNKNOWN",
+                        "指令发送结果未知，等待设备回执或现场核查；不自动重复下发");
+            }
+        });
+    }
+
+    private PreparedDispatch prepareDispatch(String commandId) {
         Map<String, Object> command = controls.control(commandId);
-        if (command == null || terminal(text(command, "status"))) return;
+        if (command == null || !"QUEUED".equals(text(command, "status"))) return null;
         boolean allowed = ((Number)command.get("operation_type")).intValue()==0
                 || disposalGuard.mayStart(text(command,"control_authorization_id"));
         controls.lockCommand(commandId);
         command = controls.control(commandId);
-        if (command == null || terminal(text(command,"status"))) return;
+        if (command == null || !"QUEUED".equals(text(command,"status"))) return null;
+        if (!dispatchAllowed(command, allowed)) return null;
+        MqttSessionSupervisor supervisor = sessions.getIfAvailable();
+        if (supervisor == null) throw new IllegalStateException("MQTT_DISABLED");
+        long now = clock.nowMillis();
+        String topic = LingyunControlEnvelope.controlTopic(text(command, "provider_code"),
+                text(command, "device_type_abbr"), text(command, "external_device_id"));
+        byte[] payload = LingyunControlEnvelope.encode(text(command,"command_no"),text(command,"external_device_id"),now,
+                ((Number)command.get("operation_type")).intValue(),((Number)command.get("operation_cmd")).intValue(),
+                read(text(command,"params_json")));
+        // Commit the send attempt before touching the network. SENT is never blindly republished.
+        if (controls.updateCommand(commandId,"QUEUED","SENT",now,null,null)!=1) return null;
+        return new PreparedDispatch(supervisor,text(command,"broker_id"),topic,payload);
+    }
+
+    private boolean dispatchAllowed(Map<String,Object> command, boolean allowed) {
+        String commandId = text(command,"command_id");
         if (!allowed) {
             controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
                     "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查");
-            return;
+            return false;
         }
         long now = clock.nowMillis();
         String status = text(command, "status");
-        if ("QUEUED".equals(status)) {
-            controls.updateCommand(commandId, "QUEUED", "SENT", now, null, null);
-            status = "SENT";
+        if (((Number)command.get("deadline_at")).longValue()<=now) {
+            controls.updateCommand(commandId,status,"TIMED_OUT",now,"COMMAND_EXPIRED","发送窗口已到期，不重复下发；实际设备状态需回执核查");
+            return false;
         }
-        MqttSessionSupervisor supervisor = sessions.getIfAvailable();
-        if (supervisor == null) throw new IllegalStateException("MQTT_DISABLED");
-        String topic = LingyunControlEnvelope.controlTopic(text(command, "provider_code"),
-                text(command, "device_type_abbr"), text(command, "external_device_id"));
-        Map<String, Object> params = read(text(command, "params_json"));
-        int type = ((Number) command.get("operation_type")).intValue();
-        int cmd = ((Number) command.get("operation_cmd")).intValue();
-        supervisor.publish(text(command, "broker_id"), topic,
-                LingyunControlEnvelope.encode(text(command, "command_no"), text(command, "external_device_id"),
-                        now, type, cmd, params));
+        Map<String, Object> device = devices.find(text(command,"device_id"));
+        if (((Number)command.get("operation_type")).intValue()!=0
+                && (device==null || !bool(device,"enabled") || !"ONLINE".equals(text(device,"connectivity"))
+                    || "BAD".equals(text(device,"health_code")))) {
+            controls.updateCommand(commandId,status,"CANCELLED",now,"DEVICE_NOT_OPERABLE",
+                    "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查");
+            return false;
+        }
+        return true;
     }
+
+    private record PreparedDispatch(MqttSessionSupervisor supervisor,String brokerId,String topic,byte[] payload) { }
 
     @Transactional
     public void receive(String broker, String owner, String topic, byte[] bytes, int qos, boolean retained, long receivedAt) {
@@ -167,9 +213,20 @@ public class LingyunControlService {
         try { response = LingyunControlEnvelope.decodeResponse(topic, bytes); }
         catch (Rejected ignored) { return; }
         Map<String, Object> command = controls.byMsgNo(response.msgNo());
-        if (command == null || terminal(text(command, "status"))) return;
-        if (!broker.equals(text(command, "broker_id"))) return;
-        if (!response.externalId().equals(text(command, "external_device_id"))) return;
+        if (!matchesSource(command, broker, response)) return;
+        controls.lockCommand(text(command, "command_id"));
+        command = controls.control(text(command, "command_id"));
+        if (!matchesSource(command, broker, response)) return;
+        if (terminal(text(command, "status"))) {
+            if (List.of("TIMED_OUT", "CANCELLED").contains(text(command, "status")) && command.get("issued_at") != null
+                    && controls.addLateReceipt(text(command, "command_id"), text(command, "command_no"),
+                            response.code() == 0 ? "PROTOCOL_B_OK" : "PROTOCOL_B_FAILED", receivedAt, response.json())) {
+                controls.addEvent(text(command, "device_id"), "LINGYUN_CONTROL_LATE_RESPONSE", "WARN",
+                        "原指令已超时或取消，收到关联该指令的迟到" + (response.code() == 0 ? "成功" : "失败")
+                                + "回执；保留原办理结论，不自动重发或续链", receivedAt, bool(command, "simulated"));
+            }
+            return;
+        }
         String next = response.code() == 0 ? "SUCCEEDED" : "FAILED";
         String code = response.code() == 0 ? "PROTOCOL_B_OK" : "PROTOCOL_B_FAILED";
         String current = text(command, "status");
@@ -198,6 +255,14 @@ public class LingyunControlService {
                     bool(command, "simulated"));
             events.publishEvent(new DeviceCommandFinished(commandId));
         }
+    }
+
+    private static boolean matchesSource(Map<String, Object> command, String broker,
+                                         LingyunControlEnvelope.Response response) {
+        return command != null && broker.equals(text(command, "broker_id"))
+                && response.provider().equals(text(command, "provider_code"))
+                && response.type().equals(text(command, "device_type_abbr"))
+                && response.externalId().equals(text(command, "external_device_id"));
     }
 
     private String write(Object value) {

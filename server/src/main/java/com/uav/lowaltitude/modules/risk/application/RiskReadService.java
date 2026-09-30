@@ -41,15 +41,16 @@ public class RiskReadService {
     private final com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather;
     private final com.uav.lowaltitude.platform.audit.AuditService audit;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
+    private final RiskPresenceService presence;
 
     private final com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskReadService spaceRisk;
 
     public RiskReadService(AccessControlService access, RiskRepository repository,
             @org.springframework.context.annotation.Lazy com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskReadService spaceRisk,
             com.uav.lowaltitude.platform.audit.AuditService audit, com.uav.lowaltitude.platform.time.AppClock clock,
-            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather) {
+            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather, RiskPresenceService presence) {
         this.access = access; this.repository = repository; this.spaceRisk = spaceRisk;
-        this.audit = audit; this.clock = clock; this.weather = weather;
+        this.audit = audit; this.clock = clock; this.weather = weather; this.presence = presence;
     }
 
     @Transactional(readOnly = true)
@@ -181,6 +182,10 @@ public class RiskReadService {
     }
 
     public RiskDto dto(RiskRow row) {
+        return dto(row,presence.read(row,clock.nowMillis()));
+    }
+
+    public RiskDto dto(RiskRow row, RiskPresenceService.Presence current) {
         // 风险读取不隐含关联领域权限；即使有权限，也要再次校验关联对象仍属于风险的同一有效范围元组。
         String planId=visible(PermissionCode.FLIGHT_READ)&&repository.planReferenceVisible(row)?row.planId():null;
         String routeVersionId=visible(PermissionCode.ROUTE_READ)&&repository.routeReferenceVisible(row)?row.routeVersionId():null;
@@ -194,7 +199,7 @@ public class RiskReadService {
                 row.heightRelation(), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), row.version(),
                 RiskState.verifiable(row.state())&&visible(PermissionCode.RISK_VERIFY) ? List.of("VERIFY") : List.of(),
                 row.sourceName(), row.ownerOrgName(), row.districtName(), planId == null ? null : row.planNo(), targetId == null ? null : row.targetNo(),
-                spaceFact(row), row.displayNo());
+                spaceFact(row), row.displayNo(),current.status(),current.reason(),current.observedAt());
     }
 
     private boolean visible(PermissionCode permission){try{access.require(permission);return true;}catch(ApiException ignored){return false;}}

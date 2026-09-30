@@ -14,11 +14,6 @@ vi.mock('@/api/devices.js', () => ({ deviceApi: Object.fromEntries(
 ) }));
 let app, host;
 const devices = ['A', 'B'].map(id => ({ device_id: id, device_no: id, name: `设备${id}`, channel: 'MQTT' }));
-const info = id => ({ device_id: id, device_no: id, name: `设备${id}`, source_mode: 'live', generated_at: 100000,
-  sections: [{ code: 'work_parameters', title: `${id}工参`, source: '协议 A V8.6', fields: [
-    { key: 'temperature', label: '温度', value: 0, unit: '℃', status: 'RECEIVED', required: true },
-    { key: 'voltage', label: '电压', status: 'NOT_REPORTED', required: true }
-  ] }], sample_sections: [], notes: [] });
 async function settle() { for (let i = 0; i < 18; i++) { await Promise.resolve(); await nextTick(); } }
 async function mount() {
   host = document.createElement('div'); document.body.append(host);
@@ -37,63 +32,61 @@ beforeEach(() => {
   deviceApi.trends.mockResolvedValue({ from: 0, to: 3600000, bucket_ms: 60000, metrics: [], reports: [] });
   deviceApi.events.mockResolvedValue({ items: [], next_seq: 0 });
   deviceApi.protocolStatus.mockResolvedValue({});
-  deviceApi.information.mockImplementation(async id => info(id));
 });
 afterEach(() => { app?.unmount(); host?.remove(); vi.useRealTimers(); vi.resetAllMocks(); });
 
-describe('实时监测完整设备信息', () => {
-  it('首次仅获取一次完整信息，按同一轮询刷新并保留缺失字段及来源', async () => {
+describe('实时监测设备状态', () => {
+  it('移除当前运行信息及其请求，设备运行监控仍按轮询刷新', async () => {
     await mount();
-    expect(deviceApi.information).toHaveBeenCalledTimes(1);
-    expect(host.textContent).toContain('当前运行信息');
-    expect(host.textContent).toContain('协议 A V8.6');
-    expect(host.textContent).not.toContain('协议必填项');
-    expect(host.textContent).toContain('未上报');
+    expect(deviceApi.information).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('当前运行信息');
+    expect(host.textContent).not.toContain('刷新信息');
+    expect(host.textContent).toContain('设备运行监控');
+    expect(host.textContent).toContain('A温度');
+    expect(deviceApi.state).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(2000); await settle();
-    expect(deviceApi.information).toHaveBeenCalledTimes(2);
+    expect(deviceApi.state).toHaveBeenCalledTimes(2);
+    expect(deviceApi.information).not.toHaveBeenCalled();
   });
 
-  it('暂停轮询后允许手动刷新和查看另一设备，继续后恢复轮询', async () => {
+  it('暂停轮询后允许查看另一设备，继续后恢复轮询', async () => {
     await mount(); await click('暂停刷新');
     await vi.advanceTimersByTimeAsync(4000); await settle();
-    expect(deviceApi.information).toHaveBeenCalledTimes(1);
-    await click('刷新信息');
-    expect(deviceApi.information).toHaveBeenCalledTimes(2);
+    expect(deviceApi.state).toHaveBeenCalledTimes(1);
     await click('设备B');
-    expect(host.textContent).toContain('B工参');
-    expect(host.textContent).not.toContain('A工参');
+    expect(host.textContent).toContain('B温度');
+    expect(host.textContent).not.toContain('A温度');
     await click('继续刷新');
-    const calls = deviceApi.information.mock.calls.length;
+    const calls = deviceApi.state.mock.calls.length;
     await vi.advanceTimersByTimeAsync(2000); await settle();
-    expect(deviceApi.information.mock.calls.length).toBeGreaterThan(calls);
+    expect(deviceApi.state.mock.calls.length).toBeGreaterThan(calls);
+    expect(deviceApi.information).not.toHaveBeenCalled();
   });
 
-  it('信息获取失败清除旧读数，其他实时状态仍能显示，重试可恢复', async () => {
-    await mount(); deviceApi.information.mockRejectedValueOnce(new Error('完整信息暂不可用'));
-    await click('刷新信息');
-    expect(host.textContent).toContain('完整信息暂不可用');
+  it('状态获取失败清除旧读数，重试可恢复', async () => {
+    await mount(); deviceApi.state.mockRejectedValueOnce(new Error('状态暂不可用'));
+    await vi.advanceTimersByTimeAsync(2000); await settle();
+    expect(host.textContent).toContain('状态暂不可用');
+    expect(host.textContent).not.toContain('A温度');
+    await click('重新加载');
     expect(host.textContent).toContain('A温度');
-    expect(host.textContent).not.toContain('A工参');
-    await click('刷新信息');
-    expect(host.textContent).toContain('A工参');
-    expect(host.textContent).not.toContain('完整信息暂不可用');
+    expect(host.textContent).not.toContain('状态暂不可用');
   });
 
   it('切换 A→B→A 时丢弃旧请求，不出现上一轮的设备状态', async () => {
-    const old = deferred(); deviceApi.information.mockReturnValueOnce(old.promise);
+    const old = deferred(); deviceApi.state.mockReturnValueOnce(old.promise);
     await mount(); await click('设备B'); await click('设备A');
-    const latest = deferred(); deviceApi.information.mockReturnValueOnce(latest.promise);
-    old.resolve({ ...info('A'), sections: [{ ...info('A').sections[0], title: '旧请求工参' }] }); await settle();
-    expect(host.textContent).not.toContain('旧请求工参');
-    latest.resolve(info('A')); await settle();
-    expect(host.textContent).toContain('A工参');
+    const latest = deferred(); deviceApi.state.mockReturnValueOnce(latest.promise);
+    old.resolve({ metrics: [{ code: 'temperature_c', label: '旧请求温度', value: 99 }] }); await settle();
+    expect(host.textContent).not.toContain('旧请求温度');
+    latest.resolve({ metrics: [{ code: 'temperature_c', label: 'A温度', value: 0 }] }); await settle();
+    expect(host.textContent).toContain('A温度');
   });
 
-  it('筛选无设备时清空完整信息、状态和事件，不残留上一设备', async () => {
+  it('筛选无设备时清空状态和事件，不残留上一设备', async () => {
     await mount(); deviceApi.tree.mockResolvedValue({ items: [] });
     await click('筛选');
     expect(host.textContent).toContain('没有匹配的设备');
-    expect(host.textContent).not.toContain('A工参');
     expect(host.textContent).not.toContain('A温度');
   });
 });
@@ -125,9 +118,8 @@ describe('设备事件独立增量读取', () => {
     expect(deviceApi.events).toHaveBeenLastCalledWith({ device_id: 'A', after_seq: 0, limit: 100 });
   });
 
-  it('状态挂起且完整信息、趋势失败时，日志仍然立即显示并持续增量刷新', async () => {
+  it('状态挂起且趋势失败时，日志仍然立即显示并持续增量刷新', async () => {
     const pending = deferred(); deviceApi.state.mockReturnValueOnce(pending.promise);
-    deviceApi.information.mockRejectedValueOnce(new Error('信息不可用'));
     deviceApi.trends.mockRejectedValueOnce(new Error('曲线不可用'));
     deviceApi.events.mockResolvedValueOnce({ items: [event(1, '独立日志')], next_seq: 1 });
     await mount();

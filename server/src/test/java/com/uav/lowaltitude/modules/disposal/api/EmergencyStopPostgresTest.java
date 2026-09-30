@@ -28,6 +28,63 @@ class EmergencyStopPostgresTest extends EmergencyStopApiTest {
     private static boolean created;
 
     @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void approvalCancellationAndExecutionRaceKeepOneLegalHistory(boolean alreadyApproved) throws Exception {
+        String device = fourChannel();
+        String executorActor = user("disposal:read", "disposal:execute", "devices");
+        String authorization = data(request("/api/v1/disposal-authorizations", requester, key(), java.util.Map.of(
+                "subject_kind", "UAV_EVENT", "subject_id", eventId, "action_type", "COUNTERMEASURE",
+                "channel", "COUNTERMEASURE_4CH", "device_id", device, "reason", "批准撤销执行三方竞争"))
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        String base = "/api/v1/disposal-authorizations/" + authorization;
+        if (alreadyApproved) request(base + "/approve", operator, key(), java.util.Map.of("expected_version", 0))
+                .andExpect(status().isOk());
+        var actions = java.util.List.of("approve", "cancel", "execute");
+        var actors = java.util.List.of(operator, requester, executorActor);
+        var versions = java.util.List.of(0, alreadyApproved ? 1 : 0, 1);
+        var keys = java.util.List.of(key(), key(), key());
+        var barrier = new java.util.concurrent.CyclicBarrier(3);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(3);
+        var results = new java.util.ArrayList<Integer>();
+        try {
+            var futures = new java.util.ArrayList<java.util.concurrent.Future<Integer>>();
+            for (int i = 0; i < 3; i++) {
+                final int operation = i;
+                futures.add(pool.submit(() -> {
+                    barrier.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    return request(base + "/" + actions.get(operation), actors.get(operation), keys.get(operation),
+                            java.util.Map.of("expected_version", versions.get(operation))).andReturn().getResponse().getStatus();
+                }));
+            }
+            for (var future : futures) results.add(future.get(30, java.util.concurrent.TimeUnit.SECONDS));
+        } finally { pool.shutdownNow(); }
+        assertThat(results).allMatch(code -> code == 200 || code == 409);
+        if (alreadyApproved) assertThat(results).containsExactlyInAnyOrder(200, 409, 409);
+        else assertThat(results.stream().filter(code -> code == 200).count()).isBetween(1L, 2L);
+        var history = jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=? order by occurred_at,event_id", String.class, authorization);
+        int approvals = (alreadyApproved ? 1 : 0) + (results.get(0) == 200 ? 1 : 0);
+        int cancellations = results.get(1) == 200 ? 1 : 0;
+        int executions = results.get(2) == 200 ? 1 : 0;
+        assertThat(java.util.Collections.frequency(history, "APPROVE")).isEqualTo(approvals);
+        assertThat(java.util.Collections.frequency(history, "CANCEL")).isEqualTo(cancellations);
+        assertThat(java.util.Collections.frequency(history, "EXECUTE")).isEqualTo(executions);
+        if (executions == 1) {
+            assertThat(history).containsExactly("REQUEST", "APPROVE", "EXECUTE");
+            assertThat(statusOf(authorization)).isEqualTo("EXECUTING");
+        } else if (cancellations == 1) {
+            assertThat(history).doesNotContain("EXECUTE");
+            assertThat(statusOf(authorization)).isEqualTo("CANCELLED");
+        } else assertThat(statusOf(authorization)).isEqualTo("APPROVED");
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isEqualTo(executions);
+        for (int i = 0; i < 3; i++) {
+            request(base + "/" + actions.get(i), actors.get(i), keys.get(i), java.util.Map.of("expected_version", versions.get(i)))
+                    .andExpect(status().isConflict());
+        }
+        assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=? order by occurred_at,event_id", String.class, authorization)).isEqualTo(history);
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isEqualTo(executions);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {"COMPLETED", "FAILED"})
     void stopRequestedDuringDeviceReplySurvivesCompletionWhileWaitingForEventLock(String result) throws Exception {
         String historicalDevice = fourChannel(), device = fourChannel();
@@ -74,6 +131,39 @@ class EmergencyStopPostgresTest extends EmergencyStopApiTest {
             release.countDown();
             executor.shutdownNow();
             executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test void twoActorsAndEventsCompetingForOneDeviceCreateOnlyOneStartCommand() throws Exception {
+        String device = fourChannel(), secondEvent = event();
+        String firstActor = user("disposal:direct", "disposal:read", "devices", "target:read");
+        String secondActor = user("disposal:direct", "disposal:read", "devices", "target:read");
+        var barrier = new java.util.concurrent.CyclicBarrier(2);
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> {
+                barrier.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                return data(request("/api/v1/disposal-authorizations/direct-execute", firstActor, key(),
+                        java.util.Map.of("subject_kind","UAV_EVENT","subject_id",eventId,"action_type","COUNTERMEASURE",
+                                "channel","COUNTERMEASURE_4CH","device_id",device,"reason","并发占用甲"))
+                        .andExpect(status().isCreated()));
+            });
+            var second = executor.submit(() -> {
+                barrier.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                return data(request("/api/v1/disposal-authorizations/direct-execute", secondActor, key(),
+                        java.util.Map.of("subject_kind","UAV_EVENT","subject_id",secondEvent,"action_type","COUNTERMEASURE",
+                                "channel","COUNTERMEASURE_4CH","device_id",device,"reason","并发占用乙"))
+                        .andExpect(status().isCreated()));
+            });
+            var results = java.util.List.of(first.get(30,java.util.concurrent.TimeUnit.SECONDS),
+                    second.get(30,java.util.concurrent.TimeUnit.SECONDS));
+            assertThat(results.stream().map(row -> row.path("status").asText())).containsExactlyInAnyOrder("EXECUTING","APPROVED");
+            assertThat(results.stream().filter(row -> "APPROVED".equals(row.path("status").asText()))
+                    .map(row -> row.path("execution_block_reason").asText())).containsExactly("DEVICE_BUSY");
+            assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,device)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("select count(*) from command_receipt r join device_command c on r.command_id=c.command_id where c.device_id=?",Integer.class,device)).isZero();
+        } finally {
+            executor.shutdownNow();
         }
     }
 

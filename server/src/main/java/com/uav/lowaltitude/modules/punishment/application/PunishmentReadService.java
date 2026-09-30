@@ -21,6 +21,8 @@ import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.CaseDto;
 import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.CaseEventDto;
 import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.DecisionDocumentDto;
 import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.DiscretionDto;
+import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.EffectiveDecisionDto;
+import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.DecisionHistoryDto;
 import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.FactorDto;
 import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.LeadDto;
 import com.uav.lowaltitude.modules.punishment.api.PunishmentDtos.PageDto;
@@ -133,7 +135,18 @@ public class PunishmentReadService {
                 row.version(), current == null ? null : discretionDto(current), issued,
                 openLeads.stream().map(PunishmentReadService::leadDto).toList(),
                 List.copyOf(PunishmentRules.allowedActions(row.status(), permissions,
-                        com.uav.lowaltitude.platform.security.AuthContext.require().userId(), facts)));
+                        com.uav.lowaltitude.platform.security.AuthContext.require().userId(), facts)), effectiveDecision(row));
+    }
+
+    private EffectiveDecisionDto effectiveDecision(CaseRow row) {
+        var result = repository.effectiveDecision(row.caseId());
+        var history = repository.decisionHistory(row.caseId()).stream().map(document -> new DecisionHistoryDto(
+                document.documentId(),document.documentNo(),document.status(),
+                !"live".equals(row.sourceMode()) || document.templateVersion().startsWith("demo") || "DEMO".equals(document.ruleStatus()),
+                millis(document.issuedAt()),millis(document.revokedAt()),document.revokeReason())).toList();
+        return result == null ? new EffectiveDecisionDto("NONE",null,null,null,null,null,history)
+                : new EffectiveDecisionDto("EFFECTIVE",result.documentId(),result.documentNo(),result.penaltyType(),
+                        result.fineAmount(),millis(result.issuedAt()),history);
     }
 
     private DiscretionDto discretionDto(DiscretionRow row) {

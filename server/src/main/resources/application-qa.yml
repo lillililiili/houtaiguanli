@@ -5,6 +5,8 @@ spring:
       on-profile: "local & qa & !production"
 
 app:
+  notifications:
+    transport: simulator
   dev-seed:
     enabled: false
   fusion:
@@ -21,11 +23,14 @@ app:
     enabled: false
   advisory:
     auto-sms:
-      enabled: false
+      enabled: true
     auto-voice:
-      enabled: false
+      enabled: true
+  qa:
+    device-setup:
+      enabled: true
   handoff:
-    channel: none
+    channel: simulator
   device:
     mock-adapter:
       enabled: false
@@ -33,4 +38,5 @@ app:
     auto-track-enabled: false
   flight:
     status-advance:
-      enabled: false
+      # 计划按自身时段推进，避免模拟输入的执行状态跨日冻结；固定状态夹具可显式关闭。
+      enabled: ${APP_FLIGHT_STATUS_ADVANCE_ENABLED:true}

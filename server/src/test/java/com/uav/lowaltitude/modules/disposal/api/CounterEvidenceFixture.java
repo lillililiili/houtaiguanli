@@ -10,8 +10,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 /** 隔离测试前置依据；不创建人工观察、授权或执行结果。 */
 public final class CounterEvidenceFixture {
     public static void seed(JdbcTemplate jdbc, String eventId) {
+        seed(jdbc, eventId, Instant.now());
+    }
+
+    /** Explicit observation time for isolated clock-advance tests; still appends a new evaluation. */
+    public static void seed(JdbcTemplate jdbc, String eventId, Instant observedAt) {
         var event = jdbc.queryForMap("select e.alarm_id,e.owner_org_id,e.district_id,a.target_id from uav_event e join alarm a on a.alarm_id=e.alarm_id where e.event_id=?", eventId);
-        var at = Timestamp.from(Instant.now());
+        var at = Timestamp.from(observedAt);
         String target = (String) event.get("target_id");
         if (target == null) {
             target = UUID.randomUUID().toString();

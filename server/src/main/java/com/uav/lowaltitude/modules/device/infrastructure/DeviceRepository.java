@@ -631,9 +631,22 @@ public class DeviceRepository {
         return named.query(sql.toString(), params, (rs, row) -> rs.getString(1));
     }
 
+    /** Background dispatch must use the original actor's current scope, without a thread-bound session. */
+    public Map<String, Object> findForActor(String deviceId, com.uav.lowaltitude.platform.security.AuthUser actor) {
+        if (actor == null) return null;
+        Map<String,Object> params = new HashMap<>();
+        params.put("device_id", deviceId);
+        var rows = named.queryForList(DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL"
+                + deviceScope(params, actor), params);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     // All device protocols share the same explicit organization/district authorization tuple.
     private String deviceScope(Map<String,Object> params) {
-        var actor=com.uav.lowaltitude.platform.security.AuthContext.get();
+        return deviceScope(params, com.uav.lowaltitude.platform.security.AuthContext.get());
+    }
+
+    private String deviceScope(Map<String,Object> params, com.uav.lowaltitude.platform.security.AuthUser actor) {
         if(actor==null || "ALL".equals(actor.scopeMode())) return "";
         if(!"ASSIGNED".equals(actor.scopeMode())) return " AND 1=0";
         params.put("device_scope_actor",actor.userId());

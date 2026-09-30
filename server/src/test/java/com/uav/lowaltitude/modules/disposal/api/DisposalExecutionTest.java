@@ -41,6 +41,7 @@ class DisposalExecutionTest {
 
     private String requester, approver;
     private String eventId;
+    private String deviceId, sourceId;
 
     @BeforeEach
     void fixture() {
@@ -50,6 +51,17 @@ class DisposalExecutionTest {
         approver = user("APR", List.of("disposal:read", "disposal:approve", "disposal:execute",
                 "disposal:stop", "devices", "monitoring"))[0];
         eventId = event("CONFIRMED");
+        deviceId = UUID.randomUUID().toString();
+        sourceId = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis();
+        jdbc.update("insert into ops_integration_source (source_id,source_code,name,source_mode,enabled,simulated,created_at,updated_at)"
+                + " values (?,?,?,'live',true,false,?,?)", sourceId, "EXEC-" + sourceId, "执行测试来源", now, now);
+        jdbc.update("insert into ops_device (device_id,source_id,external_device_id,device_no,name,device_type_name,channel,"
+                + "enabled,source_mode,simulated,version,created_at,updated_at)"
+                + " values (?,?,?,?,?,?,'mqtt',true,'live',false,0,?,?)", deviceId, sourceId, deviceId,
+                "EXEC-" + deviceId, "执行测试设备", "雷达", now, now);
+        jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at)"
+                + " values (?,?,?,?,?)", deviceId, ORG, DISTRICT, new Timestamp(now), new Timestamp(now));
     }
 
     @AfterEach
@@ -63,6 +75,9 @@ class DisposalExecutionTest {
         jdbc.update("delete from rule_evaluation where alarm_id like 'exec-alarm-%'");
         jdbc.update("delete from uav_event where event_id like 'exec-event-%'");
         jdbc.update("delete from alarm where alarm_id like 'exec-alarm-%'");
+        jdbc.update("delete from device_business_scope where ops_device_id=?", deviceId);
+        jdbc.update("delete from ops_device where device_id=?", deviceId);
+        jdbc.update("delete from ops_integration_source where source_id=?", sourceId);
     }
 
     @Test
@@ -149,7 +164,6 @@ class DisposalExecutionTest {
         execute(id, 1).andExpect(status().isOk());
         // 人工登记结果只对人工通道开放：协议 B 的结果必须来自设备回执，不能由人代设备宣布成功。
         String deviceId = anyDevice();
-        if (deviceId == null) return;
         String other = approved("LINGYUN_B", deviceId);
         mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", other)
                         .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
@@ -162,7 +176,6 @@ class DisposalExecutionTest {
     @Test
     void deviceChannelCannotExecuteThisPhaseButLeavesEvidence() throws Exception {
         String deviceId = anyDevice();
-        if (deviceId == null) return;   // 环境里没有设备夹具时跳过，不做假断言。
         String id = approved("LINGYUN_B", deviceId);
         JsonNode error = body(execute(id, 1).andExpect(status().isConflict())).path("error");
         // 测试库里没有任何 mqtt_device_binding，因此走的必然是"未登记"这一支。断成精确值而不是二选一：
@@ -182,8 +195,8 @@ class DisposalExecutionTest {
         String deviceId = anyDevice();
         assertThat(deviceId).as("测试库需要至少一台设备，否则本用例是空跑").isNotNull();
         String id = approved("COUNTERMEASURE_4CH", deviceId);
-        body(execute(id, 1).andExpect(status().isConflict()))
-                .path("error").path("code").asText().equals("DEVICE_CONTROL_UNAVAILABLE");
+        assertThat(body(execute(id, 1).andExpect(status().isConflict()))
+                .path("error").path("code").asText()).isEqualTo("DEVICE_CONTROL_UNAVAILABLE");
         assertThat(kinds(id)).contains("DEVICE_CONTROL_UNAVAILABLE");
         assertThat(statusOf(id)).isEqualTo("APPROVED");
         // 测试库设备不是四通道协议：补救方是换设备，不能和"等厂家开通指令码"混为一谈。
@@ -272,8 +285,7 @@ class DisposalExecutionTest {
     }
 
     private String anyDevice() {
-        return jdbc.query("select device_id from ops_device where enabled=true order by device_id asc limit 1",
-                rs -> rs.next() ? rs.getString(1) : null);
+        return deviceId;
     }
 
     private List<String> kinds(String id) {

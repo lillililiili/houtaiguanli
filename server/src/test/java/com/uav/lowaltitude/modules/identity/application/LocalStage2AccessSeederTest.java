@@ -138,7 +138,7 @@ class LocalStage2AccessSeederTest {
                         "--spring.datasource.password=",
                         "--spring.datasource.driver-class-name=org.h2.Driver",
                         "--spring.flyway.locations=classpath:db/migration",
-                        "--app.dev-seed.enabled=true",
+                        "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false",
                         "--app.dev-seed.password=Stage2ProductionGuard-9!")) {
             assertThat(context.getBeansOfType(LocalStage2AccessSeeder.class)).isEmpty();
             assertThat(actionGrants(context.getBean(JdbcTemplate.class))).isEmpty();
@@ -158,7 +158,7 @@ class LocalStage2AccessSeederTest {
                         "--spring.datasource.password=",
                         "--spring.datasource.driver-class-name=org.h2.Driver",
                         "--spring.flyway.locations=classpath:db/migration",
-                        "--app.dev-seed.enabled=true",
+                        "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false",
                         "--app.dev-seed.password=Stage4ProductionGuard-9!")) {
             assertThat(context.getBeansOfType(LocalStage2AccessSeeder.class)).isEmpty();
             assertThat(actionGrants(context.getBean(JdbcTemplate.class))).isEmpty();

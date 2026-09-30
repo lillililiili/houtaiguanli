@@ -7,6 +7,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
+import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.time.AppClock;
 
@@ -18,8 +19,10 @@ public class AlarmRuleVerification {
     private final UavEventRepository events;
     private final AuditService audit;
     private final AppClock clock;
-    public AlarmRuleVerification(JdbcTemplate jdbc, UavEventRepository events, AuditService audit, AppClock clock) {
-        this.jdbc = jdbc; this.events = events; this.audit = audit; this.clock = clock;
+    private final AutomationRuntimeEligibility eligibility;
+    public AlarmRuleVerification(JdbcTemplate jdbc, UavEventRepository events, AuditService audit, AppClock clock,
+            AutomationRuntimeEligibility eligibility) {
+        this.jdbc = jdbc; this.events = events; this.audit = audit; this.clock = clock; this.eligibility = eligibility;
     }
     @Transactional
     public void confirmIfPassed(String eventId, String runId) {
@@ -27,6 +30,7 @@ public class AlarmRuleVerification {
         var rows = jdbc.query("SELECT state_code, version FROM uav_event WHERE event_id=?",
                 (rs, n) -> new State(rs.getString("state_code"), rs.getLong("version")), eventId);
         if (rows.isEmpty() || !"PENDING_VERIFICATION".equals(rows.get(0).state)) return;
+        if (!eligibility.allowsRun("verify", eventId, runId)) return;
         long version = rows.get(0).version;
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         if (events.update(eventId, version, "CONFIRMED", at) != 1) return;

@@ -89,8 +89,8 @@ class LocalStage5HandoffSeederTest {
 
     @Test
     void actualIsolatedContextsDoNotSeedWhenProductionOrPropertyGateBlocks() {
-        assertIsolatedSeedAbsent(true, "production");
-        assertIsolatedSeedAbsent(true, "production", "local");
+        assertIsolatedSeedAbsent(false, "production");
+        assertIsolatedSeedAbsent(false, "production", "local");
         assertIsolatedSeedAbsent(false, "test");
     }
 
@@ -100,7 +100,7 @@ class LocalStage5HandoffSeederTest {
                 "--spring.datasource.url=jdbc:h2:mem:" + database + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.driver-class-name=org.h2.Driver", "--spring.datasource.username=sa", "--spring.datasource.password=",
                 "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=" + enabled, "--app.dev-seed.password=Isolation-9!",
-                "--app.live-device.enabled=false", "--spring.main.banner-mode=off"};
+                "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false", "--spring.main.banner-mode=off"};
         try (ConfigurableApplicationContext context = new SpringApplicationBuilder(Application.class)
                 .web(WebApplicationType.NONE).profiles(profiles).run(args)) {
             assertThat(context.getBeansOfType(LocalStage5HandoffSeeder.class)).isEmpty();

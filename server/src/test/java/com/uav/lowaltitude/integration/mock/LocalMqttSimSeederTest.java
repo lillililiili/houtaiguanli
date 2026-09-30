@@ -29,7 +29,7 @@ class LocalMqttSimSeederTest {
     void testProfileDoesNotRegisterSeederAndAnnotationExcludesTest() {
         assertThat(context.containsBean("localMqttSimSeeder")).isFalse();
         assertThat(LocalMqttSimSeeder.class.getAnnotation(Profile.class).value())
-                .containsExactly("!production & local");
+                .containsExactly("local & qa & !prod & !production");
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM ops_device WHERE device_no IN ('S85R1','S85T1','S85A1','S85G1','S85D1','S85I1','S85E1D1','S85Y1','S85F1','S85B1')",
                 Integer.class)).isZero();

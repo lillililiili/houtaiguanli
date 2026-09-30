@@ -17,19 +17,8 @@ import com.uav.lowaltitude.modules.fusion.FusionContracts.SourceObservationPort;
 import com.uav.lowaltitude.testsupport.SourceTypeCatalogFixture;
 
 /**
- * production 必须压过 local：阶段 8.5 的直连切片（凌云 v2 回放数据集、实测雷达提升端口）不允许因部署 profile 组合泄入生产。
- *
- * 这里守的是两件不同的事，不要混为一谈：
- *   ① **演示数据**（v2 数据集、回放种子写的 inbox 与观测）在生产必须一行都没有；
- *   ② **结构性目录**（`source_type_catalog` 八行、`fusion_config demo-v1`）在生产**必须存在**——
- *      它们是外键与融合参数的前提，缺了引擎读不到精度缺省只能退回裸阈值。所以目录断言的是"在且标 DEMO"，不是"为空"。
- *
- * 实测雷达提升另有两道闸，本类验证第一道：`app.fusion.live-promotion.enabled` 默认关时
- * {@link com.uav.lowaltitude.modules.fusion.application.LiveRadarSourceObservationPort} 不注册，
- * 由 `NoopSourceObservationPort` 兜底丢弃。第二道（`FusionInboxRepository.claim` 的前缀白名单不含 `live-radar:`）
- * 归 E1，落地后在 `Stage85PostgresTest` 上钉。
- *
- * 按 Bean 名断言，不引用 E1/E2 的类型：类被重命名时这里也不会因编译依赖而"默认通过"。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage85SeedIsolationTest {
     @Test void productionNeverRegistersStage85ReplaySeedersOrLivePromotion() { assertIsolated("production"); }
@@ -46,7 +35,7 @@ class ProductionStage85SeedIsolationTest {
                 "--spring.profiles.active=local",
                 "--spring.datasource.url=jdbc:h2:mem:stage85_live_" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
-                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.live-device.enabled=false",
+                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
                 "--app.fusion.enabled=false", "--app.fusion.replay.run-on-start=false",
                 "--app.fusion.live-promotion.enabled=true",
@@ -63,10 +52,9 @@ class ProductionStage85SeedIsolationTest {
                 "--spring.datasource.url=jdbc:h2:mem:stage85_seed_" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
                 "--spring.flyway.locations=classpath:db/migration",
-                // 故意打开：要证明的是"即使演示种子被打开，production 仍然赢"，而不是"因为没开所以没数据"。
-                "--app.dev-seed.enabled=true", "--app.live-device.enabled=false",
+                "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
-                "--app.fusion.enabled=true", "--app.fusion.replay.run-on-start=true",
+                "--app.fusion.enabled=true", "--app.fusion.replay.run-on-start=false",
                 "--spring.main.banner-mode=off")) {
 
             // 闸一：实测提升端口默认关，不注册；关闭态由 Noop 兜底（丢弃并记日志，不写任何表）。

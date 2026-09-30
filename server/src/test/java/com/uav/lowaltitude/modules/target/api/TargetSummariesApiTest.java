@@ -82,7 +82,7 @@ class TargetSummariesApiTest {
         assertSummaries(detail);
         // 列表与详情同形（决策 15-4）：两条路各写一份就迟早长出差异，而那种差异只有对着页面看才发现。
         JsonNode listed = null;
-        for (JsonNode item : list().path("items")) {
+        for (JsonNode item : allItems("/api/v1/targets?size=100")) {
             if (targetId.equals(item.path("target_id").asText())) listed = item;
         }
         assertThat(listed).isNotNull();
@@ -169,8 +169,7 @@ class TargetSummariesApiTest {
 
     private List<String> idsOf(String url) throws Exception {
         List<String> ids = new ArrayList<>();
-        data(mvc.perform(get(url).header("Authorization", bearer(reader))).andExpect(status().isOk()))
-                .path("items").forEach(item -> ids.add(item.path("target_id").asText()));
+        allItems(url).forEach(item -> ids.add(item.path("target_id").asText()));
         return ids;
     }
 
@@ -201,9 +200,15 @@ class TargetSummariesApiTest {
                 .andExpect(status().isOk()));
     }
 
-    private JsonNode list() throws Exception {
-        return data(mvc.perform(get("/api/v1/targets?size=100").header("Authorization", bearer(reader)))
-                .andExpect(status().isOk()));
+    private List<JsonNode> allItems(String url) throws Exception {
+        List<JsonNode> items = new ArrayList<>();
+        for (int page = 1; ; page++) {
+            JsonNode result = data(mvc.perform(get(url + "&page=" + page).header("Authorization", bearer(reader)))
+                    .andExpect(status().isOk()));
+            result.path("items").forEach(items::add);
+            if (items.size() >= result.path("total").asLong()) return items;
+            assertThat(result.path("items").isEmpty()).as("未到总数时分页不能提前为空").isFalse();
+        }
     }
 
     private JsonNode data(org.springframework.test.web.servlet.ResultActions actions) throws Exception {

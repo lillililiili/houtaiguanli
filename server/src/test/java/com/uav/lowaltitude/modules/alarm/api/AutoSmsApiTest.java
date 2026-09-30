@@ -87,6 +87,24 @@ class AutoSmsApiTest {
         }
     }
     @AfterEach void clearSpy(){reset(directory);reset(sms);reset(audit);reset(smsPolicy);}
+    @Test void lateDeliveryAfterLeaseReconciliationCannotOverwriteUnknownOrDuplicateContact() throws Exception {
+        long version = jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId);
+        int records = jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?", Integer.class, eventId);
+        doAnswer(call -> {
+            // A second worker cannot send while the first is in the channel call.
+            automatic.process(eventId);
+            jdbc.update("update uav_auto_sms_task set lease_until=0 where event_id=?", eventId);
+            automatic.process(eventId);
+            return call.callRealMethod(); // The original channel response arrives after UNKNOWN was persisted.
+        }).when(sms).simulateAutomatic(anyString(), anyString(), anyString(), eq("auto-advisory:" + eventId));
+        automatic.process(eventId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId)).isEqualTo(version);
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?", Integer.class, eventId)).isEqualTo(records);
+        verify(sms, times(1)).simulateAutomatic(anyString(), anyString(), anyString(), eq("auto-advisory:" + eventId));
+    }
     @Test void voiceIsDisabledByDefaultAndCannotBeRetried()throws Exception {
         read().andExpect(status().isOk()).andExpect(jsonPath("$.data.voice_mode").value("UNAVAILABLE"))
                 .andExpect(jsonPath("$.data.auto_voice.status").value("DISABLED"))

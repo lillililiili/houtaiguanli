@@ -1,11 +1,12 @@
 import axios from 'axios';
+import { userFacingMessage } from '@/utils/userMessages';
 
 export const SESSION_KEY = 'uav.admin.session.v1';
 const baseURL = String(import.meta.env.VITE_APP_BASE_API || (import.meta.env.DEV ? '/dev-api' : '/api')).replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(message, code = 'REQUEST_FAILED', status = 0) {
-    super(message || '请求失败');
+    super(userFacingMessage(message || '请求失败'));
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
@@ -41,8 +42,8 @@ function normalizeError(error) {
   const response = error?.response;
   const payload = response?.data?.error || {};
   if (response?.status === 401) window.dispatchEvent(new CustomEvent('admin:unauthorized'));
-  if (!response) return new ApiError('无法连接后端服务，请确认服务已启动后重试。', 'NETWORK_ERROR', 0);
-  return new ApiError(payload.message || `请求失败（HTTP ${response.status}）`, payload.code || 'REQUEST_FAILED', response.status);
+  if (!response) return new ApiError('暂时无法连接系统，请检查网络；若刚提交过操作，请先核对最新记录，避免重复提交。', 'NETWORK_ERROR', 0);
+  return new ApiError(payload.message || '系统暂时无法完成操作，请查看最新记录；仍有问题请联系管理员。', payload.code || 'REQUEST_FAILED', response.status);
 }
 
 client.interceptors.response.use(response => {

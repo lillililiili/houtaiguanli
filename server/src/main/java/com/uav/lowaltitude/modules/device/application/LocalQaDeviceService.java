@@ -1,6 +1,8 @@
 package com.uav.lowaltitude.modules.device.application;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import java.util.Map;
+import java.util.Objects;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -38,6 +40,12 @@ public class LocalQaDeviceService {
         if(!"ALL".equals(actor.scopeMode()))throw new ApiException(HttpStatus.FORBIDDEN,"QA_GLOBAL_SCOPE_REQUIRED","本地测试设备准备需要全局管理范围");
         var plan=flights.flightPlan(planId);LocalInterfaceSimulatorService.requireSimulated(plan.sourceMode());
         if(plan.ownerOrgId()==null||plan.districtId()==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","测试计划必须具有单位与区域");
+        var existing=repo.existing(NO);
+        if(!existing.isEmpty()){
+            if(existing.size()!=1||!matches(existing.get(0),plan.ownerOrgId(),plan.districtId()))
+                throw new ApiException(HttpStatus.CONFLICT,"QA_DEVICE_CONFLICT","已有同编号设备的来源、范围或本机连接配置不匹配");
+            return devices.detail((String)existing.get(0).get("device_id"));
+        }
         idempotency.claim(key,"local-qa-cm4:"+planId);
         var source=sources.insertLive(new IntegrationSourceService.Mutation(NO,"本机四通道QA模拟器",DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0,null,null,CIDR));
         repo.markNewSourceSimulated(source.sourceId());
@@ -48,5 +56,24 @@ public class LocalQaDeviceService {
         sources.activate(source.sourceId(),source.version(),"显式准备本机QA模拟设备；不代表现场射频设备");
         audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",created.device().deviceId(),"仅127.0.0.1:10006；不创建反制授权",null);
         return devices.detail(created.device().deviceId());
+    }
+    private static boolean matches(Map<String,Object> row,String org,String district) {
+        return DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(row.get("protocol_code"))
+                && "live".equals(row.get("source_mode"))
+                && Boolean.TRUE.equals(row.get("source_simulated"))
+                && Boolean.TRUE.equals(row.get("source_enabled"))
+                && CIDR.equals(row.get("allowed_cidrs"))
+                && row.get("device_id")!=null
+                && NO.equals(row.get("device_no"))
+                && NO.equals(row.get("external_device_id"))
+                && "live".equals(row.get("device_source_mode"))
+                && Boolean.TRUE.equals(row.get("device_simulated"))
+                && Boolean.TRUE.equals(row.get("device_enabled"))
+                && row.get("deleted_at")==null
+                && "TCP".equals(row.get("transport"))
+                && "127.0.0.1".equals(row.get("host"))
+                && row.get("port") instanceof Number port && port.intValue()==10006
+                && Objects.equals(org,row.get("owner_org_id"))
+                && Objects.equals(district,row.get("district_id"));
     }
 }

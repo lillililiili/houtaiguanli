@@ -28,6 +28,7 @@ import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.ReferenceMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RiskMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.VerificationMaterialDto;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimePolicy;
+import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
 import com.uav.lowaltitude.modules.automationrule.infrastructure.AutomationRuntimeRepository;
 import com.uav.lowaltitude.modules.handoff.domain.DisposalCompletionPort;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
@@ -77,15 +78,17 @@ public class HandoffSubmissionService {
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private final AutomationRuntimePolicy rulePolicy;
     private final AutomationRuntimeRepository ruleRuns;
+    private final AutomationRuntimeEligibility ruleEligibility;
     static final String WAITING_RULES = "通知处罚规则尚未全部满足";
 
     public HandoffSubmissionService(AccessControlService access, HandoffRepository repository, RiskRepository risks, RiskReadService riskRead,
             IdempotencyGuard idempotency, AppClock clock, AuditService audit, ObjectMapper objectMapper,
             DisposalCompletionPort disposals, UavEventRepository events, HandoffMaterialAssembler materials, HandoffChannelPort channel,
             RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
-            AutomationRuntimePolicy rulePolicy, AutomationRuntimeRepository ruleRuns) {
+            AutomationRuntimePolicy rulePolicy, AutomationRuntimeRepository ruleRuns, AutomationRuntimeEligibility ruleEligibility) {
         this.rulePolicy = rulePolicy;
         this.ruleRuns = ruleRuns;
+        this.ruleEligibility = ruleEligibility;
         this.directory=directory;
         this.channel = channel;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
@@ -389,7 +392,8 @@ public class HandoffSubmissionService {
     private boolean automaticPunishmentSend(String eventId) {
         if (!rulePolicy.enabled()) return true;
         var state = ruleRuns.state("dispose", eventId);
-        return state != null && "PASS".equals(state.status());
+        return state != null && "PASS".equals(state.status())
+                && "PASS".equals(ruleEligibility.check("dispose", eventId).status());
     }
 
     /** 只补发仍停在“等待规则”的那一次。已经发出、失败或人工接管的记录不再自动重试。 */

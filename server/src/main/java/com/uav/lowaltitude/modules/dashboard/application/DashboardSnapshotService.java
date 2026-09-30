@@ -242,7 +242,7 @@ public class DashboardSnapshotService {
                     location.longitude(), location.latitude(), "WGS84",
                     state.altitudeAmslM(), state.speedMps(), state.headingDeg(), state.fusionConfidence(),
                     evaluation == null ? null : evaluation.legalStatus(),
-                    evaluation == null ? null : evaluation.grade()));
+                    evaluation == null ? null : evaluation.grade(), state.observedAt(), row.mapExpiresAt()));
         }
         return List.copyOf(items);
     }

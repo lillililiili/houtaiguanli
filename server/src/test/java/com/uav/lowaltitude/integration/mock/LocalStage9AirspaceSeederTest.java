@@ -85,7 +85,8 @@ class LocalStage9AirspaceSeederTest {
         assertThat(expression.matches(name -> Set.of("production", "local").contains(name))).isFalse();
         assertThat(expression.matches(name -> Set.of("production").contains(name))).isFalse();
         assertThat(expression.matches(name -> Set.of("test").contains(name))).isTrue();
-        assertThat(expression.matches(name -> Set.of("local").contains(name))).isTrue();
+        assertThat(expression.matches(name -> Set.of("local").contains(name))).isFalse();
+        assertThat(expression.matches(name -> Set.of("local", "qa").contains(name))).isTrue();
         assertThat(property.havingValue()).isEqualTo("true");
     }
 

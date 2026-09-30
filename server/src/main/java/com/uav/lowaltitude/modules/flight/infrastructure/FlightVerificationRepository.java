@@ -37,4 +37,11 @@ public class FlightVerificationRepository {
             f.feedbackId(),f.verificationId(),f.planId(),f.recipientId(),f.recipientName(),snapshot,f.deliveryStatus(),f.receiptStatus(),
             f.processingResult(),f.blockedReason(),actor,f.createdAt(),f.submittedAt(),f.deliveredAt(),f.acknowledgedAt());
     }
+    /** Update only this frozen feedback attempt; later verifications are separate records. */
+    public boolean completeSimulatorReceipt(String feedbackId,String marker,
+            com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome outcome) {
+        return jdbc.update("UPDATE flight_plan_feedback SET delivery_status=?,receipt_status=?,blocked_reason=?,delivered_at=?,acknowledged_at=? WHERE feedback_id=? AND blocked_reason=?",
+                outcome.deliveryStatus(),outcome.receiptStatus(),outcome.blockedReason(),millis(outcome.deliveredAt()),millis(outcome.acknowledgedAt()),feedbackId,marker)==1;
+    }
+    private static Long millis(java.time.OffsetDateTime value){return value==null?null:value.toInstant().toEpochMilli();}
 }

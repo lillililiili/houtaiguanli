@@ -1,4 +1,5 @@
 <script setup>
+import { userFacingMessage } from '@/utils/userMessages';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import ErrorAlert from '@/components/ErrorAlert.vue';
@@ -95,7 +96,7 @@ defineExpose({ reload });
           <el-descriptions-item v-if="selected.recipient_snapshot?.contact_name" label="最近通知联系人">{{ selected.recipient_snapshot.contact_name }}<span v-if="selected.recipient_snapshot.contact_hint"> · {{ selected.recipient_snapshot.contact_hint }}</span></el-descriptions-item>
           <el-descriptions-item label="最新通知结果">{{ latestNotificationText }}<el-tag v-if="simulatedNotification(selected.recipient_snapshot)" class="notification-kind" size="small" type="info">模拟通知</el-tag><p v-if="previousDeliveries && latestNotification?.delivery_status !== 'DELIVERED'" class="muted">此前已有 {{ previousDeliveries }} 次送达记录，本次结果不改变历史送达事实。</p></el-descriptions-item>
           <el-descriptions-item v-if="selected.notification_receipt_status || latestNotification?.outcome_state === 'UNKNOWN'" label="最新通知回执">{{ receiptStatus(selected.notification_receipt_status, latestNotification?.outcome_state) }}</el-descriptions-item>
-          <el-descriptions-item v-if="selected.notification_blocked_reason" label="通知阻断原因">{{ selected.notification_blocked_reason }}</el-descriptions-item>
+          <el-descriptions-item v-if="selected.notification_blocked_reason" label="暂不能通知的原因">{{ userFacingMessage(selected.notification_blocked_reason) }}</el-descriptions-item>
           <el-descriptions-item v-if="selected.recipient_snapshot?.config_version != null" label="通知配置版本">{{ selected.recipient_snapshot.config_version }}</el-descriptions-item>
           <el-descriptions-item label="上报人 / 时间">{{ selected.reported_by_name }} · {{ formatTime(selected.reported_at) }}</el-descriptions-item>
           <el-descriptions-item v-if="selected.handling_note" label="处理结果">{{ selected.handling_note }}<p class="muted">{{ selected.handled_by_name }} · {{ formatTime(selected.handled_at) }}</p></el-descriptions-item>
@@ -122,7 +123,7 @@ defineExpose({ reload });
               <el-descriptions-item label="回执情况">{{ receiptStatus(attempt.receipt_status, attempt.outcome_state) }}</el-descriptions-item>
               <el-descriptions-item v-if="attempt.acknowledged_at" label="回执确认时间">{{ formatTime(attempt.acknowledged_at) }}</el-descriptions-item>
               <el-descriptions-item v-if="attempt.receipt_result" label="回执内容">{{ attempt.receipt_result }}</el-descriptions-item>
-              <el-descriptions-item v-if="attempt.blocked_reason" label="未完成原因">{{ attempt.blocked_reason }}</el-descriptions-item>
+              <el-descriptions-item v-if="attempt.blocked_reason" label="未完成原因">{{ userFacingMessage(attempt.blocked_reason) }}</el-descriptions-item>
             </el-descriptions>
           </article>
         </details>

@@ -19,6 +19,7 @@ import com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
+import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.disposal.application.DisposalExecutionGateway;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
@@ -55,11 +56,12 @@ public class AlarmRuleCounter {
     private final AuditService audit;
     private final AppClock clock;
     private final ObjectMapper json;
+    private final AutomationRuntimeEligibility eligibility;
 
     public AlarmRuleCounter(UavEventRepository events, UavAdvisoryRepository advisory, UavAdvisoryService phases,
             DisposalRepository repository, DisposalPolicyRepository policies, DisposalExecutionGateway gateway,
             EmergencyStopRepository emergencyStops, DeviceRepository devices, AuditService audit, AppClock clock,
-            ObjectMapper json) {
+            ObjectMapper json, AutomationRuntimeEligibility eligibility) {
         this.events = events;
         this.advisory = advisory;
         this.phases = phases;
@@ -71,11 +73,13 @@ public class AlarmRuleCounter {
         this.audit = audit;
         this.clock = clock;
         this.json = json;
+        this.eligibility = eligibility;
     }
 
     @Transactional
     public void launchIfPassed(String eventId, String runId) {
         if (eventId == null || eventId.isBlank() || runId == null || runId.isBlank()) return;
+        if (!eligibility.allowsRun("counter", eventId, runId)) return;
         AuthUser actor = repository.actor(AutomationPrincipal.USER_ID);
         if (actor == null) return;
         EventRow event = events.lock(eventId, SCOPE);
@@ -91,6 +95,7 @@ public class AlarmRuleCounter {
         if (chosen == null) return;
         emergencyStops.lockDevice(chosen.deviceId());
         if (emergencyStops.deviceUnresolved(chosen.deviceId())) return;
+        if (!eligibility.allowsRun("counter", eventId, runId)) return;
 
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(DisposalRules.COUNTERMEASURE));

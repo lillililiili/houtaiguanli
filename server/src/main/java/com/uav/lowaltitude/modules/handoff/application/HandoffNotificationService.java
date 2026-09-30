@@ -67,7 +67,7 @@ public class HandoffNotificationService {
    }catch(ApiException error){reason=error.getStatus()==HttpStatus.FORBIDDEN?"当前账号没有通知处罚部门所需权限":error.getMessage();}
   }
   return new StatusDto(row.handoffId(),reason==null,reason,latest==null?0:latest.attemptNo(),row.deliveryStatus(),row.receiptStatus(),
-    latest==null?null:HandoffReadService.dto(latest),target, target!=null&&"MOCK".equals(target.channelType()));
+    latest==null?null:HandoffReadService.dto(latest),target, target!=null&&("MOCK".equals(target.channelType())||simulatorTarget(target)));
  }
  public DeliveryDto notify(String id,String raw,String key){
   // 鉴权先于解析，避免无权用户通过校验差异探测对象。
@@ -145,10 +145,11 @@ public class HandoffNotificationService {
   if(repository.findEnabledRecipient(row.recipientId(),row.handoffType())==null)return "原处罚接收方已停用";
   if(target==null||!target.configured())return target==null||target.blockedReason()==null?"接收方通知配置不可用":target.blockedReason();
   if(!Objects.equals(target.recipientId(),row.recipientId()))return "通知接收方与原交接不一致";
-  if(!"MOCK".equals(target.channelType())||!environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))
+  if((!"MOCK".equals(target.channelType())&&!simulatorTarget(target))||!environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))
     ||environment.acceptsProfiles(Profiles.of("prod","production"))||!Set.of("mock","replay").contains(row.sourceMode())||!channel.simulated())return "真实通知渠道尚未接通，当前来源不能使用模拟投递";
   return null;
  }
+ private boolean simulatorTarget(RecipientSnapshot target){return "simulator".equals(environment.getProperty("app.notifications.transport"))&&"API".equals(target.channelType())&&"local-data-simulator".equals(target.endpointRef());}
  private int parse(String raw){try{var body=json.readTree(raw==null?"":raw);if(body==null||!body.isObject()||body.size()!=1||!body.has("expected_attempt_no")||!body.get("expected_attempt_no").isIntegralNumber()||!body.get("expected_attempt_no").canConvertToInt()||body.get("expected_attempt_no").asInt()<0)throw new IllegalArgumentException();return body.get("expected_attempt_no").asInt();}catch(Exception error){throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请提供原通知次数 expected_attempt_no，不允许提交送达或回执结果");}}
  private String material(String raw){try{var value=json.readTree(raw);if(value.isTextual())value=json.readTree(value.textValue());if(!value.isObject())throw new IllegalArgumentException();return json.writeValueAsString(value);}catch(Exception error){throw conflict("HANDOFF_MATERIAL_UNAVAILABLE","原交接材料无法读取");}}
  private RecipientSnapshot savedRecipient(String deliveryId){String raw=repository.notificationRecipient(deliveryId);if(raw==null)return null;try{return json.readValue(raw,RecipientSnapshot.class);}catch(Exception error){throw new IllegalStateException("通知接收快照无法读取",error);}}

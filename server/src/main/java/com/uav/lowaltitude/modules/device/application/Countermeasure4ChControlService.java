@@ -106,6 +106,8 @@ public class Countermeasure4ChControlService {
                     "仅已接入的四通道网络控制器可下发继电器设置");
         if (!bool(device, "enabled") || !"ONLINE".equals(text(device, "connectivity")))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "仅已启用且在线的设备可下发控制");
+        if (starts(normalizedAction, storedMask) && "BAD".equals(text(device, "health_code")))
+            throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "设备已上报故障，不能下发启动指令");
         String key = "countermeasure-4ch:" + idempotencyKey.trim();
         String hash = sha(user.userId() + "|" + deviceId + "|" + normalizedAction + "|"
                 + String.valueOf(storedChannel) + "|" + storedMask + "|"
@@ -148,11 +150,18 @@ public class Countermeasure4ChControlService {
         }
         long now = clock.nowMillis();
         String status = text(command, "status");
+        Map<String, Object> device = devices.find(text(command, "device_id"));
+        if (starts(text(command,"action"),number(command,"mask"))
+                && (device == null || !bool(device,"enabled") || !"ONLINE".equals(text(device,"connectivity"))
+                    || "BAD".equals(text(device,"health_code")))) {
+            controls.updateCommand(commandId,status,"CANCELLED",now,"DEVICE_NOT_OPERABLE",
+                    "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查");
+            return;
+        }
         if ("QUEUED".equals(status)) {
             controls.updateCommand(commandId, "QUEUED", "SENT", now, null, null);
             status = "SENT";
         }
-        Map<String, Object> device = devices.find(text(command, "device_id"));
         if (device == null) throw new IllegalStateException("device disappeared for command " + commandId);
         DeviceAdapterPort adapter = adapters.require(SourceMode.valueOf(text(device, "source_mode")),
                 text(device, "protocol_code"));

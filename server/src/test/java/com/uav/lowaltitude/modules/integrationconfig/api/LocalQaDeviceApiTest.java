@@ -22,7 +22,22 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         assertThat(jdbc.queryForObject("select port from device_connection_profile where device_id=?",Integer.class,id)).isEqualTo(10006);
         assertThat(jdbc.queryForObject("select count(*) from device_business_scope where ops_device_id=?",Long.class,id)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from disposal_authorization",Long.class)).isEqualTo(grants);
+        assertThat(prepare(plan,200).path("device").path("device_id").asText()).isEqualTo(id);
+        String anotherPlan=send("/plans",plan("qa-cm-device-reuse"),200).path("subject_id").asText();
+        assertThat(prepare(anotherPlan,200).path("device").path("device_id").asText()).isEqualTo(id);
+        assertThat(jdbc.queryForObject("select count(*) from ops_integration_source where source_code='QA-LOCAL-CM4'",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from ops_device where device_no='QA-LOCAL-CM4'",Long.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization",Long.class)).isEqualTo(grants);
+    }
+    @Test void existingDeviceWithDifferentScopeOrHostCannotBeReused() throws Exception {
+        String plan=send("/plans",plan("qa-cm-mismatch"),200).path("subject_id").asText();
+        String id=prepare(plan,200).path("device").path("device_id").asText();
+        jdbc.update("update device_connection_profile set host='127.0.0.2' where device_id=?",id);
         prepare(plan,409);
+        jdbc.update("update device_connection_profile set host='127.0.0.1' where device_id=?",id);
+        jdbc.update("update device_business_scope set owner_org_id=(select org_id from app_org where org_id<>owner_org_id fetch first 1 rows only) where ops_device_id=?",id);
+        prepare(plan,409);
+        assertThat(jdbc.queryForObject("select count(*) from ops_integration_source where source_code='QA-LOCAL-CM4'",Long.class)).isEqualTo(1);
     }
     @Test void rejectsLivePlanAndLeavesDeviceInventoryUnchanged() throws Exception {
         String plan=send("/plans",plan("qa-cm-live"),200).path("subject_id").asText();

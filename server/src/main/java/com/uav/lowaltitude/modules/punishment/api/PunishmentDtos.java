@@ -38,7 +38,13 @@ public final class PunishmentDtos {
             String filedBy, String filedByName, Long filedAt, Long decidedAt, Long closedAt, String closeNote,
             String withdrawReason, String ownerOrgId, String districtId, String sourceMode, long version,
             DiscretionDto currentDiscretion, Integer issuedDocumentCount, List<LeadDto> openLeads,
-            List<String> allowedActions) { }
+            List<String> allowedActions, EffectiveDecisionDto effectiveDecision) { }
+
+    /** Always present; NONE has no current decision fields. Amounts remain integer cents. */
+    public record EffectiveDecisionDto(String status,String documentId,String documentNo,String penaltyType,
+            Long fineAmount,Long issuedAt,List<DecisionHistoryDto> history) { }
+    public record DecisionHistoryDto(String documentId,String documentNo,String status,boolean simulated,
+            Long issuedAt,Long revokedAt,String revokeReason) { }
 
     public record CaseEventDto(String eventId, String eventKind, String actorId, String actorName, String note,
             Map<String, Object> snapshot, long occurredAt) { }

@@ -59,6 +59,7 @@ public class AutoSmsService {
         try { delivery=sms.simulateAutomatic(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey()); }
         catch(RuntimeException failed) { /* 通道可能已受理，未知结果独立持久化，不能盲目重发。 */ }
         final AdvisorySmsPort.Delivery receipt=delivery;
+        if(receipt!=null&&"SUBMITTED".equals(receipt.status()))return;
         tx.executeWithoutResult(s->finish(claim,receipt));
     }
     private Claim claim(String eventId) {
@@ -81,10 +82,13 @@ public class AutoSmsService {
         return new Claim(eventId,event.sourceMode(),token,tasks.find(eventId).providerKey(),recipient);
     }
     private void finish(Claim claim,AdvisorySmsPort.Delivery delivery) {
+        finish(claim,delivery,null);
+    }
+    private void finish(Claim claim,AdvisorySmsPort.Delivery delivery,Long deliveredAt) {
         EventRow event=events.lock(claim.eventId(),SYSTEM_SCOPE);if(event==null)return;
         Task current=tasks.find(claim.eventId());
         if(current==null||!claim.token().equals(current.token())||!"SENDING".equals(current.status()))return;
-        long now=clock.nowMillis();
+        long now=deliveredAt==null?clock.nowMillis():deliveredAt;
         if(delivery==null||!delivery.simulated()||!"SIMULATED_DELIVERED".equals(delivery.status())) {
             boolean failed=delivery!=null&&delivery.simulated()&&"FAILED".equals(delivery.status());
             tasks.finish(event.eventId(),claim.token(),failed?"FAILED":"UNKNOWN",failed?"模拟短信通道明确返回失败；当前条件仍满足时可申请补发":"短信发送结果未知，须先向通道对账，禁止盲目补发",null,now);
@@ -94,8 +98,25 @@ public class AutoSmsService {
         if(events.update(event.eventId(),event.version(),event.state(),Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1)throw new IllegalStateException("Event version changed under lock");
         records.appendAutomatic(recordId,event.eventId(),event.version()+1,now,content(event.eventId()),AutoSmsPolicy.CODE);
         directory.freezeAdvisoryRecord("ADVISORY_SMS",recordId,claim.recipient());
-        tasks.finish(event.eventId(),claim.token(),"SIMULATED_DELIVERED","后台已自动模拟发送短信；模拟送达不代表飞手阅读或目标已飞离",recordId,now);
+        tasks.finish(event.eventId(),claim.token(),"SIMULATED_DELIVERED","已收到模拟短信送达回执；不代表飞手阅读或目标已飞离",recordId,now);
         audit.record(null,"AUTO_SMS","SYSTEM","alarm","auto_sms_delivered","uav_event",event.eventId(),"policy="+AutoSmsPolicy.CODE+"; provider_key="+claim.providerKey()+"; simulated=true","SUCCESS","","");
+    }
+    /** Only the original pending attempt can consume an authenticated simulator receipt. */
+    public boolean completeSimulatorReceipt(String eventId,String providerKey,String token,
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,
+            String outcome,Long deliveredAt,long requestedAt) {
+        var event=events.lock(eventId,SYSTEM_SCOPE);if(event==null)return false;
+        var task=tasks.find(eventId);long now=clock.nowMillis();
+        if(task==null||token==null||!token.equals(task.token())||!java.util.Objects.equals(providerKey,task.providerKey())
+                ||!"SENDING".equals(task.status())||task.leaseUntil()==null||task.leaseUntil()<now
+                ||recipient==null||requestedAt!=task.updatedAt())return false;
+        if("DELIVERED".equals(outcome)) {
+            if(deliveredAt==null||deliveredAt<requestedAt||deliveredAt>now)return false;
+            finish(new Claim(eventId,event.sourceMode(),token,providerKey,recipient),new AdvisorySmsPort.Delivery(true,"SIMULATED_DELIVERED"),deliveredAt);
+        } else if(Set.of("FAILED","TIMEOUT").contains(outcome)) {
+            finish(new Claim(eventId,event.sourceMode(),token,providerKey,recipient),new AdvisorySmsPort.Delivery(true,"FAILED".equals(outcome)?"FAILED":"UNKNOWN"));
+        } else return false;
+        return true;
     }
     /** 纯读取；不得在页面回读期间建任务或发送短信。 */
     public AutoSms overview(EventRow event,boolean mayRetry) {

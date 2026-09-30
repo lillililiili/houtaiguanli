@@ -7,6 +7,7 @@ import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import com.uav.lowaltitude.modules.punishment.infrastructure.EffectiveDecisionSql;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -51,13 +52,7 @@ public class ReportingRepository {
             SELECT c.case_id,c.filed_at,c.source_mode,COALESCE(d.name,'区域未标注') AS region,
                    COALESCE(c.party_name,'当事人未明确') AS party_name,p.penalty_type,p.fine_amount
             FROM punishment_case c LEFT JOIN app_district d ON d.district_id=c.district_id
-            LEFT JOIN penalty_decision_document doc ON doc.case_id=c.case_id AND doc.status='ISSUED' AND doc.template_version NOT LIKE 'demo%'
-              AND NOT EXISTS (SELECT 1 FROM penalty_decision_document newer
-                WHERE newer.case_id=doc.case_id AND newer.status='ISSUED'
-                  AND (newer.issued_at,newer.document_id) > (doc.issued_at,doc.document_id))
-            LEFT JOIN penalty_discretion p ON p.discretion_id=doc.discretion_id AND p.status='CONFIRMED'
-              AND EXISTS (SELECT 1 FROM penalty_rule pr WHERE pr.rule_code=p.rule_code AND pr.schema_status='CONFIRMED')
-            """ + where(scope,"c","filed_at"), params(from,to,scope), (rs,n) ->
+            """ + EffectiveDecisionSql.JOINS + where(scope,"c","filed_at"), params(from,to,scope), (rs,n) ->
             new CaseFact(rs.getString("case_id"),rs.getObject("filed_at",OffsetDateTime.class),
                 rs.getString("source_mode"),rs.getString("region"),rs.getString("party_name"),
                 rs.getString("penalty_type"),rs.getBigDecimal("fine_amount")));

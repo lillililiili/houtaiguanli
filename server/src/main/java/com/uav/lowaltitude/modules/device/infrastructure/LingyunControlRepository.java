@@ -60,13 +60,24 @@ public class LingyunControlRepository {
     }
 
     public void addReceipt(String commandId, String commandNo, String resultCode, long now, String payload) {
+        addReceipt(commandId, commandNo, resultCode, now, payload, "PROTOCOL_B");
+    }
+
+    /** 调用方持有 command 行锁；迟到重复包不得重复形成证据。 */
+    public boolean addLateReceipt(String commandId, String commandNo, String resultCode, long now, String payload) {
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?", Integer.class, commandId) != 0) return false;
+        addReceipt(commandId, commandNo, resultCode, now, payload, "PROTOCOL_B_LATE");
+        return true;
+    }
+
+    private void addReceipt(String commandId, String commandNo, String resultCode, long now, String payload, String kind) {
         String inboxId = UUID.randomUUID().toString();
         jdbc.update("INSERT INTO inbox_message (inbox_id,source,source_msg_id,received_at) VALUES (?,?,?,?)",
                 inboxId, "control-resp:" + commandNo, commandNo, now);
         jdbc.update("""
                 INSERT INTO command_receipt (receipt_id,command_id,inbox_id,receipt_kind,device_result_code,occurred_at,received_at,payload)
                 VALUES (?,?,?,?,?,?,?,?)
-                """, UUID.randomUUID().toString(), commandId, inboxId, "PROTOCOL_B", resultCode, now, now, payload);
+                """, UUID.randomUUID().toString(), commandId, inboxId, kind, resultCode, now, now, payload);
     }
 
     public void addEvent(String deviceId, String type, String level, String message, long now, boolean simulated) {

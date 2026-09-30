@@ -44,6 +44,22 @@ public class DeviceMaintenanceNoticeRepository {
                 r.getString("delivery_status"),r.getString("receipt_status"),r.getString("receipt_result"),r.getString("blocked_reason"),
                 number(r,"submitted_at"),number(r,"delivered_at"),number(r,"acknowledged_at"),r.getString("outcome_state"),r.getBoolean("historical"));
     }
+    /** Lock the owner task before matching its current immutable notification attempt. */
+    public boolean completeSimulatorReceipt(String attemptId,String taskId,String marker,DeliveryOutcome result,String state) {
+        var locked=jdbc.queryForList("SELECT task_id FROM ops_device_maintenance_task WHERE task_id=? FOR UPDATE",String.class,taskId);
+        if(locked.isEmpty())return false;
+        int changed=jdbc.update("""
+            UPDATE ops_device_maintenance_notice_attempt SET delivery_status=?,receipt_status=?,blocked_reason=?,
+                delivered_at=?,acknowledged_at=?,outcome_state=?
+            WHERE attempt_id=? AND task_id=? AND blocked_reason=?
+                AND attempt_no=(SELECT MAX(a.attempt_no) FROM ops_device_maintenance_notice_attempt a WHERE a.task_id=?)
+            """,result.deliveryStatus(),result.receiptStatus(),result.blockedReason(),epoch(result.deliveredAt()),epoch(result.acknowledgedAt()),state,attemptId,taskId,marker,taskId);
+        if(changed!=1)return false;
+        // Keep the compatibility summary tied to the same original message, never overwrite another attempt.
+        jdbc.update("UPDATE ops_device_maintenance_task SET notification_delivery_status=?,notification_receipt_status=?,notification_blocked_reason=? WHERE task_id=? AND notification_blocked_reason=?",
+                result.deliveryStatus(),result.receiptStatus(),result.blockedReason(),taskId,marker);
+        return true;
+    }
     private String encode(RecipientSnapshot value){try{return json.writeValueAsString(value);}catch(JsonProcessingException e){throw new IllegalStateException("不能保存通知对象快照",e);}}
     private RecipientSnapshot decode(String value){if(value==null)return null;try{return json.readValue(value,RecipientSnapshot.class);}catch(JsonProcessingException e){throw new IllegalStateException("不能读取通知对象快照",e);}}
     private static Long number(ResultSet r,String key)throws SQLException{long v=r.getLong(key);return r.wasNull()?null:v;}

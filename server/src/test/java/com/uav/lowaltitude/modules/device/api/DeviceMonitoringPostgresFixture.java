@@ -12,7 +12,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.test.context.DynamicPropertyRegistry;
 
 /** Only disposable schemas in an explicitly configured stage456_verify_* database are writable. */
-final class DeviceMonitoringPostgresFixture {
+public final class DeviceMonitoringPostgresFixture {
     private final String schema = "monitor_events_" + UUID.randomUUID().toString().replace("-", "");
     private boolean created;
 
@@ -39,12 +39,16 @@ final class DeviceMonitoringPostgresFixture {
         return new DriverManagerDataSource(schemaUrl(), environment("POSTGRES_TEST_USER"), environment("POSTGRES_TEST_PASSWORD"));
     }
 
-    void springProperties(DynamicPropertyRegistry registry) {
+    public void springProperties(DynamicPropertyRegistry registry) {
         initialize();
         registry.add("spring.datasource.url", this::schemaUrl);
         registry.add("spring.datasource.username", () -> environment("POSTGRES_TEST_USER"));
         registry.add("spring.datasource.password", () -> environment("POSTGRES_TEST_PASSWORD"));
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
+        // Some subclasses inherit only the test profile, so apply the same bounded pool here.
+        registry.add("spring.datasource.hikari.minimum-idle", () -> 0);
+        registry.add("spring.datasource.hikari.maximum-pool-size", () -> 4);
+        registry.add("spring.datasource.hikari.idle-timeout", () -> 10000);
         registry.add("spring.flyway.enabled", () -> false);
         registry.add("app.dev-seed.enabled", () -> true);
         registry.add("app.handoff.channel", () -> "none");
@@ -57,7 +61,7 @@ final class DeviceMonitoringPostgresFixture {
             registry.add(key, () -> false);
     }
 
-    synchronized void close() {
+    public synchronized void close() {
         if (!created) return;
         assertSafeSchema();
         new JdbcTemplate(rootDataSource()).execute("DROP SCHEMA " + schema + " CASCADE");
@@ -88,7 +92,7 @@ final class DeviceMonitoringPostgresFixture {
 
     /** Some legacy jobs have no enable flag; disable registration of all scheduled callbacks in this test context. */
     @TestConfiguration(proxyBeanMethods = false)
-    static class NoScheduledJobs {
+    public static class NoScheduledJobs {
         @Bean static BeanFactoryPostProcessor disableScheduledCallbacks() {
             return factory -> {
                 String name = "org.springframework.context.annotation.internalScheduledAnnotationProcessor";

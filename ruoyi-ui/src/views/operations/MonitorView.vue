@@ -4,7 +4,6 @@ import PageHeader from '@/components/PageHeader.vue';
 import OperationMetrics from './OperationMetrics.vue';
 import './operations-reference.css';
 import ErrorAlert from '@/components/ErrorAlert.vue';
-import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
 import DeviceTrendPanel from '@/components/DeviceTrendPanel.vue';
 import { deviceApi } from '@/api/devices.js';
 import { display, formatTime, statusText, statusType } from '@/utils/format.js';
@@ -28,8 +27,6 @@ const eventsError = ref('');
 let eventsRequest;
 const protocolStatus = ref(null);
 const radarTargets = ref([]);
-const information = ref(null);
-const informationError = ref('');
 const selectedError = ref('');
 const loading = ref(false);
 const selectedLoading = ref(false);
@@ -102,22 +99,18 @@ async function loadSelected(showBusy = false, manual = false) {
   const deviceId = selectedId.value;
   const generation = selectedGeneration;
   try {
-    const [statusResult, informationResult] = await Promise.allSettled([Promise.all([
+    const [deviceState, protocol, targetPage] = await Promise.all([
       deviceApi.state(deviceId),
       deviceApi.protocolStatus(deviceId),
       selected.value?.protocol_code === 'RADAR_TCP_V3_0_0' ? deviceApi.targets({ device_id: deviceId, active: true, page: 1, size: 20 }) : Promise.resolve({ items: [] })
-    ]), deviceApi.information(deviceId)]);
+    ]);
     if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return;
-    information.value = informationResult.status === 'fulfilled' ? informationResult.value : null;
-    informationError.value = informationResult.status === 'rejected' ? informationResult.reason?.message || '完整信息加载失败' : '';
-    if (statusResult.status === 'fulfilled') {
-      const [deviceState, protocol, targetPage] = statusResult.value;
-      state.value = deviceState; protocolStatus.value = protocol; radarTargets.value = targetPage.items || [];
-      selectedError.value = '';
-    } else {
-      state.value = null; protocolStatus.value = null; radarTargets.value = [];
-      selectedError.value = statusResult.reason?.message || '所选设备状态加载失败';
-    }
+    state.value = deviceState; protocolStatus.value = protocol; radarTargets.value = targetPage.items || [];
+    selectedError.value = '';
+  } catch (e) {
+    if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return;
+    state.value = null; protocolStatus.value = null; radarTargets.value = [];
+    selectedError.value = e.message || '所选设备状态加载失败';
   }
   finally {
     selectedLoading.value = false; selectedInFlight = false;
@@ -163,8 +156,8 @@ watch(selectedId, () => {
   selectedGeneration++;
   state.value = null; events.value = []; eventSeq.value = 0;
   eventsLoaded.value = false; eventsLoading.value = false; eventsError.value = ''; eventsRequest = null;
-  protocolStatus.value = null; radarTargets.value = []; information.value = null;
-  informationError.value = ''; selectedError.value = '';
+  protocolStatus.value = null; radarTargets.value = [];
+  selectedError.value = '';
   if (selectedId.value) loadSelected(true, true);
 });
 onMounted(async () => {
@@ -185,7 +178,7 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
     <ErrorAlert :message="error" @retry="applyFilters" />
     <ErrorAlert :message="selectedError" @retry="loadSelected(true, true)" />
     <div class="monitor-layout">
-      <el-card v-loading="loading">
+      <el-card v-loading="loading" class="monitor-devices">
         <template #header><div class="table-toolbar"><b>设备分类与状态</b><span class="muted">{{ tree.length }} 台</span></div></template>
         <el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="applyFilters"><template #append><el-button @click="applyFilters">筛选</el-button></template></el-input>
         <div class="device-tree-list">
@@ -213,8 +206,6 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
           </template>
         </el-card>
 
-        <DeviceInformationPanel v-if="selectedId" :key="selectedId" purpose="monitor" :information="information" :loading="selectedLoading" :error="informationError" @refresh="loadSelected(true, true)" />
-
         <el-card v-if="selected?.protocol_code==='RADAR_TCP_V3_0_0'">
           <template #header><div class="table-toolbar"><b>最近活动航迹</b><span class="muted">仅展示原始坐标</span></div></template>
           <el-table :data="radarTargets" max-height="210"><el-table-column prop="external_track_id" label="航迹 ID" min-width="110" /><el-table-column prop="category_code" label="分类" width="90" /><el-table-column label="X / Y / Z（m）" min-width="170"><template #default="{row}">{{ display(row.raw_xm) }} / {{ display(row.raw_ym) }} / {{ display(row.raw_zm) }}</template></el-table-column><el-table-column prop="snr_db" label="SNR" width="75" /></el-table>
@@ -223,35 +214,56 @@ onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInter
         <DeviceTrendPanel v-if="selectedId" :key="selectedId" :device-id="selectedId" :paused="paused" />
       </div>
 
-      <div class="monitor-column">
+      <div class="monitor-column monitor-activity">
         <el-card><template #header><div class="table-toolbar"><b>实时告警</b><span class="muted">共 {{ incidentTotal }} 条</span><el-select v-model="severity" clearable placeholder="全部级别" style="width:110px" aria-label="告警级别"><el-option v-for="(label,value) in SEVERITY_LABELS" :key="value" :label="label" :value="value" /></el-select></div></template>
-          <div v-if="filteredIncidents.length" class="event-feed monitor-alarms"><button v-for="item in filteredIncidents" :key="item.incident_id" type="button" class="device-tree-item" @click="selectedId=item.device_id"><span class="device-tree-copy"><b>{{ item.device_name }}</b><small class="alarm-reason">{{ item.reason }}</small><small class="mono">{{ formatTime(item.detected_at) }}</small></span><el-tag class="device-tree-status" :type="['HIGH','CRITICAL'].includes(item.severity)?'danger':'warning'" effect="plain">{{ SEVERITY_LABELS[item.severity] || item.severity }}</el-tag></button></div><el-empty v-else :description="severity ? '当前列表中没有此级别告警' : '当前没有活动告警'" /><p v-if="incidentTotal > incidents.length" class="tree-note">当前显示最近 {{ incidents.length }} 条待处理告警。</p>
+          <div v-if="filteredIncidents.length" class="event-feed monitor-alarms"><button v-for="item in filteredIncidents" :key="item.incident_id" type="button" class="device-tree-item" @click="selectedId=item.device_id"><span class="device-tree-copy"><b>{{ item.device_name }}</b><small class="alarm-reason">{{ item.reason }}</small><small class="mono">{{ formatTime(item.detected_at) }}</small></span><el-tag class="device-tree-status" :type="['HIGH','CRITICAL'].includes(item.severity)?'danger':'warning'" effect="plain">{{ SEVERITY_LABELS[item.severity] || item.severity }}</el-tag></button></div><el-empty v-else :image-size="64" :description="severity ? '当前列表中没有此级别告警' : '当前没有活动告警'" /><p v-if="incidentTotal > incidents.length" class="tree-note">当前显示最近 {{ incidents.length }} 条待处理告警。</p>
         </el-card>
-      </div>
-    </div>
         <el-card class="table-card monitor-events"><template #header><div class="table-toolbar"><b>设备事件记录</b><span class="muted">当前设备 · 按序号增量更新</span></div></template>
           <p class="tree-note">关键事件即时记录，正常上报每 30 秒汇总；显示最近 100 条。</p>
           <ErrorAlert :message="eventsError" @retry="loadEvents(true)" />
-          <div v-if="events.length" class="event-feed"><article v-for="item in [...events].reverse()" :key="item.event_seq" class="event-item"><div class="event-heading"><b>{{ EVENT_LABELS[item.event_type] || item.event_type || '设备事件' }}</b><el-tag size="small" :type="eventLevelType(item.level_code)" effect="plain">{{ EVENT_LEVELS[item.level_code] || item.level_code || '级别未声明' }}</el-tag><el-tag v-if="item.simulated" size="small" type="warning" effect="plain">模拟数据</el-tag></div><p>{{ item.message }}</p><time>#{{ item.event_seq }} · {{ formatTime(item.occurred_at) }}</time></article></div><el-empty v-else :description="eventEmptyText" />
+          <div v-if="events.length" class="event-feed"><article v-for="item in [...events].reverse()" :key="item.event_seq" class="event-item"><div class="event-heading"><b>{{ EVENT_LABELS[item.event_type] || item.event_type || '设备事件' }}</b><el-tag size="small" :type="eventLevelType(item.level_code)" effect="plain">{{ EVENT_LEVELS[item.level_code] || item.level_code || '级别未声明' }}</el-tag><el-tag v-if="item.simulated" size="small" type="warning" effect="plain">模拟数据</el-tag></div><p>{{ item.message }}</p><time>#{{ item.event_seq }} · {{ formatTime(item.occurred_at) }}</time></article></div><el-empty v-else :image-size="64" :description="eventEmptyText" />
         </el-card>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.monitor-reference .monitor-layout { grid-template-columns: 245px minmax(0, 1fr) 320px; min-height: 0; align-items: start; }
-.monitor-reference .monitor-layout > .monitor-column:last-child { grid-column: auto; display: flex; }
-.monitor-reference .device-tree-list { max-height: 640px; }
+.monitor-reference .monitor-layout { grid-template-columns: 245px minmax(0, 1fr) 320px; min-height: 520px; align-items: stretch; flex: none; }
+.monitor-reference .monitor-layout > .monitor-activity { grid-column: auto; display: flex; }
+.monitor-devices, .monitor-activity { contain: size; min-height: 0; }
+.monitor-devices, .monitor-activity > .el-card { display: flex; flex-direction: column; min-height: 0; }
+.monitor-activity > .el-card { flex: 1; }
+.monitor-devices :deep(.el-card__body), .monitor-activity :deep(.el-card__body) { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.monitor-reference .device-tree-list { flex: 1; height: 0; min-height: 260px; max-height: none; scrollbar-gutter: stable; }
+.monitor-reference .monitor-activity .event-feed { flex: 1; height: 0; min-height: 120px; max-height: none; scrollbar-gutter: stable; }
+.monitor-activity .tree-note { flex-shrink: 0; margin: 0 0 12px; }
+.monitor-activity .monitor-alarms + .tree-note { margin: 12px 0 0; }
+.monitor-activity :deep(.el-card__header) { flex-shrink: 0; }
+.monitor-events .table-toolbar .muted { font-size: 12px; font-weight: 400; }
+.monitor-events .event-item { overflow-wrap: anywhere; }
 .device-type-group { padding-left: 8px; }
-.monitor-reference .state-hero { grid-template-columns: repeat(2, minmax(0,1fr)); }
-.monitor-reference .state-hero article:last-child { grid-column: 1 / -1; }
+.monitor-reference .state-hero { grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(190px,1.5fr); }
+.monitor-reference .state-hero article:last-child strong { font-size: 14px; }
 .monitor-reference .metric-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .monitor-reference .metric-values article { background: #fff; }
 .monitor-metric-tabs { margin-top: 16px; }
 .chart-empty { margin: 0; padding: 4px 0; color: var(--admin-muted); font-size: 13px; line-height: 1.6; }
-.monitor-reference .monitor-alarms { max-height: 650px; }
 .event-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .monitor-reference .alarm-reason { white-space: normal; line-height: 1.6; }
 .monitor-alarms .device-tree-item { border-bottom: 1px solid #eef1f5; align-items: flex-start; padding: 12px 0; }
-@media (max-width: 1150px) { .monitor-reference .monitor-layout { grid-template-columns: 220px minmax(0,1fr); } .monitor-reference .monitor-layout > .monitor-column:last-child { grid-column: 1 / -1; display: block; } }
-@media (max-width: 720px) { .monitor-reference .monitor-layout { grid-template-columns: minmax(0,1fr); } .monitor-reference .monitor-layout > .monitor-column:last-child { grid-column: auto; } .monitor-reference .device-tree-list { max-height: 300px; } }
+@media (max-width: 1280px) {
+  .monitor-reference .monitor-layout { grid-template-columns: 220px minmax(0,1fr); }
+  .monitor-reference .monitor-layout > .monitor-activity { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); contain: none; }
+  .monitor-reference .monitor-activity .event-feed { height: auto; min-height: 0; max-height: 320px; }
+}
+@media (max-width: 720px) {
+  .monitor-reference .monitor-layout { grid-template-columns: minmax(0,1fr); }
+  .monitor-devices { contain: none; }
+  .monitor-reference .monitor-layout > .monitor-activity { grid-column: auto; display: flex; }
+  .monitor-reference .device-tree-list { height: auto; min-height: 0; max-height: 280px; }
+  .monitor-reference .state-hero { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .monitor-reference .state-hero article:last-child { grid-column: 1 / -1; }
+  .monitor-reference .monitor-activity .event-feed { max-height: 280px; }
+}
 </style>

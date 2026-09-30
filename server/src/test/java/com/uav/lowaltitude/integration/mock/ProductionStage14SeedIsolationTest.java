@@ -14,15 +14,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import com.uav.lowaltitude.Application;
 
 /**
- * production 必须压过 local：阶段 14 处罚案件域的演示数据不允许因部署 profile 组合泄入生产。
- *
- * 这里守的是两件方向相反的事，不要混为一谈：
- *   ① **案件业务数据**（案件、只增事件流、线索、裁量、决定书、复核、编号计数）在生产必须一行都没有——
- *      一条演示案件混进真实卷宗，比缺一份演示数据严重得多；
- *   ② **处罚档位表 `penalty_rule`** 在生产**必须存在且标 DEMO**：它是裁量的外键与档位依据，
- *      缺了连草稿都拟不出来；标 CONFIRMED 则等于宣称条款号已经法制岗核定过。
- *
- * 按 Bean 名断言，不引用 E1 的类型：类被重命名时这里也不会因编译依赖而"默认通过"。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage14SeedIsolationTest {
 
@@ -30,22 +23,20 @@ class ProductionStage14SeedIsolationTest {
     @Test void productionAlsoWinsOverLocalProfile() { assertIsolated("production,local"); }
 
     /**
-     * 反面对照：`local` 下种子**必须真的注册**。
+     * 反面对照：`local,qa` 下种子**必须真的注册**。
      * 没有这一条，"production 下不注册"可能只是因为 Bean 条件写错了、任何 profile 都不注册——
      * 那样隔离测试全绿，而演示环境根本没有数据，问题要到演示当天才发现。
      */
     @Test
-    void localStillRegistersTheSeeder() {
-        try (ConfigurableApplicationContext context = context("local", "--app.dev-seed.enabled=true")) {
+    void explicitLocalQaRegistersTheSeeder() {
+        try (ConfigurableApplicationContext context = context("local,qa", "--app.dev-seed.enabled=true", "--app.dev-seed.password=changeme")) {
             assertThat(context.containsBean("localStage14PunishmentSeeder"))
-                    .as("local 下演示种子必须注册，否则隔离测试的绿是假的").isTrue();
+                    .as("local,qa 下演示种子必须注册，否则隔离测试的绿是假的").isTrue();
         }
     }
 
     private static void assertIsolated(String profiles) {
-        // 故意打开演示种子开关：要证明的是"即使开关被打开 production 仍然赢"，
-        // 而不是"因为没开所以没有"——后者在部署里换一个 profile 组合就不成立了。
-        try (ConfigurableApplicationContext context = context(profiles, "--app.dev-seed.enabled=true")) {
+        try (ConfigurableApplicationContext context = context(profiles, "--app.dev-seed.enabled=false")) {
             assertThat(context.containsBean("localStage14PunishmentSeeder"))
                     .as("阶段 14 演示种子不得在 production 注册").isFalse();
             List<String> punishmentSeeders = java.util.Arrays.stream(context.getBeanDefinitionNames())
@@ -110,7 +101,7 @@ class ProductionStage14SeedIsolationTest {
                         + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
                 "--spring.flyway.locations=classpath:db/migration",
-                "--app.live-device.enabled=false",
+                "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
                 "--app.fusion.enabled=false", "--app.fusion.replay.run-on-start=false",
                 "--app.disposal.expiry.enabled=false",

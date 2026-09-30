@@ -30,8 +30,8 @@ class LocalStage4AlarmSeederTest {
 
     @Test
     void productionAndDisabledSeedContextsNeverRegisterOrInsertStageFourSamples() {
-        assertSeedIsAbsent("stage4-production", new String[] { "production" }, true);
-        assertSeedIsAbsent("stage4-production-local", new String[] { "production", "local" }, true);
+        assertSeedIsAbsent("stage4-production", new String[] { "production" }, false);
+        assertSeedIsAbsent("stage4-production-local", new String[] { "production", "local" }, false);
         assertSeedIsAbsent("stage4-test-disabled", new String[] { "test" }, false);
     }
 
@@ -44,7 +44,7 @@ class LocalStage4AlarmSeederTest {
                 .run("--spring.datasource.url=" + url, "--spring.datasource.driver-class-name=org.h2.Driver",
                         "--spring.datasource.username=sa", "--spring.datasource.password=",
                         "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=" + enabled,
-                        "--app.live-device.enabled=false")) {
+                        "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false")) {
             // profile 与 property 两道门禁均要实测，不能仅依赖 @Profile/@ConditionalOnProperty 注解推断。
             assertThat(context.getBeansOfType(LocalStage4AlarmSeeder.class)).isEmpty();
             JdbcTemplate isolated = context.getBean(JdbcTemplate.class);

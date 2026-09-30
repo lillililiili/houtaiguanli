@@ -64,7 +64,8 @@ public final class TargetDtos {
             /* 列表与详情同形（决策 15-4）：同一张悬浮卡在两处都要能画出来。 */
             RiskSummaryDto riskSummary,
             LegalitySummaryDto legalitySummary,
-            DisposalSummaryDto disposalSummary) {
+            DisposalSummaryDto disposalSummary,
+            Long mapExpiresAt) {
     }
 
     public record TargetDetailDto(

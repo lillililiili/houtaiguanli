@@ -283,7 +283,9 @@ class LegalityEvaluationServiceTest {
     void missingParameterIsADeploymentErrorAndWritesNothing() {
         jdbc.update("delete from rule_param where rule_code='C03' and param_key='fresh_seconds' and rule_set_version_id=(select active_version_id from rule_set where rule_set_code=?)", code);
         RunHandle run = runs.start(code, RunMode.ACTIVE, "SCHEDULED", null, null, now());
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId()));
+        var error = org.junit.jupiter.api.Assertions.assertThrows(com.uav.lowaltitude.platform.api.ApiException.class,
+                () -> service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId()));
+        assertThat(error.getCode()).isEqualTo("RULE_CONFIGURATION_INVALID");
         assertThat(jdbc.queryForObject("select count(*) from rule_evaluation where run_id=?", Long.class, run.runId())).isZero();
     }
 

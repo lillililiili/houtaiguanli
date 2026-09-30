@@ -120,7 +120,8 @@ class LocalStage8FusionReplaySeederTest {
         assertThat(expression.matches(name -> Set.of("production", "local").contains(name))).isFalse();
         assertThat(expression.matches(name -> Set.of("production").contains(name))).isFalse();
         assertThat(expression.matches(name -> Set.of("test").contains(name))).isTrue();
-        assertThat(expression.matches(name -> Set.of("local").contains(name))).isTrue();
+        assertThat(expression.matches(name -> Set.of("local").contains(name))).isFalse();
+        assertThat(expression.matches(name -> Set.of("local", "qa").contains(name))).isTrue();
         assertThat(property.havingValue()).isEqualTo("true");
         // 回放写入器与适配器同样不在生产注册（生产不生成、不消费回放数据）。
         Profiles runner = Profiles.of(com.uav.lowaltitude.integration.replay.FusionReplayRunner.class.getAnnotation(Profile.class).value());

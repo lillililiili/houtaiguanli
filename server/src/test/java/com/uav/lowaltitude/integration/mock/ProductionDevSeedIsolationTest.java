@@ -15,6 +15,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProductionDevSeedIsolationTest {
 
     @Test
+    void productionRejectsEnabledDevelopmentSeedsBeforeAnyRunnerCanWrite() {
+        for (String profiles : java.util.List.of("production", "production,local", "prod,test", "production,local,qa")) {
+            String database = "rejected_seed_" + UUID.randomUUID();
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> {
+                try (var ignored = start(database, profiles, true)) { }
+            }).hasRootCauseInstanceOf(IllegalStateException.class)
+                    .hasStackTraceContaining("Simulation configuration is forbidden: app.dev-seed.enabled");
+        }
+    }
+
+    @Test
     void productionCannotEnableAnyDevelopmentSeeder() {
         assertProductionIsolation("production");
     }
@@ -49,6 +60,10 @@ class ProductionDevSeedIsolationTest {
     }
 
     private static ConfigurableApplicationContext start(String database, String profiles) {
+        return start(database, profiles, false);
+    }
+
+    private static ConfigurableApplicationContext start(String database, String profiles, boolean enabled) {
         return new SpringApplicationBuilder(Application.class)
                 .web(WebApplicationType.NONE)
                 .run(
@@ -59,9 +74,9 @@ class ProductionDevSeedIsolationTest {
                         "--spring.datasource.password=",
                         "--spring.datasource.driver-class-name=org.h2.Driver",
                         "--spring.flyway.locations=classpath:db/migration",
-                        "--app.dev-seed.enabled=true",
+                        "--app.source-mode=live", "--app.dev-seed.enabled=" + enabled,
                         "--app.dev-seed.password=ProductionMustNotSeed-9!",
-                        "--app.live-device.enabled=false");
+                        "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false");
     }
 
     private static int count(JdbcTemplate jdbc, String sql) {

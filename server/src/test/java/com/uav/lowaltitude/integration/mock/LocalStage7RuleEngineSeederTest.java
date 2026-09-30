@@ -160,11 +160,12 @@ class LocalStage7RuleEngineSeederTest {
         assertThat(expression.matches(name -> Set.of("production", "local").contains(name))).isFalse();
         assertThat(expression.matches(name -> Set.of("production").contains(name))).isFalse();
         assertThat(expression.matches(name -> Set.of("test").contains(name))).isTrue();
-        assertThat(expression.matches(name -> Set.of("local").contains(name))).isTrue();
+        assertThat(expression.matches(name -> Set.of("local").contains(name))).isFalse();
+        assertThat(expression.matches(name -> Set.of("local", "qa").contains(name))).isTrue();
         assertThat(property.havingValue()).isEqualTo("true");
         Profiles runner = Profiles.of(RuleReplayRunner.class.getAnnotation(Profile.class).value());
         assertThat(runner.matches(name -> Set.of("production", "local").contains(name))).isFalse();
-        assertThat(runner.matches(name -> Set.of("local").contains(name))).isTrue();
+        assertThat(runner.matches(name -> Set.of("local").contains(name))).isFalse();
     }
 
     @Test
@@ -177,8 +178,8 @@ class LocalStage7RuleEngineSeederTest {
         String[] args = {
                 "--spring.datasource.url=jdbc:h2:mem:stage7-gate-" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.driver-class-name=org.h2.Driver", "--spring.datasource.username=sa", "--spring.datasource.password=",
-                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=true", "--app.live-device.enabled=false",
-                "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=true", "--spring.main.banner-mode=off"};
+                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
+                "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false", "--spring.main.banner-mode=off"};
         try (ConfigurableApplicationContext context = new SpringApplicationBuilder(Application.class).web(WebApplicationType.NONE).profiles(profiles).run(args)) {
             assertThat(context.getBeansOfType(LocalStage7RuleEngineSeeder.class)).isEmpty();
             assertThat(context.getBeansOfType(RuleReplayRunner.class)).isEmpty();

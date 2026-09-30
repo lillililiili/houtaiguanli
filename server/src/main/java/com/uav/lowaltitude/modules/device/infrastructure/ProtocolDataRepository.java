@@ -432,7 +432,7 @@ public class ProtocolDataRepository {
         catch (Exception ex) { throw new IllegalStateException(ex); }
         int updated = jdbc.update("""
                 UPDATE ops_device_state SET connectivity=?,work_state_code=?,health_code=?,observed_at=?,received_at=?,
-                    last_heartbeat_at=?,metrics_json=COALESCE(?,metrics_json),unknown_reason=?,simulated=?,
+                    last_heartbeat_at=COALESCE(?,last_heartbeat_at),metrics_json=COALESCE(?,metrics_json),unknown_reason=?,simulated=?,
                     version=version+1 WHERE device_id=?
                 """, connectivity, "ONLINE".equals(connectivity) ? "REPORTING" : "NO_RESPONSE",
                 "ONLINE".equals(connectivity) ? "GOOD" : "UNKNOWN", now, now,

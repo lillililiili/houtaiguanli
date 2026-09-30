@@ -23,6 +23,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture;
@@ -38,9 +39,9 @@ class DirectDisposalBackgroundTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired DisposalCommandGuard guard;
     @Autowired DisposalJammingChain chain;
-    @Autowired AppClock clock;
+    @MockitoSpyBean AppClock clock;
     @MockitoBean DisposalExecutionGateway gateway;
-    private String userId, role, eventId;
+    private String userId, role, eventId, scopedDeviceId;
     private Instant at;
 
     @BeforeEach void fixture() {
@@ -61,10 +62,37 @@ class DirectDisposalBackgroundTest {
         jdbc.update("insert into alarm(alarm_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) select ?,source_id,?,'UAV_INTRUSION','HIGH',?,?,'mock',?,?,? from integration_source limit 1", alarmId, eventId, now, now, ORG, DISTRICT, now);
         jdbc.update("insert into uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'CONFIRMED',?,?,?,?,0)", eventId, alarmId, ORG, DISTRICT, now, now);
         CounterEvidenceFixture.seed(jdbc, eventId);
+        scopedDeviceId = jdbc.queryForObject("select device_id from ops_device order by device_id limit 1", String.class);
+        // The positive background fixture needs an explicitly authorized device, not just a device OP grant.
+        if (jdbc.update("update device_business_scope set owner_org_id=?,district_id=? where ops_device_id=?", ORG, DISTRICT, scopedDeviceId) == 0)
+            jdbc.update("insert into device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) values(?,?,?,current_timestamp,current_timestamp)", scopedDeviceId, ORG, DISTRICT);
     }
 
     @Test void activeDirectAuthorizationMayReachDeviceGuard() {
         assertThat(guard.mayStart(authorization("DIRECT", "EXECUTING", "LINGYUN_B", 300))).isTrue();
+    }
+
+    @Test void queuedAutomationCommandCannotStartWhenEngineIsDisabled() {
+        String id = automationAuthorization("EXECUTING");
+        assertThat(guard.mayStart(id)).isFalse();
+    }
+
+    @Test void automationCannotChainWhenEngineIsDisabled() {
+        String id = automationAuthorization("COMPLETED");
+        chain.chain(id);
+        assertThat(child(id)).isNull();
+        verifyNoInteractions(gateway);
+    }
+
+    private String automationAuthorization(String status) {
+        String runner = com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal.USER_ID;
+        if (jdbc.queryForObject("select count(*) from app_role where role_code='ROLE-AUTOMATION'", Integer.class) == 0)
+            jdbc.update("insert into app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) values('ROLE-AUTOMATION','自动规则测试','',false,true,0,0,0,false)");
+        if (jdbc.queryForObject("select count(*) from app_user where user_id=?", Integer.class, runner) == 0)
+            jdbc.update("insert into app_user(user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values(?,'automation-rule','自动规则测试','ROLE-AUTOMATION','DISABLED','unused',0,'ALL',0,0,0,0)", runner);
+        String id = authorization("DIRECT", status, "LINGYUN_B", 300);
+        jdbc.update("update disposal_authorization set requested_by=? where authorization_id=?", runner, id);
+        return id;
     }
 
     @ParameterizedTest
@@ -86,6 +114,22 @@ class DirectDisposalBackgroundTest {
 
     @Test void queuedDirectCommandStopsAtAuthorizationExpiry() {
         assertThat(guard.mayStart(authorization("DIRECT", "EXECUTING", "LINGYUN_B", -1))).isFalse();
+    }
+
+    @Test void queuedReviewedCommandStopsAtAuthorizationExpiry() {
+        assertThat(guard.mayStart(authorization("REVIEW", "EXECUTING", "LINGYUN_B", -1))).isFalse();
+    }
+
+    @Test void queuedReviewedCommandCannotStartBeforeValidityWindow() {
+        String id = authorization("REVIEW", "EXECUTING", "LINGYUN_B", 300);
+        jdbc.update("update disposal_authorization set valid_from=? where authorization_id=?", Timestamp.from(at.plusSeconds(30)), id);
+        assertThat(guard.mayStart(id)).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"COMPLETED", "FAILED", "EXPIRED"})
+    void terminalReviewedAuthorizationCannotStartQueuedCommand(String status) {
+        assertThat(guard.mayStart(authorization("REVIEW", status, "LINGYUN_B", 300))).isFalse();
     }
 
     @Test void queuedDirectCommandCannotStartBeforeValidityWindow() {
@@ -152,6 +196,11 @@ class DirectDisposalBackgroundTest {
     @ParameterizedTest
     @ValueSource(strings = {"ACCEPTED", "REJECTED"})
     void directJammingRecordsDispatchAfterItsAuthorization(String result) {
+        // TIMESTAMP rounds nanoseconds to microseconds in both H2 and PostgreSQL. Keep the
+        // clock inside that rounding interval to reproduce an immediately rechecked window.
+        Instant dispatchTime = clock.now().plusMillis(1)
+                .truncatedTo(java.time.temporal.ChronoUnit.MICROS).plusNanos(700);
+        org.mockito.Mockito.doReturn(dispatchTime).when(clock).now();
         String parent = authorization("DIRECT", "COMPLETED", "LINGYUN_B", 300);
         DisposalExecutionGateway.Result dispatchResult = "ACCEPTED".equals(result)
                 ? new DisposalExecutionGateway.Accepted(UUID.randomUUID().toString())
@@ -194,7 +243,7 @@ class DirectDisposalBackgroundTest {
 
     private String authorization(String mode, String status, String channel, long untilSeconds) {
         String id = UUID.randomUUID().toString();
-        String deviceId = "MANUAL".equals(channel) ? null : jdbc.queryForObject("select device_id from ops_device order by device_id limit 1", String.class);
+        String deviceId = "MANUAL".equals(channel) ? null : scopedDeviceId;
         jdbc.update("insert into disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,device_id,channel,reason,requested_by,requested_at,approved_by,approved_at,valid_from,valid_until,status,policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at,authorization_mode) values (?,?,'COUNTERMEASURE','UAV_EVENT',?,?,?,'隔离后台验证',?,?,?,?,?,?,?,'demo-v1',?,?,'mock',0,?,?,?)", id, "BG-" + id.substring(0, 20), eventId, deviceId, channel, userId, Timestamp.from(at.minusSeconds(60)), "REVIEW".equals(mode) ? userId : null, "REVIEW".equals(mode) ? Timestamp.from(at.minusSeconds(60)) : null, Timestamp.from(at.minusSeconds(60)), Timestamp.from(at.plusSeconds(untilSeconds)), status, ORG, DISTRICT, Timestamp.from(at), Timestamp.from(at), mode);
         return id;
     }

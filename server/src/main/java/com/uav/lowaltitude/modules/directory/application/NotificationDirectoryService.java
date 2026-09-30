@@ -19,6 +19,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 统一的是对象关联和历史摘要；每条业务仍由原有状态机判断能否通知。 */
 @Service
 public class NotificationDirectoryService {
+ @org.springframework.beans.factory.annotation.Autowired(required=false)
+ private com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport simulator;
+ private boolean simulatorChannel(String type,String endpoint){return "API".equals(type)&&com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport.ENDPOINT.equals(endpoint)&&simulator!=null&&simulator.enabled();}
+ private boolean supportedChannel(RecipientSnapshot target){return simulatorChannel(target.channelType(),target.endpointRef())||("MOCK".equals(target.channelType())&&(simulator==null||!simulator.enabled()));}
  public static final String SUPERIOR_RECIPIENT="fixed-superior-recipient";
  private final DirectoryRepository repo;private final AppClock clock;private final Environment env;private final HandoffChannelPort channel;
  public NotificationDirectoryService(DirectoryRepository repo,AppClock clock,Environment env,HandoffChannelPort channel){this.repo=repo;this.clock=clock;this.env=env;this.channel=channel;}
@@ -27,6 +31,8 @@ public class NotificationDirectoryService {
   if(row.contactId()!=null){var c=repo.contact(row.contactId());if(c==null||!Objects.equals(c.orgId(),row.orgId())||!c.roles().contains(contactRole(row.purpose())))return "接收联系人业务角色或单位关联已变更";}
   if(row.contactId()!=null&&(!row.contactEnabled()||(row.contactValidUntil()!=null&&row.contactValidUntil()<=now)))return "接收联系人已停用或超过有效期";
   if("NONE".equals(row.channelType()))return "通知渠道尚未配置";
+  if(simulatorChannel(row.channelType(),row.endpointRef()))return simulator.online()?null:"数据模拟器接收端未连接或心跳已失效";
+  if(simulator!=null&&simulator.enabled())return "通知尚未切换到数据模拟器通道";
   if(!"MOCK".equals(row.channelType()))return "正式通知渠道尚未接通";
   if(!simulationEnvironment())return "当前环境不允许使用模拟通知渠道";
   return null;
@@ -51,7 +57,7 @@ public class NotificationDirectoryService {
  }
  public String maintenanceBlocker(RecipientSnapshot target,String sourceMode){
   if(!target.configured())return target.blockedReason();
-  if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return "通知渠道尚未接通或不允许此数据来源";
+  if(!supportedChannel(target)||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return "通知渠道尚未接通或不允许此数据来源";
   return null;
  }
  public MaintenanceOutcome dispatchMaintenance(String taskId,String attemptId,RecipientSnapshot target,String sourceMode,String material){
@@ -70,7 +76,7 @@ public class NotificationDirectoryService {
  @Transactional public void freezeMaintenance(String taskId,RecipientSnapshot target,DeliveryOutcome result){repo.maintenanceNotice(taskId,target,result);}
  public record MaintenanceOutcome(DeliveryOutcome result,String state) { }
  public DirectoryRepository.MaintenanceNotice maintenanceNotice(String taskId){return repo.maintenanceNotice(taskId);}
- public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!"MOCK".equals(target.channelType())||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null||result.deliveryStatus()==null||result.receiptStatus()==null
+ public DeliveryOutcome deliver(RecipientSnapshot target,String sourceMode,HandoffDispatch dispatch){if(!target.configured())return unavailable(target.blockedReason());if(!supportedChannel(target)||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return unavailable("通知渠道尚未接通或不允许此数据来源");try{var result=channel.deliver(dispatch);return result==null||result.deliveryStatus()==null||result.receiptStatus()==null
     ||!HandoffRules.DELIVERY_STATUSES.contains(result.deliveryStatus())||!HandoffRules.RECEIPT_STATUSES.contains(result.receiptStatus())
     ||"PENDING_DELIVERY".equals(result.deliveryStatus())?unknownDelivery():result;}catch(RuntimeException e){return unknownDelivery();}}
  @Transactional public void freezeHandoff(String id,RecipientSnapshot snapshot){repo.freeze("handoff",id,snapshot);}

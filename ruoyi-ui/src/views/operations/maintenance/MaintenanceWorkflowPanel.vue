@@ -1,4 +1,5 @@
 <script setup>
+import { userFacingMessage } from '@/utils/userMessages';
 import { computed, ref } from 'vue';
 import { formatTime } from '@/utils/format.js';
 import { maintenanceMeta } from './useMaintenanceWorkflow.js';
@@ -20,7 +21,7 @@ function save() { if (allowed('SAVE_PROGRESS') && note.value.trim().length <= 10
     <div class="maintenance-meta"><span>上报时间 <b>{{ formatTime(task.reported_at) }}</b></span><span>关联计划 <b>{{ task.plan_no || '无查看权限' }}</b></span><span>处理人 <b>{{ workflow.assigned_to_name || '待接手' }}</b></span><el-button link type="primary" @click="details=true">查看上报详情</el-button></div>
     <el-steps v-if="workflow.state!=='LEGACY_HANDLED'" :active="meta.step" finish-status="success" align-center class="maintenance-steps"><el-step title="待处理" /><el-step title="处理中" /><el-step title="待恢复核验" /><el-step title="已完成" /></el-steps>
     <el-alert v-else title="此记录为旧流程已反馈，不能作为设备恢复凭据。" type="info" :closable="false" show-icon />
-    <el-alert v-if="workflow.blocked_reason" :title="workflow.blocked_reason" type="warning" :closable="false" show-icon />
+    <el-alert v-if="workflow.blocked_reason" :title="userFacingMessage(workflow.blocked_reason)" type="warning" :closable="false" show-icon />
     <div v-if="workflow.open_incidents?.length" class="maintenance-incident-list"><p class="muted">设备尚有未恢复的异常事件。支持恢复核验的事件可在此核查，核验后再确认待办恢复。</p><article v-for="incident in workflow.open_incidents" :key="incident.incident_id"><span>{{ incident.reason }}</span><el-button v-if="incident.allowed_actions?.includes('VERIFY_RECOVERY') && !['COMPLETED','LEGACY_HANDLED'].includes(workflow.state)" :disabled="busy || locked || pending" link type="primary" @click="emit('recover-incident',incident)">核验事件恢复</el-button><small v-else class="muted">{{ incident.stage==='REBOOTING' ? '等待设备指令回执' : '需先按设备异常流程处理' }}</small></article></div>
     <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" show-icon />
     <el-button v-if="pending" type="primary" :loading="busy" @click="emit('retry')">按原请求重试确认</el-button>

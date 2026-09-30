@@ -203,6 +203,9 @@ class TargetReadApiTest {
         assertThat(data.path("items").get(1).path("target_id").asText()).isEqualTo(targetUnknownTime);
         JsonNode latest = data.path("items").get(0).path("latest_state");
         assertThat(latest.path("observed_at").asLong()).isEqualTo(T0.plusSeconds(9).toInstant().toEpochMilli());
+        assertThat(data.path("items").get(0).path("map_expires_at").asLong())
+                .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
+        assertThat(data.path("items").get(1).has("map_expires_at")).isFalse();
         assertThat(latest.path("location").path("coordinate_system").asText()).isEqualTo("WGS84");
         assertThat(latest.path("location").path("longitude").decimalValue()).isEqualByComparingTo("120.125");
         assertThat(latest.path("field_issues").findValuesAsText("field"))

@@ -1,5 +1,9 @@
 # low-altitude-server
 
+2026-09-30：`local,qa` 默认开启飞行计划时段推进，每 60 秒扫描一次，启动后自动补处理已过期的待执行/执行中计划；结束时间到达后记为“已完成”，已取消计划不变。这仅表示计划时段结束，不代表已确认实际起降或飞离。固定状态测试可显式设置 `APP_FLIGHT_STATUS_ADVANCE_ENABLED=false`；普通 local 与生产默认值不变。
+
+2026-09-30：`local,qa` 联合测试覆盖层启用自动短信、自动语音和本机四通道 QA 设备准备；普通 `local` 保持原默认值。自动通知仍按事件、观测、飞手及接收端配置逐项校验，`POST /api/v1/local-interface-simulator/bindings` 连接实时接收端时会把已有且启用的过期 QA MOCK 通道切换到数据模拟器通道，不修改联系人。旧 `app.qa.notification-setup.enabled` 入口不必为此开启。相同单位和区域的模拟计划可重复调用 `countermeasure-device` 并取得原 `QA-LOCAL-CM4`，不同范围或本机连接配置冲突时返回 409。
+
 2026-09-28：补齐业务前台已使用的 `/api/v1/evidence-ledger` 只读接口，统一录像、图片、轨迹及设备指令的台账、筛选、统计、精确详情、关联材料和 CSV。复用现有文件权限与保管规则，不迁移或重写历史记录；原 `/evidence-files`、`/evidence-chains` 保持兼容。见[接口修复说明](../docs/证据台账接口修复-2026-09-28.md)。
 
 ### 2026-09-28 第十轮续测修复
@@ -37,6 +41,8 @@
 T02 只读契约与设备运维模型使用独立表：契约表保留 `device/target/track/alarm` 等稳定名称，既有设备运维与 live 感知表使用 `ops_*` 前缀。`device:read/target:read/alarm:read` 是独立动作权限，不能由运维菜单权限或 `ROLE-ADMIN` 名称隐式推导；生产迁移只建目录，不自动授权。合成动作授权同时要求 `local`/`test` profile 与 `app.dev-seed.enabled=true`，生产 profile 即使误开该属性也不会加载授权 Seeder。
 
 ## 本地启动
+
+2026-09-29：目标列表新增可空 `map_expires_at`，按最新观测时间加当前融合配置 `identity.terminate_after_ms` 计算；没有观测时不返回。大屏地图目标透传 `observed_at` 与 `map_expires_at`，前台据此移除过期实时点。该只读展示契约不删除目标、告警或风险，不推进飞离、解除或处置状态。
 
 准备 JDK 17 和 Docker；用 Wrapper 固定 Maven 版本。本仓库 local API 端口为 8081、管理前端 5175；业务前台如需接入，应显式将 API 代理改为 8081。local 默认数据库是独立的 `houtaiguanli`，与旧工作区 `uav` 库分开。以下数据库必须是隔离开发实例，不使用生产库或已有业务库作试验。
 
@@ -260,6 +266,8 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 2026-09-23：三类规则只服务前台告警到处罚，不控制人工按钮。核实规则全部满足后自动核实属实。反制规则全部满足、事件已到待反制，且证据、急停和唯一可用设备都允许时，自动发起一次直接反制，不写审批人。干扰完成后，通知处罚规则全部满足才自动通知处罚部门；未满足时交接仍在，前台「通知处罚部门」可以手动发送。本地预置每类两条启用规则。生产环境默认不启用该引擎。
 
+2026-09-29：自动规则主体发起的直接授权，在排队实际发送和反制后的干扰续链前重新检查当前反制规则。引擎关闭、条件停用、运行记录缺失或版本变化、时段不符、当前事实未知/过期/不满足时停止推进；规则读取异常同样阻断。人工直接授权保持现有权限与范围检查，不受自动规则启停控制；停止命令继续走原安全通路。
+
 2026-09-18：`GET /api/v1/legality-evaluations` 新增可选布尔筛选 `needs_attention`。为 true 时返回系统结论 `UNDETERMINED` 或既有 `needs_review=true` 的并集；同一条不重复计数，权限、目标类别、最新记录、分页及 total 共用数据库谓词。其他筛选继续取交集，为 false 时返回该并集的补集；不改变判定结果、人工复核状态或历史记录。业务前台默认待处理队列使用此参数，管理后台原调用不传参时不受影响。
 
 ## 单目标 MQTT 通知测试（2026-09-18）
@@ -300,6 +308,8 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 2026-09-23 合法性读取优化：新增 `/api/v1/legality-evaluations/summary`，单次条件聚合替代业务前台五次串行列表统计，共用原列表权限、筛选及最新记录规则。无需数据库迁移，不修改历史。需同步部署业务前台及本后端，详细字段见 `../docs/backend-stage7/rule-engine-api-contract.md`。
 
 ### 飞行计划当前风险读取（2026-09-23）
+
+2026-09-29 后续实现：按已确认规则，C04 仅在新的可信实测位置明确离开原风险范围时保存独立解除事实；通知、签收、停报不解除。既有 C04 评估链追加 `risk_clearance_evidence`，读取不写。所有风险列表/详情新增 `current_status/current_reason/current_observed_at`，与当前风险列表同源；已保存 CLEARED 移入历史，后续观测过期不复燃。C05 与缺权威后续依据的类型仍 UNKNOWN。本条替代下段“其他类型暂缺持续／解除契约”中 C04 的旧限制，详细边界和本轮验证计划见 [C04 风险解除证据](../docs/designs/2026-09-29-risk-clearance.md)。
 
 `GET /api/v1/risks/current` 必填 `plan_id`，支持 `page`、`size`、`exclude_demo_samples`；先检查 `risk:read` 与 `flight:read`，复用原风险数据范围。响应包含 `items[{risk,current_status,current_reason}]`、`total`、`current_total`、`uncertain_total`、`as_of`。在只读事务中先按持续依据分类再分页，不以发生时间或通知状态替代风险持续性。EXCLUDED 不列入；气象有效期内 CURRENT，未到有效期不列入，过期及缺少持续依据 UNKNOWN。其他类型暂缺持续／解除契约，显示 UNKNOWN，不新增人工必经步骤。旧列表、历史与通知权限不变。业务前台已接入；管理端没有该接口的直接消费者。RiskReadApiTest 覆盖旧记录、通知独立性、排除、过期、未到期、50条跨页及权限。
 
@@ -396,3 +406,32 @@ PostgreSQL 夹具额外支持 `PLAN_DUE`：仅将隔离种子计划设置到当�
 `RadarLiveBrowserFixtureTest#serveBrowserFixture` 需显式 `-Dqa.radar.live.browser=true` 与独立 PostgreSQL URL `radar_browser_verify_*`。HTTP 和雷达端口仅监听回环，正常管理端登记 `QA-F31-TCP` 并创建、配置、启动调测。通过 `target/radar-live-browser/manifest.json` 读取端口，向同目录 `control` 写入 `RUN`、`HOLD`、`QUIET`、`CLOSE` 或 `STOP`。夹具只响应登录、心跳、工作模式寄存器和 RTK 查询，并发送持续 TCP 航迹；最长 40 分钟。它会显式标记该测试设备为 simulated，不能用于正式验收或真实射频动作。结束必须写入 STOP 并核对正常测试退出。原始 x/y/z 保留厂家坐标含义，未经验证的 RTK 不可替代 WGS-84/AGL 转换依据。
 
 连续航迹回归需同时运行 `TcpMonitoringEventTest` 和 `TcpMonitoringPostgresTest`：同一目标连续帧保持一个目标/链路/航迹，增加不同帧的点，重复帧不得重复插入。PG 重复键不得被吞掉后继续使用已中止事务。
+
+### 2026-09-29 排队指令授权窗口回归
+
+普通审批与直接反制授权在设备启动指令实际发送前均重新检查当前状态和有效窗口：仅 APPROVED/EXECUTING 且已到开始时间、未到结束时间可继续。排队期间过期或转入终态的启动指令取消，不补造发送时刻或设备回执；四通道全关和凌云停止指令仍可进入安全停止流程。外部协议授权的既有兼容约定保持。
+
+回归覆盖 H2 与隔离 PostgreSQL 的普通审批过期、未生效、终态、DIRECT 撤权/范围变化及急停。实际队列用例还验证重复调度不再下发、无发送时刻/回执，以及过期后全关指令可排队。
+
+
+### 2026-09-29 设备故障与独立回执回归
+
+四通道与凌云启动在入队及实际发送前检查启用、ONLINE 与明确 BAD 故障状态；排队后变化取消未发送启动，不生成发送时刻/回执。停止/全关保留原安全流程，UNKNOWN 不擅自等同明确故障。处置授权因设备故障受阻保留 DEVICE_FAULT 事件和授权历史，前台说明未下发；独立协议指令无关联处置授权时不运行授权结算。新增 V202609290001 迁移已在隔离PostgreSQL和当前本地业务库验证。
+
+
+### 2026-09-29 处置设备占用
+
+处置启动复用设备已有活动工作判据：未完成指令（QUEUED/SENT/ACCEPTED）、调测或跟踪任务存在时返回DEVICE_BUSY并保留授权及事件。执行与续链均在现有设备行锁下检查，跨事件、跨操作者不能同时入队启动；四通道全关和凌云停止不受该新增启动限制。新增迁移V202609290002保留独立占用原因，不归为设备故障。
+
+### 2026-09-29 凌云迟到回执
+
+已实际下发且随后超时或取消的凌云指令，收到通过 broker、厂商、设备类型、设备外部编号和 msgNo 关联校验的迟到回执后，以 PROTOCOL_B_LATE 保存到原命令。保留原状态、超时或取消原因，不再次触发处置结算、重发或自动续链；并发重复回执在原命令行锁下去重。未下发的取消指令不接纳此类回执，retained、非 QoS 1、身份不符继续拒绝。前台证据详情明确区分迟到成功、失败和原任务结论。
+
+正常与迟到回执均校验完整设备来源；同一 broker 下其他厂商或设备类型即使外部编号与 msgNo 相同，也不能推进原命令或写入原命令回执。
+
+
+### 自动核实与自动反制的当前判定校验（2026-09-29）
+
+自动核实落笔和自动反制新建授权前，须确认传入的 automation_run_id 仍为本事件、本类别当前的 PASS 判定，并重算当前引擎、规则版本、时段、范围和观测条件。运行记录在核对期间变化则跳过本轮，不把旧 PASS 或其他事件的判定写入新核实历史。自动反制获取设备锁后再次核对；人工核实和人工直接授权入口维持各自原有规则。
+
+验证：AlarmRuleVerificationTest/AlarmRuleVerificationPostgresTest、AlarmRuleCounterTest 与 AutomationRuntimeEligibilityTest；统计跨年边界用 ReportingApiTest/OperationsPostgresTest，浏览器隔离夹具 ReportingBoundaryBrowserFixtureTest 仅对显式 qa.reporting.boundary.browser=true 开放，使用 stage456_verify_* 随机 schema，样本不代表真实案件或处罚结果。

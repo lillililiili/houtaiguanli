@@ -11,6 +11,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 模拟状态回执，不拨号、不实际播放音频，也不代表真实接收人听到录音。 */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(prefix="app.notifications",name="transport",havingValue="mock",matchIfMissing=true)
 public class LocalAdvisoryVoiceAdapter implements AdvisoryVoicePort {
     private final Environment environment;
     private final AdvisoryVoiceRecording configuredRecording;

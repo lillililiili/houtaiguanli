@@ -28,9 +28,9 @@ class LocalCountermeasure4ChSeederTest {
         assertThat(context.containsBean("localCountermeasure4ChSeeder")).isFalse();
         assertThat(context.containsBean("localCountermeasure4ChSimulator")).isFalse();
         assertThat(LocalCountermeasure4ChSeeder.class.getAnnotation(Profile.class).value())
-                .containsExactly("!production & local");
+                .containsExactly("local & qa & !prod & !production");
         assertThat(LocalCountermeasure4ChSimulator.class.getAnnotation(Profile.class).value())
-                .containsExactly("!production & local");
+                .containsExactly("local & qa & !prod & !production");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?",
                 Integer.class, LocalCountermeasure4ChSeeder.DEVICE_NO)).isZero();
     }

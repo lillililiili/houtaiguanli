@@ -64,7 +64,7 @@ class LegalityReviewApiTest {
     @Autowired RuleEngineHooks hooks;
     @SpyBean AuditService audit;
 
-    private String suffix, orgId, district, target, run, evaluation, session;
+    protected String suffix, orgId, district, target, run, evaluation, session;
 
     @TestConfiguration
     static class Stubs {
@@ -295,8 +295,10 @@ class LegalityReviewApiTest {
                 .andExpect(jsonPath("$.data.items[0].evaluation_id").value(evaluation))
                 .andExpect(jsonPath("$.data.items[0].object_type_code").value("UAV"))
                 .andExpect(jsonPath("$.data.items[0].plan_id").doesNotExist());
-        for (String objectType : List.of("BIRD", "UNKNOWN")) {
-            jdbc.update("update target set object_type_code=? where target_id=?", objectType, target);
+        for (String classification : List.of("BIRD:BIRD_FLOCK", "UNKNOWN:BALLOON", "UNKNOWN:KITE", "UNKNOWN:UNKNOWN")) {
+            String[] parts = classification.split(":");
+            String objectType = parts[0];
+            jdbc.update("update target set object_type_code=?,subtype=? where target_id=?", objectType, parts[1], target);
             mvc.perform(get(path + "&object_type_code=UAV").header("Authorization", bearer(session)))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0))
                     .andExpect(jsonPath("$.data.items").isEmpty());
@@ -324,6 +326,23 @@ class LegalityReviewApiTest {
         mvc.perform(get("/api/v1/legality-evaluations?object_type_code=PERSON")
                         .header("Authorization", bearer(session)))
                 .andExpect(status().isBadRequest());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"LEGAL,NULL", "ILLEGAL,0", "ILLEGAL,99", "ILLEGAL,NULL"})
+    void reliableConclusionsDoNotRequireReviewRegardlessOfScore(String conclusion, String score) throws Exception {
+        String id = "s7r-reliable-" + suffix;
+        insertEvaluation(id, run, conclusion, "[]", "NULL".equals(score) ? null : "LOW", "NULL".equals(score) ? null : new BigDecimal(score),
+                "SUFFICIENT", T0.plusDays(1), null);
+        insertReview(id, "PENDING_REVIEW", 0);
+        mvc.perform(get("/api/v1/legality-evaluations/" + id).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.legal_status").value(conclusion))
+                .andExpect(jsonPath("$.data.decision_assurance.status").value("SUFFICIENT"))
+                .andExpect(jsonPath("$.data.decision_assurance.review_required").value(false));
+        mvc.perform(get("/api/v1/legality-evaluations?target_id=" + target + "&latest_only=true&needs_review=true")
+                .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=?", Integer.class, id)).isZero();
     }
 
     @Test
@@ -635,14 +654,14 @@ class LegalityReviewApiTest {
         insertEvaluation(id, runId, legalStatus, violations, grade, score, null, T0, null);
     }
 
-    private void insertEvaluation(String id, String runId, String legalStatus, String violations, String grade, BigDecimal score,
+    protected void insertEvaluation(String id, String runId, String legalStatus, String violations, String grade, BigDecimal score,
             String assurance, OffsetDateTime evaluatedAt, String alarmId) {
         String hits = "[{\"rule_code\":\"C01\",\"rule_version_id\":\"seed-stage7-rule-C01\",\"result_code\":\"FAIL\",\"reason_code\":\"NO_PLAN_CANDIDATE\",\"facts\":{\"plan_match_code\":\"NONE\"},\"params\":[{\"key\":\"time_window_min\",\"value\":\"10\",\"status\":\"DEMO\"}],\"evidence\":[],\"message\":\"没有可匹配的飞行计划；参数为 DEMO 演示值\"}]";
         jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,supersedes_evaluation_id,assessment_id,alarm_outcome,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons) values (?,?,?,'ACTIVE','TARGET',?,null,null,null,?,?,?,'FRESH','NONE',?,?,?,CAST(? AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('[{\"kind\":\"target\",\"id\":\"" + target + "\"}]' AS JSON),CAST('{}' AS JSON),null,null,null,?,?,?,'mock',?,?,?,CAST(? AS JSON))",
                 id, runId, LocalStage7RuleEngineSeeder.VERSION_1, target, ts(T0), ts(T0), ts(evaluatedAt), legalStatus, score, grade, violations, hits, alarmId, orgId, district, ts(T0), assurance == null ? null : "test-v1", assurance, assurance == null ? null : "[]");
     }
 
-    private void insertReview(String id, String state, long version) {
+    protected void insertReview(String id, String state, long version) {
         jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,?,null,?,?,?,?,?)",
                 id, state, version, orgId, district, ts(T0), ts(T0));
     }

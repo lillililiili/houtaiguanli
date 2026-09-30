@@ -275,6 +275,34 @@ public class PunishmentRepository {
         return count == null ? 0 : count;
     }
 
+    /** Caller has already authorized the case. Case status and confirmed discretion alone are not a result. */
+    public EffectiveDecisionRow effectiveDecision(String caseId) {
+        List<EffectiveDecisionRow> rows = jdbc.query("""
+                SELECT doc.document_id,doc.document_no,doc.issued_at,p.penalty_type,p.fine_amount
+                FROM punishment_case c
+                """ + EffectiveDecisionSql.JOINS + """
+                WHERE c.case_id=:id AND c.source_mode='live'
+                  AND c.owner_org_id IS NOT NULL AND c.district_id IS NOT NULL AND p.discretion_id IS NOT NULL
+                """, Map.of("id", caseId), (rs,n) -> new EffectiveDecisionRow(rs.getString("document_id"),
+                        rs.getString("document_no"),rs.getObject("issued_at",OffsetDateTime.class),
+                        rs.getString("penalty_type"),rs.getLong("fine_amount")));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public List<DecisionHistoryRow> decisionHistory(String caseId) {
+        return jdbc.query("""
+                SELECT doc.document_id,doc.document_no,doc.status,doc.template_version,doc.issued_at,
+                       doc.revoked_at,doc.revoke_reason,pr.schema_status
+                FROM penalty_decision_document doc
+                LEFT JOIN penalty_discretion p ON p.discretion_id=doc.discretion_id
+                LEFT JOIN penalty_rule pr ON pr.rule_code=p.rule_code
+                WHERE doc.case_id=:id ORDER BY doc.issued_at DESC,doc.document_id DESC
+                """, Map.of("id", caseId), (rs,n) -> new DecisionHistoryRow(rs.getString("document_id"),
+                        rs.getString("document_no"),rs.getString("status"),rs.getString("template_version"),
+                        rs.getObject("issued_at",OffsetDateTime.class),rs.getObject("revoked_at",OffsetDateTime.class),
+                        rs.getString("revoke_reason"),rs.getString("schema_status")));
+    }
+
     private static String documentSelect() {
         return "SELECT f.document_id,f.document_no,f.case_id,f.discretion_id,f.template_version,f.status,f.fields,"
                 + "f.rendered_sha256,f.issued_by,f.issued_by_name,f.issued_at,f.revoked_at,f.revoke_reason,f.version"
@@ -415,6 +443,11 @@ public class PunishmentRepository {
     public record DocumentRow(String documentId, String documentNo, String caseId, String discretionId,
             String templateVersion, String status, String fieldsJson, String renderedSha256, String issuedBy,
             String issuedByName, OffsetDateTime issuedAt, OffsetDateTime revokedAt, String revokeReason, long version) { }
+
+    public record EffectiveDecisionRow(String documentId,String documentNo,OffsetDateTime issuedAt,
+            String penaltyType,long fineAmount) { }
+    public record DecisionHistoryRow(String documentId,String documentNo,String status,String templateVersion,
+            OffsetDateTime issuedAt,OffsetDateTime revokedAt,String revokeReason,String ruleStatus) { }
 
     public record RuleRow(String ruleCode, String violationCode, String title, String legalBasis, long fineMin,
             long fineMax, Long fineReference, String penaltyTypes, String schemaStatus, boolean enabled) { }

@@ -58,7 +58,29 @@ public class AutoVoiceService {
         try {delivery=voice.simulate(claim.mode(),claim.recipient(),claim.recording(),claim.providerKey());}
         catch(RuntimeException uncertain) { /* 可能已经受理，不能把未知直接当失败并重拨。 */ }
         final var receipt=delivery;
+        if(receipt!=null&&"SUBMITTED".equals(receipt.status()))return;
         tx.executeWithoutResult(s->finish(claim,receipt));
+    }
+    /** Preserve the frozen recipient and recording; a newer claim must never consume an older call. */
+    public boolean completeSimulatorReceipt(String eventId,String providerKey,String token,
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,Recording recording,
+            String messageId,String outcome,Long answeredAt,Long completedAt,long requestedAt) {
+        var event=events.lock(eventId,SYSTEM_SCOPE);if(event==null)return false;
+        var task=tasks.find(eventId);long now=clock.nowMillis();
+        if(task==null||token==null||!token.equals(task.token())||!java.util.Objects.equals(providerKey,task.providerKey())
+                ||!"CALLING".equals(task.status())||task.leaseUntil()==null||task.leaseUntil()<now
+                ||requestedAt!=task.leaseUntil()-60000||recipient==null||recording==null||!task.recordingMatches(recording))return false;
+        if("ANSWERED".equals(outcome)) {
+            if(answeredAt==null||answeredAt<requestedAt||answeredAt>now||task.answeredAt()!=null)return false;
+            tasks.answer(eventId,token,messageId,answeredAt,now);return true;
+        }
+        if("PLAYED".equals(outcome)) {
+            if(answeredAt==null||completedAt==null||answeredAt<requestedAt||completedAt<answeredAt||completedAt>now
+                    ||task.answeredAt()==null||!task.answeredAt().equals(answeredAt))return false;
+        } else if(!Set.of("FAILED","TIMEOUT").contains(outcome))return false;
+        finish(new Claim(eventId,event.sourceMode(),token,providerKey,recording,requestedAt,recipient),
+                new AdvisoryVoicePort.Delivery(true,"PLAYED".equals(outcome)?"SIMULATED_PLAYED":"FAILED".equals(outcome)?"FAILED":"UNKNOWN",messageId,answeredAt,completedAt));
+        return true;
     }
     private Claim claim(String id) {
         EventRow event=events.lock(id,SYSTEM_SCOPE);if(event==null)return null;
@@ -103,7 +125,7 @@ public class AutoVoiceService {
         if(events.update(event.eventId(),event.version(),event.state(),Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1)throw new IllegalStateException("Event version changed under lock");
         tasks.append(recordId,event.eventId(),event.version()+1,now,claim.recording(),receipt.providerCallId(),receipt.answeredAt(),receipt.playbackCompletedAt(),AutoVoicePolicy.CODE);
         directory.freezeAdvisoryRecord("ADVISORY_VOICE",recordId,claim.recipient());
-        tasks.finish(event.eventId(),claim.token(),"SIMULATED_PLAYED","模拟接通并播放录音已完成；未实际拨号或播放，不代表飞手听取或目标飞离",recordId,receipt.providerCallId(),receipt.answeredAt(),receipt.playbackCompletedAt(),now);
+        tasks.finish(event.eventId(),claim.token(),"SIMULATED_PLAYED","已收到模拟电话接通及录音播放完成回执；不代表真实通话或目标飞离",recordId,receipt.providerCallId(),receipt.answeredAt(),receipt.playbackCompletedAt(),now);
         audit.record(null,"AUTO_VOICE","SYSTEM","alarm","auto_voice_played","uav_event",event.eventId(),"policy="+AutoVoicePolicy.CODE+"; provider_key="+claim.providerKey()+"; recording_sha256="+claim.recording().sha256()+"; simulated=true","SUCCESS","","");
     }
     /** 纯读取；即使查询多次或页面关闭，都不会创建或触发电话任务。 */

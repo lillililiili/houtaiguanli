@@ -16,14 +16,11 @@ import com.uav.lowaltitude.Application;
 import com.uav.lowaltitude.testsupport.SourceTypeCatalogFixture;
 
 /**
- * production 必须压过 local：阶段 8 的回放种子、回放 Runner 与摄取 Worker 不允许因部署 profile 组合泄入生产。
- * 故意打开 app.dev-seed.enabled 与 app.fusion.replay.run-on-start，证明仅靠 profile/属性门禁就足以阻止它们注册和写表；
- * 生产没有任何来源观测、回放目标或融合事件，但迁移 050/070 登记的 fusion_config demo-v1 与八行来源类型目录必须存在——
- * 它们是引擎运行的结构性目录（参数外置、来源类型外键），不是演示数据。
- * 按 Bean 名断言，不引用 E1/E2 的类型：类被重命名时这里也不会因编译依赖而“默认通过”。
+ * 有效生产配置不注册演示种子、不写样本，迁移目录和显式启用的正式能力继续验证。
+ * 非法模拟开关必须拒绝启动，由 ProductionDevSeedIsolationTest 与 SimulationPolicyTest 单独覆盖。
  */
 class ProductionStage8SeedIsolationTest {
-    @Test void productionNeverRegistersStage8SeederRunnerOrWorker() { assertIsolated("production"); }
+    @Test void productionHasNoReplaySeedsAndHonorsDisabledFusionWorker() { assertIsolated("production"); }
     @Test void productionAlsoWinsOverLocalProfile() { assertIsolated("production,local"); }
 
     private static void assertIsolated(String profiles) {
@@ -32,9 +29,9 @@ class ProductionStage8SeedIsolationTest {
                 // 命令行参数优先级高于 application-local.yml，production,local 组合也只会连到这个隔离 H2。
                 "--spring.datasource.url=jdbc:h2:mem:stage8_seed_" + UUID.randomUUID() + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
                 "--spring.datasource.username=sa", "--spring.datasource.password=", "--spring.datasource.driver-class-name=org.h2.Driver",
-                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=true", "--app.live-device.enabled=false",
+                "--spring.flyway.locations=classpath:db/migration", "--app.dev-seed.enabled=false", "--app.bootstrap-admin.enabled=false", "--app.live-device.enabled=false",
                 "--app.rule-engine.enabled=false", "--app.rule-engine.replay.run-on-start=false",
-                "--app.fusion.replay.run-on-start=true",
+                "--app.fusion.enabled=false", "--app.fusion.replay.run-on-start=false",
                 "--spring.main.banner-mode=off")) {
             assertThat(context.containsBean("localStage8FusionReplaySeeder")).isFalse();
             assertThat(context.containsBean("fusionReplayRunner")).isFalse();

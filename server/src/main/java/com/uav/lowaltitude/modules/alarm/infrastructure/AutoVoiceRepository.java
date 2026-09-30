@@ -41,6 +41,10 @@ public class AutoVoiceRepository {
         if(jdbc.update("UPDATE uav_auto_voice_task SET status='WAITING',reason='已登记补呼，等待后台检查后执行',updated_at=? WHERE event_id=? AND status='FAILED'",now,id)!=1)
             throw new IllegalStateException("Automatic voice retry state changed");
     }
+    public void answer(String id,String token,String callId,long answered,long now) {
+        if(jdbc.update("UPDATE uav_auto_voice_task SET provider_call_id=?,answered_at=?,updated_at=?,reason='模拟器已回报接通，等待录音播放完成回执' WHERE event_id=? AND claim_token=? AND status='CALLING' AND answered_at IS NULL",callId,answered,now,id,token)!=1)
+            throw new IllegalStateException("Automatic voice claim changed");
+    }
     public void append(String recordId,String eventId,long version,long now,Recording recording,String callId,long answered,long completed,String policy) {
         jdbc.update("INSERT INTO uav_event_voice_advisory(record_id,event_id,event_version,created_at,recording_id,recording_name,recording_sha256,transcript,provider_call_id,answered_at,playback_completed_at,policy_code,simulated,delivery_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,TRUE,'SIMULATED_PLAYED')",recordId,eventId,version,now,recording.id(),recording.name(),recording.sha256(),recording.transcript(),callId,answered,completed,policy);
     }

@@ -78,3 +78,16 @@
 ## 7. 待确认（客户）
 
 罚则金额档位与处罚主体（Q 罚则）；外部处罚系统与通知渠道（Q4）；证据保留（Q7）。全部 DEMO。
+
+
+## 8. 有效处罚决定读模型（2026-09-30）
+
+`GET /punishment-cases` 每条记录及 `GET /punishment-cases/{id}` 均追加必有的 `effective_decision`：
+
+- `status` 为 `EFFECTIVE` 或 `NONE`。仅 `EFFECTIVE` 返回 `document_id/document_no/penalty_type/fine_amount/issued_at`；金额仍为整数分，时间仍为 epoch 毫秒。无有效结果不返回金额，不从案件状态或已确认裁量补造结果。
+- 判定复用运行统计现有文书与裁量筛选：live 案件且单位、区域非空；当前最新 ISSUED 文书必须为非 demo 模板，关联 CONFIRMED 裁量及 CONFIRMED 罚则。保留现有最新文书比较规则、撤销文书排除规则及统计口径，不改变案件状态机。
+- `history` 始终是数组，按出具时间及文书 ID 倒序返回文书摘要：`document_id/document_no/status/simulated/issued_at/revoked_at/revoke_reason`。非 live 来源、demo 模板或 DEMO 罚则明确标为模拟；撤销记录保留原时间、原因，不作为当前有效结果。
+- 原 `current_discretion` 与 `issued_document_count` 保持原义；后者包含演示 ISSUED 文书，不能代替有效决定。撤销文书不回退案件状态，也不删除裁量历史。
+- 业务前台“处罚办理结果”读取此投影，区分有效决定、无有效决定与字段尚不可用；拟定/已确认裁量及演示、撤销历史分别标识。后台当前无此字段消费者，新增字段不改变既有动作权限、范围控制与旧响应字段。
+
+此读模型不表示正式出文能力已经接通；现有出文接口仍仅支持模拟模板。隔离测试的合成正式文书不构成实际执法结果。

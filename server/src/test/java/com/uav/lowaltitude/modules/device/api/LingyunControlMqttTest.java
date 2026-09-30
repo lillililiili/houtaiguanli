@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -140,6 +141,37 @@ class LingyunControlMqttTest {
                 Long.class, ok)).isEqualTo(1L);
     }
 
+    @Test void knownFaultRejectsStartButAllowsStop() {
+        Binding radar = register("radar");
+        online(radar);
+        jdbc.update("UPDATE ops_device_state SET health_code='BAD' WHERE device_id=?", radar.opsDeviceId());
+        assertThatThrownBy(() -> control.enqueue(radar.opsDeviceId(),key(),"AUTH-FAULT",1,10000,null,"故障设备不得启动"))
+                .isInstanceOf(com.uav.lowaltitude.platform.api.ApiException.class).hasMessageContaining("故障");
+        assertThat(control.enqueue(radar.opsDeviceId(),key(),"AUTH-STOP",0,10000,null,"故障后停止")).isNotBlank();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"DISABLED","OFFLINE","FAULT"})
+    void changedDeviceCannotPublishQueuedStart(String changed) {
+        Binding radar = register("radar");
+        online(radar);
+        String command = control.enqueue(radar.opsDeviceId(),key(),"AUTH-QUEUED",1,10000,null,"排队后检查设备");
+        if("DISABLED".equals(changed)) jdbc.update("UPDATE ops_device SET enabled=false WHERE device_id=?",radar.opsDeviceId());
+        else if("OFFLINE".equals(changed)) jdbc.update("UPDATE ops_device_state SET connectivity='OFFLINE' WHERE device_id=?",radar.opsDeviceId());
+        else jdbc.update("UPDATE ops_device_state SET health_code='BAD' WHERE device_id=?",radar.opsDeviceId());
+        // No MQTT supervisor exists in this context: reaching publish would fail this call.
+        control.dispatch(command);
+        control.dispatch(command);
+        var cancelled=jdbc.queryForMap("SELECT status,result_code,issued_at FROM device_command WHERE command_id=?",command);
+        assertThat(cancelled.get("status")).isEqualTo("CANCELLED");
+        assertThat(cancelled.get("result_code")).isEqualTo("DEVICE_NOT_OPERABLE");
+        assertThat(cancelled.get("issued_at")).isNull();
+        String number = jdbc.queryForObject("select command_no from device_command where command_id=?", String.class, command);
+        control.receive(brokerId, owner, radar.controlRespTopic(),
+                resp(number, radar.externalDeviceId(), 0, "unsolicited").getBytes(StandardCharsets.UTF_8), 1, false, clock.nowMillis());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?",Integer.class,command)).isZero();
+    }
+
     @Test void successFailureTimeoutAndDoesNotWriteFusionInbox() {
         Binding radar = register("radar");
         online(radar);
@@ -169,7 +201,9 @@ class LingyunControlMqttTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?", Long.class, timed)).isZero();
     }
 
-    @Test void realMqttPublishesCommandAndCompletesOnResponse() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {-1, 0, 1})
+    void realMqttPublishesCommandAndCompletesOnResponse(int lateCode) throws Exception {
         int port;
         try (var socket = new java.net.ServerSocket(0)) { port = socket.getLocalPort(); }
         Properties props = new Properties();
@@ -187,6 +221,12 @@ class LingyunControlMqttTest {
                 null, null, 3000, control);
         MqttClient device = new MqttClient("tcp://127.0.0.1:" + port, "dev-" + key(),
                 new org.eclipse.paho.client.mqttv3.persist.MemoryPersistence());
+        Binding otherProvider = mqtt.binding(configuration.register(new Registration(LingyunEnvelope.PROTOCOL,
+                brokerId, radar.providerCode() + "-other", radar.externalDeviceId(), "radar", "replay", org, district,
+                "P5-OTHER-" + key(), "同编号不同厂商设备", null, null, null), key()), false);
+        Binding otherType = mqtt.binding(configuration.register(new Registration(LingyunEnvelope.PROTOCOL,
+                brokerId, radar.providerCode(), radar.externalDeviceId(), "ifr", "replay", org, district,
+                "P5-TYPE-" + key(), "同编号不同类型设备", null, null, null), key()), false);
         AtomicInteger seen = new AtomicInteger();
         AtomicReference<String> msgNo = new AtomicReference<>();
         try {
@@ -195,20 +235,38 @@ class LingyunControlMqttTest {
                 seen.incrementAndGet();
                 JsonNode root = mapper.readTree(message.getPayload());
                 msgNo.set(root.path("head").path("msgNo").asText());
-                device.publish(radar.controlRespTopic(),
+                if (lateCode < 0) {
+                    // Both foreign topics are subscribed because these are registered bindings.
+                    // A command number alone must not let either identity finish this command.
+                    byte[] foreign = resp(msgNo.get(), radar.externalDeviceId(), 1, "foreign-binding").getBytes(StandardCharsets.UTF_8);
+                    device.publish(otherProvider.controlRespTopic(), foreign, 1, false);
+                    device.publish(otherType.controlRespTopic(), foreign, 1, false);
+                }
+                if (lateCode < 0) device.publish(radar.controlRespTopic(),
                         resp(msgNo.get(), radar.externalDeviceId(), 0, "ok").getBytes(StandardCharsets.UTF_8), 1, false);
             });
             supervisor.reconcile();
             String commandId = control.enqueue(radar.opsDeviceId(), key(), "AUTH-MQTT", 1, 10000, null, "真实会话");
             swallowOutbox(commandId);
             String commandNo = jdbc.queryForObject("SELECT command_no FROM device_command WHERE command_id=?", String.class, commandId);
+            jdbc.update("update device_command set status='SENT',issued_at=? where command_id=?", clock.nowMillis(), commandId);
             supervisor.publish(brokerId, radar.controlTopic(),
                     LingyunControlEnvelope.encode(commandNo, radar.externalDeviceId(), clock.nowMillis(), 1, 10000, Map.of()));
+            if (lateCode >= 0) {
+                Awaitility.await().atMost(Duration.ofSeconds(10)).until(() -> seen.get() > 0);
+                control.timeout(commandId, "真实 MQTT 等待回执超时");
+                byte[] late = resp(commandNo, radar.externalDeviceId(), lateCode, "late-wire-result").getBytes(StandardCharsets.UTF_8);
+                device.publish(radar.controlRespTopic(), late, 1, false);
+                device.publish(radar.controlRespTopic(), late, 1, false);
+            }
             Awaitility.await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
                 supervisor.reconcile();
                 assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, commandId))
-                        .isEqualTo("SUCCEEDED");
+                        .isEqualTo(lateCode < 0 ? "SUCCEEDED" : "TIMED_OUT");
+                assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?", Integer.class, commandId)).isEqualTo(1);
             });
+            assertThat(jdbc.queryForObject("select receipt_kind from command_receipt where command_id=?", String.class, commandId))
+                    .isEqualTo(lateCode < 0 ? "PROTOCOL_B" : "PROTOCOL_B_LATE");
             assertThat(seen.get()).isPositive();
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inbox_message WHERE source=?", Long.class, radar.source())).isZero();
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM inbox_message WHERE source LIKE 'control-resp:%' AND source_msg_id=?",
@@ -219,6 +277,49 @@ class LingyunControlMqttTest {
             device.close();
             server.stopServer();
         }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"0,TIMED_OUT", "1,TIMED_OUT", "0,CANCELLED", "1,CANCELLED"})
+    void lateCorrelatedReplyStaysWithOriginalCommandWithoutChangingNewerCommand(int resultCode, String terminalStatus) throws Exception {
+        Binding radar = register("radar");
+        online(radar);
+        String original = control.enqueue(radar.opsDeviceId(), key(), "AUTH-LATE", 1, 10000, null, "迟到关联验证");
+        swallowOutbox(original);
+        jdbc.update("update device_command set status='SENT',issued_at=? where command_id=?", clock.nowMillis(), original);
+        control.timeout(original, "已发出但未按时收到回执；实际执行情况待核查");
+        if ("CANCELLED".equals(terminalStatus)) jdbc.update("update device_command set status='CANCELLED',result_code='OPERATOR_CANCELLED' where command_id=?", original);
+        String newer = control.enqueue(radar.opsDeviceId(), key(), "AUTH-NEWER", 0, 10000, null, "后续停止命令");
+        swallowOutbox(newer);
+        String originalNo = jdbc.queryForObject("select command_no from device_command where command_id=?", String.class, original);
+        byte[] reply = resp(originalNo, radar.externalDeviceId(), resultCode, "late-result").getBytes(StandardCharsets.UTF_8);
+        control.receive(brokerId, owner, radar.controlRespTopic(), reply, 1, true, clock.nowMillis());
+        control.receive(brokerId, owner, radar.controlRespTopic(), reply, 0, false, clock.nowMillis());
+        control.receive(brokerId, owner, radar.controlRespTopic().replace("fixture-provider", "another-provider"), reply, 1, false, clock.nowMillis());
+        control.receive(brokerId, owner, radar.controlRespTopic().replace("/radar/", "/ifr/"), reply, 1, false, clock.nowMillis());
+        control.receive(brokerId, owner, radar.controlRespTopic(), resp(originalNo, "another-device", resultCode, "wrong").getBytes(StandardCharsets.UTF_8), 1, false, clock.nowMillis());
+        assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?", Integer.class, original)).isZero();
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        var start = new java.util.concurrent.CyclicBarrier(2);
+        try {
+            var tasks = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 0; i < 2; i++) tasks.add(pool.submit(() -> {
+                start.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                control.receive(brokerId, owner, radar.controlRespTopic(), reply, 1, false, clock.nowMillis());
+                return null;
+            }));
+            for (var task : tasks) task.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally { pool.shutdownNow(); }
+        control.receive(brokerId, owner, radar.controlRespTopic(), reply, 1, false, clock.nowMillis());
+        assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?", Integer.class, original))
+                .as("迟到结果应留在原任务，重复回执只保留一份").isEqualTo(1);
+        assertThat(jdbc.queryForObject("select receipt_kind from command_receipt where command_id=?", String.class, original)).isEqualTo("PROTOCOL_B_LATE");
+        assertThat(jdbc.queryForObject("select device_result_code from command_receipt where command_id=?", String.class, original))
+                .isEqualTo(resultCode == 0 ? "PROTOCOL_B_OK" : "PROTOCOL_B_FAILED");
+        assertThat(jdbc.queryForObject("select status from device_command where command_id=?", String.class, original)).isEqualTo(terminalStatus);
+        assertThat(jdbc.queryForObject("select result_code from device_command where command_id=?", String.class, original)).isEqualTo("CANCELLED".equals(terminalStatus) ? "OPERATOR_CANCELLED" : "ADAPTER_TIMEOUT");
+        assertThat(jdbc.queryForObject("select status from device_command where command_id=?", String.class, newer)).isEqualTo("QUEUED");
+        assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?", Integer.class, newer)).isZero();
     }
 
     private Binding register(String type) {
