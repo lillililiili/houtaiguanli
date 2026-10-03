@@ -20,7 +20,7 @@ app:
     replay:
       run-on-start: false
   automation-rules:
-    enabled: false
+    enabled: ${APP_AUTOMATION_RULES_ENABLED:true}
   advisory:
     auto-sms:
       enabled: true

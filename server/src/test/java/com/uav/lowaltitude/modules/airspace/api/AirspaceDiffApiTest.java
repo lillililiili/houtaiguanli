@@ -1,10 +1,10 @@
 package com.uav.lowaltitude.modules.airspace.api;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -14,7 +14,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -23,7 +22,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /** 版本差异：字段差在应用层比对；几何差只在 PostGIS 上算，H2 下如实标为暂不可用。 */
-@SpringBootTest(properties = {"app.dev-seed.enabled=false", "app.airspace.legacy-write-enabled=true"})
+@SpringBootTest(properties = {"app.dev-seed.enabled=false"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AirspaceDiffApiTest {
@@ -44,21 +43,15 @@ class AirspaceDiffApiTest {
         jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", orgId, "ORG-9D-" + suffix, "差异测试机构");
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", district, "DIST-9D-" + suffix, "差异测试区域");
         session = user();
-        MvcResult created = mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + session).header("Idempotency-Key", key())
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"airspace_no\":\"KY-9D-" + suffix + "\",\"name\":\"差异演示\",\"kind_code\":\"PROHIBITED\",\"boundary\":" + SQUARE
-                        + ",\"min_altitude_m\":0,\"max_altitude_m\":120,\"altitude_datum\":\"AMSL\",\"valid_from\":" + T0.toEpochMilli()
-                        + ",\"owner_org_id\":\"" + orgId + "\",\"district_id\":\"" + district + "\"}"))
-                .andExpect(status().isCreated()).andReturn();
-        airspaceId = json.readTree(created.getResponse().getContentAsString()).path("data").path("airspace_id").asText();
-        firstVersionId = json.readTree(created.getResponse().getContentAsString()).path("data").path("airspace_version_id").asText();
-        MvcResult second = mvc.perform(post("/api/v1/airspaces/" + airspaceId + "/versions").header("Authorization", "Bearer " + session)
-                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
-                .content("{\"kind_code\":\"RESTRICTED\",\"boundary\":" + SQUARE_EAST + ",\"min_altitude_m\":0,\"max_altitude_m\":200,"
-                        + "\"altitude_datum\":\"AMSL\",\"valid_from\":" + T0.plusSeconds(3600).toEpochMilli()
-                        + ",\"change_reason\":\"扩大范围并抬高上限\",\"expected_version\":0}"))
-                .andExpect(status().isCreated()).andReturn();
-        secondVersionId = json.readTree(second.getResponse().getContentAsString()).path("data").path("airspace_version_id").asText();
+        airspaceId = "as-9d-" + suffix;
+        firstVersionId = "av-9d-1-" + suffix;
+        secondVersionId = "av-9d-2-" + suffix;
+        jdbc.update("insert into airspace (airspace_id,airspace_no,name,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,?,'mock',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",
+                airspaceId, "KY-9D-" + suffix, "差异演示", orgId, district);
+        jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,min_altitude_m,max_altitude_m,altitude_datum,valid_from,valid_to,created_at) values (?,?,1,'PROHIBITED',0,120,'AMSL',?,?,CURRENT_TIMESTAMP)",
+                firstVersionId, airspaceId, Timestamp.from(T0), Timestamp.from(T0.plusSeconds(3600)));
+        jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,min_altitude_m,max_altitude_m,altitude_datum,valid_from,change_reason,created_at) values (?,?,2,'RESTRICTED',0,200,'AMSL',?,'扩大范围并抬高上限',CURRENT_TIMESTAMP)",
+                secondVersionId, airspaceId, Timestamp.from(T0.plusSeconds(3600)));
     }
 
     @AfterEach
@@ -103,12 +96,12 @@ class AirspaceDiffApiTest {
 
     @Test
     void versionFromAnotherAirspaceIsNotFound() throws Exception {
-        MvcResult other = mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + session).header("Idempotency-Key", key())
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"airspace_no\":\"KY-9D-X-" + suffix + "\",\"name\":\"另一片空域\",\"kind_code\":\"PERMITTED\",\"boundary\":" + SQUARE
-                        + ",\"valid_from\":" + T0.toEpochMilli() + ",\"owner_org_id\":\"" + orgId + "\",\"district_id\":\"" + district + "\"}"))
-                .andExpect(status().isCreated()).andReturn();
-        String otherVersionId = json.readTree(other.getResponse().getContentAsString()).path("data").path("airspace_version_id").asText();
+        String otherAirspaceId = "as-9d-x-" + suffix;
+        String otherVersionId = "av-9d-x-" + suffix;
+        jdbc.update("insert into airspace (airspace_id,airspace_no,name,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,?,'mock',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",
+                otherAirspaceId, "KY-9D-X-" + suffix, "另一片空域", orgId, district);
+        jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,valid_from,created_at) values (?,?,1,'PERMITTED',?,CURRENT_TIMESTAMP)",
+                otherVersionId, otherAirspaceId, Timestamp.from(T0));
         // 版本必须属于路径上的空域，否则可以拿别处的版本 ID 读到不该看到的字段。
         mvc.perform(get("/api/v1/airspaces/{a}/versions/{f}/diff/{t}", airspaceId, firstVersionId, otherVersionId)
                         .header("Authorization", "Bearer " + session))
@@ -119,7 +112,7 @@ class AirspaceDiffApiTest {
         String role = "ROLE-9D-" + UUID.randomUUID().toString().substring(0, 8);
         String userId = UUID.randomUUID().toString(), token = UUID.randomUUID().toString();
         jdbc.update("insert into app_role (role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) values (?,?,'',false,true,0,0,0,false)", role, role);
-        jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,'airspace:read','READ',false,current_timestamp),(?,'airspace:manage','OP',false,current_timestamp)", role, role);
+        jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,'airspace:read','READ',false,current_timestamp)", role);
         jdbc.update("insert into app_user (user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values (?,?,?,?,'ACTIVE','unused',0,'ASSIGNED',0,0,0,0)",
                 userId, "airspace-d-" + UUID.randomUUID().toString().substring(0, 8), "差异查看员", role);
         jdbc.update("insert into app_user_data_scope (user_id,org_id,district_id) values (?,?,?)", userId, orgId, district);
@@ -127,5 +120,4 @@ class AirspaceDiffApiTest {
         return token;
     }
 
-    private static String key() { return "diff-" + UUID.randomUUID(); }
 }

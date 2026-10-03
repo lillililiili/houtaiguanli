@@ -51,8 +51,8 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
  * 事件流与复核只增；已出具的决定书内容冻结但**允许作废**；已确认的裁量数字冻结但**允许被 SUPERSEDED**。
  * 只堵不放和只放不堵一样危险——前者逼业务去"删了重开"，后者让已经发出去的文书能被悄悄改掉金额。
  *
- * <p>本轮是第一批（不依赖 E1 的写接口）。契约要求的四处 HTTP 并发与材料包 v2 都要经接口，
- * 落地后按文末 TODO 补齐；现在写死只会红在"接口不存在"上，掩盖真正要验的东西。
+ * <p>立案、指派、裁量、复核和决定书写入入口已关闭。库层约束继续保留，
+ * 这些写入路径不再产生案件、复核或裁量记录。材料包 v2 仍走交接提交。
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -301,123 +301,76 @@ class Stage14PostgresTest {
         }
     }
 
-    /**
-     * 一事件一案的并发保证：两路同时立案，恰一条 201、一条 409 `CASE_ALREADY_EXISTS`。
-     *
-     * <p><b>判据看事件不只看状态（13-28）</b>：`punishment_case_event` 必须恰一条 `FILE`。
-     * 只看"案件表里有一条"是不够的——落败方若在回滚前写了一条 FILE 事件，卷宗里就永远留着
-     * "这个案子被立过两次"，而案件表看起来完全正常。状态可被覆盖，只增的事件流不能。
-     */
+    /** 立案入口已关闭：并发提交也不产生案件或 FILE 事件。 */
     @Test
     @Order(5)
-    void twoRealConnectionsFilingSameHandoffCommitExactlyOne() throws Exception {
+    void filingEndpointIsClosedAndDoesNotCreateACase() throws Exception {
         String filer = session("punishment:file", "punishment:read", "handoff:read", "alarm:read");
         Scope scope = scopeOn(jdbc, suffix + "-f" + nextNo());
+        long casesBefore = jdbc.queryForObject("select count(*) from punishment_case where event_id=?", Long.class, scope.eventId());
+        long eventsBefore = jdbc.queryForObject("select count(*) from punishment_case_event", Long.class);
 
         List<MvcResult> results = race(
                 fileCaseRequest(filer, scope.handoffId(), "file-a-" + UUID.randomUUID()),
                 fileCaseRequest(filer, scope.handoffId(), "file-b-" + UUID.randomUUID()));
 
-        assertThat(results.stream().map(r -> r.getResponse().getStatus()).sorted().toList())
-                .as("同一交接并发立案必须一成一败").containsExactly(201, 409);
-        MvcResult loser = results.stream().filter(r -> r.getResponse().getStatus() == 409).findFirst().orElseThrow();
-        assertThat(json.readTree(loser.getResponse().getContentAsString()).path("error").path("code").asText())
-                .isEqualTo("CASE_ALREADY_EXISTS");
+        assertThat(results).allSatisfy(r -> assertThat(r.getResponse().getStatus())
+                .as(responseBody(r)).isEqualTo(405));
         assertThat(jdbc.queryForObject("select count(*) from punishment_case where event_id=?", Long.class, scope.eventId()))
-                .as("一事件一案").isEqualTo(1L);
-        assertThat(jdbc.queryForObject("select count(*) from punishment_case_event e join punishment_case c"
-                + " on c.case_id=e.case_id where c.event_id=? and e.event_kind='FILE'", Long.class, scope.eventId()))
-                .as("落败方不得也写一条 FILE——只增事件流里多一条就永远留着").isEqualTo(1L);
+                .isEqualTo(casesBefore);
+        assertThat(jdbc.queryForObject("select count(*) from punishment_case_event", Long.class)).isEqualTo(eventsBefore);
     }
 
-    /**
-     * 案件编号并发 20 路：`case_no` 互不相同、格式一致、序号连续无洞。
-     *
-     * <p><b>"无重复"必须用唯一性断言，不能用 count</b>：20 条里两条重号、另有一条多出来，count 一样是 20。
-     * 序号连续也要验——计数表若退化成"读了再写"，并发下会跳号，
-     * 那意味着某次立案拿到的号其实来自另一次的读，只是恰好没撞上。
-     */
+    /** 关闭后的立案入口不再分配案件编号。 */
     @Test
     @Order(6)
-    void concurrentFilingsNeverProduceDuplicateCaseNumbers() throws Exception {
-        int parallelism = 20;
+    void closedFilingDoesNotAllocateCaseNumbers() throws Exception {
         String filer = session("punishment:file", "punishment:read", "handoff:read", "alarm:read");
-        List<MockHttpServletRequestBuilder> requests = new java.util.ArrayList<>();
-        for (int i = 0; i < parallelism; i++) {
-            Scope scope = scopeOn(jdbc, suffix + "-n" + nextNo());
-            requests.add(fileCaseRequest(filer, scope.handoffId(), "no-" + i + "-" + UUID.randomUUID()));
-        }
-        // 用例 5 已经通过接口立过一条，所以按**增量**断言，不要求起点为 0。
-        long apiCasesBefore = jdbc.queryForObject("select count(*) from punishment_case where case_no like 'CASE-%'", Long.class);
+        Scope scope = scopeOn(jdbc, suffix + "-n" + nextNo());
+        long before = jdbc.queryForObject("select count(*) from punishment_case where case_no like 'CASE-%'", Long.class);
 
-        List<MvcResult> results = race(requests);
+        List<MvcResult> results = race(List.of(
+                fileCaseRequest(filer, scope.handoffId(), "no-a-" + UUID.randomUUID()),
+                fileCaseRequest(filer, scope.handoffId(), "no-b-" + UUID.randomUUID())));
 
         assertThat(results).allSatisfy(r -> assertThat(r.getResponse().getStatus())
-                .as("各自交接互不冲突，全部应成功：" + responseBody(r)).isEqualTo(201));
-        List<String> generated = jdbc.queryForList("select case_no from punishment_case where case_no like 'CASE-%'"
-                + " order by case_no", String.class);
-        assertThat(generated).as("接口生成的编号（CASE- 前缀）应增加 20 条；夹具案件用 FIX- 前缀，不会混进来")
-                .hasSize((int) apiCasesBefore + parallelism);
-        assertThat(generated).as("编号不得重复").doesNotHaveDuplicates();
-        assertThat(generated).allSatisfy(no -> assertThat(no).matches("^CASE-\\d{8}-\\d{4}$"));
-        assertThat(generated.stream().map(no -> no.substring(5, 13)).distinct().toList())
-                .as("同一次运行只跨一个日期段").hasSize(1);
-        List<Integer> sequences = generated.stream().map(no -> Integer.parseInt(no.substring(14))).sorted().toList();
-        assertThat(sequences.get(sequences.size() - 1) - sequences.get(0))
-                .as("序号必须连续无洞：跳号说明计数器的读与写不在同一把锁里").isEqualTo(sequences.size() - 1);
+                .as(responseBody(r)).isEqualTo(405));
+        assertThat(jdbc.queryForObject("select count(*) from punishment_case where case_no like 'CASE-%'", Long.class))
+                .isEqualTo(before);
     }
 
-    /**
-     * 复核并发：两路同时复核同一案件，恰一条 200、一条 409，`punishment_review` 恰一行。
-     * 复核是定性动作，两条并存等于同一案件有两个互相独立的定性结论——事后无法说清依据的是哪一个。
-     */
+    /** 复核入口已关闭，不再写入复核记录。 */
     @Test
     @Order(7)
-    void twoRealConnectionsReviewingSameCaseCommitExactlyOne() throws Exception {
-        String filer = session("punishment:file", "punishment:read", "punishment:decide", "handoff:read", "alarm:read");
+    void reviewEndpointIsClosed() throws Exception {
         String reviewerSession = session("punishment:review", "punishment:read");
-        String caseId = caseUnderReview(filer);
+        String caseId = "missing-" + UUID.randomUUID();
+        long before = jdbc.queryForObject("select count(*) from punishment_review", Long.class);
 
         List<MvcResult> results = race(
-                reviewRequest(reviewerSession, caseId, "review-a-" + UUID.randomUUID()),
-                reviewRequest(reviewerSession, caseId, "review-b-" + UUID.randomUUID()));
+                closedReview(reviewerSession, caseId, "review-a-" + UUID.randomUUID()),
+                closedReview(reviewerSession, caseId, "review-b-" + UUID.randomUUID()));
 
-        List<Integer> statuses = results.stream().map(r -> r.getResponse().getStatus()).sorted().toList();
-        assertThat(statuses).as("并发复核必须一成一败：" + results.stream().map(Stage14PostgresTest::responseBody).toList())
-                .containsExactly(200, 409);
-        assertThat(jdbc.queryForObject("select count(*) from punishment_review where case_id=?", Long.class, caseId))
-                .as("复核记录只增，两条并存说不清依据的是哪一个").isEqualTo(1L);
+        assertThat(results).allSatisfy(r -> assertThat(r.getResponse().getStatus())
+                .as(responseBody(r)).isEqualTo(404));
+        assertThat(jdbc.queryForObject("select count(*) from punishment_review", Long.class)).isEqualTo(before);
     }
 
-    /**
-     * 金额的**应用层**边界：超出 `penalty_rule` 的档位区间 → 400 `FINE_OUT_OF_RANGE`。
-     * 与用例 3 的库层 CHECK 分工明确：库层管"这个数在任何情况下都不合法"（负数、警告带金额），
-     * 应用层管"这个数超出了本条款的档位"。只测一层会漏——库层放行 999999999，而它早就超出 PR-01 的上限。
-     */
+    /** 裁量入口已关闭。金额区间仍由库层 CHECK 约束，见顺序 3。 */
     @Test
     @Order(8)
-    void fineOutsideTheRuleRangeIsRejectedByTheApplicationLayer() throws Exception {
+    void discretionEndpointIsClosed() throws Exception {
         String filer = session("punishment:file", "punishment:read", "punishment:decide", "handoff:read", "alarm:read");
-        String caseId = investigatingCase(filer);
-        Map<String, Object> rule = fineRule();
-        long max = ((Number) rule.get("fine_max")).longValue();
-        long min = ((Number) rule.get("fine_min")).longValue();
+        String caseId = "missing-" + UUID.randomUUID();
+        long before = jdbc.queryForObject("select count(*) from penalty_discretion", Long.class);
 
-        MvcResult tooHigh = mvc.perform(discretionRequest(filer, caseId, (String) rule.get("rule_code"), "FINE", max + 1)).andReturn();
-        assertThat(tooHigh.getResponse().getStatus()).as("超上限（档位 " + rule + "）：" + responseBody(tooHigh)).isEqualTo(400);
-        assertThat(json.readTree(tooHigh.getResponse().getContentAsString()).path("error").path("code").asText())
-                .as("档位 " + rule).isEqualTo("FINE_OUT_OF_RANGE");
-        if (min > 0) {
-            MvcResult tooLow = mvc.perform(discretionRequest(filer, caseId, (String) rule.get("rule_code"), "FINE", min - 1)).andReturn();
-            assertThat(tooLow.getResponse().getStatus()).as("低于下限同样越界：" + responseBody(tooLow)).isEqualTo(400);
-            assertThat(json.readTree(tooLow.getResponse().getContentAsString()).path("error").path("code").asText())
-                    .isEqualTo("FINE_OUT_OF_RANGE");
-        }
-        // 区间内必须放行：把校验收得过紧和放得过松一样是缺陷。
-        MvcResult accepted = mvc.perform(discretionRequest(filer, caseId, (String) rule.get("rule_code"), "FINE", min)).andReturn();
-        assertThat(accepted.getResponse().getStatus()).as("区间下限必须放行：" + responseBody(accepted)).isEqualTo(200);
-        assertThat(jdbc.queryForObject("select count(*) from penalty_discretion where case_id=?", Long.class, caseId))
-                .as("被拒的两次不得留下草稿").isEqualTo(1L);
+        MvcResult rejected = mvc.perform(post("/api/v1/punishment-cases/{id}/discretions", caseId)
+                .header("Authorization", "Bearer " + filer)
+                .header("Idempotency-Key", "disc-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"rule_code\":\"PR-01\",\"penalty_type\":\"FINE\",\"fine_amount\":1,"
+                        + "\"factors\":[],\"basis_text\":\"裁量入口已关闭\",\"expected_version\":0}")).andReturn();
+        assertThat(rejected.getResponse().getStatus()).as(responseBody(rejected)).isEqualTo(404);
+        assertThat(jdbc.queryForObject("select count(*) from penalty_discretion", Long.class)).isEqualTo(before);
     }
 
     /**
@@ -499,6 +452,12 @@ class Stage14PostgresTest {
         return post("/api/v1/punishment-cases/{id}/reviews", caseId).header("Authorization", "Bearer " + sessionId)
                 .header("Idempotency-Key", idempotencyKey).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"conclusion\":\"UPHELD\",\"note\":\"阶段十四并发复核\",\"expected_version\":" + version(caseId) + "}");
+    }
+
+    private MockHttpServletRequestBuilder closedReview(String sessionId, String caseId, String idempotencyKey) {
+        return post("/api/v1/punishment-cases/{id}/reviews", caseId).header("Authorization", "Bearer " + sessionId)
+                .header("Idempotency-Key", idempotencyKey).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"conclusion\":\"UPHELD\",\"note\":\"复核入口已关闭\",\"expected_version\":0}");
     }
 
     private MockHttpServletRequestBuilder discretionRequest(String sessionId, String caseId, String ruleCode,

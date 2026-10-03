@@ -12,7 +12,7 @@ public class AutomationRuntimePolicy {
     private final long maxAge,poll;
     private final AutomationRuntimeRepository runs;
     private final AppClock clock;
-    public AutomationRuntimePolicy(@Value("${app.automation-rules.enabled:false}") boolean enabled,
+    public AutomationRuntimePolicy(@Value("${app.automation-rules.enabled:true}") boolean enabled,
             @Value("${app.automation-rules.fact-max-age-ms:30000}") long maxAge,
             @Value("${app.automation-rules.poll-ms:2000}") long poll,AutomationRuntimeRepository runs,AppClock clock){
         if(maxAge<1000||maxAge>300000||poll<500||poll>60000)throw new IllegalArgumentException("自动规则调度和事实时效配置无效");

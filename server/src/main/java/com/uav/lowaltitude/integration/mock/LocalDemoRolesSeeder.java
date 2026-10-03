@@ -55,7 +55,7 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
                     PermissionCode.DISPOSAL_READ, PermissionCode.HANDOFF_READ),
             "flights", List.of(PermissionCode.FLIGHT_READ, PermissionCode.ROUTE_READ,
                     PermissionCode.AIRSPACE_READ, PermissionCode.RISK_READ),
-            // 告警页与工作台要显示这条告警的反制/干扰处置状态，所以这一页也要读处置授权（决策 18-12）。
+            // 告警页要显示这条告警的反制/干扰处置状态，所以这一页也要读处置授权（决策 18-12）。
             "alarms", List.of(PermissionCode.ALARM_READ, PermissionCode.TARGET_READ, PermissionCode.EVIDENCE_READ,
                     PermissionCode.DISPOSAL_READ),
             "punish", List.of(PermissionCode.HANDOFF_READ, PermissionCode.PUNISHMENT_READ,
@@ -65,12 +65,6 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
             "monitor", List.of(PermissionCode.DEVICE_READ),
             "commission", List.of(PermissionCode.DEVICE_READ),
             "archive", List.of());
-
-    /**
-     * 工作台菜单固定可见（{@code AccessService.menuKeys} 无条件加上它），外壳在**每个路由**上都会拉工作台事项。
-     * 少了它，人在任何一页上都会看到工作台那一栏报错——所以每个演示角色都给。
-     */
-    private static final PermissionCode WORKBENCH = PermissionCode.WORKBENCH_READ;
 
     /**
      * 只给读、不进菜单的模块（15-34 起）：`GET /devices` 要的是**模块码** `devices.read`，不是动作码
@@ -206,12 +200,11 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
     private static String level(String moduleCode) { return "audit".equals(moduleCode) ? "OP" : "READ"; }
 
     /**
-     * 动作权限 = 该角色每个菜单所需的读动作（由 {@link #MENU_READS} 推出）+ 工作台读 + 这个角色自己的操作动作。
+     * 动作权限 = 该角色每个菜单所需的读动作（由 {@link #MENU_READS} 推出）+ 这个角色自己的操作动作。
      * 不再逐个角色手抄清单：手抄就会漏，15-34 与 18-11 漏的是同一类。
      */
     private boolean actions(DemoRole role) {
         Map<String, String> wanted = new java.util.LinkedHashMap<>();
-        wanted.put(WORKBENCH.value(), "READ");
         for (String menu : role.menus()) {
             for (PermissionCode code : MENU_READS.getOrDefault(menu, List.of())) {
                 wanted.putIfAbsent(code.value(), "READ");

@@ -71,7 +71,7 @@ class LocalDemoRolesSeederTest {
     private static final java.util.Map<String, List<String>> MENU_NEEDS = java.util.Map.of(
             "situation", List.of("device:read", "target:read", "fusion:read", "airspace:read", "assessment:read"),
             "flights", List.of("flight:read", "route:read", "airspace:read", "risk:read"),
-            // 告警页与工作台要显示这条告警的反制/干扰处置状态（18-12）。
+            // 告警页要显示这条告警的反制/干扰处置状态（18-12）。
             "alarms", List.of("alarm:read", "target:read", "evidence:read", "disposal:read"),
             "punish", List.of("handoff:read", "punishment:read", "disposal:read", "evidence:read"),
             "evidence", List.of("evidence:read"),
@@ -84,8 +84,6 @@ class LocalDemoRolesSeederTest {
         for (String account : List.of("zhangjg", "zhangwei", "zhaopeng", "wugang")) {
             JsonNode me = me(account);
             List<String> menus = menus(me), codes = codes(me);
-            // 工作台固定可见，而外壳在**每个路由**上都拉工作台事项——少了它，人在任何一页都会看到那一栏报错。
-            assertThat(codes).as("%s 的工作台读权限", account).contains("workbench:read");
             for (String menu : menus) {
                 for (String needed : MENU_NEEDS.getOrDefault(menu, List.of())) {
                     assertThat(codes).as("%s 的 %s 这一页要的 %s", account, menu, needed).contains(needed);

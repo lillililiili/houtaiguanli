@@ -48,7 +48,6 @@ public class DisposalAuthorizationService {
             "device_id", "channel", "reason");
     private static final Set<String> DECISION_FIELDS = Set.of("expected_version", "note");
     private static final Set<String> EXECUTE_FIELDS = Set.of("expected_version", "operation_params");
-    private static final Set<String> MANUAL_FIELDS = Set.of("expected_version", "result", "detail");
 
     private final com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory;
     private final AccessControlService access;
@@ -106,12 +105,14 @@ public class DisposalAuthorizationService {
         if ("RISK".equals(request.subjectKind())) throw riskSubjectNotSupported();
         DisposalRules.requireKnown(request.subjectKind(), DisposalRules.SUBJECT_KINDS, "处置主体类型无效");
         DisposalRules.requireKnown(request.channel(), DisposalRules.CHANNELS, "执行通道无效");
+        if (DisposalRules.MANUAL.equals(request.channel()))
+            throw bad("人工执行通道已关闭，请改用设备通道");
         String subjectId = text(request.subjectId(), "subject_id");
         String reason = reason(request.reason());
-        if (!DisposalRules.MANUAL.equals(request.channel()) && blank(request.deviceId()))
+        if (blank(request.deviceId()))
             throw bad("经设备执行的处置必须指定设备");
 
-        if (direct && !DisposalRules.MANUAL.equals(request.channel())) devices.requireDevicesOperate();
+        if (direct) devices.requireDevicesOperate();
         DisposalPolicy policy = policies.active();
         Subject subject = resolveSubject(request.subjectKind(), subjectId, request.actionType(), policy);
         // 一律用**解析后**的主体 ID：目标经 target_current_alias 并入当前航迹后，旧 ID 与新 ID 指的是同一件事。
@@ -224,15 +225,8 @@ public class DisposalAuthorizationService {
         if ("DIRECT".equals(row.authorizationMode()) && !at.isAfter(row.validFrom()))
             at = row.validFrom().plusNanos(1_000_000);
 
-        if (DisposalRules.MANUAL.equals(row.channel())) {
-            if (repository.transition(id, row.version(), DisposalRules.EXECUTING, at, null, null, null) != 1)
-                throw versionConflict();
-            event(id, "EXECUTE", actor.userId(), "人工执行", Map.of("status", DisposalRules.EXECUTING,
-                    "channel", DisposalRules.MANUAL), at);
-            audit(actor, "disposal_executed", id, "authorization_no=" + row.authorizationNo() + "; channel=MANUAL");
-            return ExecuteOutcome.accepted(new ActionResultDto(id, DisposalRules.EXECUTING, row.version() + 1,
-                    null, null, null));
-        }
+        if (DisposalRules.MANUAL.equals(row.channel()))
+            throw conflict("MANUAL_CHANNEL_RETIRED", "人工执行已关闭，历史记录仅供查阅");
 
         DisposalPolicy policy = policies.active();
         // 四通道走 A 的原生 TCP 设置；凌云 B 仍经 enqueue，自校验 devices.op（决策 13-9）。
@@ -266,27 +260,8 @@ public class DisposalAuthorizationService {
 
     @Transactional
     public ActionResultDto manualResult(String id, String rawRequest, String key) {
-        AccessDecision decision = executionAccess(id);
-        Manual body = parseManual(rawRequest);
-        AuthorizationRow row = locked(id, decision);
-        idempotency.claim(key, "disposal:manual-result:" + id + ":" + body.expectedVersion());
-        requireVersion(row, body.expectedVersion());
-        DisposalRules.requireTransition(DisposalRules.MANUAL_RESULT, row.status());
-        // 协议 B 的结果只能来自设备回执：人不能替设备说"我成功了"，否则处罚案件的依据就成了自述。
-        if (!DisposalRules.MANUAL.equals(row.channel()))
-            throw conflict("INVALID_TRANSITION", "只有人工执行的授权才能登记人工结果");
-        String status = "SUCCEEDED".equals(body.result()) ? DisposalRules.COMPLETED : DisposalRules.FAILED;
-        AuthUser actor = AuthContext.require();
-        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
-        if (repository.transition(id, row.version(), status, at, null, "MANUAL_" + body.result(), body.detail()) != 1)
-            throw versionConflict();
-        event(id, "MANUAL_RESULT", actor.userId(), body.detail(), Map.of("status", status, "result", body.result()), at);
-        audit(actor, "disposal_manual_result", id, "authorization_no=" + row.authorizationNo()
-                + "; result=" + body.result());
-        if (DisposalRules.COMPLETED.equals(status) && DisposalRules.COUNTERMEASURE.equals(row.actionType())) {
-            jammingChain.scheduleAfterComplete(id);
-        }
-        return result(id, status, row.version() + 1, null, "MANUAL_" + body.result());
+        executionAccess(id);
+        throw conflict("MANUAL_CHANNEL_RETIRED", "人工执行已关闭，历史记录仅供查阅");
     }
 
     /* ---- 停止与撤回 ---- */
@@ -510,16 +485,6 @@ public class DisposalAuthorizationService {
         return new Execute(version(node), params);
     }
 
-    private Manual parseManual(String raw) {
-        JsonNode node = strict(raw, MANUAL_FIELDS);
-        String result = str(node, "result");
-        if (!"SUCCEEDED".equals(result) && !"FAILED".equals(result)) throw bad("人工结果只能是成功或失败");
-        String detail = str(node, "detail");
-        if (blank(detail)) throw bad("必须填写人工执行结果说明");
-        if (detail.length() > 500) throw bad("说明最长 500 个字符");
-        return new Manual(version(node), result, detail.trim());
-    }
-
     private long version(JsonNode node) {
         JsonNode value = node.get("expected_version");
         if (value == null || !value.canConvertToLong() || value.asLong() < 0) throw bad("expected_version 必填且不能为负");
@@ -564,5 +529,4 @@ public class DisposalAuthorizationService {
 
     private record Decision(long expectedVersion, String note) { }
     private record Execute(long expectedVersion, Map<String, Object> operationParams) { }
-    private record Manual(long expectedVersion, String result, String detail) { }
 }

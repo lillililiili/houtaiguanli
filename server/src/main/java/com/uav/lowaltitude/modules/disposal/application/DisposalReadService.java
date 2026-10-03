@@ -116,10 +116,10 @@ public class DisposalReadService {
         if ("DIRECT".equals(row.authorizationMode())) {
             actions.remove(DisposalRules.EXECUTE);
             actions.remove(DisposalRules.MANUAL_RESULT);
-            if (actor.userId().equals(row.requestedBy()) && permissions.contains("disposal:direct")) {
-                if (DisposalRules.APPROVED.equals(row.status())) actions.add(DisposalRules.EXECUTE);
-                if (DisposalRules.EXECUTING.equals(row.status()) && DisposalRules.MANUAL.equals(row.channel()))
-                    actions.add(DisposalRules.MANUAL_RESULT);
+            if (actor.userId().equals(row.requestedBy()) && permissions.contains("disposal:direct")
+                    && DisposalRules.APPROVED.equals(row.status())
+                    && !DisposalRules.MANUAL.equals(row.channel())) {
+                actions.add(DisposalRules.EXECUTE);
             }
         }
         if (!DisposalRules.MANUAL.equals(row.channel()) && !permissions.contains("devices.op")) actions.remove(DisposalRules.EXECUTE);

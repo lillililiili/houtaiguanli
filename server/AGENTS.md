@@ -106,7 +106,7 @@ Java 根包保持 `com.uav.lowaltitude`。保留现有 `modules/identity`、`mod
 
 ### 本地开发数据环境（2026-09-26 用户确认）
 
-- 本地演示/模拟数据已默认关闭：`application-local.yml` 中 `app.dev-seed.enabled=false`。2026-09-29 用户后续要求开启自动研判，`fusion.enabled` 与 `rule-engine.enabled` 默认开启，替代此前对这两个开关的关闭约定；replay、automation-rules、状态推进、自动短信/语音、handoff（none）、mock-adapter、MQTT demo、EO 自动跟踪仍保持关闭。业务数据只通过界面录入、设备真实接入（MQTT/直连）或外部接口推送进入；不要手动往库插数据（绕过来源校验、权限与审计）。未确认规则参数不因开启自动调度而变为已确认。
+- 本地演示/模拟数据已默认关闭：`application-local.yml` 中 `app.dev-seed.enabled=false`。2026-09-29 用户后续要求开启自动研判，`fusion.enabled` 与 `rule-engine.enabled` 默认开启，替代此前对这两个开关的关闭约定。2026-10-03 用户确认自动规则执行引擎默认打开（`app.automation-rules.enabled=true`，环境变量 `APP_AUTOMATION_RULES_ENABLED` 可关闭），替代此前 automation-rules 保持关闭的约定；某一类没有启用规则时，这一类仍暂停。replay、状态推进、自动短信/语音、handoff（none）、mock-adapter、MQTT demo、EO 自动跟踪仍保持关闭。业务数据只通过界面录入、设备真实接入（MQTT/直连）或外部接口推送进入；不要手动往库插数据（绕过来源校验、权限与审计）。未确认规则参数不因开启自动调度而变为已确认。
 - 本地库实际在 docker 容器 `deploy-db-1`（127.0.0.1:25432）的 `houtaiguanli` 库（uav/uav），不是 `application-local.yml` 默认的 5432——5432 被另一项目 inspection 的 `backend-postgis-1` 占用。启动后端必须带 `DB_URL=jdbc:postgresql://127.0.0.1:25432/houtaiguanli`；IDE 运行配置若已有该变量保持不动。
 - 空库自举登录账号：`app.bootstrap-admin.enabled=true`（application-local.yml），仅在 `app_user` 为空时创建 `admin1`（ROLE-ADMIN，首次登录强制改密，临时密码见该文件）。`dev-seed` 关闭后 `LocalUserSeeder` 不再建演示账号，删库后必须靠它才能登录。
 - 重建干净库：`docker exec deploy-db-1 psql -U uav -d postgres -c "DROP DATABASE IF EXISTS houtaiguanli" -c "CREATE DATABASE houtaiguanli OWNER uav"`，再依次 `CREATE EXTENSION`（fuzzystrmatch、postgis、postgis_tiger_geocoder、postgis_topology），重启后端由 Flyway 建表。恢复演示数据：把上述开关改回 true 后重建库。

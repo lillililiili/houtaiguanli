@@ -115,8 +115,6 @@ class Stage9PostgresTest {
         registry.add("spring.datasource.password", () -> requiredEnvironment("POSTGRES_TEST_PASSWORD"));
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("app.dev-seed.enabled", () -> "false");
-        // These isolated legacy-write contract cases explicitly opt in; production remains read-only.
-        registry.add("app.airspace.legacy-write-enabled", () -> "true");
         registry.add("app.live-device.enabled", () -> "false");
         registry.add("app.rule-engine.enabled", () -> "false");
         registry.add("app.rule-engine.replay.run-on-start", () -> "false");
@@ -559,109 +557,66 @@ class Stage9PostgresTest {
     @Order(12)
     void airspaceVersionDiffRunsInsideReadOnlyTransactionOnPostgres() throws Exception {
         String manager = session(managerRole());
-        String airspaceNo = "AS-DIFF-" + suffix;
-        // 第 1 版：禁飞、无高度带；第 2 版接替：限高并带高度三元组，制造可比较的字段差。
-        String created = mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
-                        .header("Idempotency-Key", "diff-create-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody(airspaceNo, "PROHIBITED", T0, null)))
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
-        String airspaceId = json.readTree(created).path("data").path("airspace_id").asText();
-        String firstVersion = json.readTree(created).path("data").path("airspace_version_id").asText();
-        String addedVersion = json.readTree(mvc.perform(post("/api/v1/airspaces/{id}/versions", airspaceId)
-                        .header("Authorization", "Bearer " + manager).header("Idempotency-Key", "diff-version-" + UUID.randomUUID())
-                        .contentType(MediaType.APPLICATION_JSON).content(versionBody("ALTITUDE_LIMIT", T0.plusDays(1))))
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString())
-                .path("data").path("airspace_version_id").asText();
+        String diffAirspaceId = id();
+        String firstVersion = id();
+        String addedVersion = id();
+        jdbc.update("insert into airspace (airspace_id,airspace_no,name,source_mode,owner_org_id,district_id,created_at,updated_at,version)"
+                + " values (?,?,?,'live',?,?,?,?,0)", diffAirspaceId, "AS-DIFF-" + suffix, "阶段九差异空域",
+                LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT, T0, T0);
+        jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,boundary,valid_from,valid_to,created_at)"
+                + " values (?,?,1,'PROHIBITED',ST_GeomFromEWKT(?),?,?,?)", firstVersion, diffAirspaceId, boundary(), T0, T0.plusDays(1), T0);
+        jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at)"
+                + " values (?,?,2,'ALTITUDE_LIMIT',ST_GeomFromEWKT(?),0,120,'AMSL',?,?)", addedVersion, diffAirspaceId, boundary(), T0.plusDays(1), T0);
 
         // 关键断言：只读事务里跑 diff 不得因行锁在 PG 上 500。
-        mvc.perform(get("/api/v1/airspaces/{id}/versions/{a}/diff/{b}", airspaceId, firstVersion, addedVersion)
+        mvc.perform(get("/api/v1/airspaces/{id}/versions/{a}/diff/{b}", diffAirspaceId, firstVersion, addedVersion)
                         .header("Authorization", "Bearer " + manager))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.fields").isArray())
                 .andExpect(jsonPath("$.data.fields[?(@.field=='kind_code')].from").value("PROHIBITED"))
                 .andExpect(jsonPath("$.data.fields[?(@.field=='kind_code')].to").value("ALTITUDE_LIMIT"))
                 .andExpect(jsonPath("$.data.geometry.availability").value("AVAILABLE"));
-        // 接替式：上一版被关闭到新版生效时刻，其余列不变（R__stage9 触发器只放开 valid_to）。
         assertThat(jdbc.queryForObject("select valid_to from airspace_version where airspace_version_id=?", OffsetDateTime.class, firstVersion))
-                .as("新版本插入时应把上一开放版本关闭").isNotNull();
+                .isNotNull();
         assertThat(jdbc.queryForObject("select kind_code from airspace_version where airspace_version_id=?", String.class, firstVersion))
                 .isEqualTo("PROHIBITED");
     }
 
-    /** 两条真实连接并发建同一 `airspace_no`（各自幂等键）：唯一编号只能有一个赢家，另一个必须是 409 AIRSPACE_NO_EXISTS。 */
+    /** 业务前台划设入口已关闭：并发新建不再受理，也不会留下空域。 */
     @Test
     @Order(13)
     void twoRealConnectionsCreatingSameAirspaceNoCommitExactlyOne() throws Exception {
         String manager = session(managerRole());
         String airspaceNo = "AS-RACE-" + suffix;
-        List<MvcResult> results = race(
-                post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
+        mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "race-a-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody(airspaceNo, "PROHIBITED", T0, null)),
-                post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
+                        .content(createBody(airspaceNo, "PROHIBITED", T0, null)))
+                .andExpect(status().isMethodNotAllowed());
+        mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "race-b-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody(airspaceNo, "RESTRICTED", T0, null)));
-        List<Integer> statuses = results.stream().map(r -> r.getResponse().getStatus()).sorted().toList();
-        assertThat(statuses).as("同一编号并发建库必须一成一败，不能双双成功").containsExactly(201, 409);
-        MvcResult loser = results.stream().filter(r -> r.getResponse().getStatus() == 409).findFirst().orElseThrow();
-        assertThat(json.readTree(loser.getResponse().getContentAsString()).path("error").path("code").asText()).isEqualTo("AIRSPACE_NO_EXISTS");
-        // 数据库里只有一条该编号的空域与一条初版；落败方整体回滚，不留半个空域。
-        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no=?", Long.class, airspaceNo)).isEqualTo(1L);
-        assertThat(jdbc.queryForObject("select count(*) from airspace_version v join airspace a on a.airspace_id=v.airspace_id"
-                + " where a.airspace_no=?", Long.class, airspaceNo)).isEqualTo(1L);
-        assertThat(jdbc.queryForObject("select count(*) from airspace_version_origin o join airspace_version v"
-                + " on v.airspace_version_id=o.airspace_version_id join airspace a on a.airspace_id=v.airspace_id where a.airspace_no=?",
-                Long.class, airspaceNo)).isEqualTo(1L);
+                        .content(createBody(airspaceNo, "RESTRICTED", T0, null)))
+                .andExpect(status().isMethodNotAllowed());
+        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no=?", Long.class, airspaceNo)).isZero();
     }
 
-    /** 两条真实连接并发确认同一导入批次：一成一 409 `VERSION_CONFLICT`，只对 accepted 项建空域，落败方不留半个批次。 */
+    /** 本地 GeoJSON 导入入口已关闭，确认和查询都不再受理。 */
     @Test
     @Order(14)
     void twoRealConnectionsConfirmingSameImportBatchCommitExactlyOne() throws Exception {
         String manager = session(managerRole());
-        String batch = json.readTree(mvc.perform(post("/api/v1/airspaces/import-batches").header("Authorization", "Bearer " + manager)
+        mvc.perform(post("/api/v1/airspaces/import-batches").header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "import-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
                         .content(importBody("AS-IMP-" + suffix)))
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data").path("batch_id").asText();
-        long acceptedItems = jdbc.queryForObject("select count(*) from airspace_import_item where batch_id=? and accepted=true", Long.class, batch);
-        assertThat(acceptedItems).as("暂存批次里应有可确认的要素").isPositive();
-
-        List<MvcResult> results = race(
-                post("/api/v1/airspaces/import-batches/{id}/confirm", batch).header("Authorization", "Bearer " + manager)
-                        .header("Idempotency-Key", "confirm-a-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":0}"),
-                post("/api/v1/airspaces/import-batches/{id}/confirm", batch).header("Authorization", "Bearer " + manager)
-                        .header("Idempotency-Key", "confirm-b-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":0}"));
-        List<Integer> statuses = results.stream().map(r -> r.getResponse().getStatus()).sorted().toList();
-        assertThat(statuses).as("并发确认同一批次必须一成一败").containsExactly(200, 409);
-        MvcResult loser = results.stream().filter(r -> r.getResponse().getStatus() == 409).findFirst().orElseThrow();
-        // 决策 9-23：批次已被另一请求决定 → IMPORT_ALREADY_DECIDED；只有客户端自带的 expected_version 过期才是 VERSION_CONFLICT。
-        assertThat(json.readTree(loser.getResponse().getContentAsString()).path("error").path("code").asText())
-                .as("并发落败方是“批次已被决定”，不是版本过期").isEqualTo("IMPORT_ALREADY_DECIDED");
-
-        // 批次只被确认一次：状态 CONFIRMED、版本恰好加一，创建的空域数等于 accepted 项数（不多不少）。
-        Map<String, Object> row = jdbc.queryForMap("select status,version from airspace_import_batch where batch_id=?", batch);
-        assertThat(row.get("status")).isEqualTo("CONFIRMED");
-        assertThat(((Number) row.get("version")).longValue()).isEqualTo(1L);
-        assertThat(jdbc.queryForObject("select count(*) from airspace_import_item where batch_id=? and result_airspace_version_id is not null",
-                Long.class, batch)).isEqualTo(acceptedItems);
-        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no like ?", Long.class, "AS-IMP-" + suffix + "%"))
-                .as("只对 accepted 项建空域，不因并发建两份").isEqualTo(acceptedItems);
-
-        // 版本过期是另一回事：另起一个仍处于 STAGED 的批次，用陈旧的 expected_version 确认 → VERSION_CONFLICT。
-        String staged = json.readTree(mvc.perform(post("/api/v1/airspaces/import-batches").header("Authorization", "Bearer " + manager)
-                        .header("Idempotency-Key", "import-stale-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(importBody("AS-IMPS-" + suffix)))
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data").path("batch_id").asText();
-        mvc.perform(post("/api/v1/airspaces/import-batches/{id}/confirm", staged).header("Authorization", "Bearer " + manager)
-                        .header("Idempotency-Key", "confirm-stale-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":7}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
-        // 版本冲突不得留下任何副作用：批次仍是 STAGED，没有建出空域。
-        assertThat(jdbc.queryForObject("select status from airspace_import_batch where batch_id=?", String.class, staged)).isEqualTo("STAGED");
-        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no like ?", Long.class, "AS-IMPS-" + suffix + "%")).isZero();
+                .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/airspaces/import-batches/{id}/confirm", "missing-" + suffix)
+                        .header("Authorization", "Bearer " + manager)
+                        .header("Idempotency-Key", "confirm-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expected_version\":0}"))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/airspaces/import-batches/{id}", "missing-" + suffix)
+                        .header("Authorization", "Bearer " + manager))
+                .andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no like ?", Long.class, "AS-IMP-" + suffix + "%")).isZero();
     }
 
     /**
@@ -672,11 +627,10 @@ class Stage9PostgresTest {
     @Order(15)
     void airspaceOriginIsAppendOnlyAndImportItemGeometryIsChecked() throws Exception {
         String manager = session(managerRole());
-        String created = mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
-                        .header("Idempotency-Key", "origin-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody("AS-ORG-" + suffix, "PROHIBITED", T0, null)))
-                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
-        String versionId = json.readTree(created).path("data").path("airspace_version_id").asText();
+        String actor = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, manager);
+        String versionId = insertLooseVersion();
+        jdbc.update("insert into airspace_version_origin (origin_id,airspace_version_id,origin_kind,actor_id,created_at)"
+                + " values (?,?,'MANUAL',?,?)", id(), versionId, actor, T0);
         Map<String, Object> origin = jdbc.queryForMap("select origin_id,origin_kind,actor_id from airspace_version_origin where airspace_version_id=?", versionId);
         assertThat(origin.get("origin_kind")).as("人工建空域的来源是 MANUAL").isEqualTo("MANUAL");
         assertThat(origin.get("actor_id")).as("人工与导入都必须留下操作者").isNotNull();

@@ -26,7 +26,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * 执行通道：人工执行走完整链路；经设备的 LINGYUN_B 在未绑定/离线/码族未开通时必须如实拒绝并留痕，
+ * 执行通道：新的人工执行不再受理。经设备的 LINGYUN_B 在未绑定/离线/码族未开通时必须如实拒绝并留痕，
  * 不伪造回执，也不能把授权推进到 EXECUTING。
  */
 @SpringBootTest
@@ -82,35 +82,30 @@ class DisposalExecutionTest {
 
     @Test
     void manualChannelRunsThroughToCompleted() throws Exception {
-        String id = approved("MANUAL", null);
-        assertThat(jdbc.queryForObject("select source_mode from disposal_authorization where authorization_id=?",
-                String.class, id)).isEqualTo("mock");
-        execute(id, 1).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("EXECUTING"));
-        mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", id)
-                        .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":2,\"result\":\"SUCCEEDED\",\"detail\":\"演示：已驱离\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("COMPLETED"));
-        assertThat(kinds(id)).containsExactly("REQUEST", "APPROVE", "EXECUTE", "MANUAL_RESULT");
-        String jam = jammingOf(id);
-        assertThat(jam).as("反制完成后应自动接一条信号干扰授权").isNotNull();
-        assertThat(statusOf(jam)).isEqualTo("APPROVED");
-        assertThat(jdbc.queryForObject("select action_type from disposal_authorization where authorization_id=?",
-                String.class, jam)).isEqualTo("JAMMING");
-        assertThat(jdbc.queryForObject("select channel from disposal_authorization where authorization_id=?",
-                String.class, jam)).isEqualTo("MANUAL");
-        assertThat(kinds(jam)).containsExactly("REQUEST", "APPROVE");
+        String subject = event("CONFIRMED");
+        mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
+                        .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""
+                                + subject + "\",\"channel\":\"MANUAL\",\"reason\":\"人工执行已关闭\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",
+                Long.class, subject)).isZero();
+        String id = historicalManual(subject, "EXECUTING");
+        manualResult(id, "SUCCEEDED").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_CHANNEL_RETIRED"));
+        assertThat(statusOf(id)).isEqualTo("EXECUTING");
+        assertThat(kinds(id)).doesNotContain("MANUAL_RESULT", "EXECUTE");
+        assertThat(jammingOf(id)).isNull();
     }
 
     @Test
     void failedCountermeasureDoesNotChainJamming() throws Exception {
-        String id = approved("MANUAL", null);
-        execute(id, 1).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", id)
-                        .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":2,\"result\":\"FAILED\",\"detail\":\"现场未驱离\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("FAILED"));
+        String id = historicalManual(event("CONFIRMED"), "APPROVED");
+        execute(id, 2).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_CHANNEL_RETIRED"));
+        assertThat(statusOf(id)).isEqualTo("APPROVED");
+        assertThat(kinds(id)).doesNotContain("EXECUTE");
         assertThat(jammingOf(id)).isNull();
     }
 
@@ -118,13 +113,15 @@ class DisposalExecutionTest {
     void existingJammingIsNotReplacedByAutoChain() throws Exception {
         String eventId = event("CONFIRMED");
         String jamBody = "{\"action_type\":\"JAMMING\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""
-                + eventId + "\",\"channel\":\"MANUAL\",\"reason\":\"先手选干扰\"}";
+                + eventId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"" + deviceId
+                + "\",\"reason\":\"先手选干扰\"}";
         String existing = body(mvc.perform(post("/api/v1/disposal-authorizations")
                         .header("Authorization", bearer(requester)).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON).content(jamBody))
                 .andExpect(status().isCreated())).path("data").path("authorization_id").asText();
         String cmBody = "{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""
-                + eventId + "\",\"channel\":\"MANUAL\",\"reason\":\"再走反制\"}";
+                + eventId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"" + deviceId
+                + "\",\"reason\":\"再走反制\"}";
         String counter = body(mvc.perform(post("/api/v1/disposal-authorizations")
                         .header("Authorization", bearer(requester)).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON).content(cmBody))
@@ -133,12 +130,10 @@ class DisposalExecutionTest {
                         .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0}"))
                 .andExpect(status().isOk());
-        execute(counter, 1).andExpect(status().isOk());
-        mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", counter)
-                        .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":2,\"result\":\"SUCCEEDED\",\"detail\":\"反制完成\"}"))
-                .andExpect(status().isOk());
+        execute(counter, 1).andExpect(status().isConflict());
+        manualResult(counter, "SUCCEEDED").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_CHANNEL_RETIRED"));
+        assertThat(statusOf(counter)).isEqualTo("APPROVED");
         assertThat(jammingOf(counter)).isNull();
         assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=? and action_type='JAMMING'",
                 Long.class, eventId)).isEqualTo(1L);
@@ -160,17 +155,10 @@ class DisposalExecutionTest {
 
     @Test
     void manualResultIsRejectedOnDeviceChannel() throws Exception {
-        String id = approved("MANUAL", null);
-        execute(id, 1).andExpect(status().isOk());
-        // 人工登记结果只对人工通道开放：协议 B 的结果必须来自设备回执，不能由人代设备宣布成功。
-        String deviceId = anyDevice();
-        String other = approved("LINGYUN_B", deviceId);
-        mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", other)
-                        .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expected_version\":1,\"result\":\"SUCCEEDED\",\"detail\":\"不该被接受\"}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));
+        String other = approved("LINGYUN_B", anyDevice());
+        manualResult(other, "SUCCEEDED").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("MANUAL_CHANNEL_RETIRED"));
+        assertThat(statusOf(other)).isEqualTo("APPROVED");
     }
 
     @Test
@@ -245,15 +233,17 @@ class DisposalExecutionTest {
 
     @Test
     void blockReasonClearsOnceExecutionSucceeds() throws Exception {
-        String id = approved("MANUAL", null);
-        execute(id, 1).andExpect(status().isOk());
-        // 人工通道从来没有受阻事件；执行成功后更不该显示"受阻"。
-        assertThat(blockReason(id)).isNull();
+        String id = approved("COUNTERMEASURE_4CH", anyDevice());
+        execute(id, 1).andExpect(status().isConflict());
+        assertThat(blockReason(id)).isEqualTo("DEVICE_CAPABILITY");
+        manualResult(id, "SUCCEEDED").andExpect(status().isConflict());
+        assertThat(statusOf(id)).isEqualTo("APPROVED");
+        assertThat(blockReason(id)).isEqualTo("DEVICE_CAPABILITY");
     }
 
     @Test
     void executionOutsideTheWindowIsRejected() throws Exception {
-        String id = approved("MANUAL", null);
+        String id = approved("LINGYUN_B", anyDevice());
         // 把有效期改成已经过去：过期的授权不是"晚一点也行"，是已经失效。
         jdbc.update("update disposal_authorization set valid_from=?, valid_until=? where authorization_id=?",
                 Timestamp.from(Instant.parse("2020-01-01T00:00:00Z")),
@@ -264,6 +254,30 @@ class DisposalExecutionTest {
     }
 
     /* ---- 辅助 ---- */
+
+    private ResultActions manualResult(String id, String result) throws Exception {
+        return mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", id)
+                .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"expected_version\":2,\"result\":\"" + result + "\",\"detail\":\"历史人工结果不再登记\"}"));
+    }
+
+    /** 已有人工执行记录只供查阅，不再通过申请接口新建。 */
+    private String historicalManual(String subjectId, String status) {
+        String id = UUID.randomUUID().toString();
+        String requesterId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, requester);
+        String approverId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, approver);
+        Timestamp now = Timestamp.from(Instant.now());
+        Timestamp from = Timestamp.from(Instant.now().minusSeconds(30));
+        Timestamp until = Timestamp.from(Instant.now().plusSeconds(600));
+        jdbc.update("insert into disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,"
+                + "channel,reason,requested_by,requested_at,approved_by,approved_at,valid_from,valid_until,status,"
+                + "policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at,authorization_mode)"
+                + " values (?,?, 'COUNTERMEASURE','UAV_EVENT',?,'MANUAL','历史人工执行',?,?,?,?,?,?,?,'demo-v1',?,?,'mock',2,?,?,'REVIEW')",
+                id, "EX-" + id.substring(0, 12), subjectId, requesterId, now, approverId, from, from, until, status,
+                ORG, DISTRICT, now, now);
+        return id;
+    }
 
     private String approved(String channel, String deviceId) throws Exception {
         String bodyText = "{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""

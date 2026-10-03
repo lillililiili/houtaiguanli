@@ -165,9 +165,10 @@ class Stage5PostgresTest {
                 "select data_type from information_schema.columns where table_schema=? and table_name='handoff_material_snapshot' and column_name='snapshot'",
                 String.class, SCHEMA)).isEqualTo("jsonb");
         List<String> permissions = jdbc.queryForList(
-                "select permission_code from app_permission where permission_code in ('workbench:read','handoff:read','handoff:create') order by permission_code",
+                "select permission_code from app_permission where permission_code in ('handoff:read','handoff:create') order by permission_code",
                 String.class);
-        assertThat(permissions).containsExactly("handoff:create", "handoff:read", "workbench:read");
+        assertThat(permissions).containsExactly("handoff:create", "handoff:read");
+        assertThat(jdbc.queryForObject("select count(*) from app_permission where permission_code='workbench:read'", Long.class)).isZero();
         // 目录迁移仅新增统一上级；旧接收方必须保留供历史交接引用。
         assertThat(jdbc.queryForList("select recipient_id from handoff_recipient where display_name not like '验证接收方%'", String.class))
                 .containsExactly(SUPERIOR_RECIPIENT);

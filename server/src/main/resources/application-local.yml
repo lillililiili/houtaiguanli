@@ -59,9 +59,9 @@ app:
   flight:
     status-advance:
       enabled: ${APP_FLIGHT_STATUS_ADVANCE_ENABLED:false}
-  # 本地告警到处罚按三条预置规则判定。生产默认关闭，不在这里放开。
+  # 2026-10-03 起执行引擎默认打开。某一类没有启用规则时，这一类仍暂停。
   automation-rules:
-    enabled: false
+    enabled: ${APP_AUTOMATION_RULES_ENABLED:true}
     fact-max-age-ms: 120000
   # 自动研判有效的新鲜无人机观测；启动不生成演示数据、不回放历史。
   rule-engine:

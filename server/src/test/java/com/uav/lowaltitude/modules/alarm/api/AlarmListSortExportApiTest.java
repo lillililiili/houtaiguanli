@@ -228,7 +228,7 @@ class AlarmListSortExportApiTest {
                 .containsExactlyInAnyOrder("低", "高", "中");
         // 状态取自 uav_event，与风险的"待核验"不是同一套（告警核实、风险核验）。
         assertThat(rows.stream().map(r -> r[3]).toList())
-                .containsExactlyInAnyOrder("待核实", "已核实，待处置", "误报");
+                .containsExactlyInAnyOrder("待核实", "告警已确认", "误报");
         // 类别：字典里有的翻译，没有的原样给出（不写成"未知"，那会把信息抹掉）。
         assertThat(rows.stream().map(r -> r[1]).toList()).contains("无人机入侵");
     }

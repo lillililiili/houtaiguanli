@@ -15,8 +15,6 @@ public enum PermissionCode {
     // 飞行风险拥有独立状态机，读取和核验不能借用计划或研判权限。
     RISK_READ("risk:read"),
     RISK_VERIFY("risk:verify"),
-    // 工作台只聚合三类源事项，仍需逐项校验源模块读权限；workbench:read 不能扩大任何源的可见范围。
-    WORKBENCH_READ("workbench:read"),
     // 交接是独立于源状态的记录：读交接、发起交接分权，发起还必须同时具备源对象读权限。
     HANDOFF_READ("handoff:read"),
     HANDOFF_CREATE("handoff:create"),

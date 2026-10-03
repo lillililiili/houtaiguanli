@@ -547,7 +547,7 @@ class Stage13PostgresTest {
         return post("/api/v1/disposal-authorizations").header("Authorization", "Bearer " + sessionId)
                 .header("Idempotency-Key", idempotencyKey).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\"" + eventId
-                        + "\",\"channel\":\"MANUAL\",\"reason\":\"阶段十三并发验证\"}");
+                        + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-stage13-device\",\"reason\":\"阶段十三并发验证\"}");
     }
 
     private String createAuthorization(String sessionId, String eventId) throws Exception {

@@ -13,7 +13,6 @@ import com.uav.lowaltitude.modules.airspace.api.AirspaceDtos;
 import com.uav.lowaltitude.modules.airspace.api.AirspaceDtos.PageDto;
 import com.uav.lowaltitude.modules.airspace.application.AirspaceReadService;
 import com.uav.lowaltitude.modules.airspace.application.AirspaceDiffService;
-import com.uav.lowaltitude.modules.airspace.application.AirspaceImportService;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
@@ -22,17 +21,10 @@ public class AirspaceReadController {
 
     private final AirspaceReadService service;
     private final AirspaceDiffService diffs;
-    private final AirspaceImportService imports;
 
-    public AirspaceReadController(AirspaceReadService service, AirspaceDiffService diffs, AirspaceImportService imports) {
+    public AirspaceReadController(AirspaceReadService service, AirspaceDiffService diffs) {
         this.service = service;
         this.diffs = diffs;
-        this.imports = imports;
-    }
-
-    @GetMapping("/airspaces/import-batches/{batchId}")
-    public ApiResponse<AirspaceWriteDtos.ImportBatchDto> batch(@PathVariable String batchId) {
-        return ApiResponse.ok(imports.batch(batchId));
     }
 
     @GetMapping("/airspaces/{airspaceId}/versions/{fromVersionId}/diff/{toVersionId}")

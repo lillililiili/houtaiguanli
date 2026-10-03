@@ -5,8 +5,6 @@ import java.security.MessageDigest;
 import java.time.ZoneOffset;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.Set;
-import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -72,33 +70,6 @@ public class UavAdvisoryService {
         long deadline = since + ("VOICE".equals(channel) ? NotifyFlow.CALL_WATCH_MILLIS : NotifyFlow.SMS_WATCH_MILLIS);
         if (now < deadline) return new DepartureObservation(id, channel, "WATCHING", "UNKNOWN", since, deadline, now);
         return new DepartureObservation(id, channel, "ASSESSED", presence(id, since, now).name(), since, deadline, now);
-    }
-    @Transactional
-    public Overview act(String id,String raw,String key) {
-        var read=access.require(PermissionCode.ALARM_READ);
-        access.require(PermissionCode.ALARM_VERIFY);access.require(PermissionCode.HANDOFF_CREATE);
-        Action a=parse(raw);
-        if(key==null || key.trim().length()<8 || key.trim().length()>128) throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
-        EventRow event=events.lock(id,read); if(event==null) throw notFound();
-        var actor=AuthContext.require();
-        String hash=hash(id+":"+write(a));
-        var replay=repository.replay(actor.userId(),key.trim());
-        if(replay!=null) {
-            if(!hash.equals(replay.hash()) || !id.equals(replay.eventId())) throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作");
-            try { return json.readValue(replay.response(),Overview.class); } catch(Exception ex) {throw new IllegalStateException("Invalid advisory replay",ex);}
-        }
-        if(event.version()!=a.expectedVersion()) throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
-        if(!"CONFIRMED".equals(event.state())) throw conflict("INVALID_TRANSITION","请先人工核实事件属实");
-        if("SMS_SIMULATED".equals(a.kind())&&automatic.sending(id))throw conflict("AUTO_SMS_SENDING","后台正在发送短信，请等待结果后再补发");
-        AdvisorySmsPort.Delivery delivery="SMS_SIMULATED".equals(a.kind())?sms.simulate(event.sourceMode(),a.recipientName(),a.content()):null;
-        long now=clock.nowMillis();
-        if(events.update(id,event.version(),event.state(),java.time.Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1) throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
-        repository.append(UUID.randomUUID().toString(),id,event.version()+1,actor.userId(),now,a,delivery!=null && delivery.simulated(),delivery==null?null:delivery.status());
-        audit.record(actor.userId(),actor.account(),actor.roleCode(),"alarm","uav_advisory_recorded","uav_event",id,"kind="+a.kind()+"; simulated="+(delivery!=null),"SUCCESS","","");
-        Overview response=view(events.find(id,read));
-        try { repository.saveReplay(actor.userId(),key.trim(),hash,id,write(response)); }
-        catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作"); }
-        return response;
     }
     @Transactional
     public Overview retryAutomatic(String id,String raw,String key) {
@@ -215,23 +186,6 @@ public class UavAdvisoryService {
     private PilotDepartureWatch.Presence presence(String eventId, long since, long now) {
         try { return departure.assess(eventId, since, now); }
         catch (RuntimeException unavailable) { return PilotDepartureWatch.Presence.UNKNOWN; }
-    }
-    private Action parse(String raw) {
-        try(JsonParser parser=json.getFactory().createParser(raw==null?"":raw)) {
-            parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
-            JsonNode n=json.readTree(parser);
-            if(n==null || !n.isObject() || parser.nextToken()!=null) throw new IllegalArgumentException();
-            Set<String> fields=Set.of("expected_version","kind","recipient_name","contact_basis","content","outcome","danger","note","urgent");
-            n.fieldNames().forEachRemaining(f->{if(!fields.contains(f)) throw new IllegalArgumentException();});
-            if(!n.has("expected_version") || !n.get("expected_version").isIntegralNumber() || !n.get("expected_version").canConvertToLong() || n.get("expected_version").longValue()<0) throw new IllegalArgumentException();
-            String kind=text(n,"kind",32,true),recipient=text(n,"recipient_name",120,false),basis=text(n,"contact_basis",500,false),content=text(n,"content",1000,false),outcome=text(n,"outcome",24,false),danger=text(n,"danger",16,false),note=text(n,"note",1000,false);
-            if("OBSERVATION".equals(kind)) throw bad("MANUAL_OBSERVATION_RETIRED","人工现场记录已停用，请使用系统观测与研判依据");
-            if(!Set.of("SMS_SIMULATED","CONTACT_RECORDED").contains(kind)) throw new IllegalArgumentException();
-            if(n.has("urgent")&&!n.get("urgent").isBoolean()) throw new IllegalArgumentException();
-            boolean urgent=n.path("urgent").asBoolean(false);
-            if(recipient==null||basis==null||content==null||outcome!=null||danger!=null||urgent) throw new IllegalArgumentException();
-            return new Action(n.get("expected_version").longValue(),kind,recipient,basis,content,outcome,danger,note,urgent);
-        } catch(ApiException ex) {throw ex;} catch(Exception ex) {throw bad("VALIDATION_ERROR","请填写接收对象、联系依据与劝离内容");}
     }
     private static String optionalRetryNote(JsonNode node) {
         if (!node.hasNonNull("note")) return "";

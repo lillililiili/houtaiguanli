@@ -22,7 +22,7 @@ class BusinessReportExportTest {
     @Test void labelsReuseDomainWordingInsteadOfConflatingAlarmAndRiskStates() {
         assertThat(ReportLabels.text("alarms","state","PENDING_VERIFICATION")).isEqualTo("待核实");
         assertThat(ReportLabels.text("risks","state","PENDING_VERIFICATION")).isEqualTo("待核验");
-        assertThat(ReportLabels.text("events","state","CONFIRMED")).isEqualTo("已核实，待处置");
+        assertThat(ReportLabels.text("events","state","CONFIRMED")).isEqualTo("告警已确认");
         assertThat(ReportLabels.dictionary()).containsEntry("events.kind.RULE_LEGALITY","飞行违规");
         assertThat(ReportLabels.text("risks","kind","FUTURE_TYPE")).isEqualTo("FUTURE_TYPE");
     }
