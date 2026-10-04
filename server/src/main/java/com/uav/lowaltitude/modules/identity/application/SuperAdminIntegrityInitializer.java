@@ -96,6 +96,27 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
                   AND permission_code IN
                       (SELECT permission_code FROM app_permission WHERE permission_kind = 'MODULE')
                 """);
+        // 超级管理员的动作行此前只由开发种子补齐，迁移从未写入；不开种子的新库里管理员菜单齐全、业务接口却全是 403。
+        // 内置角色的动作在角色管理里不可编辑，所以每次启动按目录补齐缺失行（READ 即授予，已有行不改）。
+        // disposal:direct 只认显式 OP，且默认不授予任何角色（2026-09-17），这里不补。
+        int granted = jdbcTemplate.update("""
+                INSERT INTO app_role_permission (role_code, permission_code, permission_level, menu_enabled, created_at)
+                SELECT 'ROLE-ADMIN', p.permission_code, 'READ', FALSE, CURRENT_TIMESTAMP
+                FROM app_permission p
+                WHERE p.permission_kind = 'ACTION'
+                  AND p.permission_code <> 'disposal:direct'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM app_role_permission rp
+                      WHERE rp.role_code = 'ROLE-ADMIN' AND rp.permission_code = p.permission_code
+                  )
+                """);
+        if (granted > 0) {
+            jdbcTemplate.update("""
+                    UPDATE app_user SET permission_version = permission_version + 1
+                    WHERE role_code = 'ROLE-ADMIN'
+                    """);
+            log.info("granted {} missing action permission(s) to the super administrator role", granted);
+        }
         // 用户、角色、反制这三个模块只归超级管理员——阶段 4 单一超管改造定的红线，每次启动重申一次。
         //
         // **审计不在其列（决策 18-13）**：审计员这个角色的本职就是看审计日志，把 audit 一并锁死是规则定得过严。

@@ -69,6 +69,29 @@ class SingleSuperAdminMigrationTest {
                 .isEqualTo("DISABLED");
         assertThat(jdbc.queryForObject("select expire_at from app_session where session_id='old-session'", Long.class))
                 .isZero();
+
+        // 不开开发种子的库：超级管理员按目录补齐全部动作，唯独 disposal:direct 不自动授予。
+        String missingActions = """
+                select count(*) from app_permission p
+                where p.permission_kind='ACTION' and p.permission_code<>'disposal:direct'
+                  and not exists (select 1 from app_role_permission rp
+                                  where rp.role_code='ROLE-ADMIN' and rp.permission_code=p.permission_code
+                                    and rp.permission_level in ('READ','OP','AUTH'))
+                """;
+        assertThat(jdbc.queryForObject(missingActions, Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("""
+                select count(*) from app_role_permission
+                where role_code='ROLE-ADMIN' and permission_code='disposal:direct'
+                """, Integer.class)).isZero();
+        long version = jdbc.queryForObject("select permission_version from app_user where account='admin1'", Long.class);
+        new SuperAdminIntegrityInitializer(jdbc, properties).run(null);
+        assertThat(jdbc.queryForObject("select permission_version from app_user where account='admin1'", Long.class))
+                .isEqualTo(version);
+        assertThat(jdbc.queryForObject("""
+                select count(distinct permission_level) from app_role_permission rp
+                join app_permission p on p.permission_code=rp.permission_code
+                where rp.role_code='ROLE-ADMIN' and p.permission_kind='ACTION'
+                """, Integer.class)).isEqualTo(1);
     }
 
     private void insertUser(JdbcTemplate jdbc, String id, String account, String role, long now) {

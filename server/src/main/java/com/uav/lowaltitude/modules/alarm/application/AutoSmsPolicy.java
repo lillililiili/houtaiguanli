@@ -22,6 +22,6 @@ public class AutoSmsPolicy {
     public boolean enabled(){return configured&&env.acceptsProfiles(Profiles.of("!production & (local | test)"));}
     public long freshMillis(){return freshMillis;}
     public long eventMillis(){return eventMillis;}
-    public String description(){return "本地演示策略：目标和研判有效期"+(freshMillis/1000)+"秒，事件及人工确认有效期"+(eventMillis/1000)+"秒";}
+    public String description(){return "自动通知时效：目标和研判有效期"+(freshMillis/1000)+"秒，事件及人工确认有效期"+(eventMillis/1000)+"秒";}
     public boolean fresh(Long at,long now,long window){return at!=null&&at<=now&&now-at<=window;}
 }
