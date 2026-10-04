@@ -39,7 +39,8 @@ public class FusionIngestWorker {
         this.perFrame = new TransactionTemplate(transactionManager);
     }
 
-    @Scheduled(fixedDelayString = "${app.fusion.poll-millis:500}")
+    // 首轮默认随调度器启动立即跑；测试可推迟首轮，免得排在其他定时任务之后的首轮和用例手工领取撞在一起。
+    @Scheduled(fixedDelayString = "${app.fusion.poll-millis:500}", initialDelayString = "${app.fusion.initial-delay-millis:0}")
     public void poll() { drainOnce(); }
 
     /** 把当前所有待处理回放帧跑完（种子/测试用；避免依赖调度节拍）。返回处理的帧数。 */
