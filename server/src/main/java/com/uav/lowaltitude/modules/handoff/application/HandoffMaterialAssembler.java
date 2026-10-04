@@ -10,6 +10,7 @@ import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EventMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EventVerificationDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.MaterialV2Dto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.PilotLocationMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.ReferenceMaterialDto;
 import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository;
 
@@ -29,8 +30,12 @@ public class HandoffMaterialAssembler {
 
     private final HandoffRepository repository;
     private final com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
+    private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets;
 
-    public HandoffMaterialAssembler(HandoffRepository repository, com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory) { this.repository = repository; this.advisory = advisory; }
+    public HandoffMaterialAssembler(HandoffRepository repository, com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory,
+            com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets) {
+        this.repository = repository; this.advisory = advisory; this.targets = targets;
+    }
 
     /**
      * @param includeEvidence 证据段是否纳入。由调用方按**提交人当时**的 evidence:read 决定；
@@ -63,7 +68,15 @@ public class HandoffMaterialAssembler {
                 : new ReferenceMaterialDto(null, null, null, event.targetId(), null);
         // 兼容旧材料对空历史段的省略；劝离记录按提交时事实独立冻结。
         return new MaterialV2Dto(SCHEMA_V2, eventDto, emptyToNull(verifications), emptyToNull(disposals), evidence,
-                includeEvidence ? null : Boolean.TRUE, references, advisory.records(eventId));
+                includeEvidence ? null : Boolean.TRUE, references, advisory.records(eventId), pilotLocation(event));
+    }
+
+    /** 设备测算的遥控器位置，按提交时目标的最新状态冻结；没有就省略，由页面写明"没有遥控器位置"。 */
+    private PilotLocationMaterialDto pilotLocation(HandoffRepository.EventMaterialRow event) {
+        if (event == null || event.targetId() == null) return null;
+        var fix = targets.pilotFix(event.targetId());
+        return fix == null ? null : new PilotLocationMaterialDto(fix.location().longitude(), fix.location().latitude(),
+                millis(fix.observedAt()), "DEVICE_ESTIMATE");
     }
 
     /** 事件所属告警的 source_mode（决策 14-22）；取不到时按 mock 处理，绝不冒充 live。 */

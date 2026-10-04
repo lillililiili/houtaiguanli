@@ -77,6 +77,8 @@ class HandoffPunishmentMaterialsApiTest {
         jdbc.update("delete from uav_event_verification where event_id like 'pm-event-%'");
         jdbc.update("delete from uav_event where event_id like 'pm-event-%'");
         jdbc.update("delete from alarm where alarm_id like 'pm-alarm-%'");
+        jdbc.update("delete from target_latest_state where target_id like 'pm-target-%'");
+        jdbc.update("delete from target where target_id like 'pm-target-%'");
     }
 
     /* ---- 正面 ---- */
@@ -100,6 +102,40 @@ class HandoffPunishmentMaterialsApiTest {
         // 证据引用。
         assertThat(material.path("evidence")).isNotEmpty();
         assertThat(material.path("evidence").get(0).path("evidence_no").asText()).isNotBlank();
+    }
+
+    /** 设备测算的遥控器位置（2026-10-04 用户确认用于找飞手）随材料冻结，注明是设备推算；之后目标位置再变也不跟。 */
+    @Test
+    void devicePilotEstimateIsFrozenIntoMaterial() throws Exception {
+        String targetId = "pm-target-" + UUID.randomUUID().toString().substring(0, 8);
+        Timestamp at = Timestamp.from(Instant.parse("2026-09-05T12:00:00Z"));
+        jdbc.update("insert into target (target_id,target_no,object_type_code,first_seen_at,last_seen_at,source_mode,"
+                + "owner_org_id,district_id,created_at,updated_at,version) values (?,?,'UAV',?,?,'mock',?,?,?,?,0)",
+                targetId, "MB-" + targetId, at, at, ORG, DISTRICT, at, at);
+        jdbc.update("insert into target_latest_state (target_id,location,pilot_location,pilot_observed_at,observed_at,"
+                + "received_at,unknown_fields,created_at,updated_at,version) values (?,GEOMETRY 'SRID=4326;POINT (118.5 37.4)',"
+                + "GEOMETRY 'SRID=4326;POINT (118.49 37.39)',?,?,?,'[]',?,?,0)", targetId, at, at, at, at, at);
+        jdbc.update("update alarm set target_id=? where alarm_id=(select alarm_id from uav_event where event_id=?)", targetId, eventId);
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+
+        JsonNode pilot = detail(handoffId, submitter).path("material").path("pilot_location");
+        assertThat(pilot.path("longitude").decimalValue()).isEqualByComparingTo("118.49");
+        assertThat(pilot.path("latitude").decimalValue()).isEqualByComparingTo("37.39");
+        assertThat(pilot.path("observed_at").asLong()).isEqualTo(at.getTime());
+        assertThat(pilot.path("basis").asText()).isEqualTo("DEVICE_ESTIMATE");
+
+        jdbc.update("update target_latest_state set pilot_location=GEOMETRY 'SRID=4326;POINT (118.6 37.5)' where target_id=?", targetId);
+        assertThat(detail(handoffId, submitter).path("material").path("pilot_location").path("longitude").decimalValue())
+                .isEqualByComparingTo("118.49");
+    }
+
+    @Test
+    void materialOmitsPilotLocationWhenNoneWasEstimated() throws Exception {
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+        // 页面据此写“没有遥控器位置”；不能用 0,0 之类的坐标顶替。
+        assertThat(detail(handoffId, submitter).path("material").has("pilot_location")).isFalse();
     }
 
     @Test

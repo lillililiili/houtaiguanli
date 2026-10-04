@@ -88,6 +88,19 @@ public class TargetReadRepository {
                 java.util.Map.of("target_id", targetId));
     }
 
+    /**
+     * 目标当前的飞手（遥控器）位置与其观测时刻，供处罚移送材料冻结。不做范围校验：
+     * 调用方已对目标所属的事件做过权限判断，这里只读该目标自己的一行。没有位置时返回 null。
+     */
+    public PilotFixRow pilotFix(String targetId) {
+        List<PilotFixRow> rows = jdbc.query("SELECT ls.pilot_observed_at," + locationColumns("ls.pilot_location", "pilot_")
+                + " FROM target_latest_state ls WHERE ls.target_id=:target_id", java.util.Map.of("target_id", targetId),
+                (rs, i) -> new PilotFixRow(location(rs, "pilot_"), time(rs, "pilot_observed_at")));
+        return rows.isEmpty() || rows.get(0).location() == null ? null : rows.get(0);
+    }
+
+    public record PilotFixRow(Coordinate location, OffsetDateTime observedAt) { }
+
     public TargetRow findTarget(String targetId, AccessDecision access) {
         TargetQuery query = new TargetQuery(null, null, null, null, null, null, null, true);
         Where where = targetWhere(query, access);

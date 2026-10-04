@@ -53,7 +53,14 @@ public final class HandoffDtos {
        快照是"提交那一刻的事实"，之后不随源变——所以这里的每一段都是值，不是引用。 */
     public record MaterialV2Dto(int schemaVersion, EventMaterialDto event, List<EventVerificationDto> verifications,
             List<DisposalMaterialDto> disposals, List<EvidenceMaterialDto> evidence, Boolean evidenceOmitted,
-            ReferenceMaterialDto references, List<com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record> advisoryRecords) { }
+            ReferenceMaterialDto references, List<com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record> advisoryRecords,
+            PilotLocationMaterialDto pilotLocation) { }
+    /**
+     * 设备测算的遥控器（飞手）大概位置，提交时冻结（2026-10-04 用户确认用于找飞手）。
+     * basis 恒为 DEVICE_ESTIMATE：这是 TDOA/AOA/DCD/RID 等设备推算的位置，不是现场核实的位置。没有位置时整段省略。
+     */
+    public record PilotLocationMaterialDto(java.math.BigDecimal longitude, java.math.BigDecimal latitude, Long observedAt,
+            String basis) { }
     public record EventMaterialDto(String eventId, String alarmId, String sourceAlarmId, String alarmType, String severity,
             Long occurredAt, Long receivedAt, String state, String targetId, String ownerOrgId, String districtId,
             String sourceMode, long version) { }

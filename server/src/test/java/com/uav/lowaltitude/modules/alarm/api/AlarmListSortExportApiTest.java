@@ -151,6 +151,46 @@ class AlarmListSortExportApiTest {
         }
     }
 
+    /**
+     * 默认次序（2026-10-04 用户确认）：人工核实时告警没人处理也不升级、不提醒，靠次序顶上来——
+     * 未处理在前，其中等级高在前、同等级等得越久越靠前；已处理在后，新到旧。导出与列表一致。
+     */
+    @Test
+    void defaultOrderPutsUnhandledFirstBySeverityThenLongestWaiting() throws Exception {
+        jdbc.update("delete from alarm where alarm_id like 'srt-alarm-%'");
+        alarm("HIGH", "UAV_INTRUSION", Instant.parse("2026-09-08T05:00:00Z"), "P-HIGH-NEW");
+        alarm("LOW", "UAV_INTRUSION", Instant.parse("2026-09-08T00:30:00Z"), "P-LOW-OLD");
+        alarm("HIGH", "UAV_INTRUSION", Instant.parse("2026-09-08T01:00:00Z"), "P-HIGH-OLD");
+        alarm("CRITICAL", "UAV_INTRUSION", Instant.parse("2026-09-08T06:00:00Z"), "P-CRIT-NOEVENT");
+        alarm("CRITICAL", "UAV_INTRUSION", Instant.parse("2026-09-08T02:00:00Z"), "H-CRIT-CONFIRMED");
+        alarm("LOW", "UAV_INTRUSION", Instant.parse("2026-09-08T07:00:00Z"), "H-LOW-EXCLUDED");
+        event("P-HIGH-NEW", "PENDING_VERIFICATION");
+        event("P-LOW-OLD", "PENDING_VERIFICATION");
+        event("P-HIGH-OLD", "PENDING_VERIFICATION");
+        event("H-CRIT-CONFIRMED", "CONFIRMED");
+        event("H-LOW-EXCLUDED", "FALSE_POSITIVE");
+        List<String> expected = List.of("P-CRIT-NOEVENT", "P-HIGH-OLD", "P-HIGH-NEW", "P-LOW-OLD",
+                "H-LOW-EXCLUDED", "H-CRIT-CONFIRMED");
+
+        assertThat(rawValues("alarm_no", "")).containsExactlyElementsOf(expected);
+        assertThat(rawValues("alarm_no", "sort=priority")).containsExactlyElementsOf(expected);
+        // 固定次序，order 不把它倒过来。
+        assertThat(rawValues("alarm_no", "sort=priority&order=asc")).containsExactlyElementsOf(expected);
+
+        String text = mvc.perform(get("/api/v1/alarms/export.csv").header("Authorization", bearer(reader)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        List<String> exported = text.lines().skip(1).map(line -> line.split(",")[0].replace("\uFEFF", ""))
+                .filter(expected::contains).toList();
+        assertThat(exported).containsExactlyElementsOf(expected);
+    }
+
+    private void event(String sourceAlarmId, String state) {
+        Timestamp at = Timestamp.from(Instant.parse("2026-09-08T08:00:00Z"));
+        jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)"
+                + " select ?,alarm_id,?,?,?,?,?,1 from alarm where source_alarm_id=? and alarm_id like 'srt-alarm-%'",
+                "srt-event-" + UUID.randomUUID().toString().substring(0, 8), state, ORG, DISTRICT, at, at, sourceAlarmId);
+    }
+
     @Test
     void illegalSortOrOrderIsRejectedRatherThanSilentlyIgnored() throws Exception {
         // 悄悄回落到默认次序会让调用方以为自己排好了序，拿到的却是另一种顺序——这种错在页面上很难看出来。

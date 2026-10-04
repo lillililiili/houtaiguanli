@@ -66,7 +66,8 @@ public class AlarmReadRepository {
      * received_at 之类可能重复，没有唯一兜底的话翻页会漏行或重复行。
      */
     private static String orderBy(String sort, String order) {
-        String column = switch (sort == null ? "received_at" : sort) {
+        if (sort == null || "priority".equals(sort)) return PRIORITY_ORDER;
+        String column = switch (sort) {
             case "occurred_at" -> "a.occurred_at";
             // a.severity 是枚举字符串，按它排是字典序；等级序号见 SeverityOrder（决策 15-30）。
             case "severity" -> com.uav.lowaltitude.platform.query.SeverityOrder.rank("a.severity");
@@ -139,7 +140,18 @@ public class AlarmReadRepository {
     public record DistrictOptionRow(String districtId, String name) { }
 
     public static final java.util.Set<String> SORT_KEYS =
-            java.util.Set.of("received_at", "occurred_at", "severity", "state");
+            java.util.Set.of("priority", "received_at", "occurred_at", "severity", "state");
+
+    /**
+     * 默认次序（2026-10-04 用户确认）：人工核实时告警没人处理也不升级、不提醒，靠列表次序把它顶上来——
+     * 未处理（未核实，或还没有核实事件）在前；其中等级高在前，同等级等得越久越靠前；
+     * 已处理（已确认、已排除）在后，按接收时间新到旧。固定次序，不受 order 参数影响；导出同用此次序。
+     */
+    private static final String PENDING = "(e.state_code IS NULL OR e.state_code='PENDING_VERIFICATION')";
+    private static final String PRIORITY_ORDER = " ORDER BY CASE WHEN " + PENDING + " THEN 0 ELSE 1 END ASC,"
+            + " CASE WHEN " + PENDING + " THEN " + com.uav.lowaltitude.platform.query.SeverityOrder.rank("a.severity") + " ELSE 0 END DESC,"
+            + " CASE WHEN " + PENDING + " THEN a.received_at END ASC,"
+            + " a.received_at DESC,a.alarm_id ASC";
 
     private static Where where(AlarmQuery query, AccessDecision access) {
         StringBuilder sql = new StringBuilder(" WHERE a.owner_org_id IS NOT NULL AND a.district_id IS NOT NULL");
