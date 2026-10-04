@@ -34,7 +34,7 @@ public class RealtimeHub {
 
     public RealtimeHub(AppClock clock,
             @Value("${app.realtime.max-connections:200}") int maxConnections,
-            @Value("${app.realtime.stream-timeout-millis:600000}") long timeoutMillis) {
+            @Value("${app.realtime.stream-timeout-millis:1800000}") long timeoutMillis) {
         this.clock = clock;
         this.maxConnections = maxConnections;
         this.timeoutMillis = timeoutMillis;

@@ -167,8 +167,9 @@ onMounted(async () => {
   aggregateTimer = window.setInterval(loadAggregate, 10000); selectedTimer = window.setInterval(loadSelected, 2000);
 });
 onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInterval(selectedTimer); });
-// 设备或目标变化后立即重读；暂停时不刷新，定时器保留为推送不可用时的兜底。
-useRealtimeRefresh(['device', 'target'], () => Promise.all([loadAggregate(), loadSelected()]), { minIntervalMs: 1_000 });
+// 设备资料或在线状态变化后重读总览与设备树；选中设备的状态已由 2 秒定时器读取，推送不再重复读。
+// 暂停时不刷新，定时器保留为推送不可用时的兜底。
+useRealtimeRefresh(['device', 'device_state'], () => loadAggregate(), { minIntervalMs: 3_000 });
 </script>
 
 <template>

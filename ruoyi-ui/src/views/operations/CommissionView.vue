@@ -334,8 +334,19 @@ onMounted(async () => {
   informationTimer = window.setInterval(() => { if (!maintenanceListVisible.value && !informationLoading.value) void loadInformation(); }, 10000);
 });
 onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterval(pollTimer); window.clearInterval(informationTimer); });
-// 设备状态、调测任务变化后立即重读当前调测；定时器保留为推送不可用时的兜底。
-useRealtimeRefresh(['device'], () => (maintenanceListVisible.value ? undefined : pollActive()), { minIntervalMs: 1_000 });
+// 设备资料或调测任务变化后重读设备列表与当前调测，设备在线状态变化后重读设备信息；
+// 调测进行中不重排设备列表。定时器保留为推送不可用时的兜底。
+useRealtimeRefresh(['device', 'device_state'], topics => {
+  if (maintenanceListVisible.value) return undefined;
+  const all = topics.includes('*');
+  const tasks = [];
+  if (all || topics.includes('device')) {
+    tasks.push(pollActive());
+    if (!commissionInProgress.value) tasks.push(loadDevices().catch(() => {}));
+  }
+  if ((all || topics.includes('device_state')) && !informationLoading.value) tasks.push(loadInformation());
+  return Promise.all(tasks);
+}, { minIntervalMs: 2_000 });
 </script>
 
 <template>

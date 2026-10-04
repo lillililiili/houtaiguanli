@@ -152,7 +152,7 @@ async function realtimeRefresh() {
     if (selectedId.value && after !== before && after !== 'null' && !detailLoading.value) await loadDetail(selectedId.value);
   } catch { /* 静默刷新失败保留当前台账 */ }
 }
-useRealtimeRefresh(['device'], realtimeRefresh, { minIntervalMs: 2_000 });
+useRealtimeRefresh(['device', 'device_state'], realtimeRefresh, { minIntervalMs: 3_000 });
 
 const route = useRoute();
 if (route.query.type === 'weather_sensor') filters.type_code = 'weather_sensor';
