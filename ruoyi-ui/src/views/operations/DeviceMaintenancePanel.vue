@@ -1,6 +1,7 @@
 <script setup>
 import { userFacingMessage } from '@/utils/userMessages';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useRouter } from 'vue-router';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
@@ -62,6 +63,8 @@ function notificationChannel(snapshot) {
     INTERNAL: '平台待办', SMS_SIMULATED: '模拟短信', VOICE_SIMULATED: '模拟语音' })[snapshot?.channel_type] || snapshot?.channel_type || '未记录';
 }
 onMounted(() => reload());
+// 运维待办变化后立即重读当前页。
+useRealtimeRefresh(['device'], () => reload(), { minIntervalMs: 2_000 });
 onBeforeUnmount(() => { alive = false; generation++; });
 defineExpose({ reload });
 </script>

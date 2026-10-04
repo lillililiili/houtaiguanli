@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRealtimeRefresh } from '@/services/realtime.js';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import PageHeader from '@/components/PageHeader.vue';
@@ -333,6 +334,8 @@ onMounted(async () => {
   informationTimer = window.setInterval(() => { if (!maintenanceListVisible.value && !informationLoading.value) void loadInformation(); }, 10000);
 });
 onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterval(pollTimer); window.clearInterval(informationTimer); });
+// 设备状态、调测任务变化后立即重读当前调测；定时器保留为推送不可用时的兜底。
+useRealtimeRefresh(['device'], () => (maintenanceListVisible.value ? undefined : pollActive()), { minIntervalMs: 1_000 });
 </script>
 
 <template>

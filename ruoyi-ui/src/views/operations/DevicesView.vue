@@ -10,6 +10,7 @@ import { weatherSensorsApi } from '@/api/externalInterfaces.js';
 import DeviceCatalogPreview from './DeviceCatalogPreview.vue';
 import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
+import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { display, formatTime, statusText, statusType } from '@/utils/format.js';
 
@@ -135,6 +136,23 @@ async function loadList(keepSelection = true, refreshOverview = true) {
   } catch (e) { if (alive && sequence === listSequence) error.value = e.message || '设备台账加载失败'; }
   finally { await summaryRequest; if (sequence === listSequence) loading.value = false; }
 }
+
+/* 实时刷新：设备数据变化后静默重读当前筛选和分页下的台账与概况，保留选中设备；
+   选中行本身有变化时才重读设备档案。 */
+async function realtimeRefresh() {
+  if (loading.value || error.value) return;
+  const sequence = ++listSequence;
+  const before = JSON.stringify(table.items?.find(item => item.device_id === selectedId.value) || null);
+  void loadOverview();
+  try {
+    const data = await deviceApi.list(listParams());
+    if (!alive || sequence !== listSequence) return;
+    Object.assign(table, data);
+    const after = JSON.stringify(data.items.find(item => item.device_id === selectedId.value) || null);
+    if (selectedId.value && after !== before && after !== 'null' && !detailLoading.value) await loadDetail(selectedId.value);
+  } catch { /* 静默刷新失败保留当前台账 */ }
+}
+useRealtimeRefresh(['device'], realtimeRefresh, { minIntervalMs: 2_000 });
 
 const route = useRoute();
 if (route.query.type === 'weather_sensor') filters.type_code = 'weather_sensor';

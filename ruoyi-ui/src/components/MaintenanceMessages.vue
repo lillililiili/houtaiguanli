@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useRouter } from 'vue-router';
 import { Bell } from '@element-plus/icons-vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
@@ -40,6 +41,8 @@ function dismiss(event) {
   if (event.type === 'keydown') { if (event.key === 'Escape') visible.value = false; return; }
   if (!event.target.closest?.('.maintenance-bell, .maintenance-message-popover')) visible.value = false;
 }
+// 设备异常、运维待办变化后立即更新消息数；30 秒定时器保留为推送不可用时的兜底。
+useRealtimeRefresh(['device'], () => reload(), { minIntervalMs: 2_000 });
 onMounted(() => {
   void reload();
   timer = window.setInterval(() => { if (!document.hidden) void reload(); }, 30000);

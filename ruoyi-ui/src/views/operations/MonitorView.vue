@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRealtimeRefresh } from '@/services/realtime.js';
 import PageHeader from '@/components/PageHeader.vue';
 import OperationMetrics from './OperationMetrics.vue';
 import './operations-reference.css';
@@ -166,6 +167,8 @@ onMounted(async () => {
   aggregateTimer = window.setInterval(loadAggregate, 10000); selectedTimer = window.setInterval(loadSelected, 2000);
 });
 onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInterval(selectedTimer); });
+// 设备或目标变化后立即重读；暂停时不刷新，定时器保留为推送不可用时的兜底。
+useRealtimeRefresh(['device', 'target'], () => Promise.all([loadAggregate(), loadSelected()]), { minIntervalMs: 1_000 });
 </script>
 
 <template>
