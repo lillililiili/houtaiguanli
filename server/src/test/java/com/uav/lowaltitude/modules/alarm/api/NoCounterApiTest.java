@@ -31,7 +31,7 @@ class NoCounterApiTest {
     @Autowired AutoVoicePolicy voicePolicy;
     @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
     @BeforeEach void evidence() {
-        var fixture=new UavAdvisoryApiTest();fixture.mvc=mvc;fixture.jdbc=jdbc;fixture.json=json;fixture.fixture();
+        var fixture=new UavAdvisoryApiTest();fixture.mvc=mvc;fixture.jdbc=jdbc;fixture.fixture();
         eventId=fixture.eventId;session=fixture.session;userId=fixture.userId;role=fixture.role;
         CounterEvidenceFixture.seed(jdbc,eventId);
     }
@@ -124,7 +124,7 @@ class NoCounterApiTest {
         assertThat(jdbc.queryForObject("select attempt_count from uav_auto_voice_task where event_id=?",Integer.class,eventId)).isZero();
     }
     @Test void requestedCounterAndUnresolvedEmergencyStopBlockDecision() throws Exception {
-        var result=mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization","Bearer "+session).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+eventId+"\",\"action_type\":\"COUNTERMEASURE\",\"channel\":\"MANUAL\",\"reason\":\"隔离测试反制申请\"}")).andExpect(status().isCreated());
+        var result=mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization","Bearer "+session).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+eventId+"\",\"action_type\":\"COUNTERMEASURE\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"隔离测试反制申请\"}")).andExpect(status().isCreated());
         noCounter().andExpect(jsonPath("$.data.can_decide").value(false));
         decide(body(0),key()).andExpect(status().isConflict());
         String authorization=json.readTree(result.andReturn().getResponse().getContentAsString()).path("data").path("authorization_id").asText();
@@ -135,7 +135,7 @@ class NoCounterApiTest {
         jdbc.update("update disposal_authorization set status='STOPPED' where authorization_id=?",authorization);
         String stop=key();
         jdbc.update("insert into disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note) values(?,?,?,?,true,'隔离停机核查')",stop,eventId,userId,System.currentTimeMillis());
-        jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','MANUAL','mock',true,'UNSUPPORTED','未核实实际停机')",stop,key(),authorization);
+        jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','COUNTERMEASURE_4CH','mock',true,'UNSUPPORTED','未核实实际停机')",stop,"unbound-test-device",authorization);
         noCounter().andExpect(jsonPath("$.data.can_decide").value(false)).andExpect(jsonPath("$.data.block_reason").value("设备急停后的实际停机尚未核查，不能结束本次处置"));
     }
     protected ResultActions noCounter()throws Exception{return mvc.perform(get("/api/v1/uav-events/"+eventId+"/no-counter-decision").header("Authorization","Bearer "+session));}

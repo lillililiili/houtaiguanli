@@ -36,12 +36,12 @@ class NoCounterBrowserFixtureTest {
     @Autowired MockMvc mvc;
     @LocalServerPort int port;
     @Test void serve()throws Exception {
-        var fixture=new UavAdvisoryApiTest();fixture.jdbc=jdbc;fixture.json=json;fixture.mvc=mvc;fixture.fixture();
+        var fixture=new UavAdvisoryApiTest();fixture.jdbc=jdbc;fixture.mvc=mvc;fixture.fixture();
         jdbc.update("update app_role_permission set menu_enabled=true where role_code=?",fixture.role);
         for(String permission:java.util.List.of("alarms","punishment","target:read","evidence:read","handoff:read"))
             jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,?,'READ',true,current_timestamp)",fixture.role,permission);
         CounterEvidenceFixture.seed(jdbc,fixture.eventId);
-        var blocked=new UavAdvisoryApiTest();blocked.jdbc=jdbc;blocked.json=json;blocked.mvc=mvc;blocked.fixture();
+        var blocked=new UavAdvisoryApiTest();blocked.jdbc=jdbc;blocked.mvc=mvc;blocked.fixture();
         assertThat(jdbc.queryForObject("select current_database()",String.class)).matches("stage456_verify_[a-z0-9_]+");
         Path directory=Path.of("target","no-counter-browser").toAbsolutePath();Files.createDirectories(directory);
         String run=java.util.UUID.randomUUID().toString();Path stop=directory.resolve(run+".stop"),risk=directory.resolve(run+".risk"),ack=directory.resolve(run+".risk-ack");
