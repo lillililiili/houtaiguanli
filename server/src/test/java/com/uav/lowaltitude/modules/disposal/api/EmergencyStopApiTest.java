@@ -104,22 +104,18 @@ class EmergencyStopApiTest {
     @Test
     void completedParentIsPreservedAndItsApprovedJammingChildIsSuppressed() throws Exception {
         String parent = authorization("COUNTERMEASURE", true);
-        request("/api/v1/disposal-authorizations/" + parent + "/manual-result", operator, key(),
-                Map.of("expected_version", 2, "result", "SUCCEEDED", "detail", "反制完成" )).andExpect(status().isOk());
-        String child = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, parent);
-        assertThat(statusOf(child)).isEqualTo("APPROVED");
+        JsonNode rejected = json.readTree(request("/api/v1/disposal-authorizations/" + parent + "/manual-result", operator, key(),
+                Map.of("expected_version", 2, "result", "SUCCEEDED", "detail", "反制完成"))
+                .andExpect(status().isConflict()).andReturn().getResponse().getContentAsString());
+        assertThat(rejected.path("error").path("code").asText()).isEqualTo("MANUAL_CHANNEL_RETIRED");
+        assertThat(statusOf(parent)).isEqualTo("EXECUTING");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?", Long.class, parent)).isZero();
         JsonNode overview = data(mvc.perform(get(path()).header("Authorization", "Bearer " + operator)).andExpect(status().isOk()));
         assertThat(overview.path("requires_device_stop").isBoolean()).isTrue();
         assertThat(overview.path("requires_device_stop").asBoolean()).isTrue();
         stop(operator, key()).andExpect(status().isOk());
-        assertThat(statusOf(parent)).isEqualTo("COMPLETED");
-        assertThat(statusOf(child)).isIn("STOPPED", "CANCELLED");
-        request("/api/v1/disposal-authorizations/" + child + "/execute", operator, key(),
-                Map.of("expected_version", 1)).andExpect(status().isConflict());
-        chain.scheduleAfterComplete(parent);
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?", Long.class, parent))
-                .isEqualTo(1);
+        assertThat(statusOf(parent)).isEqualTo("STOPPED");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?", Long.class, parent)).isZero();
     }
 
     @Test
@@ -655,7 +651,8 @@ class EmergencyStopApiTest {
         authorization("COUNTERMEASURE", true);
         JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
         request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
-                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "MANUAL", "reason", "再次处置"))
+                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "COUNTERMEASURE_4CH",
+                "device_id", "estop-fixture-device", "reason", "再次处置"))
                 .andExpect(status().isConflict());
         String device = latest.path("devices").get(0).path("device_id").asText();
         request(path() + "/" + latest.path("stop_id").asText() + "/devices/" + device + "/manual-confirm",
@@ -712,13 +709,29 @@ class EmergencyStopApiTest {
     }
 
     String authorization(String action, boolean execute) throws Exception {
+        if (execute) return historicalExecuting(action);
         String id = data(request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", action,
-                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "MANUAL", "reason", "急停回归测试"))
+                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "COUNTERMEASURE_4CH",
+                "device_id", UUID.randomUUID().toString(), "reason", "急停回归测试"))
                 .andExpect(status().isCreated())).path("authorization_id").asText();
         request("/api/v1/disposal-authorizations/" + id + "/approve", operator, key(), Map.of("expected_version", 0))
                 .andExpect(status().isOk());
-        if (execute) request("/api/v1/disposal-authorizations/" + id + "/execute", operator, key(), Map.of("expected_version", 1))
-                .andExpect(status().isOk());
+        return id;
+    }
+
+    /** 历史人工执行只作为急停夹具，不再调用已关闭的人工执行接口。 */
+    private String historicalExecuting(String action) {
+        String id = UUID.randomUUID().toString();
+        String requesterId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, requester);
+        String operatorId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, operator);
+        Timestamp now = Timestamp.from(Instant.now());
+        Timestamp until = Timestamp.from(Instant.now().plusSeconds(600));
+        jdbc.update("insert into disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,"
+                + "channel,reason,requested_by,requested_at,approved_by,approved_at,valid_from,valid_until,status,"
+                + "policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at,authorization_mode)"
+                + " values (?,?,?,'UAV_EVENT',?,'MANUAL','急停回归测试',?,?,?,?,?,?,'EXECUTING','demo-v1',?,?,'mock',2,?,?,'REVIEW')",
+                id, "ESTOP-" + id.substring(0, 8), action, eventId, requesterId, now, operatorId, now, now, until,
+                ORG, DISTRICT, now, now);
         return id;
     }
 

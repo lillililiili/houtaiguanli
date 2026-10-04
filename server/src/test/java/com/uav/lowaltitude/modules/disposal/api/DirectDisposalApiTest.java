@@ -44,7 +44,8 @@ class DirectDisposalApiTest {
     @Test void directActorStartsManualExecutionWithoutInventingApproval() throws Exception {
         Actor actor=directActor();String event=event(actor,"CONFIRMED");
         JsonNode result=data(postDirect(actor,body(event,"COUNTERMEASURE"),key()).andExpect(status().isCreated()));
-        assertThat(result.path("status").asText()).isEqualTo("EXECUTING");
+        assertThat(result.path("status").asText()).isEqualTo("APPROVED");
+        assertThat(result.path("execution_block_reason").asText()).isNotBlank();
         String id=result.path("authorization_id").asText();
         JsonNode detail=data(mvc.perform(get(BASE+"/"+id).header("Authorization",actor.bearer())).andExpect(status().isOk()));
         assertThat(detail.path("authorization_mode").asText()).isEqualTo("DIRECT");
@@ -52,7 +53,7 @@ class DirectDisposalApiTest {
         assertThat(detail.hasNonNull("approved_by")).isFalse();
         assertThat(detail.path("valid_until").asLong()).isGreaterThan(detail.path("valid_from").asLong());
         assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?",String.class,id))
-                .contains("DIRECT_AUTHORIZE","EXECUTE").doesNotContain("APPROVE");
+                .contains("DIRECT_AUTHORIZE").doesNotContain("EXECUTE","APPROVE");
     }
     @Test void directDoesNotAllowSelfApprovalOfAnOrdinaryRequest() throws Exception {
         Actor actor=actor(List.of(DIRECT,"disposal:request","disposal:approve","disposal:execute"));String event=event(actor,"CONFIRMED");
@@ -73,7 +74,7 @@ class DirectDisposalApiTest {
         postDirect(actor,body(event,"COUNTERMEASURE"),key).andExpect(status().isCreated());
         postDirect(actor,body(event,"COUNTERMEASURE"),key).andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,event)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization_event e join disposal_authorization a on a.authorization_id=e.authorization_id where a.subject_id=? and e.event_kind='EXECUTE'",Integer.class,event)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization_event e join disposal_authorization a on a.authorization_id=e.authorization_id where a.subject_id=? and e.event_kind='EXECUTE'",Integer.class,event)).isZero();
     }
     @Test void revokedDirectPrivilegeBlocksFurtherCommands() throws Exception {
         Actor actor=directActor();String event=event(actor,"CONFIRMED");
@@ -100,7 +101,8 @@ class DirectDisposalApiTest {
     }
     @Test void directPermissionDoesNotReplaceDeviceControlPermission() throws Exception {
         Actor actor=directActor();String event=event(actor,"CONFIRMED");
-        postDirect(actor,body(event,"COUNTERMEASURE").replace("\"channel\":\"MANUAL\"", "\"channel\":\"LINGYUN_B\",\"device_id\":\"unbound-test-device\""),key())
+        jdbc.update("delete from app_role_permission where role_code=? and permission_code='devices'",actor.role());
+        postDirect(actor,body(event,"COUNTERMEASURE"),key())
                 .andExpect(status().isForbidden());
         assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,event)).isZero();
     }
@@ -112,15 +114,14 @@ class DirectDisposalApiTest {
     }
     @Test void deviceBlockPersistsDirectAuthorizationAndDoesNotClaimExecution() throws Exception {
         Actor actor=directActor();String event=event(actor,"CONFIRMED");
-        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values (?,'devices','OP',false,current_timestamp)",actor.role());
-        JsonNode result=data(postDirect(actor,body(event,"COUNTERMEASURE").replace("\"channel\":\"MANUAL\"", "\"channel\":\"LINGYUN_B\",\"device_id\":\"unbound-test-device\""),key()).andExpect(status().isCreated()));
+        JsonNode result=data(postDirect(actor,body(event,"COUNTERMEASURE"),key()).andExpect(status().isCreated()));
         assertThat(result.path("status").asText()).isEqualTo("APPROVED");
         assertThat(result.path("execution_block_reason").asText()).isNotBlank();
         String id=result.path("authorization_id").asText();
         assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?",String.class,id)).contains("DIRECT_AUTHORIZE").doesNotContain("EXECUTE","APPROVE");
         assertThat(jdbc.queryForObject("select execution_command_id from disposal_authorization where authorization_id=?",String.class,id)).isNull();
     }
-    private Actor directActor(){return actor(List.of(DIRECT));}
+    private Actor directActor(){return actor(List.of(DIRECT,"devices"));}
     private Actor actor(List<String> permissions) {
         if(permissions.contains(DIRECT)) assertThat(jdbc.queryForObject("select count(*) from app_permission where permission_code=?",Integer.class,DIRECT)).as("new direct permission catalog row").isEqualTo(1);
         String id=UUID.randomUUID().toString(),role="DCT-"+UUID.randomUUID().toString().substring(0,8), token=UUID.randomUUID().toString();
@@ -139,7 +140,7 @@ class DirectDisposalApiTest {
         if ("CONFIRMED".equals(state)) CounterEvidenceFixture.seed(jdbc,id);
         return id;
     }
-    private String body(String event,String action){return "{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+event+"\",\"action_type\":\""+action+"\",\"channel\":\"MANUAL\",\"reason\":\"隔离模拟验证\"}";}
+    private String body(String event,String action){return "{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+event+"\",\"action_type\":\""+action+"\",\"channel\":\"LINGYUN_B\",\"device_id\":\"unbound-test-device\",\"reason\":\"隔离模拟验证\"}";}
     private ResultActions postDirect(Actor a,String body,String key)throws Exception{return post(a,BASE+"/direct-execute",body,key);}
     private ResultActions post(Actor a,String path,String body,String key)throws Exception{return mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(path).header("Authorization",a.bearer()).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content(body));}
     private JsonNode data(ResultActions r)throws Exception{return json.readTree(r.andReturn().getResponse().getContentAsString()).path("data");}

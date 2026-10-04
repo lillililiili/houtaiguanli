@@ -98,6 +98,12 @@ class UpstreamAirspaceApiTest {
     @Test void manualEndpointsAreClosedAndLiveIsNotSilentlySimulated() throws Exception {
         mvc.perform(post("/api/v1/airspaces").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(input(1).toString()))
             .andExpect(status().isMethodNotAllowed());
+        mvc.perform(post("/api/v1/airspaces/import-batches").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isMethodNotAllowed());
+        mvc.perform(get("/api/v1/airspaces/import-batches/missing").header("Authorization","Bearer "+token))
+            .andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/airspaces/missing/versions").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isMethodNotAllowed());
         mvc.perform(post("/api/v1/integrations/airspaces/messages").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(input(1).toString()))
             .andExpect(status().isServiceUnavailable()).andExpect(jsonPath("$.error.code").value("UPSTREAM_NOT_CONFIGURED"));
     }

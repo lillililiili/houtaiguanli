@@ -2,7 +2,6 @@ package com.uav.lowaltitude.modules.punishment.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.OffsetDateTime;
@@ -50,10 +49,8 @@ class PunishmentEffectiveDecisionApiTest {
             if ("NEWER_DEMO".equals(scenario)) document("demo-qa",AT.plusMinutes(1));
             if ("REVOKED".equals(scenario)) {
                 assertThat(detail().path("effective_decision").path("status").asText()).isEqualTo("EFFECTIVE");
-                mvc.perform(post("/api/v1/decision-documents/{id}/revoke",document).header("Authorization",auth)
-                        .header("Idempotency-Key",UUID.randomUUID().toString()).contentType("application/json")
-                        .content("{\"reason\":\"QA合成撤销\",\"expected_version\":0}"))
-                        .andExpect(status().isOk());
+                jdbc.update("update penalty_decision_document set status='REVOKED',revoked_at=?,revoke_reason=?,"
+                        + "version=version+1,updated_at=? where document_id=?", AT, "QA合成撤销", AT, document);
             }
         }
         var result = detail();

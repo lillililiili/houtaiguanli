@@ -91,6 +91,11 @@ app:
     sim-port: ${APP_COUNTERMEASURE_4CH_SIM_PORT:10006}
   network:
     allow-loopback-when-listed: ${APP_NETWORK_ALLOW_LOOPBACK_WHEN_LISTED:false}
+  # 告警核实、反制、通知处罚的执行引擎。2026-10-03 起默认打开；某一类没有启用规则时，这一类仍暂停。
+  automation-rules:
+    enabled: ${APP_AUTOMATION_RULES_ENABLED:true}
+    fact-max-age-ms: ${APP_AUTOMATION_RULES_FACT_MAX_AGE_MS:30000}
+    poll-ms: ${APP_AUTOMATION_RULES_POLL_MS:2000}
   # 阶段 7 规则引擎：默认关闭调度；DEMO 参数版本默认不允许激活（只能做影子验证）。
   flight:
     # 飞行计划执行状态按计划时段推进（待执行 → 执行中 → 已完成）；默认关闭，本地演示打开。见需求确认表增补四 F10。

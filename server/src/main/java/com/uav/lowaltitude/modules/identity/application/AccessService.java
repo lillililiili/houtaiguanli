@@ -62,7 +62,6 @@ public class AccessService {
 
     public List<String> menuKeys(String roleCode) {
         Set<String> keys = new LinkedHashSet<>();
-        keys.add("workbench");
         List<PermissionRow> permissions = "ROLE-ADMIN".equals(roleCode)
                 ? mapper.listPermissionCatalog() : mapper.listPermissionsForRole(roleCode);
         for (PermissionRow permission : permissions) {

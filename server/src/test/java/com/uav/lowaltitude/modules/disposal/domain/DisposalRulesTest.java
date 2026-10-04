@@ -141,7 +141,7 @@ class DisposalRulesTest {
     @Test
     void manualResultOnlyOnManualChannelWhileExecuting() {
         assertThat(DisposalRules.allowedActions(DisposalRules.EXECUTING, DisposalRules.MANUAL, "u-1", "u-2", ALL_PERMS))
-                .contains("MANUAL_RESULT");
+                .doesNotContain("MANUAL_RESULT", "EXECUTE");
         // 协议 B 的结果来自设备回执，人不能替设备说"我成功了"。
         assertThat(DisposalRules.allowedActions(DisposalRules.EXECUTING, DisposalRules.LINGYUN_B, "u-1", "u-2", ALL_PERMS))
                 .doesNotContain("MANUAL_RESULT");

@@ -52,11 +52,12 @@ class DeviceBusinessScopeTest {
 
     @Test
     void stage5PermissionsAreCataloguedAsActionsWithoutProductionGrants() {
-        List<Map<String, Object>> rows = jdbc.queryForList("select permission_code, permission_kind, route_key from app_permission where permission_code in ('workbench:read','handoff:read','handoff:create') order by permission_code");
-        assertThat(rows).extracting(row -> row.get("permission_code")).containsExactly("handoff:create", "handoff:read", "workbench:read");
+        List<Map<String, Object>> rows = jdbc.queryForList("select permission_code, permission_kind, route_key from app_permission where permission_code in ('handoff:read','handoff:create') order by permission_code");
+        assertThat(rows).extracting(row -> row.get("permission_code")).containsExactly("handoff:create", "handoff:read");
         assertThat(rows).allSatisfy(row -> { assertThat(row.get("permission_kind")).isEqualTo("ACTION"); assertThat(row.get("route_key")).isNull(); });
+        assertThat(jdbc.queryForObject("select count(*) from app_permission where permission_code='workbench:read'", Integer.class)).isZero();
         // 阶段 15 的本地/测试种子给演示复核员授了 handoff:read（决策 15-3，只在 dev-seed 下存在）；按名字排除这一个，不放开其它非内置角色。
-        List<String> holders = jdbc.queryForList("select distinct p.role_code from app_role_permission p join app_role r on r.role_code=p.role_code where p.permission_code in ('workbench:read','handoff:read','handoff:create') and r.builtin=true and p.role_code <> 'ROLE-ADMIN' order by p.role_code", String.class);
+        List<String> holders = jdbc.queryForList("select distinct p.role_code from app_role_permission p join app_role r on r.role_code=p.role_code where p.permission_code in ('handoff:read','handoff:create') and r.builtin=true and p.role_code <> 'ROLE-ADMIN' order by p.role_code", String.class);
         // 失败时列出持有者：共享 H2 上下文里其它用例的夹具若不清理自己的授权，会在这里冒充产品授权（14-34）。
         assertThat(holders).as("non-admin roles holding stage 5 action codes").isEmpty();
     }

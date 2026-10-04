@@ -130,15 +130,14 @@ public final class DisposalRules {
         Set<String> actions = new LinkedHashSet<>();
         boolean canApprove = permissions.contains("disposal:approve");
         if (TRANSITIONS.get(APPROVE).contains(status) && canApprove) { actions.add(APPROVE); actions.add(REJECT); }
-        if (TRANSITIONS.get(EXECUTE).contains(status) && permissions.contains("disposal:execute")) actions.add(EXECUTE);
+        if (TRANSITIONS.get(EXECUTE).contains(status) && permissions.contains("disposal:execute")
+                && !MANUAL.equals(channel)) actions.add(EXECUTE);
         // 尚未下发时的撤销只属于发起人。已在执行中的急停仍按停止权限开放。
         if (TRANSITIONS.get(STOP).contains(status) && permissions.contains("disposal:stop")
                 && (!APPROVED.equals(status) || callerId != null && callerId.equals(requestedBy))) actions.add(STOP);
         // 撤回是申请人自己收回申请，因此本人无需审批权；他人收回则需要审批权。
         if (TRANSITIONS.get(CANCEL).contains(status) && (canApprove || callerId != null && callerId.equals(requestedBy)))
             actions.add(CANCEL);
-        if (MANUAL.equals(channel) && TRANSITIONS.get(MANUAL_RESULT).contains(status)
-                && permissions.contains("disposal:execute")) actions.add(MANUAL_RESULT);
         return actions;
     }
 

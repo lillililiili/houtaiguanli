@@ -11,7 +11,6 @@ import com.uav.lowaltitude.modules.identity.application.*;
 import com.uav.lowaltitude.modules.responseplan.application.ResponsePlanService;
 import com.uav.lowaltitude.modules.responseplan.api.ResponsePlanDtos.*;
 import com.uav.lowaltitude.modules.responseplan.infrastructure.ResponsePlanRepository;
-import com.uav.lowaltitude.modules.punishment.application.PunishmentCaseService;
 import com.uav.lowaltitude.platform.api.ApiException;
 
 class FormalBusinessGuardTest {
@@ -37,7 +36,7 @@ class FormalBusinessGuardTest {
         assertThatThrownBy(()->service.update("version",live,"key")).isInstanceOf(ApiException.class);
         verify(repository,never()).createPlan(anyString(),anyString(),anyLong());
     }
-    @Test void simulatedCommissionCannotBeCreatedAndDemoDocumentCannotBeIssued() {
+    @Test void simulatedCommissionCannotBeCreated() {
         var devices=mock(DeviceRepository.class);
         when(devices.find("device")).thenReturn(Map.of("enabled",true,"source_mode","replay","simulated",true));
         var clock=mock(com.uav.lowaltitude.platform.time.AppClock.class);
@@ -47,7 +46,5 @@ class FormalBusinessGuardTest {
         when(commissions.deviceInScope(eq("device"),any())).thenReturn(true);
         var service=new CommissionService(commissions,devices,access,clock,new AppProperties(),null,null,null,formal);
         assertThatThrownBy(()->service.create("device",null)).isInstanceOf(ApiException.class);
-        var punishment=new PunishmentCaseService(null,null,null,null,null,null,null,formal);
-        assertThatThrownBy(()->punishment.issueDocument("case","{}","key")).isInstanceOf(ApiException.class);
     }
 }

@@ -44,7 +44,7 @@ class AutomationRuleApiTest {
             var g=ok(auth(get(BASE+category)));
             assertThat(g.path("rules")).isEmpty();
             assertThat(g.path("version").asLong()).isZero();
-            assertThat(g.path("execution_status").asText()).isEqualTo("DISABLED");
+            assertThat(g.path("execution_status").asText()).isIn("STARTING", "CONNECTED");
             assertThat(g.path("catalog").size()).isGreaterThan(0);
         }
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM automation_rule_change",Long.class)).isZero();

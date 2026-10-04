@@ -83,7 +83,7 @@ class DisposalAuthorizationApiTest {
         // 主体不存在也仍然是 403 优先。
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(reader))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody("COUNTERMEASURE", "no-such-event", "MANUAL")))
+                        .content(createBody("COUNTERMEASURE", "no-such-event", "COUNTERMEASURE_4CH")))
                 .andExpect(status().isForbidden());
     }
 
@@ -93,9 +93,20 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""
-                                + eventId + "\",\"channel\":\"MANUAL\",\"reason\":\"演示\",\"typo_field\":1}"))
+                                + eventId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"演示\",\"typo_field\":1}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+    }
+
+    @Test
+    void manualChannelIsRejectedWithoutWriting() throws Exception {
+        mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
+                        .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("COUNTERMEASURE", eventId, "MANUAL")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.error.message").value("人工执行通道已关闭，请改用设备通道"));
+        assertThat(count(eventId)).isZero();
     }
 
     /* ---- 申请 ---- */
@@ -105,26 +116,26 @@ class DisposalAuthorizationApiTest {
         String pending = pendingEvent();
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody("COUNTERMEASURE", pending, "MANUAL")))
+                        .content(createBody("COUNTERMEASURE", pending, "COUNTERMEASURE_4CH")))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("POLICY_REQUIRES_CONFIRMED_EVENT"));
         // 驱离在 demo-v1 里不要求已核实，同一个事件应当放行——证明这条判断真的读了策略，不是写死的。
-        create(requester, "DISPERSAL", pending, "MANUAL").andExpect(status().isCreated());
+        create(requester, "DISPERSAL", pending, "COUNTERMEASURE_4CH").andExpect(status().isCreated());
     }
 
     @Test
     void secondActiveAuthorizationForSameSubjectIsRejected() throws Exception {
-        create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated());
+        create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated());
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody("COUNTERMEASURE", eventId, "MANUAL")))
+                        .content(createBody("COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH")))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("ACTIVE_AUTHORIZATION_EXISTS"));
     }
 
     @Test
     void authorizationNumberIsIssuedAndRequestEventRecorded() throws Exception {
-        JsonNode created = body(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        JsonNode created = body(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         assertThat(created.path("data").path("authorization_no").asText()).matches("AUTH-\\d{8}-\\d{4,}");
         assertThat(created.path("data").path("status").asText()).isEqualTo("REQUESTED");
         String id = created.path("data").path("authorization_id").asText();
@@ -137,7 +148,7 @@ class DisposalAuthorizationApiTest {
     void twoPersonRuleBlocksSelfApproval() throws Exception {
         // 申请人自己也有审批权时，仍然不能批自己的申请。
         String[] both = user("BOTH", List.of("disposal:read", "disposal:request", "disposal:approve"), false);
-        String id = id(create(both[0], "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(both[0], "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         mvc.perform(post("/api/v1/disposal-authorizations/{id}/approve", id).header("Authorization", bearer(both[0]))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"expected_version\":0}"))
@@ -147,7 +158,7 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void approveSetsWindowFromPolicyAndBumpsVersion() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         approve(id, 0).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.version").value(1));
         JsonNode detail = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}", id)
@@ -159,7 +170,7 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void staleExpectedVersionIsConflict() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         approve(id, 0).andExpect(status().isOk());
         // 拿旧版本号再批一次：必须 409，而不是把已批准的授权重批一遍。
         approve(id, 0).andExpect(status().isConflict())
@@ -168,7 +179,7 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void approveOnNonRequestedIsInvalidTransition() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         approve(id, 0).andExpect(status().isOk());
         approve(id, 1).andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));
@@ -179,7 +190,7 @@ class DisposalAuthorizationApiTest {
     @Test
     void sameIdempotencyKeyDoesNotCreateTwoAuthorizations() throws Exception {
         String key = key();
-        String bodyText = createBody("COUNTERMEASURE", eventId, "MANUAL");
+        String bodyText = createBody("COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH");
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                 .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON).content(bodyText))
                 .andExpect(status().isCreated());
@@ -193,7 +204,7 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void authorizationOutsideScopeIsNotFoundRatherThanForbidden() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         // 别的组织的人有全部处置权限，但看不到这条：必须 404 而不是 403——
         // 403 等于告诉对方"这个 ID 是存在的"，那本身就是泄露。
         String outsider = user("OUT", List.of("disposal:read", "disposal:approve"), true)[0];
@@ -209,7 +220,7 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void allowedActionsReflectStatusAndCallerPermissions() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         assertThat(allowedActions(id, approver)).containsExactlyInAnyOrder("APPROVE", "REJECT", "CANCEL");
         // 申请人没有审批权，但可以撤回自己的申请。
         assertThat(allowedActions(id, requester)).containsExactly("CANCEL");
@@ -221,17 +232,17 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void eventStreamGrowsAndIsNeverRewritten() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         approve(id, 0).andExpect(status().isOk());
         mvc.perform(post("/api/v1/disposal-authorizations/{id}/stop", id).header("Authorization", bearer(approver))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"expected_version\":1,\"note\":\"演示停止\"}"))
                 .andExpect(status().isOk());
-        // 停止的是 MANUAL 通道：没有设备可急停，因此是"未尝试"而不是"已执行"。
-        assertThat(eventKinds(id)).containsExactly("REQUEST", "APPROVE", "STOP");
+        // 四通道设备不存在时，停止仍撤销授权，并留下设备无法全关的事实。
+        assertThat(eventKinds(id)).containsExactly("REQUEST", "APPROVE", "STOP", "DEVICE_CONTROL_UNAVAILABLE");
         JsonNode detail = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}", id)
                 .header("Authorization", bearer(approver))).andExpect(status().isOk())).path("data");
-        assertThat(detail.path("device_stop_result").asText()).isEqualTo("NOT_ATTEMPTED");
+        assertThat(detail.path("device_stop_result").asText()).isEqualTo("UNAVAILABLE");
     }
 
     /* ---- 目标主体（决策 13-24）与人名回填（13-26）---- */
@@ -244,7 +255,7 @@ class DisposalAuthorizationApiTest {
                         .header("Authorization", bearer(requester)).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + targetId + "\",\"channel\":\"MANUAL\",\"reason\":\"目标主体驱离\"}"))
+                                + targetId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"目标主体驱离\"}"))
                 .andExpect(status().isCreated())).path("data");
         assertThat(data.path("status").asText()).isEqualTo("REQUESTED");
     }
@@ -256,7 +267,7 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + targetId + "\",\"channel\":\"MANUAL\",\"reason\":\"不该被接受\"}"))
+                                + targetId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"不该被接受\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("POLICY_REQUIRES_CONFIRMED_EVENT"));
     }
@@ -268,7 +279,7 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + targetId + "\",\"channel\":\"MANUAL\",\"reason\":\"越权\"}"))
+                                + targetId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"越权\"}"))
                 .andExpect(status().isNotFound());
     }
 
@@ -279,7 +290,7 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + stale + "\",\"channel\":\"MANUAL\",\"reason\":\"目标已消失\"}"))
+                                + stale + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"目标已消失\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("TARGET_NOT_ACTIVE"));
     }
@@ -294,7 +305,7 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + id + "\",\"channel\":\"MANUAL\",\"reason\":\"无观测\"}"))
+                                + id + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"无观测\"}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("TARGET_NOT_ACTIVE"));
         jdbc.update("delete from target where target_id=?", id);
@@ -314,7 +325,7 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + historical + "\",\"channel\":\"MANUAL\",\"reason\":\"旧 ID 派驱离\"}"))
+                                + historical + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"旧 ID 派驱离\"}"))
                 .andExpect(status().isCreated());
         // 落库的主体必须是解析后的当前目标，不是调用方递进来的旧 ID。
         assertThat(jdbc.queryForObject("select subject_id from disposal_authorization where subject_id=?",
@@ -332,14 +343,14 @@ class DisposalAuthorizationApiTest {
         mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"RISK\",\"subject_id\":\"risk-1\""
-                                + ",\"channel\":\"MANUAL\",\"reason\":\"本期不支持\"}"))
+                                + ",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"本期不支持\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("SUBJECT_KIND_NOT_SUPPORTED"));
     }
 
     @Test
     void requesterAndApproverNamesAreReturnedNotJustIds() throws Exception {
-        String id = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         approve(id, 0).andExpect(status().isOk());
         JsonNode data = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}", id)
                 .header("Authorization", bearer(approver))).andExpect(status().isOk())).path("data");
@@ -365,9 +376,9 @@ class DisposalAuthorizationApiTest {
 
     @Test
     void listCanExcludeCompletedAuthorizations() throws Exception {
-        String completedId = id(create(requester, "COUNTERMEASURE", eventId, "MANUAL").andExpect(status().isCreated()));
+        String completedId = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
         jdbc.update("update disposal_authorization set status='COMPLETED' where authorization_id=?", completedId);
-        String openId = id(create(requester, "DISPERSAL", eventId, "MANUAL").andExpect(status().isCreated()));
+        String openId = id(create(requester, "DISPERSAL", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
 
         JsonNode excluded = body(mvc.perform(get("/api/v1/disposal-authorizations")
                         .param("subject_id", eventId).param("exclude_status", "COMPLETED")
@@ -410,8 +421,9 @@ class DisposalAuthorizationApiTest {
     }
 
     private static String createBody(String actionType, String subjectId, String channel) {
+        String device = "MANUAL".equals(channel) ? "" : ",\"device_id\":\"unbound-test-device\"";
         return "{\"action_type\":\"" + actionType + "\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\"" + subjectId
-                + "\",\"channel\":\"" + channel + "\",\"reason\":\"本地演示：接口测试\"}";
+                + "\",\"channel\":\"" + channel + "\"" + device + ",\"reason\":\"本地演示：接口测试\"}";
     }
 
     private List<String> allowedActions(String id, String token) throws Exception {

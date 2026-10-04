@@ -20,8 +20,4 @@ public class UavAdvisoryController {
             @RequestBody(required=false) String body,@RequestHeader(value="Idempotency-Key",required=false) String key) {
         return ApiResponse.ok(service.retryAutomaticVoice(eventId,body,key));
     }
-    @PostMapping("/actions") public ApiResponse<Overview> act(@PathVariable String eventId,
-            @RequestBody(required=false) String body,@RequestHeader(value="Idempotency-Key",required=false) String key) {
-        return ApiResponse.ok(service.act(eventId,body,key));
-    }
 }
