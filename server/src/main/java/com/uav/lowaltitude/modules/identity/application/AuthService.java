@@ -147,7 +147,8 @@ public class AuthService {
             return null;
         }
         AppSession session = sessionMapper.findById(sessionId);
-        if (session == null || session.getExpireAt() <= appClock.nowMillis()) {
+        long now = appClock.nowMillis();
+        if (session == null || session.getExpireAt() <= now) {
             return null;
         }
         AppUser user = userMapper.findById(session.getUserId());
@@ -156,8 +157,16 @@ public class AuthService {
                 || session.getPermissionVersion() != user.getPermissionVersion()) {
             return null;
         }
+        renewSessionIfDue(sessionId, now);
         return new AuthUser(user.getUserId(), user.getAccount(), user.getName(), user.getRoleCode(),
                 user.getPermissionVersion(), user.isMustChangePassword(), user.getScopeMode());
+    }
+
+    private void renewSessionIfDue(String sessionId, long now) {
+        if (!appProperties.getSession().isRollingEnabled()) return;
+        long ttl = appProperties.getSession().getTtlHours() * 3600_000L;
+        if (ttl <= 0) return;
+        sessionMapper.renewIfDue(sessionId, now, now + ttl / 2, now + ttl);
     }
 
     private ScopeGrantResponse toScopeResponse(ScopeGrantRow row) {

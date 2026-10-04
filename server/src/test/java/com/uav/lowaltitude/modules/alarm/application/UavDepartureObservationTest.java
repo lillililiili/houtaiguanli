@@ -18,7 +18,7 @@ class UavDepartureObservationTest {
  final PilotDepartureWatch watch=mock(PilotDepartureWatch.class);
  final EventRow event=mock(EventRow.class);
  final AccessDecision scope=mock(AccessDecision.class);
- final UavAdvisoryService service=new UavAdvisoryService(events,null,access,null,null,clock,null,sms,voice,watch,null);
+ final UavAdvisoryService service=new UavAdvisoryService(events,null,access,null,null,clock,null,sms,voice,watch,null,null,null);
  @BeforeEach void setup(){when(access.require(PermissionCode.ALARM_READ)).thenReturn(scope);when(events.find("event",scope)).thenReturn(event);when(event.state()).thenReturn("CONFIRMED");when(clock.nowMillis()).thenReturn(20000L);}
  void delivered(){AutoSms value=mock(AutoSms.class);when(value.status()).thenReturn("SIMULATED_DELIVERED");when(sms.overview(event,false)).thenReturn(value);when(sms.deliveredAt("event")).thenReturn(10000L);}
  @Test void unverifiedNeverStarts(){when(event.state()).thenReturn("PENDING_VERIFICATION");assertThat(service.observation("event").status()).isEqualTo("NOT_STARTED");verifyNoInteractions(sms,voice,watch);}

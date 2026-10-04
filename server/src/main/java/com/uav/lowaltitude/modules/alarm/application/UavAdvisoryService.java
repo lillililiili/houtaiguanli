@@ -17,6 +17,7 @@ import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.*;
 import com.uav.lowaltitude.modules.alarm.domain.CounterLaunchVisibility;
 import com.uav.lowaltitude.modules.alarm.domain.NotifyFlow;
 import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository;
+import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
@@ -35,6 +36,7 @@ public class UavAdvisoryService {
     private final AutoVoiceService voice;
     private final PilotDepartureWatch departure;
     private final HandoffRepository handoffs;
+    private final DisposalRepository disposals;
     private final UavEventRepository events;
     private final UavAdvisoryRepository repository;
     private final AccessControlService access;
@@ -42,12 +44,15 @@ public class UavAdvisoryService {
     private final ObjectMapper json;
     private final AppClock clock;
     private final AuditService audit;
+    private final NoCounterService noCounter;
     public UavAdvisoryService(UavEventRepository events,UavAdvisoryRepository repository,AccessControlService access,
-            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs) {
+            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs,DisposalRepository disposals,NoCounterService noCounter) {
+        this.noCounter=noCounter;
         this.voice=voice;
         this.automatic=automatic;
         this.departure=departure;
         this.handoffs=handoffs;
+        this.disposals=disposals;
         this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;
     }
     @Transactional(readOnly=true)
@@ -89,6 +94,7 @@ public class UavAdvisoryService {
         }
         if(event.version()!=a.expectedVersion()) throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
         if(!"CONFIRMED".equals(event.state())) throw conflict("INVALID_TRANSITION","请先人工核实事件属实");
+        if(repository.noCounterActive(id))throw conflict("NO_COUNTER_BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON);
         if("SMS_SIMULATED".equals(a.kind())&&automatic.sending(id))throw conflict("AUTO_SMS_SENDING","后台正在发送短信，请等待结果后再补发");
         AdvisorySmsPort.Delivery delivery="SMS_SIMULATED".equals(a.kind())?sms.simulate(event.sourceMode(),a.recipientName(),a.content()):null;
         long now=clock.nowMillis();
@@ -184,11 +190,12 @@ public class UavAdvisoryService {
         var autoSms=automatic.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE));
         var autoVoice=voice.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE));
         var phase=notifyPhase(event,autoSms,autoVoice);
+        var decision=noCounter.status(event);
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
-                "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
+                !decision.decisionActive() && "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的计划执行飞手"),
-                autoSms,voice.mode(event),autoVoice,CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event.eventId()));
+                autoSms,voice.mode(event),autoVoice,!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event.eventId()),decision);
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
     private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
@@ -207,10 +214,31 @@ public class UavAdvisoryService {
     private String phaseName(NotifyFlow.Phase phase) { return phase == null ? null : phase.name(); }
     private AutoHandoff autoHandoff(String eventId) {
         String handoffId = handoffs.existingPunishment(eventId);
-        if (handoffId == null) return new AutoHandoff(true, "WAITING", "干扰完成后自动移送到处罚", null, null, null);
+        if (handoffId == null) {
+            if(repository.noCounterActive(eventId))return new AutoHandoff(false,"NOT_REQUIRED","已决定不反制；是否移送按事件事实另行判断",null,null,null);
+            if (disposals.completedJammingRequester(eventId) == null)
+                return new AutoHandoff(true, "WAITING", "干扰完成后自动移送到处罚", null, null, null);
+            if (!canInspectHandoffRecipients(eventId))
+                return new AutoHandoff(true, "WAITING", "干扰已完成，处罚移送进度需由有权限人员核查", null, null, null);
+            // Match the automatic submission gate, without selecting a recipient or starting any work.
+            int recipients = handoffs.enabledRecipients("UAV_PUNISHMENT").size();
+            if (recipients == 0)
+                return new AutoHandoff(true, "BLOCKED", "未配置有效的处罚接收方，暂不能自动移送，请联系管理员核查配置", null, null, null);
+            if (recipients > 1)
+                return new AutoHandoff(true, "BLOCKED", "存在多个有效的处罚接收方，无法确定唯一接收方，暂不能自动移送，请联系管理员核查配置", null, null, null);
+            return new AutoHandoff(true, "WAITING", "干扰已完成，等待后台自动移送", null, null, null);
+        }
         String delivery = handoffs.latestDeliveryStatus(handoffId);
         String status = "FAILED".equals(delivery) ? "FAILED" : "SUBMITTED";
         return new AutoHandoff(true, status, "FAILED".equals(status) ? "处罚交接投递失败" : null, handoffId, "JAMMING_COMPLETED", null);
+    }
+    private boolean canInspectHandoffRecipients(String eventId) {
+        for (PermissionCode permission : List.of(PermissionCode.HANDOFF_READ, PermissionCode.HANDOFF_CREATE)) {
+            try {
+                if (events.find(eventId, access.require(permission)) != null) return true;
+            } catch (ApiException denied) { /* Keep directory configuration private without matching permission and scope. */ }
+        }
+        return false;
     }
     private PilotDepartureWatch.Presence presence(String eventId, long since, long now) {
         try { return departure.assess(eventId, since, now); }

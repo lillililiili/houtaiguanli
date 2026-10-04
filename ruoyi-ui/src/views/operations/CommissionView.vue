@@ -70,7 +70,13 @@ let connectionRequest = 0;
 let existingRequest = 0;
 
 const currentDevice = computed(() => devices.value.find(item => item.device_id === selectedDeviceId.value));
+const isLogicalSimulatorDevice = item => Boolean(item?.simulated
+  && ['replay', 'mock'].includes(item?.source_mode)
+  && ['LINGYUN_MQTT_V8_6', 'EO_EDGE_MQTT_20250826'].includes(item?.protocol_code));
 const taskSupported = computed(() => information.value?.device_id === selectedDeviceId.value && information.value?.task_supported);
+const informationNotes = computed(() => information.value?.device_id === selectedDeviceId.value
+  && Array.isArray(information.value?.notes)
+  ? information.value.notes.filter(note => typeof note === 'string' && note.trim()) : []);
 const isTestSource = task => task?.simulated === true || ['mock', 'replay'].includes(task?.source_mode);
 const isSimulation = computed(() => isTestSource(active.value) || isTestSource(currentDevice.value));
 const formalDevice = computed(() => currentDevice.value?.source_mode === 'live' && !currentDevice.value?.simulated);
@@ -78,6 +84,7 @@ const simulationAllowed = computed(() => information.value?.device_id === select
   && !informationLoading.value && !informationError.value && information.value?.simulation_allowed === true);
 const deviceSourceAllowed = computed(() => formalDevice.value || (isTestSource(currentDevice.value) && simulationAllowed.value));
 const taskSourceAllowed = computed(() => deviceSourceAllowed.value && (!isSimulation.value || simulationAllowed.value));
+const logicalSimulation = computed(() => isLogicalSimulatorDevice(currentDevice.value) || isLogicalSimulatorDevice(active.value));
 const statusMeta = {
   CREATED: ['待连接', 'info'], CONNECTING: ['连接中', 'warning'], CONNECTED: ['已连接', 'success'], READY: ['待调测', 'warning'],
   RUNNING: ['调测中', 'warning'], PASSED: ['通过', 'success'], FAILED: ['失败', 'danger'], UNTESTABLE: ['不可判定', 'warning'], CANCELLED: ['已取消', 'info']
@@ -98,7 +105,11 @@ const stepIndex = computed(() => {
   return 4;
 });
 
-function resetConfig() { Object.assign(config, { transport: 'TCP', host: '', port: null, timeout_millis: 3000 }); }
+function resetConfig() {
+  Object.assign(config, logicalSimulation.value
+    ? { transport: 'SIMULATOR', host: 'simulator', port: 8766, timeout_millis: 1000 }
+    : { transport: 'TCP', host: '', port: null, timeout_millis: 3000 });
+}
 function restoreTaskConfig() {
   if (active.value?.device_id !== selectedDeviceId.value || !active.value?.configuration) return false;
   const saved = active.value.configuration;
@@ -122,6 +133,7 @@ async function applyConnection(deviceId) {
   const request = ++connectionRequest;
   if (restoreTaskConfig()) return;
   if (!deviceId || !auth.hasPermission('devices.op')) { resetConfig(); return; }
+  if (isLogicalSimulatorDevice(currentDevice.value)) { resetConfig(); return; }
   try {
     const detail = await deviceApi.detail(deviceId);
     if (!alive || request !== connectionRequest || selectedDeviceId.value !== deviceId) return;
@@ -265,6 +277,7 @@ async function createTask() {
 function connectTask() { if (!canOperate.value || !taskSourceAllowed.value) return; runAction(() => commissionApi.connect(active.value.commission_id, active.value.version), isSimulation.value ? '正在建立模拟调测连接' : '正在建立连接'); }
 function saveConfig() {
   if (!canOperate.value || !taskSourceAllowed.value) return;
+  if (logicalSimulation.value && (!config.host?.trim() || !config.port)) resetConfig();
   if (!config.host?.trim() || !config.port) { ElMessage.error('主机和端口为必填'); return; }
   runAction(() => commissionApi.configure(active.value.commission_id, { version: active.value.version, ...config, host: config.host.trim() }), '配置快照已保存');
 }
@@ -363,6 +376,7 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
       <el-card class="commission-config"><template #header><div class="table-toolbar"><b>参数配置</b><span class="muted">{{ active?.commission_no || '尚未创建任务' }}</span></div></template>
         <template v-if="taskSupported || active">
           <h3 class="config-section-title">网络参数</h3>
+          <p v-if="logicalSimulation" class="tree-note">这是模拟器逻辑调测，使用本地模拟配置，不连接真实设备。</p>
           <el-form :model="config" label-position="top" class="commission-form"><el-form-item label="主机 / IP 地址"><el-input v-model="config.host" :disabled="!canOperate || active?.status!=='CONNECTED'" placeholder="建立连接后配置" /></el-form-item><el-form-item label="端口"><el-input-number v-model="config.port" :min="1" :max="65535" :disabled="!canOperate || active?.status!=='CONNECTED'" controls-position="right" /></el-form-item><h3 class="config-section-title">接口与协议</h3><el-form-item label="传输方式"><el-input v-model="config.transport" disabled /></el-form-item><el-form-item label="接入协议"><el-input :model-value="protocolLabel(active || currentDevice)" disabled /></el-form-item><h3 class="config-section-title">通信设置</h3><el-form-item label="超时（ms）"><el-input-number v-model="config.timeout_millis" :min="100" :disabled="!canOperate || active?.status!=='CONNECTED'" controls-position="right" /></el-form-item></el-form>
           <div class="commission-action-bar">
             <el-button v-if="maintenanceId && active && !linkedToMaintenance" :disabled="!maintenance.can('LINK_COMMISSION') || actionBusy || !taskSourceAllowed" @click="linkCommission()">关联当前调测任务</el-button>
@@ -380,6 +394,9 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
         </template>
         <el-alert v-else-if="information && !taskSupported" title="此协议使用主动上报" description="在右侧查看连接状态，展开设备上报参数可核对工参。" type="info" :closable="false" show-icon />
         <el-empty v-else description="请选择设备并等待能力信息加载" :image-size="72" />
+        <ul v-if="informationNotes.length" class="tree-note commission-capability-notes" aria-label="协议能力说明">
+          <li v-for="(note, index) in informationNotes" :key="index">{{ note }}</li>
+        </ul>
         <CommissionDeviceStatus :information="information" parameters />
       </el-card>
       <el-card class="commission-results"><template #header><div class="table-toolbar"><b>实时调测结果</b><el-tag :type="tagType(active?.status,isTestSource(active))" effect="plain">{{ active ? statusText(active.status,isTestSource(active)) : '未开始' }}</el-tag></div></template>
@@ -427,6 +444,8 @@ onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterva
 .connection-heading .config-section-title { margin: 0; }
 .task-details { padding-top: 12px; border-top: 1px solid #e7edf3; }
 .commission-config :deep(.el-card__body) { display: flex; flex-direction: column; }
+.commission-capability-notes { margin: 12px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+.commission-capability-notes li + li { margin-top: 4px; }
 .commission-steps :deep(.el-card__body) { padding: 14px 10px; }
 .commission-reference :deep(.device-tree-item) { padding: 7px 10px; }
 .commission-form .el-input-number { width: 100%; }

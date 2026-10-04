@@ -31,6 +31,13 @@ public interface SessionMapper {
     int expireAllForUser(@Param("userId") String userId);
 
     @Update("""
+            UPDATE app_session SET expire_at = #{renewedExpireAt}
+            WHERE session_id = #{sessionId} AND expire_at > #{now} AND expire_at < #{renewBefore}
+            """)
+    int renewIfDue(@Param("sessionId") String sessionId, @Param("now") long now,
+            @Param("renewBefore") long renewBefore, @Param("renewedExpireAt") long renewedExpireAt);
+
+    @Update("""
             UPDATE app_session SET expire_at = 0
             WHERE user_id IN (SELECT user_id FROM app_user WHERE role_code = #{roleCode}) AND expire_at > 0
             """)

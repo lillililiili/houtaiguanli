@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.device.application;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.dao.DuplicateKeyException;
@@ -24,6 +25,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class MqttConfigurationService {
+    private static final Set<String> SIMULATOR_ONLY_TYPES = Set.of("weather", "countermeasure");
     private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final MqttRepository repository;
     private final EoEdgeRepository edges;
@@ -243,7 +245,9 @@ public class MqttConfigurationService {
         if (p.latitude() != null && (p.latitude().compareTo(java.math.BigDecimal.valueOf(-90)) < 0
                 || p.latitude().compareTo(java.math.BigDecimal.valueOf(90)) > 0)) throw bad("纬度范围必须为 -90 到 90");
         if(eo(p)) { segment(p.edgeId(),64); segment(p.externalDeviceId(),32); return; }
-        if(!LingyunEnvelope.PROTOCOL.equals(p.protocolCode()) || !LingyunControlEnvelope.registrable(p.deviceTypeAbbr()))
+        boolean simulatorOnly = "replay".equals(p.sourceMode()) && SIMULATOR_ONLY_TYPES.contains(p.deviceTypeAbbr());
+        if(!LingyunEnvelope.PROTOCOL.equals(p.protocolCode())
+                || !(LingyunControlEnvelope.registrable(p.deviceTypeAbbr()) || simulatorOnly))
             throw bad("支持雷达、5G-A、TDOA、AOA、协议破解、RemoteID、诱骗、干扰、驱鸟炮、光电或光电边端");
         segment(p.providerCode(),64); segment(p.externalDeviceId(),128);
     }

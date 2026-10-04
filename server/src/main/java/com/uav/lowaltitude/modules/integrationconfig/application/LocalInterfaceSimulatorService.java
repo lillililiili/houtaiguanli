@@ -74,7 +74,10 @@ public class LocalInterfaceSimulatorService {
   audit.record(actor.userId(),actor.account(),"local_interface_binding","local_interface",p.sourceId(),p.enabled()?"启用20分钟本地模拟接收":"停止本地模拟接收",null);
   return new Binding(p.sourceKind(),p.sourceId(),p.enabled(),expires);
  }
- @Transactional(readOnly=true) public Context context(){
+ // This endpoint aggregates several independently permission-scoped read models.
+ // Do not wrap the aggregation in one transaction: a handled ApiException from
+ // one optional section must not mark the whole request rollback-only.
+ public Context context(){
   var actor=interfaces.requireInterfacesRead();var params=new LinkedMultiValueMap<String,String>();params.add("size","100");
   List<String> unavailable=new ArrayList<>();
   List<RouteOption> routeOptions=new ArrayList<>();
@@ -82,7 +85,7 @@ public class LocalInterfaceSimulatorService {
    for(var route:flights.routes(params).items())if(route.enabled()&&Set.of("mock","replay").contains(route.sourceMode())){
     var versions=flights.routeVersions(route.routeId(),params).items();
     for(var version:versions)if(version.validTo()==null||version.validTo()>clock.nowMillis()+300000){
-     routeOptions.add(new RouteOption(version.routeVersionId(),route.routeId(),route.name(),route.routeNo(),version.validFrom(),version.validTo()));break;
+     routeOptions.add(new RouteOption(version.routeVersionId(),route.routeId(),route.name(),route.routeNo(),version.validFrom(),version.validTo(),version.centerline()));break;
     }
    }
   }catch(ApiException error){permissionSection(error,"航线",unavailable);}

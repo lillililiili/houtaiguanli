@@ -65,14 +65,17 @@ public class FlightDeviceCheckService {
         if(preflight)from=to=now;
         if(to<from)return unknown(planId,now,"计划时段不正确，暂不能检查。",mqttSimulation);
         // 不用区县文本或来源单位作地理范围；演示与真实模式仍严格隔离。
+        boolean replaySimulation="replay".equals(plan.sourceMode());
         List<DeviceRow> rows=new ArrayList<>();boolean complete=false;int unchecked=0,seen=0;
         for(int page=1;page<=20;page++) {
             var listed=devices.list(new DeviceFilter(null,null,null,null,null,null,null),page,100,"device_no_asc");
             for(var device:listed.items()) {
                 boolean demoDevice="replay".equals(device.sourceMode())
                     && device.simulated() && device.deviceNo()!=null && device.deviceNo().startsWith("FP-CHECK-");
+                // 回放计划只检查当前启用的回放设备；历史批次停用设备不属于本次计划周边设备。
                 if((mqttSimulation?!demoDevice:!plan.sourceMode().equals(device.sourceMode())) || device.deviceTypeCode()==null
-                        || !SENSORS.contains(device.deviceTypeCode().toUpperCase(Locale.ROOT)))continue;
+                        || !SENSORS.contains(device.deviceTypeCode().toUpperCase(Locale.ROOT))
+                        || (replaySimulation && !device.enabled()))continue;
                 var detail=devices.detail(device.deviceId());
                 if(!positionKnown(detail)){unchecked++;continue;}
                 var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());

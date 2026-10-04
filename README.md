@@ -14,17 +14,25 @@
 
 ## 本地启动
 
+推荐使用统一编排脚本。脚本会先复用已健康的数据库/API/前台/模拟器进程，只有缺失服务才启动新进程；数据库宿主机端口会从现有 Compose 容器读取，避免把 25432 的开发库误当成 5432 重建。验收启动显式保持 `APP_DEV_SEED_ENABLED=false`。
+
+```powershell
+cd E:\houtaiguanlii
+.\scripts\start-local.ps1 -WithMqtt -WithSimulator
+.\scripts\smoke-system.ps1 -RequireBusinessFrontend -RequireSimulator
+```
+
+冒烟脚本默认不猜测 `admin1` 密码；未传 `-SeedPassword` 时跳过登录请求，避免旧密码反复尝试触发账号锁定。需要验证 Bearer 会话时，显式传入当前密码：`.\scripts\smoke-system.ps1 -SeedPassword '<当前密码>' -RequireBusinessFrontend -RequireSimulator`。
+
+日志和进程清单写入系统临时目录 `houtaiguanlii-local-runtime`；停止本次脚本启动的应用进程使用 `.\scripts\stop-local.ps1`，不会停止数据库/MQTT 容器。端口、依赖、设备状态字段和故障定位见[系统启动拓扑与故障定位](docs/系统启动拓扑与故障定位.md)。
+
 ```powershell
 cd deploy
-docker compose up -d db mosquitto
+docker compose --profile qa up -d db mosquitto
 # 已有旧 pgdata 卷时，先按下文创建新后端专用数据库。
 
-cd ..\server
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local"
-
-cd ..\ruoyi-ui
-npm ci
-npm run dev
+cd ..
+.\scripts\start-local.ps1 -WithMqtt -WithSimulator
 ```
 
 - 管理端：http://localhost:5175

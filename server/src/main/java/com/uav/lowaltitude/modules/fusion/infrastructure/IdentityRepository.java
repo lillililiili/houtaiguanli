@@ -87,6 +87,15 @@ public class IdentityRepository {
         jdbc.update("UPDATE target SET object_type_code=:type WHERE target_id=:id AND object_type_code IS NULL", Map.of("id", targetId, "type", classCode));
     }
 
+    /** Only explicitly normalized replay observations may supply simulator serial/subtype metadata. */
+    public void applySimulatorIdentity(String targetId,String classCode,String serial,String subtype,Instant observedAt) {
+        Map<String,Object> p=new HashMap<>();
+        p.put("id",targetId);p.put("type",classCode);p.put("sn","UAV".equals(classCode)?serial:null);
+        p.put("subtype","UNKNOWN".equals(classCode)?subtype:null);p.put("observed",Timestamp.from(observedAt));
+        jdbc.update("UPDATE target SET object_type_code=:type,uav_sn=:sn,subtype=:subtype WHERE target_id=:id AND source_mode='replay' AND last_seen_at<=:observed"
+                + " AND NOT EXISTS(SELECT 1 FROM target_attribute_selection a WHERE a.target_id=:id AND a.manual_class_override=TRUE)",p);
+    }
+
     public TargetRow findTarget(String targetId) {
         List<TargetRow> rows = jdbc.query("SELECT target_id,target_no,object_type_code,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,unified FROM target WHERE target_id=:id",
                 Map.of("id", targetId), IdentityRepository::target);

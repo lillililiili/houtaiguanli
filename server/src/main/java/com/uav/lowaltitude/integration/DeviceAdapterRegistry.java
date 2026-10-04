@@ -28,6 +28,7 @@ public class DeviceAdapterRegistry {
         DeviceAdapterPort exact = adapters.get(new Key(mode, normalize(protocolCode)));
         if (exact != null) return Optional.of(exact);
         if (mode == SourceMode.mock) return Optional.ofNullable(adapters.get(new Key(mode, DeviceProtocolCodes.MOCK)));
+        if (mode == SourceMode.replay) return Optional.ofNullable(adapters.get(new Key(mode, DeviceProtocolCodes.SIMULATOR_REPLAY)));
         return Optional.empty();
     }
 

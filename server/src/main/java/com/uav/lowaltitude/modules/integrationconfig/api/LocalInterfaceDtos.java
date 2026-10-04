@@ -3,6 +3,7 @@ import java.util.List;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.uav.lowaltitude.modules.flight.api.FlightDtos.GeoJsonLineStringDto;
 
 public final class LocalInterfaceDtos {
  private LocalInterfaceDtos(){}
@@ -29,7 +30,7 @@ public final class LocalInterfaceDtos {
   @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT|ANSWERED|PLAYED") @NotNull String outcome){}
  public record Message(String messageId,String kind,String direction,String subjectId,String state,long version,
   long createdAt,JsonNode payload,JsonNode result){}
- public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo){}
+ public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo,GeoJsonLineStringDto centerline){}
  public record PlanOption(String planId,String planNo,Long startAt,Long endAt){}
  public record SourceOption(String sourceKind,String sourceId,String label){}
  public record Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections,List<Message> receiverMessages){

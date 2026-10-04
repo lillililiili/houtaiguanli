@@ -13,10 +13,25 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class DeviceRepository {
 
+    // One read-time interpretation for detail, filtering, sorting, reports and aggregates.
+    // Use the application clock rather than database wall time so every caller shares the freshness contract.
+    private static final String EFFECTIVE_CONNECTIVITY = """
+            (CASE WHEN d.simulated=TRUE AND d.source_mode='replay'
+                AND EXISTS(SELECT 1 FROM ops_integration_source weather_source
+                    WHERE weather_source.source_id=d.source_id AND weather_source.protocol_code='WEATHER_SIMULATOR')
+                AND (d.enabled=FALSE OR s.observed_at IS NULL OR s.observed_at<:weather_fresh_after)
+                THEN 'UNKNOWN' ELSE COALESCE(s.connectivity,'UNKNOWN') END)
+            """;
+    private static final String CONNECTIVITY_COUNTS =
+            "SUM(CASE WHEN " + EFFECTIVE_CONNECTIVITY + "='ONLINE' THEN 1 ELSE 0 END) AS online, "
+            + "SUM(CASE WHEN " + EFFECTIVE_CONNECTIVITY + "='OFFLINE' THEN 1 ELSE 0 END) AS offline, "
+            + "SUM(CASE WHEN " + EFFECTIVE_CONNECTIVITY + "='ABNORMAL' THEN 1 ELSE 0 END) AS abnormal, "
+            + "SUM(CASE WHEN " + EFFECTIVE_CONNECTIVITY + "='UNKNOWN' THEN 1 ELSE 0 END) AS unknown_count ";
+
     public com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset reportDataset() {
-        Map<String,Object> params = new HashMap<>();
+        Map<String,Object> params = readParameters();
         String sql = "SELECT d.device_id AS id,d.name AS label,CAST(NULL AS BIGINT) AS at_ms,"
-            + "s.connectivity AS state,d.device_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,d.region_name AS region,"
+            + EFFECTIVE_CONNECTIVITY + " AS state,d.device_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,d.region_name AS region,"
             + "CASE WHEN d.simulated=TRUE AND d.source_mode='live' THEN 'mock' ELSE d.source_mode END AS source_mode,"
             + "d.device_no AS related,s.health_code AS result,CAST(NULL AS VARCHAR) AS note"
             + " FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id WHERE d.deleted_at IS NULL" + deviceScope(params);
@@ -24,7 +39,7 @@ public class DeviceRepository {
     }
 
     private static final String DEVICE_SELECT = """
-            SELECT d.*, s.connectivity, s.work_state_code, s.has_alarm, s.health_code,
+            SELECT d.*, %s AS connectivity, s.work_state_code, s.has_alarm, s.health_code,
                    s.observed_at, s.received_at, s.last_heartbeat_at, s.metrics_json,
                    s.unknown_reason, s.version AS state_version,
                    src.source_code, src.name AS source_name, src.protocol_code, src.protocol_version,
@@ -43,14 +58,22 @@ public class DeviceRepository {
             LEFT JOIN eo_device_binding eo_binding ON eo_binding.ops_device_id=d.device_id
             LEFT JOIN device tcp_device ON tcp_device.device_id=d.device_id AND src.protocol_code='RADAR_TCP_V3_0_0'
             LEFT JOIN device_business_scope business_scope ON business_scope.ops_device_id=d.device_id
-            """;
+            """.formatted(EFFECTIVE_CONNECTIVITY);
 
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate named;
+    private final com.uav.lowaltitude.platform.time.AppClock clock;
 
-    public DeviceRepository(JdbcTemplate jdbc) {
+    public DeviceRepository(JdbcTemplate jdbc, com.uav.lowaltitude.platform.time.AppClock clock) {
         this.jdbc = jdbc;
         this.named = new NamedParameterJdbcTemplate(jdbc);
+        this.clock = clock;
+    }
+
+    private Map<String,Object> readParameters() {
+        Map<String,Object> params = new HashMap<>();
+        params.put("weather_fresh_after", clock.nowMillis() - 15000);
+        return params;
     }
 
     public long countAll() {
@@ -67,7 +90,7 @@ public class DeviceRepository {
         SqlWhere where = where(query);
         where.params.put("offset", offset);
         where.params.put("size", size);
-        return named.queryForList(DEVICE_SELECT + where.sql + " ORDER BY " + orderBy + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.params);
+        return named.queryForList(DEVICE_SELECT + where.sql + " ORDER BY " + orderBy.replace("s.connectivity", EFFECTIVE_CONNECTIVITY) + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.params);
     }
 
     public long count(DeviceQuery query) {
@@ -87,7 +110,7 @@ public class DeviceRepository {
     }
 
     public Map<String, Object> find(String deviceId) {
-        Map<String,Object> params=new HashMap<>();
+        Map<String,Object> params=readParameters();
         params.put("device_id",deviceId);
         List<Map<String, Object>> rows = named.queryForList(
                 DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL" + deviceScope(params), params);
@@ -174,6 +197,19 @@ public class DeviceRepository {
                 + " IS NOT NULL AND " + safe + "<>'' AND d.deleted_at IS NULL" + deviceScope(params) + " ORDER BY " + safe,params,String.class);
     }
 
+    public List<String> distinct(String column, boolean formalOnly) {
+        if (!formalOnly) return distinct(column);
+        String safe = switch (column) { case "type" -> "device_type_name"; case "channel" -> "channel"; case "region" -> "region_name"; case "vendor" -> "vendor"; default -> throw new IllegalArgumentException("unsupported option column"); };
+        Map<String,Object> params=new HashMap<>();
+        return named.queryForList("SELECT DISTINCT " + safe + " FROM ops_device d WHERE " + safe + " IS NOT NULL AND " + safe + "<>'' AND d.deleted_at IS NULL AND d.source_mode='live' AND d.simulated=FALSE" + deviceScope(params) + " ORDER BY " + safe,params,String.class);
+    }
+
+    public List<Map<String,Object>> distinctTypes(boolean formalOnly) {
+        if (!formalOnly) return distinctTypes();
+        Map<String,Object> params=readParameters();
+        return named.queryForList("SELECT DISTINCT d.device_type_code,d.device_type_name FROM ops_device d WHERE d.deleted_at IS NULL AND d.device_type_code IS NOT NULL AND d.device_type_code<>'' AND d.source_mode='live' AND d.simulated=FALSE" + deviceScope(params) + " ORDER BY d.device_type_name,d.device_type_code",params);
+    }
+
     public Map<String, Object> overview() {
         return overview(null);
     }
@@ -181,37 +217,53 @@ public class DeviceRepository {
     public Map<String, Object> overview(String ownerOrgId) { return overview(ownerOrgId, false); }
 
     public Map<String, Object> overview(String ownerOrgId, boolean formalOnly) {
-        Map<String,Object> params=new HashMap<>();
+        return overview(ownerOrgId, formalOnly, null);
+    }
+
+    public Map<String, Object> overview(String ownerOrgId, boolean formalOnly, Boolean enabled) {
+        Map<String,Object> params=readParameters();
         String ownerFilter = "";
         if (ownerOrgId != null) {
             params.put("overview_org_id", ownerOrgId);
             ownerFilter = " AND EXISTS (SELECT 1 FROM device_business_scope selected_scope WHERE selected_scope.ops_device_id=d.device_id AND selected_scope.owner_org_id=:overview_org_id)";
         }
+        if (enabled != null) params.put("overview_enabled", enabled);
+        String enabledFilter = enabled == null ? "" : " AND d.enabled=:overview_enabled";
         return named.queryForMap("""
-                SELECT COUNT(*) AS total,
-                       SUM(CASE WHEN s.connectivity='ONLINE' THEN 1 ELSE 0 END) AS online,
-                       SUM(CASE WHEN s.connectivity='OFFLINE' THEN 1 ELSE 0 END) AS offline,
-                       SUM(CASE WHEN s.connectivity='ABNORMAL' THEN 1 ELSE 0 END) AS abnormal,
-                       SUM(CASE WHEN s.connectivity IS NULL OR s.connectivity='UNKNOWN' THEN 1 ELSE 0 END) AS unknown_count,
+                SELECT COUNT(*) AS total, %s,
                        SUM(CASE WHEN s.has_alarm=TRUE THEN 1 ELSE 0 END) AS alarm,
                        COUNT(DISTINCT CASE WHEN d.vendor IS NOT NULL AND d.vendor<>'' THEN d.vendor END) AS vendor_count,
                        COUNT(DISTINCT CASE WHEN d.model IS NOT NULL AND d.model<>'' THEN d.model END) AS model_count
                        ,SUM(CASE WHEN d.source_mode='live' THEN 1 ELSE 0 END) AS live_count
                        ,SUM(CASE WHEN d.simulated=TRUE THEN 1 ELSE 0 END) AS simulated_count
                 FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id
-                """ + " WHERE d.deleted_at IS NULL" + deviceScope(params) + ownerFilter + (formalOnly ? " AND d.source_mode='live' AND d.simulated=FALSE" : ""),params);
+                """.formatted(CONNECTIVITY_COUNTS) + " WHERE d.deleted_at IS NULL" + deviceScope(params) + ownerFilter
+                + (formalOnly ? " AND d.source_mode='live' AND d.simulated=FALSE" : "") + enabledFilter,params);
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn) {
-        Map<String,Object> params=new HashMap<>();
+        Map<String,Object> params=readParameters();
         String safe = "channel".equals(groupColumn) ? "d.channel" : "d.device_type_name";
         return named.queryForList("SELECT " + safe + " AS group_name, COUNT(*) AS total, "
-                + "SUM(CASE WHEN s.connectivity='ONLINE' THEN 1 ELSE 0 END) AS online, "
-                + "SUM(CASE WHEN s.connectivity='OFFLINE' THEN 1 ELSE 0 END) AS offline, "
-                + "SUM(CASE WHEN s.connectivity='ABNORMAL' THEN 1 ELSE 0 END) AS abnormal, "
-                + "SUM(CASE WHEN s.connectivity IS NULL OR s.connectivity='UNKNOWN' THEN 1 ELSE 0 END) AS unknown_count "
+                + CONNECTIVITY_COUNTS
                 + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id "
                 + "WHERE d.deleted_at IS NULL" + deviceScope(params) + " GROUP BY " + safe + " ORDER BY " + safe,params);
+    }
+
+    public List<Map<String, Object>> overviewGroups(String groupColumn, boolean formalOnly) {
+        return overviewGroups(groupColumn, formalOnly, null);
+    }
+
+    public List<Map<String, Object>> overviewGroups(String groupColumn, boolean formalOnly, Boolean enabled) {
+        Map<String,Object> params=readParameters();
+        String safe = "channel".equals(groupColumn) ? "d.channel" : "d.device_type_name";
+        if (enabled != null) params.put("overview_group_enabled", enabled);
+        StringBuilder where = new StringBuilder(" WHERE d.deleted_at IS NULL");
+        if (formalOnly) where.append(" AND d.source_mode='live' AND d.simulated=FALSE");
+        if (enabled != null) where.append(" AND d.enabled=:overview_group_enabled");
+        return named.queryForList("SELECT " + safe + " AS group_name, COUNT(*) AS total, " + CONNECTIVITY_COUNTS
+                + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id" + where + deviceScope(params)
+                + " GROUP BY " + safe + " ORDER BY " + safe,params);
     }
 
     public void insertDevice(Map<String, Object> values) {
@@ -575,8 +627,9 @@ public class DeviceRepository {
     }
 
     private SqlWhere where(DeviceQuery q) {
-        Map<String, Object> p = new HashMap<>();
+        Map<String, Object> p = readParameters();
         StringBuilder sql = new StringBuilder(" WHERE d.deleted_at IS NULL");
+        if (q.formalOnly()) sql.append(" AND d.source_mode='live' AND d.simulated=FALSE");
         sql.append(deviceScope(p));
         if (q.keyword != null && !q.keyword.isBlank()) {
             sql.append(" AND (LOWER(d.device_no) LIKE :keyword OR LOWER(d.name) LIKE :keyword)");
@@ -586,7 +639,7 @@ public class DeviceRepository {
         add(sql, p, "d.channel", "channel", q.channel);
         add(sql, p, "d.region_name", "region", q.region);
         add(sql, p, "d.vendor", "vendor", q.vendor);
-        add(sql, p, "COALESCE(s.connectivity,'UNKNOWN')", "connectivity", q.connectivity);
+        add(sql, p, EFFECTIVE_CONNECTIVITY, "connectivity", q.connectivity);
         if (q.enabled != null) {
             sql.append(" AND d.enabled=:enabled");
             p.put("enabled", q.enabled);
@@ -634,7 +687,7 @@ public class DeviceRepository {
     /** Background dispatch must use the original actor's current scope, without a thread-bound session. */
     public Map<String, Object> findForActor(String deviceId, com.uav.lowaltitude.platform.security.AuthUser actor) {
         if (actor == null) return null;
-        Map<String,Object> params = new HashMap<>();
+        Map<String,Object> params = readParameters();
         params.put("device_id", deviceId);
         var rows = named.queryForList(DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL"
                 + deviceScope(params, actor), params);
@@ -660,7 +713,7 @@ public class DeviceRepository {
     }
 
     public record DeviceQuery(String keyword, String typeCode, String channel, String region,
-                              String vendor, String connectivity, Boolean enabled) {
+                              String vendor, String connectivity, Boolean enabled, boolean formalOnly) {
     }
 
     private record SqlWhere(String sql, Map<String, Object> params) {

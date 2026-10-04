@@ -5,6 +5,9 @@ spring:
       on-profile: "local & qa & !production"
 
 app:
+  session:
+    # 活跃的本地 QA 模拟器会话在接近到期时自动续期；停止使用后仍按 TTL 过期。
+    rolling-enabled: true
   notifications:
     transport: simulator
   dev-seed:

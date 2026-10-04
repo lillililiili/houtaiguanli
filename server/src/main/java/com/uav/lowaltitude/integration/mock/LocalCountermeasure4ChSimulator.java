@@ -27,7 +27,7 @@ import com.uav.lowaltitude.integration.device.countermeasure.Countermeasure4ChCo
  */
 @Component
 @Profile("local & qa & !prod & !production")
-@ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
+@ConditionalOnProperty(prefix = "app.qa.device-setup", name = "enabled", havingValue = "true")
 public class LocalCountermeasure4ChSimulator implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(LocalCountermeasure4ChSimulator.class);

@@ -80,6 +80,7 @@ public class AppProperties {
 
     public static class Session {
         private int ttlHours = 8;
+        private boolean rollingEnabled;
 
         public int getTtlHours() {
             return ttlHours;
@@ -87,6 +88,14 @@ public class AppProperties {
 
         public void setTtlHours(int ttlHours) {
             this.ttlHours = ttlHours;
+        }
+
+        public boolean isRollingEnabled() {
+            return rollingEnabled;
+        }
+
+        public void setRollingEnabled(boolean rollingEnabled) {
+            this.rollingEnabled = rollingEnabled;
         }
     }
 

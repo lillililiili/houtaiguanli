@@ -96,8 +96,8 @@ it('普通设备操作员看不到管理员接入配置入口', async () => {
   permissions.connections = false; await mount(); expect(button('接入配置')).toBeUndefined();
   await click('接入设备'); await click('TDOA'); expect(button('管理连接')).toBeUndefined();
 });
-it('管理员独立维护连接，有设备操作权限时也保留入口', async () => {
-  await mount(); await click('接入配置'); expect(mqttApi.list).toHaveBeenCalledOnce();
+it('管理员也不显示独立的接入配置入口', async () => {
+  await mount(); expect(button('接入配置')).toBeUndefined(); expect(mqttApi.list).not.toHaveBeenCalled();
 });
 it('多个同范围通道需选择，其他范围、停用和模拟通道不混入', async () => {
   const base = { source_mode: 'live', owner_org_id: 'org1', district_id: 'd1', enabled: true };
@@ -124,9 +124,9 @@ it('范围切换后清除旧通道，没有通道时阻止提交并提示联系�
   expect(dialog().textContent).toContain('暂无可用接入通道，请联系管理员配置'); expect(button('保存接入配置').disabled).toBe(true);
   expect(deviceApi.onboard).not.toHaveBeenCalled();
 });
-it('无设备操作权限时仍保留有权访问的接入配置入口', async () => {
+it('无设备操作权限时也不显示接入配置入口', async () => {
   permissions.operate = false; await mount(); expect(button('接入设备').disabled).toBe(true);
-  await click('接入配置'); expect(mqttApi.list).toHaveBeenCalledOnce();
+  expect(button('接入配置')).toBeUndefined(); expect(mqttApi.list).not.toHaveBeenCalled();
 });
 it('天气档案编辑锁定编号、类型及范围，并携带原版本更新', async () => {
   const row = { device_id: 'w1', device_no: 'WX-OLD', name: '旧气象站', device_type_code: 'weather_sensor', version: 4, enabled: false };
@@ -163,10 +163,19 @@ it('TCP 接入保存型号和安装位置，连续提交只调用一次', async 
   deviceApi.onboard.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
   await mount(); await click('接入设备'); await click('雷达');
   await fill('设备编号', 'RD-2'); await fill('设备名称', '雷达'); await fill('型号', 'R2'); await fill('安装位置', '东门楼顶');
+  await fill('安装经度', '118.6592400'); await fill('安装纬度', '37.4300000');
   await fill('设备地址', '192.0.2.20'); await fill('端口', '5001'); await fill('允许网段', '192.0.2.0/24');
   await choose('所属单位 / 区域', '单位 / 东区');
   button('保存接入配置').click(); button('保存接入配置').click(); await settle();
   expect(deviceApi.onboard).toHaveBeenCalledOnce();
-  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: 'RADAR_TCP_V3_0_0', model: 'R2', address: '东门楼顶', host: '192.0.2.20', port: 5001, owner_org_id: 'org1', district_id: 'd1' }), expect.any(String));
+  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: 'RADAR_TCP_V3_0_0', model: 'R2', address: '东门楼顶', host: '192.0.2.20', port: 5001, longitude: 118.65924, latitude: 37.43, owner_org_id: 'org1', district_id: 'd1' }), expect.any(String));
   complete({ device: { device_id: 'new-1' } }); await settle();
+});
+
+it('地图坐标必须成对填写，避免设备落到不完整位置', async () => {
+  await mount(); await click('接入设备'); await click('雷达');
+  await fill('设备编号', 'RD-3'); await fill('设备名称', '雷达'); await fill('设备地址', '192.0.2.21');
+  await fill('端口', '5001'); await fill('允许网段', '192.0.2.0/24'); await fill('安装经度', '118.6592400');
+  await choose('所属单位 / 区域', '单位 / 东区'); await click('保存接入配置');
+  expect(deviceApi.onboard).not.toHaveBeenCalled();
 });

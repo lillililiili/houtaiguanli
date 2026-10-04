@@ -2,14 +2,14 @@ import { mutation, newIdempotencyKey, queryString, request } from '@/services/ap
 
 export const deviceApi = {
   list: params => request({ url: `/v1/devices${queryString(params)}` }),
-  options: () => request({ url: '/v1/devices/options' }),
+  options: (params = {}) => request({ url: `/v1/devices/options${queryString(params)}` }),
   mqttOptions: () => request({ url: '/v1/devices/mqtt-options' }),
   detail: id => request({ url: `/v1/devices/${encodeURIComponent(id)}` }),
   onboard: (body, key = newIdempotencyKey('device-onboard')) => mutation('post', '/v1/devices/onboard', body, { idempotencyKey: key }),
   update: (id, body, key = newIdempotencyKey('device-update')) => mutation('put', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
   remove: (id, body, key = newIdempotencyKey('device-delete')) => mutation('delete', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
   setEnabled: (id, body, key = newIdempotencyKey('device-enabled')) => mutation('patch', `/v1/devices/${encodeURIComponent(id)}/enabled`, body, { idempotencyKey: key }),
-  overview: () => request({ url: '/v1/device-monitor/overview' }),
+  overview: (params = {}) => request({ url: `/v1/device-monitor/overview${queryString(params)}` }),
   information: id => request({ url: `/v1/device-monitor/devices/${encodeURIComponent(id)}/information` }),
   trends: (id, params) => request({ url: `/v1/device-monitor/devices/${encodeURIComponent(id)}/trends${queryString(params)}` }),
   tree: params => request({ url: `/v1/device-monitor/tree${queryString(params)}` }),
