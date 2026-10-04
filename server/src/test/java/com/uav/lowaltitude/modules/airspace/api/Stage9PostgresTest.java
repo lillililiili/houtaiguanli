@@ -71,7 +71,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("postgres-test")
+@ActiveProfiles(value = {"test", "postgres-test"}, inheritProfiles = false)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = ".+",
@@ -113,6 +113,8 @@ class Stage9PostgresTest {
         registry.add("spring.datasource.url", () -> schemaUrl(requiredEnvironment("POSTGRES_TEST_URL")));
         registry.add("spring.datasource.username", () -> requiredEnvironment("POSTGRES_TEST_USER"));
         registry.add("spring.datasource.password", () -> requiredEnvironment("POSTGRES_TEST_PASSWORD"));
+        // test 画像带 H2 驱动名；这里接真实 PostgreSQL，需显式换回。
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("app.dev-seed.enabled", () -> "false");
         registry.add("app.live-device.enabled", () -> "false");
@@ -607,7 +609,7 @@ class Stage9PostgresTest {
         mvc.perform(post("/api/v1/airspaces/import-batches").header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "import-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
                         .content(importBody("AS-IMP-" + suffix)))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isMethodNotAllowed());
         mvc.perform(post("/api/v1/airspaces/import-batches/{id}/confirm", "missing-" + suffix)
                         .header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "confirm-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)

@@ -67,7 +67,7 @@ import com.uav.lowaltitude.testsupport.SourceTypeCatalogFixture;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("postgres-test")
+@ActiveProfiles(value = {"test", "postgres-test"}, inheritProfiles = false)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = ".+",
@@ -113,6 +113,8 @@ class Stage85PostgresTest {
         registry.add("spring.datasource.url", () -> schemaUrl(requiredEnvironment("POSTGRES_TEST_URL")));
         registry.add("spring.datasource.username", () -> requiredEnvironment("POSTGRES_TEST_USER"));
         registry.add("spring.datasource.password", () -> requiredEnvironment("POSTGRES_TEST_PASSWORD"));
+        // test 画像带 H2 驱动名；这里接真实 PostgreSQL，需显式换回。
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
         registry.add("spring.flyway.enabled", () -> "false");
         registry.add("app.dev-seed.enabled", () -> "false");
         registry.add("app.live-device.enabled", () -> "false");

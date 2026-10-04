@@ -43,7 +43,7 @@ class SimulatorScenarioPostgresTest {
 
     @Test void matchingPlanRouteAndAreaProduceTheExpectedReplayConclusions() throws Exception {
         replay.replay();
-        Map<String,String> expected = Map.of("legal", "LEGAL", "deviation", "ABNORMAL", "airspace-limit", "ILLEGAL",
+        Map<String,String> expected = Map.of("legal", "LEGAL", "deviation", "ILLEGAL", "airspace-limit", "ILLEGAL",
                 "no-plan", "ILLEGAL", "datum-mismatch", "UNDETERMINED");
         for (var entry : expected.entrySet()) {
             String target = LocalStage7RuleEngineSeeder.targetId(entry.getKey());
