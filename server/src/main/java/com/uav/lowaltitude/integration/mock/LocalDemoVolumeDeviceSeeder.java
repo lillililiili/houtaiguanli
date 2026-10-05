@@ -54,9 +54,9 @@ public class LocalDemoVolumeDeviceSeeder implements ApplicationRunner {
             new Seed(3, "东营区反制05号", "countermeasure", "反制", "反制直连", "东营区", 118.550, 37.470, "ONLINE", "DEGRADED", false),
             new Seed(4, "河口区雷达07号", "radar", "雷达", "雷达直连", "河口区", 118.530, 37.660, "ABNORMAL", "BAD", false),
             new Seed(5, "河口区TDOA03号", "tdoa", "TDOA", "TDOA", "河口区", 118.600, 37.620, "OFFLINE", "UNKNOWN", false),
-            new Seed(6, "垦利区AOA02号", "aoa", "AOA", "TDOA", "垦利区", 118.580, 37.550, "ONLINE", "GOOD", false),
-            new Seed(7, "垦利区RemoteID04号", "rid", "RemoteID", "TDOA", "垦利区", 118.620, 37.520, "UNKNOWN", "UNKNOWN", false),
-            new Seed(8, "广饶县融合终端01号", "other", "融合终端", "融合感知箱", "广饶县", 118.420, 37.250, "ONLINE", "GOOD", false),
+            new Seed(6, "垦利区TDOA02号", "tdoa", "TDOA", "TDOA", "垦利区", 118.580, 37.550, "ONLINE", "GOOD", false),
+            new Seed(7, "垦利区5G-A基站04号", "5ga", "5G-A基站", "5G-A", "垦利区", 118.620, 37.520, "UNKNOWN", "UNKNOWN", false),
+            new Seed(8, "广饶县光电01号", "oe", "光电", "融合感知箱", "广饶县", 118.420, 37.250, "ONLINE", "GOOD", false),
             new Seed(9, "广饶县雷达08号", "radar", "雷达", "融合感知箱", "广饶县", 118.380, 37.300, "ABNORMAL", "DEGRADED", false),
             new Seed(10, "利津县光电03号", "oe", "光电", "融合感知箱", "利津县", 118.270, 37.500, "OFFLINE", "UNKNOWN", false),
             new Seed(11, "东营港5G-A基站02号", "5ga", "5G-A基站", "5G-A", "东营港经济区", 118.660, 37.690, "ONLINE", "GOOD", true),
@@ -111,6 +111,11 @@ public class LocalDemoVolumeDeviceSeeder implements ApplicationRunner {
                 seed.typeCode(), seed.typeName(), seed.channel(), "待设备方确认", "演示模拟厂商",
                 seed.region() + "低空监管中心", seed.region(), seed.region() + "演示布设点" + i,
                 seed.lon(), seed.lat(), 12.0 + i, "mock-1.0", now - (30L + i) * DAY, now - (30L + i) * DAY, now, id);
+        // 早期样例 6/7/8 号是 AOA、RemoteID、融合终端，现场没有这些类型；已建好的库就地改成现场类型。
+        jdbc.update("""
+                UPDATE ops_device SET name=?,device_type_code=?,device_type_name=?,channel=?,updated_at=?,version=version+1
+                WHERE device_id=? AND device_type_code IN ('aoa','rid','other') AND device_type_code<>?
+                """, seed.name(), seed.typeCode(), seed.typeName(), seed.channel(), now, id, seed.typeCode());
         jdbc.update("""
                 INSERT INTO device_connection_profile (device_id,transport,host,port,path,data_format,charset_name,
                     auth_mode,heartbeat_interval_seconds,report_interval_millis,sampling_rate_hz,

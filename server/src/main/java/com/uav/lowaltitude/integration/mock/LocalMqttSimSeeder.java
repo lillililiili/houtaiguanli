@@ -51,13 +51,10 @@ public class LocalMqttSimSeeder implements ApplicationRunner {
     public static final List<LingyunDevice> LINGYUN_DEVICES = List.of(
             new LingyunDevice("radar", "S85R1", "凌云 MQTT 回放雷达"),
             new LingyunDevice("tdoa", "S85T1", "凌云 MQTT 回放 TDOA"),
-            new LingyunDevice("aoa", "S85A1", "凌云 MQTT 回放 AOA"),
-            new LingyunDevice("5ga", "S85G1", "凌云 MQTT 回放 5G-A"),
-            new LingyunDevice("dcd", "S85D1", "凌云 MQTT 回放协议破解"),
-            new LingyunDevice("rid", "S85I1", "凌云 MQTT 回放 RemoteID"),
-            new LingyunDevice("dec", "S85Y1", "凌云 MQTT 回放诱骗"),
-            new LingyunDevice("ifr", "S85F1", "凌云 MQTT 回放干扰"),
-            new LingyunDevice("bsc", "S85B1", "凌云 MQTT 回放驱鸟炮"));
+            new LingyunDevice("5ga", "S85G1", "凌云 MQTT 回放 5G-A"));
+
+    /** 现场没有的类型（AOA、协议破解、RemoteID、诱骗、干扰、驱鸟炮），早期样例登记过，见 {@link FieldDeviceScope}。 */
+    static final List<String> RETIRED_DEVICE_NOS = List.of("S85A1", "S85D1", "S85I1", "S85Y1", "S85F1", "S85B1");
 
     private final JdbcTemplate jdbc;
     private final MqttConfigurationService configuration;
@@ -74,6 +71,8 @@ public class LocalMqttSimSeeder implements ApplicationRunner {
         AuthUser admin = admin1();
         AuthContext.set(admin);
         try {
+            int retired = FieldDeviceScope.retire(jdbc, RETIRED_DEVICE_NOS, System.currentTimeMillis());
+            if (retired > 0) log.info("local MQTT sim seed: removed {} sample devices of types not deployed in the field", retired);
             String brokerId = ensureBroker();
             for (LingyunDevice device : LINGYUN_DEVICES) {
                 registerLingyun(brokerId, device);

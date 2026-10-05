@@ -38,10 +38,11 @@ public class LocalFlightDeviceMqttSeeder implements ApplicationRunner {
                     "replay",LocalStage5DeviceScopeSeeder.PLATFORM_ORG_ID,LocalStage5DeviceScopeSeeder.DONGYING_DISTRICT_ID,null),key());
                 broker=configuration.enable(created.brokerId(),created.version(),true,key()).brokerId();
             } else broker=ids.get(0);
+            FieldDeviceScope.retire(jdbc,List.of("FP-CHECK-I1"),System.currentTimeMillis());
             for(var entry:List.of(
                 List.of("radar","FP-CHECK-R1","航线附近雷达·故障模拟"),
                 List.of("tdoa","FP-CHECK-T1","航线附近TDOA·离线模拟"),
-                List.of("rid","FP-CHECK-I1","航线附近RemoteID·正常模拟"),
+                List.of("5ga","FP-CHECK-G1","航线附近5G-A·正常模拟"),
                 List.of("radar","FP-CHECK-R2","跨区航线雷达·正常模拟"))) {
                 if(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?",Integer.class,entry.get(1))>0)continue;
                 configuration.register(new Registration(LingyunEnvelope.PROTOCOL,broker,"fpcheck",entry.get(1),entry.get(0),"replay",

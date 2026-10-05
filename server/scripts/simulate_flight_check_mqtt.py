@@ -11,7 +11,7 @@ from publish_lingyun_ndjson import mqtt_client
 DEVICES = [
     ('radar', 'FP-CHECK-R1', '航线附近雷达·故障模拟', 1, 118.015, 37.015, 2, 5),
     ('tdoa', 'FP-CHECK-T1', '航线附近TDOA·离线模拟', 10, 118.016, 37.016, 1, 90),
-    ('rid', 'FP-CHECK-I1', '航线附近RemoteID·正常模拟', 102, 118.014, 37.014, 1, 5),
+    ('5ga', 'FP-CHECK-G1', '航线附近5G-A·正常模拟', 0, 118.014, 37.014, 1, 5),
     ('radar', 'FP-CHECK-R2', '跨区航线雷达·正常模拟', 1, 119.005, 38.005, 1, 5),
 ]
 
