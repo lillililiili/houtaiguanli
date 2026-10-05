@@ -40,4 +40,10 @@ public class LocalQaDeviceRepository {
         jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,?,?)",
             id,org,district,new Timestamp(now),new Timestamp(now));
     }
+    /** 启用中的单位与区县名称；任一不存在或已停用时返回 null。 */
+    public String[] scopeNames(String org,String district) {
+        var rows=jdbc.query("SELECT o.name,d.name FROM app_org o CROSS JOIN app_district d WHERE o.org_id=? AND d.district_id=? AND o.enabled=TRUE AND d.enabled=TRUE",
+            (r,n)->new String[]{r.getString(1),r.getString(2)},org,district);
+        return rows.isEmpty()?null:rows.get(0);
+    }
 }

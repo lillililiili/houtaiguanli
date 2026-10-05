@@ -29,6 +29,17 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         assertThat(jdbc.queryForObject("select count(*) from ops_device where device_no='QA-LOCAL-CM4'",Long.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from disposal_authorization",Long.class)).isEqualTo(grants);
     }
+    @Test void ownerUnitAndDistrictAloneProvisionTheDeviceWithoutAnyPlan() throws Exception {
+        String org=jdbc.queryForObject("select org_id from app_org where enabled order by org_id fetch first 1 rows only",String.class);
+        String district=jdbc.queryForObject("select district_id from app_district where enabled order by district_id fetch first 1 rows only",String.class);
+        var device=prepareScope(Map.of("owner_org_id",org,"district_id",district),200).path("device");
+        String id=device.path("device_id").asText();
+        assertThat(jdbc.queryForObject("select owner_org_id from device_business_scope where ops_device_id=?",String.class,id)).isEqualTo(org);
+        assertThat(jdbc.queryForObject("select district_id from device_business_scope where ops_device_id=?",String.class,id)).isEqualTo(district);
+        assertThat(prepareScope(Map.of("owner_org_id",org,"district_id",district),200).path("device").path("device_id").asText()).isEqualTo(id);
+        prepareScope(Map.of("owner_org_id",org),400);
+        prepareScope(Map.of("owner_org_id","missing-org","district_id",district),409);
+    }
     @Test void existingDeviceWithDifferentScopeOrHostCannotBeReused() throws Exception {
         String plan=send("/plans",plan("qa-cm-mismatch"),200).path("subject_id").asText();
         String id=prepare(plan,200).path("device").path("device_id").asText();
@@ -82,6 +93,12 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         protocol.markConnection(id,"COUNTERMEASURE_TCP_4CH_V2_0","OFFLINE",null,"QA模拟连接失败",System.currentTimeMillis(),false);
         assertThat(jdbc.queryForObject("select connectivity from ops_device_state where device_id=?",String.class,id)).isEqualTo("OFFLINE");
         assertThat(jdbc.queryForObject("select health_code from ops_device_state where device_id=?",String.class,id)).isEqualTo("UNKNOWN");
+    }
+    com.fasterxml.jackson.databind.JsonNode prepareScope(Map<String,String> body,int status) throws Exception {
+        String response=mvc.perform(post(PATH).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())
+            .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body)))
+            .andExpect(status().is(status)).andReturn().getResponse().getContentAsString();
+        return json.readTree(response).path("data");
     }
     com.fasterxml.jackson.databind.JsonNode prepare(String plan,int status) throws Exception {
         String response=mvc.perform(post(PATH).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())

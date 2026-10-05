@@ -34,22 +34,33 @@ public class LocalQaDeviceService {
         this.access=access;this.flights=flights;this.sources=sources;this.devices=devices;this.repo=repo;
         this.idempotency=idempotency;this.audit=audit;this.clock=clock;
     }
-    @Transactional public DeviceDetail prepare(String planId,String key) {
+    /** 反制设备长期部署在某个单位与区县，不跟飞行计划绑定（2026-10-05 业务确认）。 */
+    @Transactional public DeviceDetail prepare(String ownerOrgId,String districtId,String planId,String key) {
         access.require("interfaces.op");access.require("devices.auth");
         var actor=AuthContext.require();
         if(!"ALL".equals(actor.scopeMode()))throw new ApiException(HttpStatus.FORBIDDEN,"QA_GLOBAL_SCOPE_REQUIRED","本地测试设备准备需要全局管理范围");
-        var plan=flights.flightPlan(planId);LocalInterfaceSimulatorService.requireSimulated(plan.sourceMode());
-        if(plan.ownerOrgId()==null||plan.districtId()==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","测试计划必须具有单位与区域");
+        Scope scope;
+        if(!blank(ownerOrgId)||!blank(districtId)) {
+            if(blank(ownerOrgId)||blank(districtId))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请同时选择反制设备所属单位和区县");
+            var names=repo.scopeNames(ownerOrgId.trim(),districtId.trim());
+            if(names==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","所选单位或区县不存在或已停用");
+            scope=new Scope(ownerOrgId.trim(),names[0],districtId.trim(),names[1]);
+        } else if(!blank(planId)) {
+            var flight=flights.flightPlan(planId);LocalInterfaceSimulatorService.requireSimulated(flight.sourceMode());
+            if(flight.ownerOrgId()==null||flight.districtId()==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","测试计划必须具有单位与区域");
+            scope=new Scope(flight.ownerOrgId(),flight.ownerOrgName(),flight.districtId(),flight.districtName());
+        } else throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请选择反制设备所属单位和区县");
+        String scopeKey=scope.ownerOrgId()+":"+scope.districtId();
         var existing=repo.existing(NO);
         if(!existing.isEmpty()){
             var configured=existing.stream()
-                    .filter(row -> matchesConfigured(row,plan.ownerOrgId(),plan.districtId()))
+                    .filter(row -> matchesConfigured(row,scope.ownerOrgId(),scope.districtId()))
                     .toList();
             if(configured.size()!=1)
                 throw new ApiException(HttpStatus.CONFLICT,"QA_DEVICE_CONFLICT","已有同编号设备的来源、范围或本机连接配置不匹配");
             var row=configured.get(0); String deviceId=(String)row.get("device_id");
-            if(matches(row,plan.ownerOrgId(),plan.districtId())) return devices.detail(deviceId);
-            idempotency.claim(key,"local-qa-cm4:"+planId);
+            if(matches(row,scope.ownerOrgId(),scope.districtId())) return devices.detail(deviceId);
+            idempotency.claim(key,"local-qa-cm4:"+scopeKey);
             long now=clock.nowMillis();
             Number deviceVersion=(Number)row.get("device_version");
             Number sourceVersion=(Number)row.get("source_version");
@@ -61,17 +72,19 @@ public class LocalQaDeviceService {
                     "恢复既有 QA 模拟设备；仅127.0.0.1:10006，不创建反制授权",null);
             return devices.detail(deviceId);
         }
-        idempotency.claim(key,"local-qa-cm4:"+planId);
+        idempotency.claim(key,"local-qa-cm4:"+scopeKey);
         var source=sources.insertLive(new IntegrationSourceService.Mutation(NO,"本机四通道QA模拟器",DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0,null,null,CIDR));
         repo.markNewSourceSimulated(source.sourceId());
         var connection=new ConnectionProfile("TCP","127.0.0.1",10006,null,"BINARY","UTF-8",null,null,30,1000,null,false,true,3000,1,null,null,null,"NTP",null,"Asia/Shanghai",60);
         var protocol=new ProtocolConfiguration("DATA",null,false,false,1,"ASCII_HEX_SPACED",5000);
-        var created=devices.create(new DeviceMutation(source.sourceId(),NO,NO,"本机四通道QA模拟器","countermeasure","反制","反制直连","QA-CM4","本机协议模拟",plan.ownerOrgName(),plan.districtName(),null,null,null,null,null,null,null,null,connection,protocol,CIDR));
-        repo.bindScope(created.device().deviceId(),plan.ownerOrgId(),plan.districtId(),clock.nowMillis());
+        var created=devices.create(new DeviceMutation(source.sourceId(),NO,NO,"本机四通道QA模拟器","countermeasure","反制","反制直连","QA-CM4","本机协议模拟",scope.ownerOrgName(),scope.districtName(),null,null,null,null,null,null,null,null,connection,protocol,CIDR));
+        repo.bindScope(created.device().deviceId(),scope.ownerOrgId(),scope.districtId(),clock.nowMillis());
         sources.activate(source.sourceId(),source.version(),"显式准备本机QA模拟设备；不代表现场射频设备");
         audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",created.device().deviceId(),"仅127.0.0.1:10006；不创建反制授权",null);
         return devices.detail(created.device().deviceId());
     }
+    private record Scope(String ownerOrgId,String ownerOrgName,String districtId,String districtName) { }
+    private static boolean blank(String value) { return value==null||value.isBlank(); }
     private static boolean matchesConfigured(Map<String,Object> row,String org,String district) {
         return DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(row.get("protocol_code"))
                 && "live".equals(row.get("source_mode"))
