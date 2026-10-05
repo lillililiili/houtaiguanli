@@ -2,7 +2,7 @@
 
 2026-09-30：`local,qa` 默认开启飞行计划时段推进，每 60 秒扫描一次，启动后自动补处理已过期的待执行/执行中计划；结束时间到达后记为“已完成”，已取消计划不变。这仅表示计划时段结束，不代表已确认实际起降或飞离。固定状态测试可显式设置 `APP_FLIGHT_STATUS_ADVANCE_ENABLED=false`；普通 local 与生产默认值不变。
 
-2026-09-30：`local,qa` 联合测试覆盖层启用自动短信、自动语音和本机四通道 QA 设备准备；普通 `local` 保持原默认值。自动通知仍按事件、观测、飞手及接收端配置逐项校验，`POST /api/v1/local-interface-simulator/bindings` 连接实时接收端时会把已有且启用的过期 QA MOCK 通道切换到数据模拟器通道，不修改联系人。旧 `app.qa.notification-setup.enabled` 入口不必为此开启。相同单位和区域的模拟计划可重复调用 `countermeasure-device` 并取得原 `QA-LOCAL-CM4`，不同范围或本机连接配置冲突时返回 409。
+2026-09-30：`local,qa` 联合测试覆盖层启用自动短信、自动语音和本机四通道 QA 设备准备；普通 `local` 保持原默认值。自动通知仍按事件、观测、飞手及接收端配置逐项校验，`POST /api/v1/local-interface-simulator/bindings` 连接实时接收端时会把已有且启用的过期 QA MOCK 通道切换到数据模拟器通道，不修改联系人。旧 `app.qa.notification-setup.enabled` 入口不必为此开启。相同单位和区域的模拟计划可重复调用 `countermeasure-device` 并取得原 `QA-LOCAL-CM4`；固定设备若只是被禁用或逻辑删除且配置仍一致，会先恢复后复用；不同范围或本机连接配置冲突时返回 409。
 
 2026-09-29：合法性页取消独立“异常”结论。新行为违规在证据充分时判非法并沿用告警合并流程，依据不足时不可判定；历史异常只在读取层归入不可判定，通过 `original_legal_status` 保留原始结论，不改旧记录。见[合法性三类结论](../docs/合法性三类结论-2026-09-29.md)。
 
@@ -56,14 +56,15 @@ T02 只读契约与设备运维模型使用独立表：契约表保留 `device/t
 cd deploy
 docker compose up -d db
 # 可选：本机凌云 MQTT 回放
-docker compose up -d db mosquitto
+docker compose --profile qa up -d db mosquitto
 ```
 
 从 `deploy/` 进入后端，Windows PowerShell：
 
 ```powershell
 cd ../server
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local"
+New-Item -ItemType Directory -Force .\target\qa-tmp | Out-Null
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local" "-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=E:/houtaiguanlii/server/target/qa-tmp -Djdk.net.unixdomain.tmpdir=E:/houtaiguanlii/server/target/qa-tmp"
 ```
 
 Linux/macOS 在 `server/` 执行：
@@ -76,11 +77,11 @@ Linux/macOS 在 `server/` 执行：
 
 数据库连接按 [application-local.yml](src/main/resources/application-local.yml)与 [Compose](../deploy/compose.yml)保持一致；修改了数据库凭据后须同步本地连接配置，不要提交或输出真实凭据。Flyway 会对所配置的数据库执行迁移。
 
-`local` profile 幂等补齐唯一合成超级管理员 `admin1` 以及三个目标/轨迹示例，不再预置运维模拟设备台账；默认密码为 `changeme`，可通过 `APP_DEV_SEED_PASSWORD` 覆盖。目标示例包含可信 WGS-84 目标以及无最新位置、仅有历史轨迹的目标。`app.dev-seed.enabled` 为真时还会写入运行统计样本事实（近 30 天空中目标与处罚案件），供统计页查询，不是生产指标。其他角色和账号由 `admin1` 在系统管理中按需创建。所有开发 Seeder 同时受 `!production & (local | test)` profile 和 `app.dev-seed.enabled=true` 约束，默认环境和 `integration` profile 默认关闭，`test` profile 显式启用；设备模拟夹具仅在 `test` profile 注入，不能当作现场设备。MQTT 回放种子 `LocalMqttSimSeeder` 只在 `local` 注册，避免把 `S85*` 设备写进 `test` 台账。本机四通道模拟器与 `CM4-LOCAL` 同样只在 `local` 注册，不挂 `test`。本工程不是可直接上线的生产配置。
+`local` profile 默认关闭 `app.dev-seed.enabled`，不预置运维模拟设备台账，也不补写业务演示数据；空库只在 `app.bootstrap-admin.enabled=true` 时幂等创建唯一合成超级管理员 `admin1`，默认临时密码为 `Admin@2026dev`（可通过 `APP_BOOTSTRAP_ADMIN_PASSWORD` 覆盖）。目标/轨迹和统计样本不在验收启动中自动生成。显式在隔离开发上下文开启 `app.dev-seed.enabled=true` 时，才会按对应 Seeder 登记回放设备或样本；生产和普通验收不得开启。其他角色和账号由 `admin1` 在系统管理中按需创建。设备模拟夹具仅在 `test` profile 注入，不能当作现场设备。本工程不是可直接上线的生产配置。
 
 两位开发者的个人数据库、共享联调库与迁移协作流程见[协作开发环境](../docs/协作开发环境.md)。
 
-启动后可检查 `GET /actuator/health`；无 Bearer 请求 `GET /api/v1/devices` 应为 401。登录返回 `session_id` 后，以 `Authorization: Bearer <session_id>` 请求 `/api/v1/auth/me`。所有系统管理写接口还必须带 8–128 位 `Idempotency-Key`，更新已有资源须提交 `expected_version`。运行仓库根目录的 `.\scripts\verify-dev.ps1` 会检查健康状态、登录、`/auth/me` 和 Vite API 代理。
+启动后可检查 `GET /actuator/health/readiness`；该检查同时确认数据库可用。无 Bearer 请求 `GET /api/v1/devices` 应为 401。登录返回 `session_id` 后，以 `Authorization: Bearer <session_id>` 请求 `/api/v1/auth/me`。`local,qa` 下活跃会话会在接近 TTL 时自动续期，供持续运行的本地模拟器使用；生产及普通 `local` 不启用该策略。所有系统管理写接口还必须带 8–128 位 `Idempotency-Key`，更新已有资源须提交 `expected_version`。运行仓库根目录的 `.\scripts\verify-dev.ps1` 会检查健康状态、登录、`/auth/me` 和 Vite API 代理。
 
 协议 A MQTT（`LINGYUN_MQTT_V8_6`）与协议 C 光电边端（`EO_EDGE_MQTT_20250826`）由 `app.mqtt.enabled` 控制，默认开启；`test` profile 关闭以免占用嵌入式测试库。本地模拟：在设备页配置 `source_mode=replay` 的 MQTT 连接（回环仅允许 replay）。协议 A 登记雷达/5G-A/TDOA/AOA/协议破解/RemoteID，向 `bridge/{providerCode}/device|device_data/{type}/{externalDeviceId}` 发布。光电登记 `edgeId` 与设备 `deviceId`，设备向 `iot-reporting/cmlc/edge/{edgeId}` 上报 HeartBeat / BeginTracking，平台向 `iot-dispatcher/cmlc/edge/{deviceId}` 下发。有效告警或高风险目标会自动选择同机构、同辖区的在线空闲光电设备；`local` profile 默认开启，生产环境通过 `app.eo-edge.auto-track.enabled` 显式开启。人工补跟踪接口为 `POST /api/v1/targets/{id}/eo-tracking-tasks`。真实 broker 的密码只通过 `credential_ref=env:变量名` 注入，配置了 live 不等于现场已联调。目标/跟踪上报进入 `inbox_message` 后仍为 `RECEIVED`，融合消费由协作者 B 领取。雷达 TCP 与四通道反制维持厂家原生协议（四通道不登记凌云 `cm`）。本机回放步骤见下方「本地 MQTT 模拟」；数据集说明见[凌云回放说明](../docs/直连接入计划/凌云回放说明.md)。
 
@@ -101,15 +102,16 @@ Linux/macOS 在 `server/` 执行：
 
 ```bash
 # 1. 启动库和本机 broker（在 deploy/）
-docker compose up -d db mosquitto
+docker compose --profile qa up -d db mosquitto
 
 # 2. local 启动后端（种子登记连接与 replay 设备）
 cd ../server
 # Windows PowerShell
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local"
+New-Item -ItemType Directory -Force .\target\qa-tmp | Out-Null
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local" "-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=E:/houtaiguanlii/server/target/qa-tmp -Djdk.net.unixdomain.tmpdir=E:/houtaiguanlii/server/target/qa-tmp"
 # Linux/macOS: ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 
-# 3. 登录 admin1 / changeme，设备页确认连接已启用、七台 replay 设备存在
+# 3. 仅在显式开启 dev-seed 的隔离开发库中登录 admin1 / Admin@2026dev，设备页确认回放连接；验收启动保持 dev-seed=false，不期待自动出现 replay 设备
 
 # 4. 仓库根目录发布 NDJSON（payload 原样 UTF-8 字节，禁止再 json.dumps）
 python server/scripts/publish_lingyun_ndjson.py
@@ -142,7 +144,7 @@ python server/scripts/reply_lingyun_control.py
 
 协议 B 控制：`POST /api/v1/devices/{id}/commands/lingyun-control`，经已有 MQTT 会话发布 `bridge/{provider}/device_control/...`，回执主题 `device_control_resp`。诱骗 `dec`、干扰 `ifr`、驱鸟炮 `bsc` 已按附录开通，须与绑定类型同族。急停接口固定返回「设备协议未提供」。
 
-四通道原生 TCP：`POST /api/v1/devices/{id}/commands/countermeasure-4ch`，`action` 为 `CHANNEL_ON` / `CHANNEL_OFF` / `SET_MASK`（`mask` 仅 0/13/15）。调测和轮询只发 `0x10`。停止是全关 `SET_MASK 0x00`，不叫急停。`local` 且 `app.dev-seed.enabled=true` 时启动本机 `127.0.0.1` 模拟器并登记 `CM4-LOCAL`（`source_mode=live`，`simulated=true`，CIDR `127.0.0.1/32`）。不登记现场 `192.168.0.7`。配置 live 不等于现场射频联调完成。不用协议 B 接管四通道。
+四通道原生 TCP：`POST /api/v1/devices/{id}/commands/countermeasure-4ch`，`action` 为 `CHANNEL_ON` / `CHANNEL_OFF` / `SET_MASK`（`mask` 仅 0/13/15）。调测和轮询只发 `0x10`。停止是全关 `SET_MASK 0x00`，不叫急停。`local,qa` 且 `app.qa.device-setup.enabled=true` 时启动本机 `127.0.0.1` 模拟器，固定 QA 设备通过 `countermeasure-device` 准备（`source_mode=live`，`simulated=true`，CIDR `127.0.0.1/32`）；开发种子仍独立受 `app.dev-seed.enabled` 控制。不登记现场 `192.168.0.7`。配置 live 不等于现场射频联调完成。不用协议 B 接管四通道。
 
 目标/轨迹只读接口为 `GET /api/v1/targets`、`GET /api/v1/targets/{target_id}`、`GET /api/v1/targets/{target_id}/tracks` 和 `GET /api/v1/tracks/{track_id}/points`。这四个接口均要求 `target:read`，并使用账号的组织/区域数据范围；越权对象按不存在返回 404。响应 ID 为字符串，时间为 epoch 毫秒，坐标仅在存在可信 WGS-84 位置时输出。
 
@@ -441,3 +443,19 @@ PostgreSQL 夹具额外支持 `PLAN_DUE`：仅将隔离种子计划设置到当�
 自动核实落笔和自动反制新建授权前，须确认传入的 automation_run_id 仍为本事件、本类别当前的 PASS 判定，并重算当前引擎、规则版本、时段、范围和观测条件。运行记录在核对期间变化则跳过本轮，不把旧 PASS 或其他事件的判定写入新核实历史。自动反制获取设备锁后再次核对；人工核实和人工直接授权入口维持各自原有规则。
 
 验证：AlarmRuleVerificationTest/AlarmRuleVerificationPostgresTest、AlarmRuleCounterTest 与 AutomationRuntimeEligibilityTest；统计跨年边界用 ReportingApiTest/OperationsPostgresTest，浏览器隔离夹具 ReportingBoundaryBrowserFixtureTest 仅对显式 qa.reporting.boundary.browser=true 开放，使用 stage456_verify_* 随机 schema，样本不代表真实案件或处罚结果。
+
+### 人工确认无风险并决定不反制（2026-09-30）
+
+GET/POST `/api/v1/uav-events/{eventId}/no-counter-decision` 使用数据库 Bearer 会话。GET 需要 `alarm:read` 和事件范围；POST 同时需要 `alarm:verify` 和其对象范围，不要求反制、移送或直接反制权限。POST 请求为 `{"expected_version":0,"expected_evaluation_id":"当前研判ID"}`，必须带 8–128 字符 `Idempotency-Key`，未知字段、重复 JSON 键和无效版本均拒绝。
+
+响应 `data` 包含 `event_id/event_version/can_decide/block_reason/basis/decision/decision_active/review_required`；advisory overview 同步追加 `no_counter`。`basis` 含 `evaluation_id/observed_at/evaluated_at/legal_status/grade/violation_reasons`，时间为 epoch 毫秒，缺失字段沿用忽略 null 的约定。`decision` 含 `decision_id/decided_at/actor_name/reason/basis`，冻结人工决定时的依据。幂等重放不重复写入，返回当前状态，并通过 `replayed_decision_id` 标明原请求创建的决定；后续新决定或风险重开不会被旧响应覆盖。
+
+只有已核实属实、当前有效 UAV 观测和同目标/单位/区域/来源模式的 ACTIVE、FRESH、SUFFICIENT、算法版本明确且无未知原因研判可提交。允许明确 LEGAL、ABNORMAL 和 ILLEGAL：不反制是有权限人员的处置选择，不改写既有告警事实。事件版本、研判编号变化返回 409 `VERSION_CONFLICT`/`EVALUATION_CONFLICT`；缺失/过期/未知依据、在途 REQUESTED/APPROVED/EXECUTING 反制及未完成实际停机核查返回 409 `NO_COUNTER_BLOCKED`。
+
+决定和审计在同一事件锁事务提交；追加 `V202609300004` 建立独立决定与幂等表，不修改既有迁移、核实历史、通知回执或冻结材料。有效决定阻止普通/直接反制、后台授权、排队启动和自动续链，也阻止本次事件后续自动短信、电话及补发。已在途的通知保留真实回执处理。无现有移送时 `auto_handoff.status=NOT_REQUIRED`，明确“已决定不反制；是否移送按事件事实另行判断”；已有移送继续独立显示。
+
+持续监测按新事实重开：同风险重复评估不会仅因 ID 变化重开；新增违规原因、级别升级、合法转违规或可靠合法间隔后的再次违规设置 `review_required=true`，旧决定仍可读。提交时单次查询冻结当前时效窗口内已见研判 ID，后续扫描未见 ID，覆盖同毫秒及计算开始早于决定但晚提交的研判。历史可靠性使用研判自身的 FRESH、充分性和无未知结论，不因当前时效配置改变而撤销已发现的新风险。缺失信息本身不是新可靠风险，也不能创建新的“无风险”决定。
+
+受影响回归命令：`./mvnw.cmd "-Dtest=NoCounterRulesTest,NoCounterApiTest,NoCounterPostgresTest,UavHandoffProgressTest,UavDepartureObservationTest,SimulatorAdvisoryReceiptTest" test`。已在 H2 与显式 `stage456_verify_*` PostgreSQL/PostGIS 随机 schema 验证 53 例，失败/错误/跳过均为 0；包括迁移、动作/范围权限、幂等、并发决定、不可变研判追加及晚提交的新风险。`package` 和认证扩展回归由本次整体交付单列结果。
+
+浏览器夹具 `NoCounterBrowserFixtureTest` 仅在 `-Dqa.no-counter.browser=true` 及安全测试库变量存在时运行，绑定 loopback 随机端口，不启用真实传输；在 `target/no-counter-browser/metadata.json` 提供临时会话、事件、风险触发与停止文件路径，最多等待 15 分钟，结束清理隔离 schema。该目录和日志不提交。

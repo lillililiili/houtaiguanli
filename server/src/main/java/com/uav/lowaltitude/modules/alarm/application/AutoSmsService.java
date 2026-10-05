@@ -142,6 +142,7 @@ public class AutoSmsService {
     public boolean sending(String id){Task task=tasks.find(id);return task!=null&&"SENDING".equals(task.status());}
     public Long deliveredAt(String eventId){return tasks.deliveredAt(eventId);}
     private Eligibility eligible(EventRow event) {
+        if(records.noCounterActive(event.eventId()))return new Eligibility(false,"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON,TRIGGER,null,null);
         if("FALSE_POSITIVE".equals(event.state()))return new Eligibility(false,"BLOCKED","已核实为误报，不发送飞手短信",TRIGGER,null,null);
         if(!"CONFIRMED".equals(event.state()))return new Eligibility(false,"WAITING","事件尚未核实属实，核实后自动发送短信",TRIGGER,null,null);
         if(!sms.automaticSimulationAvailable(event.sourceMode()))return new Eligibility(false,"UNAVAILABLE","正式短信渠道尚未接入，不能把模拟送达写成真实通知",TRIGGER,null,null);

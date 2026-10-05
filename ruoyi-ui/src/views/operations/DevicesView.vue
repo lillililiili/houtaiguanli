@@ -5,6 +5,7 @@ import PageHeader from '@/components/PageHeader.vue';
 import OperationMetrics from './OperationMetrics.vue';
 import './operations-reference.css';
 import ErrorAlert from '@/components/ErrorAlert.vue';
+import DeviceCoordinatePicker from '@/components/DeviceCoordinatePicker.vue';
 import { useRoute } from 'vue-router';
 import { weatherSensorsApi } from '@/api/externalInterfaces.js';
 import DeviceCatalogPreview from './DeviceCatalogPreview.vue';
@@ -31,7 +32,7 @@ const auth = useAuthStore();
 const canOperate = computed(() => auth.hasPermission('devices.op'));
 const canReadBrokers = computed(() => auth.hasPermission('interfaces.read'));
 const canEditBrokers = computed(() => auth.hasPermission('interfaces.op'));
-const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: '', sort: 'priority' });
+const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' });
 const options = ref({ types: [], channels: [], regions: [], vendors: [] });
 const filterTypes = computed(() => {
   const items = options.value.type_options || [];
@@ -66,11 +67,13 @@ const metrics = computed(() => [
 
 const deviceDialog = reactive({ visible: false, saving: false, opening: false, editing: false, row: null, current: null, optionsError: '' });
 const deviceFormRef = ref();
+const coordinatePickerOpen = ref(false);
 const deviceForm = reactive({
   protocol_code: '', device_no: '', name: '', vendor: '', region_name: '', host: '', port: null, allowed_cidrs: '',
   recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false, device_address: 1,
   wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live', scope_key: '',
-  device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '', version: null
+  device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
+  longitude: null, latitude: null, version: null
 });
 const isWeather = computed(() => selectedType.value === 'weather_sensor');
 const availableProtocols = computed(() => (deviceTypes.find(type => type.code === selectedType.value)?.protocols || [])
@@ -98,7 +101,7 @@ function listParams() {
 async function loadOverview() {
   const sequence = ++overviewSequence;
   try {
-    const summary = await deviceApi.overview();
+    const summary = await deviceApi.overview({ enabled: true });
     if (alive && sequence === overviewSequence) overview.value = summary;
   } catch (e) { if (alive && sequence === overviewSequence && !error.value) error.value = e.message; }
 }
@@ -161,7 +164,7 @@ async function bootstrap() {
   loading.value = true; error.value = '';
   const sequence = ++overviewSequence;
   try {
-    const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), deviceApi.overview(), integrationApi.protocols()]);
+    const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), deviceApi.overview({ enabled: true }), integrationApi.protocols()]);
     if (!alive) return;
     options.value = filterOptions; protocols.value = protocolList;
     if (sequence === overviewSequence) overview.value = summary;
@@ -170,14 +173,16 @@ async function bootstrap() {
 }
 
 function search() { table.page = 1; void loadList(false); }
-function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: '', sort: 'priority' }); search(); }
+function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' }); search(); }
 function selectRow(row) { selectedId.value = row.device_id; loadDetail(row.device_id); }
 
 function resetDeviceForm() {
   Object.assign(deviceForm, { protocol_code: '', device_no: '', name: '', vendor: '', region_name: '', host: '', port: null,
     allowed_cidrs: '', recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false,
     device_address: 1, wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live',
-    scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '', version: null });
+    scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
+    longitude: null, latitude: null, version: null });
+  coordinatePickerOpen.value = false;
 }
 
 function clearProtocolFields() {
@@ -231,6 +236,7 @@ async function openDevice(row = null) {
       Object.assign(deviceForm, {
         protocol_code: current.protocol_code || '', device_no: current.device?.device_no || '', name: current.device?.name || '',
         vendor: current.vendor || '', region_name: current.region_name || '', model: current.model || '', address: current.address || '',
+        longitude: current.longitude ?? current.device?.longitude ?? null, latitude: current.latitude ?? current.device?.latitude ?? null,
         scope_key: current.device?.owner_org_id && current.device?.district_id ? `${current.device.owner_org_id}/${current.device.district_id}` : '',
         host: connection.host || '', port: connection.port ?? null, allowed_cidrs: current.allowed_cidrs || '',
         recognition_code_ref: protocol.recognition_code_ref || '', rtk_enabled: Boolean(protocol.rtk_enabled),
@@ -259,6 +265,16 @@ function tcpConnection(values, current) {
     time_sync_mode: 'NTP', timezone_name: 'Asia/Shanghai', time_sync_interval_seconds: 60 };
 }
 
+function locationValues() {
+  const longitude = deviceForm.longitude == null || deviceForm.longitude === '' ? null : Number(deviceForm.longitude);
+  const latitude = deviceForm.latitude == null || deviceForm.latitude === '' ? null : Number(deviceForm.latitude);
+  if (longitude == null && latitude == null) return { longitude: null, latitude: null };
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) throw new Error('经度和纬度必须同时填写');
+  if (longitude < -180 || longitude > 180) throw new Error('经度必须在 -180 到 180 之间');
+  if (latitude < -90 || latitude > 90) throw new Error('纬度必须在 -90 到 90 之间');
+  return { longitude, latitude };
+}
+
 function mqttPayload(values, version) {
   const broker = brokers.value.find(item => item.broker_id === values.broker_id);
   const [owner_org_id, district_id] = values.scope_key.split('/');
@@ -266,7 +282,7 @@ function mqttPayload(values, version) {
   if (!deviceDialog.editing && !availableChannels.value.some(item => item.broker_id === broker.broker_id)) throw new Error('该设备暂无可用接入通道，请联系管理员配置。');
   const common = { protocol_code: values.protocol_code, broker_id: broker.broker_id, external_device_id: values.external_device_id.trim(),
     source_mode: values.source_mode, owner_org_id, district_id, device_no: values.device_no.trim(), name: values.name.trim(),
-    vendor: values.vendor || null, model: values.model || null, version };
+    vendor: values.vendor || null, model: values.model || null, longitude: values.longitude ?? null, latitude: values.latitude ?? null, version };
   return values.protocol_code === EO_PROTOCOL ? { ...common, edge_id: values.edge_id.trim() }
     : { ...common, provider_code: values.provider_code.trim(), device_type_abbr: values.device_type_abbr };
 }
@@ -276,6 +292,9 @@ async function saveDevice() {
   if (!isWeather.value && !availableProtocols.value.some(item => item.protocol_code === deviceForm.protocol_code)) return;
   if (deviceDialog.optionsError) return;
   if (!await deviceFormRef.value.validate().catch(() => false) || deviceDialog.saving) return;
+  let location;
+  try { location = locationValues(); }
+  catch (e) { ElMessage.error(e.message); return; }
   deviceDialog.saving = true;
   const current = deviceDialog.current;
   const key = newIdempotencyKey('device-form');
@@ -297,7 +316,8 @@ async function saveDevice() {
         device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(), device_type_code: current.device.device_type_code,
         device_type_name: current.device.device_type_name, channel: current.device.channel, vendor: deviceForm.vendor || null,
         model: deviceForm.model || null, owner_name: current.owner_name || null, region_name: deviceForm.region_name || null,
-        address: deviceForm.address || null, allowed_cidrs: deviceForm.allowed_cidrs.trim(), connection: tcpConnection(deviceForm, current),
+        address: deviceForm.address || null, longitude: location.longitude, latitude: location.latitude,
+        coordinate_system: location.longitude == null ? null : 'WGS-84', allowed_cidrs: deviceForm.allowed_cidrs.trim(), connection: tcpConnection(deviceForm, current),
         protocol_configuration: { login_role: 'DATA', recognition_code_ref: deviceForm.recognition_code_ref || null,
           rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
           device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }
@@ -305,7 +325,8 @@ async function saveDevice() {
     } else {
       saved = await deviceApi.onboard({ owner_org_id: tcpOrg, district_id: tcpDistrict, protocol_code: deviceForm.protocol_code, device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(),
         host: deviceForm.host.trim(), port: deviceForm.port, allowed_cidrs: deviceForm.allowed_cidrs.trim(), vendor: deviceForm.vendor || null,
-        region_name: deviceForm.region_name || null, model: deviceForm.model || null, address: deviceForm.address || null, recognition_code_ref: deviceForm.recognition_code_ref || null,
+        region_name: deviceForm.region_name || null, model: deviceForm.model || null, address: deviceForm.address || null,
+        longitude: location.longitude, latitude: location.latitude, recognition_code_ref: deviceForm.recognition_code_ref || null,
         rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
         device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }, key);
     }
@@ -397,7 +418,6 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
 <template>
   <section class="page-stack operation-page devices-reference">
     <PageHeader title="设备管理" description="设备台账、接入配置与运行状态统一管理。">
-      <el-button v-if="canReadBrokers" @click="openBrokers">接入配置</el-button>
       <el-button type="primary" :disabled="!canOperate" :loading="deviceDialog.opening" @click="openDevice()">接入设备</el-button>
     </PageHeader>
     <OperationMetrics :items="metrics" />
@@ -453,6 +473,14 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
               <el-form-item label="型号"><el-input v-model="deviceForm.model" maxlength="128" placeholder="请输入设备型号" /></el-form-item>
               <el-form-item label="所属单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择所属单位及区域'}]"><el-select v-model="deviceForm.scope_key" :disabled="deviceDialog.editing && (isWeather || isMqttTransport || Boolean(deviceDialog.current?.device?.owner_org_id))" placeholder="请选择单位及区域"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
               <el-form-item v-if="!isMqttTransport" label="安装位置"><el-input v-model="deviceForm.address" maxlength="256" placeholder="例如：园区东门楼顶" /></el-form-item>
+              <div v-if="!isWeather" class="wide coordinate-section">
+                <div class="coordinate-section-heading"><div><b>地图位置</b><span>可选，使用 WGS-84 坐标；地图选点后自动填入</span></div><el-button size="small" type="primary" plain @click="coordinatePickerOpen = !coordinatePickerOpen">{{ coordinatePickerOpen ? '收起地图' : '打开地图选点' }}</el-button></div>
+                <div class="coordinate-fields">
+                  <el-form-item label="安装经度"><el-input-number v-model="deviceForm.longitude" :min="-180" :max="180" :precision="7" :step="0.000001" controls-position="right" placeholder="例如：118.6592400" /></el-form-item>
+                  <el-form-item label="安装纬度"><el-input-number v-model="deviceForm.latitude" :min="-90" :max="90" :precision="7" :step="0.000001" controls-position="right" placeholder="例如：37.4300000" /></el-form-item>
+                </div>
+                <DeviceCoordinatePicker v-if="coordinatePickerOpen" v-model:longitude="deviceForm.longitude" v-model:latitude="deviceForm.latitude" :disabled="deviceDialog.saving" />
+              </div>
             </div>
             <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载连接及范围</el-button></el-alert>
           </section>
@@ -546,6 +574,12 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
 .access-basic-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }
 .access-form :deep(.el-form-item) { margin-bottom: 18px; min-width: 0; }
 .access-form :deep(.el-select), .access-form :deep(.el-input-number) { width: 100%; }
+.coordinate-section { grid-column: 1 / -1; margin-top: 2px; padding: 12px; border: 1px solid #e6edf6; border-radius: 7px; background: #fbfdff; }
+.coordinate-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.coordinate-section-heading > div { display: flex; flex-direction: column; gap: 3px; }
+.coordinate-section-heading span { color: var(--admin-muted); font-size: 12px; }
+.coordinate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.coordinate-fields :deep(.el-form-item) { margin-bottom: 12px; }
 .access-protocol-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: center; }
 .access-field-note { display: block; width: 100%; font-size: 12px; color: var(--admin-muted); line-height: 1.6; }
 .access-connection-grid .wide { grid-column: 1 / -1; }
@@ -555,6 +589,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
 @media (max-width: 700px) {
   .access-type-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .access-basic-grid, .access-protocol-row { grid-template-columns: minmax(0, 1fr); }
+  .coordinate-fields { grid-template-columns: minmax(0, 1fr); }
   .access-protocol-row > .muted { display: none; }
 }
 @media (max-width: 1100px) { .devices-workspace { grid-template-columns: minmax(0, 1fr); } }

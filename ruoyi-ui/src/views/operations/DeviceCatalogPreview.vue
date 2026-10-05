@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import DeviceLocationMap from '@/components/DeviceLocationMap.vue';
 import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
+import WeatherObservationPanel from './WeatherObservationPanel.vue';
 import { catalogInformation } from '@/utils/deviceInformationPresentation.js';
 import { display, formatTime, statusText, statusType } from '@/utils/format.js';
 const props = defineProps({ detail: { type: Object, default: null }, loading: Boolean, error: { type: String, default: '' } });
@@ -26,7 +27,7 @@ const fields = computed(() => ({
     <template v-if="detail">
       <div class="preview-identity"><h2>{{ device.name }}</h2><el-tag :type="statusType(device.connectivity)" effect="plain">{{ isWeather && device.protocol_code==='WEATHER_PENDING' ? '待接入' : statusText(device.connectivity) }}</el-tag></div>
       <p class="muted mono">设备编号：{{ device.device_no }}</p>
-      <el-tag v-if="!isWeather" size="small" :type="device.simulated || device.source_mode==='replay' ? 'warning' : 'info'" effect="plain">{{ device.simulated ? '模拟数据' : ({live:'真实链路数据', replay:'回放数据'})[device.source_mode] || '来源未登记' }}</el-tag>
+      <el-tag v-if="!isWeather || device.simulated" size="small" :type="device.simulated || device.source_mode==='replay' ? 'warning' : 'info'" effect="plain">{{ device.simulated ? '模拟数据' : ({live:'真实链路数据', replay:'回放数据'})[device.source_mode] || '来源未登记' }}</el-tag>
       <el-tabs v-model="tab" class="preview-tabs"><el-tab-pane v-if="isWeather" label="气象观测" name="weather" /><el-tab-pane label="位置概览" name="location" /><el-tab-pane label="基础参数" name="basic" /><el-tab-pane label="接口信息" name="connection" /><el-tab-pane label="所属区域" name="region" /><el-tab-pane label="完整档案 / 厂家资料" name="archive" /></el-tabs>
       <DeviceLocationMap v-if="tab==='location'" :device="device" />
       <dl v-if="fields.length" class="preview-fields"><template v-for="[key,label,unit] in fields" :key="key"><dt>{{ label }}</dt><dd>{{ display(device[key]) }}<span v-if="device[key] != null && unit"> {{ unit }}</span></dd></template></dl>
@@ -35,7 +36,7 @@ const fields = computed(() => ({
         <dl v-if="detail.connection_visible" class="preview-fields"><dt>传输方式</dt><dd>{{ display(detail.connection?.transport) }}</dd><dt>主机</dt><dd>{{ display(detail.connection?.host) }}</dd><dt>端口</dt><dd>{{ display(detail.connection?.port) }}</dd></dl>
         <p v-else class="muted">连接参数按操作权限提供。</p>
       </template>
-      <el-empty v-if="tab==='weather'" description="尚无气象观测数据，设备待接入" />
+      <WeatherObservationPanel v-if="tab==='weather' && device.device_id" :device-id="device.device_id" />
       <DeviceInformationPanel v-if="tab==='archive'" purpose="catalog" :information="archive" @refresh="$emit('refresh')" />
     </template>
   </el-card>

@@ -6,14 +6,14 @@ import { deviceApi } from '@/api/devices.js';
 vi.mock('@/api/devices.js', () => ({ deviceApi: { trends: vi.fn() } }));
 vi.mock('echarts', () => ({ init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.fn(), clear: vi.fn(), dispose: vi.fn() })) }));
 let app, host, props;
-const sample = value => ({ from: 0, to: 120000, bucket_ms: 60000, protocol_code: 'RADAR_TCP_V3_0_0', metrics: [{ code: 'active_track_count', at: 0, latest: value, average: value, minimum: value, maximum: value, samples: 1 }], reports: [] });
+const sample = value => ({ from: 0, to: 120000, bucket_ms: 60000, protocol_code: 'RADAR_TCP_V3_0_0', metrics: [{ code: 'active_track_count', at: 0, latest: value, average: value, minimum: value, maximum: value, samples: 1 }], reports: [{ code: 'report_static', at: 0, samples: value, interval_seconds: 1 }] });
 async function settle() { for (let n = 0; n < 14; n++) { await Promise.resolve(); await nextTick(); } }
 async function mount() { host = document.createElement('div'); document.body.append(host); props = reactive({ deviceId: 'A', paused: false }); app = createApp({ render: () => h(DeviceTrendPanel, props) }); app.use(ElementPlus); app.mount(host); await settle(); }
 beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }); deviceApi.trends.mockResolvedValue(sample(3)); });
 afterEach(() => { app?.unmount(); host?.remove(); vi.useRealTimers(); vi.resetAllMocks(); });
 it('范围筛选真实改变查询参数，切换 Tab 不重复拉取，暂停允许手动刷新', async () => {
   await mount();
-  expect([...host.querySelectorAll('[role="tab"]')].map(el => el.textContent)).toEqual(['感知统计', '上报趋势', '状态历史']);
+  expect([...host.querySelectorAll('[role="tab"]')].map(el => el.textContent)).toEqual(['上报趋势', '状态历史']);
   [...host.querySelectorAll('[role="tab"]')].find(el => el.textContent === '上报趋势').click(); await settle();
   expect(deviceApi.trends).toHaveBeenCalledTimes(1);
   host.querySelector('input[value="24h"]').click(); await settle();
@@ -23,10 +23,11 @@ it('范围筛选真实改变查询参数，切换 Tab 不重复拉取，暂停�
   [...host.querySelectorAll('button')].find(el => el.textContent.includes('刷新统计')).click(); await settle();
   expect(deviceApi.trends).toHaveBeenCalledTimes(3);
 });
-it('不支持感知的设备仅显示适用 Tab，报文摘要不填充空卡片', async () => {
+it('设备趋势不显示感知统计页签，报文摘要不填充空卡片', async () => {
   deviceApi.trends.mockResolvedValue({ ...sample(0), sensing_supported: false });
   await mount();
   expect([...host.querySelectorAll('[role="tab"]')].map(el => el.textContent)).toEqual(['上报趋势', '状态历史']);
+  expect(host.textContent).not.toContain('感知统计');
   expect(host.querySelectorAll('.trend-cards article')).toHaveLength(1);
   expect(host.textContent).not.toContain('其他报文类型');
   [...host.querySelectorAll('[role="tab"]')].find(el => el.textContent === '状态历史').click(); await settle();

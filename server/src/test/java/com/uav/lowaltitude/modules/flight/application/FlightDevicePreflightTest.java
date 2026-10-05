@@ -91,4 +91,16 @@ class FlightDevicePreflightTest {
         when(plan.startAt()).thenReturn(now.minusSeconds(3600).atOffset(ZoneOffset.UTC));
         assertThat(service.read("future-plan").conclusion()).isEqualTo("SUSPECTED_NOT_TAKEN_OFF");
     }
+    @Test void replayPlanIgnoresDisabledHistoricalReplayDevices() {
+        when(plan.sourceMode()).thenReturn("replay");
+        var sensor=devices.list(null,1,100,"device_no_asc").items().get(0);
+        when(sensor.sourceMode()).thenReturn("replay");
+        when(sensor.simulated()).thenReturn(false);
+        when(sensor.enabled()).thenReturn(false);
+
+        var result=service.read("future-plan");
+
+        assertThat(result.rows()).isEmpty();
+        assertThat(result.conclusion()).isEqualTo("CHECK_INCOMPLETE");
+    }
 }

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$SeedAccount = 'admin1',
-    [string]$SeedPassword = $(if ($env:APP_DEV_SEED_PASSWORD) { $env:APP_DEV_SEED_PASSWORD } else { 'changeme' }),
+    [string]$SeedPassword = $(if ($env:APP_BOOTSTRAP_ADMIN_PASSWORD) { $env:APP_BOOTSTRAP_ADMIN_PASSWORD } elseif ($env:APP_DEV_SEED_PASSWORD) { $env:APP_DEV_SEED_PASSWORD } else { 'Admin@2026dev' }),
     [switch]$CheckBusinessFrontend
 )
 
@@ -32,7 +32,7 @@ function Test-Endpoint {
 $adminOk = Test-Endpoint -Name 'admin frontend' -Uri 'http://127.0.0.1:5175/'
 $businessOk = $true
 if ($CheckBusinessFrontend) { $businessOk = Test-Endpoint -Name 'business frontend' -Uri 'http://127.0.0.1:5173/' }
-$backendOk = Test-Endpoint -Name 'backend' -Uri 'http://127.0.0.1:8081/actuator/health'
+$backendOk = Test-Endpoint -Name 'backend readiness' -Uri 'http://127.0.0.1:8081/actuator/health/readiness'
 
 if (-not ($adminOk -and $businessOk -and $backendOk)) {
     exit 1

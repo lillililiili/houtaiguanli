@@ -29,6 +29,7 @@ public class AutoVoiceService {
     private static final Set<String> TERMINAL=Set.of("SIMULATED_PLAYED","FAILED","UNKNOWN");
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private final AutoVoiceRepository tasks;
+    private final com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository noCounter;
     private final UavEventRepository events;
     private static final long WATCH_MILLIS=com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.SMS_WATCH_MILLIS;
     private static final String TRIGGER="SMS_THEN_WATCH";
@@ -41,7 +42,8 @@ public class AutoVoiceService {
     private final AuditService audit;
     private final TransactionTemplate tx;
     public AutoVoiceService(AutoVoiceRepository tasks,UavEventRepository events,AutoSmsRepository smsTasks,PilotDepartureWatch departure,AutoVoicePolicy policy,
-            AdvisoryVoiceRecording recordings,AdvisoryVoicePort voice,AppClock clock,AuditService audit,PlatformTransactionManager manager,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+            AdvisoryVoiceRecording recordings,AdvisoryVoicePort voice,AppClock clock,AuditService audit,PlatformTransactionManager manager,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository noCounter) {
+        this.noCounter=noCounter;
         this.directory=directory;
         this.tasks=tasks;this.events=events;this.smsTasks=smsTasks;this.departure=departure;this.policy=policy;this.recordings=recordings;
         this.voice=voice;this.clock=clock;this.audit=audit;this.tx=new TransactionTemplate(manager);
@@ -150,6 +152,7 @@ public class AutoVoiceService {
         tasks.queueRetry(event.eventId(),clock.nowMillis());
     }
     private Eligibility eligible(EventRow event,long now,Task task,Recording recording) {
+        if(noCounter.active(event.eventId()))return blocked(waiting("已决定不反制"),"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON);
         Long smsAt=smsTasks.deliveredAt(event.eventId());
         if(smsAt==null)return waiting("飞手短信尚未送达，电话要等短信送达并观察 3 秒");
         // 电话通道或录音不可用，也不能跳过短信送达后的 3 秒观察。

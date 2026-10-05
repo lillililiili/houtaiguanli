@@ -1,4 +1,5 @@
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
+import { applyDeviceMapTheme } from './deviceMapTheme.js';
 
 export function devicePosition(device) {
   const values = [device?.longitude, device?.latitude];
@@ -42,6 +43,14 @@ export async function loadDeviceMapStyle(signal) {
   for (const faces of Object.values(style['font-faces'] || {})) {
     for (const face of faces) face.url = localUrl(face.url, styleUrl);
   }
+  const imagery = manifest.imagery?.tiles ? {
+    tiles: localUrl(manifest.imagery.tiles, manifestUrl),
+    minzoom: manifest.imagery.minZoom ?? 7,
+    maxzoom: manifest.imagery.maxZoom ?? 12,
+    bounds: manifest.bounds,
+    attribution: manifest.imagery.attribution || ''
+  } : null;
+  applyDeviceMapTheme(style, { imagery });
   return { style, bounds: manifest.bounds, maxZoom: manifest.displayMaxZoom ?? 18 };
 }
 

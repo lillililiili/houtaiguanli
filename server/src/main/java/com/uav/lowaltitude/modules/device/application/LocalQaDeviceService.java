@@ -42,9 +42,24 @@ public class LocalQaDeviceService {
         if(plan.ownerOrgId()==null||plan.districtId()==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","测试计划必须具有单位与区域");
         var existing=repo.existing(NO);
         if(!existing.isEmpty()){
-            if(existing.size()!=1||!matches(existing.get(0),plan.ownerOrgId(),plan.districtId()))
+            var configured=existing.stream()
+                    .filter(row -> matchesConfigured(row,plan.ownerOrgId(),plan.districtId()))
+                    .toList();
+            if(configured.size()!=1)
                 throw new ApiException(HttpStatus.CONFLICT,"QA_DEVICE_CONFLICT","已有同编号设备的来源、范围或本机连接配置不匹配");
-            return devices.detail((String)existing.get(0).get("device_id"));
+            var row=configured.get(0); String deviceId=(String)row.get("device_id");
+            if(matches(row,plan.ownerOrgId(),plan.districtId())) return devices.detail(deviceId);
+            idempotency.claim(key,"local-qa-cm4:"+planId);
+            long now=clock.nowMillis();
+            Number deviceVersion=(Number)row.get("device_version");
+            Number sourceVersion=(Number)row.get("source_version");
+            if(deviceVersion==null||sourceVersion==null||!repo.restoreDevice(deviceId,deviceVersion.longValue(),now))
+                throw new ApiException(HttpStatus.CONFLICT,"VERSION_CONFLICT","QA 模拟设备已被更新，请刷新后重试");
+            if(!Boolean.TRUE.equals(row.get("source_enabled")))
+                sources.activate((String)row.get("source_id"),sourceVersion.longValue(),"重新准备本机QA模拟设备");
+            audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",deviceId,
+                    "恢复既有 QA 模拟设备；仅127.0.0.1:10006，不创建反制授权",null);
+            return devices.detail(deviceId);
         }
         idempotency.claim(key,"local-qa-cm4:"+planId);
         var source=sources.insertLive(new IntegrationSourceService.Mutation(NO,"本机四通道QA模拟器",DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0,null,null,CIDR));
@@ -57,23 +72,26 @@ public class LocalQaDeviceService {
         audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",created.device().deviceId(),"仅127.0.0.1:10006；不创建反制授权",null);
         return devices.detail(created.device().deviceId());
     }
-    private static boolean matches(Map<String,Object> row,String org,String district) {
+    private static boolean matchesConfigured(Map<String,Object> row,String org,String district) {
         return DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(row.get("protocol_code"))
                 && "live".equals(row.get("source_mode"))
                 && Boolean.TRUE.equals(row.get("source_simulated"))
-                && Boolean.TRUE.equals(row.get("source_enabled"))
                 && CIDR.equals(row.get("allowed_cidrs"))
                 && row.get("device_id")!=null
                 && NO.equals(row.get("device_no"))
                 && NO.equals(row.get("external_device_id"))
                 && "live".equals(row.get("device_source_mode"))
                 && Boolean.TRUE.equals(row.get("device_simulated"))
-                && Boolean.TRUE.equals(row.get("device_enabled"))
-                && row.get("deleted_at")==null
                 && "TCP".equals(row.get("transport"))
                 && "127.0.0.1".equals(row.get("host"))
                 && row.get("port") instanceof Number port && port.intValue()==10006
                 && Objects.equals(org,row.get("owner_org_id"))
                 && Objects.equals(district,row.get("district_id"));
+    }
+    private static boolean matches(Map<String,Object> row,String org,String district) {
+        return matchesConfigured(row,org,district)
+                && Boolean.TRUE.equals(row.get("source_enabled"))
+                && Boolean.TRUE.equals(row.get("device_enabled"))
+                && row.get("deleted_at")==null;
     }
 }

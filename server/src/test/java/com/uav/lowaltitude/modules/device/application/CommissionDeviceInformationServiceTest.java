@@ -51,6 +51,16 @@ class CommissionDeviceInformationServiceTest {
         assertThat(info.sections().stream().filter(s -> s.code().equals("work_parameters")).findFirst().orElseThrow().fields()).allMatch(f -> f.status().equals("NOT_REPORTED"));
         verify(devices, never()).findProfile(anyString());
     }
+    @Test void replaySimulatorMqttDeviceSupportsLogicalCommissioning() {
+        when(access.requireCommissionRead()).thenReturn(new AuthUser("user", "test", "测试", "role", 1, false, "ASSIGNED"));
+        when(devices.find("device")).thenReturn(Map.of("device_id", "device", "protocol_code", "LINGYUN_MQTT_V8_6",
+                "source_mode", "replay", "simulated", true));
+        when(data.inScope("device", "user", "ASSIGNED")).thenReturn(true);
+        when(data.mqtt("device", false)).thenReturn(Map.of("device_type_abbr", "weather", "device_id", "weather-id"));
+        var info = service.get("device");
+        assertThat(info.taskSupported()).isTrue();
+        assertThat(info.notes()).anyMatch(note -> note.contains("模拟器对象支持逻辑调测"));
+    }
     @Test void preservesEntireEoHeartbeatAndSeparatesCameraReceptionTime() {
         device("EO_EDGE_MQTT_20250826");
         when(data.mqtt("device", true)).thenReturn(Map.of("heartbeat_json", "{\"event\":\"Heartbeat\",\"timestamp\":99000,\"metadata\":{\"workState\":2,\"taskId\":\"tracking-1\"}}", "last_heartbeat_at", 100_000L,

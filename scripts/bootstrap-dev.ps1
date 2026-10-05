@@ -79,8 +79,8 @@ Write-Host '  cd ruoyi-ui; npm run dev'
 if (Test-Path $businessDir) {
     Write-Host '  cd ..\demo-ronghe\dongying-vue; npm run dev'
 }
-Write-Host "  cd server; .\mvnw.cmd spring-boot:run `"-Dspring-boot.run.profiles=local`""
+Write-Host "  cd '$repoRoot'; .\scripts\start-local.ps1 -WithMqtt -WithSimulator"
 Write-Host ''
 Write-Host 'Admin frontend: http://127.0.0.1:5175/'
 Write-Host 'Business frontend: http://127.0.0.1:5173/'
-Write-Host 'Backend health: http://127.0.0.1:8081/actuator/health'
+Write-Host 'Backend readiness: http://127.0.0.1:8081/actuator/health/readiness'

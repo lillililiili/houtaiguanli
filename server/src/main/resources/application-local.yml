@@ -17,11 +17,26 @@ spring:
     url: ${DB_URL:jdbc:postgresql://127.0.0.1:5432/houtaiguanli}
     username: ${DB_USER:uav}
     password: ${DB_PASSWORD:uav}
+    hikari:
+      # 本地电脑休眠、Docker 重启后主动淘汰失效连接，避免后台线程长时间卡在旧连接上。
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:10000}
+      validation-timeout: ${DB_VALIDATION_TIMEOUT_MS:5000}
+      keepalive-time: ${DB_KEEPALIVE_TIME_MS:300000}
+      max-lifetime: ${DB_MAX_LIFETIME_MS:1500000}
   devtools:
     restart:
       enabled: true
     livereload:
       enabled: false
+
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState,db
+        liveness:
+          include: livenessState
 
 app:
   advisory:
@@ -56,6 +71,13 @@ app:
   dev-seed:
     enabled: ${APP_DEV_SEED_ENABLED:false}
     password: ${APP_DEV_SEED_PASSWORD:changeme}
+  # 空库自举唯一超级管理员（dev-seed 关闭后本地没有种子账号，靠这里建登录账号）。
+  # 仅在 app_user 为空时创建；首次登录强制改密。密码满足 6-32 位、含大小写/数字/特殊字符。
+  bootstrap-admin:
+    enabled: true
+    account: admin1
+    name: 超级管理员
+    password: Admin@2026dev
   flight:
     status-advance:
       enabled: ${APP_FLIGHT_STATUS_ADVANCE_ENABLED:false}
@@ -79,6 +101,8 @@ app:
       interval-millis: 15000
   # 本地演示按业务主流程自动引导光电；生产环境仍使用 application.yml 的安全默认值 false，需显式开启。
   eo-edge:
+    # 模拟器默认按 5 秒发送一次光电心跳；本地判活需覆盖一次发送间隔和调度抖动。
+    heartbeat-timeout-millis: ${APP_EO_HEARTBEAT_TIMEOUT_MILLIS:15000}
     auto-track-enabled: ${APP_EO_AUTO_TRACK_ENABLED:false}
   network:
     allow-loopback-when-listed: true

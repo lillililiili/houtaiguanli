@@ -96,16 +96,42 @@ public class DeviceService {
                         text(row,"device_type_code"),text(row,"device_type_name"))).toList());
     }
 
+    public DeviceOptions formalOptions() {
+        access.requireDevicesRead();
+        return new DeviceOptions(repository.distinct("type", true), repository.distinct("channel", true),
+                repository.distinct("region", true), repository.distinct("vendor", true),
+                repository.distinctTypes(true).stream().map(row -> new DeviceTypeOption(
+                        text(row,"device_type_code"),text(row,"device_type_name"))).toList());
+    }
+
     public DeviceOverview overview() {
+        return overview(null);
+    }
+
+    public DeviceOverview overview(Boolean enabled) {
         access.requireOverviewRead();
-        Map<String, Object> row = repository.overview();
+        Map<String, Object> row = repository.overview(null, false, enabled);
         int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
         String mode = live == 0 ? "mock" : live == total ? "live" : "mixed";
         return new DeviceOverview(number(row, "total"), number(row, "online"), number(row, "offline"),
                 number(row, "abnormal"), number(row, "unknown_count"), number(row, "alarm"),
                 number(row, "vendor_count"), number(row, "model_count"),
-                groups(repository.overviewGroups("channel")), groups(repository.overviewGroups("type")),
+                groups(repository.overviewGroups("channel", false, enabled)), groups(repository.overviewGroups("type", false, enabled)),
                 mode, simulated == total);
+    }
+
+    public DeviceOverview formalOverview() {
+        return formalOverview(null);
+    }
+
+    public DeviceOverview formalOverview(Boolean enabled) {
+        access.requireOverviewRead();
+        Map<String, Object> row = repository.overview(null, true, enabled);
+        int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
+        return new DeviceOverview(total, number(row, "online"), number(row, "offline"), number(row, "abnormal"),
+                number(row, "unknown_count"), number(row, "alarm"), number(row, "vendor_count"), number(row, "model_count"),
+                groups(repository.overviewGroups("channel", true, enabled)), groups(repository.overviewGroups("type", true, enabled)),
+                live == 0 ? "live" : "live", simulated == total);
     }
 
     /** 大屏地图点：只返回有经纬度的启用设备；非 WGS-84 仍带回坐标系，由调用方决定是否绘制。 */
@@ -113,7 +139,7 @@ public class DeviceService {
         access.requireMonitoringRead();
         int safe = Math.min(Math.max(limit, 1), 100);
         List<DeviceMapMarker> markers = new ArrayList<>();
-        for (Map<String, Object> row : repository.listForTree(query(new DeviceFilter(null, null, null, null, null, null, true)), safe)) {
+        for (Map<String, Object> row : repository.listForTree(query(new DeviceFilter(null, null, null, null, null, null, true, false)), safe)) {
             DeviceMapMarker marker = marker(row);
             if (marker != null) markers.add(marker);
         }
@@ -430,14 +456,14 @@ public class DeviceService {
     }
 
     private DeviceQuery query(DeviceFilter f) {
-        if (f == null) return new DeviceQuery(null, null, null, null, null, null, null);
+        if (f == null) return new DeviceQuery(null, null, null, null, null, null, null, false);
         String keyword = blankToNull(f.keyword());
         if (keyword != null && keyword.length() > 100) throw bad("VALIDATION_ERROR", "keyword 最长 100 个字符");
         String connectivity = blankToNull(f.connectivity());
         if (connectivity != null && !List.of("UNKNOWN", "ONLINE", "OFFLINE", "ABNORMAL").contains(connectivity))
             throw bad("VALIDATION_ERROR", "connectivity 不在允许范围内");
         return new DeviceQuery(keyword, blankToNull(f.typeCode()), blankToNull(f.channel()), blankToNull(f.region()),
-                blankToNull(f.vendor()), connectivity, f.enabled());
+                blankToNull(f.vendor()), connectivity, f.enabled(), f.formalOnly());
     }
 
     private static void rejectWeatherMutation(DeviceMutation m) {
@@ -728,7 +754,12 @@ public class DeviceService {
     private static BigDecimal decimal(Map<String, Object> r, String key) { Object v = r.get(key); return v instanceof BigDecimal b ? b : v instanceof Number n ? BigDecimal.valueOf(n.doubleValue()) : null; }
 
     public record DeviceFilter(String keyword, String typeCode, String channel, String region,
-                               String vendor, String connectivity, Boolean enabled) { }
+                               String vendor, String connectivity, Boolean enabled, boolean formalOnly) {
+        public DeviceFilter(String keyword, String typeCode, String channel, String region,
+                            String vendor, String connectivity, Boolean enabled) {
+            this(keyword, typeCode, channel, region, vendor, connectivity, enabled, false);
+        }
+    }
     public record DevicePage(List<DeviceSummary> items, int page, int size, long total) { }
     public record DeviceTypeOption(String code, String name) { }
     public record DeviceOptions(List<String> types, List<String> channels, List<String> regions, List<String> vendors,

@@ -43,6 +43,22 @@ public class ObservationRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** Consume-time revalidation and locks for the explicit normalized replay registration. */
+    public DeviceMeta requireNormalizedDevice(String sourceId,String deviceId,String org,String district) {
+        if(deviceId==null||org==null||district==null)throw new IllegalStateException("NORMALIZED_SOURCE_SCOPE_CHANGED");
+        List<DeviceMeta> rows=jdbc.query("SELECT d.device_id,d.owner_org_id,d.district_id"
+                +" FROM simulator_observation_source r JOIN integration_source s ON s.source_id=r.source_id"
+                +" JOIN device d ON d.device_id=r.device_id AND d.source_id=s.source_id"
+                +" JOIN app_org o ON o.org_id=d.owner_org_id JOIN app_district district ON district.district_id=d.district_id"
+                +" WHERE s.source_id=:source AND d.device_id=:device AND d.owner_org_id=:org AND d.district_id=:district"
+                +" AND s.source_type='SIM_NORMALIZED' AND s.source_mode='replay' AND s.enabled=TRUE"
+                +" AND d.source_mode='replay' AND d.enabled=TRUE AND o.enabled=TRUE AND district.enabled=TRUE FOR UPDATE",
+                Map.of("source",sourceId,"device",deviceId,"org",org,"district",district),
+                (r,n)->new DeviceMeta(r.getString(1),r.getString(2),r.getString(3)));
+        if(rows.size()!=1)throw new IllegalStateException("NORMALIZED_SOURCE_SCOPE_CHANGED");
+        return rows.get(0);
+    }
+
     public void insert(SourceObservation o) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", o.observationId()); p.put("inbox", o.inboxId()); p.put("source", o.sourceId()); p.put("device", o.deviceId()); p.put("type", o.sourceType());

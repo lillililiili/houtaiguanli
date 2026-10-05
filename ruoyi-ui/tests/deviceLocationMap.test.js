@@ -17,12 +17,16 @@ describe('设备地图坐标与离线资源', () => {
 
   it('优先使用已发布底图，重写离线瓦片、字体、图标地址', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response({ manifest: '/map-data/packages/current/manifest.json' }))
-      .mockResolvedValueOnce(response({ coordinateSystem: 'WGS84', archive: './city.pmtiles', style: './style.json', bounds: [117, 36, 119, 38], maxZoom: 15 }))
-      .mockResolvedValueOnce(response({ version: 8, sources: { protomaps: {} }, layers: [], glyphs: './fonts/{fontstack}/{range}.pbf', sprite: './sprites/light' }));
+      .mockResolvedValueOnce(response({ coordinateSystem: 'WGS84', archive: './city.pmtiles', style: './style.json', bounds: [117, 36, 119, 38], maxZoom: 15,
+        imagery: { tiles: './imagery/{z}/{x}/{y}.jpg', minZoom: 7, maxZoom: 12, attribution: '开发影像' } }))
+      .mockResolvedValueOnce(response({ version: 8, sources: { protomaps: {} }, layers: [{ id: 'background', type: 'background', paint: {} }], glyphs: './fonts/{fontstack}/{range}.pbf', sprite: './sprites/light' }));
     vi.stubGlobal('fetch', fetch);
     const { style } = await loadDeviceMapStyle(new AbortController().signal);
     expect(fetch).toHaveBeenCalledTimes(3);
     expect(style.sources.protomaps.url).toBe(`pmtiles://${window.location.origin}/map-data/packages/current/city.pmtiles`);
+    expect(style.sources.imagery.tiles[0]).toContain('/map-data/packages/current/imagery/{z}/{x}/{y}.jpg');
+    expect(style.layers.find(layer => layer.id === 'theme_imagery').source).toBe('imagery');
+    expect(style.layers.find(layer => layer.id === 'background').paint['background-color']).toBe('#061a3d');
     expect(style.glyphs).toContain('/map-data/packages/current/fonts/{fontstack}/{range}.pbf');
     expect(style.sprite).toContain('/map-data/packages/current/sprites/light');
   });

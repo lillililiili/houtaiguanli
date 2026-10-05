@@ -103,6 +103,16 @@ public class FusionPipeline {
         if (source == null || !source.enabled()) throw new IllegalStateException("回放来源不存在或已停用: " + inbox.sourceId());
         simulation.requireSourceMode(source.sourceMode());
         DeviceMeta device = observations.findDeviceForSource(inbox.sourceId());
+        if ("SIM_NORMALIZED".equals(source.sourceType())) {
+            if (!"replay".equals(source.sourceMode()) || !inbox.source().startsWith("sim-normalized:"))
+                throw new IllegalStateException("NORMALIZED_SOURCE_SCOPE_CHANGED");
+            try {
+                var envelope=json.readTree(inbox.payloadJson());
+                if(envelope.isTextual())envelope=json.readTree(envelope.asText());
+                device=observations.requireNormalizedDevice(inbox.sourceId(),envelope.path("device_id").asText(null),
+                        envelope.path("owner_org_id").asText(null),envelope.path("district_id").asText(null));
+            } catch(java.io.IOException error) { throw new IllegalStateException("NORMALIZED_SOURCE_SCOPE_CHANGED",error); }
+        }
         Frame frame = router.map(inbox);
         Instant receivedAt = Instant.ofEpochMilli(inbox.receivedAtMillis());
         if (frame.observedAt().isAfter(receivedAt.plusMillis(properties.getMaxFutureSkewMillis()))) {
@@ -199,6 +209,10 @@ public class FusionPipeline {
                 if (origin != null) splitOrigins.put(targetId, origin);
             }
             else identities.touchTarget(targetId, observation.observedAt(), receivedAt);
+            if ("SIM_NORMALIZED".equals(observation.sourceType()) && "replay".equals(observation.sourceMode())) {
+                identities.applySimulatorIdentity(targetId, observation.classCode(), observation.identityClue(),
+                        "BALLOON".equals(observation.quality().get("subtype")) ? "BALLOON" : null, observation.observedAt());
+            }
             assignedTarget[i] = targetId;
             SourceEstimate estimate = writeRawLayer(observation, updates.get(i), accuracies.get(i), targetId, params, receivedAt);
             estimatesByTarget.computeIfAbsent(targetId, k -> new ArrayList<>()).add(estimate);

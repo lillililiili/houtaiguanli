@@ -67,8 +67,9 @@ public class CommissionService {
         AuthUser user = access.requireCommissionOperate();
         Map<String, Object> device = devices.find(deviceId);
         if (device == null || !repository.deviceInScope(deviceId, user)) throw notFound("DEVICE_NOT_FOUND", "设备不存在或不在授权范围内");
-        if (DeviceProtocolCodes.LINGYUN_MQTT_V8_6.equals(device.get("protocol_code"))
+        if ((DeviceProtocolCodes.LINGYUN_MQTT_V8_6.equals(device.get("protocol_code"))
                 || DeviceProtocolCodes.EO_EDGE_MQTT_20250826.equals(device.get("protocol_code")))
+                && !isLogicalSimulation(device))
             throw new ApiException(HttpStatus.CONFLICT,"PROTOCOL_UNSUPPORTED","MQTT 协议本轮不提供调测能力");
         if (!asBoolean(device.get("enabled")))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "停用设备不能发起调测");
@@ -132,7 +133,7 @@ public class CommissionService {
         AuthUser user = access.requireCommissionOperate();
         Task before = required(id, user);
         if (!"CONNECTED".equals(before.status())) throw illegal("仅已连接任务可以保存配置");
-        validate(configuration);
+        validate(configuration, isLogicalSimulation(before));
         long now = clock.nowMillis();
         String json = write(configuration);
         if (repository.saveConfiguration(id, version, json, now) != 1) throw conflict();
@@ -218,10 +219,11 @@ public class CommissionService {
                 longValue(r, "finished_at"), longNumber(r, "created_at"), longNumber(r, "updated_at"));
     }
 
-    private void validate(ConnectionProfile c) {
+    private void validate(ConnectionProfile c, boolean logicalSimulation) {
         if (c == null || blank(c.transport()) == null || blank(c.host()) == null || c.port() == null)
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "传输方式、主机和端口必填");
-        if (!List.of("TCP", "HTTP", "WS").contains(c.transport()))
+        if (!List.of("TCP", "HTTP", "WS").contains(c.transport())
+                && !(logicalSimulation && "SIMULATOR".equals(c.transport())))
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "transport 不在允许范围内");
         if (c.port() < 1 || c.port() > 65535)
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "端口必须在 1 到 65535 之间");
@@ -249,6 +251,13 @@ public class CommissionService {
     private static long longNumber(Map<String, Object> r, String key) { Object v = r.get(key); return v instanceof Number n ? n.longValue() : 0; }
     private static Long longValue(Map<String, Object> r, String key) { return r.get(key) == null ? null : longNumber(r, key); }
     private static boolean asBoolean(Object v) { return v instanceof Boolean b ? b : v != null && Boolean.parseBoolean(String.valueOf(v)); }
+    private static boolean isLogicalSimulation(Map<String, Object> device) {
+        return device != null && asBoolean(device.get("simulated"))
+                && List.of("replay", "mock").contains(text(device, "source_mode"));
+    }
+    private static boolean isLogicalSimulation(Task task) {
+        return task != null && task.simulated() && List.of("replay", "mock").contains(task.sourceMode());
+    }
 
     public record TaskPage(List<Task> items, int page, int size, long total) { }
     public record Task(String commissionId, String commissionNo, String previousTaskId, String deviceId,

@@ -97,10 +97,12 @@ public class MqttRepository {
             case "dec" -> "DEC";
             case "ifr" -> "IFR";
             case "bsc" -> "BSC";
+            case "weather" -> "WEATHER";
+            case "countermeasure" -> "COUNTERMEASURE";
             default -> throw new IllegalArgumentException("UNSUPPORTED_TYPE");
         };
         String catalogType= switch(p.deviceTypeAbbr()) {
-            case "dec", "ifr", "bsc" -> null;
+            case "dec", "ifr", "bsc", "weather", "countermeasure" -> null;
             default -> type;
         };
         String typeName= switch(p.deviceTypeAbbr()) {
@@ -114,6 +116,8 @@ public class MqttRepository {
             case "dec" -> "诱骗";
             case "ifr" -> "干扰";
             case "bsc" -> "驱鸟炮";
+            case "weather" -> "气象设备";
+            case "countermeasure" -> "反制设备";
             default -> throw new IllegalArgumentException("UNSUPPORTED_TYPE");
         };
         boolean simulated=p.sourceMode().equals("replay");

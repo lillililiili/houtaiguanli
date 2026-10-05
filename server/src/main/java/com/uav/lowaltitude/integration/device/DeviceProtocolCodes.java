@@ -7,6 +7,8 @@ public final class DeviceProtocolCodes {
     public static final String COUNTERMEASURE_TCP_4CH_V2_0 = "COUNTERMEASURE_TCP_4CH_V2_0";
     public static final String LINGYUN_MQTT_V8_6 = "LINGYUN_MQTT_V8_6";
     public static final String EO_EDGE_MQTT_20250826 = "EO_EDGE_MQTT_20250826";
+    /** Replay-only adapter route for devices created by the map/device simulator. */
+    public static final String SIMULATOR_REPLAY = "SIMULATOR_REPLAY";
 
     private DeviceProtocolCodes() {
     }

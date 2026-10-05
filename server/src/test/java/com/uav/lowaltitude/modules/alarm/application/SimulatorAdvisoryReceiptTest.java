@@ -25,7 +25,7 @@ class SimulatorAdvisoryReceiptTest {
     private final RecipientSnapshot recipient=new RecipientSnapshot("pilot","Pilot","org","Org","contact","Pilot","***","API","local-data-simulator","setting",1L,true,null,90000L);
     private final AdvisoryVoiceRecording.Recording recording=new AdvisoryVoiceRecording.Recording("r","Recording","Stop flying","hash");
     private final AutoSmsService sms=new AutoSmsService(smsTasks,events,records,mock(AutoSmsPolicy.class),mock(AdvisorySmsPort.class),clock,new ObjectMapper(),mock(AuditService.class),mock(PlatformTransactionManager.class),directory);
-    private final AutoVoiceService voice=new AutoVoiceService(voiceTasks,events,smsTasks,mock(PilotDepartureWatch.class),mock(AutoVoicePolicy.class),mock(AdvisoryVoiceRecording.class),mock(AdvisoryVoicePort.class),clock,mock(AuditService.class),mock(PlatformTransactionManager.class),directory);
+    private final AutoVoiceService voice=new AutoVoiceService(voiceTasks,events,smsTasks,mock(PilotDepartureWatch.class),mock(AutoVoicePolicy.class),mock(AdvisoryVoiceRecording.class),mock(AdvisoryVoicePort.class),clock,mock(AuditService.class),mock(PlatformTransactionManager.class),directory,mock(com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.class));
     private void event(){
         var at=clock.now().atOffset(ZoneOffset.UTC);
         when(events.lock(eq("event"),any())).thenReturn(new UavEventRepository.EventRow("event","alarm","target","CONFIRMED","org","district",at,at,2,"live"));

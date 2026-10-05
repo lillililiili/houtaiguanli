@@ -20,7 +20,7 @@ services:
     volumes:
       - ./mediamtx-qa.yml:/mediamtx.yml:ro
     ports:
-      - "127.0.0.1:8554:8554"
-      - "127.0.0.1:8888:8888"
-      - "127.0.0.1:9997:9997"
+      - "127.0.0.1:${QA_VIDEO_RTSP_PORT:-8554}:8554"
+      - "127.0.0.1:${QA_VIDEO_HLS_PORT:-8888}:8888"
+      - "127.0.0.1:${QA_VIDEO_API_PORT:-9997}:9997"
     restart: "no"
