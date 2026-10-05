@@ -14,6 +14,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
+import static org.hamcrest.Matchers.hasItem;
 
 @SpringBootTest(properties="app.handoff.channel=mock") @AutoConfigureMockMvc @ActiveProfiles("test") @Transactional
 class LocalInterfaceSimulatorApiTest {
@@ -132,6 +133,15 @@ class LocalInterfaceSimulatorApiTest {
   jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-EXT-ONLY','interfaces','OP',TRUE)");
   jdbc.update("UPDATE app_user SET role_code='ROLE-EXT-ONLY' WHERE account='admin1'");
   mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.routes").isEmpty()).andExpect(jsonPath("$.data.unavailable_sections").isNotEmpty());
+ }
+ @Test void contextExposesExpiredRouteSeparatelyForMapPlanDiagnostics() throws Exception {
+  String route=UUID.randomUUID().toString(),version=UUID.randomUUID().toString(),template=jdbc.queryForObject("select v.route_version_id from route_version v join route r on r.route_id=v.route_id where r.source_mode='mock' and r.enabled=true and r.owner_org_id is not null fetch first 1 rows only",String.class);
+  var now=java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
+  jdbc.update("insert into route(route_id,route_no,name,enabled,source_id,source_mode,owner_org_id,district_id,created_at,updated_at,version) select ?,?,'QA expired context route',true,r.source_id,'mock',r.owner_org_id,r.district_id,?,?,0 from route r join route_version v on v.route_id=r.route_id where v.route_version_id=?",route,"QA-expired-"+route,now,now,template);
+  jdbc.update("insert into route_version(route_version_id,route_id,version_no,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,valid_from,valid_to,change_reason,created_at) select ?,?,1,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,?,?, 'QA expired context',? from route_version where route_version_id=?",version,route,now.minusHours(2),now.minusHours(1),now,template);
+  mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.routes[*].route_version_id").value(org.hamcrest.Matchers.not(hasItem(version))))
+   .andExpect(jsonPath("$.data.expired_routes[*].route_version_id").value(hasItem(version)));
  }
  @Test void expiredBindingCanBeTakenOverByAnotherAuthorizedOperator() throws Exception {
   var h=jdbc.queryForMap("select * from handoff where source_kind='RISK' and source_mode='mock' fetch first 1 rows only");

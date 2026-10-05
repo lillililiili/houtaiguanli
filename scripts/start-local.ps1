@@ -3,6 +3,7 @@ param(
     [switch]$SkipBusinessFrontend,
     [switch]$WithMqtt,
     [switch]$WithSimulator,
+    [switch]$WithQaVideo,
     [switch]$SkipFrontendInstall,
     [switch]$SkipWait,
     [int]$DbPort = 0,
@@ -10,6 +11,12 @@ param(
     [int]$AdminPort = 5175,
     [int]$BusinessPort = 5173,
     [int]$SimulatorPort = 8766,
+    [ValidateRange(1024, 65535)]
+    [int]$QaVideoRtspPort = 8554,
+    [ValidateRange(1024, 65535)]
+    [int]$QaVideoHlsPort = 8888,
+    [ValidateRange(1024, 65535)]
+    [int]$QaVideoApiPort = 9997,
     [string]$BusinessRoot = '',
     [string]$SimulatorRoot = '',
     [string]$JavaHome = '',
@@ -25,6 +32,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $adminDir = Join-Path $repoRoot 'ruoyi-ui'
 $serverDir = Join-Path $repoRoot 'server'
 $composeFile = Join-Path $repoRoot 'deploy\compose.yml'
+$qaVideoComposeFile = Join-Path $repoRoot 'deploy\compose.qa-video.yml'
 $businessCandidates = @(
     (Join-Path (Split-Path -Parent $repoRoot) 'rwurenji\_rong\dongying-vue'),
     (Join-Path (Split-Path -Parent $repoRoot) 'demo-ronghe\dongying-vue')
@@ -137,6 +145,15 @@ function Test-Endpoint {
     catch { return $false }
 }
 
+function Test-SimulatorVideoEnabled {
+    param([Parameter(Mandatory)][int]$Port)
+    try {
+        $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/status" -TimeoutSec 3
+        return [bool]$status.video_config.enabled
+    }
+    catch { return $false }
+}
+
 function Find-MapProviderOrigin {
     param([Parameter(Mandatory)][int]$Port)
     $candidates = [System.Collections.Generic.List[string]]::new()
@@ -240,12 +257,30 @@ Assert-Command docker
 Assert-Command node
 Assert-Command npm
 if ($WithSimulator) { Assert-Command python }
+if ($WithQaVideo) {
+    if (-not $WithSimulator) { throw '-WithQaVideo 必须与 -WithSimulator 一起使用。' }
+    if ($QaVideoRtspPort -eq $QaVideoHlsPort -or $QaVideoRtspPort -eq $QaVideoApiPort -or $QaVideoHlsPort -eq $QaVideoApiPort) {
+        throw 'QA 视频的 RTSP、HLS、API 端口必须互不相同。'
+    }
+    foreach ($secret in @($env:QA_VIDEO_PUBLISH_PASSWORD, $env:QA_VIDEO_READ_PASSWORD)) {
+        if ($secret -notmatch '^[A-Za-z0-9_-]{24,128}$') {
+            throw '启用 QA 视频前请在当前 PowerShell 会话设置 QA_VIDEO_PUBLISH_PASSWORD 和 QA_VIDEO_READ_PASSWORD（24-128 位 base64url 随机值）。'
+        }
+    }
+    if ($env:QA_VIDEO_PUBLISH_PASSWORD -eq $env:QA_VIDEO_READ_PASSWORD) {
+        throw 'QA 视频发布密码和读取密码必须不同。'
+    }
+}
 
 if (-not (Test-Path -LiteralPath $composeFile)) { throw "Compose 文件不存在：$composeFile" }
+if ($WithQaVideo -and -not (Test-Path -LiteralPath $qaVideoComposeFile)) { throw "QA 视频 Compose 文件不存在：$qaVideoComposeFile" }
 if (-not (Test-Path -LiteralPath $adminDir)) { throw "管理前端目录不存在：$adminDir" }
 if (-not (Test-Path -LiteralPath $serverDir)) { throw "后端目录不存在：$serverDir" }
 if ($WithSimulator -and -not (Test-Path -LiteralPath (Join-Path $simulatorDir 'server.py'))) {
     throw "设备模拟器入口不存在：$simulatorDir\server.py"
+}
+if ($WithQaVideo -and (Test-Endpoint -Uri "http://127.0.0.1:$SimulatorPort/") -and -not (Test-SimulatorVideoEnabled -Port $SimulatorPort)) {
+    throw "设备模拟器端口 $SimulatorPort 已有运行实例，但未启用光电测试推流；请先停止该实例，再使用 -WithQaVideo 重新启动。"
 }
 
 $dockerProbe = & docker info --format '{{.ServerVersion}}' 2>&1
@@ -301,9 +336,46 @@ else {
     Write-Host '[2/5] 未请求 MQTT；跳过 Mosquitto。'
 }
 
+if ($WithQaVideo) {
+    foreach ($port in @($QaVideoRtspPort, $QaVideoHlsPort, $QaVideoApiPort)) {
+        if (Test-LocalPort -Port $port) {
+            throw "QA 视频端口 $port 已被占用；请换端口后重试（Android 模拟器常占用 8554，可使用 -QaVideoRtspPort 18554）。"
+        }
+    }
+    Write-Host "[2/5] 启动本机 QA 视频媒体服务（RTSP $QaVideoRtspPort / HLS $QaVideoHlsPort / API $QaVideoApiPort）..."
+    $previousVideoPorts = @{}
+    foreach ($entry in @{
+        QA_VIDEO_RTSP_PORT = [string]$QaVideoRtspPort
+        QA_VIDEO_HLS_PORT = [string]$QaVideoHlsPort
+        QA_VIDEO_API_PORT = [string]$QaVideoApiPort
+    }.GetEnumerator()) {
+        $name = $entry.Key
+        $previousVideoPorts[$name] = [Environment]::GetEnvironmentVariable($name)
+        Set-Item -LiteralPath ('Env:' + $name) -Value $entry.Value
+    }
+    try {
+        & docker compose -f $qaVideoComposeFile --profile qa-video up -d --wait qa-video
+        if ($LASTEXITCODE -ne 0) { throw 'QA 视频媒体服务启动失败。' }
+    }
+    finally {
+        foreach ($name in $previousVideoPorts.Keys) {
+            if ($null -eq $previousVideoPorts[$name]) { Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue }
+            else { Set-Item -LiteralPath ('Env:' + $name) -Value $previousVideoPorts[$name] }
+        }
+    }
+}
+
 $services = [ordered]@{}
 $springProfiles = if ($WithSimulator) { 'local,qa' } else { 'local' }
+$backendVideoEnvironment = if ($WithQaVideo) {
+    "`$env:APP_VIDEO_QA_ENABLED = 'true'`n" +
+    "`$env:APP_VIDEO_MEDIA_USERNAME = 'qa-platform'`n" +
+    "`$env:APP_VIDEO_MEDIA_PASSWORD = [Environment]::GetEnvironmentVariable('QA_VIDEO_READ_PASSWORD')`n" +
+    "`$env:APP_VIDEO_MEDIA_API_ORIGIN = 'http://127.0.0.1:$QaVideoApiPort'`n" +
+    "`$env:APP_VIDEO_MEDIA_HLS_ORIGIN = 'http://127.0.0.1:$QaVideoHlsPort'`n"
+} else { '' }
 $backendCommand = @"
+${backendVideoEnvironment}
 `$env:DB_URL = 'jdbc:postgresql://127.0.0.1:5432/houtaiguanli'
 `$env:DB_USER = 'uav'
 `$env:DB_PASSWORD = 'uav'
@@ -312,7 +384,14 @@ $backendCommand = @"
 `$env:SERVER_PORT = '$ApiPort'
 & '.\mvnw.cmd' 'spring-boot:run' '-Dspring-boot.run.profiles=$springProfiles' '-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=$javaTempDirJvm -Djdk.net.unixdomain.tmpdir=$javaTempDirJvm'
 "@
-if ($WithSimulator -and (Test-Endpoint -Uri "http://127.0.0.1:$ApiPort/actuator/health/readiness") -and -not (Test-ApiRoute -Port $ApiPort -Path '/api/v1/local-interface-simulator/context')) {
+$apiReady = Test-Endpoint -Uri "http://127.0.0.1:$ApiPort/actuator/health/readiness"
+$apiNeedsSimulatorRoute = $false
+$apiNeedsQaVideoRoute = $false
+if ($apiReady) {
+    $apiNeedsSimulatorRoute = $WithSimulator -and -not (Test-ApiRoute -Port $ApiPort -Path '/api/v1/local-interface-simulator/context')
+    $apiNeedsQaVideoRoute = $WithQaVideo -and -not (Test-ApiRoute -Port $ApiPort -Path '/api/v1/local-interface-simulator/video-streams/not-a-task')
+}
+if ($apiNeedsSimulatorRoute -or $apiNeedsQaVideoRoute) {
     Restart-ManagedApi -Port $ApiPort
 }
 Write-Host "[3/5] 启动后端（$springProfiles，演示种子保持关闭）..."
@@ -361,7 +440,15 @@ Write-Host '[4/5] 启动管理前端（地图代理指向业务前台）...'
 $services.admin = Reuse-Or-Start -Name 'admin' -ProbeUri "http://127.0.0.1:$AdminPort/map-config.json" -WorkingDirectory $adminDir -Command $adminCommand -RequireMapConfig
 
 if ($WithSimulator) {
-    $simulatorCommand = "& 'python.exe' 'server.py' '--port' '$SimulatorPort' '--map-origin' 'http://127.0.0.1:$BusinessPort'"
+    $simulatorVideoEnvironment = if ($WithQaVideo) {
+        "`$env:QA_VIDEO_ENABLED = 'true'`n" +
+        "`$env:QA_VIDEO_RTSP_BASE = 'rtsp://127.0.0.1:$QaVideoRtspPort'`n" +
+        "`$env:QA_VIDEO_PUBLISH_PASSWORD = [Environment]::GetEnvironmentVariable('QA_VIDEO_PUBLISH_PASSWORD')`n"
+    } else { '' }
+    $simulatorCommand = @"
+${simulatorVideoEnvironment}
+& 'python.exe' 'server.py' '--port' '$SimulatorPort' '--map-origin' 'http://127.0.0.1:$BusinessPort'
+"@
     Write-Host "[5/5] 启动设备模拟器（仅本机 $SimulatorPort）..."
     $services.simulator = Reuse-Or-Start -Name 'simulator' -ProbeUri "http://127.0.0.1:$SimulatorPort/" -WorkingDirectory $simulatorDir -Command $simulatorCommand
 }

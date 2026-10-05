@@ -33,8 +33,9 @@ public final class LocalInterfaceDtos {
  public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo,GeoJsonLineStringDto centerline){}
  public record PlanOption(String planId,String planNo,Long startAt,Long endAt){}
  public record SourceOption(String sourceKind,String sourceId,String label){}
- public record Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections,List<Message> receiverMessages){
-  public Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections){this(routes,plans,bindings,messages,sources,unavailableSections,List.of());}
-  public Context withReceiverMessages(List<Message> receiverMessages){return new Context(routes,plans,bindings,messages,sources,unavailableSections,receiverMessages);}
+ public record Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections,List<Message> receiverMessages,List<RouteOption> expiredRoutes){
+  public Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections){this(routes,plans,bindings,messages,sources,unavailableSections,List.of(),List.of());}
+  public Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections,List<Message> receiverMessages){this(routes,plans,bindings,messages,sources,unavailableSections,receiverMessages,List.of());}
+  public Context withReceiverMessages(List<Message> receiverMessages){return new Context(routes,plans,bindings,messages,sources,unavailableSections,receiverMessages,expiredRoutes);}
  }
 }
