@@ -184,6 +184,30 @@ class AlarmListSortExportApiTest {
         assertThat(exported).containsExactlyElementsOf(expected);
     }
 
+    /** 2026-10-05 用户确认：刚到的未处理告警（不满 5 分钟）置顶，否则会被已有待处理告警压到后面、值班员看不到。 */
+    @Test
+    void freshUnhandledAlarmsComeFirstForFiveMinutes() throws Exception {
+        jdbc.update("delete from alarm where alarm_id like 'srt-alarm-%'");
+        Instant now = Instant.now();
+        alarm("CRITICAL", "UAV_INTRUSION", now.minusSeconds(3_600), "F-CRIT-HOUR");
+        alarm("CRITICAL", "UAV_INTRUSION", now.minusSeconds(360), "F-CRIT-6MIN");
+        alarm("LOW", "UAV_INTRUSION", now.minusSeconds(60), "F-LOW-1MIN");
+        alarm("HIGH", "UAV_INTRUSION", now.minusSeconds(150), "F-HIGH-2MIN");
+        alarm("LOW", "UAV_INTRUSION", now.minusSeconds(30), "F-LOW-NOW");
+        alarm("HIGH", "UAV_INTRUSION", now.minusSeconds(20), "F-HIGH-DONE");
+        event("F-LOW-1MIN", "PENDING_VERIFICATION");
+        event("F-HIGH-DONE", "CONFIRMED");
+        // 刚到的：等级高在前，同等级新到的在前；然后是其余未处理（等级高、等得久在前）；已处理最后。
+        List<String> expected = List.of("F-HIGH-2MIN", "F-LOW-NOW", "F-LOW-1MIN", "F-CRIT-HOUR", "F-CRIT-6MIN", "F-HIGH-DONE");
+        assertThat(rawValues("alarm_no", "")).containsExactlyElementsOf(expected);
+
+        String text = mvc.perform(get("/api/v1/alarms/export.csv").header("Authorization", bearer(reader)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        List<String> exported = text.lines().skip(1).map(line -> line.split(",")[0].replace("\uFEFF", ""))
+                .filter(expected::contains).toList();
+        assertThat(exported).containsExactlyElementsOf(expected);
+    }
+
     private void event(String sourceAlarmId, String state) {
         Timestamp at = Timestamp.from(Instant.parse("2026-09-08T08:00:00Z"));
         jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)"

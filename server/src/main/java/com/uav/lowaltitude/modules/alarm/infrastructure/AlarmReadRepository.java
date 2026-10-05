@@ -35,8 +35,17 @@ public class AlarmReadRepository {
         return ReportDatasetReader.window(sql, w.parameters, range, time);
     }
     private final NamedParameterJdbcTemplate jdbc;
+    private final com.uav.lowaltitude.platform.time.AppClock clock;
 
-    public AlarmReadRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }
+    public AlarmReadRepository(JdbcTemplate jdbcTemplate, com.uav.lowaltitude.platform.time.AppClock clock) {
+        this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
+        this.clock = clock;
+    }
+
+    /** 默认次序里“刚到”的界线：此刻往前 FRESH_WINDOW 内到达的未处理告警置顶。 */
+    private void putFreshSince(Map<String, Object> parameters) {
+        parameters.put("fresh_since", java.time.OffsetDateTime.ofInstant(clock.now().minus(FRESH_WINDOW), java.time.ZoneOffset.UTC));
+    }
 
     public long count(AlarmQuery query, AccessDecision access) {
         Where where = where(query, access);
@@ -47,6 +56,7 @@ public class AlarmReadRepository {
     public List<AlarmRow> list(AlarmQuery query, AccessDecision access, int offset, int size, String sort, String order) {
         Where where = where(query, access);
         where.parameters.put("offset", offset);
+        putFreshSince(where.parameters);
         where.parameters.put("size", size);
         return jdbc.query(select() + from() + where.sql + orderBy(sort, order)
                 + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.parameters, AlarmReadRepository::alarm);
@@ -56,6 +66,7 @@ public class AlarmReadRepository {
     public List<AlarmRow> listForExport(AlarmQuery query, AccessDecision access, int limit, String sort, String order) {
         Where where = where(query, access);
         where.parameters.put("size", limit);
+        putFreshSince(where.parameters);
         return jdbc.query(select() + from() + where.sql + orderBy(sort, order)
                 + " FETCH NEXT :size ROWS ONLY", where.parameters, AlarmReadRepository::alarm);
     }
@@ -143,13 +154,18 @@ public class AlarmReadRepository {
             java.util.Set.of("priority", "received_at", "occurred_at", "severity", "state");
 
     /**
-     * 默认次序（2026-10-04 用户确认）：人工核实时告警没人处理也不升级、不提醒，靠列表次序把它顶上来——
-     * 未处理（未核实，或还没有核实事件）在前；其中等级高在前，同等级等得越久越靠前；
-     * 已处理（已确认、已排除）在后，按接收时间新到旧。固定次序，不受 order 参数影响；导出同用此次序。
+     * 默认次序（2026-10-04、2026-10-05 用户确认）：人工核实时告警没人处理也不升级、不提醒，靠列表次序把它顶上来——
+     * 1. 刚到的未处理告警（接收不满 5 分钟）置顶，免得被已有的待处理告警压到后面、值班员看不到；其中等级高在前，同等级新到的在前；
+     * 2. 其余未处理（未核实，或还没有核实事件）：等级高在前，同等级等得越久越靠前；
+     * 3. 已处理（已确认、已排除）在后，按接收时间新到旧。
+     * 固定次序，不受 order 参数影响；导出同用此次序。:fresh_since 由 putFreshSince 按应用时钟给出。
      */
+    static final java.time.Duration FRESH_WINDOW = java.time.Duration.ofMinutes(5);
     private static final String PENDING = "(e.state_code IS NULL OR e.state_code='PENDING_VERIFICATION')";
-    private static final String PRIORITY_ORDER = " ORDER BY CASE WHEN " + PENDING + " THEN 0 ELSE 1 END ASC,"
+    private static final String FRESH = "(" + PENDING + " AND a.received_at>=:fresh_since)";
+    private static final String PRIORITY_ORDER = " ORDER BY CASE WHEN " + FRESH + " THEN 0 WHEN " + PENDING + " THEN 1 ELSE 2 END ASC,"
             + " CASE WHEN " + PENDING + " THEN " + com.uav.lowaltitude.platform.query.SeverityOrder.rank("a.severity") + " ELSE 0 END DESC,"
+            + " CASE WHEN " + FRESH + " THEN a.received_at END DESC,"
             + " CASE WHEN " + PENDING + " THEN a.received_at END ASC,"
             + " a.received_at DESC,a.alarm_id ASC";
 
