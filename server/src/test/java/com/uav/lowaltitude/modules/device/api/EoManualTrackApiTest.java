@@ -331,7 +331,17 @@ class EoManualTrackApiTest {
         try {
             mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
                     .andExpect(status().isForbidden());
+            // OBS-03：看画面只是读取。设备查看权限加目标读取资格即可，不需要设备操作权限；发起跟踪仍要 devices.op。
+            jdbc.update("INSERT INTO app_role_permission (role_code,permission_code,permission_level,menu_enabled) VALUES (?,'target:read','READ',FALSE)", role);
+            mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("NO_TASK"));
+            mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", target)
+                    .header("Authorization", bearer()).header("Idempotency-Key", key())
+                    .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isForbidden());
         } finally { jdbc.update("UPDATE app_user SET role_code='ROLE-ADMIN' WHERE account='admin1'"); }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class)).isEqualTo(tasks);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class)).isEqualTo(commands);
     }
 
     @Test void videoRequiresMatchingReceiptAndDoesNotManufactureCanvasVideo() throws Exception {
