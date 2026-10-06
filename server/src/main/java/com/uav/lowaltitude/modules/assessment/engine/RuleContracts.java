@@ -119,6 +119,15 @@ public final class RuleContracts {
         String string(String ruleCode, String key);
 
         List<String> list(String ruleCode, String key);
+
+        /**
+         * 参数是否存在且有值。只给缺项有明确兜底的少数取值用（C03 严重度只影响评分）；其余参数缺项仍是部署错误，
+         * 照常由取值方法抛出。默认按取值是否抛出判断，{@link RuleParamLoader} 的快照直接查表覆盖。
+         */
+        default boolean has(String ruleCode, String key) {
+            try { return string(ruleCode, key) != null; }
+            catch (RuntimeException missing) { return false; }
+        }
     }
 
     public record ParamRef(String key, String value, String status) { }

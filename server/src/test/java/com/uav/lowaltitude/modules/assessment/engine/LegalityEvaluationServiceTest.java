@@ -56,6 +56,7 @@ class LegalityEvaluationServiceTest {
     @Autowired ObjectMapper json;
     @Autowired StubSpatialFacts spatial;
     @Autowired RecordingHooks hooks;
+    @Autowired StubPlanMatcher matcher;
     @Autowired RuleEngineRepository engineRepository;
     @Autowired com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository recognitionRepository;
     @Autowired com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository readRepository;
@@ -147,8 +148,15 @@ class LegalityEvaluationServiceTest {
     static class Stubs {
         @Bean @Primary StubSpatialFacts stubSpatialFacts() { return new StubSpatialFacts(); }
         @Bean @Primary RecordingHooks recordingHooks() { return new RecordingHooks(); }
-        @Bean @Primary PlanMatcher stubPlanMatcher() {
-            return (EvaluationContext context, List<PlanFact> candidates, RuleParams params) -> candidates.isEmpty()
+        @Bean @Primary StubPlanMatcher stubPlanMatcher() { return new StubPlanMatcher(); }
+    }
+
+    /** 有候选即 FULL、无候选即 NONE；forced 非空时直接给出指定结果（如多个计划分不清）。 */
+    static class StubPlanMatcher implements PlanMatcher {
+        PlanMatch forced;
+        @Override public PlanMatch match(EvaluationContext context, List<PlanFact> candidates, RuleParams params) {
+            if (forced != null) return forced;
+            return candidates.isEmpty()
                     ? new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"))
                     : new PlanMatch(PlanMatchCode.FULL, candidates.get(0), Map.of("time", "MATCH", "corridor", "MATCH", "identity", "MATCH"), List.of());
         }
@@ -173,7 +181,7 @@ class LegalityEvaluationServiceTest {
 
     @BeforeEach
     void fixture() {
-        spatial.hits = List.of(); spatial.ambiguous = false; hooks.outcomes.clear();
+        spatial.hits = List.of(); spatial.ambiguous = false; hooks.outcomes.clear(); matcher.forced = null;
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         code = "E1-TEST-" + suffix;
         observedAt = OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(10).withNano(0);
@@ -207,6 +215,101 @@ class LegalityEvaluationServiceTest {
         assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
         assertThat(jdbc.queryForObject("select violation_reasons from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).contains("PLAN_ALTITUDE_EXCEEDED");
         assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).isEqualTo("INSUFFICIENT");
+    }
+
+    @Test
+    void cancelledPlanNoLongerAuthorisesTheFlightButCompletedPlanStillMatches() {
+        onlyFixturePlanInTuple();
+        jdbc.update("update flight_plan set status_code='CANCELLED' where plan_id=?", planId);
+        var cancelled = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(cancelled.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(cancelled.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(cancelled.violationReasons()).containsExactly("NO_AUTHORIZATION");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isTrue();
+        assertThat(jdbc.queryForObject("select plan_id from rule_evaluation where evaluation_id=?", String.class, cancelled.evaluationId())).isNull();
+        // 手动按计划研判同一条已取消的计划，同样没有可授权的候选。
+        var bySubject = service.evaluate(new Subject(SubjectKind.PLAN, planId, null, null, null), RunMode.ACTIVE, now(),
+                runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(bySubject.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        // 已完成（到点自动转 COMPLETED）的计划仍参与匹配，超时继续飞才能对上本机计划。
+        jdbc.update("update flight_plan set status_code='COMPLETED' where plan_id=?", planId);
+        var completed = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(completed.planMatchCode()).isEqualTo(PlanMatchCode.FULL);
+        assertThat(completed.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+    }
+
+    @Test
+    void noPlanUavAtNightIsIllegalAndAlarmedWhileAuthorisationStaysForReview() {
+        nightAllDay();
+        withoutCandidatePlan();
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(result.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        // 夜航"依据不足"不能把无计划飞行降成不可判定、不出告警。
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(result.violationReasons()).containsExactly("NO_AUTHORIZATION", "NIGHT_FLIGHT");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isTrue();
+        // 计划授权仍待人工核对：证据充分性保持不足，反制等动作照旧受它约束。
+        assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).isEqualTo("INSUFFICIENT");
+        assertThat(jdbc.queryForObject("select decision_assurance_reasons from rule_evaluation where evaluation_id=?", String.class, result.evaluationId()))
+                .contains("PLAN_AUTHORIZATION_UNVERIFIED");
+    }
+
+    @Test
+    void noPlanUavWithPoorDataStaysUndetermined() {
+        withoutCandidatePlan();
+        jdbc.update("update target_latest_state set fusion_confidence=0.5,classification_confidence=0.5 where target_id=?", targetId);
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
+        assertThat(result.unknownReasons()).contains("LOW_CONFIDENCE");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+    }
+
+    @Test
+    void nightFlightWithTheMatchedPlanIsLegalButOutsideThePlanIsNot() {
+        nightAllDay();
+        onlyFixturePlanInTuple();
+        var inside = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(inside.planMatchCode()).isEqualTo(PlanMatchCode.FULL);
+        assertThat(inside.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+        // 本机计划两小时前已结束，C01 对不上（NONE，挂着本机计划）：夜间继续飞按无授权、超时和夜航判非法并出告警。
+        jdbc.update("update flight_plan set start_at=?,end_at=? where plan_id=?", ts(observedAt.minusHours(3)), ts(observedAt.minusHours(2)), planId);
+        matcher.forced = new PlanMatch(PlanMatchCode.NONE, engineRepository.planSubject(planId), Map.of("time_window", "MISMATCH"), List.of("TIME_WINDOW_MISMATCH"));
+        var outside = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(outside.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(outside.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(outside.violationReasons()).containsExactlyInAnyOrder("NO_AUTHORIZATION", "TIME_WINDOW_OVERRUN", "NIGHT_FLIGHT");
+        assertThat(hooks.outcomes.get(1).alarmEligible()).isTrue();
+    }
+
+    @Test
+    void ambiguousNearbyPlansDoNotHideANoFlyZoneViolation() {
+        matcher.forced = new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS", "IDENTITY_CLUE_MISSING"));
+        spatial.hits = List.of(covers("PROHIBITED"));
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(result.planMatchCode()).isEqualTo(PlanMatchCode.UNDETERMINED);
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(result.violationReasons()).containsExactly("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(result.unknownReasons()).contains("PLAN_AMBIGUOUS");
+        assertThat(result.assessmentId()).isNull();
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isTrue();
+        assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).isEqualTo("SUFFICIENT");
+    }
+
+    /** 夜航窗口改为全天（本地小时 ≥ 0 即夜航），测试结论不受运行时刻影响。 */
+    private void nightAllDay() {
+        jdbc.update("update rule_param set value_text='0' where rule_code='C02-5' and param_key='night_from' and rule_set_version_id=(select active_version_id from rule_set where rule_set_code=?)", code);
+    }
+
+    /** 同机构同区域的种子计划（无编号、时段覆盖当下）挪到两天前，候选里只剩用例自己的计划。 */
+    private void onlyFixturePlanInTuple() {
+        jdbc.update("update flight_plan set start_at=?,end_at=? where owner_org_id='seed-stage3-org' and district_id='seed-stage3-district' and plan_id<>?",
+                ts(observedAt.minusDays(3)), ts(observedAt.minusDays(2)), planId);
+    }
+
+    /** 本机计划也改为两天前、别的编号：既不按编号也不按时段进入候选。 */
+    private void withoutCandidatePlan() {
+        onlyFixturePlanInTuple();
+        jdbc.update("update flight_plan set uav_sn='E1-OTHER-SN',start_at=?,end_at=? where plan_id=?", ts(observedAt.minusDays(3)), ts(observedAt.minusDays(2)), planId);
     }
 
     @Test

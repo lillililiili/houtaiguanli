@@ -30,6 +30,8 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SubjectKind;
  */
 @Repository
 public class RuleEngineRepository {
+    /** 计划来源系统给出的取消状态；取消后的计划不再授权飞行。 */
+    static final String PLAN_STATUS_CANCELLED = "CANCELLED";
     private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;
@@ -274,8 +276,10 @@ public class RuleEngineRepository {
     }
 
     /**
-     * C01 候选：与目标同 (owner_org_id, district_id) 的计划，uav_sn 相等 或 [start_at − 窗口, end_at + 窗口) 覆盖 as_of。
-     * 计划状态词表尚未冻结（种子为 PENDING、测试为 APPROVED），这里不按状态过滤，由 C01 维度和复核承担。
+     * C01 候选：与目标同 (owner_org_id, district_id)、未取消的计划，uav_sn 相等 或 [start_at − 窗口, end_at + 窗口) 覆盖 as_of。
+     * 计划状态来自计划来源系统（PENDING/EXECUTING/COMPLETED/CANCELLED）：已取消的计划不再授权任何飞行，不进入匹配；
+     * 已完成的计划仍要参与，否则超时继续飞的无人机会对不上本机计划，说不清是"不在计划时段"。
+     * 别的编号的计划仍会作为时段候选取出，但 C01 只把同编号计划当本机计划，其余只用于说明"编号不匹配"，不挂到研判上。
      */
     public List<PlanFact> candidatePlans(String ownerOrgId, String districtId, String uavSn, OffsetDateTime asOf, int windowMinutes) {
         Map<String, Object> p = new HashMap<>();
@@ -286,7 +290,7 @@ public class RuleEngineRepository {
         if (uavSn != null && !uavSn.isBlank()) { bySn = "p.uav_sn=:sn OR "; p.put("sn", uavSn.trim()); }
         return jdbc.query("SELECT p.plan_id,p.route_version_id,p.uav_sn,p.start_at,p.end_at,rv.corridor_width_m,rv.min_altitude_m,rv.max_altitude_m,rv.altitude_datum,"
                 + "p.owner_org_id,p.district_id FROM flight_plan p JOIN route_version rv ON rv.route_version_id=p.route_version_id"
-                + " WHERE p.owner_org_id=:org AND p.district_id=:district"
+                + " WHERE p.owner_org_id=:org AND p.district_id=:district AND p.status_code<>'" + PLAN_STATUS_CANCELLED + "'"
                 + " AND (" + bySn + "(p.start_at IS NOT NULL AND p.end_at IS NOT NULL AND p.start_at<=:latest_start AND :earliest_end<p.end_at))"
                 + " ORDER BY p.start_at ASC,p.plan_id ASC", p,
                 (rs, i) -> new PlanFact(rs.getString("plan_id"), rs.getString("route_version_id"), rs.getString("uav_sn"), time(rs, "start_at"), time(rs, "end_at"),
@@ -302,6 +306,12 @@ public class RuleEngineRepository {
                         rs.getBigDecimal("corridor_width_m"), rs.getBigDecimal("min_altitude_m"), rs.getBigDecimal("max_altitude_m"), rs.getString("altitude_datum"),
                         rs.getString("owner_org_id"), rs.getString("district_id")));
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 计划主体是否已被来源系统取消：取消的计划仍能作为研判主体，但不再作为 C01 候选授权飞行。 */
+    public boolean planCancelled(String planId) {
+        List<String> rows = jdbc.queryForList("SELECT status_code FROM flight_plan WHERE plan_id=:id", Map.of("id", planId), String.class);
+        return !rows.isEmpty() && PLAN_STATUS_CANCELLED.equals(rows.get(0));
     }
 
     public String planSourceMode(String planId) {

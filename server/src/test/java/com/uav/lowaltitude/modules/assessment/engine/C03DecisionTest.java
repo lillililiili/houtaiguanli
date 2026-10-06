@@ -77,6 +77,50 @@ class C03DecisionTest {
     }
 
     @Test
+    void ambiguousPlanDoesNotHideAnAirspaceViolation() {
+        // 附近多个执行中计划分不清（PLAN_AMBIGUOUS）时，进禁飞区本身仍是违规：判 ILLEGAL，计划不明的原因保留给复核。
+        PlanMatch ambiguous = new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS", "IDENTITY_CLUE_MISSING"));
+        EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), ambiguous);
+        Decision illegal = decision.decide(ctx, List.of(undetermined("C01", "PLAN_AMBIGUOUS"), fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(illegal.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(illegal.reasonCode()).isEqualTo("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(illegal.violationReasons()).containsExactly("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(illegal.unknownReasons()).contains("PLAN_AMBIGUOUS");
+        // 计划不明的计划因子取 0.5：100*(0.4*1.0+0.25*0.5+0.15*1+0.1*0.1)=68.5 → HIGH。
+        assertThat(illegal.score()).isEqualByComparingTo("68.50");
+        assertThat(illegal.grade()).isEqualTo("HIGH");
+        // 临管、限高同属空域类，同样不被计划不明挡住。
+        assertThat(decision.decide(ctx, List.of(fail("C02-8", "TEMPORARY_RESTRICTION_ACTIVE")), params).status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(decision.decide(ctx, List.of(fail("C02-2", "AIRSPACE_ALTITUDE_EXCEEDED")), params).status()).isEqualTo(LegalStatus.ILLEGAL);
+        // 空域只是边界未知、或只有依赖计划的行为项时，仍因计划不明而不可判定。
+        Decision boundary = decision.decide(ctx, List.of(undetermined("C02-1", "BOUNDARY_POLICY_UNKNOWN")), params);
+        assertThat(boundary.status()).isEqualTo(LegalStatus.UNDETERMINED);
+        assertThat(boundary.unknownReasons()).contains("PLAN_AMBIGUOUS", "BOUNDARY_POLICY_UNKNOWN");
+        assertThat(decision.decide(ctx, List.of(fail("C02-5", "NIGHT_FLIGHT")), params).status()).isEqualTo(LegalStatus.UNDETERMINED);
+    }
+
+    @Test
+    void missingSeverityParameterOnlyLowersTheScoreAndNeverAbortsTheDecision() {
+        // 旧规则集版本没有 C03.severity.BVLOS_EXCEEDED：无计划且超视距仍要给出结论，缺项的原因码按 0 参与评分。
+        PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), none);
+        List<HitDetail> hits = List.of(pass("C02-1"), fail("C02-6", "BVLOS_EXCEEDED"));
+        Decision legacy = decision.decide(ctx, hits, TestRuleParams.demoCatalog().without("C03", "severity.BVLOS_EXCEEDED"));
+        assertThat(legacy.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(legacy.violationReasons()).containsExactly("NO_AUTHORIZATION", "BVLOS_EXCEEDED");
+        assertThat(legacy.reasonCode()).isEqualTo("NO_AUTHORIZATION");
+        // 100*(0.4*0.8+0.25*1+0.1*0.1)=58 → MEDIUM；目录补齐后（0.3，低于无授权 0.8）结论与评分不变。
+        assertThat(legacy.score()).isEqualByComparingTo("58.00");
+        assertThat(legacy.grade()).isEqualTo("MEDIUM");
+        Decision current = decision.decide(ctx, hits, params);
+        assertThat(current.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(current.score()).isEqualByComparingTo("58.00");
+        // 只有严重度可以缺项；权重、等级阈值等其他参数缺失仍是部署错误。
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> decision.decide(ctx, hits, TestRuleParams.demoCatalog().without("C03", "w.violation")));
+    }
+
+    @Test
     void airspaceFailuresAreIllegalAndAirspaceUnknownsWinOverOtherFailures() {
         EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), full());
         Decision illegal = decision.decide(ctx, List.of(fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE"), fail("C02-3", "ROUTE_DEVIATION")), params);

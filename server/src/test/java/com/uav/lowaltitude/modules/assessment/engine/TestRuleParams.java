@@ -31,6 +31,7 @@ final class TestRuleParams implements RuleParams {
                 .put("C03", "severity.TEMPORARY_RESTRICTION_ACTIVE", "0.9").put("C03", "severity.NO_AUTHORIZATION", "0.8")
                 .put("C03", "severity.ROUTE_DEVIATION", "0.6").put("C03", "severity.PLAN_ALTITUDE_EXCEEDED", "0.5")
                 .put("C03", "severity.TIME_WINDOW_OVERRUN", "0.4").put("C03", "severity.NIGHT_FLIGHT", "0.3")
+                .put("C03", "severity.BVLOS_EXCEEDED", "0.3")
                 .put("C03", "grade.high", "67").put("C03", "grade.medium", "34")
                 .put("C06", "dedup_window_min", "5").put("C06", "upgrade_window_min", "10").put("C06", "auto_close_min", "15")
                 .put("C06", "severity_by_grade", "HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW");
@@ -41,12 +42,16 @@ final class TestRuleParams implements RuleParams {
 
     TestRuleParams put(String ruleCode, String key, String value) { values.put(ruleCode + "." + key, value); return this; }
 
+    /** 模拟旧版本缺某一项参数。 */
+    TestRuleParams without(String ruleCode, String key) { values.remove(ruleCode + "." + key); return this; }
+
     @Override public String ruleSetVersionId() { return "test-rule-set-version"; }
     @Override public String paramStatus(String ruleCode, String key) { require(ruleCode, key); return status; }
     @Override public BigDecimal number(String ruleCode, String key) { return new BigDecimal(require(ruleCode, key)); }
     @Override public int integer(String ruleCode, String key) { return Integer.parseInt(require(ruleCode, key)); }
     @Override public boolean bool(String ruleCode, String key) { return Boolean.parseBoolean(require(ruleCode, key)); }
     @Override public String string(String ruleCode, String key) { return require(ruleCode, key); }
+    @Override public boolean has(String ruleCode, String key) { return values.containsKey(ruleCode + "." + key); }
     @Override public List<String> list(String ruleCode, String key) {
         return Arrays.stream(require(ruleCode, key).split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList();
     }

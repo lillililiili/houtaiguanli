@@ -136,17 +136,48 @@ class C02ChecksTest {
     @Test
     void nightFlightUsesConfiguredTimezoneAndHalfOpenHours() {
         // 04:00Z = 12:00 上海，白天；13:00Z = 21:00 上海，夜航；21:30Z = 05:30 上海仍在夜航；22:30Z = 06:30 上海不算。
+        // 没有匹配上计划时，夜航时段内飞行即违规。
         NightFlightCheck check = new NightFlightCheck();
-        assertThat(check.evaluate(context(state(), full(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
-        HitDetail night = check.evaluate(context(state(), full(), List.of(), AS_OF.withHour(13)), params);
+        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
+        HitDetail night = check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(13)), params);
         assertThat(night.resultCode()).isEqualTo(ResultCode.FAIL);
         assertThat(night.reasonCode()).isEqualTo("NIGHT_FLIGHT");
         assertThat(night.ruleCode()).isEqualTo("C02-5");
         assertThat(night.facts()).containsEntry("local_hour", 21);
-        assertThat(check.evaluate(context(state(), full(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
-        assertThat(check.evaluate(context(state(), full(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
-        // 无计划也照样按时刻判定：夜航是行为事实，不依赖计划。
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(13)), params).resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(night.message()).contains("处于夜航时段", "没有匹配上的飞行计划");
+        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
+    }
+
+    @Test
+    void nightFlightWithAMatchedPlanIsAuthorised() {
+        // 21:00 上海（13:00Z）飞行，计划 20:30–22:00 上海（12:30Z–14:00Z）已匹配上：计划已报备这段夜间飞行，判通过。
+        NightFlightCheck check = new NightFlightCheck();
+        OffsetDateTime night = AS_OF.withHour(13);
+        PlanFact evening = plan(night.minusMinutes(30), night.plusHours(1));
+        HitDetail covered = check.evaluate(context(state(), match(evening), List.of(), night), params);
+        assertThat(covered.resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(covered.reasonCode()).isNull();
+        assertThat(covered.facts()).containsEntry("plan_id", "p-1").containsEntry("local_hour", 21);
+        assertThat(covered.evidence()).anyMatch(ref -> "flight_plan".equals(ref.kind()) && "p-1".equals(ref.id()));
+        assertThat(covered.message()).contains("已匹配上飞行计划");
+        // 身份线索缺失的 PARTIAL 同样是已匹配的计划。
+        assertThat(check.evaluate(context(state(), new PlanMatch(PlanMatchCode.PARTIAL, evening, Map.of(), List.of("IDENTITY_CLUE_MISSING")), List.of(), night), params)
+                .resultCode()).isEqualTo(ResultCode.PASS);
+        // 计划时段的容差与白天一致，由 C01 时间窗决定：刚过结束时刻、仍在容差内被 C01 匹配上，不另判夜航；超时由 C02-4 单独判。
+        assertThat(check.evaluate(context(state(), match(plan(night.minusHours(2), night.minusMinutes(5))), List.of(), night), params)
+                .resultCode()).isEqualTo(ResultCode.PASS);
+        // 超出计划时段（C01 对不上，NONE 时挂着本机计划）、计划不明（UNDETERMINED）都不能为夜间飞行作保。
+        HitDetail outside = check.evaluate(context(state(), new PlanMatch(PlanMatchCode.NONE, plan(night.minusHours(3), night.minusHours(2)), Map.of(),
+                List.of("TIME_WINDOW_MISMATCH")), List.of(), night), params);
+        assertThat(outside.resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(outside.reasonCode()).isEqualTo("NIGHT_FLIGHT");
+        assertThat(outside.message()).contains("已超出本机飞行计划的计划时段或航线");
+        assertThat(outside.facts()).doesNotContainKey("plan_id");
+        assertThat(check.evaluate(context(state(), new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS")), List.of(), night), params)
+                .resultCode()).isEqualTo(ResultCode.FAIL);
+        // 白天不看计划。
+        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
     }
 
     /**

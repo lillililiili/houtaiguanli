@@ -86,6 +86,76 @@ class PlanMatchCheckTest {
     }
 
     @Test
+    void flyingOutsideTheOwnPlanPeriodNamesTheOwnPlanNotAnUnrelatedOne() {
+        // 评估时刻 02:00Z，本机计划 00:30–01:40Z 已结束 20 分钟；同区域还有一条别的编号、别的航线的计划在执行，按 ID 排序还排在前面。
+        PlanFact own = plan("plan-own", "rv-own", "SN-1", AS_OF.minusMinutes(90), AS_OF.minusMinutes(20));
+        PlanFact other = plan("plan-0other", "rv-other", "SN-9", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
+        PlanMatch match = check.match(state("SN-1"), List.of(other, own), distances(Map.of("rv-own", 10.0, "rv-other", 900.0)), AS_OF, params);
+        assertThat(match.code()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(match.plan().planId()).isEqualTo("plan-own");
+        assertThat(match.dimensions()).containsEntry("time_window", "MISMATCH").containsEntry("identity", "MATCH");
+        assertThat(match.reasonCodes().get(0)).isEqualTo("TIME_WINDOW_MISMATCH");
+        HitDetail detail = check.evaluate(context(match), params);
+        assertThat(detail.resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(detail.facts()).containsEntry("plan_id", "plan-own").containsEntry("match_reason", "TIME_WINDOW_MISMATCH");
+        assertThat(detail.message()).startsWith("不在计划时段").doesNotContain("plan-0other").doesNotContain("TIME_WINDOW_MISMATCH");
+        // 时段对上、但离开了本机计划航线：同样挂本机计划，说明不在航线走廊内。
+        PlanFact current = plan("plan-own", "rv-own", "SN-1", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
+        PlanMatch away = check.match(state("SN-1"), List.of(other, current), distances(Map.of("rv-own", 300.0, "rv-other", 10.0)), AS_OF, params);
+        assertThat(away.plan().planId()).isEqualTo("plan-own");
+        assertThat(away.reasonCodes().get(0)).isEqualTo("CORRIDOR_MISMATCH");
+        assertThat(check.evaluate(context(away), params).message()).startsWith("不在计划航线走廊内");
+    }
+
+    @Test
+    void ownPlanClosestToTheMomentIsReportedAmongSeveral() {
+        PlanFact morning = plan("plan-a-morning", "rv-m", "SN-1", AS_OF.minusHours(5), AS_OF.minusHours(3));
+        PlanFact evening = plan("plan-b-evening", "rv-e", "SN-1", AS_OF.plusHours(2), AS_OF.plusHours(4));
+        PlanMatch between = check.match(state("SN-1"), List.of(morning, evening), distances(Map.of("rv-m", 10.0, "rv-e", 10.0)), AS_OF, params);
+        assertThat(between.code()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(between.plan().planId()).isEqualTo("plan-b-evening");
+        // 有一条本机计划时段对得上（只是偏离航线）时优先报它，而不是时段对不上的那条。
+        PlanFact now = plan("plan-c-now", "rv-n", "SN-1", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
+        PlanMatch off = check.match(state("SN-1"), List.of(morning, now), distances(Map.of("rv-m", 10.0, "rv-n", 500.0)), AS_OF, params);
+        assertThat(off.plan().planId()).isEqualTo("plan-c-now");
+        assertThat(off.dimensions()).containsEntry("time_window", "MATCH").containsEntry("corridor", "MISMATCH");
+    }
+
+    @Test
+    void serialMismatchIsReportedWithoutAttachingSomeoneElsesPlan() {
+        // SN-2 沿计划 P3（登记 SN-1）的航线飞；另有一条别的航线上的旧计划，按 ID 排序排在前面。都不是本机计划。
+        PlanFact p3 = plan("plan-p3", "rv-p3", "SN-1", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
+        PlanFact unrelated = plan("plan-0old", "rv-old", "SN-9", AS_OF.minusMinutes(40), AS_OF.plusMinutes(5));
+        PlanMatch match = check.match(state("SN-2"), List.of(unrelated, p3), distances(Map.of("rv-p3", 10.0, "rv-old", 900.0)), AS_OF, params);
+        assertThat(match.code()).isEqualTo(PlanMatchCode.NONE);
+        // 别的编号的计划不挂到这次研判上：既不拿它比偏航/高度，也不让它的实际轨迹里出现这架无人机。
+        assertThat(match.plan()).isNull();
+        assertThat(match.reasonCodes().get(0)).isEqualTo("IDENTITY_MISMATCH");
+        assertThat(match.dimensions()).containsEntry("identity", "MISMATCH").containsEntry("time_window", "MATCH").containsEntry("corridor", "MATCH");
+        HitDetail detail = check.evaluate(context(match), params);
+        assertThat(detail.resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(detail.reasonCode()).isNull();
+        assertThat(detail.facts()).containsEntry("match_reason", "IDENTITY_MISMATCH").containsEntry("plan_id", null);
+        assertThat(detail.evidence()).isEmpty();
+        assertThat(detail.message()).startsWith("编号不匹配").doesNotContain("plan-0old").doesNotContain("plan-p3");
+        // 走廊也对不上时，首要原因仍是编号不匹配：这架无人机根本没有本机计划。
+        PlanMatch far = check.match(state("SN-2"), List.of(unrelated), distances(Map.of("rv-old", 900.0)), AS_OF, params);
+        assertThat(far.plan()).isNull();
+        assertThat(far.reasonCodes()).startsWith("IDENTITY_MISMATCH").contains("CORRIDOR_MISMATCH");
+    }
+
+    @Test
+    void targetWithoutSerialAwayFromEveryRouteIsNotTiedToAnyPlan() {
+        PlanFact a = plan("plan-a", "rv-a", "SN-1", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
+        PlanFact b = plan("plan-b", "rv-b", "SN-2", AS_OF.minusMinutes(10), AS_OF.plusMinutes(60));
+        PlanMatch match = check.match(state(null), List.of(a, b), distances(Map.of("rv-a", 400.0, "rv-b", 800.0)), AS_OF, params);
+        assertThat(match.code()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(match.plan()).isNull();
+        assertThat(match.reasonCodes().get(0)).isEqualTo("CORRIDOR_MISMATCH");
+        assertThat(check.evaluate(context(match), params).message()).startsWith("不在任何候选飞行计划的航线走廊内");
+    }
+
+    @Test
     void twoEquallyRankedCandidatesAreAmbiguous() {
         PlanFact a = plan("plan-a", "rv-a", "SN-1", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
         PlanFact b = plan("plan-b", "rv-b", "SN-1", AS_OF.minusMinutes(20), AS_OF.plusMinutes(40));
@@ -93,6 +163,9 @@ class PlanMatchCheckTest {
         assertThat(match.code()).isEqualTo(PlanMatchCode.UNDETERMINED);
         assertThat(match.plan()).isNull();
         assertThat(match.reasonCodes()).contains("PLAN_AMBIGUOUS");
+        // 页面上的说明用业务话，不出现原因码。
+        assertThat(check.evaluate(context(match), params).message())
+                .startsWith("计划匹配不可判定：附近有多个飞行计划都可能对应这架无人机").doesNotContain("PLAN_AMBIGUOUS");
     }
 
     @Test
@@ -111,6 +184,9 @@ class PlanMatchCheckTest {
         PlanMatch time = check.match(state("SN-1"), List.of(noTime), distance("rv-t", 10, 50), AS_OF, params);
         assertThat(time.code()).isEqualTo(PlanMatchCode.UNDETERMINED);
         assertThat(time.reasonCodes()).contains("PLAN_TIME_UNKNOWN");
+        assertThat(check.evaluate(context(width), params).message()).startsWith("计划匹配不可判定：候选飞行计划的航线走廊无法确认");
+        assertThat(check.evaluate(context(position), params).message()).startsWith("计划匹配不可判定：目标位置未知");
+        assertThat(check.evaluate(context(time), params).message()).startsWith("计划匹配不可判定：候选飞行计划缺少起止时间");
     }
 
     @Test
@@ -149,6 +225,13 @@ class PlanMatchCheckTest {
 
     private static PlanFact plan(String planId, String routeVersionId, String sn, OffsetDateTime start, OffsetDateTime end) {
         return new PlanFact(planId, routeVersionId, sn, start, end, new BigDecimal("100"), new BigDecimal("10"), new BigDecimal("100"), "AMSL", "org", "district");
+    }
+
+    /** 各航线到目标的距离（米），走廊半宽统一 50 m；未列出的航线距离未知。 */
+    private static PlanMatchCheck.RouteDistanceSource distances(Map<String, Double> byRoute) {
+        return id -> byRoute.containsKey(id)
+                ? new RouteDistance(id, BigDecimal.valueOf(byRoute.get(id)), BigDecimal.valueOf(50), null)
+                : new RouteDistance(id, null, null, "ROUTE_UNKNOWN");
     }
 
     private static PlanMatchCheck.RouteDistanceSource distance(String routeVersionId, double distanceM, double halfWidthM) {

@@ -60,13 +60,13 @@
 
 ## 引擎接口（`modules/assessment/engine/RuleContracts.java`，领导冻结）
 
-`SpatialFactPort { airspaceHits(targetId, asOf); distanceToRoute(targetId, routeVersionId); ambiguousEffectiveAirspaceVersion(asOf) }` 是唯一 PostGIS 依赖。`RuleCheck { ruleCode(); defaultPriority(); evaluate(EvaluationContext, RuleParams) → HitDetail }`。`RuleParams.number/integer/bool/string/list(ruleCode, key)` 缺参数抛 `IllegalStateException`（配置缺失是部署错误，不是业务未知）。
+`SpatialFactPort { airspaceHits(targetId, asOf); distanceToRoute(targetId, routeVersionId); ambiguousEffectiveAirspaceVersion(asOf) }` 是唯一 PostGIS 依赖。`RuleCheck { ruleCode(); defaultPriority(); evaluate(EvaluationContext, RuleParams) → HitDetail }`。`RuleParams.number/integer/bool/string/list(ruleCode, key)` 缺参数抛 `IllegalStateException`（配置缺失是部署错误，不是业务未知）；唯一例外是 C03 评分用的 `C03.severity.<reason>`：缺项按 0 计分（`RuleParams.has`），不让整次研判失败。
 
 评估流程：取 ACTIVE/SHADOW 版本 → 收集 `target_latest_state`、最近 `C03.track_points` 个轨迹点、候选计划、生效空域（`valid_from ≤ as_of < valid_to`）、空间事实 → 新鲜度（SCHEDULED：`observed_at ≥ now − C03.fresh_seconds` 否则 STALE → `NOT_APPLICABLE/STATE_STALE`；REPLAY/MANUAL 以 `observed_at` 为 `as_of`）→ C01 → C02-x → C03 → C06 → 写 `rule_evaluation` + 投影 + `legality_review(PENDING_REVIEW)`（`NOT_APPLICABLE` 研判不建复核行，否则 STALE 目标每 tick 都会灌满队列）；一条研判一个事务。
 
 ### C01 计划匹配（E2）
 
-候选：同 `(owner_org_id, district_id)` 的 `flight_plan`，`uav_sn` 相等 **或** `[start_at − C01.time_window_min, end_at + C01.time_window_min)` 覆盖 `as_of`。五维：时间窗 MATCH/MISMATCH/UNDETERMINED(`PLAN_TIME_UNKNOWN`)；走廊（`distanceToRoute ≤ 半宽 + C01.corridor_tolerance_m`，与 C02-3 同源）MATCH/MISMATCH/UNDETERMINED(`CORRIDOR_WIDTH_UNKNOWN`/`POSITION_UNKNOWN`)；身份（`target.uav_sn` vs `plan.uav_sn`，目标无 sn → `IDENTITY_CLUE_MISSING`，页面文案"线索缺失"）；起降点恒 `TAKEOFF_POINT_UNAVAILABLE`；飞手/单位恒 `PILOT_UNIT_UNAVAILABLE`。等级：任一可判维度 MISMATCH → NONE；时间+走廊 MATCH 且身份 MATCH → FULL；时间+走廊 MATCH 且身份 UNDETERMINED → PARTIAL；时间或走廊 UNDETERMINED → UNDETERMINED；多候选同优且非 NONE → `PLAN_AMBIGUOUS` → UNDETERMINED；无候选 → NONE(`NO_PLAN_CANDIDATE`)。
+候选：同 `(owner_org_id, district_id)`、`status_code<>'CANCELLED'`（已取消的计划不授权飞行；`COMPLETED` 仍参与，超时继续飞才能对上本机计划）的 `flight_plan`，`uav_sn` 相等 **或** `[start_at − C01.time_window_min, end_at + C01.time_window_min)` 覆盖 `as_of`。五维：时间窗 MATCH/MISMATCH/UNDETERMINED(`PLAN_TIME_UNKNOWN`)；走廊（`distanceToRoute ≤ 半宽 + C01.corridor_tolerance_m`，与 C02-3 同源）MATCH/MISMATCH/UNDETERMINED(`CORRIDOR_WIDTH_UNKNOWN`/`POSITION_UNKNOWN`)；身份（`target.uav_sn` vs `plan.uav_sn`，目标无 sn → `IDENTITY_CLUE_MISSING`，页面文案"线索缺失"）；起降点恒 `TAKEOFF_POINT_UNAVAILABLE`；飞手/单位恒 `PILOT_UNIT_UNAVAILABLE`。等级：任一可判维度 MISMATCH → NONE；时间+走廊 MATCH 且身份 MATCH → FULL；时间+走廊 MATCH 且身份 UNDETERMINED → PARTIAL；时间或走廊 UNDETERMINED → UNDETERMINED；多候选同优且非 NONE → `PLAN_AMBIGUOUS` → UNDETERMINED；无候选 → NONE(`NO_PLAN_CANDIDATE`)。全部候选都是 NONE 时只说本机的情况：有同编号计划 → 挂本机计划（时段对得上的优先，否则离 `as_of` 最近的），原因写它没对上的维度（页面"不在计划时段"/"不在航线走廊内"）；没有同编号计划 → 不挂任何计划（别人的计划不拿来比偏航、高度），目标有编号时首要原因 `IDENTITY_MISMATCH`（"编号不匹配"）。计划主体已取消 → 无候选。
 
 ### C02 检查（E1）
 
@@ -76,8 +76,8 @@
 | C02-2 空域限高 | kind ∈ `C02-2.kinds` 水平覆盖；目标高度按 `airspace_version.altitude_datum` 取 `altitude_amsl_m` 或 `height_agl_m` | `AIRSPACE_ALTITUDE_EXCEEDED` | 同上 |
 | C02-3 航线偏离 | 距中心线 − 半宽 > `C02-3.tolerance_m` | `ROUTE_DEVIATION` | `CORRIDOR_WIDTH_UNKNOWN`、`POSITION_UNKNOWN`；无计划 NOT_APPLICABLE |
 | C02-4 时间窗 | `as_of ≥ end_at + C02-4.grace_min` 或 `< start_at − grace` | `TIME_WINDOW_OVERRUN` | `PLAN_TIME_UNKNOWN`；无计划 NOT_APPLICABLE |
-| C02-5 夜航 | `C02-5.timezone` 本地时 ∈ [`night_from`, 24) ∪ [0, `night_to`) | `NIGHT_FLIGHT` | — |
-| C02-6 超视距 | 无 pilot_position | — | 恒 `PILOT_POSITION_UNAVAILABLE` |
+| C02-5 夜航 | `C02-5.timezone` 本地时 ∈ [`night_from`, 24) ∪ [0, `night_to`)，且 C01 没有匹配上计划（FULL/PARTIAL 即已在计划时段内，容差与白天同为 `C01.time_window_min`；超时另由 C02-4 判） | `NIGHT_FLIGHT` | — |
+| C02-6 超视距 | 目标与飞手位置距离 > `C02-6.vlos_m` | `BVLOS_EXCEEDED` | 无飞手位置 `PILOT_POSITION_UNAVAILABLE`；目标位置缺失 `POSITION_UNKNOWN` |
 | C02-7 计划高度 | 目标同基准高度 > `route_version.max_altitude_m` 或 < min | `PLAN_ALTITUDE_EXCEEDED` | 基准缺失；无计划 NOT_APPLICABLE |
 | C02-8 临时限制 | kind ∈ `C02-8.kinds` 且生效窗口内覆盖 | `TEMPORARY_RESTRICTION_ACTIVE` | 同 C02-1 |
 
@@ -85,12 +85,12 @@
 
 1. NO_STATE / STALE → `NOT_APPLICABLE`。
 2. 质量门：`fusion_confidence`（缺则 `classification_confidence`）< `C03.conf_min` → `LOW_CONFIDENCE`；轨迹点数 < `C03.min_points` → `TRACK_DEGRADED`；相邻点间隔 > `C03.gap_seconds` → `TRACK_BRIDGED`；任一 → `UNDETERMINED`。
-3. C01 NONE → `C03.no_plan_status`（默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`）；C01 UNDETERMINED → `UNDETERMINED`。
+3. C01 NONE → `C03.no_plan_status`（默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`；已过质量门、类别为无人机，行为项依据不足也不降为不可判定，计划授权待核对由 `decision_assurance` 交人工复核）；C01 UNDETERMINED 且 C02-1/2/8 无 FAIL → `UNDETERMINED`，有空域 FAIL 则照常走第 4 步判 `ILLEGAL`（进禁飞/限高/临管空域不取决于属于哪个计划）。
 4. C02-1/2/8 任一 FAIL → `ILLEGAL`；任一 UNDETERMINED（无 FAIL）→ `UNDETERMINED`。
-5. C02-3/4/5/7 任一 FAIL → `ABNORMAL`。
+5. C02-3/4/5/7 任一 FAIL → `ILLEGAL`；应用服务再校验证据充分性，不充分降为 `UNDETERMINED`（空域违规与无计划 `NO_AUTHORIZATION` 除外）。
 6. 其余检查有 UNDETERMINED（排除 `C03.ignore_undetermined_rules`）→ `UNDETERMINED`；否则 `LEGAL`。
 
-`violation_reasons` = 全部 FAIL 原因码；评分仅 ILLEGAL/ABNORMAL：`score = 100·Σ w_k·F_k`（因子：最大违规严重度 `C03.severity.<reason>`、计划匹配 NONE 1/PARTIAL .5/FULL 0、限制空域命中 1/0、轨迹桥接 .6/0、`1 − confidence`），`grade` 按 `C03.grade.high/medium`。
+`violation_reasons` = 全部 FAIL 原因码；评分仅 ILLEGAL/ABNORMAL：`score = 100·Σ w_k·F_k`（因子：最大违规严重度 `C03.severity.<reason>`、计划匹配 NONE 1/PARTIAL、UNDETERMINED .5/FULL 0、限制空域命中 1/0、轨迹桥接 .6/0、`1 − confidence`），`grade` 按 `C03.grade.high/medium`。
 
 ### 模式、回滚、重算、C06
 
@@ -116,7 +116,7 @@
 | C03 | no_plan_status | ILLEGAL | STRING |
 | C03 | ignore_undetermined_rules | C02-6 | LIST |
 | C03 | w.violation / w.plan_match / w.airspace / w.track / w.confidence | 0.40 / 0.25 / 0.15 / 0.10 / 0.10 | NUMBER |
-| C03 | severity.INSIDE_RESTRICTED_AIRSPACE / AIRSPACE_ALTITUDE_EXCEEDED / TEMPORARY_RESTRICTION_ACTIVE / NO_AUTHORIZATION / ROUTE_DEVIATION / PLAN_ALTITUDE_EXCEEDED / TIME_WINDOW_OVERRUN / NIGHT_FLIGHT | 1.0 / 0.9 / 0.9 / 0.8 / 0.6 / 0.5 / 0.4 / 0.3 | NUMBER |
+| C03 | severity.INSIDE_RESTRICTED_AIRSPACE / AIRSPACE_ALTITUDE_EXCEEDED / TEMPORARY_RESTRICTION_ACTIVE / NO_AUTHORIZATION / ROUTE_DEVIATION / PLAN_ALTITUDE_EXCEEDED / TIME_WINDOW_OVERRUN / NIGHT_FLIGHT / BVLOS_EXCEEDED | 1.0 / 0.9 / 0.9 / 0.8 / 0.6 / 0.5 / 0.4 / 0.3 / 0.3 | NUMBER（BVLOS_EXCEEDED 后补，已有库由迁移 V202610069001 补行） |
 | C03 | grade.high / grade.medium | 67 / 34 | NUMBER |
 | C06 | dedup_window_min / upgrade_window_min / auto_close_min | 5 / 10 / 15 | INTEGER min |
 | C06 | severity_by_grade | HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW | LIST |
