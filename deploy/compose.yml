@@ -34,6 +34,13 @@ services:
       SPRING_PROFILES_ACTIVE: production
       APP_SOURCE_MODE: live
       APP_DEV_SEED_ENABLED: "false"
+      # 空库首次启动时一次性创建唯一超级管理员（首次登录须改密）；库里已有用户时不再创建。
+      # 初始密码只写在 deploy/.env（见 .env.example，不提交）或运行环境里；空库未填写时 api 拒绝启动并提示该变量。
+      # APP_SUPER_ADMIN_ACCOUNT 每次启动都用于校验唯一超级管理员，创建后不要再改。
+      APP_BOOTSTRAP_ADMIN_ENABLED: ${APP_BOOTSTRAP_ADMIN_ENABLED:-true}
+      APP_SUPER_ADMIN_ACCOUNT: ${APP_SUPER_ADMIN_ACCOUNT:-admin1}
+      APP_SUPER_ADMIN_NAME: ${APP_SUPER_ADMIN_NAME:-超级管理员}
+      APP_SUPER_ADMIN_PASSWORD: ${APP_SUPER_ADMIN_PASSWORD:-}
       EVIDENCE_DIR: /data/evidence
       MAP_DATA_DIR: /data/map-data
     depends_on:
