@@ -43,6 +43,12 @@ public class DisposalCommandGuard {
             if (!Set.of("APPROVED", "EXECUTING").contains(current.status())
                     || current.validFrom() == null || current.validUntil() == null
                     || now.isBefore(current.validFrom()) || !now.isBefore(current.validUntil())) return false;
+            // 这台设备上还有未经现场核查的急停（可能是同设备另一事件按的）时，排队中的启动一律不发，
+            // 与手动执行、续链用同一道设备核查（锁序：事件→授权→设备→指令）。
+            if (current.deviceId() != null) {
+                stops.lockDevice(current.deviceId());
+                if (stops.deviceUnresolved(current.deviceId())) return false;
+            }
         }
         if (current != null && "DIRECT".equals(current.authorizationMode())) {
             return status != null && Set.of("APPROVED", "EXECUTING").contains(status)

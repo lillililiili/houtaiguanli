@@ -77,7 +77,7 @@ public class TargetVideoService {
         var user = access.requireDevicesRead();
         var target = targets.target(targetId);
         Map<String, Object> task = edges.latestTaskByTarget(targetId);
-        if (task == null) return result(targetId, null, "NO_TASK", "当前目标没有光电跟踪任务，暂无可查看画面。");
+        if (task == null) return result(targetId, null, "NO_TASK", noTaskReason(target.ownerOrgId(), target.districtId()));
         String deviceId = text(task, "ops_device_id");
         if (!devices.canDeleteInScope(deviceId, user.userId(), user.scopeMode()))
             throw new ApiException(HttpStatus.FORBIDDEN, "DEVICE_SCOPE_FORBIDDEN", "当前账号无权查看关联光电设备。");
@@ -114,6 +114,15 @@ public class TargetVideoService {
         return receipt
                 ? result(targetId, task, "TRACKING", pendingVideoReason(binding))
                 : result(targetId, task, "RECEIPT_UNAVAILABLE", "尚未取得当前跟踪任务的有效设备回执。");
+    }
+
+    /** 没有跟踪任务时把光电本身的状况一起说清：没有光电、光电都不在线，还是光电在线只是没在跟这个目标（ZT-18）。 */
+    private String noTaskReason(String orgId, String districtId) {
+        DeviceRepository.EoAvailability eo = devices.eoAvailability(orgId, districtId);
+        if (eo.total() == 0) return "当前目标没有光电跟踪任务：目标所在区域没有光电设备，暂无画面。";
+        if (eo.online() == 0)
+            return "当前目标没有光电跟踪任务：目标所在区域的光电设备都不在线（共 " + eo.total() + " 台，停用、离线、异常或状态未知），暂无画面。";
+        return "当前目标没有光电跟踪任务，暂无可查看画面。";
     }
 
     private static String pendingVideoReason(Binding binding) {

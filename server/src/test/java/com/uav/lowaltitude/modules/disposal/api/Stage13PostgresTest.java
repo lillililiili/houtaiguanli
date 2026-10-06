@@ -640,9 +640,10 @@ class Stage13PostgresTest {
         assertThat(blockReason(approverSession, notBound)).isEqualTo("NOT_BOUND");
 
         // ④ 已登记但设备未启用/不在线（补救方＝现场）。
-        // 有绑定、但没有 ops_device_state 行 → connectivity 不是 ONLINE → 走"不在线"那一支。
+        // 申请和批准时设备在线（离线设备在申请时就会被拒，BUG-03）；批准之后设备掉线 → 执行时走"不在线"那一支。
         String offlineDevice = boundOpsDevice("radar");
         String offline = approvedAuthorization(requesterSession, approverSession, "COUNTERMEASURE", "LINGYUN_B", offlineDevice);
+        jdbc.update("update ops_device_state set connectivity='OFFLINE' where device_id=?", offlineDevice);
         assertThat(executeExpectingConflict(executorSession, offline)).isEqualTo("DEVICE_OFFLINE");
         assertThat(eventCount(offline, "DEVICE_OFFLINE")).isEqualTo(1L);
         assertThat(blockReason(approverSession, offline)).isEqualTo("DEVICE_OFFLINE");
@@ -681,6 +682,9 @@ class Stage13PostgresTest {
         // 绑定存在也查不出来，"已绑定但离线"就会被误报成"未绑定"。
         jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at)"
                 + " values (?,?,?,?,?)", opsDeviceId, org, district, T0, T0);
+        // 申请时就核对设备能不能用（BUG-03）：夹具设备默认在线、未报故障；"不在线"那一支在批准之后再改成离线。
+        jdbc.update("insert into ops_device_state (device_id,connectivity,has_alarm,health_code,observed_at,received_at,simulated,version)"
+                + " values (?,'ONLINE',false,'GOOD',?,?,false,0)", opsDeviceId, now, now);
         return opsDeviceId;
     }
 

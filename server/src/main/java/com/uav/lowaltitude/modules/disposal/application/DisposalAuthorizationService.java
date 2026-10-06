@@ -121,6 +121,9 @@ public class DisposalAuthorizationService {
         String effectiveSubjectId = subject.subjectId();
         if ("UAV_EVENT".equals(request.subjectKind()) && emergencyStops.unresolved(effectiveSubjectId))
             throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
+        // 停用、离线、状态未知、异常或故障的设备在申请时就拒绝（BUG-03），不留一条执行不了却占着名额的授权。
+        String unavailable = gateway.requestBlockReason(request.deviceId());
+        if (unavailable != null) throw conflict("DEVICE_UNAVAILABLE", unavailable);
         idempotency.claim(key, (direct ? "disposal:direct:" : "disposal:create:") + request.subjectKind() + ":" + effectiveSubjectId + ":" + request.actionType());
         // 并发上限按主体+动作计：同一架无人机不该同时挂着两份还没了结的反制授权。
         if (repository.activeCount(request.subjectKind(), effectiveSubjectId, request.actionType()) >= policy.maxActivePerSubject())
@@ -317,21 +320,36 @@ public class DisposalAuthorizationService {
 
     @Transactional
     public ActionResultDto cancel(String id, String rawRequest, String key) {
-        // 撤回自己的申请只需申请权；替别人撤回才需要审批权。两者都不满足时按 403 拒绝。
-        AccessDecision decision = access.require(PermissionCode.DISPOSAL_REQUEST);
+        // 撤销尚未执行的申请或授权（BUG-03：批准后没执行的授权不能只等过期）：
+        // 申请人本人凭申请权（直接授权凭直接处置权）即可；替别人撤销需要审批权。都没有时按 403 拒绝。
+        AccessDecision decision = cancelAccess();
         Decision body = parseDecision(rawRequest, false);
         AuthorizationRow row = locked(id, decision);
         idempotency.claim(key, "disposal:cancel:" + id + ":" + body.expectedVersion());
         requireVersion(row, body.expectedVersion());
         DisposalRules.requireTransition(DisposalRules.CANCEL, row.status());
         AuthUser actor = AuthContext.require();
-        if (!actor.userId().equals(row.requestedBy())) access.require(PermissionCode.DISPOSAL_APPROVE);
+        boolean own = actor.userId().equals(row.requestedBy());
+        if (!own) access.require(PermissionCode.DISPOSAL_APPROVE);
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
-        if (repository.transition(id, row.version(), DisposalRules.CANCELLED, at, null, "CANCELLED_BY_REQUESTER", body.note()) != 1)
+        // 结果码如实写是谁撤的：审批人撤销别人的授权不能记成“申请人撤回”。
+        if (repository.transition(id, row.version(), DisposalRules.CANCELLED, at, null,
+                own ? "CANCELLED_BY_REQUESTER" : "CANCELLED_BY_APPROVER", body.note()) != 1)
             throw versionConflict();
         event(id, "CANCEL", actor.userId(), body.note(), Map.of("status", DisposalRules.CANCELLED), at);
         audit(actor, "disposal_cancelled", id, "authorization_no=" + row.authorizationNo());
         return result(id, DisposalRules.CANCELLED, row.version() + 1, null, null);
+    }
+
+    /** 撤销的入口权限：审批权、申请权、直接处置权任一即可进入，是否本人再在锁行后判断。 */
+    private AccessDecision cancelAccess() {
+        ApiException first = null;
+        for (PermissionCode code : java.util.List.of(PermissionCode.DISPOSAL_APPROVE, PermissionCode.DISPOSAL_REQUEST,
+                PermissionCode.DISPOSAL_DIRECT)) {
+            try { return access.require(code); }
+            catch (ApiException denied) { if (first == null) first = denied; }
+        }
+        throw first;
     }
 
     /* ---- 主体解析 ---- */
@@ -357,7 +375,8 @@ public class DisposalAuthorizationService {
             if (target == null) throw notFound();
             if (policy.requiresConfirmedEvent(actionType)) {
                 // 该动作要求"事件已核实"，而目标主体身上没有事件可查——不能因为换个主体类型就绕过这条。
-                throw conflict("POLICY_REQUIRES_CONFIRMED_EVENT", "该动作要求先核实事件，请对事件发起而不是对目标");
+                // 码不变，话要说真实原因（ZT-18）：多半是证据不足，而不是“先去核实”。
+                throw conflict("POLICY_REQUIRES_CONFIRMED_EVENT", targetCounterBlock(repository.targetCounterFacts(target.targetId())));
             }
             requireActive(target);
             return new Subject(target.targetId(), target.targetId(), target.ownerOrgId(), target.districtId(),
@@ -366,6 +385,25 @@ public class DisposalAuthorizationService {
         // 兜底：主体名单已在入口挡过一遍，走到这里说明名单里新添了一种主体却没在上面实现。
         // 与其抛内部错误，不如仍旧答那句能读懂的话。
         throw riskSubjectNotSupported();
+    }
+
+    /** 对目标直接申请反制/干扰被挡时给值班员看的真实原因。 */
+    static String targetCounterBlock(DisposalRepository.TargetCounterFacts facts) {
+        String type = facts == null ? null : facts.objectTypeCode();
+        boolean noAlarm = facts == null || facts.eventState() == null;
+        if (type == null || "UNKNOWN".equals(type))
+            return "证据不足，不能反制：这个目标还没确认是无人机（类别未分类）" + (noAlarm ? "，也没有违规告警" : "")
+                    + "。请先用光电等手段确认目标。";
+        if (!"UAV".equals(type))
+            return "不能反制：这个目标的类别是" + ("BIRD".equals(type) ? "鸟类" : "非无人机") + "，不是无人机。";
+        if (noAlarm)
+            return "证据不足，不能反制：这个目标目前没有违规告警，不能直接对目标反制。";
+        String alarm = facts.alarmNo() == null ? "告警" : "告警 " + facts.alarmNo() + " ";
+        return switch (facts.eventState()) {
+            case "PENDING_VERIFICATION" -> "这个目标的" + alarm + "还没核实。反制要在告警上发起：请先打开这条告警核实，系统会说明还缺哪些依据。";
+            case "FALSE_POSITIVE" -> "这个目标的" + alarm + "已核实为误报，不能反制。";
+            default -> "反制要在告警上发起，不能直接对目标发起。请打开这个目标的" + alarm + "办理。";
+        };
     }
 
     private static ApiException riskSubjectNotSupported() {

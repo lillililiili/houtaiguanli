@@ -619,6 +619,24 @@ public class DeviceRepository {
                 """, now, now, id, version);
     }
 
+    /**
+     * 目标所在机构、区域内的光电设备：台账总数与此刻在线台数（ZT-18：没有跟踪任务时说清光电本身的状况）。
+     * 与光电跟踪选设备同一口径（按目标的机构与区域），不看调用者的设备范围。
+     */
+    public EoAvailability eoAvailability(String orgId, String districtId) {
+        if (orgId == null || districtId == null) return new EoAvailability(0, 0);
+        return jdbc.queryForObject("""
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(CASE WHEN d.enabled=TRUE AND st.connectivity='ONLINE' THEN 1 ELSE 0 END),0) AS online
+                FROM ops_device d JOIN device_business_scope bs ON bs.ops_device_id=d.device_id
+                LEFT JOIN ops_device_state st ON st.device_id=d.device_id
+                WHERE d.deleted_at IS NULL AND UPPER(d.device_type_code) IN ('EO','OE')
+                  AND bs.owner_org_id=? AND bs.district_id=?
+                """, (rs, i) -> new EoAvailability(rs.getInt("total"), rs.getInt("online")), orgId, districtId);
+    }
+
+    public record EoAvailability(int total, int online) { }
+
     public boolean hasActiveWork(String id) {
         return jdbc.queryForObject("""
                 SELECT (SELECT COUNT(*) FROM device_command WHERE device_id=? AND status IN ('QUEUED','SENT','ACCEPTED'))

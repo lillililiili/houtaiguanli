@@ -188,7 +188,8 @@ class EmergencyStopApiTest {
     }
 
     @Test
-    void sharedDeviceWithAnotherActiveEventBlocksAllOffWithoutChangingEitherEvent() throws Exception {
+    void sharedDeviceStopIsNeverBlockedByAnotherEventAndTellsTheOtherRecord() throws Exception {
+        // ZT-42：急停永远要能停下本事件实际在跑的设备；同设备上别的事件只记一条“已下发全关”，不被替人停掉。
         String device = fourChannel(), firstEvent = eventId;
         String firstAuthorization = authorization("COUNTERMEASURE", true);
         eventId = event();
@@ -196,12 +197,81 @@ class EmergencyStopApiTest {
         jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id in (?,?)",
                 device, firstAuthorization, secondAuthorization);
         eventId = firstEvent;
-        String response = stop(operator, key()).andExpect(status().isConflict()).andReturn().getResponse().getContentAsString();
-        assertThat(response).contains("SHARED_DEVICE_SCOPE_BLOCKED").doesNotContain(secondEvent);
-        assertThat(statusOf(firstAuthorization)).isEqualTo("EXECUTING");
+        JsonNode overview = data(mvc.perform(get(path()).header("Authorization", "Bearer " + operator)).andExpect(status().isOk()));
+        assertThat(overview.path("allowed_actions").toString()).contains("EMERGENCY_STOP");
+        assertThat(overview.path("block_reason").textValue()).isNull();
+        String response = stop(operator, key()).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(response).doesNotContain("SHARED_DEVICE_SCOPE_BLOCKED").doesNotContain(secondEvent);
+        assertThat(statusOf(firstAuthorization)).isEqualTo("STOPPED");
         assertThat(statusOf(secondAuthorization)).isEqualTo("EXECUTING");
-        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Long.class, device)).isZero();
-        assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop where event_id in (?,?)", Long.class, firstEvent, secondEvent)).isZero();
+        String allOff = jdbc.queryForObject("select command_id from device_command where device_id=?", String.class, device);
+        assertThat(jdbc.queryForObject("select mask from countermeasure_4ch_command where command_id=?", Integer.class, allOff)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop where event_id=?", Long.class, secondEvent)).isZero();
+        var notes = jdbc.queryForList("select event_kind,note,cast(snapshot as varchar) as snapshot from disposal_authorization_event"
+                + " where authorization_id=? and event_kind in ('DEVICE_ALL_OFF_ISSUED','STOP')", secondAuthorization);
+        assertThat(notes).hasSize(1);
+        assertThat(notes.get(0).get("event_kind")).isEqualTo("DEVICE_ALL_OFF_ISSUED");
+        assertThat(notes.get(0).get("note").toString()).contains("另一起处置按了急停").doesNotContain(firstEvent);
+        assertThat(notes.get(0).get("snapshot").toString()).contains(allOff);
+        // 另一事件自己的急停照样可用。
+        eventId = secondEvent;
+        stop(operator, key()).andExpect(status().isOk());
+        assertThat(statusOf(secondAuthorization)).isEqualTo("STOPPED");
+    }
+
+    @Test
+    void otherEventApprovalOnStoppedDeviceWaitsForSiteCheckBeforeAnyStart() throws Exception {
+        // ZT-42 原场景：A、B 两起事件都批了同一台反制设备，A 在执行。A 急停后，B 的批准不被撤销，
+        // 但在现场核查确认设备已停之前，B 不能执行，B 排队中的启动也不能发出去。
+        String device = fourChannel(), firstEvent = eventId;
+        String operatorId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, operator);
+        String running = authorization("COUNTERMEASURE", true);
+        jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?", device, running);
+        eventId = event();
+        String secondEvent = eventId;
+        String waiting = data(request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
+                "subject_kind", "UAV_EVENT", "subject_id", secondEvent, "channel", "COUNTERMEASURE_4CH",
+                "device_id", device, "reason", "同一设备上的第二起事件"))
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        request("/api/v1/disposal-authorizations/" + waiting + "/approve", operator, key(), Map.of("expected_version", 0))
+                .andExpect(status().isOk());
+        String queuedStart = directFourChannel(device, waiting, 15);
+        eventId = firstEvent;
+
+        JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
+        assertThat(statusOf(running)).isEqualTo("STOPPED");
+        assertThat(latest.path("devices").findValuesAsText("device_id")).containsExactly(device);
+        assertThat(latest.path("devices").get(0).path("stop_status").asText()).isEqualTo("QUEUED");
+        String allOff = latest.path("devices").get(0).path("command_id").asText();
+        assertThat(jdbc.queryForObject("select mask from countermeasure_4ch_command where command_id=?", Integer.class, allOff)).isZero();
+
+        assertThat(statusOf(waiting)).isEqualTo("APPROVED");
+        var notes = jdbc.queryForList("select actor_id,note from disposal_authorization_event"
+                + " where authorization_id=? and event_kind='DEVICE_ALL_OFF_ISSUED'", waiting);
+        assertThat(notes).hasSize(1);
+        assertThat(notes.get(0).get("actor_id")).isEqualTo(operatorId);
+        assertThat(notes.get(0).get("note").toString()).contains("现场核查");
+
+        fourChannelControl.dispatch(queuedStart);
+        var cancelled = jdbc.queryForMap("select status,result_code,issued_at from device_command where command_id=?", queuedStart);
+        assertThat(cancelled.get("status")).isEqualTo("CANCELLED");
+        assertThat(cancelled.get("result_code")).isEqualTo("AUTHORIZATION_STOPPED");
+        assertThat(cancelled.get("issued_at")).isNull();
+        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+                Map.of("authorization_id", waiting, "action", "SET_MASK", "mask", 15, "reason", "未核查前不得重新启动"))
+                .andExpect(status().isConflict());
+
+        long version = jdbc.queryForObject("select version from disposal_authorization where authorization_id=?", Long.class, waiting);
+        String blocked = request("/api/v1/disposal-authorizations/" + waiting + "/execute", operator, key(),
+                Map.of("expected_version", version)).andExpect(status().isConflict()).andReturn().getResponse().getContentAsString();
+        assertThat(blocked).contains("EMERGENCY_STOP_UNCONFIRMED");
+        assertThat(statusOf(waiting)).isEqualTo("APPROVED");
+
+        request(path() + "/" + latest.path("stop_id").asText() + "/devices/" + device + "/manual-confirm", operator, key(),
+                Map.of("note", "现场核实设备已经全关")).andExpect(status().isOk());
+        request("/api/v1/disposal-authorizations/" + waiting + "/execute", operator, key(), Map.of("expected_version", version))
+                .andExpect(status().isOk());
+        assertThat(statusOf(waiting)).isEqualTo("EXECUTING");
     }
 
     @Test
@@ -323,21 +393,67 @@ class EmergencyStopApiTest {
         assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?", Integer.class, command)).isZero();
     }
 
-    @Test void directFaultBlockCommitsAuthorizationWithoutExecutionOrApproval() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"FAULT,上报故障", "OFFLINE,当前离线", "DISABLED,已停用",
+            "ABNORMAL,工作异常", "UNKNOWN,还没有上报状态"})
+    void directOnUnusableDeviceIsRefusedBeforeAnyAuthorizationExists(String state, String said) throws Exception {
+        // BUG-03 / ZT-18：坏的、离线的、停用的、状态不明的设备在发起时就拒绝，不再先落一条执行不了却占着名额的授权。
         String actor = user("disposal:direct", "disposal:read", "devices", "target:read");
         String device = fourChannel();
-        jdbc.update("update ops_device_state set health_code='BAD',has_alarm=true where device_id=?", device);
-        JsonNode result = data(request("/api/v1/disposal-authorizations/direct-execute", actor, key(),
+        switch (state) {
+            case "FAULT" -> jdbc.update("update ops_device_state set health_code='BAD',has_alarm=true where device_id=?", device);
+            case "OFFLINE", "ABNORMAL" -> jdbc.update("update ops_device_state set connectivity=? where device_id=?", state, device);
+            case "DISABLED" -> jdbc.update("update ops_device set enabled=false where device_id=?", device);
+            case "UNKNOWN" -> jdbc.update("delete from ops_device_state where device_id=?", device);
+            default -> throw new IllegalArgumentException(state);
+        }
+        JsonNode error = json.readTree(request("/api/v1/disposal-authorizations/direct-execute", actor, key(),
                 Map.of("subject_kind", "UAV_EVENT", "subject_id", eventId, "action_type", "COUNTERMEASURE",
-                        "channel", "COUNTERMEASURE_4CH", "device_id", device, "reason", "故障设备处置受阻测试"))
-                .andExpect(status().isCreated()));
-        String authorization = result.path("authorization_id").asText();
-        assertThat(result.path("status").asText()).isEqualTo("APPROVED");
-        assertThat(result.path("execution_block_reason").asText()).isEqualTo("DEVICE_FAULT");
+                        "channel", "COUNTERMEASURE_4CH", "device_id", device, "reason", "不可用设备申请时拒绝"))
+                .andExpect(status().isConflict()).andReturn().getResponse().getContentAsString()).path("error");
+        assertThat(error.path("code").asText()).isEqualTo("DEVICE_UNAVAILABLE");
+        assertThat(error.path("message").asText()).contains(said).contains("请换一台");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?", Integer.class, eventId)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isZero();
+    }
+
+    /** 申请时设备正常、批准后设备出状况：执行如实受阻，授权仍是已批准。 */
+    String blockedAfterApproval(String state) throws Exception {
+        String device = fourChannel();
+        String authorization = data(request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
+                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "COUNTERMEASURE_4CH",
+                "device_id", device, "reason", "批准后设备出状况"))
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        request("/api/v1/disposal-authorizations/" + authorization + "/approve", operator, key(), Map.of("expected_version", 0))
+                .andExpect(status().isOk());
+        if ("FAULT".equals(state)) jdbc.update("update ops_device_state set health_code='BAD',has_alarm=true where device_id=?", device);
+        else jdbc.update("update ops_device_state set connectivity='OFFLINE' where device_id=?", device);
+        request("/api/v1/disposal-authorizations/" + authorization + "/execute", operator, key(), Map.of("expected_version", 1))
+                .andExpect(status().isConflict());
+        return authorization;
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"FAULT,DEVICE_FAULT", "OFFLINE,DEVICE_OFFLINE"})
+    void deviceThatGoesBadAfterApprovalBlocksExecutionAndTheApprovalCanBeWithdrawn(String state, String reason) throws Exception {
+        String authorization = blockedAfterApproval(state);
+        assertThat(statusOf(authorization)).isEqualTo("APPROVED");
         assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?", String.class, authorization))
-                .contains("DIRECT_AUTHORIZE","DEVICE_FAULT").doesNotContain("EXECUTE","APPROVE");
-        assertThat(jdbc.queryForObject("select approved_by from disposal_authorization where authorization_id=?", String.class, authorization)).isNull();
+                .contains("REQUEST", "APPROVE", reason).doesNotContain("EXECUTE");
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=(select device_id from disposal_authorization"
+                + " where authorization_id=?)", Integer.class, authorization)).isZero();
+        JsonNode detail = data(mvc.perform(get("/api/v1/disposal-authorizations/" + authorization)
+                .header("Authorization", "Bearer " + requester)).andExpect(status().isOk()));
+        assertThat(detail.path("execution_block_reason").asText()).isEqualTo(reason);
+        assertThat(detail.path("allowed_actions").toString()).contains("CANCEL");
+        // BUG-03：受阻的已批准授权不必等过期——申请人撤销后，同一事件马上可以换一台设备重新申请。
+        request("/api/v1/disposal-authorizations/" + authorization + "/cancel", requester, key(),
+                Map.of("expected_version", detail.path("version").asLong(), "note", "设备出状况，改用其他设备"))
+                .andExpect(status().isOk());
+        assertThat(statusOf(authorization)).isEqualTo("CANCELLED");
+        request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
+                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "COUNTERMEASURE_4CH",
+                "device_id", fourChannel(), "reason", "换一台设备重新申请")).andExpect(status().isCreated());
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -361,25 +477,6 @@ class EmergencyStopApiTest {
         assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isEqualTo(1);
         String allOff = directFourChannel(device, first.path("authorization_id").asText(), 0);
         assertThat(jdbc.queryForObject("select status from device_command where command_id=?", String.class, allOff)).isEqualTo("QUEUED");
-    }
-
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"OFFLINE", "DISABLED"})
-    void unavailableDevicePreservesBlockedAuthorizationWithoutCommand(String state) throws Exception {
-        String actor = user("disposal:direct", "disposal:read", "devices", "target:read");
-        String device = fourChannel();
-        if ("OFFLINE".equals(state)) jdbc.update("update ops_device_state set connectivity='OFFLINE' where device_id=?", device);
-        else jdbc.update("update ops_device set enabled=false where device_id=?", device);
-        var result = data(request("/api/v1/disposal-authorizations/direct-execute", actor, key(),
-                Map.of("subject_kind", "UAV_EVENT", "subject_id", eventId, "action_type", "COUNTERMEASURE",
-                        "channel", "COUNTERMEASURE_4CH", "device_id", device, "reason", "离线或停用设备阻断测试"))
-                .andExpect(status().isCreated()));
-        assertThat(result.path("status").asText()).isEqualTo("APPROVED");
-        assertThat(result.path("execution_block_reason").asText()).isEqualTo("DEVICE_OFFLINE");
-        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isZero();
-        assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?",
-                String.class, result.path("authorization_id").asText())).contains("DIRECT_AUTHORIZE", "DEVICE_OFFLINE")
-                .doesNotContain("EXECUTE", "APPROVE");
     }
 
     @org.junit.jupiter.params.ParameterizedTest

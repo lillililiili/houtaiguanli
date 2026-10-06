@@ -67,7 +67,7 @@ class DisposalAuthorizationApiTest {
         jdbc.update("delete from target where target_id like 'dsp-target-%'");
         jdbc.update("delete from uav_event_advisory where event_id like 'dsp-event-%'");
         jdbc.update("delete from rule_evaluation where alarm_id like 'dsp-alarm-%'");
-        jdbc.update("delete from uav_event where event_id like 'dsp-event-%'");
+        AutomationRuntimeRows.deleteEvents(jdbc, "dsp-event-%");
         jdbc.update("delete from alarm where alarm_id like 'dsp-alarm-%'");
     }
 
@@ -272,12 +272,39 @@ class DisposalAuthorizationApiTest {
     void countermeasureAgainstATargetIsRejectedBecauseItNeedsAConfirmedEvent() throws Exception {
         String targetId = target(ORG, DISTRICT);
         // 反制要求"事件已核实"，而目标主体身上没有事件可查——不能因为换了个主体类型就绕过这条。
-        mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
+        // 提示要说真实原因（ZT-18）：类别未分类、也没有告警，是证据不足，不是笼统的“先核实事件”。
+        assertThat(targetCounterRefusal(targetId)).startsWith("证据不足").contains("类别未分类", "没有违规告警")
+                .doesNotContain("先核实事件");
+        jdbc.update("update target set object_type_code='BIRD' where target_id=?", targetId);
+        assertThat(targetCounterRefusal(targetId)).contains("鸟类", "不是无人机");
+        jdbc.update("update target set object_type_code='UAV' where target_id=?", targetId);
+        assertThat(targetCounterRefusal(targetId)).startsWith("证据不足").contains("没有违规告警");
+        String suffix = UUID.randomUUID().toString().substring(0, 8), alarmId = "dsp-alarm-" + suffix;
+        Timestamp at = Timestamp.from(Instant.parse("2026-09-07T02:00:00Z"));
+        jdbc.update("insert into alarm (alarm_id,alarm_no,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,"
+                + "received_at,source_mode,owner_org_id,district_id,created_at)"
+                + " values (?,?,?,'dsp-src',?,'UAV_INTRUSION','HIGH',?,?,'mock',?,?,?)",
+                alarmId, "ALM-T-" + suffix, targetId, "告警-目标-" + suffix, at, at, ORG, DISTRICT, at);
+        try {
+            jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)"
+                    + " values (?,?,'PENDING_VERIFICATION',?,?,?,?,1)", "dsp-event-" + suffix, alarmId, ORG, DISTRICT, at, at);
+            assertThat(targetCounterRefusal(targetId)).contains("ALM-T-" + suffix, "还没核实", "在告警上发起");
+            assertThat(count(targetId)).isZero();
+        } finally {
+            // 告警引用目标（RESTRICT），先于公共清理里的删目标删掉。
+            AutomationRuntimeRows.deleteEvents(jdbc, "dsp-event-" + suffix);
+            jdbc.update("delete from alarm where alarm_id=?", alarmId);
+        }
+    }
+
+    private String targetCounterRefusal(String targetId) throws Exception {
+        return body(mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
                                 + targetId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"不该被接受\"}"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("POLICY_REQUIRES_CONFIRMED_EVENT"));
+                .andExpect(jsonPath("$.error.code").value("POLICY_REQUIRES_CONFIRMED_EVENT")))
+                .path("error").path("message").asText();
     }
 
     @Test

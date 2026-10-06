@@ -181,6 +181,32 @@ public class DisposalExecutionGateway {
         return new Accepted(commandId);
     }
 
+    /**
+     * 申请时就把明显用不了的设备挡下（BUG-03 / ZT-18）：停用、离线、状态未知、上报工作异常或故障。
+     * 不然要等批准后执行才失败，而这条已批准的授权还会把同一事件的新申请挡到过期。
+     * 设备忙不在此列——那是一时的，批准后多半已空出来，执行时仍会再查一遍。
+     * 台账里查不到（或不在本人设备范围内）的编号不在这里下结论，留给执行时按通道如实受阻。
+     */
+    public String requestBlockReason(String deviceId) {
+        Map<String, Object> device = deviceId == null || deviceId.isBlank() ? null : devices.find(deviceId.trim());
+        return device == null ? null : unavailableReason(device);
+    }
+
+    /** 设备为什么现在不能用来处置；能用时返回 null。文案直接给值班员看。 */
+    public static String unavailableReason(Map<String, Object> device) {
+        Object enabled = device.get("enabled");
+        boolean on = enabled instanceof Boolean b ? b : enabled != null && Boolean.parseBoolean(String.valueOf(enabled));
+        if (!on) return "所选设备已停用，不能用它申请处置。请换一台在用的设备。";
+        String connectivity = String.valueOf(device.get("connectivity"));
+        if ("OFFLINE".equals(connectivity)) return "所选设备当前离线，不能用它申请处置。请换一台在线的设备。";
+        if ("ABNORMAL".equals(connectivity))
+            return "所选设备上报工作异常（故障），不能用它申请处置。请换一台正常的设备，或等设备恢复后再申请。";
+        if (!"ONLINE".equals(connectivity))
+            return "所选设备还没有上报状态，确认不了能不能用，不能用它申请处置。请换一台在线的设备。";
+        if (knownFault(device)) return "所选设备上报故障，不能用它申请处置。请换一台正常的设备，或等设备修好后再申请。";
+        return null;
+    }
+
     private static boolean operable(Map<String, Object> device) {
         Object enabled = device.get("enabled");
         boolean on = enabled instanceof Boolean b ? b : enabled != null && Boolean.parseBoolean(String.valueOf(enabled));

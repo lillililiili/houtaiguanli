@@ -31,7 +31,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 反制完成后自动接信号干扰。
  *
  * 必须在来源授权的完成事务提交之后跑：干扰创建或下发失败不能把「反制已完成」一起回滚。
- * 普通审批链沿用原批准；直接反制链保留 DIRECT 并重新检查发起人当前权限，不生成审批事实。
+ * 普通审批链沿用原批准：批准人与批准时刻照抄原授权的真实记录，续链时刻没有人再批一次，
+ * 所以批准事件不挂任何人的名字（系统沿用）。直接反制链保留 DIRECT 并重新检查发起人当前权限，不生成审批事实。
+ * 两种续链的有效期都不超过原授权（ZT-41）。
  */
 @Service
 public class DisposalJammingChain {
@@ -107,11 +109,20 @@ public class DisposalJammingChain {
             log.info("countermeasure {} completed but jamming was not chained: direct window or requester is no longer eligible", parentAuthorizationId);
             return;
         }
+        if (!direct && (parent.approvedBy() == null || parent.approvedAt() == null)) {
+            log.info("countermeasure {} completed but jamming was not chained: no recorded approval to carry over", parentAuthorizationId);
+            return;
+        }
+        if (parent.validUntil() == null) {
+            log.info("countermeasure {} completed but jamming was not chained: no authorization window", parentAuthorizationId);
+            return;
+        }
         DisposalPolicy policy = policies.active();
         // 与数据库时间戳的微秒精度对齐，避免四舍五入后的 valid_from 比立即复核的当前时刻更晚。
         OffsetDateTime at = clock.now().truncatedTo(ChronoUnit.MICROS).atOffset(ZoneOffset.UTC);
         OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(DisposalRules.JAMMING));
-        if (direct && parent.validUntil().isBefore(until)) until = parent.validUntil();
+        // 续上的干扰沿用原授权，不能比原授权活得久——审批链与直接链一样截到原授权有效期（ZT-41）。
+        if (parent.validUntil().isBefore(until)) until = parent.validUntil();
         if (!until.isAfter(at)) {
             log.info("countermeasure {} completed but jamming was not chained: authorization window already ended", parentAuthorizationId);
             return;
@@ -119,15 +130,16 @@ public class DisposalJammingChain {
         String id = UUID.randomUUID().toString();
         String no = DisposalRules.authorizationNo(dayKey(at), repository.nextSequence(dayKey(at)));
         String reason = "反制完成后自动发起信号干扰（来源 " + parent.authorizationNo() + "）";
-        String approver = direct ? null : parent.approvedBy() != null ? parent.approvedBy() : parent.requestedBy();
-        String note = direct ? "直接反制完成后接续信号干扰，沿用原直接授权有效期" : "反制完成后自动批准，不再二次审批";
+        String note = direct ? "直接反制完成后接续信号干扰，沿用原直接授权有效期"
+                : "沿用 " + parent.authorizationNo() + " 的批准（批准联动反制时已包含反制完成后的信号干扰），这次没有再审批；有效期不超过原授权";
         AuthorizationInsert insert = new AuthorizationInsert(id, no, DisposalRules.JAMMING, parent.subjectKind(),
                 parent.subjectId(), parent.targetId(), parent.deviceId(), parent.channel(), reason,
                 parent.requestedBy(), at, DisposalRules.APPROVED, parent.policyVersion(), parent.ownerOrgId(),
                 parent.districtId(), parent.sourceMode());
         try {
             if (direct) repository.insertChainedDirect(insert, parent.authorizationId(), at, until, note);
-            else repository.insertChainedApproved(insert, parent.authorizationId(), approver, at, at, until, note);
+            else repository.insertChainedApproved(insert, parent.authorizationId(), parent.approvedBy(),
+                    parent.approvedAt(), at, until, note);
         } catch (DataIntegrityViolationException raced) {
             return;
         }
@@ -139,10 +151,20 @@ public class DisposalJammingChain {
         // 只有这种机器连做两步的链式流转会撞。批准确实发生在申请之后，所以让它晚一毫秒，次序就是确定的。
         event(id, "REQUEST", parent.requestedBy(), reason, snap, at);
         OffsetDateTime approvedEventAt = at.plusNanos(1_000_000);
-        event(id, direct ? "DIRECT_AUTHORIZE" : "APPROVE", direct ? parent.requestedBy() : approver, note,
-                Map.of("status", DisposalRules.APPROVED, "authorization_mode", direct ? "DIRECT" : "REVIEW",
-                        "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
-                        "chained_from", parent.authorizationId()), approvedEventAt);
+        if (direct) {
+            event(id, "DIRECT_AUTHORIZE", parent.requestedBy(), note,
+                    Map.of("status", DisposalRules.APPROVED, "authorization_mode", "DIRECT",
+                            "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
+                            "chained_from", parent.authorizationId()), approvedEventAt);
+        } else {
+            // 这一刻没有人审批：不以原批准人的名义记一次新批准，只由系统写明沿用的是谁、何时的批准。
+            event(id, "APPROVE", null, note,
+                    Map.of("status", DisposalRules.APPROVED, "authorization_mode", "REVIEW",
+                            "approval_source", "CHAINED_FROM_PARENT", "approved_by", parent.approvedBy(),
+                            "approved_at", parent.approvedAt().toInstant().toEpochMilli(),
+                            "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
+                            "chained_from", parent.authorizationId()), approvedEventAt);
+        }
         AuthUser requester = repository.actor(parent.requestedBy());
         audit.record(parent.requestedBy(), requester == null ? "" : requester.account(),
                 requester == null ? null : requester.roleCode(), "disposal", "disposal_jamming_chained",
@@ -150,7 +172,7 @@ public class DisposalJammingChain {
                 "SUCCESS", "", "");
 
         if (DisposalRules.MANUAL.equals(parent.channel())) return;
-        tryDispatch(id, parent, policy, reason, direct ? approvedEventAt : at);
+        tryDispatch(id, parent, policy, reason, approvedEventAt);
     }
 
     private void tryDispatch(String id, AuthorizationRow parent, DisposalPolicy policy, String reason,
@@ -181,12 +203,10 @@ public class DisposalJammingChain {
             log.warn("auto jamming {} created but dispatch failed: {}", id, ex.getMessage());
             return;
         }
-        if ("DIRECT".equals(row.authorizationMode())) {
-            // 设备结果发生在直接授权之后；重采实际时刻，并为同毫秒调用保留确定的逻辑顺序。
-            OffsetDateTime observedAt = clock.now().atOffset(ZoneOffset.UTC);
-            OffsetDateTime earliestResultAt = at.plusNanos(1_000_000);
-            at = observedAt.isAfter(earliestResultAt) ? observedAt : earliestResultAt;
-        }
+        // 设备结果发生在授权之后；重采实际时刻，并为同毫秒调用保留确定的逻辑顺序（审批链与直接链相同）。
+        OffsetDateTime observedAt = clock.now().atOffset(ZoneOffset.UTC);
+        OffsetDateTime earliestResultAt = at.plusNanos(1_000_000);
+        at = observedAt.isAfter(earliestResultAt) ? observedAt : earliestResultAt;
         if (dispatched instanceof DisposalExecutionGateway.Rejected rejected) {
             event(id, rejected.eventKind(), executor.userId(), rejected.detail(),
                     Map.of("status", row.status(), "channel", row.channel(), "device_id", nullToEmpty(row.deviceId())), at);
