@@ -43,6 +43,8 @@ class SpatialVersionLifecyclePostgresTest extends SpatialBoundaryAcceptancePostg
         assertThat(first.alarmId()).isNotBlank();
         String event=jdbc.queryForObject("select event_id from uav_event where alarm_id=?",String.class,first.alarmId());
         long eventVersion=jdbc.queryForObject("select version from uav_event where event_id=?",Long.class,event);
+        // 回放事实的观测时刻早于当前时间；人工核实为属实要求目标数据仍在有效时长内，这里补一条当前观测。
+        jdbc.update("update target_latest_state set observed_at=?,received_at=? where target_id=?",clock.now().atOffset(java.time.ZoneOffset.UTC),clock.now().atOffset(java.time.ZoneOffset.UTC),oldTarget);
         var verification=json.createObjectNode().put("conclusion","CONFIRMED").put("expected_version",eventVersion)
                 .put("note","隔离 QA 合成事实人工核实；研判 "+first.evaluationId()+"；旧空间版本依据 "+firstVersion);
         mvc.perform(post("/api/v1/uav-events/{id}/verifications",event).header("Authorization","Bearer "+token)

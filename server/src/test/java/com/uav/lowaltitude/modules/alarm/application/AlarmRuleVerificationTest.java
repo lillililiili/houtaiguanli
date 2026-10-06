@@ -34,6 +34,7 @@ class AlarmRuleVerificationTest {
     @Autowired AppClock clock;
     @Autowired com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeWorker worker;
     @Autowired org.springframework.context.ApplicationContext context;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.UavVerificationBasisRepository basis;
     @MockitoBean AutomationRuntimePolicy policy;
     @MockitoBean AutomationRuntimeFactsRepository facts;
     private String event, run, rule;
@@ -95,6 +96,15 @@ class AlarmRuleVerificationTest {
         assertThat(records()).isEqualTo(originalRecords + 1);
         assertThat(runtime.state("verify", event).runId()).isEqualTo(recoveredRun);
         assertThat(runtime.lastError()).isNull();
+    }
+    @Test void automaticPassDoesNotGoThroughTheManualBasisCheck() {
+        // 人工核实为属实前的依据检查不参与自动核实：自动核实条件（BUG-13）待定，这里只证明不受影响。
+        jdbc.update("update alarm set target_id=null where alarm_id=(select alarm_id from uav_event where event_id=?)", event);
+        var manual = com.uav.lowaltitude.modules.alarm.domain.UavVerificationBasis.evaluate(basis.facts(event, clock.nowMillis()));
+        assertThat(manual.confirmable()).isFalse();
+        verification.confirmIfPassed(event, run);
+        assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?", String.class, event)).isEqualTo("CONFIRMED");
+        assertThat(records()).isEqualTo(originalRecords + 1);
     }
     private long records() { return jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?",Long.class,event); }
     private void assertUnchanged() {

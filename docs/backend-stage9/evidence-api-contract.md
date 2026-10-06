@@ -119,9 +119,22 @@ Query：`page,size,kind_code,status,subject_kind,subject_id,q`。`subject_kind` 
 `source_mode` 缺省为配置 `app.source-mode`，只允许 `mock|replay|live`。`captured_at` 不得晚于 `AppClock`。
 成功 201：详情 DTO。幂等重放 409 `IDEMPOTENCY_REPLAY`。
 
+文件格式（2026-10-06）：每类证据只收取证需要的格式，扩展名、上传时声明的类型和文件内容（文件头特征及容器结构）三者必须一致，`content_type` 只记服务端按内容识别的结果，不沿用客户端声明。
+
+| `kind_code` | 允许的格式（扩展名） |
+| --- | --- |
+| `EO_STILL`、`SCENE_PHOTO` | JPG（.jpg/.jpeg）、PNG、WEBP |
+| `EO_VIDEO` | MP4、WEBM |
+| `TRACK_SNAPSHOT` | JSON、CSV、PNG、JPG、WEBP |
+| `NOTICE_RECEIPT`、`COMMISSION_REPORT`、`PENALTY_DOCUMENT` | PDF、JPG、PNG、WEBP、TXT |
+| `COMMAND_LOG` | TXT（.txt/.log）、CSV、JSON |
+
+扩展名不在该种类白名单内（含程序、网页、无扩展名）415 `EVIDENCE_TYPE_NOT_ALLOWED`；内容与扩展名不符（如 JPG 改名为 .png、网页改名为 .txt）或声明类型与内容不符 415 `EVIDENCE_TYPE_MISMATCH`。`application/octet-stream` 等通用声明不算冲突。错误信息为面向值班人员的中文，说明允许的格式或实际识别出的格式。现有记录不回改。
+
 ### 下载
 
 `evidence:download`；`AVAILABLE` 才 200。`PENDING` 409 `EVIDENCE_NOT_READY`；`MISSING`/`CORRUPT` 409 `EVIDENCE_UNAVAILABLE`；`DESTROYED` 409 `EVIDENCE_DESTROYED`。响应为文件流，`Content-Disposition: attachment`。每次尝试写入 `evidence_access_log`（成功 `GRANTED` / 拒绝在已定位到对象且缺下载权时 `DENIED`）。
+响应另带 `X-Content-Type-Options: nosniff`、`Cache-Control: no-store, private`；`Content-Type` 只回传白名单内的图片、视频、PDF 与文本类型，历史记录里客户端声明的其他类型（网页、程序等）一律按 `application/octet-stream` 给出。
 
 ### 校验
 

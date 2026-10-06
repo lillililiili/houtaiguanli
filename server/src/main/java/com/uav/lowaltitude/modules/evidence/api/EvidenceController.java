@@ -88,6 +88,9 @@ public class EvidenceController {
         HttpHeaders headers = new HttpHeaders();
         headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded);
         headers.setContentType(MediaType.parseMediaType(download.contentType()));
+        // 原件一律作为附件下载，禁止浏览器按内容猜类型，避免历史上误收的网页文件被直接打开。
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.setCacheControl("no-store, private");
         if (download.sizeBytes() != null) headers.setContentLength(download.sizeBytes());
         return new ResponseEntity<>(new InputStreamResource(download.stream()), headers, HttpStatus.OK);
     }

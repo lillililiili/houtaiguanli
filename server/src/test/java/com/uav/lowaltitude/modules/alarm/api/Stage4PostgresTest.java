@@ -21,6 +21,7 @@ import javax.sql.DataSource;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -236,6 +237,8 @@ class Stage4PostgresTest {
         assertThat(jdbc.queryForObject("select version from flight_risk where risk_id=?", Long.class, riskId)).isZero();
 
         // 接口层：成功提交后版本递增一次；再次携带旧版本必须 409，且不得出现第二条历史。
+        // 核实为属实要有依据：目标、本次告警的研判和仍在有效时长内的目标数据。
+        CounterEvidenceFixture.seed(jdbc, eventId);
         MvcResult ok = mvc.perform(verifyEvent(sessionA, eventId, "CONFIRMED", "真实库首次核实", 0, "pg-event-" + UUID.randomUUID())).andReturn();
         assertThat(ok.getResponse().getStatus()).isEqualTo(200);
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?", String.class, eventId)).isEqualTo("CONFIRMED");
@@ -268,6 +271,7 @@ class Stage4PostgresTest {
 
     @Test
     void twoRealConnectionsVerifyingSameUavEventCommitExactlyOneHistory() throws Exception {
+        CounterEvidenceFixture.seed(jdbc, eventId);
         List<MvcResult> results = race(
                 verifyEvent(sessionA, eventId, "CONFIRMED", "并发连接 A 判属实", 0, "race-event-a-" + UUID.randomUUID()),
                 verifyEvent(sessionB, eventId, "FALSE_POSITIVE", "并发连接 B 判误报", 0, "race-event-b-" + UUID.randomUUID()));

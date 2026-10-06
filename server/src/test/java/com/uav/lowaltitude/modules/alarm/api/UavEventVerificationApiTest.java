@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,14 +39,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
+import com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture;
 import com.uav.lowaltitude.platform.audit.AuditService;
 
 /**
  * 核实 API 覆盖状态、乐观版本和幂等边界；反制不属于本写接口的成功语义。
  * 不使用测试级事务：回滚证明和双线程竞争都要求业务事务真正提交或真正回滚，
  * 夹具数据由 {@link #cleanup()} 按依赖顺序删除。
+ * 核实为属实要有依据（目标、本次告警的合法性研判、仍在有效时长内的目标数据或光电取证），
+ * 默认夹具用 {@link CounterEvidenceFixture} 备齐；缺依据的场景单独建事件。
+ * 自动规则引擎会给有目标数据的事件写运行记录，本类只测人工核实，关掉它以免后台写入与清理竞争。
  */
-@SpringBootTest
+@SpringBootTest(properties = "app.automation-rules.enabled=false")
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class UavEventVerificationApiTest {
@@ -58,7 +64,8 @@ class UavEventVerificationApiTest {
     private String eventId;
     private String role;
     private final List<String> roles = new ArrayList<>(), users = new ArrayList<>(), orgs = new ArrayList<>(),
-            districts = new ArrayList<>(), sources = new ArrayList<>(), alarms = new ArrayList<>(), eventIds = new ArrayList<>();
+            districts = new ArrayList<>(), sources = new ArrayList<>(), alarms = new ArrayList<>(), eventIds = new ArrayList<>(),
+            evidence = new ArrayList<>();
 
     @BeforeEach
     void fixture() {
@@ -76,6 +83,7 @@ class UavEventVerificationApiTest {
         org(org, "ORG-" + suffix); district(district, "DIST-" + suffix); source(source, "SRC-" + suffix);
         alarm(alarm, source, "AL-" + suffix, org, district, Instant.parse("2026-09-05T12:00:00Z"), Instant.parse("2026-09-05T12:01:00Z"));
         event(eventId, alarm, org, district);
+        CounterEvidenceFixture.seed(jdbc, eventId);
     }
 
     @AfterEach
@@ -87,9 +95,19 @@ class UavEventVerificationApiTest {
             jdbc.update("delete from idempotency_request where user_id=?", user);
             jdbc.update("delete from app_session where user_id=?", user);
         }
+        for (String id : evidence) { jdbc.update("delete from evidence_link where evidence_id=?", id); jdbc.update("delete from evidence_file where evidence_id=?", id); }
+        List<String> targets = new ArrayList<>();
+        for (String id : alarms) targets.addAll(jdbc.queryForList("select target_id from alarm where alarm_id=? and target_id is not null", String.class, id));
+        for (String target : targets) {
+            List<String> runs = jdbc.queryForList("select distinct run_id from rule_evaluation where target_id=?", String.class, target);
+            jdbc.update("delete from rule_evaluation where target_id=?", target);
+            for (String run : runs) jdbc.update("delete from rule_run where run_id=?", run);
+            jdbc.update("delete from target_latest_state where target_id=?", target);
+        }
         for (String id : eventIds) jdbc.update("delete from uav_event_verification where event_id=?", id);
         for (String id : eventIds) jdbc.update("delete from uav_event where event_id=?", id);
         for (String id : alarms) jdbc.update("delete from alarm where alarm_id=?", id);
+        for (String target : targets) jdbc.update("delete from target where target_id=?", target);
         for (String id : sources) jdbc.update("delete from integration_source where source_id=?", id);
         for (String user : users) jdbc.update("delete from app_user where user_id=?", user);
         for (String id : districts) jdbc.update("delete from app_district where district_id=?", id);
@@ -214,7 +232,8 @@ class UavEventVerificationApiTest {
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='alarm:verify'", role);
         mvc.perform(get("/api/v1/uav-events/" + eventId).header("Authorization", "Bearer " + sessionId))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("PENDING_VERIFICATION"))
-                .andExpect(jsonPath("$.data.allowed_actions").isEmpty());
+                .andExpect(jsonPath("$.data.allowed_actions").isEmpty())
+                .andExpect(jsonPath("$.data.verification_basis").doesNotExist());
     }
 
     @Test
@@ -289,6 +308,97 @@ class UavEventVerificationApiTest {
         assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?", Long.class, eventId)).isEqualTo(1L);
     }
 
+    @Test
+    void confirmationWithoutTargetIsRefusedWithReasonButFalsePositiveStillWorks() throws Exception {
+        String id = UUID.randomUUID().toString();
+        createVisiblePendingEvent(id, false);
+        mvc.perform(get("/api/v1/uav-events/" + id).header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowed_actions[0]").value("VERIFY"))
+                .andExpect(jsonPath("$.data.verification_basis.confirmable").value(false))
+                .andExpect(jsonPath("$.data.verification_basis.missing").value(Matchers.contains("NO_TARGET")))
+                .andExpect(jsonPath("$.data.verification_basis.message").value(Matchers.startsWith("缺少依据，不能核实为属实：告警没有关联目标")));
+        mvc.perform(verify(id, "CONFIRMED", "没有依据也想确认", 0, "basis-no-target"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error.code").value("VERIFICATION_BASIS_MISSING"))
+                .andExpect(jsonPath("$.error.message").value(Matchers.containsString("确认是误报的，可以核实为误报")));
+        // 拒绝整体回滚：状态、版本、历史、幂等占位都不留。
+        assertThat(jdbc.queryForObject("select state_code||'/'||version from uav_event where event_id=?", String.class, id)).isEqualTo("PENDING_VERIFICATION/0");
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?", Long.class, id)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from idempotency_request where user_id=?", Long.class, userId)).isZero();
+        mvc.perform(verify(id, "FALSE_POSITIVE", "现场确认误报", 0, "basis-no-target-fp"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("FALSE_POSITIVE"))
+                .andExpect(jsonPath("$.data.verification_basis").doesNotExist());
+    }
+
+    @Test
+    void targetSilentForTenMinutesCannotBeConfirmedUntilEoEvidenceIsAttached() throws Exception {
+        String target = jdbc.queryForObject("select a.target_id from alarm a join uav_event e on e.alarm_id=a.alarm_id where e.event_id=?", String.class, eventId);
+        Timestamp silent = Timestamp.from(Instant.now().minusSeconds(600));
+        jdbc.update("update target_latest_state set observed_at=?,received_at=? where target_id=?", silent, silent, target);
+        mvc.perform(get("/api/v1/uav-events/" + eventId).header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.verification_basis.confirmable").value(false))
+                .andExpect(jsonPath("$.data.verification_basis.missing").value(Matchers.contains("NO_CURRENT_DATA")))
+                .andExpect(jsonPath("$.data.verification_basis.message").value(Matchers.containsString("目标已经 10 分钟没有新数据（有效时长 2 分钟）")));
+        mvc.perform(verify("CONFIRMED", "目标已停报", 0, "basis-silent-1"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("VERIFICATION_BASIS_MISSING"));
+        // 指令日志不是现场画面，不能代替目标数据。
+        attachEvidence(eventId, "COMMAND_LOG");
+        mvc.perform(verify("CONFIRMED", "目标已停报", 0, "basis-silent-2"))
+                .andExpect(status().isUnprocessableEntity());
+        attachEvidence(eventId, "EO_STILL");
+        mvc.perform(get("/api/v1/uav-events/" + eventId).header("Authorization", "Bearer " + sessionId))
+                .andExpect(jsonPath("$.data.verification_basis.confirmable").value(true))
+                .andExpect(jsonPath("$.data.verification_basis.missing").isEmpty());
+        mvc.perform(verify("CONFIRMED", "光电截图可见目标", 0, "basis-silent-3"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("CONFIRMED"));
+    }
+
+    @Test
+    void confirmationNeedsAnEvaluationForThisAlarm() throws Exception {
+        String target = jdbc.queryForObject("select a.target_id from alarm a join uav_event e on e.alarm_id=a.alarm_id where e.event_id=?", String.class, eventId);
+        // 早于本次告警的旧研判不算依据。
+        jdbc.update("update rule_evaluation set evaluated_at=? where target_id=?", Timestamp.from(Instant.now().minusSeconds(3600)), target);
+        mvc.perform(get("/api/v1/uav-events/" + eventId).header("Authorization", "Bearer " + sessionId))
+                .andExpect(jsonPath("$.data.verification_basis.confirmable").value(false))
+                .andExpect(jsonPath("$.data.verification_basis.missing").value(Matchers.contains("NO_EVALUATION")))
+                .andExpect(jsonPath("$.data.verification_basis.message").value(Matchers.containsString("还没有这次告警的合法性研判结果")));
+        mvc.perform(verify("CONFIRMED", "没有研判", 0, "basis-evaluation-1"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("VERIFICATION_BASIS_MISSING"));
+        CounterEvidenceFixture.seed(jdbc, eventId);
+        mvc.perform(verify("CONFIRMED", "研判已到", 0, "basis-evaluation-2"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("CONFIRMED"));
+    }
+
+    @Test
+    void fusedCurrentTargetCarriesTheBasisOfItsHistoricalAlarmTarget() throws Exception {
+        var alarmTarget = jdbc.queryForMap("select a.target_id,e.owner_org_id,e.district_id from alarm a join uav_event e on e.alarm_id=a.alarm_id where e.event_id=?", eventId);
+        String historical = (String) alarmTarget.get("target_id"), current = UUID.randomUUID().toString(), lineage = UUID.randomUUID().toString();
+        Timestamp silent = Timestamp.from(Instant.now().minusSeconds(600)), now = Timestamp.from(Instant.now());
+        jdbc.update("update target_latest_state set observed_at=?,received_at=? where target_id=?", silent, silent, historical);
+        // 告警目标已并入当前目标，当前目标仍在报：依据随融合关系一起看。
+        jdbc.update("insert into target(target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at,version) values(?,?,'UAV','mock',?,?,?,?,0)",
+                current, current, alarmTarget.get("owner_org_id"), alarmTarget.get("district_id"), now, now);
+        jdbc.update("insert into target_latest_state(target_id,observed_at,received_at,created_at,updated_at,unknown_fields) values(?,?,?,?,?,CAST('[]' AS JSON))",
+                current, now, now, now, now);
+        String config = jdbc.queryForObject("select config_version from fusion_config order by config_version fetch first 1 row only", String.class);
+        jdbc.update("insert into target_lineage (lineage_id,op,occurred_at,survivor_target_id,origin_target_id,member_target_ids,source_target_ids,basis,algo_version,config_version,operator_kind,snapshots,created_at) values (?,'MERGE',?,?,?,cast('[]' as json),cast('[]' as json),cast('{}' as json),'test',?,'SYSTEM',cast('{}' as json),?)",
+                lineage, now, current, historical, config, now);
+        jdbc.update("insert into target_current_alias (historical_target_id,current_target_id,lineage_id,updated_at) values (?,?,?,?)",
+                historical, current, lineage, now);
+        try {
+            mvc.perform(get("/api/v1/uav-events/" + eventId).header("Authorization", "Bearer " + sessionId))
+                    .andExpect(jsonPath("$.data.verification_basis.confirmable").value(true));
+            mvc.perform(verify("CONFIRMED", "融合后的当前目标仍在报", 0, "basis-fused"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("CONFIRMED"));
+        } finally {
+            jdbc.update("delete from target_current_alias where historical_target_id=?", historical);
+            jdbc.update("delete from target_lineage where lineage_id=?", lineage);
+            jdbc.update("delete from target_latest_state where target_id=?", current);
+            jdbc.update("delete from target where target_id=?", current);
+        }
+    }
+
     private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder verify(String conclusion, String note, long version, String key) {
         return verify(eventId, conclusion, note, version, key);
     }
@@ -324,10 +434,30 @@ class UavEventVerificationApiTest {
     }
 
     private void createVisiblePendingEvent(String id) {
+        createVisiblePendingEvent(id, true);
+    }
+
+    private void createVisiblePendingEvent(String id, boolean basis) {
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         String org = UUID.randomUUID().toString(), district = UUID.randomUUID().toString(), source = UUID.randomUUID().toString(), alarm = UUID.randomUUID().toString();
         org(org, "ORG-C-" + suffix); district(district, "DIST-C-" + suffix); source(source, "SRC-C-" + suffix);
         alarm(alarm, source, "AL-C-" + suffix, org, district, null, Instant.now());
         event(id, alarm, org, district);
+        if (basis) CounterEvidenceFixture.seed(jdbc, id);
+    }
+
+    /** 直接登记一份可用证据并关联事件；只用于核实依据，不经过上传接口。 */
+    private void attachEvidence(String event, String kind) {
+        String id = UUID.randomUUID().toString();
+        evidence.add(id);
+        var scope = jdbc.queryForMap("select owner_org_id,district_id from uav_event where event_id=?", event);
+        jdbc.update("""
+                insert into evidence_file (evidence_id,evidence_no,kind_code,original_name,content_type,storage_backend,object_key,size_bytes,sha256,
+                    captured_at,stored_at,status,source_mode,owner_org_id,district_id,created_at,updated_at,version)
+                values (?,?,?,?,?,'local',?,1,?,current_timestamp,current_timestamp,'AVAILABLE','mock',?,?,current_timestamp,current_timestamp,1)
+                """, id, "EV-BASIS-" + id.substring(0, 8), kind, "basis-" + kind.toLowerCase(), "EO_STILL".equals(kind) ? "image/jpeg" : "text/plain",
+                "basis/" + id, "a".repeat(64), scope.get("owner_org_id"), scope.get("district_id"));
+        jdbc.update("insert into evidence_link (link_id,evidence_id,subject_kind,subject_id,event_id,created_at) values (?,?,'EVENT',?,?,current_timestamp)",
+                UUID.randomUUID().toString(), id, event, event);
     }
 }

@@ -141,8 +141,8 @@ public class EvidenceLedgerService {
         }
         var actor=AuthContext.require();
         audit.record(actor.userId(),actor.account(),actor.roleCode(),"evidence","evidence_exported","evidence_ledger",null,"导出材料台账 "+items.size()+" 条","SUCCESS",ip,agent);
-        List<List<String>> rows=items.stream().map(e->java.util.Arrays.asList(e.sourceKind(),e.sourceId(),e.category(),e.evidenceNo(),e.originalName(),e.status(),e.sourceMode(),e.custody())).toList();
-        return CsvExport.response(CsvExport.fileName("evidence-ledger",clock.now()),List.of("来源","记录ID","类别","编号","名称","状态","数据模式","保管状态"),rows);
+        List<List<String>> rows=items.stream().map(EvidenceLedgerLabels::row).toList();
+        return CsvExport.response(CsvExport.fileName("evidence-ledger",clock.now()),EvidenceLedgerLabels.HEADERS,rows);
     }
     private static boolean unavailable(Entry e){return Set.of("PENDING","MISSING","CORRUPT","DESTROYED","NO_POINTS").contains(e.status());}
     private static String string(Map<String,Object> row,String key){Object value=row.get(key);return value==null?null:value.toString();}

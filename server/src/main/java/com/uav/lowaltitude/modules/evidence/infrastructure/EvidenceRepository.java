@@ -266,6 +266,17 @@ public class EvidenceRepository {
                 """, p);
     }
 
+    /** 事件所属告警的目标就是该目标，或该目标是告警目标融合后的当前目标。 */
+    public boolean eventConcernsTarget(String eventId, String targetId) {
+        Long count = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id
+                WHERE e.event_id=:event AND (a.target_id=:target OR EXISTS (
+                    SELECT 1 FROM target_current_alias c
+                    WHERE c.historical_target_id=a.target_id AND c.current_target_id=:target))
+                """, Map.of("event", eventId, "target", targetId), Long.class);
+        return count != null && count > 0;
+    }
+
     public boolean linkExists(String evidenceId, String kind, String subjectId) {
         Long count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM evidence_link WHERE evidence_id=:e AND subject_kind=:k AND subject_id=:s",

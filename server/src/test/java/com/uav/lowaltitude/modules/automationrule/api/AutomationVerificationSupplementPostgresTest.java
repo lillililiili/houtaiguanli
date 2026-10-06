@@ -109,8 +109,11 @@ class AutomationVerificationSupplementPostgresTest {
         assertUnverified(fixture.event());
         JsonNode runtimeHistory=read(BASE+"/runs?size=100");
         assertThat(runtimeHistory.path("items").findValuesAsText("run_id")).contains(paused.runId());
+        // 人工核实为属实要有本次告警的合法性研判和仍在有效时长内的目标数据。
+        com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture.seed(jdbc,fixture.event(),Instant.ofEpochMilli(clock.now));
         JsonNode pending=read("/api/v1/uav-events/"+fixture.event());
         assertThat(pending.path("allowed_actions").toString()).contains("VERIFY");
+        assertThat(pending.path("verification_basis").path("confirmable").asBoolean()).isTrue();
         JsonNode confirmed=write(post("/api/v1/uav-events/"+fixture.event()+"/verifications"),
                 Map.of("conclusion","CONFIRMED","note","R04 authorized manual verification with automatic verification paused","expected_version",pending.path("version").asLong()));
         assertThat(confirmed.path("state").asText()).isEqualTo("CONFIRMED");

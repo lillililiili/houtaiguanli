@@ -15,6 +15,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HexFormat;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -38,8 +39,6 @@ import com.uav.lowaltitude.platform.config.AppProperties;
 @ActiveProfiles("test")
 @Transactional
 class EvidenceApiTest {
-    private static final byte[] PAYLOAD = "evidence-bytes-v1".getBytes(StandardCharsets.UTF_8);
-
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
@@ -166,8 +165,10 @@ class EvidenceApiTest {
         grantAction(readOnly, "evidence:read");
         JsonNode created = ingestFile(ingest, "shot.jpg", org, district, null, null);
         assertThat(created.get("status").asText()).isEqualTo("AVAILABLE");
-        assertThat(created.get("sha256").asText()).isEqualTo(sha(PAYLOAD));
-        assertThat(created.get("size_bytes").asLong()).isEqualTo(PAYLOAD.length);
+        assertThat(created.get("sha256").asText()).isEqualTo(sha(EvidenceTestFiles.bytes("shot.jpg")));
+        assertThat(created.get("size_bytes").asLong()).isEqualTo(EvidenceTestFiles.bytes("shot.jpg").length);
+        // 客户端只声明了通用二进制类型，入库类型取服务端按内容识别的结果。
+        assertThat(created.get("content_type").asText()).isEqualTo("image/jpeg");
         assertThat(created.has("object_key")).isFalse();
 
         mvc.perform(get("/api/v1/evidence-files").header("Authorization", bearer(readOnly)))
@@ -201,7 +202,7 @@ class EvidenceApiTest {
     void downloadRequiresDownloadPermissionAndWritesAccessLog() throws Exception {
         String ingest = reader("ASSIGNED", org, district);
         grantAction(ingest, "evidence:ingest", "evidence:read", "evidence:link");
-        String evidenceId = ingestFile(ingest, "clip.bin", org, district, "TARGET", targetId).get("evidence_id").asText();
+        String evidenceId = ingestFile(ingest, "clip.jpg", org, district, "TARGET", targetId).get("evidence_id").asText();
         mvc.perform(get("/api/v1/evidence-files/" + evidenceId + "/content").header("Authorization", bearer(ingest)))
                 .andExpect(status().isForbidden());
 
@@ -210,7 +211,7 @@ class EvidenceApiTest {
                         .header("Authorization", bearer(ingest)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsByteArray();
-        assertThat(body).isEqualTo(PAYLOAD);
+        assertThat(body).isEqualTo(EvidenceTestFiles.bytes("clip.jpg"));
         assertThat(jdbc.queryForObject(
                 "select count(*) from evidence_access_log where evidence_id=? and action='DOWNLOAD' and result='GRANTED'",
                 Long.class, evidenceId)).isEqualTo(1L);
@@ -220,7 +221,7 @@ class EvidenceApiTest {
     void holdBlocksSecondHoldAndVerifyDetectsMissingObject() throws Exception {
         String ingest = reader("ASSIGNED", org, district);
         grantAction(ingest, "evidence:ingest", "evidence:read", "evidence:link", "evidence:hold");
-        JsonNode created = ingestFile(ingest, "hold.bin", org, district, "TARGET", targetId);
+        JsonNode created = ingestFile(ingest, "hold.jpg", org, district, "TARGET", targetId);
         String evidenceId = created.get("evidence_id").asText();
         JsonNode hold = json.readTree(mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/holds")
                         .header("Authorization", bearer(ingest)).header("Idempotency-Key", "hold-" + suffix)
@@ -354,7 +355,7 @@ class EvidenceApiTest {
                 .andExpect(jsonPath("$.data.destroy_reason").value("留存届满清理"))
                 .andExpect(jsonPath("$.data.destroy_approval").value("DEL-2026-0118"))
                 .andReturn().getResponse().getContentAsString()).get("data");
-        assertThat(destroyed.get("sha256").asText()).isEqualTo(sha(PAYLOAD));
+        assertThat(destroyed.get("sha256").asText()).isEqualTo(sha(EvidenceTestFiles.bytes("due.pdf")));
         assertThat(stored).doesNotExist();
         mvc.perform(get("/api/v1/evidence-files/" + dueId + "/content").header("Authorization", bearer(ingest)))
                 .andExpect(status().isConflict())
@@ -430,7 +431,8 @@ class EvidenceApiTest {
         String body = mvc.perform(get("/api/v1/evidence-files/stats").header("Authorization", bearer(ingest)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(2))
-                .andExpect(jsonPath("$.data.size_bytes").value(2L * PAYLOAD.length))
+                .andExpect(jsonPath("$.data.size_bytes").value((long) EvidenceTestFiles.bytes("still.jpg").length
+                        + EvidenceTestFiles.bytes("clip.mp4").length))
                 .andExpect(jsonPath("$.data.by_kind.length()").value(8))
                 .andExpect(jsonPath("$.data.by_kind[0].code").value("EO_VIDEO"))
                 .andExpect(jsonPath("$.data.by_kind[0].count").value(1))
@@ -500,6 +502,10 @@ class EvidenceApiTest {
         String csv = mvc.perform(get("/api/v1/evidence-ledger/export.csv?category=IMAGE").header("Authorization", auth))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         assertThat(csv).contains("ledger.jpg").doesNotContain("ledger.mp4", "historical.txt");
+        // 正文枚举列与列头一样用中文，与前台台账同一说法。
+        String mode = Map.of("mock", "模拟", "replay", "回放", "live", "实时").get(image.get("source_mode").asText());
+        assertThat(csv.lines()).contains("证据文件," + image.get("evidence_id").asText() + ",图片,"
+                + image.get("evidence_no").asText() + ",ledger.jpg,在库," + mode + ",保管中");
         // Original types and files remain accessible; this adapter never rewrites history.
         mvc.perform(get("/api/v1/evidence-files").header("Authorization", auth)).andExpect(jsonPath("$.data.total").value(3));
     }
@@ -553,6 +559,67 @@ class EvidenceApiTest {
                 .andExpect(status().isNotFound());
     }
 
+    @Test
+    void uploadRefusesProgramsWebPagesAndRenamedImagesWithPlainReason() throws Exception {
+        String ingest = reader("ASSIGNED", org, district);
+        grantAction(ingest, "evidence:ingest", "evidence:read");
+        byte[] exe = {'M', 'Z', (byte) 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0, (byte) 0xFF, (byte) 0xFF, 0, 0};
+        byte[] html = "<html><body><script>alert(1)</script></body></html>".getBytes(StandardCharsets.UTF_8);
+        byte[] jpeg = EvidenceTestFiles.bytes("photo.jpg");
+        upload(ingest, "SCENE_PHOTO", "tool.exe", "application/x-msdownload", exe)
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error.code").value("EVIDENCE_TYPE_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.error.message").value("“现场照片”只收 JPG 图片、PNG 图片、WEBP 图片，不能上传 .exe 文件。"));
+        upload(ingest, "SCENE_PHOTO", "page.html", "text/html", html)
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error.code").value("EVIDENCE_TYPE_NOT_ALLOWED"));
+        upload(ingest, "SCENE_PHOTO", "page.jpg", "image/jpeg", html)
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error.code").value("EVIDENCE_TYPE_MISMATCH"))
+                .andExpect(jsonPath("$.error.message").value("文件内容与扩展名不符：扩展名是 .jpg，实际是网页文件，请确认后重新上传。"));
+        for (String declared : new String[]{"image/png", "image/jpeg"}) {
+            upload(ingest, "EO_STILL", "renamed.png", declared, jpeg)
+                    .andExpect(status().isUnsupportedMediaType())
+                    .andExpect(jsonPath("$.error.code").value("EVIDENCE_TYPE_MISMATCH"))
+                    .andExpect(jsonPath("$.error.message").value("文件内容与扩展名不符：扩展名是 .png，实际是 JPG 图片，请确认后重新上传。"));
+        }
+        // 被拒的文件不登记、不落盘。
+        assertThat(jdbc.queryForObject("select count(*) from evidence_file where owner_org_id=?", Long.class, org)).isZero();
+        upload(ingest, "SCENE_PHOTO", "photo.jpg", "image/jpeg", jpeg)
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.content_type").value("image/jpeg"));
+    }
+
+    @Test
+    void legacyFileWithUnsafeDeclaredTypeDownloadsOnlyAsBinaryAttachment() throws Exception {
+        String ingest = reader("ASSIGNED", org, district);
+        grantAction(ingest, "evidence:ingest", "evidence:read", "evidence:download");
+        String evidenceId = ingestFile(ingest, "legacy.txt", org, district, null, null, "NOTICE_RECEIPT", null)
+                .get("evidence_id").asText();
+        // 模拟格式校验上线前入库的网页文件：字节、哈希和当时客户端声明的类型都原样保留。
+        byte[] html = "<html><script>alert(1)</script></html>".getBytes(StandardCharsets.UTF_8);
+        Path stored = Path.of(properties.getEvidenceDir()).toAbsolutePath().normalize()
+                .resolve(jdbc.queryForObject("select object_key from evidence_file where evidence_id=?", String.class, evidenceId));
+        Files.write(stored, html);
+        jdbc.update("update evidence_file set original_name='legacy.html',content_type='text/html',size_bytes=?,sha256=? where evidence_id=?",
+                html.length, sha(html), evidenceId);
+        var response = mvc.perform(get("/api/v1/evidence-files/" + evidenceId + "/content").header("Authorization", bearer(ingest)))
+                .andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(response.getContentType()).isEqualTo("application/octet-stream");
+        assertThat(response.getHeader("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(response.getHeader("Content-Disposition")).startsWith("attachment;");
+        assertThat(response.getHeader("Cache-Control")).contains("no-store");
+        assertThat(response.getContentAsByteArray()).isEqualTo(html);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions upload(String token, String kindCode, String filename,
+            String declaredType, byte[] content) throws Exception {
+        return mvc.perform(multipart("/api/v1/evidence-files")
+                .file(new MockMultipartFile("file", filename, declaredType, content))
+                .param("kind_code", kindCode).param("owner_org_id", org).param("district_id", district)
+                .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString()));
+    }
+
     private JsonNode ingestFile(String token, String filename, String orgId, String districtId,
             String subjectKind, String subjectId) throws Exception {
         return ingestFile(token, filename, orgId, districtId, subjectKind, subjectId, "EO_STILL", null);
@@ -561,7 +628,7 @@ class EvidenceApiTest {
     private JsonNode ingestFile(String token, String filename, String orgId, String districtId,
             String subjectKind, String subjectId, String kindCode, Long capturedAt) throws Exception {
         var request = multipart("/api/v1/evidence-files")
-                .file(new MockMultipartFile("file", filename, "application/octet-stream", PAYLOAD))
+                .file(new MockMultipartFile("file", filename, "application/octet-stream", EvidenceTestFiles.bytes(filename)))
                 .param("kind_code", kindCode)
                 .param("owner_org_id", orgId)
                 .param("district_id", districtId)

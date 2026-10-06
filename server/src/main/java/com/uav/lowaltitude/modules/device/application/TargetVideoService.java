@@ -69,6 +69,27 @@ public class TargetVideoService {
         return session == null ? media.resource(stream.streamPath(), resource) : media.resource(stream.streamPath(), resource, session);
     }
 
+    /**
+     * 截图、录像只能取自当前跟踪任务正在登记的视频流：设备、任务、流都由这里核定，不信任客户端。
+     * 跟踪回报刚过期（LOST）时流仍可能在播，已录下的画面仍可入库；任务结束或换了任务则拒绝。
+     */
+    public CaptureSource captureSource(String targetId, String streamId) {
+        TargetVideoDto tracking = tracking(targetId);
+        if (!"TRACKING".equals(tracking.status()) && !"LOST".equals(tracking.status()))
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "EO_CAPTURE_NOT_TRACKING", "当前没有进行中的光电跟踪，不能截图或录像。");
+        var stream = streams.find(tracking.taskId());
+        if (stream == null)
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "EO_VIDEO_NOT_AVAILABLE", simulatedMode(tracking.sourceMode())
+                    ? "测试视频尚未推流或已中断，暂不能截图或录像。"
+                    : "现场光电视频尚未接入平台，暂不能在平台上截图或录像。");
+        if (streamId == null || !stream.streamId().equals(streamId) || !stream.targetId().equals(targetId)
+                || !stream.deviceId().equals(tracking.deviceId()))
+            throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "VIDEO_STREAM_NOT_CURRENT", "画面已换成新的跟踪任务，请刷新视频后重新截图或录像。");
+        return new CaptureSource(targetId, tracking.taskId(), tracking.deviceId(), stream.streamId(), stream.sourceMode());
+    }
+
+    public record CaptureSource(String targetId, String taskId, String deviceId, String streamId, String sourceMode) { }
+
     private TargetVideoDto tracking(String targetId) {
         var user = access.requireDevicesOperate();
         var target = targets.target(targetId);
