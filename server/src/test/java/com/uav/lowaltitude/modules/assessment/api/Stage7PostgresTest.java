@@ -674,7 +674,8 @@ class Stage7PostgresTest {
         cloneLatestEvaluation(uncertain, "TARGET", targetId, "ACTIVE", "UNDETERMINED", T0.plusSeconds(1));
         jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,'CONFIRMED',null,1,?,?,?,?)",
                 uncertain, org, district, T0, T0);
-        cloneEvaluationWithAssurance(reliable, "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]", T0.plusSeconds(2));
+        // 历史 ABNORMAL 现读作不可判定（2026-09-29），“可靠结论”需是明确的三类结论之一。
+        cloneEvaluationWithAssurance(reliable, "SUFFICIENT", "[\"CLEAR_RULE_OUTCOME\"]", T0.plusSeconds(2), "ILLEGAL");
         jdbc.update("insert into legality_review (evaluation_id,review_state,manual_status,version,owner_org_id,district_id,created_at,updated_at) values (?,'PENDING_REVIEW',null,0,?,?,?,?)",
                 reliable, org, district, T0, T0);
         AccessDecision access = new AccessDecision(userA, ScopeMode.ASSIGNED);
@@ -782,9 +783,14 @@ class Stage7PostgresTest {
     }
 
     private void cloneEvaluationWithAssurance(String id, String assurance, String reasons, OffsetDateTime at) {
+        cloneEvaluationWithAssurance(id, assurance, reasons, at, null);
+    }
+
+    /** legalStatus 为 null 时沿用被克隆研判的结论。 */
+    private void cloneEvaluationWithAssurance(String id, String assurance, String reasons, OffsetDateTime at, String legalStatus) {
         jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons,created_at) "
-                + "select ?,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,?,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,'legality-assurance-v1',?,cast(? as jsonb),created_at from rule_evaluation where evaluation_id=?",
-                id, at, assurance, reasons, evaluationId);
+                + "select ?,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,?,freshness_code,plan_match_code,coalesce(cast(? as varchar),legal_status),score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,'legality-assurance-v1',?,cast(? as jsonb),created_at from rule_evaluation where evaluation_id=?",
+                id, at, legalStatus, assurance, reasons, evaluationId);
     }
 
     private void assertScenario(Scenario scenario, Map<String, Object> row) {
