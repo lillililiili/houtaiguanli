@@ -239,7 +239,11 @@ class DisposalAuthorizationApiTest {
                         .content("{\"expected_version\":1,\"note\":\"演示停止\"}"))
                 .andExpect(status().isOk());
         // 四通道设备不存在时，停止仍撤销授权，并留下设备无法全关的事实。
-        assertThat(eventKinds(id)).containsExactly("REQUEST", "APPROVE", "STOP", "DEVICE_CONTROL_UNAVAILABLE");
+        // STOP 与 DEVICE_CONTROL_UNAVAILABLE 在同一请求内写入，常落在同一毫秒；同毫秒按随机 event_id 排，先后不固定。
+        List<String> kinds = eventKinds(id);
+        assertThat(kinds).hasSize(4);
+        assertThat(kinds.subList(0, 2)).containsExactly("REQUEST", "APPROVE");
+        assertThat(kinds.subList(2, 4)).containsExactlyInAnyOrder("STOP", "DEVICE_CONTROL_UNAVAILABLE");
         JsonNode detail = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}", id)
                 .header("Authorization", bearer(approver))).andExpect(status().isOk())).path("data");
         assertThat(detail.path("device_stop_result").asText()).isEqualTo("UNAVAILABLE");
