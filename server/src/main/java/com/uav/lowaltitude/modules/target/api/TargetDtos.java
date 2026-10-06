@@ -96,7 +96,13 @@ public final class TargetDtos {
             /* 阶段 15（决策 15-4）：与列表同形的三段摘要。 */
             RiskSummaryDto riskSummary,
             LegalitySummaryDto legalitySummary,
-            DisposalSummaryDto disposalSummary) {
+            DisposalSummaryDto disposalSummary,
+            /* ZT-04：类别变化记录（系统改判与人工修订），最新的在前；没有变化过就省略。 */
+            List<ClassChangeDto> classChanges) {
+    }
+
+    /** 一次类别变化：何时、由什么改成什么（改前为空表示当时还是"识别中/未定类"）、系统改判还是人工修订。 */
+    public record ClassChangeDto(long changedAt, String fromClassCode, String toClassCode, String operatorKind) {
     }
 
     public record TargetSourceLinkDto(

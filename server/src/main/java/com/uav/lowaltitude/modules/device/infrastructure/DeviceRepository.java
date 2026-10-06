@@ -50,6 +50,7 @@ public class DeviceRepository {
                    sensing.fov_deg AS coverage_fov_deg, sensing.source_label AS coverage_source_label,
                    sensing.version AS coverage_version, sensing.updated_at AS coverage_updated_at,
                    COALESCE(mqtt_binding.device_id, eo_binding.device_id, tcp_device.device_id) AS fusion_device_id,
+                   mqtt_binding.last_sense_at AS sense_received_at, mqtt_binding.last_pt_time AS sense_observed_at,
                    business_scope.owner_org_id,business_scope.district_id
             FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id = d.device_id
             LEFT JOIN ops_integration_source src ON src.source_id=d.source_id

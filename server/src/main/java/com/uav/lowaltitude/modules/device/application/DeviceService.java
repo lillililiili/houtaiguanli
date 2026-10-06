@@ -25,6 +25,7 @@ import com.uav.lowaltitude.integration.DeviceAdapterPort;
 import com.uav.lowaltitude.integration.DeviceAdapterRegistry;
 import com.uav.lowaltitude.integration.SourceMode;
 import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
+import com.uav.lowaltitude.modules.fusion.application.FusionProperties;
 import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
@@ -57,12 +58,13 @@ public class DeviceService {
     private final IntegrationSourceService sources;
     private final IdempotencyGuard idempotency;
     private final TcpDeviceScopeService tcpScopes;
+    private final FusionProperties fusionProperties;
 
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
                          DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
                          IdempotencyGuard idempotency, DeviceEventPublicationRepository publication,
-                         TcpDeviceScopeService tcpScopes) {
+                         TcpDeviceScopeService tcpScopes, FusionProperties fusionProperties) {
         this.repository = repository;
         this.publication = publication;
         this.access = access;
@@ -74,6 +76,7 @@ public class DeviceService {
         this.sources = sources;
         this.idempotency = idempotency;
         this.tcpScopes = tcpScopes;
+        this.fusionProperties = fusionProperties;
     }
 
     public DevicePage list(DeviceFilter filter, int page, int size, String sort) {
@@ -610,6 +613,7 @@ public class DeviceService {
     }
 
     private DeviceSummary summary(Map<String, Object> r) {
+        Long reportLag = reportLagMillis(r);
         return new DeviceSummary(text(r, "device_id"), text(r, "device_no"), text(r, "name"),
                 text(r, "device_type_code"), text(r, "device_type_name"), text(r, "channel"),
                 text(r, "owner_name"), text(r, "region_name"), text(r, "address"), text(r, "model"),
@@ -619,7 +623,23 @@ public class DeviceService {
                 bool(r, "simulated"), text(r, "source_mode"), text(r, "source_name"),
                 text(r, "protocol_code"), text(r, "protocol_version"),
                 decimal(r, "longitude"), decimal(r, "latitude"), text(r, "coordinate_system"),
-                text(r, "fusion_device_id"), coverage(r),text(r,"owner_org_id"),text(r,"district_id"));
+                text(r, "fusion_device_id"), coverage(r),text(r,"owner_org_id"),text(r,"district_id"),
+                reportLag, timeUntrusted(reportLag, fusionProperties.getTimeUntrustedLagMillis()));
+    }
+
+    /**
+     * 最近一帧感知数据的"平台接收时刻 − 设备报文时刻"（ZT-20）。只看 MQTT 感知水位（融合实际用的就是这些数据），
+     * 心跳和台账种子写的时刻不参与，免得把没有感知数据的设备误标成时间不准。没有感知数据时为 null。
+     */
+    static Long reportLagMillis(Map<String, Object> r) {
+        Long received = longValue(r, "sense_received_at");
+        Long observed = longValue(r, "sense_observed_at");
+        return received == null || observed == null ? null : received - observed;
+    }
+
+    /** 与融合同一口径：报文时刻比接收时刻晚超过 time-untrusted-lag-millis，设备上写明"设备时间不准"。 */
+    static boolean timeUntrusted(Long reportLagMillis, long thresholdMillis) {
+        return thresholdMillis > 0 && reportLagMillis != null && reportLagMillis > thresholdMillis;
     }
 
     private Coverage coverage(Map<String, Object> row) {
@@ -783,7 +803,8 @@ public class DeviceService {
                                 Long lastHeartbeatAt, boolean simulated, String sourceMode, String sourceName,
                                 String protocolCode, String protocolVersion,
                                 BigDecimal longitude, BigDecimal latitude, String coordinateSystem,
-                                String fusionDeviceId, Coverage coverage, String ownerOrgId, String districtId) { }
+                                String fusionDeviceId, Coverage coverage, String ownerOrgId, String districtId,
+                                Long reportLagMs, boolean timeUntrusted) { }
     public record Coverage(String kind, String status, BigDecimal radiusM, BigDecimal rangeM,
                            BigDecimal azimuthDeg, BigDecimal fovDeg, String availabilityReason,
                            String sourceLabel, Long updatedAt, Long version) { }

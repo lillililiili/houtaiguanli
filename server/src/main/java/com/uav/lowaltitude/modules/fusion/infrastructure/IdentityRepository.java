@@ -6,6 +6,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +83,49 @@ public class IdentityRepository {
                 + " last_seen_at=CASE WHEN last_seen_at IS NULL OR last_seen_at<:seen THEN :seen ELSE last_seen_at END, updated_at=:now WHERE target_id=:id", p);
     }
 
+    /** 一帧内被命中的多个目标的 last_seen_at 一次批量推进（ZT-06），口径与 {@link #touchTarget} 相同。 */
+    @SuppressWarnings("unchecked")
+    public void touchTargets(Map<String, Instant> seenByTarget, Instant now) {
+        if (seenByTarget == null || seenByTarget.isEmpty()) return;
+        Map<String, Object>[] batch = new Map[seenByTarget.size()];
+        int i = 0;
+        for (Map.Entry<String, Instant> entry : seenByTarget.entrySet()) {
+            Map<String, Object> p = new HashMap<>();
+            p.put("id", entry.getKey()); p.put("seen", Timestamp.from(entry.getValue())); p.put("now", Timestamp.from(now));
+            batch[i++] = p;
+        }
+        jdbc.batchUpdate("UPDATE target SET first_seen_at=CASE WHEN first_seen_at IS NULL OR first_seen_at>:seen THEN :seen ELSE first_seen_at END,"
+                + " last_seen_at=CASE WHEN last_seen_at IS NULL OR last_seen_at<:seen THEN :seen ELSE last_seen_at END, updated_at=:now WHERE target_id=:id", batch);
+    }
+
+    /** 一批目标头行当前的类别（ZT-04）：融合类别与它不同才算改判。值可能为 null（识别中/未定类）。 */
+    public Map<String, String> objectTypes(Collection<String> targetIds) {
+        Map<String, String> out = new HashMap<>();
+        if (targetIds == null || targetIds.isEmpty()) return out;
+        jdbc.query("SELECT target_id,object_type_code FROM target WHERE target_id IN (:ids)", Map.of("ids", List.copyOf(targetIds)),
+                (org.springframework.jdbc.core.RowCallbackHandler) rs -> out.put(rs.getString("target_id"), rs.getString("object_type_code")));
+        return out;
+    }
+
+    /** 系统改判的一次类别变化：改前（可能为空，即"识别中/未定类"）与改后。 */
+    public record ClassRevision(String previousClassCode, String newClassCode) { }
+
+    /**
+     * 融合层的类别结论变了，目标头行跟着改（ZT-04）。不递增 version（决策 8-6：系统写入不与人工修订争乐观锁），
+     * 人工修订过类别的目标不动（manual_class_override 优先）。真的改了才返回改前改后，没变返回 null——没变就不留变化记录。
+     */
+    public ClassRevision reviseSystemClass(String targetId, String classCode, Instant now) {
+        if (classCode == null) return null;
+        List<String> current = jdbc.query("SELECT object_type_code FROM target WHERE target_id=:id", Map.of("id", targetId), (rs, i) -> rs.getString("object_type_code"));
+        if (current.isEmpty() || classCode.equals(current.get(0))) return null;
+        Map<String, Object> p = new HashMap<>();
+        p.put("id", targetId); p.put("type", classCode); p.put("now", Timestamp.from(now));
+        int updated = jdbc.update("UPDATE target SET object_type_code=:type, updated_at=:now WHERE target_id=:id"
+                + " AND (object_type_code IS NULL OR object_type_code<>:type)"
+                + " AND NOT EXISTS (SELECT 1 FROM target_attribute_selection a WHERE a.target_id=:id AND a.manual_class_override=TRUE)", p);
+        return updated == 1 ? new ClassRevision(current.get(0), classCode) : null;
+    }
+
     public void setObjectTypeIfMissing(String targetId, String classCode) {
         if (classCode == null) return;
         jdbc.update("UPDATE target SET object_type_code=:type WHERE target_id=:id AND object_type_code IS NULL", Map.of("id", targetId, "type", classCode));
@@ -118,6 +162,22 @@ public class IdentityRepository {
         Map<String, Object> p = statusParams(targetId, state, primarySourceId, now);
         jdbc.update("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,primary_source_id=:primary,"
                 + "updated_at=:now,version=version+1 WHERE target_id=:id", p);
+    }
+
+    /** 一条待写的轨迹状态（字段与 {@link #updateStatus} 相同）。 */
+    public record StatusUpdate(String targetId, TrackState state, String primarySourceId) { }
+
+    /** 一帧的目标状态推进一次批量写（ZT-06），语义与逐条 {@link #updateStatus} 相同。 */
+    @SuppressWarnings("unchecked")
+    public void updateStatuses(List<StatusUpdate> updates, Instant now) {
+        if (updates == null || updates.isEmpty()) return;
+        Map<String, Object>[] batch = new Map[updates.size()];
+        for (int i = 0; i < updates.size(); i++) {
+            StatusUpdate update = updates.get(i);
+            batch[i] = statusParams(update.targetId(), update.state(), update.primarySourceId(), now);
+        }
+        jdbc.batchUpdate("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,primary_source_id=:primary,"
+                + "updated_at=:now,version=version+1 WHERE target_id=:id", batch);
     }
 
     /** 同一分区内仍活跃（TENTATIVE/STABLE/SHORT_LOST）的统一目标。 */

@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.fusion.domain;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import com.uav.lowaltitude.modules.fusion.FusionContracts.FusionDomainKey;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.FusionParams;
@@ -12,6 +13,8 @@ import com.uav.lowaltitude.modules.fusion.FusionContracts.FusionParams;
  *     + w_class·mismatch + w_hist·(1 − stability)，σ = √(acc_o² + acc_T²)。
  * 门限：d ≤ gate_sigma·σ 且 c ≤ cost_max。所有权重与尺度来自 fusion_config；
  * AGL 与 AMSL 永不互比——基准不同时高度项为 0 并记 ALTITUDE_NOT_COMPARABLE，缺失事实不用默认值填。
+ * 身份硬约束（ZT-01）：观测报出的机身序列号与目标已知序列号不同，直接判为门外（IDENTITY_CONFLICT），
+ * 不是加一个代价项——几十米外两架不同序列号的无人机，位置项再小也不是同一架。
  */
 public final class AssociationCost {
     /** 契约固定：类别任一未知时 mismatch 取 0.5（两者都有且不同为 1，相同为 0）。 */
@@ -36,10 +39,26 @@ public final class AssociationCost {
         costMax = params.number("association", "cost_max");
     }
 
-    /** 候选目标在观测时刻的预测状态（由管线用 α-β 状态外推得到）。 */
+    /**
+     * 候选目标在观测时刻的预测状态（由管线用 α-β 状态外推得到）。
+     * serials：该目标各条 link 上已报出的机身序列号（归一后）；没有就是空集合，不参与否决。
+     */
     public record Candidate(String targetId, FusionDomainKey domain, double longitude, double latitude, double accuracyM,
             Double altitudeAmslM, Double heightAglM, Double speedMps, Double headingDeg, String classCode,
-            long lastObservedMillis, int hits, int misses) { }
+            long lastObservedMillis, int hits, int misses, Set<String> serials) {
+
+        public Candidate {
+            serials = serials == null ? Set.of() : Set.copyOf(serials);
+        }
+
+        /** 不带序列号的旧签名：等同于"该目标还没有任何来源报出序列号"。 */
+        public Candidate(String targetId, FusionDomainKey domain, double longitude, double latitude, double accuracyM,
+                Double altitudeAmslM, Double heightAglM, Double speedMps, Double headingDeg, String classCode,
+                long lastObservedMillis, int hits, int misses) {
+            this(targetId, domain, longitude, latitude, accuracyM, altitudeAmslM, heightAglM, speedMps, headingDeg, classCode,
+                    lastObservedMillis, hits, misses, Set.of());
+        }
+    }
 
     public record Result(double cost, double distanceM, double sigmaM, boolean gated, List<String> unknowns) { }
 
@@ -48,6 +67,9 @@ public final class AssociationCost {
         List<String> unknowns = new ArrayList<>();
         double distance = AlphaBetaFilter.distanceM(observation.longitude(), observation.latitude(), candidate.longitude(), candidate.latitude());
         double sigma = Math.sqrt(observationAccuracyM * observationAccuracyM + candidate.accuracyM() * candidate.accuracyM());
+        if (IdentitySerials.conflicts(IdentitySerials.of(observation), candidate.serials())) {
+            return new Result(Double.POSITIVE_INFINITY, distance, sigma, false, List.of("IDENTITY_CONFLICT"));
+        }
         double cost = wPos * square(distance / sigma);
 
         Double altitudeDelta = altitudeDelta(observation, candidate);

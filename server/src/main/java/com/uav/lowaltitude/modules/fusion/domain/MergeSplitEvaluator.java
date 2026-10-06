@@ -3,6 +3,7 @@ package com.uav.lowaltitude.modules.fusion.domain;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import com.uav.lowaltitude.modules.fusion.FusionContracts.TrackStatus;
 
@@ -22,9 +23,21 @@ public class MergeSplitEvaluator {
      * 位置收**经纬度**而不是滤波状态里的 x/y：`AlphaBetaFilter.State` 的 x/y 是相对**该轨迹自己的** ENU 原点
      * （`lon0/lat0` 逐轨迹保存）的米，两条轨迹的原点不同，直接拿 x/y 相减得到的不是它们之间的距离。
      * vx/vy 则可以直接比——ENU 的轴向都是东/北，与原点无关。
+     * serials：该目标已报出的机身序列号（归一后），两边都有且互不相同时永不合并（ZT-01）。
      */
     public record TargetSnapshot(String targetId, TrackStatus status, double longitude, double latitude, double sigmaM,
-            double vx, double vy, Instant firstSeenAt) { }
+            double vx, double vy, Instant firstSeenAt, Set<String> serials) {
+
+        public TargetSnapshot {
+            serials = serials == null ? Set.of() : Set.copyOf(serials);
+        }
+
+        /** 不带序列号的旧签名：等同于"还没有来源报出序列号"。 */
+        public TargetSnapshot(String targetId, TrackStatus status, double longitude, double latitude, double sigmaM,
+                double vx, double vy, Instant firstSeenAt) {
+            this(targetId, status, longitude, latitude, sigmaM, vx, vy, firstSeenAt, Set.of());
+        }
+    }
 
     public record Candidate(String aId, String bId, String survivorId, String mergedId, double distanceM,
             double thresholdM) { }
@@ -37,6 +50,8 @@ public class MergeSplitEvaluator {
      * "运动一致"按契约要"若有速度/航向"参与判断，但参数集里没有对应阈值。这里只做**不引入新参数**的
      * 一条排除：两边都有速度且速度方向相悖（点积为负）时不算这一帧——那是两个目标擦肩而过，
      * 位置一时接近不代表是同一个。真正的"连续性"由 merge_min_frames 连续计帧保证，不需要再造一个角度阈值。
+     *
+     * 身份排除（ZT-01）：两边都已报出机身序列号且序列号不同，就是两架飞机——贴得再近、同向飞得再久也不合并。
      */
     public List<Candidate> mergeCandidates(List<TargetSnapshot> snapshots) {
         List<Candidate> candidates = new ArrayList<>();
@@ -44,6 +59,7 @@ public class MergeSplitEvaluator {
             for (int j = i + 1; j < snapshots.size(); j++) {
                 TargetSnapshot a = snapshots.get(i), b = snapshots.get(j);
                 if (a.status() != TrackStatus.STABLE || b.status() != TrackStatus.STABLE) continue;
+                if (IdentitySerials.conflicts(a.serials(), b.serials())) continue;
                 double sigma = Math.max(a.sigmaM(), b.sigmaM());
                 if (Double.isNaN(sigma)) continue;
                 double threshold = machine.mergeDistanceThreshold(sigma);

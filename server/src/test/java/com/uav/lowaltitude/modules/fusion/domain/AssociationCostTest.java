@@ -3,7 +3,9 @@ package com.uav.lowaltitude.modules.fusion.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -86,5 +88,54 @@ class AssociationCostTest {
                 candidate("t1", 118.6, 37.4, null, null, 10.0, 90.0, null, T0, 9, 1));
         assertThat(noMotion.unknowns()).contains("MOTION_NOT_COMPARABLE");
         assertThat(noMotion.cost()).isEqualTo(stable.cost());
+    }
+    /** 报出机身序列号的观测（凌云协议 extension.uavSN 由映射器写进 quality.uav_sn）。 */
+    static SourceObservation serialObservation(double lon, double lat, String serial) {
+        Map<String, Object> quality = new HashMap<>();
+        if (serial != null) quality.put(IdentitySerials.QUALITY_KEY, serial);
+        return new SourceObservation("obs-" + serial, null, "src-tdoa", "replay-tdoa-a", "TDOA", "DEMO", null, "session", "D-1", null,
+                T0, T0, lon, lat, 60.0, null, null, null, null, "UAV", null, serial, null, null, quality, "replay", "org-a", "district-a", 1L);
+    }
+
+    static Candidate serialCandidate(String id, double lon, double lat, Set<String> serials) {
+        return new Candidate(id, DOMAIN, lon, lat, 15.0, null, null, null, null, "UAV", T0.toEpochMilli(), 5, 0, serials);
+    }
+
+    @Test
+    void differentSerialNumbersNeverAssociateHoweverClose() {
+        // ZT-01：两架都报出了序列号、序列号不同，同一个位置也不是同一架——直接判门外，不是加一项代价。
+        Result conflict = cost.evaluate(serialObservation(118.6, 37.4, "SN-B"), 60.0, serialCandidate("t1", 118.6, 37.4, Set.of("SN-A")));
+        assertThat(conflict.gated()).isFalse();
+        assertThat(conflict.cost()).isInfinite();
+        assertThat(conflict.unknowns()).containsExactly("IDENTITY_CONFLICT");
+        // 同一个序列号（大小写、首尾空白不同也算同一台）照常关联。
+        Result same = cost.evaluate(serialObservation(118.6, 37.4, " sn-a "), 60.0, serialCandidate("t1", 118.6, 37.4, Set.of("SN-A")));
+        assertThat(same.gated()).isTrue();
+        assertThat(same.unknowns()).doesNotContain("IDENTITY_CONFLICT");
+    }
+
+    @Test
+    void missingSerialOnEitherSideFallsBackToPositionAndMotion() {
+        // 雷达报不出序列号；目标还没有任何来源报出序列号时也不做判断——交回位置/运动/类别去关联。
+        Result radar = cost.evaluate(serialObservation(118.6, 37.4, null), 60.0, serialCandidate("t1", 118.6, 37.4, Set.of("SN-A")));
+        Result fresh = cost.evaluate(serialObservation(118.6, 37.4, "SN-B"), 60.0, serialCandidate("t1", 118.6, 37.4, Set.of()));
+        assertThat(radar.gated()).isTrue();
+        assertThat(fresh.gated()).isTrue();
+        // 旧签名的候选等同于"没有已知序列号"。
+        assertThat(cost.evaluate(serialObservation(118.6, 37.4, "SN-B"), 60.0,
+                candidate("t1", 118.6, 37.4, null, null, null, null, "UAV", T0, 5, 0)).gated()).isTrue();
+    }
+
+    @Test
+    void associatorNeverPutsADifferentSerialOnTheNearerTarget() {
+        // 观测离 t1（序列号 SN-A）更近，但它报的是 SN-B：只能落到 t2（还没有序列号）上，即使 t2 远一些。
+        Associator associator = new Associator(cost);
+        double east40m = 0.00045;
+        Associator.Result result = associator.associate(java.util.List.of(serialObservation(118.6, 37.4, "SN-B")), java.util.List.of(60.0),
+                java.util.List.of(serialCandidate("t1", 118.6, 37.4, Set.of("SN-A")), serialCandidate("t2", 118.6 + east40m, 37.4, Set.of())));
+        assertThat(result.matches()).hasSize(1);
+        assertThat(result.matches().get(0).targetId()).isEqualTo("t2");
+        // 被否决的候选不进歧义名单：它根本不在门内。
+        assertThat(result.ambiguities()).isEmpty();
     }
 }

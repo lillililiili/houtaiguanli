@@ -94,6 +94,12 @@ public class LineageRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 目标的类别变化记录（系统改判与人工修订都是 op=CLASS_REVISION，挂在 survivor 上），最新的在前（ZT-04）。 */
+    public List<LineageRow> classRevisions(String targetId, int limit) {
+        return jdbc.query(LINEAGE_SELECT + " WHERE g.survivor_target_id=:t AND g.op='CLASS_REVISION' ORDER BY g.occurred_at DESC, g.lineage_id DESC FETCH FIRST :limit ROWS ONLY",
+                Map.of("t", targetId, "limit", limit), LineageRepository::lineage);
+    }
+
     private static Map<String, Object> params(String targetId) {
         Map<String, Object> p = new HashMap<>();
         p.put("t", targetId);

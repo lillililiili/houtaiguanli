@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.fusion.domain.IdentitySerials;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
 /** Maps the explicitly authenticated normalized simulator contract into a fusion frame. */
@@ -49,11 +50,13 @@ public class NormalizedObservationMapper implements FrameMapper {
             String subtype = text(node, "subtype");
             if (subtype != null) quality.put("subtype", subtype);
             quality.put("source", "LOCAL_SIMULATOR");
+            String serial = textAny(node, "uav_sn", "uavSn");
+            if (serial != null) quality.put(IdentitySerials.QUALITY_KEY, serial);
             parsed.add(new Item(external, textAny(node, "external_track_id", "externalTrackId"), longitude, latitude, null,
                     numberAny(node, "altitude_amsl_m", "altitudeAmslM"), numberAny(node, "height_agl_m", "heightAglM"),
                     numberAny(node, "speed_mps", "speedMps"), numberAny(node, "heading_deg", "headingDeg"),
                     textAny(node, "class_code", "classCode"), numberAny(node, "class_confidence", "classConfidence"),
-                    textAny(node, "uav_sn", "uavSn"), null, numberAny(node, "pilot_longitude", "pilotLongitude"),
+                    serial, null, numberAny(node, "pilot_longitude", "pilotLongitude"),
                     numberAny(node, "pilot_latitude", "pilotLatitude"),
                     "SENSE_DATA", quality));
         }

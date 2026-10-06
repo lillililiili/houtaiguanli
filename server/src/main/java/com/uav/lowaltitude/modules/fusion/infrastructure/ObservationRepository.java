@@ -59,7 +59,27 @@ public class ObservationRepository {
         return rows.get(0);
     }
 
+    private static final String INSERT = "INSERT INTO source_observation (observation_id,inbox_id,source_id,device_id,source_type,source_session_key,external_target_id,external_track_id,"
+            + "observed_at,received_at,location,position_accuracy_m,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,class_code,class_confidence,identity_clue,"
+            + "identity_confidence,latency_ms,quality,source_mode,owner_org_id,district_id,created_at,pilot_location,class_source) VALUES (:id,:inbox,:source,:device,"
+            + ":type,:session,:external,:external_track,:observed,:received,CAST(:location AS GEOMETRY),:accuracy,:amsl,:agl,:speed,:heading,:class_code,:class_conf,"
+            + ":identity,:identity_conf,:latency,CAST(:quality AS JSON),:mode,:org,:district,:created,CAST(:pilot AS GEOMETRY),:class_source)";
+
     public void insert(SourceObservation o) {
+        jdbc.update(INSERT, params(o));
+    }
+
+    /** 一帧的全部观测一次批量写入（ZT-06）：逐条 INSERT 是每帧 O(观测数) 次往返。 */
+    @SuppressWarnings("unchecked")
+    public void insertAll(List<SourceObservation> observations) {
+        if (observations == null || observations.isEmpty()) return;
+        if (observations.size() == 1) { insert(observations.get(0)); return; }
+        Map<String, Object>[] batch = new Map[observations.size()];
+        for (int i = 0; i < observations.size(); i++) batch[i] = params(observations.get(i));
+        jdbc.batchUpdate(INSERT, batch);
+    }
+
+    private Map<String, Object> params(SourceObservation o) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", o.observationId()); p.put("inbox", o.inboxId()); p.put("source", o.sourceId()); p.put("device", o.deviceId()); p.put("type", o.sourceType());
         p.put("session", o.sourceSessionKey()); p.put("external", o.externalTargetId()); p.put("external_track", o.externalTrackId());
@@ -72,11 +92,7 @@ public class ObservationRepository {
         // 飞手位置与目标位置分列存放：C02-6 要拿这两个点算大圆距离，合并进 location 就分不开了。
         p.put("pilot", o.hasPilotPosition() ? ewkt(o.pilotLongitude(), o.pilotLatitude()) : null);
         p.put("class_source", o.classSource());
-        jdbc.update("INSERT INTO source_observation (observation_id,inbox_id,source_id,device_id,source_type,source_session_key,external_target_id,external_track_id,"
-                + "observed_at,received_at,location,position_accuracy_m,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,class_code,class_confidence,identity_clue,"
-                + "identity_confidence,latency_ms,quality,source_mode,owner_org_id,district_id,created_at,pilot_location,class_source) VALUES (:id,:inbox,:source,:device,"
-                + ":type,:session,:external,:external_track,:observed,:received,CAST(:location AS GEOMETRY),:accuracy,:amsl,:agl,:speed,:heading,:class_code,:class_conf,"
-                + ":identity,:identity_conf,:latency,CAST(:quality AS JSON),:mode,:org,:district,:created,CAST(:pilot AS GEOMETRY),:class_source)", p);
+        return p;
     }
 
     public long countByInbox(String inboxId) {

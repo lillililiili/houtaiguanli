@@ -51,6 +51,37 @@ class FusionPipelineMergeCandidatesTest {
                 .as("本帧没被观测到的目标不该参与合并").containsExactly("hit");
     }
 
+    @Test
+    void knownSerialNumbersTravelWithTheMergeSnapshots() {
+        // ZT-01：合并判定要拿到两边已知的机身序列号，才能在"贴得很近"时仍认出是两架。
+        Map<String, List<SourceEstimate>> estimates = new LinkedHashMap<>();
+        Map<String, State> predicted = new LinkedHashMap<>();
+        Map<String, ActiveTarget> byTarget = new LinkedHashMap<>();
+        Map<String, TrackStatus> statuses = new LinkedHashMap<>();
+        put(estimates, predicted, byTarget, statuses, "a", 0, true);
+        put(estimates, predicted, byTarget, statuses, "b", 5, true);
+
+        List<TargetSnapshot> snapshots = FusionPipeline.mergeSnapshots(estimates, predicted, byTarget, statuses,
+                Map.of("a", java.util.Set.of("SN-A"), "b", java.util.Set.of("SN-B")));
+        assertThat(snapshots).extracting(TargetSnapshot::serials).containsExactly(java.util.Set.of("SN-A"), java.util.Set.of("SN-B"));
+        // 旧签名：没有序列号信息时两边都是空集合，判定退回只看位置。
+        assertThat(FusionPipeline.mergeSnapshots(estimates, predicted, byTarget, statuses))
+                .allSatisfy(snapshot -> assertThat(snapshot.serials()).isEmpty());
+    }
+
+    @Test
+    void pendingKeysThatWouldOverflowTheColumnAreHashedStably() {
+        // ZT-01：候选目标多、外部编号长时 reason|主体 会超过 association_pending.pending_key 的列宽，整条写入失败。
+        String shortKey = FusionPipeline.pendingKey("GATE_AMBIGUOUS", "src|ext|t1,t2");
+        assertThat(shortKey).isEqualTo("GATE_AMBIGUOUS|src|ext|t1,t2");
+        String subject = "src|ext|" + String.join(",", java.util.Collections.nCopies(10, "00000000-0000-0000-0000-000000000000"));
+        String hashed = FusionPipeline.pendingKey("GATE_AMBIGUOUS", subject);
+        assertThat(hashed).startsWith("GATE_AMBIGUOUS|sha256:").hasSizeLessThanOrEqualTo(FusionPipeline.PENDING_KEY_MAX_LENGTH);
+        // 同一组候选每帧得到同一个键，计帧（frames_seen）才接得上；不同的候选组不撞键。
+        assertThat(FusionPipeline.pendingKey("GATE_AMBIGUOUS", subject)).isEqualTo(hashed);
+        assertThat(FusionPipeline.pendingKey("GATE_AMBIGUOUS", subject + ",x")).isNotEqualTo(hashed);
+    }
+
     private void put(Map<String, List<SourceEstimate>> estimates, Map<String, State> predicted,
             Map<String, ActiveTarget> byTarget, Map<String, TrackStatus> statuses,
             String id, double metersNorth, boolean observedThisFrame) {

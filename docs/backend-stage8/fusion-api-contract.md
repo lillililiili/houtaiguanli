@@ -98,3 +98,11 @@ POST /api/v1/fusion/config/{version}/activate         fusion:manage {expected_ve
 ## 门槛（阶段 7 审查固化）
 
 列表计数断言按自身归属过滤；触及 JSON/JSONB 列的非 INSERT 表达式、CHECK、触发器必须先过 `Stage8PostgresTest` 再报 GREEN；H2 下米制距离用 Java 侧 Haversine（域层不依赖 SQL 几何）。
+
+## 2026-10-06 验收修复（ZT-01 / ZT-04 / ZT-06 / ZT-20）
+
+- **序列号**（ZT-01）：观测 `quality.uav_sn`（去空白、转大写）与目标已知序列号（各 link 最近单源估计）不同的，关联代价为无穷大、不进门限，也不进自动合并候选；没有序列号的一方仍按位置关联。同一来源同一外部编号改报另一个序列号时不沿用旧 link，按新观测重新关联并在观测 `quality.identity_conflict=true`。修复前已经并错的目标不自动拆分。
+- **待定记录**（ZT-01）：`GATE_AMBIGUOUS` 的 `association_pending` 在本帧观测入库之后、保存点（嵌套事务）里写，写失败只记日志，不再让整帧失败；`pending_key` 超过 256 字符时改用摘要。
+- **吞吐**（ZT-06）：`FusionIngestWorker` 一批取满时在 `app.fusion.drain-budget-millis`（10000，0 为旧行为）内连续取下一批，每帧仍是一个事务；一帧内 link、未结束 RAW 轨迹、活跃目标快照各一次读取，观测、轨迹点、滤波快照、目标与状态推进、融合层写入按帧批量。
+- **类别变化**（ZT-04）：融合得到确定类别（非空、非 `UNKNOWN`）且与目标头行不同，就更新 `target.object_type_code`（不递增 `version`；`manual_class_override` 的目标不动），同时写 `operator_kind=SYSTEM` 的 `CLASS_REVISION` 血缘（`basis{previous_class_code,new_class_code,reason:FUSED_CLASS_CHANGED,class_source_id}`，原来没有类别时 `previous_class_code` 为空串）与 `CLASS_REVISED` 融合事件。`GET /targets/{id}` 追加可省略的 `class_changes[{changed_at, from_class_code?, to_class_code, operator_kind}]`（新的在前，最多 20 条，含人工修订）。目标列表/详情的 `legality_summary` 不再显示为另一个类别做的研判（研判与告警记录保留）。
+- **报文时刻不可信**（ZT-20）：帧的 `received_at − ptTime` 超过 `app.fusion.time-untrusted-lag-millis`（30000，0 关闭）时，观测照常入库、照常关联，`quality` 记 `time_untrusted=true`、`arrival_lag_ms`；由这类观测决定时刻的最新状态 `field_issues` 带 `{field: observed_at, reason_code: TIME_UNTRUSTED}`，`map_expires_at` 按 `received_at` 计算。设备列表/详情追加 `report_lag_ms`（最近一帧 MQTT 感知数据的接收时刻 − 报文时刻，可省略）与 `time_untrusted`（同一阈值）。

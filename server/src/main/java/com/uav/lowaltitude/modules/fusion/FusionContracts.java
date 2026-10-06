@@ -91,6 +91,14 @@ public final class FusionContracts {
     /** E2 实现；E1 通过 ObjectProvider 获取，缺席时用无操作实现（只在 E2 落地前的 E1 单测里出现）。 */
     public interface FusedLayerWriter {
         void write(TargetFrameResult frame);
+
+        /**
+         * 一帧里所有目标一起交给融合层（ZT-06）：实现可以把逐目标的查询与写入合成按帧的批量操作。
+         * 缺省实现逐个调用 {@link #write}；任何实现的结果都必须与逐个调用完全相同。
+         */
+        default void writeAll(java.util.List<TargetFrameResult> frames) {
+            for (TargetFrameResult frame : frames) write(frame);
+        }
     }
 
     /**

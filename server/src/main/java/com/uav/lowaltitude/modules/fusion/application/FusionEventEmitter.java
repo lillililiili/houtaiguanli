@@ -2,8 +2,10 @@ package com.uav.lowaltitude.modules.fusion.application;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.stereotype.Component;
@@ -48,6 +50,18 @@ public class FusionEventEmitter {
      */
     public boolean stableAlreadyEmitted(String targetId, OffsetDateTime occurredAt, OffsetDateTime trackStartedAt) {
         return repository.existsSince(targetId, STATUS_STABLE, trackStartedAt == null ? occurredAt : trackStartedAt);
+    }
+
+    /** 同上，一帧内多个目标一次问（ZT-06）。键是目标，值是该目标的"轨迹段起点（没有就是本帧观测时刻）"；返回已经发过的目标。 */
+    public Set<String> stableAlreadyEmitted(Map<String, OffsetDateTime> sinceByTarget) {
+        Set<String> out = new HashSet<>();
+        if (sinceByTarget.isEmpty()) return out;
+        Map<String, OffsetDateTime> latest = repository.latestOccurredAt(sinceByTarget.keySet(), STATUS_STABLE);
+        for (Map.Entry<String, OffsetDateTime> entry : sinceByTarget.entrySet()) {
+            OffsetDateTime at = latest.get(entry.getKey());
+            if (at != null && !at.isBefore(entry.getValue())) out.add(entry.getKey());
+        }
+        return out;
     }
 
     private String write(Map<String, Object> payload) {

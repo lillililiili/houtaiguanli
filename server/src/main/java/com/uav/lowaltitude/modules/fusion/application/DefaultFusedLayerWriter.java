@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -30,13 +31,17 @@ import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser.Contribution;
 import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser.FusedState;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.DegradationRow;
+import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.DegradationWrite;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.SelectionRow;
+import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.SelectionWrite;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionEventContextRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusedTrackRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusedTrackRepository.FusedPoint;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusedTrackRepository.FusedTrackRow;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusedTrackRepository.LastPoint;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusedTrackRepository.LatestState;
+import com.uav.lowaltitude.modules.fusion.infrastructure.IdentityRepository;
+import com.uav.lowaltitude.modules.fusion.infrastructure.IdentityRepository.ClassRevision;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
@@ -44,12 +49,18 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 一帧一个目标：属性优选 + 加权融合 → 降级评估 → FUSED 层 track/track_point → target_latest_state →
  * target_attribute_selection / target_degradation → fusion_event。不递增 target.version（决策 8-6）。
  * fusion_event 的 payload 是最新状态摘要（契约 §4/§8，决策 10-1）：给 A 的光电跟踪触发用，不放原始观测。
+ * 一帧的多个目标按帧处理（ZT-06）：各目标的现状一次取回，融合点、最新状态、属性优选、降级各批量写一次，事件最后发；
+ * 每个目标算出的内容、写入的内容与逐个写完全相同。
+ * 融合类别变成明确的另一类时，目标头行的类别跟着改，并留一条系统改判记录（ZT-04）。
+ * 报文时刻不可信（设备时钟慢、数据积压）的帧，最新状态带 observed_at 的 TIME_UNTRUSTED 提示（ZT-20）。
  */
 @Component
 public class DefaultFusedLayerWriter implements FusedLayerWriter {
     private static final int COORD_SCALE = 7, METRIC_SCALE = 2, CONF_SCALE = 5, SPEED_SCALE = 3;
     /** 决策 10-1：高度基准（海拔 vs 椭球高）客户未答复前，摘要里的 altitude_raw 固定标 UNCONFIRMED。 */
     private static final String ALTITUDE_DATUM_UNCONFIRMED = "UNCONFIRMED";
+    /** 管线写进观测 quality 的"报文时刻不可信"标记（ZT-20）。 */
+    static final String QUALITY_TIME_UNTRUSTED = "time_untrusted";
     private final WeightedFuser fuser = new WeightedFuser();
     private final DegradationEvaluator degradations = new DegradationEvaluator();
     private final FusionConfigService config;
@@ -60,65 +71,149 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
     private final AppClock clock;
     private final ObjectMapper json;
     private final FusionConfigLoader simulatorParameters;
+    private final IdentityRepository identities;
 
     public DefaultFusedLayerWriter(FusionConfigService config, FusedTrackRepository tracks, DegradationRepository states, FusionEventEmitter events,
-            FusionEventContextRepository eventContext, AppClock clock, ObjectMapper json, FusionConfigLoader simulatorParameters) {
+            FusionEventContextRepository eventContext, AppClock clock, ObjectMapper json, FusionConfigLoader simulatorParameters, IdentityRepository identities) {
         this.config = config; this.tracks = tracks; this.states = states; this.events = events; this.eventContext = eventContext; this.clock = clock; this.json = json;
         this.simulatorParameters=simulatorParameters;
+        this.identities = identities;
     }
+
+    /** 本批各目标写入前的现状（一次取回）与攒着的批量写。 */
+    private static final class Batch {
+        final Map<String, SelectionRow> selections;
+        final Map<String, DegradationRow> degradations;
+        final Map<String, OffsetDateTime> latestObserved;
+        final Map<String, FusedTrackRow> openTracks;
+        final Map<String, Long> nextSeq;
+        /** 目标头行当前的类别：融合类别与它不同才改判（不和上一帧的属性优选比，头行曾经没跟上的也能纠正过来）。 */
+        final Map<String, String> headerClasses;
+        final List<FusedPoint> points = new ArrayList<>();
+        final List<String> endedTracks = new ArrayList<>();
+        final List<OffsetDateTime> endedAt = new ArrayList<>();
+        final List<LatestState> latest = new ArrayList<>();
+        final List<SelectionWrite> selectionWrites = new ArrayList<>();
+        final List<DegradationWrite> degradationWrites = new ArrayList<>();
+        final List<ClassChange> classChanges = new ArrayList<>();
+        final List<PendingEvents> events = new ArrayList<>();
+
+        Batch(Map<String, SelectionRow> selections, Map<String, DegradationRow> degradations, Map<String, OffsetDateTime> latestObserved,
+                Map<String, FusedTrackRow> openTracks, Map<String, Long> nextSeq, Map<String, String> headerClasses) {
+            this.selections = selections; this.degradations = degradations; this.latestObserved = latestObserved; this.openTracks = openTracks; this.nextSeq = nextSeq;
+            this.headerClasses = headerClasses;
+        }
+    }
+
+    /** 融合类别变成了另一个明确类别：落库后再改目标头行并留记录。 */
+    private record ClassChange(String targetId, String classCode, String classSourceId, OffsetDateTime observedAt, String configVersion) { }
+
+    /** 一个目标本帧可能要发的事件：要等最新状态落库之后再组装摘要。 */
+    private record PendingEvents(TargetFrameResult frame, FusedState fused, Degradation degradation, DegradationRow previousDegradation, SelectionRow previousSelection,
+            boolean manualOverride, FusedTrackRow track, LatestState written, OffsetDateTime observedAt) { }
 
     @Override
     public void write(TargetFrameResult frame) {
+        writeAll(List.of(frame));
+    }
+
+    /**
+     * 同一目标在一批里出现多次（只有调用方自己拼批才会，管线一帧里每个目标只有一份结果）时退回逐个写，
+     * 后一份要读到前一份写过的状态。
+     */
+    @Override
+    public void writeAll(List<TargetFrameResult> frames) {
+        if (frames == null || frames.isEmpty()) return;
+        Set<String> distinct = new LinkedHashSet<>();
+        for (TargetFrameResult frame : frames) distinct.add(frame.targetId());
+        if (distinct.size() != frames.size()) {
+            for (TargetFrameResult frame : frames) writeBatch(List.of(frame));
+            return;
+        }
+        writeBatch(frames);
+    }
+
+    private void writeBatch(List<TargetFrameResult> frames) {
+        OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
+        List<String> ids = frames.stream().map(TargetFrameResult::targetId).toList();
+        Map<String, FusedTrackRow> openTracks = tracks.findOpenTracks(ids);
+        Batch batch = new Batch(states.findSelections(ids), states.findDegradations(ids), tracks.latestStatesObservedAt(ids), openTracks,
+                tracks.nextPointSeqs(openTracks.values().stream().map(FusedTrackRow::trackId).toList()), identities.objectTypes(ids));
+        Map<String, FusionParams> paramsByKey = new HashMap<>();
+        for (TargetFrameResult frame : frames) {
+            FusionParams params = paramsByKey.computeIfAbsent(frame.configVersion() + "|" + frame.domain().sourceMode(), key -> params(frame));
+            writeFrame(frame, params, now, batch);
+        }
+        tracks.insertPoints(batch.points);
+        // 关闭融合轨迹放在本帧的点写完之后：与逐个写时"先写点、再关轨迹"的顺序一致。
+        for (int i = 0; i < batch.endedTracks.size(); i++) tracks.endTrack(batch.endedTracks.get(i), batch.endedAt.get(i));
+        tracks.upsertLatestStates(batch.latest);
+        states.upsertSelections(batch.selectionWrites);
+        states.upsertDegradations(batch.degradationWrites);
+        for (ClassChange change : batch.classChanges) reviseClass(change, now);
+        emitEvents(batch.events);
+    }
+
+    private FusionParams params(TargetFrameResult frame) {
         FusionParams params = config.params(frame.configVersion());
         if ("replay".equals(frame.domain().sourceMode())) params=simulatorParameters.simulationParameters(params);
+        return params;
+    }
+
+    private void writeFrame(TargetFrameResult frame, FusionParams params, OffsetDateTime now, Batch batch) {
         OffsetDateTime observedAt = frame.observedAt().atOffset(ZoneOffset.UTC);
-        OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
-        SelectionRow previousSelection = states.findSelection(frame.targetId());
-        DegradationRow previousDegradation = states.findDegradation(frame.targetId());
+        SelectionRow previousSelection = batch.selections.get(frame.targetId());
+        DegradationRow previousDegradation = batch.degradations.get(frame.targetId());
         List<SourceEstimate> estimates = frame.estimates() == null ? List.of() : frame.estimates();
         FusedState fused = fuser.fuse(estimates, params, previousSelection == null ? null : previousSelection.positionSourceId());
         Degradation degradation = degradations.evaluate(estimates, frame.missFrames(), previousDegradation == null ? null : previousDegradation.deficit().doubleValue(), params);
 
         // 迟到帧：观测时刻早于已落库的最新状态时，只补融合层历史点，不回退 latest_state / 属性优选 / 降级——
         // 页面与告警看到的“当前状态”必须单调向前，否则乱序到达会让目标在地图上倒退。
-        OffsetDateTime latestObserved = tracks.latestStateObservedAt(frame.targetId());
+        OffsetDateTime latestObserved = batch.latestObserved.get(frame.targetId());
         boolean late = latestObserved != null && observedAt.isBefore(latestObserved);
 
-        FusedTrackRow track = openTrack(frame, observedAt, now, params);
-        writePoint(frame, track, fused, degradation, observedAt, now, params);
+        FusedTrackRow track = openTrack(frame, observedAt, now, params, batch);
+        writePoint(frame, track, fused, degradation, observedAt, now, params, batch);
         if (late) return;
         // 关闭融合轨迹放在迟到判定之后：迟到的 TERMINATED 帧若用更早的 observed_at 关掉当前轨迹，
         // 下一帧就会另开一条 fused:<target>:<ms>，融合层被切成碎片（审查建议）。
-        if (frame.status() == TrackStatus.TERMINATED) tracks.endTrack(track.trackId(), observedAt);
+        if (frame.status() == TrackStatus.TERMINATED) { batch.endedTracks.add(track.trackId()); batch.endedAt.add(observedAt); }
 
         boolean manualOverride = previousSelection != null && previousSelection.manualClassOverride();
-        LatestState written = writeLatestState(frame, track, fused, degradation, manualOverride, previousSelection, observedAt, now);
-        writeSelection(frame, fused, manualOverride, previousSelection, observedAt, now, params);
-        writeDegradation(frame, degradation, previousDegradation, observedAt, now);
-        emitEvents(frame, fused, degradation, previousDegradation, previousSelection, manualOverride, track, written, observedAt);
+        LatestState written = writeLatestState(frame, track, fused, degradation, manualOverride, previousSelection, observedAt, now, batch);
+        writeSelection(frame, fused, manualOverride, previousSelection, observedAt, now, params, batch);
+        writeDegradation(frame, degradation, previousDegradation, observedAt, now, batch);
+        batch.events.add(new PendingEvents(frame, fused, degradation, previousDegradation, previousSelection, manualOverride, track, written, observedAt));
     }
 
-    private FusedTrackRow openTrack(TargetFrameResult frame, OffsetDateTime observedAt, OffsetDateTime now, FusionParams params) {
-        FusedTrackRow open = tracks.findOpenTrack(frame.targetId());
+    private FusedTrackRow openTrack(TargetFrameResult frame, OffsetDateTime observedAt, OffsetDateTime now, FusionParams params, Batch batch) {
+        FusedTrackRow open = batch.openTracks.get(frame.targetId());
         if (open != null) return open;
         String trackId = UUID.randomUUID().toString();
         String external = "fused:" + frame.targetId() + ":" + observedAt.toInstant().toEpochMilli();
         tracks.insertTrack(trackId, frame.targetId(), external, observedAt, params.configVersion(), now);
-        return new FusedTrackRow(trackId, frame.targetId(), external, observedAt, null, params.configVersion());
+        FusedTrackRow created = new FusedTrackRow(trackId, frame.targetId(), external, observedAt, null, params.configVersion());
+        batch.openTracks.put(frame.targetId(), created);
+        return created;
     }
 
     /** 有位置的实测/桥接帧写 MEAS/BRIDGE；无源帧在 pred_max_frames 内写 PRED（位置保留最后可信点，不外推）。 */
-    private void writePoint(TargetFrameResult frame, FusedTrackRow track, FusedState fused, Degradation degradation, OffsetDateTime observedAt, OffsetDateTime now, FusionParams params) {
+    private void writePoint(TargetFrameResult frame, FusedTrackRow track, FusedState fused, Degradation degradation, OffsetDateTime observedAt, OffsetDateTime now, FusionParams params,
+            Batch batch) {
         String contributing = write(fused.contributions().stream().map(c -> Map.of("source_id", c.sourceId(), "observation_id", c.observationId() == null ? "" : c.observationId(), "weight", round(c.weight(), CONF_SCALE))).toList());
         if (fused.longitude() != null) {
             PointKind kind = frame.estimates().stream().anyMatch(e -> e.kind() == PointKind.MEAS) ? PointKind.MEAS : PointKind.BRIDGE;
             String observationId = frame.estimates().stream().filter(e -> e.sourceId().equals(fused.selection().positionSourceId())).map(SourceEstimate::observationId).filter(java.util.Objects::nonNull).findFirst().orElse(null);
-            tracks.insertPoint(new FusedPoint(UUID.randomUUID().toString(), track.trackId(), tracks.nextPointSeq(track.trackId()), observedAt, now, fused.longitude(), fused.latitude(),
+            long seq = batch.nextSeq.getOrDefault(track.trackId(), 0L);
+            batch.nextSeq.put(track.trackId(), seq + 1);
+            batch.points.add(new FusedPoint(UUID.randomUUID().toString(), track.trackId(), seq, observedAt, now, fused.longitude(), fused.latitude(),
                     decimal(fused.altitudeAmslM(), METRIC_SCALE), decimal(fused.heightAglM(), METRIC_SCALE), now, kind.name(), observationId, decimal(fused.accuracyM(), METRIC_SCALE),
                     contributing, fused.selection().positionSourceId(), fused.sourceSwitched(), degradation.level().name()));
             return;
         }
         if (!frame.estimates().isEmpty() || frame.missFrames() > params.integer("filter", "pred_max_frames")) return;
+        // PRED 只出现在失联目标上，量小，照旧逐条读写：位置取库里最后一个点。
         LastPoint last = tracks.lastPoint(track.trackId());
         if (last == null || last.locationText() == null) return;
         double[] lonLat = parse(last.locationText());
@@ -128,12 +223,15 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
     }
 
     /** 返回实际写入 target_latest_state 的记录：事件摘要必须与页面/告警看到的最新状态是同一份数据。 */
-    private LatestState writeLatestState(TargetFrameResult frame, FusedTrackRow track, FusedState fused, Degradation degradation, boolean manualOverride, SelectionRow previous, OffsetDateTime observedAt, OffsetDateTime now) {
+    private LatestState writeLatestState(TargetFrameResult frame, FusedTrackRow track, FusedState fused, Degradation degradation, boolean manualOverride, SelectionRow previous,
+            OffsetDateTime observedAt, OffsetDateTime now, Batch batch) {
         // 人工修订过类别的目标：置信度固定为 1（人工结论），来源类别不再覆盖。
         BigDecimal classConfidence = manualOverride ? BigDecimal.ONE : decimal(fused.classConfidence(), CONF_SCALE);
         Set<UnknownField> unknown = new LinkedHashSet<>();
         fused.unknownFields().stream().filter(u -> !(manualOverride && "classification_confidence".equals(u.field()))).forEach(unknown::add);
         unknown.addAll(degradation.unknownFields());
+        // 本帧的观测时刻来自报文时刻不可信的来源（ZT-20）：位置照常更新，但如实标出这个时刻靠不住，页面不能当实时数据显示。
+        if (timeUntrusted(frame)) unknown.add(new UnknownField("observed_at", "TIME_UNTRUSTED"));
         // 本帧有没有身份主源，决定它有没有资格改写飞手位置两列（决策 8.5-27）。
         boolean pilotDecided = fused.selection() != null && fused.selection().identitySourceId() != null;
         double[] pilot = pilotDecided ? pilotOfIdentitySource(frame, fused) : null;
@@ -148,15 +246,22 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
                     decimal(fused.heightAglM(), METRIC_SCALE), decimal(fused.speedMps(), SPEED_SCALE), decimal(fused.headingDeg(), METRIC_SCALE), classConfidence,
                     decimal(degradation.fusionConfidence(), CONF_SCALE), observedAt, now, write(unknownList(unknown)), now,
                     pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], pilot == null ? null : observedAt, pilotDecided);
-            tracks.upsertLatestState(kept);
+            batch.latest.add(kept);
             return kept;
         }
         LatestState state = new LatestState(frame.targetId(), fused.longitude(), fused.latitude(), decimal(fused.altitudeAmslM(), METRIC_SCALE), decimal(fused.heightAglM(), METRIC_SCALE),
                 decimal(fused.speedMps(), SPEED_SCALE), decimal(fused.headingDeg(), METRIC_SCALE), classConfidence, decimal(degradation.fusionConfidence(), CONF_SCALE),
                 observedAt, now, write(unknownList(unknown)), now,
                 pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], pilot == null ? null : observedAt, pilotDecided);
-        tracks.upsertLatestState(state);
+        batch.latest.add(state);
         return state;
+    }
+
+    /** 决定本帧观测时刻的那些来源估计（观测时刻等于帧时刻）里，有没有被管线标为报文时刻不可信的。 */
+    static boolean timeUntrusted(TargetFrameResult frame) {
+        if (frame.estimates() == null || frame.observedAt() == null) return false;
+        return frame.estimates().stream().anyMatch(e -> frame.observedAt().equals(e.observedAt()) && e.quality() != null
+                && Boolean.TRUE.equals(e.quality().get(QUALITY_TIME_UNTRUSTED)));
     }
 
     /**
@@ -177,34 +282,76 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
      * 决策 8.5-27：整帧没有来源时不改写属性优选。"这一帧没有任何来源"不是"从来不知道这些属性来自哪一路"，
      * 后者会把已有归属抹成 NULL，页面读起来像从未选过源。中断这件事由 target_degradation 那行如实记录。
      */
-    private void writeSelection(TargetFrameResult frame, FusedState fused, boolean manualOverride, SelectionRow previous, OffsetDateTime observedAt, OffsetDateTime now, FusionParams params) {
+    private void writeSelection(TargetFrameResult frame, FusedState fused, boolean manualOverride, SelectionRow previous, OffsetDateTime observedAt, OffsetDateTime now, FusionParams params,
+            Batch batch) {
         if (frame.estimates() == null || frame.estimates().isEmpty()) return;
         String classCode = manualOverride ? previous.classCode() : fused.classCode();
         BigDecimal classConfidence = manualOverride ? previous.classConfidence() : decimal(fused.classConfidence(), CONF_SCALE);
         String classSource = manualOverride ? null : fused.selection().classSourceId();
-        states.upsertSelection(frame.targetId(), fused.selection().positionSourceId(), classSource, fused.selection().identitySourceId(), fused.selection().motionSourceId(),
-                classCode, classConfidence, fused.identityClue(), observedAt, params.configVersion(), manualOverride, now);
+        batch.selectionWrites.add(new SelectionWrite(frame.targetId(), fused.selection().positionSourceId(), classSource, fused.selection().identitySourceId(), fused.selection().motionSourceId(),
+                classCode, classConfidence, fused.identityClue(), observedAt, params.configVersion(), manualOverride, now));
+        // ZT-04：融合类别是一个明确类别、且与目标头行不同（识别中→无人机、无人机→鸟），目标头行要跟着改。
+        // 没有类别证据或来源互相矛盾时融合类别为空，那不是"改判"，保留已有类别；人工修订过的目标不动。
+        if (!manualOverride && definiteClass(fused.classCode()) && !fused.classCode().equals(batch.headerClasses.get(frame.targetId()))) {
+            batch.classChanges.add(new ClassChange(frame.targetId(), fused.classCode(), classSource, observedAt, params.configVersion()));
+            batch.headerClasses.put(frame.targetId(), fused.classCode());
+        }
     }
 
-    private void writeDegradation(TargetFrameResult frame, Degradation degradation, DegradationRow previous, OffsetDateTime observedAt, OffsetDateTime now) {
+    private static boolean definiteClass(String classCode) {
+        return classCode != null && !classCode.isBlank() && !"UNKNOWN".equals(classCode);
+    }
+
+    /**
+     * 系统改判类别（ZT-04）：目标头行改成新类别（不递增 version，决策 8-6），在血缘里留一条 SYSTEM 的 CLASS_REVISION
+     * （何时、由什么改成什么、依据哪一路来源），并发 CLASS_REVISED 事件。已有的告警、通知、研判一律不动：
+     * 它们记录的是当时的事实，页面通过这条改判记录写明"类别已变化"。头行本来就是这个类别时（例如建目标时已是无人机）不留记录。
+     */
+    private void reviseClass(ClassChange change, OffsetDateTime now) {
+        ClassRevision revision = identities.reviseSystemClass(change.targetId(), change.classCode(), now.toInstant());
+        if (revision == null) return;
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("previous_class_code", revision.previousClassCode() == null ? "" : revision.previousClassCode());
+        basis.put("new_class_code", revision.newClassCode());
+        basis.put("reason", "FUSED_CLASS_CHANGED");
+        if (change.classSourceId() != null) basis.put("class_source_id", change.classSourceId());
+        String lineageId = identities.insertLineage("CLASS_REVISION", change.observedAt().toInstant(), change.targetId(), null, write(List.of(change.targetId())),
+                write(List.of()), write(basis), FusionPipeline.ALGO_VERSION, change.configVersion(), write(Map.of()));
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("class_code", revision.newClassCode());
+        payload.put("previous_class_code", revision.previousClassCode() == null ? "" : revision.previousClassCode());
+        payload.put("lineage_id", lineageId);
+        payload.put("operator_kind", "SYSTEM");
+        events.emit(FusionEventEmitter.CLASS_REVISED, change.targetId(), change.observedAt(), payload);
+    }
+
+    private void writeDegradation(TargetFrameResult frame, Degradation degradation, DegradationRow previous, OffsetDateTime observedAt, OffsetDateTime now, Batch batch) {
         boolean sameLevel = previous != null && previous.level().equals(degradation.level().name()) && previous.determined() == degradation.determined();
         OffsetDateTime since = sameLevel ? previous.since() : observedAt;
-        states.upsertDegradation(frame.targetId(), degradation.level().name(), write(degradation.availableSourceIds()), round(degradation.deficit(), CONF_SCALE), degradation.determined(), since, now);
+        batch.degradationWrites.add(new DegradationWrite(frame.targetId(), degradation.level().name(), write(degradation.availableSourceIds()), round(degradation.deficit(), CONF_SCALE),
+                degradation.determined(), since, now));
     }
 
     /**
      * STATUS_STABLE（本轨迹段首次）与 UNDETERMINED（可判定 → 不可判定的转入）带同一份最新状态摘要。
      * 摘要在 {@link #summary} 里按需组装：只有真的要发事件时才去查目标编号、告警与风险，不在每帧路径上多查三张表。
+     * "本轨迹段是否已发过 STABLE"对本批所有 STABLE 目标一次问完（ZT-06）；事件在最新状态落库之后才组装，摘要读到的是本帧写入的数据。
      */
-    private void emitEvents(TargetFrameResult frame, FusedState fused, Degradation degradation, DegradationRow previousDegradation, SelectionRow previousSelection,
-            boolean manualOverride, FusedTrackRow track, LatestState written, OffsetDateTime observedAt) {
-        boolean stableFirstTime = frame.status() == TrackStatus.STABLE && !events.stableAlreadyEmitted(frame.targetId(), observedAt, track.startedAt());
-        boolean wasDetermined = previousDegradation == null || previousDegradation.determined();
-        boolean becameUndetermined = !degradation.determined() && wasDetermined;
-        if (!stableFirstTime && !becameUndetermined) return;
-        Map<String, Object> payload = summary(frame, fused, degradation, previousSelection, manualOverride, written, observedAt);
-        if (stableFirstTime) events.emit(FusionEventEmitter.STATUS_STABLE, frame.targetId(), observedAt, payload);
-        if (becameUndetermined) events.emit(FusionEventEmitter.UNDETERMINED, frame.targetId(), observedAt, payload);
+    private void emitEvents(List<PendingEvents> pending) {
+        Map<String, OffsetDateTime> stableSince = new LinkedHashMap<>();
+        for (PendingEvents p : pending) {
+            if (p.frame().status() == TrackStatus.STABLE) stableSince.put(p.frame().targetId(), p.track().startedAt() == null ? p.observedAt() : p.track().startedAt());
+        }
+        Set<String> stableEmitted = events.stableAlreadyEmitted(stableSince);
+        for (PendingEvents p : pending) {
+            boolean stableFirstTime = p.frame().status() == TrackStatus.STABLE && !stableEmitted.contains(p.frame().targetId());
+            boolean wasDetermined = p.previousDegradation() == null || p.previousDegradation().determined();
+            boolean becameUndetermined = !p.degradation().determined() && wasDetermined;
+            if (!stableFirstTime && !becameUndetermined) continue;
+            Map<String, Object> payload = summary(p.frame(), p.fused(), p.degradation(), p.previousSelection(), p.manualOverride(), p.written(), p.observedAt());
+            if (stableFirstTime) events.emit(FusionEventEmitter.STATUS_STABLE, p.frame().targetId(), p.observedAt(), payload);
+            if (becameUndetermined) events.emit(FusionEventEmitter.UNDETERMINED, p.frame().targetId(), p.observedAt(), payload);
+        }
     }
 
     /**
