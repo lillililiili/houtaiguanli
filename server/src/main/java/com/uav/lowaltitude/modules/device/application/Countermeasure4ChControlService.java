@@ -144,8 +144,10 @@ public class Countermeasure4ChControlService {
         command = controls.control(commandId);
         if (command == null || terminal(text(command,"status"))) return;
         if (!allowed) {
-            controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
-                    "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查");
+            if (controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
+                    "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
+                finished(commandId);
+            }
             return;
         }
         long now = clock.nowMillis();
@@ -154,8 +156,10 @@ public class Countermeasure4ChControlService {
         if (starts(text(command,"action"),number(command,"mask"))
                 && (device == null || !bool(device,"enabled") || !"ONLINE".equals(text(device,"connectivity"))
                     || "BAD".equals(text(device,"health_code")))) {
-            controls.updateCommand(commandId,status,"CANCELLED",now,"DEVICE_NOT_OPERABLE",
-                    "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查");
+            if (controls.updateCommand(commandId,status,"CANCELLED",now,"DEVICE_NOT_OPERABLE",
+                    "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查") == 1) {
+                finished(commandId);
+            }
             return;
         }
         if ("QUEUED".equals(status)) {
@@ -200,6 +204,7 @@ public class Countermeasure4ChControlService {
         }
     }
 
+    /** 指令进入任一终态都通知处置结案（含取消），处置授权不能停在“执行中”等人打开详情才同步。 */
     private void finished(String commandId) { events.publishEvent(new DeviceCommandFinished(commandId)); }
 
     private String configuration(Map<String, Object> device) {
