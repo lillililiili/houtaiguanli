@@ -16,8 +16,8 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 /**
- * C06 持久化：可信告警插入、合并组与成员。alarm 表在这里只有 INSERT/SELECT，永远没有 UPDATE；
- * 合并窗口状态全部落在 alarm_merge_group 上。
+ * C06 持久化：可信告警插入、合并组与成员、告警升级记录。alarm 表在这里只有 INSERT/SELECT，永远没有 UPDATE；
+ * 合并窗口状态全部落在 alarm_merge_group 上，告警升级后的等级与违规原因落在只增的 alarm_escalation 上。
  */
 @Repository
 public class AlarmMergeRepository {
@@ -55,7 +55,7 @@ public class AlarmMergeRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    /** 归并命中关联当时已有的告警；不指向后来升级生成的新告警。成员的 alarm_id 仍只表示本次新建。 */
+    /** 归并命中关联当时已有的告警；不指向后来升级生成的新告警。成员的 alarm_id 只表示本次新建或本次升级的告警。 */
     public String associatedAlarmId(String evaluationId) {
         var rows = jdbc.queryForList("SELECT previous.alarm_id FROM alarm_merge_member current_member"
                 + " JOIN alarm_merge_member previous ON previous.group_id=current_member.group_id"
@@ -135,6 +135,36 @@ public class AlarmMergeRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /**
+     * 告警当前状态（C06 判断能否升级原告警）：原始等级与违规原因在 alarm 行（alarm.detail.violation_reasons），
+     * 叠加最近一次升级（同一告警 seq 最大的一行）；事件核实状态决定能否并入。没有升级时 seq 为 0。
+     */
+    public AlarmState alarmState(String alarmId) {
+        List<AlarmState> rows = jdbc.query("SELECT a.alarm_id,a.severity,a.detail,a.owner_org_id,a.district_id,e.event_id,e.state_code,"
+                + "x.seq,x.severity_after,x.reasons_after FROM alarm a LEFT JOIN uav_event e ON e.alarm_id=a.alarm_id"
+                + " LEFT JOIN alarm_escalation x ON x.alarm_id=a.alarm_id"
+                + " AND NOT EXISTS (SELECT 1 FROM alarm_escalation newer WHERE newer.alarm_id=x.alarm_id AND newer.seq>x.seq)"
+                + " WHERE a.alarm_id=:alarm",
+                Map.of("alarm", alarmId), (rs, i) -> new AlarmState(rs.getString("alarm_id"), rs.getString("event_id"), rs.getString("state_code"),
+                        rs.getString("severity"), rs.getString("detail"), rs.getInt("seq"), rs.getString("severity_after"), rs.getString("reasons_after"),
+                        rs.getString("owner_org_id"), rs.getString("district_id")));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 升级记录只增；(alarm_id, seq) 与 evaluation_id 的唯一约束兜住并发与重放。 */
+    public void insertEscalation(EscalationInsert row) {
+        Map<String, Object> params = new HashMap<>();
+        params.put("id", row.escalationId()); params.put("alarm", row.alarmId()); params.put("seq", row.seq()); params.put("group", row.groupId());
+        params.put("evaluation", row.evaluationId()); params.put("trigger", row.triggerKind()); params.put("before", row.severityBefore());
+        params.put("after", row.severityAfter()); params.put("added", row.reasonsAddedJson()); params.put("reasons", row.reasonsAfterJson());
+        params.put("note", row.note()); params.put("actor", row.actorId()); params.put("org", row.ownerOrgId()); params.put("district", row.districtId());
+        params.put("at", row.createdAt());
+        // 显式 JSON 转换同时兼容 H2 与 PostgreSQL JSONB（同 insertAlarm）。
+        jdbc.update("INSERT INTO alarm_escalation (escalation_id,alarm_id,seq,group_id,evaluation_id,trigger_kind,severity_before,severity_after,"
+                + "reasons_added,reasons_after,note,actor_id,owner_org_id,district_id,created_at)"
+                + " VALUES (:id,:alarm,:seq,:group,:evaluation,:trigger,:before,:after,CAST(:added AS JSON),CAST(:reasons AS JSON),:note,:actor,:org,:district,:at)", params);
+    }
+
     /** 自动关闭前看该目标最近一条 ACTIVE 研判：仍是 ABNORMAL/ILLEGAL 的组不能关。 */
     public String latestActiveLegalStatus(String targetId) {
         List<String> rows = jdbc.queryForList("SELECT legal_status FROM rule_evaluation WHERE target_id=:target AND mode='ACTIVE'"
@@ -167,4 +197,13 @@ public class AlarmMergeRepository {
             String firstAlarmId, String latestAlarmId, int hitCount, OffsetDateTime windowOpenedAt, OffsetDateTime windowExpiresAt,
             OffsetDateTime lastHitAt, String ownerOrgId, String districtId, long version) { }
     public record MemberRow(String memberId, String groupId, String alarmId, String memberKind, String severityAfter) { }
+    /** escalationSeq 为 0 表示从未升级，此时 escalatedSeverity/escalatedReasonsJson 为 null。 */
+    public record AlarmState(String alarmId, String eventId, String eventState, String originalSeverity, String detailJson,
+            int escalationSeq, String escalatedSeverity, String escalatedReasonsJson, String ownerOrgId, String districtId) {
+        /** 当前等级：最近一次升级后的等级，没有升级就是告警原始等级。 */
+        public String currentSeverity() { return escalationSeq > 0 && escalatedSeverity != null ? escalatedSeverity : originalSeverity; }
+    }
+    public record EscalationInsert(String escalationId, String alarmId, int seq, String groupId, String evaluationId, String triggerKind,
+            String severityBefore, String severityAfter, String reasonsAddedJson, String reasonsAfterJson, String note, String actorId,
+            String ownerOrgId, String districtId, OffsetDateTime createdAt) { }
 }

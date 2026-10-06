@@ -20,6 +20,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 这里只负责把研判事实翻译成 MergeInput；鉴权、幂等、版本与历史仍由 {@link LegalityReviewService} 在同一事务内完成。
  * 告警等级取研判 grade 的默认映射，缺失即 UNKNOWN——人工动作不依赖 C06 的规则参数。
  * 告警 occurred_at 取研判 as_of（业务时刻），received_at 与合并时刻取时钟 now（操作时刻）：观测时刻不能冒充接收时刻。
+ * 操作人与说明随行传入：并入同一目标的现有告警时，升级记录要写明谁、为什么转告警。
  */
 @Service
 public class AlarmEscalationService {
@@ -30,11 +31,11 @@ public class AlarmEscalationService {
     public AlarmEscalationService(AlarmMergePolicy policy, ObjectMapper json, AppClock clock) { this.policy = policy; this.json = json; this.clock = clock; }
 
     @Transactional
-    public MergeOutcome escalate(ReviewRow review) {
+    public MergeOutcome escalate(ReviewRow review, String actorId, String note) {
         MergeInput input = new MergeInput(review.evaluationId(), review.targetId(), review.ownerOrgId(), review.districtId(), review.sourceMode(),
                 review.ruleSetId(), review.ruleSetVersionId(), review.legalStatus(), review.planMatchCode(), review.grade(), review.score(),
                 violations(review.violationReasons()), review.asOf(), clock.now().atOffset(ZoneOffset.UTC));
-        return policy.escalateManually(input);
+        return policy.escalateManually(input, actorId, note);
     }
 
     private List<String> violations(String text) {

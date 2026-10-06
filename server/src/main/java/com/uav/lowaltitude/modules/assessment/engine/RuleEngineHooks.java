@@ -44,7 +44,7 @@ public interface RuleEngineHooks {
             String assessmentId, String supersedesEvaluationId, boolean alarmEligible, RuleParams params) { }
 
     /**
-     * 钩子回填：alarmOutcome 写入 rule_evaluation.alarm_outcome（kind ∈ CREATED|MERGED|UPGRADED|DOWNGRADED|BLOCKED），
+     * 钩子回填：alarmOutcome 写入 rule_evaluation.alarm_outcome（kind ∈ CREATED|MERGED|UPGRADED|DOWNGRADED|ESCALATED|BLOCKED），
      * alarmId 写入 rule_evaluation.alarm_id；alarmCreated/alarmMerged 计入 rule_run 计数。
      */
     record HookResult(String alarmId, Map<String, Object> alarmOutcome, boolean alarmCreated, boolean alarmMerged) {

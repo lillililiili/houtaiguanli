@@ -19,11 +19,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.MultiValueMap;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.AlarmDto;
+import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.EscalationDto;
 import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.PageDto;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.AlarmQuery;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.AlarmRow;
+import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.EscalationRow;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
@@ -39,10 +43,11 @@ public class AlarmReadService {
     private final AlarmReadRepository repository;
     private final AuditService audit;
     private final AppClock clock;
+    private final ObjectMapper json;
 
     public AlarmReadService(AccessControlService access, AlarmReadRepository repository, AuditService audit,
-            AppClock clock) {
-        this.access = access; this.repository = repository; this.audit = audit; this.clock = clock;
+            AppClock clock, ObjectMapper json) {
+        this.access = access; this.repository = repository; this.audit = audit; this.clock = clock; this.json = json;
     }
 
     /**
@@ -171,12 +176,57 @@ public class AlarmReadService {
         return dto(row);
     }
 
+    /**
+     * GET /alarms/{alarm_id}/escalations：告警升级记录（谁、什么时候、为什么升级），按次序从早到晚。
+     * 权限与范围同告警详情；分页参数口径同核实历史。
+     */
+    @Transactional(readOnly = true)
+    public PageDto<EscalationDto> escalations(String alarmId, MultiValueMap<String, String> values) {
+        AccessDecision decision = access.require(PermissionCode.ALARM_READ);
+        values.keySet().stream().filter(key -> !key.equals("page") && !key.equals("size")).findFirst()
+                .ifPresent(key -> { throw Request.invalid("参数无效"); });
+        Page page = new Request(values).page();
+        String id = id(alarmId);
+        if (repository.find(id, decision) == null) throw new ApiException(HttpStatus.NOT_FOUND, "ALARM_NOT_FOUND", "告警不存在");
+        long total = repository.countEscalations(id);
+        return new PageDto<>(repository.escalations(id, page.offset(), page.size()).stream().map(this::escalation).toList(),
+                page.page(), page.size(), total);
+    }
+
+    private EscalationDto escalation(EscalationRow row) {
+        return new EscalationDto(row.escalationId(), row.seq(), row.triggerKind(), row.severityBefore(), row.severityAfter(),
+                reasons(row.reasonsAddedJson()), reasons(row.reasonsAfterJson()), row.note(), row.actorId(), row.actorName(),
+                requiredMillis(row.createdAt()));
+    }
+
     private AlarmDto dto(AlarmRow row) {
         // target_id 是独立敏感引用：没有 target:read 时宁可省略，也不能以 0 坐标或可猜 ID 替代。
         String targetId = targetReferenceVisible(row.targetId(), row.ownerOrgId(), row.districtId()) ? row.targetId() : null;
+        // 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。
+        List<String> violations = row.escalationCount() > 0 ? reasons(row.escalatedReasonsJson()) : reasons(row.detailJson());
         return new AlarmDto(row.alarmId(), row.eventId(), row.state(), row.alarmType(), row.severity(), millis(row.occurredAt()),
                 requiredMillis(row.receivedAt()), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), targetId,
-                row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo());
+                row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
+                row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()));
+    }
+
+    /**
+     * 违规原因代码：数组直接取，告警明细对象取其 violation_reasons。JSON 列在 H2 上可能回读成带引号的 JSON 字符串，
+     * 是文本就再解析一层。读不出来就给空数组，而不是让整条告警打不开。
+     */
+    private List<String> reasons(String raw) {
+        if (raw == null || raw.isBlank()) return List.of();
+        try {
+            JsonNode node = json.readTree(raw);
+            if (node != null && node.isTextual()) node = json.readTree(node.textValue());
+            if (node != null && node.isObject()) node = node.get("violation_reasons");
+            if (node == null || !node.isArray()) return List.of();
+            List<String> output = new java.util.ArrayList<>();
+            for (JsonNode item : node) if (item.isTextual() && !output.contains(item.textValue())) output.add(item.textValue());
+            return output;
+        } catch (Exception ignored) {
+            return List.of();
+        }
     }
 
     private boolean targetReferenceVisible(String targetId, String orgId, String districtId) {

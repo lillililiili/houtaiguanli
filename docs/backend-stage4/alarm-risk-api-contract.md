@@ -151,3 +151,19 @@ JSON 语法、结构、未知/重复/缺失键或字段类型错误返回 `INVAL
 ## 尚未接入
 
 阶段 4 不执行真实反制、信号干扰、上级通知、处罚交接、处罚立案或真实证据保管。对应页面入口保持禁用并明确说明原因；这些缺口不是接口成功的替代状态。
+
+## 2026-10-06 告警升级与升级记录
+
+同一架无人机再次违规时，规则引擎升级它原有的告警，不再另起一条（规则见 `docs/backend-stage7/rule-engine-api-contract.md` 2026-10-06 一节）。`alarm` 行不改，升级事实只追加在 `alarm_escalation`。
+
+告警列表、详情与导出：
+
+- `severity` 改为告警当前等级：升级过取最近一次升级后的等级，否则是告警产生时的等级。列表 `severity` 筛选、`sort=severity` 与默认 `priority` 排序都按当前等级；导出“等级”列同口径，导出列不变。
+- 新增固定字段 `original_severity`（告警产生时的等级）、`violation_reasons`（累计的违规原因代码，按出现顺序、不重复；没有时为 `[]`）、`escalation_count`（0 表示没升级过）；可省略字段 `escalated_at`（最近一次升级时刻，没升级过时省略）。
+- 告警报表（`/stats` 报表的告警与无人机事件分区）的等级分布同样按当前等级。
+
+```text
+GET /api/v1/alarms/{alarm_id}/escalations?page&size     alarm:read
+```
+
+权限、范围与 404 同告警详情；只接受 `page,size`，其他参数 400 `VALIDATION_ERROR`。按 `seq` 正序分页，项：`escalation_id, seq, trigger_kind ENGINE|MANUAL, severity_before, severity_after, reasons_added, reasons_after, created_at`，可省略 `note, actor_id, actor_name`（只有人工转告警有操作人；说明为空时省略）。升级不改 `uav_event` 状态，已核实属实的告警升级后不要求重新核实。PostgreSQL 上该表只增，写入时发实时推送 `alarm` 主题。

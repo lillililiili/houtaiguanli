@@ -26,11 +26,20 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 @Repository
 public class AlarmReadRepository {
 
+    /**
+     * 告警升级（2026-10-06，BUG-11/BUG-16）：alarm 行只增不改，升级记在只增的 alarm_escalation 上。
+     * 最近一次升级 = 同一告警 seq 最大的一行；当前等级取它的结果，没有升级就是告警原值。
+     * 列表、详情、筛选、排序、导出与报表一律按当前等级，页面看到的等级与筛出来、排出来的一致。
+     */
+    static final String LATEST_ESCALATION = " LEFT JOIN alarm_escalation esc ON esc.alarm_id=a.alarm_id"
+            + " AND NOT EXISTS (SELECT 1 FROM alarm_escalation newer_esc WHERE newer_esc.alarm_id=esc.alarm_id AND newer_esc.seq>esc.seq)";
+    static final String CURRENT_SEVERITY = "COALESCE(esc.severity_after,a.severity)";
+
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = where(AlarmQuery.empty(), access);
         String time = reader.epoch("a.occurred_at");
         String sql = "SELECT a.alarm_id AS id,COALESCE(a.alarm_no,a.source_alarm_id) AS label," + time + " AS at_ms,"
-            + "e.state_code AS state,a.alarm_type AS kind,a.severity,dist_ref.name AS region,a.source_mode,"
+            + "e.state_code AS state,a.alarm_type AS kind," + CURRENT_SEVERITY + " AS severity,dist_ref.name AS region,a.source_mode,"
             + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note" + from() + w.sql;
         return ReportDatasetReader.window(sql, w.parameters, range, time);
     }
@@ -80,8 +89,8 @@ public class AlarmReadRepository {
         if (sort == null || "priority".equals(sort)) return PRIORITY_ORDER;
         String column = switch (sort) {
             case "occurred_at" -> "a.occurred_at";
-            // a.severity 是枚举字符串，按它排是字典序；等级序号见 SeverityOrder（决策 15-30）。
-            case "severity" -> com.uav.lowaltitude.platform.query.SeverityOrder.rank("a.severity");
+            // 等级是枚举字符串，按它排是字典序；等级序号见 SeverityOrder（决策 15-30）。按升级后的当前等级排。
+            case "severity" -> com.uav.lowaltitude.platform.query.SeverityOrder.rank(CURRENT_SEVERITY);
             // 状态在 uav_event 上（LEFT JOIN e），alarm 表根本没有 state 列——
             // 原先写 a.state，白名单放行、SQL 必炸，GET /alarms?sort=state 稳定 500（决策 15-30）。
             case "state" -> "e.state_code";
@@ -125,12 +134,31 @@ public class AlarmReadRepository {
     private static String from() {
         return " FROM alarm a JOIN integration_source s ON s.source_id=a.source_id LEFT JOIN uav_event e ON e.alarm_id=a.alarm_id"
                 + " LEFT JOIN app_org org_ref ON org_ref.org_id=a.owner_org_id LEFT JOIN app_district dist_ref ON dist_ref.district_id=a.district_id"
-                + " LEFT JOIN target tg ON tg.target_id=a.target_id";
+                + " LEFT JOIN target tg ON tg.target_id=a.target_id" + LATEST_ESCALATION;
     }
 
+    /** detail 只在服务层取 violation_reasons 摘要，不原样外露；升级过的告警以最近一次升级的累计原因为准。 */
     private static String select() {
-        return "SELECT a.alarm_id,a.target_id,a.alarm_type,a.severity,a.occurred_at,a.received_at,a.source_mode,a.owner_org_id,a.district_id,s.source_code,e.event_id,e.state_code,"
-                + "a.source_alarm_id,s.name AS source_name,org_ref.name AS owner_org_name,dist_ref.name AS district_name,tg.target_no,a.alarm_no";
+        return "SELECT a.alarm_id,a.target_id,a.alarm_type," + CURRENT_SEVERITY + " AS severity,a.severity AS original_severity,"
+                + "a.occurred_at,a.received_at,a.source_mode,a.owner_org_id,a.district_id,s.source_code,e.event_id,e.state_code,"
+                + "a.source_alarm_id,s.name AS source_name,org_ref.name AS owner_org_name,dist_ref.name AS district_name,tg.target_no,a.alarm_no,"
+                + "a.detail,esc.reasons_after,esc.seq AS escalation_count,esc.created_at AS escalated_at";
+    }
+
+    /** 升级记录按次序从早到晚；调用方先用 find 确认告警可见（同核实历史）。 */
+    public long countEscalations(String alarmId) {
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM alarm_escalation x WHERE x.alarm_id=:alarm_id", Map.of("alarm_id", alarmId), Long.class);
+        return total == null ? 0 : total;
+    }
+
+    public List<EscalationRow> escalations(String alarmId, int offset, int size) {
+        return jdbc.query("SELECT x.escalation_id,x.seq,x.trigger_kind,x.severity_before,x.severity_after,x.reasons_added,x.reasons_after,"
+                + "x.note,x.actor_id,au.name AS actor_name,x.created_at FROM alarm_escalation x LEFT JOIN app_user au ON au.user_id=x.actor_id"
+                + " WHERE x.alarm_id=:alarm_id ORDER BY x.seq ASC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",
+                Map.of("alarm_id", alarmId, "offset", offset, "size", size),
+                (rs, i) -> new EscalationRow(rs.getString("escalation_id"), rs.getInt("seq"), rs.getString("trigger_kind"),
+                        rs.getString("severity_before"), rs.getString("severity_after"), rs.getString("reasons_added"), rs.getString("reasons_after"),
+                        rs.getString("note"), rs.getString("actor_id"), rs.getString("actor_name"), time(rs, "created_at")));
     }
 
     /** 排序白名单，供服务层在解析阶段拒绝非法值（400），而不是悄悄回落到默认次序。 */
@@ -164,7 +192,7 @@ public class AlarmReadRepository {
     private static final String PENDING = "(e.state_code IS NULL OR e.state_code='PENDING_VERIFICATION')";
     private static final String FRESH = "(" + PENDING + " AND a.received_at>=:fresh_since)";
     private static final String PRIORITY_ORDER = " ORDER BY CASE WHEN " + FRESH + " THEN 0 WHEN " + PENDING + " THEN 1 ELSE 2 END ASC,"
-            + " CASE WHEN " + PENDING + " THEN " + com.uav.lowaltitude.platform.query.SeverityOrder.rank("a.severity") + " ELSE 0 END DESC,"
+            + " CASE WHEN " + PENDING + " THEN " + com.uav.lowaltitude.platform.query.SeverityOrder.rank(CURRENT_SEVERITY) + " ELSE 0 END DESC,"
             + " CASE WHEN " + FRESH + " THEN a.received_at END DESC,"
             + " CASE WHEN " + PENDING + " THEN a.received_at END ASC,"
             + " a.received_at DESC,a.alarm_id ASC";
@@ -181,7 +209,7 @@ public class AlarmReadRepository {
             parameters.put("scope_user_id", access.userId());
         }
         add(sql, parameters, "e.state_code", "state", query.state());
-        add(sql, parameters, "a.severity", "severity", query.severity());
+        add(sql, parameters, CURRENT_SEVERITY, "severity", query.severity());
         add(sql, parameters, "a.target_id", "target_id", query.targetId());
         add(sql, parameters, "a.owner_org_id", "owner_org_id", query.ownerOrgId());
         add(sql, parameters, "a.district_id", "district_id", query.districtId());
@@ -211,7 +239,8 @@ public class AlarmReadRepository {
                 time(rs, "occurred_at"), time(rs, "received_at"), rs.getString("source_code"),
                 rs.getString("source_mode"), rs.getString("owner_org_id"), rs.getString("district_id"),
                 rs.getString("source_alarm_id"), rs.getString("source_name"), rs.getString("owner_org_name"), rs.getString("district_name"),
-                rs.getString("target_no"), rs.getString("alarm_no"));
+                rs.getString("target_no"), rs.getString("alarm_no"), rs.getString("original_severity"), rs.getString("detail"),
+                rs.getString("reasons_after"), rs.getInt("escalation_count"), time(rs, "escalated_at"));
     }
 
     private static OffsetDateTime time(ResultSet rs, String column) throws SQLException {
@@ -233,11 +262,18 @@ public class AlarmReadRepository {
             return new AlarmQuery(null, null, null, null, null, null, null, null, null);
         }
     }
+    /**
+     * severity 是升级后的当前等级，originalSeverity 是告警产生时的等级；escalationCount 为 0 表示没升级过。
+     * detailJson/escalatedReasonsJson 只供服务层取违规原因，不外露。
+     */
     public record AlarmRow(String alarmId, String targetId, String eventId, String state, String alarmType,
             String severity, OffsetDateTime occurredAt, OffsetDateTime receivedAt, String sourceCode,
             String sourceMode, String ownerOrgId, String districtId,
-            String sourceAlarmId, String sourceName, String ownerOrgName, String districtName, String targetNo, String alarmNo) {
+            String sourceAlarmId, String sourceName, String ownerOrgName, String districtName, String targetNo, String alarmNo,
+            String originalSeverity, String detailJson, String escalatedReasonsJson, int escalationCount, OffsetDateTime escalatedAt) {
         /** 页面上的告警编号：平台编号优先，没有就用来源编号。 */
         public String displayNo() { return alarmNo != null ? alarmNo : sourceAlarmId; }
     }
+    public record EscalationRow(String escalationId, int seq, String triggerKind, String severityBefore, String severityAfter,
+            String reasonsAddedJson, String reasonsAfterJson, String note, String actorId, String actorName, OffsetDateTime createdAt) { }
 }

@@ -29,10 +29,12 @@ public class UavEventRepository {
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = where(access);
         String time = reader.epoch("e.created_at");
+        // 等级按告警升级后的当前等级（同告警列表，见 AlarmReadRepository.CURRENT_SEVERITY）。
         String sql = "SELECT e.event_id AS id,COALESCE(a.alarm_no,a.source_alarm_id,e.event_id) AS label," + time + " AS at_ms,"
-            + "e.state_code AS state,a.alarm_type AS kind,a.severity,rd.name AS region,a.source_mode,"
+            + "e.state_code AS state,a.alarm_type AS kind," + AlarmReadRepository.CURRENT_SEVERITY + " AS severity,rd.name AS region,a.source_mode,"
             + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
-            + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id LEFT JOIN app_district rd ON rd.district_id=e.district_id" + w.sql;
+            + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id" + AlarmReadRepository.LATEST_ESCALATION
+            + " LEFT JOIN app_district rd ON rd.district_id=e.district_id" + w.sql;
         return ReportDatasetReader.window(sql, w.parameters, range, time);
     }
     private final NamedParameterJdbcTemplate jdbc;
