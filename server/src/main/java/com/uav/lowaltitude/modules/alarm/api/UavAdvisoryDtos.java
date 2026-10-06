@@ -20,7 +20,14 @@ public final class UavAdvisoryDtos {
             boolean canRequestCounter, boolean canDirectCounter, boolean canHandoff, String counterBlockReason, List<Record> records, Recipient recipient, AutoSms autoSms, String voiceMode, AutoVoice autoVoice, boolean counterLaunchVisible, String notifyPhase, AutoHandoff autoHandoff, NoCounterDtos.Status noCounter,
             /* BLOCK-03：事件精确关联的计划没有执行飞手或飞手电话时为 true，页面写明“缺飞手联系方式”。 */
             boolean pilotContactMissing) { }
-    public record AutoHandoff(boolean enabled, String status, String reason, String handoffId, String triggerSource, Long updatedAt) { }
+    /**
+     * 处罚移送进度。status：WAITING 等待干扰完成或后台自动移送；MANUAL_REQUIRED 启用了多个处罚接收单位，需有权限的人选定后移送；
+     * BLOCKED 没有可用接收单位；PENDING 交接已建立但还没发出；SUBMITTED 已发出；FAILED 发送失败；NOT_REQUIRED 不需要移送（误报、已决定不反制）。
+     * trigger_source：JAMMING_COMPLETED 后台自动建立，MANUAL 有人选定接收单位后提交，旧记录可能为空。
+     * party_status/party_reasons 只在 MANUAL_REQUIRED 时给出，提交前提示当事人是否明确。
+     */
+    public record AutoHandoff(boolean enabled, String status, String reason, String handoffId, String triggerSource, Long updatedAt,
+            String partyStatus, List<String> partyReasons) { }
     public record AutoSms(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,
             int attemptCount,String policyCode,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
     public record AutoVoice(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,

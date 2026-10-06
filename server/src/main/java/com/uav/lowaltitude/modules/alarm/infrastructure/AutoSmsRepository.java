@@ -50,6 +50,10 @@ public class AutoSmsRepository {
     public void queueRetry(String eventId,long now) {
         jdbc.update("UPDATE uav_auto_sms_task SET status='WAITING',reason='已登记补发，等待后台发送',updated_at=?,claim_token=NULL,lease_until=NULL WHERE event_id=?",now,eventId);
     }
+    /** 超过自动通知时效后，有人核对了最新情况并登记发送：记下这次人工核对，后台据此只发这一条。 */
+    public void queueRecheck(String eventId,String source,long now) {
+        jdbc.update("UPDATE uav_auto_sms_task SET status='WAITING',reason='已核对最新情况并登记发送，等待后台发送',trigger_source=?,updated_at=?,claim_token=NULL,lease_until=NULL WHERE event_id=?",source,now,eventId);
+    }
     private static Long time(ResultSet r,String c)throws SQLException {var t=r.getTimestamp(c);return t==null?null:t.getTime();}
     private static Long number(ResultSet r,String c)throws SQLException {long v=r.getLong(c);return r.wasNull()?null:v;}
     public record Facts(Long receivedAt,String objectType,Long observedAt,Long confirmedAt) { }

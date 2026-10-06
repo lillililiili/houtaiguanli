@@ -174,20 +174,67 @@ class AutoSmsApiTest {
         automatic.process(eventId);
         assertNoPilotNoSend();
     }
-    @Test void staleTargetOldEventAndFalsePositiveStillSend()throws Exception {
+    @Test void staleTargetStillSendsOldEventWaitsForRecheckAndFalsePositiveNeedsNothing()throws Exception {
         jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(Instant.now().minusSeconds(121)),targetId);
         automatic.process(eventId);
         read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
         fixture();
+        // 告警超过通知时效才核实：不再自动发短信、打电话，提示需核对最新情况；有权限的人核对后可以登记发送。
         jdbc.update("update alarm set received_at=? where alarm_id=(select alarm_id from uav_event where event_id=?)",Timestamp.from(Instant.now().minusSeconds(301)),eventId);
+        automatic.process(eventId);automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_sms.reason").value(org.hamcrest.Matchers.startsWith(AutoSmsService.STALE_REASON)))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(true))
+                .andExpect(jsonPath("$.data.notify_phase").doesNotExist())
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),eq("auto-advisory:"+eventId));
+        retry(UUID.randomUUID().toString(),1).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.auto_sms.trigger_source").value("MANUAL_RECHECK"))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where object_id=? and action='auto_sms_recheck_requested'",Integer.class,eventId)).isEqualTo(1);
         automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"));
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"))
+                .andExpect(jsonPath("$.data.auto_sms.trigger_source").value("MANUAL_RECHECK"));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isEqualTo(1);
         fixture();
+        // 误报后各环节写明不需要，不再显示“等待”。
         jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where event_id=?",eventId);
         automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"));
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("NOT_REQUIRED"))
+                .andExpect(jsonPath("$.data.auto_sms.reason").value(AutoSmsService.FALSE_POSITIVE_REASON))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false))
+                .andExpect(jsonPath("$.data.auto_voice.status").value("NOT_REQUIRED"))
+                .andExpect(jsonPath("$.data.auto_handoff.status").value("NOT_REQUIRED"))
+                .andExpect(jsonPath("$.data.notify_phase").doesNotExist())
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        retry(UUID.randomUUID().toString(),1).andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
         assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,eventId)).isEqualTo("FALSE_POSITIVE");
+    }
+    @Test void staleEventThatCouldNotBeNotifiedAnywayStillReachesTheCounterStep()throws Exception {
+        // 通道本来就没接通：仍提示需核对最新情况，但不提供登记发送，通知阶段照旧进入待反制。
+        doReturn(false).when(sms).automaticSimulationAvailable(anyString());
+        jdbc.update("update alarm set received_at=? where alarm_id=(select alarm_id from uav_event where event_id=?)",Timestamp.from(Instant.now().minusSeconds(301)),eventId);
+        automatic.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNAVAILABLE"))
+                .andExpect(jsonPath("$.data.auto_sms.reason").value(org.hamcrest.Matchers.startsWith(AutoSmsService.STALE_REASON)))
+                .andExpect(jsonPath("$.data.auto_sms.reason").value(org.hamcrest.Matchers.containsString("正式短信渠道尚未接入")))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false))
+                .andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"));
+        retry(UUID.randomUUID().toString(),1).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("AUTO_SMS_RETRY_BLOCKED"));
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
+    @Test void staleRecheckNeedsTheRetryPermissions()throws Exception {
+        jdbc.update("update alarm set received_at=? where alarm_id=(select alarm_id from uav_event where event_id=?)",Timestamp.from(Instant.now().minusSeconds(301)),eventId);
+        automatic.process(eventId);
+        jdbc.update("delete from app_role_permission where role_code=? and permission_code='handoff:create'",role);
+        read().andExpect(jsonPath("$.data.auto_sms.reason").value(org.hamcrest.Matchers.startsWith(AutoSmsService.STALE_REASON)))
+                .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+        retry(UUID.randomUUID().toString(),1).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("select status from uav_auto_sms_task where event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
     }
     @Test void historicalObservationDoesNotOverrideCurrentNotificationFacts()throws Exception {
         observation("DEPARTED");automatic.process(eventId);

@@ -209,11 +209,14 @@ public class HandoffReadService {
         MaterialV2Dto stored = parseV2(snapshot.json());
         int schemaVersion = stored.schemaVersion() == 0 ? snapshot.schemaVersion() : stored.schemaVersion();
         if (!"AVAILABLE".equals(source.availability))
-            return new MaterialV2Dto(schemaVersion, null, null, null, null, null, null, null, null);
+            return new MaterialV2Dto(schemaVersion, null, null, null, null, null, null, null, null, null, null, null);
         List<EvidenceMaterialDto> evidence = stored.evidence();
-        if (evidence != null && !mayReadEvidence()) evidence = null;
+        var evidenceChain = stored.evidenceChain();
+        // 证据链清单与证据段同样按读者当前的 evidence:read 裁剪。
+        if ((evidence != null || evidenceChain != null) && !mayReadEvidence()) { evidence = null; evidenceChain = null; }
         return new MaterialV2Dto(schemaVersion, stored.event(), stored.verifications(), stored.disposals(),
-                evidence, stored.evidenceOmitted(), stored.references(), stored.advisoryRecords(), stored.pilotLocation());
+                evidence, stored.evidenceOmitted(), stored.references(), stored.advisoryRecords(), stored.pilotLocation(),
+                stored.judgments(), evidenceChain, stored.party());
     }
 
     /** 证据段的可用性：提交时就没冻结 > 读者没权限 > 可用。三者互斥，取最先成立的那个。 */

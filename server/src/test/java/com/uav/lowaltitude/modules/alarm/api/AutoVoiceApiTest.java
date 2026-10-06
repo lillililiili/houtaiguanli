@@ -172,7 +172,9 @@ class AutoVoiceApiTest {
     }
     @Test void unconfiguredRecordingAndLiveSourceNeverPretendPlayed()throws Exception {
         doReturn(null).when(recordings).current();voiceService.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_voice.status").value("UNAVAILABLE"));
+        // 录音改在管理端上传并选用，提示要指到那个页面。
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("UNAVAILABLE"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value(org.hamcrest.Matchers.containsString("运维管理 → 接口配置 → 电话通知录音")));
         verify(voice,never()).simulate(anyString(),any(),anyString());assertThat(count("uav_event_voice_advisory")).isZero();
         reset(recordings);jdbc.update("update alarm set source_mode='live' where alarm_id=(select alarm_id from uav_event where event_id=?)",eventId);
         voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
@@ -195,6 +197,46 @@ class AutoVoiceApiTest {
         voiceService.process(eventId);
         read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"));
         assertThat(count("uav_event_voice_advisory")).isZero();
+    }
+    @Test void falsePositiveClosesTheCallAndTheHandoff()throws Exception {
+        // 判为误报后不再拨打电话、不移送处罚；面板写明“不需要”，不再显示等待。
+        jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where event_id=?",eventId);
+        voiceService.process(eventId);
+        assertThat(jdbc.queryForObject("select status from uav_auto_voice_task where event_id=?",String.class,eventId)).isEqualTo("BLOCKED");
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("NOT_REQUIRED"))
+                .andExpect(jsonPath("$.data.auto_voice.can_retry").value(false))
+                .andExpect(jsonPath("$.data.auto_handoff.status").value("NOT_REQUIRED"))
+                .andExpect(jsonPath("$.data.notify_phase").doesNotExist())
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        verify(voice,never()).simulate(anyString(),any(),anyString());
+        assertThat(count("uav_event_voice_advisory")).isZero();
+    }
+    @Test void staleSmsAlsoStopsTheAutomaticCall()throws Exception {
+        // 告警超过通知时效、短信停发时，电话写明不会自动拨打，不再显示“等短信送达”；任务仍按等待短信记账。
+        jdbc.update("UPDATE alarm SET received_at=? WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?)",Timestamp.from(Instant.now().minusSeconds(301)),eventId);
+        jdbc.update("UPDATE uav_auto_sms_task SET status='WAITING',delivery_record_id=NULL WHERE event_id=?",eventId);
+        automatic.process(eventId);
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value(org.hamcrest.Matchers.containsString("超过自动通知时效")));
+        assertThat(jdbc.queryForObject("select status from uav_auto_voice_task where event_id=?",String.class,eventId)).isEqualTo("WAITING");
+        verify(voice,never()).simulate(anyString(),any(),anyString());
+    }
+    @Test void callObservationKeepsTheAreaFromTheSmsAndReadsPositionsAfterPlayback()throws Exception {
+        voiceService.process(eventId);
+        long sms=jdbc.queryForObject("select updated_at from uav_auto_sms_task where event_id=?",Long.class,eventId);
+        long played=jdbc.queryForObject("select playback_completed_at from uav_auto_voice_task where event_id=?",Long.class,eventId);
+        // 录音播完已超过 10 秒的电话后观察期。
+        jdbc.update("update uav_auto_voice_task set answered_at=answered_at-11000,playback_completed_at=?,updated_at=? where event_id=?",played-11_000L,played-11_000L,eventId);
+        org.mockito.Mockito.when(departure.assess(eq(eventId),eq(sms),eq(played-11_000L),anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.LEFT);
+        read().andExpect(jsonPath("$.data.notify_phase").doesNotExist())
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        org.mockito.Mockito.when(departure.assess(eq(eventId),eq(sms),eq(played-11_000L),anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.STILL_PRESENT);
+        read().andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"));
+        verify(departure,never()).assess(eq(eventId),eq(played-11_000L),anyLong());
     }
     @Test void manualContactDoesNotBlockTheFollowUpCall()throws Exception {
         jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);

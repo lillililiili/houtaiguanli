@@ -33,6 +33,7 @@ public class AutoVoiceService {
     private final UavEventRepository events;
     private static final long WATCH_MILLIS=com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.SMS_WATCH_MILLIS;
     private static final String TRIGGER="SMS_THEN_WATCH";
+    static final String STALE_REASON="短信因超过自动通知时效没有自动发送，电话也不自动拨打；请先核对最新情况";
     private final AutoSmsRepository smsTasks;
     private final PilotDepartureWatch departure;
     private final AutoVoicePolicy policy;
@@ -133,14 +134,24 @@ public class AutoVoiceService {
     /** 纯读取；即使查询多次或页面关闭，都不会创建或触发电话任务。 */
     public AutoVoice overview(EventRow event,boolean mayRetry) {
         Task task=tasks.find(event.eventId());boolean enabled=policy.enabled();
+        // 误报不会再打电话：没有拨打过的，直接写明不需要，不显示成“等待拨打”。
+        if("FALSE_POSITIVE".equals(event.state())&&(task==null||task.attempts()==0))
+            return view(event,enabled,"NOT_REQUIRED","已核实为误报，不需要拨打飞手电话",false,task,null,null);
         Recording recording=enabled?recordings.current():null;
         if(task!=null&&(TERMINAL.contains(task.status())||"CALLING".equals(task.status())||"BLOCKED".equals(task.status()))) {
             boolean retry=enabled&&mayRetry&&"FAILED".equals(task.status())&&eligible(event,clock.nowMillis(),task,recording).allowed();
             return view(event,enabled,task.status(),task.reason(),retry,task,recording,null);
         }
-        if(!enabled)return view(event,false,"DISABLED","电话录音通知尚未启用；需配置已有录音文件、模板名称及文稿，并接通授权通知渠道",false,task,null,null);
+        if(!enabled)return view(event,false,"DISABLED","电话录音通知尚未启用；需开启后台电话通知，在管理端 运维管理 → 接口配置 → 电话通知录音 上传并选用录音，并接通授权通知渠道",false,task,null,null);
         Eligibility e=eligible(event,clock.nowMillis(),task,recording);
+        // 短信因超过时效停发时，电话也不会自动拨打，不能一直显示“等短信送达”。只改显示，任务仍按等待短信处理。
+        if(!e.allowed()&&"WAITING".equals(e.status())&&smsStale(event.eventId()))
+            return view(event,true,"BLOCKED",STALE_REASON,false,task,recording,e);
         return view(event,true,e.allowed()?"WAITING":e.status(),e.reason(),false,task,recording,e);
+    }
+    private boolean smsStale(String eventId) {
+        var sms=smsTasks.find(eventId);
+        return sms!=null&&Set.of("BLOCKED","UNAVAILABLE").contains(sms.status())&&sms.reason()!=null&&sms.reason().startsWith(AutoSmsService.STALE_REASON);
     }
     public String mode(EventRow event) {
         Task task=tasks.find(event.eventId());
@@ -153,12 +164,13 @@ public class AutoVoiceService {
     }
     private Eligibility eligible(EventRow event,long now,Task task,Recording recording) {
         if(noCounter.active(event.eventId()))return blocked(waiting("已决定不反制"),"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON);
+        if("FALSE_POSITIVE".equals(event.state()))return blocked(waiting("误报"),"BLOCKED","已核实为误报，不拨打电话");
         Long smsAt=smsTasks.deliveredAt(event.eventId());
         if(smsAt==null)return waiting("飞手短信尚未送达，电话要等短信送达并观察 3 秒");
         // 电话通道或录音不可用，也不能跳过短信送达后的 3 秒观察。
         if(now<smsAt+WATCH_MILLIS)return waiting("短信已送达，正在用设备位置观察目标是否撤离。满 3 秒后，仍在告警空域才会拨打电话");
         if(!voice.simulationAvailable(event.sourceMode()))return blocked(waiting("通道不可用"),"UNAVAILABLE","正式电话录音通道尚未接入，不能把模拟接通写成真实通话");
-        if(recording==null)return blocked(waiting("录音不可用"),"UNAVAILABLE","未配置有效的已有 WAV 录音文件、模板名称和文稿，电话通知不能执行");
+        if(recording==null)return blocked(waiting("录音不可用"),"UNAVAILABLE","还没有选用电话通知录音（在管理端 运维管理 → 接口配置 → 电话通知录音 上传并选用），电话通知不能执行");
         PilotDepartureWatch.Presence presence;
         try { presence=departure.assess(event.eventId(),smsAt,now); }
         catch(RuntimeException unavailable) { presence=PilotDepartureWatch.Presence.UNKNOWN; }

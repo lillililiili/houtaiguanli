@@ -123,10 +123,17 @@ public class HandoffRepository {
         params.put("risk", row.riskId()); params.put("event", row.eventId()); params.put("type", row.handoffType());
         params.put("recipient", row.recipientId()); params.put("version", row.sourceVersion()); params.put("org", row.ownerOrgId());
         params.put("district", row.districtId()); params.put("mode", row.sourceMode()); params.put("submitter", row.submittedBy());
-        params.put("created", row.createdAt());
+        params.put("created", row.createdAt()); params.put("trigger", row.triggerSource());
         jdbc.update("INSERT INTO handoff (handoff_id,source_kind,source_id,risk_id,event_id,handoff_type,recipient_id,source_version,"
-                + "owner_org_id,district_id,source_mode,submitted_by,created_at) VALUES (:id,:kind,:source,:risk,:event,:type,:recipient,"
-                + ":version,:org,:district,:mode,:submitter,:created)", params);
+                + "owner_org_id,district_id,source_mode,submitted_by,created_at,trigger_source) VALUES (:id,:kind,:source,:risk,:event,:type,:recipient,"
+                + ":version,:org,:district,:mode,:submitter,:created,:trigger)", params);
+    }
+
+    /** 处罚交接是后台自动建立（JAMMING_COMPLETED）还是有人选定接收单位后提交（MANUAL）；旧记录可能为空。 */
+    public String triggerSource(String handoffId) {
+        List<String> rows = jdbc.query("SELECT trigger_source FROM handoff WHERE handoff_id=:id",
+                Map.of("id", handoffId), (r, n) -> r.getString(1));
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     /**
@@ -442,6 +449,73 @@ public class HandoffRepository {
                         rs.getObject("captured_at", OffsetDateTime.class), rs.getString("status")));
     }
 
+    /**
+     * 本事件的合法性研判（2026-10-06）：basis=true 取关联本事件告警的最新一条（告警依据），否则取同一目标在本事件机构、区域内的最新一条。
+     * 带上人工复核结论；只读规则引擎和复核的表。
+     */
+    public JudgmentRow eventJudgment(String eventId, boolean basis) {
+        List<JudgmentRow> rows = jdbc.query("SELECT r.evaluation_id,r.alarm_id,r.legal_status,r.plan_match_code,r.plan_id,p.plan_no,r.grade,r.score,"
+                + "r.freshness_code,r.violation_reasons,r.unknown_reasons,r.decision_assurance_code,r.observed_at,r.evaluated_at,"
+                + "r.rule_set_version_id,v.review_state,v.manual_status"
+                + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id"
+                + " JOIN rule_evaluation r ON r.target_id=a.target_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id"
+                + " LEFT JOIN flight_plan p ON p.plan_id=r.plan_id"
+                + " LEFT JOIN legality_review v ON v.evaluation_id=r.evaluation_id"
+                + " WHERE e.event_id=:id AND r.mode='ACTIVE' AND r.subject_kind='TARGET' AND r.source_mode=a.source_mode"
+                + (basis ? " AND r.alarm_id=e.alarm_id" : "")
+                + " ORDER BY r.evaluated_at DESC, r.evaluation_id DESC FETCH FIRST 1 ROWS ONLY",
+                Map.of("id", eventId), (rs, i) -> new JudgmentRow(rs.getString("evaluation_id"), rs.getString("alarm_id"),
+                        rs.getString("legal_status"), rs.getString("plan_match_code"), rs.getString("plan_id"), rs.getString("plan_no"),
+                        rs.getString("grade"), rs.getBigDecimal("score"), rs.getString("freshness_code"),
+                        rs.getString("violation_reasons"), rs.getString("unknown_reasons"), rs.getString("decision_assurance_code"),
+                        rs.getObject("observed_at", OffsetDateTime.class), rs.getObject("evaluated_at", OffsetDateTime.class),
+                        rs.getString("rule_set_version_id"), rs.getString("review_state"), rs.getString("manual_status")));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 当事人线索（2026-10-06）：关联本事件告警、计划匹配为完全或部分匹配的最新研判所指的报备计划（飞手、运营单位来自上游计划接口），
+     * 以及目标上报的无人机序列号。只取名称，不取电话等联系方式。
+     */
+    public PartyRow eventParty(String eventId) {
+        List<PartyRow> plans = jdbc.query("SELECT p.plan_id,p.plan_no,p.pilot_name,p.operator_name,p.uav_sn,op.name AS operator_org_name,c.name AS pilot_contact_name"
+                + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id"
+                + " JOIN rule_evaluation r ON r.target_id=a.target_id AND r.alarm_id=e.alarm_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id"
+                + " JOIN flight_plan p ON p.plan_id=r.plan_id AND p.owner_org_id=e.owner_org_id AND p.district_id=e.district_id"
+                + " LEFT JOIN app_org op ON op.org_id=p.operator_org_id"
+                + " LEFT JOIN business_contact c ON c.contact_id=p.pilot_contact_id"
+                + " WHERE e.event_id=:id AND r.mode='ACTIVE' AND r.plan_match_code IN ('FULL','PARTIAL')"
+                + " ORDER BY r.evaluated_at DESC, r.evaluation_id DESC FETCH FIRST 1 ROWS ONLY",
+                Map.of("id", eventId), (rs, i) -> new PartyRow(rs.getString("plan_id"), rs.getString("plan_no"),
+                        firstText(rs.getString("pilot_name"), rs.getString("pilot_contact_name")),
+                        firstText(rs.getString("operator_name"), rs.getString("operator_org_name")), rs.getString("uav_sn"), null));
+        List<String> serials = jdbc.query("SELECT t.uav_sn FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id"
+                + " JOIN target t ON t.target_id=a.target_id WHERE e.event_id=:id", Map.of("id", eventId), (rs, i) -> rs.getString(1));
+        String targetSerial = serials.isEmpty() ? null : serials.get(0);
+        PartyRow plan = plans.isEmpty() ? null : plans.get(0);
+        return plan == null ? new PartyRow(null, null, null, null, null, targetSerial)
+                : new PartyRow(plan.planId(), plan.planNo(), plan.pilotName(), plan.operatorName(), plan.planSerial(), targetSerial);
+    }
+
+    /** 证据文件的哈希，与证据台账同一来源；只读证据表。 */
+    public Map<String, String> evidenceDigests(java.util.Collection<String> evidenceIds) {
+        if (evidenceIds == null || evidenceIds.isEmpty()) return Map.of();
+        Map<String, String> digests = new HashMap<>();
+        jdbc.query("SELECT evidence_id,sha256 FROM evidence_file WHERE evidence_id IN (:ids)", Map.of("ids", evidenceIds),
+                rs -> { digests.put(rs.getString(1), rs.getString(2)); });
+        return digests;
+    }
+
+    private static String firstText(String first, String second) {
+        if (first != null && !first.isBlank()) return first.trim();
+        return second == null || second.isBlank() ? null : second.trim();
+    }
+
+    public record JudgmentRow(String evaluationId, String alarmId, String legalStatus, String planMatchCode, String planId, String planNo,
+            String grade, java.math.BigDecimal score, String freshnessCode, String violationReasons, String unknownReasons,
+            String decisionAssuranceCode, OffsetDateTime observedAt, OffsetDateTime evaluatedAt, String ruleSetVersionId,
+            String reviewState, String manualStatus) { }
+    public record PartyRow(String planId, String planNo, String pilotName, String operatorName, String planSerial, String targetSerial) { }
     public record EventMaterialRow(String eventId, String alarmId, String sourceAlarmId, String alarmType, String severity,
             OffsetDateTime occurredAt, OffsetDateTime receivedAt, String state, String targetId, String ownerOrgId,
             String districtId, String sourceMode, long version) { }
@@ -454,9 +528,10 @@ public class HandoffRepository {
     public record EvidenceMaterialRow(String evidenceId, String evidenceNo, String kindCode, String sha256,
             OffsetDateTime capturedAt, String status) { }
 
+    /** triggerSource：处罚交接填 JAMMING_COMPLETED（后台自动）或 MANUAL（人选定接收单位后提交）；风险通知为空。 */
     public record HandoffInsert(String handoffId, String sourceKind, String sourceId, String riskId, String eventId, String handoffType,
             String recipientId, long sourceVersion, String ownerOrgId, String districtId, String sourceMode, String submittedBy,
-            OffsetDateTime createdAt) { }
+            OffsetDateTime createdAt, String triggerSource) { }
     public record DeliveryInsert(String deliveryId, String handoffId, int attemptNo, String deliveryStatus, String receiptStatus,
             String blockedReason, OffsetDateTime createdAt, OffsetDateTime submittedAt, OffsetDateTime deliveredAt, OffsetDateTime acknowledgedAt) { }
 }

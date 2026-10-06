@@ -26,6 +26,20 @@ class UavDepartureObservationTest {
  @Test void waitsFullThreeSecondsAfterSms(){delivered();when(clock.nowMillis()).thenReturn(12999L);var r=service.observation("event");assertThat(r.status()).isEqualTo("WATCHING");assertThat(r.deadlineAt()).isEqualTo(13000L);verifyNoInteractions(watch);}
  @Test void preservesThreeIndependentPositionResults(){delivered();for(var presence:PilotDepartureWatch.Presence.values()){when(watch.assess("event",10000L,20000L)).thenReturn(presence);assertThat(service.observation("event").presence()).isEqualTo(presence.name());}}
  @Test void phoneUsesItsOwnObservationWindow(){delivered();AutoVoice value=mock(AutoVoice.class);when(value.status()).thenReturn("SIMULATED_PLAYED");when(value.playbackCompletedAt()).thenReturn(15000L);when(voice.overview(event,false)).thenReturn(value);var r=service.observation("event");assertThat(r.channel()).isEqualTo("VOICE");assertThat(r.deadlineAt()).isEqualTo(25000L);assertThat(r.status()).isEqualTo("WATCHING");verifyNoInteractions(watch);}
+ @Test void afterCallKeepsTheSmsAreaAndOnlyReadsPositionsAfterPlayback(){
+  delivered();AutoVoice value=mock(AutoVoice.class);when(value.status()).thenReturn("SIMULATED_PLAYED");when(value.playbackCompletedAt()).thenReturn(15000L);when(voice.overview(event,false)).thenReturn(value);
+  when(clock.nowMillis()).thenReturn(26000L);
+  // 区域按短信送达时（10 秒）的位置确定，新位置从录音播完（15 秒）之后算。
+  when(watch.assess("event",10000L,15000L,26000L)).thenReturn(PilotDepartureWatch.Presence.LEFT);
+  var r=service.observation("event");assertThat(r.channel()).isEqualTo("VOICE");assertThat(r.status()).isEqualTo("ASSESSED");assertThat(r.presence()).isEqualTo("LEFT");
+  verify(watch,never()).assess("event",15000L,26000L);
+ }
+ @Test void afterCallWithoutSmsTimeIsUnknown(){
+  AutoSms delivered=mock(AutoSms.class);when(delivered.status()).thenReturn("SIMULATED_DELIVERED");when(sms.overview(event,false)).thenReturn(delivered);when(sms.deliveredAt("event")).thenReturn(null);
+  AutoVoice value=mock(AutoVoice.class);when(value.status()).thenReturn("SIMULATED_PLAYED");when(value.playbackCompletedAt()).thenReturn(15000L);when(voice.overview(event,false)).thenReturn(value);
+  when(clock.nowMillis()).thenReturn(26000L);
+  assertThat(service.observation("event").presence()).isEqualTo("UNKNOWN");verifyNoInteractions(watch);
+ }
  @Test void assessmentFailureIsUnknown(){delivered();when(watch.assess("event",10000L,20000L)).thenThrow(new IllegalStateException());assertThat(service.observation("event").presence()).isEqualTo("UNKNOWN");}
  @Test void scopeIsRequiredBeforeReadingNotification(){when(events.find("event",scope)).thenReturn(null);assertThatThrownBy(()->service.observation("event"));verifyNoInteractions(sms,voice,watch);}
 }
