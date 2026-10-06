@@ -33,6 +33,31 @@ beforeEach(() => {
 });
 afterEach(() => { app?.unmount(); host?.remove(); document.querySelectorAll('.el-overlay,.el-message').forEach(el => el.remove()); vi.useRealTimers(); });
 describe('调测模拟来源使用服务端明确许可', () => {
+  it('只读账号能看到服务端能力说明，过滤空项并按纯文本展示', async () => {
+    permissions.operate = false;
+    const warning = '协议 C 对 CameraStatus 支持情况表述不一致，现场支持仍需确认';
+    const literal = '<img src=x onerror=alert(1)>';
+    commissionApi.information.mockResolvedValue(info({ task_supported: false, notes: [warning, '', '  ', null, 42, literal] }));
+    await mount();
+    expect([...host.querySelectorAll('[aria-label="协议能力说明"] li')].map(el => el.textContent)).toEqual([warning, literal]);
+    expect(host.querySelector('[aria-label="协议能力说明"] img')).toBeNull();
+    expect(commissionApi.create).not.toHaveBeenCalled();
+  });
+  it('切换设备立即清除旧说明，迟到响应不能串到新设备', async () => {
+    let resolveOld, resolveNext;
+    deviceApi.list.mockResolvedValue({ items: [device, { ...device, device_id: 'next', name: '另一台设备', device_no: 'NEXT' }], total: 2 });
+    commissionApi.information.mockResolvedValueOnce(info({ notes: ['原设备说明'] }));
+    await mount();
+    expect(host.textContent).toContain('原设备说明');
+    commissionApi.information.mockImplementation(id => new Promise(resolve => { if (id === 'qa') resolveOld = resolve; else resolveNext = resolve; }));
+    button('刷新信息').click(); await settle();
+    [...host.querySelectorAll('.device-tree-item')].find(el => el.textContent.includes('另一台设备')).click(); await settle();
+    expect(host.textContent).not.toContain('原设备说明');
+    resolveOld(info({ notes: ['迟到的原设备说明'] })); await settle();
+    expect(host.textContent).not.toContain('迟到的原设备说明');
+    resolveNext(info({ device_id: 'next', notes: ['新设备说明'] })); await settle();
+    expect([...host.querySelectorAll('[aria-label="协议能力说明"] li')].map(el => el.textContent)).toEqual(['新设备说明']);
+  });
   it('本地 QA 明确许可后能按顺序创建、连接、保存和调测，仍标记非正式', async () => {
     await mount();
     for (const [label, method] of [['创建新任务', 'create'], ['建立连接', 'connect'], ['保存配置', 'configure'], ['开始协议调测', 'start']]) {
@@ -41,6 +66,18 @@ describe('调测模拟来源使用服务端明确许可', () => {
     }
     expect(host.textContent).toContain('非正式');
     expect(host.textContent).toContain('模拟数据');
+  });
+  it('回放模拟器设备使用逻辑调测配置，不读取真实连接参数', async () => {
+    const simulator = { ...device, source_mode: 'replay', simulated: true, protocol_code: 'LINGYUN_MQTT_V8_6' };
+    deviceApi.list.mockResolvedValue({ items: [simulator], total: 1 });
+    commissionApi.information.mockResolvedValue(info({ task_supported: true }));
+    await mount();
+    button('创建新任务').click(); await settle();
+    button('建立连接').click(); await settle();
+    expect(host.querySelector('input[placeholder="建立连接后配置"]').value).toBe('simulator');
+    expect([...host.querySelectorAll('input')].map(el => el.value)).toContain('8766');
+    button('保存配置').click(); await settle();
+    expect(commissionApi.configure).toHaveBeenCalledWith('task', expect.objectContaining({ transport: 'SIMULATOR', host: 'simulator', port: 8766 }));
   });
   it.each([{ simulation_allowed: false }, { simulation_allowed: undefined }, { simulation_allowed: 'true' }, { device_id: 'other' }])('未获同设备的明确许可时禁用创建：%j', async fields => {
     commissionApi.information.mockResolvedValue(info(fields)); await mount();

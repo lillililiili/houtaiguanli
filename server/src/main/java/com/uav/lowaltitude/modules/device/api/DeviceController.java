@@ -69,15 +69,16 @@ public class DeviceController {
             @RequestParam(required = false) String vendor,
             @RequestParam(required = false) String connectivity,
             @RequestParam(required = false) Boolean enabled,
+            @RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
             @RequestParam(defaultValue = "priority") String sort) {
         return ApiResponse.ok(service.list(
-                new DeviceFilter(keyword, typeCode, channel, region, vendor, connectivity, enabled),
+                new DeviceFilter(keyword, typeCode, channel, region, vendor, connectivity, enabled, formalOnly),
                 page, size, sort));
     }
 
     @GetMapping("/options")
-    public ApiResponse<DeviceOptions> options() {
-        return ApiResponse.ok(service.options());
+    public ApiResponse<DeviceOptions> options(@RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly) {
+        return ApiResponse.ok(formalOnly ? service.formalOptions() : service.options());
     }
 
     @GetMapping("/mqtt-options")

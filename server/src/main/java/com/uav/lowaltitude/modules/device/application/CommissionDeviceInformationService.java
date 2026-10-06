@@ -56,6 +56,11 @@ public class CommissionDeviceInformationService {
         add(sections, "catalog", "设备档案", "平台登记信息", "CATALOG", node(device), null, null, now, "catalog");
         boolean connectionVisible = access.canOperateDevices(actor);
         boolean mqttProtocol = LINGYUN_MQTT_V8_6.equals(protocol) || EO_EDGE_MQTT_20250826.equals(protocol);
+        boolean simulatorDevice = Boolean.TRUE.equals(device.get("simulated"))
+                && List.of("replay", "mock").contains(text(device, "source_mode"));
+        boolean taskSupported = !mqttProtocol || simulatorDevice;
+        if (simulatorDevice && mqttProtocol)
+            notes.add("这是设备模拟器对象，可进行逻辑调测；结果不代表现场协议验收。");
         if (!mqttProtocol) {
             add(sections, "connection", "连接配置", "平台接入配置", connectionVisible ? "CATALOG" : "REDACTED",
                     connectionVisible ? node(devices.findProfile(id)) : null, null, null, now, "connection");
@@ -118,7 +123,9 @@ public class CommissionDeviceInformationService {
                 }
                 if ("aoa".equals(type)) notes.add("AOA 使用方位角；协议明确其目标经纬度和高度无效，因此不展示为有效位置。");
             }
-            notes.add("MQTT 工参为设备主动上报；30 秒未收到视为过期。当前支持查看接入信息，未提供 TCP 式调测任务。");
+            notes.add(simulatorDevice
+                    ? "MQTT 工参为设备主动上报；30 秒未收到视为过期。模拟器对象支持逻辑调测。"
+                    : "MQTT 工参为设备主动上报；30 秒未收到视为过期。当前支持查看接入信息，未提供 TCP 式调测任务。");
         } else if (EO_EDGE_MQTT_20250826.equals(protocol)) {
             Map<String, Object> binding = new LinkedHashMap<>(information.mqtt(id, true));
             binding.put("reporting_topic", "iot-reporting/cmlc/edge/" + text(binding, "edge_id"));
@@ -162,7 +169,7 @@ public class CommissionDeviceInformationService {
                 millis(receipt, "occurred_at"), millis(receipt, "received_at"), now, "control_receipt");
         return new Information(id, text(device, "device_no"), text(device, "name"), protocol, text(device, "model"),
                 text(device, "source_mode"), Boolean.TRUE.equals(device.get("simulated")), now, simulation.allowed(),
-                !LINGYUN_MQTT_V8_6.equals(protocol) && !EO_EDGE_MQTT_20250826.equals(protocol), List.copyOf(sections), List.copyOf(samples), List.copyOf(notes));
+                taskSupported, List.copyOf(sections), List.copyOf(samples), List.copyOf(notes));
     }
 
     private void add(List<DeviceInformationAssembler.Section> sections, String code, String title, String source, String kind,

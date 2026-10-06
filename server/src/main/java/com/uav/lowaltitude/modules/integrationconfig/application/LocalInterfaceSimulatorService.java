@@ -74,16 +74,29 @@ public class LocalInterfaceSimulatorService {
   audit.record(actor.userId(),actor.account(),"local_interface_binding","local_interface",p.sourceId(),p.enabled()?"启用20分钟本地模拟接收":"停止本地模拟接收",null);
   return new Binding(p.sourceKind(),p.sourceId(),p.enabled(),expires);
  }
- @Transactional(readOnly=true) public Context context(){
+ // This endpoint aggregates several independently permission-scoped read models.
+ // Do not wrap the aggregation in one transaction: a handled ApiException from
+ // one optional section must not mark the whole request rollback-only.
+ public Context context(){
   var actor=interfaces.requireInterfacesRead();var params=new LinkedMultiValueMap<String,String>();params.add("size","100");
   List<String> unavailable=new ArrayList<>();
   List<RouteOption> routeOptions=new ArrayList<>();
+  List<RouteOption> expiredRouteOptions=new ArrayList<>();
+  long routeNow=clock.nowMillis();
   try {
    for(var route:flights.routes(params).items())if(route.enabled()&&Set.of("mock","replay").contains(route.sourceMode())){
     var versions=flights.routeVersions(route.routeId(),params).items();
-    for(var version:versions)if(version.validTo()==null||version.validTo()>clock.nowMillis()+300000){
-     routeOptions.add(new RouteOption(version.routeVersionId(),route.routeId(),route.name(),route.routeNo(),version.validFrom(),version.validTo()));break;
+    RouteOption expired=null;
+    boolean active=false;
+    for(var version:versions){
+     var option=new RouteOption(version.routeVersionId(),route.routeId(),route.name(),route.routeNo(),version.validFrom(),version.validTo(),version.centerline());
+     if(version.validTo()==null||version.validTo()>routeNow+300000){routeOptions.add(option);active=true;break;}
+     if(expired==null)expired=option;
     }
+    // Keep the latest expired version available only for map-plan diagnostics.
+    // It is deliberately separate from selectable routes, so a new plan cannot
+    // accidentally use a version whose validity window has ended.
+    if(!active&&expired!=null)expiredRouteOptions.add(expired);
    }
   }catch(ApiException error){permissionSection(error,"航线",unavailable);}
   List<PlanOption> plans=List.of();
@@ -96,7 +109,7 @@ public class LocalInterfaceSimulatorService {
   catch(ApiException error){permissionSection(error,"告警事件",unavailable);}
   var messages=repository.messages(actor.userId()).stream().filter(this::visible).map(this::dto).toList();
   var bindings=repository.bindings(actor.userId(),clock.nowMillis()).stream().filter(b->{try{source(b.sourceKind(),b.sourceId(),false);return true;}catch(ApiException error){if(error.getStatus()==HttpStatus.NOT_FOUND||error.getStatus()==HttpStatus.FORBIDDEN)return false;throw error;}}).toList();
-  return new Context(routeOptions,plans,bindings,messages,sources,unavailable);
+  return new Context(routeOptions,plans,bindings,messages,sources,unavailable,List.of(),expiredRouteOptions);
  }
  private static void permissionSection(ApiException error,String section,List<String> warnings){if(error.getStatus()!=HttpStatus.FORBIDDEN)throw error;warnings.add(section+"：无读取权限");}
  public void source(String kind,String id,boolean lock){

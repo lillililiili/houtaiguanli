@@ -38,8 +38,9 @@ public class DeviceMonitorController {
     }
 
     @GetMapping("/device-monitor/overview")
-    public ApiResponse<DeviceService.DeviceOverview> overview() {
-        return ApiResponse.ok(service.overview());
+    public ApiResponse<DeviceService.DeviceOverview> overview(@RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
+            @RequestParam(required = false) Boolean enabled) {
+        return ApiResponse.ok(formalOnly ? service.formalOverview(enabled) : service.overview(enabled));
     }
 
     @GetMapping("/device-monitor/tree")

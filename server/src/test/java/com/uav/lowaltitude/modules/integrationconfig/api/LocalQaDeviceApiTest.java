@@ -39,6 +39,17 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         prepare(plan,409);
         assertThat(jdbc.queryForObject("select count(*) from ops_integration_source where source_code='QA-LOCAL-CM4'",Long.class)).isEqualTo(1);
     }
+    @Test void restoresPreviouslyDisabledOrDeletedQaDeviceWhenConfigurationStillMatches() throws Exception {
+        String plan=send("/plans",plan("qa-cm-device-restore"),200).path("subject_id").asText();
+        String id=prepare(plan,200).path("device").path("device_id").asText();
+        jdbc.update("update ops_device set enabled=false,deleted_at=? where device_id=?",System.currentTimeMillis(),id);
+        jdbc.update("update ops_integration_source set enabled=false where source_id=(select source_id from ops_device where device_id=?)",id);
+        var restored=prepare(plan,200).path("device");
+        assertThat(restored.path("device_id").asText()).isEqualTo(id);
+        assertThat(restored.path("enabled").asBoolean()).isTrue();
+        assertThat(jdbc.queryForObject("select deleted_at from ops_device where device_id=?",Long.class,id)).isNull();
+        assertThat(jdbc.queryForObject("select enabled from ops_integration_source where source_id=(select source_id from ops_device where device_id=?)",Boolean.class,id)).isTrue();
+    }
     @Test void rejectsLivePlanAndLeavesDeviceInventoryUnchanged() throws Exception {
         String plan=send("/plans",plan("qa-cm-live"),200).path("subject_id").asText();
         jdbc.update("update flight_plan set source_mode='live' where plan_id=?",plan);

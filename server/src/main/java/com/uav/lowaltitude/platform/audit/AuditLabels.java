@@ -50,6 +50,8 @@ final class AuditLabels {
             Map.entry("notification_simulator_connected", "连接通知模拟器"),
             Map.entry("simulator_notification_receipt", "接收模拟通知回执"),
             Map.entry("simulator_receipt_projection", "同步模拟回执业务结果"),
+            Map.entry("weather_simulator_register", "登记模拟气象设备"),
+            Map.entry("weather_simulator_observation", "接收模拟气象观测"),
             Map.entry("local_qa_notification_prepare", "准备限时模拟通知通道"),
             Map.entry("local_qa_device_prepare", "准备本机模拟反制设备"),
             Map.entry("weather_sensor_create", "登记天气传感器"),
@@ -208,7 +210,8 @@ final class AuditLabels {
             Map.entry("auto_sms_retry_requested", "申请补发自动短信"),
             Map.entry("auto_voice_retry_requested", "申请补发自动电话"),
             Map.entry("device_delete", "删除设备"),
-            Map.entry("uav_advisory_recorded", "登记无人机劝离记录"));
+            Map.entry("uav_advisory_recorded", "登记无人机劝离记录"),
+            Map.entry("uav_no_counter_decided", "确认当前无风险并决定不反制"));
 
     private static final Map<String, String> METHODS = Map.of(
             "GET", "查询", "POST", "提交", "PUT", "更新", "PATCH", "更新", "DELETE", "删除");

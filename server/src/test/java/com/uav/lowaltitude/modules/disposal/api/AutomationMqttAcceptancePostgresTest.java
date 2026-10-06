@@ -31,6 +31,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         registry.add("app.automation-rules.fact-max-age-ms",()->300000);
         registry.add("app.mqtt.enabled",()->true);
         registry.add("app.outbox.enabled",()->true);
+        registry.add("app.dev-seed.password",()->"changeme");
         registry.add("app.lingyun-control.command-timeout-millis",()->120000);
     }
     @AfterAll static void closeDatabase() { DATABASE.close(); }
@@ -175,6 +176,68 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         assertThat(statusOf(id)).isEqualTo("EXECUTING"); awaitWire(1);
         assertThat(frames.get(0).path("data").path("operationCmd").asInt()).isEqualTo(60003);
         saveEvidence("manual-after-auto-"+pause,id);
+    }
+
+    @Test
+    @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="qa.manual.pause.browser",matches="true")
+    void serveManualActionWithPausedAutomation() throws Exception {
+        clock.offset=0;
+        automaticFixture();
+        // Keep normal time moving: rewinding to the initial observation strands commands whose
+        // outbox available_at was captured later by an HTTP thread. Refresh only this synthetic
+        // sample's observations below; production freshness and authorization windows stay intact.
+        String pause=System.getProperty("qa.manual.pause","DISABLED");
+        assertThat(pause).isIn("DISABLED","OUT_OF_SCHEDULE");
+        if("DISABLED".equals(pause)) jdbc.update("update automation_rule_condition set enabled=false where category='counter'");
+        else jdbc.update("update automation_rule_group set schedule_mode='DAILY',start_time='00:00',end_time='00:00' where category='counter'");
+        decisions.evaluate("counter",eventId);
+        String expected="DISABLED".equals(pause)?"PAUSED":"OUT_OF_SCHEDULE";
+        assertThat(runtime.state("counter",eventId).status()).isEqualTo(expected);
+        String actor=user("disposal:direct","disposal:read","devices","target:read","alarm:verify","alarms");
+        String userId=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,actor);
+        String account="qa-manual-paused";
+        jdbc.update("update app_user set account=?,name='隔离人工接管测试',password_hash=(select password_hash from app_user where account='admin1') where user_id=?",account,userId);
+        jdbc.update("update app_role_permission set menu_enabled=true where role_code=(select role_code from app_user where user_id=?)",userId);
+        String target=jdbc.queryForObject("select target_id from alarm where alarm_id=(select alarm_id from uav_event where event_id=?)",String.class,eventId);
+        Path output=Path.of("target","manual-paused-browser").toAbsolutePath();Files.createDirectories(output);
+        Path stop=output.resolve("stop");Files.deleteIfExists(stop);
+        var manifest=new java.util.LinkedHashMap<String,Object>();
+        manifest.put("port",port);manifest.put("simulated",true);manifest.put("pause",pause);
+        manifest.put("event_id",eventId);manifest.put("target_id",target);manifest.put("device_id",binding.opsDeviceId());
+        manifest.put("account",account);manifest.put("expected_automatic_state",expected);
+        manifest.put("clock_mode","REALTIME");manifest.put("synthetic_observation_refresh_ms",1000);
+        manifest.put("database",jdbc.queryForObject("select current_database()",String.class));
+        manifest.put("schema",jdbc.queryForObject("select current_schema()",String.class));
+        Files.writeString(output.resolve("manifest.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(manifest));
+        long deadline=System.nanoTime()+Duration.ofMinutes(15).toNanos(),nextObservation=0;
+        while(!Files.exists(stop)&&System.nanoTime()<deadline) {
+            long now=clock.nowMillis();
+            if(now>=nextObservation) {
+                // Explicit isolated inputs, not device receipts or renewed action authorization.
+                CounterEvidenceFixture.seed(jdbc,eventId,clock.now());
+                appendEvaluation(target,"ILLEGAL");
+                jdbc.update("update ops_device_state set observed_at=?,received_at=?,last_heartbeat_at=? where device_id=?",
+                        now,now,now,binding.opsDeviceId());
+                nextObservation=now+1000;
+            }
+            supervisor.reconcile();outbox.poll();
+            var ids=jdbc.queryForList("select authorization_id from disposal_authorization where subject_id=?",String.class,eventId);
+            Files.writeString(output.resolve("state.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(java.util.Map.of(
+                    "automatic_state",runtime.state("counter",eventId).status(),"authorization_ids",ids,"wire_count",frames.size(),
+                    "clock_ms",clock.nowMillis(),
+                    "commands",jdbc.queryForList("select command_id,status,created_at,deadline_at,issued_at from device_command where device_id=?",binding.opsDeviceId()),
+                    "outbox",jdbc.queryForList("select o.payload as command_id,o.available_at,o.processed_at,o.attempt_count from outbox_event o join device_command c on c.command_id=o.payload where o.topic='device.control.lingyun' and c.device_id=?",binding.opsDeviceId()))));
+            Thread.sleep(250);
+        }
+        assertThat(Files.exists(stop)).as("Browser owner must finish the isolated manual flow").isTrue();
+        var ids=jdbc.queryForList("select authorization_id from disposal_authorization where subject_id=?",String.class,eventId);
+        assertThat(ids).hasSize(1);assertThat(frames).hasSize(1);
+        assertThat(jdbc.queryForObject("select requested_by from disposal_authorization where authorization_id=?",String.class,ids.get(0))).isEqualTo(userId);
+        assertThat(jdbc.queryForObject("select approved_by from disposal_authorization where authorization_id=?",String.class,ids.get(0))).isNull();
+        assertThat(runtime.state("counter",eventId).status()).isEqualTo(expected);
+        assertThat(frames.get(0).path("data").path("operationCmd").asInt()).isEqualTo(60003);
+        saveEvidence("browser-manual-after-auto-"+pause,ids.get(0));
+        Files.deleteIfExists(stop);
     }
 
     @Test void independentJvmFailureKillRecoveryAndRestartDoNotRepeatWireAction() throws Exception {

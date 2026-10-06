@@ -25,9 +25,12 @@ public record LingyunEnvelope(String provider, String type, String externalId, b
      * 工参可受理的附录缩写：探测六类 + 诱骗/干扰/驱鸟炮。
      * 不登记 cm/oe/isrs；光电工参走协议 C 心跳。
      */
-    public static final Map<String, Integer> TYPES = Map.of(
-            "radar", 1, "5ga", 0, "tdoa", 10, "aoa", 9, "dcd", 11, "rid", 102,
-            "dec", 5, "ifr", 6, "bsc", 12);
+    public static final Map<String, Integer> TYPES = Map.ofEntries(
+            Map.entry("radar", 1), Map.entry("5ga", 0), Map.entry("tdoa", 10),
+            Map.entry("aoa", 9), Map.entry("dcd", 11), Map.entry("rid", 102),
+            Map.entry("dec", 5), Map.entry("ifr", 6), Map.entry("bsc", 12),
+            // 仅 replay 模拟器使用的静态心跳类型；live 来源仍被注册校验拒绝。
+            Map.entry("weather", 1001), Map.entry("countermeasure", 1002));
     private static final ObjectMapper JSON = new ObjectMapper()
             .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);

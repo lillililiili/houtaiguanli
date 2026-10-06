@@ -53,6 +53,7 @@ import com.uav.lowaltitude.platform.worker.OutboxWorker;
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:mqtt_p5;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
         "app.mqtt.enabled=false", "app.fusion.enabled=false", "app.rule-engine.enabled=false",
+        "app.fusion.replay.seed-enabled=false",
         "app.lingyun-control.command-timeout-millis=10000"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
@@ -199,6 +200,16 @@ class LingyunControlMqttTest {
         outboxWorker.poll();
         assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, timed)).isEqualTo("TIMED_OUT");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?", Long.class, timed)).isZero();
+    }
+
+    @Test void replaySimulatorOnlyTypesCanBeRegisteredWithoutDatabaseConstraintFailure() {
+        Binding weather = register("weather");
+        Binding countermeasure = register("countermeasure");
+
+        assertThat(weather.deviceTypeAbbr()).isEqualTo("weather");
+        assertThat(countermeasure.deviceTypeAbbr()).isEqualTo("countermeasure");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM mqtt_device_binding WHERE device_type_abbr IN ('weather','countermeasure')",
+                Integer.class)).isEqualTo(2);
     }
 
     @org.junit.jupiter.params.ParameterizedTest

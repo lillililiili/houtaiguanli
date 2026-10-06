@@ -50,4 +50,16 @@ class LingyunEnvelopeTest {
                     wrong.getBytes(StandardCharsets.UTF_8))).hasMessage("IDENTITY_MISMATCH");
         }
     }
+
+    @ParameterizedTest
+    @ValueSource(strings={"weather","countermeasure"})
+    void replaySimulatorPresenceTypesDecodeStaticHeartbeats(String type) {
+        int code = LingyunEnvelope.TYPES.get(type);
+        String raw = "{\"providerCode\":\"provider\",\"deviceId\":\"external-1\",\"deviceName\":\"fixture\",\"deviceType\":"
+                + code + ",\"workState\":1,\"ptTime\":1000}";
+        var decoded = LingyunEnvelope.decode("bridge/provider/device/" + type + "/external-1",
+                raw.getBytes(StandardCharsets.UTF_8));
+        assertThat(decoded.sensing()).isFalse();
+        assertThat(decoded.workState()).isEqualTo(1);
+    }
 }

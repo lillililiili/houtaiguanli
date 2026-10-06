@@ -108,8 +108,14 @@ public class TargetVideoService {
                 || target.latestState()==null || target.latestState().observedAt()<clock.nowMillis()-reportMaxAge))
             return result(targetId,task,"LOST","光电实时跟踪回报已过期，不代表目标飞离。");
         return receipt
-                ? result(targetId, task, "TRACKING", "设备已确认跟踪，视频源尚未配置。")
+                ? result(targetId, task, "TRACKING", pendingVideoReason(binding))
                 : result(targetId, task, "RECEIPT_UNAVAILABLE", "尚未取得当前跟踪任务的有效设备回执。");
+    }
+
+    private static String pendingVideoReason(Binding binding) {
+        return binding != null && simulatedMode(binding.sourceMode())
+                ? "设备已确认跟踪，等待模拟器光电设备推送视频流。"
+                : "设备已确认跟踪，现场视频源尚未配置。";
     }
 
     private boolean validReceipt(Map<String, Object> receipt, Map<String, Object> task, Binding binding) {

@@ -4,7 +4,7 @@ import * as echarts from 'echarts';
 import { deviceApi } from '@/api/devices.js';
 import { chartOption, trendLabel, trendModel } from '@/utils/deviceTrends.js';
 const props = defineProps({ deviceId: { type: String, required: true }, paused: Boolean });
-const data = ref(null), error = ref(''), loading = ref(false), tab = ref('sensing'), range = ref('1h'), reportCode = ref('');
+const data = ref(null), error = ref(''), loading = ref(false), tab = ref('reports'), range = ref('1h'), reportCode = ref('');
 const nodes = [], charts = [];
 let observer, timer, generation = 0, alive = true, inFlight = false;
 const reportCodes = computed(() => [...new Set((data.value?.reports || []).map(r => r.code))]);
@@ -18,7 +18,6 @@ async function load(manual = false) {
     const result = await deviceApi.trends(id, { range: period });
     if (!alive || current !== generation) return;
     data.value = result; error.value = '';
-    if (result.sensing_supported === false && tab.value === 'sensing') tab.value = 'reports';
     if (!reportCodes.value.includes(reportCode.value)) reportCode.value = reportCodes.value[0] || '';
   } catch (e) { if (alive && current === generation) { data.value = null; error.value = e.message || '运行趋势加载失败'; } }
   finally { if (alive && current === generation) { loading.value = false; inFlight = false; await paint(); } }
@@ -44,7 +43,7 @@ onBeforeUnmount(() => { alive = false; generation++; clearInterval(timer); obser
 <template>
   <el-card class="device-trends">
     <template #header><div class="trend-toolbar"><b>设备历史趋势</b><div class="trend-actions"><el-radio-group v-model="range" size="small" aria-label="统计时间范围"><el-radio-button label="1h">近1小时</el-radio-button><el-radio-button label="24h">近24小时</el-radio-button><el-radio-button label="7d">近7天</el-radio-button></el-radio-group><el-button size="small" :loading="loading" @click="load(true)">刷新统计</el-button></div></div></template>
-    <el-tabs v-model="tab" aria-label="运行统计分类"><el-tab-pane v-if="data?.sensing_supported !== false" label="感知统计" name="sensing" /><el-tab-pane label="上报趋势" name="reports" /><el-tab-pane label="状态历史" name="state" /></el-tabs>
+    <el-tabs v-model="tab" aria-label="运行统计分类"><el-tab-pane label="上报趋势" name="reports" /><el-tab-pane label="状态历史" name="state" /></el-tabs>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <div v-show="!error">
     <div v-if="data?.simulated" class="trend-note">模拟 / 回放设备数据</div>

@@ -59,15 +59,18 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
     private final FusionEventContextRepository eventContext;
     private final AppClock clock;
     private final ObjectMapper json;
+    private final FusionConfigLoader simulatorParameters;
 
     public DefaultFusedLayerWriter(FusionConfigService config, FusedTrackRepository tracks, DegradationRepository states, FusionEventEmitter events,
-            FusionEventContextRepository eventContext, AppClock clock, ObjectMapper json) {
+            FusionEventContextRepository eventContext, AppClock clock, ObjectMapper json, FusionConfigLoader simulatorParameters) {
         this.config = config; this.tracks = tracks; this.states = states; this.events = events; this.eventContext = eventContext; this.clock = clock; this.json = json;
+        this.simulatorParameters=simulatorParameters;
     }
 
     @Override
     public void write(TargetFrameResult frame) {
         FusionParams params = config.params(frame.configVersion());
+        if ("replay".equals(frame.domain().sourceMode())) params=simulatorParameters.simulationParameters(params);
         OffsetDateTime observedAt = frame.observedAt().atOffset(ZoneOffset.UTC);
         OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
         SelectionRow previousSelection = states.findSelection(frame.targetId());

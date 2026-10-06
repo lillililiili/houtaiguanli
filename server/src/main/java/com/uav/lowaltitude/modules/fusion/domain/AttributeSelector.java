@@ -51,11 +51,12 @@ public final class AttributeSelector {
         String classCode = classSource.map(SourceEstimate::classCode).orElse(null);
         if (classConflict) unknown.add(new UnknownField("object_type_code", "CLASS_CONFLICT"));
         else if (classCode == null) unknown.add(new UnknownField("object_type_code", REASON_NOT_REPORTED));
-        // 类别置信度只来自 EO：雷达六值类别与融合箱类别没有置信度语义，不能把权重当置信度上报。
-        Double classConfidence = classSource.filter(e -> TYPE_EO.equals(e.sourceType())).map(SourceEstimate::classConfidence).orElse(null);
+        // EO 与显式归一化模拟输入具有置信度语义；雷达六值类别与融合箱仍不以权重冒充置信度。
+        Double classConfidence = classSource.filter(e -> TYPE_EO.equals(e.sourceType()) || "SIM_NORMALIZED".equals(e.sourceType())).map(SourceEstimate::classConfidence).orElse(null);
         if (classConfidence == null) unknown.add(new UnknownField("classification_confidence", REASON_NOT_REPORTED));
 
-        Optional<SourceEstimate> identitySource = estimates.stream().filter(e -> e.identityClue() != null && IDENTITY_TYPES.contains(e.sourceType()))
+        // SIM_NORMALIZED 在来源表被约束为 replay，身份由受鉴权的模拟输入明确携带。
+        Optional<SourceEstimate> identitySource = estimates.stream().filter(e -> e.identityClue() != null && (IDENTITY_TYPES.contains(e.sourceType()) || "SIM_NORMALIZED".equals(e.sourceType())))
                 .max(Comparator.comparingDouble((SourceEstimate e) -> effectiveWeight(e, ATTR_IDENTITY, params)).thenComparing(SourceEstimate::sourceId, Comparator.reverseOrder()));
 
         boolean switched = previousPositionSourceId != null && positionSourceId != null && !previousPositionSourceId.equals(positionSourceId);

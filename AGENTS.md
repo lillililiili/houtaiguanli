@@ -7,6 +7,7 @@
 - 管理端只承载运维管理、系统管理和个人资料/改密，不加入若依演示、代码生成、缓存或定时任务菜单。
 - 不修改已应用 Flyway 脚本；新增迁移必须追加版本并在 PostgreSQL/PostGIS 验证。
 - 不提交 `node_modules`、`dist`、`target`、运行数据、日志、凭据或本地环境文件。
+- 验收环境严禁开启、补写或恢复本地演示数据种子；启动验收服务必须保持 `app.dev-seed.enabled=false`，不得通过命令行临时传入 `true`。不得为修复验收页面而修改或新增 `LocalStage*Seeder`/`LocalDemo*Seeder`；隔离测试若需种子，只能在测试上下文中显式启用，不能带入浏览器验收运行。
 
 后端详细约束见 [server/AGENTS.md](server/AGENTS.md)。
 

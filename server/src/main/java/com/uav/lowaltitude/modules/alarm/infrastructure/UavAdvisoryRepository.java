@@ -9,6 +9,7 @@ import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Action;
 @Repository
 public class UavAdvisoryRepository {
     private final JdbcTemplate jdbc;
+    private final NoCounterRepository noCounter;
     private final AutoSmsRepository facts;
     private final com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository disposal;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
@@ -16,7 +17,8 @@ public class UavAdvisoryRepository {
     private final com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory;
     public UavAdvisoryRepository(JdbcTemplate jdbc,com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory,
             AutoSmsRepository facts,com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository disposal,
-            com.uav.lowaltitude.platform.time.AppClock clock,com.fasterxml.jackson.databind.ObjectMapper json) {
+            com.uav.lowaltitude.platform.time.AppClock clock,com.fasterxml.jackson.databind.ObjectMapper json,NoCounterRepository noCounter) {
+        this.noCounter=noCounter;
         this.jdbc=jdbc;this.directory=directory;this.facts=facts;this.disposal=disposal;this.clock=clock;this.json=json;
     }
     /** 内部受控读取：调用方先完成事件范围校验或已授权材料组装。 */
@@ -25,6 +27,7 @@ public class UavAdvisoryRepository {
     }
     /** 调用方须先完成数据范围校验；动作执行链还须先锁定关联事件。 */
     public String counterBlockReason(String eventId) {
+        if(noCounter.active(eventId))return NoCounterRepository.ACTIVE_REASON;
         var event=jdbc.queryForMap("SELECT state_code,alarm_id FROM uav_event WHERE event_id=?",eventId);
         AutoSmsRepository.Facts current;
         try { current=facts.facts(eventId); }
@@ -43,6 +46,7 @@ public class UavAdvisoryRepository {
                 (String)event.get("state_code"),(String)event.get("alarm_id"),current,evaluation,
                 sufficient,noUnknowns,disposal.freshSeconds(),clock.nowMillis());
     }
+    public boolean noCounterActive(String eventId) { return noCounter.active(eventId); }
     public void append(String id, String eventId, long version, String actor, long at, Action a, boolean simulated, String delivery) {
         jdbc.update("INSERT INTO uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,outcome,danger,note,urgent,simulated,delivery_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",id,eventId,version,a.kind(),at,actor,a.recipientName(),a.contactBasis(),a.content(),a.outcome(),a.danger(),a.note(),Boolean.TRUE.equals(a.urgent()),simulated,delivery);
     }
