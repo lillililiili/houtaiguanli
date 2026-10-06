@@ -112,6 +112,29 @@ class RuleSetManagementApiTest {
     }
 
     @Test
+    void versionListTellsTheAdminPageWhichVersionCanBeActivated() throws Exception {
+        // 与激活守卫同源：草稿未发布、演示参数在 allow-demo-active=false 时不可启用、已生效版本不再给“启用”。
+        mvc.perform(get("/api/v1/rule-sets/" + code + "/versions").header("Authorization", bearer(manager)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].rule_set_version_id").value(draftVersion))
+                .andExpect(jsonPath("$.data.items[0].activation_allowed").value(false))
+                .andExpect(jsonPath("$.data.items[0].activation_block_reason").value("版本尚未发布"))
+                .andExpect(jsonPath("$.data.items[1].rule_set_version_id").value(demoVersion))
+                .andExpect(jsonPath("$.data.items[1].activation_allowed").value(false))
+                .andExpect(jsonPath("$.data.items[1].activation_block_reason").value("演示参数尚未经业务方确认，正式环境不能启用"))
+                .andExpect(jsonPath("$.data.items[2].rule_set_version_id").value(confirmedVersion))
+                .andExpect(jsonPath("$.data.items[2].activation_allowed").value(true))
+                .andExpect(jsonPath("$.data.items[2].activation_block_reason").doesNotExist());
+        mvc.perform(post("/api/v1/rule-sets/" + code + "/activate").header("Authorization", bearer(manager)).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON).content(activate(confirmedVersion, 0))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/rule-sets/" + code + "/versions").header("Authorization", bearer(manager)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[2].is_active").value(true))
+                .andExpect(jsonPath("$.data.items[2].activation_allowed").value(false))
+                .andExpect(jsonPath("$.data.items[2].activation_block_reason").value("该版本已是生效版本"));
+    }
+
+    @Test
     void rollbackWithoutPreviousVersionConflicts() throws Exception {
         mvc.perform(post("/api/v1/rule-sets/" + code + "/rollback").header("Authorization", bearer(manager)).header("Idempotency-Key", key())
                 .contentType(MediaType.APPLICATION_JSON).content("{\"note\":\"回滚\",\"expected_version\":0}"))

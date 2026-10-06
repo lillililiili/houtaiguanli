@@ -90,7 +90,7 @@ public class RuleSetManagementService {
         access.require(PermissionCode.RULE_READ);
         RuleSetRow set = requireSet(code(code));
         Page page = page(parameters, PAGE_ONLY);
-        return new PageDto<>(repository.listVersions(set.ruleSetId(), page.offset(), page.size()).stream().map(RuleSetManagementService::dto).toList(),
+        return new PageDto<>(repository.listVersions(set.ruleSetId(), page.offset(), page.size()).stream().map(this::versionDto).toList(),
                 page.page(), page.size(), repository.countVersions(set.ruleSetId()));
     }
 
@@ -145,7 +145,7 @@ public class RuleSetManagementService {
         requireVersion(set, request.expectedVersion());
         VersionRow version = requirePublishedVersion(set, request.ruleSetVersionId());
         // DEMO 参数只能做影子验证；生产（allow-demo-active=false）不允许成为生效规则。
-        if (!"CONFIRMED".equals(version.paramStatus()) && (!simulation.allowed() || !properties.isAllowDemoActive())) {
+        if (!paramsActivatable(version.paramStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "DEMO_PARAMS_NOT_ALLOWED", "演示参数版本不允许激活");
         }
         if (version.ruleSetVersionId().equals(set.activeVersionId())) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "该版本已是生效版本");
@@ -164,7 +164,7 @@ public class RuleSetManagementService {
         requireVersion(set, request.expectedVersion());
         if (set.previousActiveVersionId() == null) throw new ApiException(HttpStatus.CONFLICT, "NO_PREVIOUS_VERSION", "没有可回滚的上一生效版本");
         VersionRow previous = requirePublishedVersion(set, set.previousActiveVersionId());
-        if (!"CONFIRMED".equals(previous.paramStatus()) && (!simulation.allowed() || !properties.isAllowDemoActive())) {
+        if (!paramsActivatable(previous.paramStatus())) {
             throw new ApiException(HttpStatus.CONFLICT, "DEMO_PARAMS_NOT_ALLOWED", "上一版本为演示参数，不允许回滚为生效版本");
         }
         String shadow = previous.ruleSetVersionId().equals(set.shadowVersionId()) ? null : set.shadowVersionId();
@@ -224,6 +224,19 @@ public class RuleSetManagementService {
 
     private static void requireVersion(RuleSetRow set, long expected) {
         if (set.version() != expected) throw versionConflict();
+    }
+
+    /** 已确认参数总能生效；演示参数只在显式测试环境且打开 allow-demo-active 时才能成为生效版本。 */
+    private boolean paramsActivatable(String paramStatus) {
+        return "CONFIRMED".equals(paramStatus) || (simulation.allowed() && properties.isAllowDemoActive());
+    }
+
+    /** 与 activate 的守卫顺序一致（未发布 → 参数不允许 → 已生效）；返回 null 表示当前部署可以启用该版本。 */
+    private String activationBlockReason(VersionDetailRow row) {
+        if (!STATUS_PUBLISHED.equals(row.statusCode())) return "版本尚未发布";
+        if (!paramsActivatable(row.paramStatus())) return "演示参数尚未经业务方确认，正式环境不能启用";
+        if (row.active()) return "该版本已是生效版本";
+        return null;
     }
 
     /** 版本必须属于该规则集且已发布；不属于本规则集的版本与不存在同样是 404，避免探测其他规则集的版本 ID。 */
@@ -325,9 +338,11 @@ public class RuleSetManagementService {
         return new RuleSetDto(row.ruleSetId(), row.ruleSetCode(), row.name(), row.activeVersionId(), row.shadowVersionId(), row.previousActiveVersionId(), row.version(),
                 millis(row.createdAt()), millis(row.updatedAt()));
     }
-    private static RuleSetVersionDto dto(VersionDetailRow row) {
+    private RuleSetVersionDto versionDto(VersionDetailRow row) {
+        String blocked = activationBlockReason(row);
         return new RuleSetVersionDto(row.ruleSetVersionId(), row.ruleSetId(), row.ruleSetCode(), row.versionNo(), row.statusCode(), row.paramStatus(), millis(row.validFrom()),
-                optionalMillis(row.validTo()), row.description(), row.sourceMode(), millis(row.createdAt()), optionalMillis(row.publishedAt()), row.active(), row.shadow());
+                optionalMillis(row.validTo()), row.description(), row.sourceMode(), millis(row.createdAt()), optionalMillis(row.publishedAt()), row.active(), row.shadow(),
+                blocked == null, blocked);
     }
     private static ActivationDto dto(ActivationRow row) {
         return new ActivationDto(row.activationId(), row.ruleSetId(), row.kind(), row.fromVersionId(), row.toVersionId(), row.actorId(), row.note(), row.resultingVersion(), millis(row.createdAt()));

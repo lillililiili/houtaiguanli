@@ -13,9 +13,14 @@ public final class RuleDtos {
     public record RuleSetDto(String ruleSetId, String ruleSetCode, String name, String activeVersionId, String shadowVersionId,
             String previousActiveVersionId, long version, long createdAt, long updatedAt) { }
 
+    /**
+     * activation_allowed 与激活接口的守卫同源（已发布、参数允许、尚未生效），管理端据此决定是否给出“启用”；
+     * 不能启用时 activation_block_reason 给出原因。账号是否有 rule:manage 仍由激活接口单独校验。
+     */
     public record RuleSetVersionDto(String ruleSetVersionId, String ruleSetId, String ruleSetCode, int versionNo, String statusCode, String paramStatus,
             long validFrom, Long validTo, String description, String sourceMode, long createdAt, Long publishedAt,
-            @JsonProperty("is_active") boolean active, @JsonProperty("is_shadow") boolean shadow) { }
+            @JsonProperty("is_active") boolean active, @JsonProperty("is_shadow") boolean shadow,
+            boolean activationAllowed, String activationBlockReason) { }
 
     public record MemberDto(String ruleCode, String ruleVersionId, int priority, boolean enabled) { }
 
