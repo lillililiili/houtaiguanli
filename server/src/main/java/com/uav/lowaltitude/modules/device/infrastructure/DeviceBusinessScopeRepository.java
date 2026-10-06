@@ -38,6 +38,7 @@ public class DeviceBusinessScopeRepository {
     /**
      * 返回已按范围过滤的设备异常派生表 SQL（不含外层括号）。过滤发生在数据库层，
      * 这样工作台的分页与 count 都建立在同一谓词之上，而不是取回后再在 Java 里裁剪。
+     * 已删除设备的异常随设备退出队列，记录保留。
      */
     public String scopedIncidentSql(AccessDecision access, Map<String, Object> params) {
         StringBuilder sql = new StringBuilder("""
@@ -49,7 +50,7 @@ public class DeviceBusinessScopeRepository {
                 JOIN device_business_scope s ON s.ops_device_id = i.device_id
                 JOIN app_org o ON o.org_id = s.owner_org_id AND o.enabled = TRUE
                 JOIN app_district dd ON dd.district_id = s.district_id AND dd.enabled = TRUE
-                WHERE 1 = 1""");
+                WHERE d.deleted_at IS NULL""");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             // 同一条授权记录必须同时命中组织和区域；分成两个 IN 会把 (org-a,district-b) 这类交叉元组放进来。
             sql.append(" AND EXISTS (SELECT 1 FROM app_user_data_scope us")
