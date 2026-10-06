@@ -78,8 +78,8 @@ public class LocalStage9SpaceRiskSeeder implements ApplicationRunner {
 
     private void seed(boolean evaluable) {
         OffsetDateTime at = T0.atOffset(ZoneOffset.UTC);
-        // 观测时刻必须落在阶段 3 演示计划的窗口内，否则 C04 取不到任何目标：计划窗口是首次播种时按 AppClock 定的
-        // （clock.now()+5 分钟起算一小时），与固定常量 T0 永不重叠，种子数据就永远跑不出一次真实评估。
+        // 演示观测沿用阶段 3 计划窗口内的时刻，便于固定样本回读；当前 C04 只要求目标观测在评估回看窗口内，
+        // 待执行计划本身不再以 start_at/end_at 拦截起飞前风险预检。
         // 直接读库里那条计划的实际窗口，两边都是"不存在才插入"，播种与计划因此永远同源。
         OffsetDateTime observedAt = planWindowStart().plusMinutes(1);
         activateDemoRuleSet(at);

@@ -36,8 +36,8 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
- * Local replay route input. The simulator must register its drawn centerline
- * before the existing local plan input can create a plan for that route version.
+ * Local replay route input. It remains available for standalone route messages;
+ * a plan message may also register its embedded centerline before plan creation.
  */
 @Service
 @org.springframework.context.annotation.Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
@@ -105,7 +105,7 @@ public class LocalRouteInputService {
         String routeNo = messageId;
         jdbc.update("INSERT INTO route(route_id,route_no,name,enabled,source_mode,owner_org_id,district_id,created_at,updated_at,version) VALUES(?,?,?,?,?,?,?,?,?,0)",
                 routeId, routeNo, name, true, "replay", owner, district, at(now), at(now));
-        jdbc.update("INSERT INTO route_version(route_version_id,route_id,version_no,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,valid_from,valid_to,change_reason,created_at) VALUES(?,?,1,ST_GeomFromText(?,4326),?,?,?,?,?,?,?,?)",
+        jdbc.update("INSERT INTO route_version(route_version_id,route_id,version_no,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,valid_from,valid_to,change_reason,created_at) VALUES(?,?,1,CAST(? AS GEOMETRY),?,?,?,?,?,?,?,?)",
                 versionId, routeId, wkt, width, min, max, datum, at(validFrom), validTo == null ? null : at(validTo), "本地地图模拟批次", at(now));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("route_id", routeId);
@@ -150,7 +150,7 @@ public class LocalRouteInputService {
             if (!Double.isFinite(lon) || !Double.isFinite(lat) || lon < -180 || lon > 180 || lat < -90 || lat > 90) throw bad("航线坐标超出范围");
             points.add(point.get(0).decimalValue().toPlainString() + " " + point.get(1).decimalValue().toPlainString());
         }
-        return "LINESTRING(" + String.join(",", points) + ")";
+        return "SRID=4326;LINESTRING(" + String.join(",", points) + ")";
     }
 
     private String text(ObjectNode body, String key, int max, boolean required) {

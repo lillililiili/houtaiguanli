@@ -12,6 +12,7 @@ import org.springframework.mock.env.MockEnvironment;
 import com.uav.lowaltitude.modules.device.application.DeviceService;
 import com.uav.lowaltitude.modules.device.application.DeviceService.*;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
+import com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.*;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -22,17 +23,20 @@ class FlightDevicePreflightTest {
     FlightReadRepository plans=mock(FlightReadRepository.class);
     SpatialFactPort spatial=mock(SpatialFactPort.class);
     FlightReadRepository.PlanRow plan=mock(FlightReadRepository.PlanRow.class);
+    DeviceSummary device;
     FlightDeviceCheckService service;
     @BeforeEach void setup() {
+        var environment=new MockEnvironment().withProperty("app.flight-device-check.simulator-device-bridge-enabled","true");
+        environment.setActiveProfiles("local");
         service=new FlightDeviceCheckService(devices,plans,mock(AccessControlService.class),spatial,
-            new AppClock(Clock.fixed(now,ZoneOffset.UTC)),BigDecimal.valueOf(5000),new MockEnvironment());
+            new AppClock(Clock.fixed(now,ZoneOffset.UTC)),BigDecimal.valueOf(5000),environment);
         when(plans.findPlan(eq("future-plan"),any())).thenReturn(plan);
         when(plan.sourceMode()).thenReturn("mock");when(plan.statusCode()).thenReturn("PENDING");
         when(plan.routeVersionId()).thenReturn("route");
         when(plan.startAt()).thenReturn(now.plusSeconds(3600).atOffset(ZoneOffset.UTC));
         when(plan.endAt()).thenReturn(now.plusSeconds(7200).atOffset(ZoneOffset.UTC));
         when(plans.findRouteVersion(eq("route"),any())).thenReturn(mock(FlightReadRepository.RouteVersionRow.class));
-        var device=mock(DeviceSummary.class);when(device.deviceId()).thenReturn("sensor");
+        device=mock(DeviceSummary.class);when(device.deviceId()).thenReturn("sensor");
         when(device.sourceMode()).thenReturn("mock");when(device.deviceTypeCode()).thenReturn("radar");
         when(device.enabled()).thenReturn(true);
         when(devices.list(any(),anyInt(),anyInt(),anyString())).thenReturn(new DevicePage(List.of(device),1,100,1));
@@ -86,6 +90,29 @@ class FlightDevicePreflightTest {
         assertThat(result.rows().get(0).abnormal()).isTrue();
         assertThat(result.rows().get(0).healthCode()).isEqualTo("BAD");
         assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_ABNORMAL");
+    }
+    @Test void localSimulatorMockPlanChecksNearbyReplayDeviceThroughExplicitBridge() {
+        when(plan.sourceId()).thenReturn(LocalPlanFilingDtos.SIMULATOR_SOURCE_ID);
+        when(device.sourceMode()).thenReturn("replay");
+        when(device.simulated()).thenReturn(true);
+
+        var result=service.read("future-plan");
+
+        assertThat(result.rows()).hasSize(1);
+        assertThat(result.mqttSimulation()).isTrue();
+        assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_NORMAL");
+    }
+    @Test void livePlanChecksLiveDeviceWithoutUsingSimulatorBridge() {
+        when(plan.sourceId()).thenReturn("real-flight-source");
+        when(plan.sourceMode()).thenReturn("live");
+        when(device.sourceMode()).thenReturn("live");
+        when(device.simulated()).thenReturn(false);
+
+        var result=service.read("future-plan");
+
+        assertThat(result.rows()).hasSize(1);
+        assertThat(result.mqttSimulation()).isFalse();
+        assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_NORMAL");
     }
     @Test void startedPlanKeepsExistingTakeoffCheck() {
         when(plan.startAt()).thenReturn(now.minusSeconds(3600).atOffset(ZoneOffset.UTC));

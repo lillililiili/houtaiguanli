@@ -188,6 +188,98 @@ function Get-ContainerHostPort {
     return [int]$Matches[1]
 }
 
+function Wait-ContainerHealthy {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [int]$Seconds = 180
+    )
+    $deadline = (Get-Date).AddSeconds($Seconds)
+    do {
+        $health = Get-ContainerHealth -Name $Name
+        if ($health -eq 'healthy') {
+            Write-Host "[OK] 容器 $Name 已健康。"
+            return
+        }
+        if ($health -in @('exited', 'dead')) {
+            throw "容器 $Name 已退出，无法继续启动。"
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+    throw "容器 $Name 未在 ${Seconds}s 内进入 healthy；当前状态：$health。"
+}
+
+function Get-DockerDesktopExecutable {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidate in @(
+        (Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\Docker Desktop.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Docker\Docker Desktop.exe'),
+        'D:\DevTools\DockerDesktop\Docker Desktop.exe'
+    )) {
+        if ($candidate) { [void]$candidates.Add($candidate) }
+    }
+    $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+    if ($dockerCommand -and $dockerCommand.Source) {
+        $dockerRoot = Split-Path -Parent (Split-Path -Parent $dockerCommand.Source)
+        [void]$candidates.Add((Join-Path $dockerRoot 'Docker Desktop.exe'))
+        [void]$candidates.Add((Join-Path (Split-Path -Parent $dockerRoot) 'Docker Desktop.exe'))
+    }
+    return $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique -First 1
+}
+
+function Test-DockerEngine {
+    $null = & docker info --format '{{.ServerVersion}}' 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
+function Repair-DockerInferenceSocket {
+    $runDirectory = Join-Path $env:LOCALAPPDATA 'Docker\run'
+    $socketPath = Join-Path $runDirectory 'dockerInference'
+    $socket = Get-Item -LiteralPath $socketPath -Force -ErrorAction SilentlyContinue
+    if (-not $socket -or -not ($socket.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return }
+    $otherEntries = @(Get-ChildItem -LiteralPath $runDirectory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'dockerInference' })
+    if ($otherEntries.Count -gt 0) {
+        throw "Docker 推理套接字链接损坏，但 Docker\run 目录还有其它运行文件，未自动处理：$runDirectory"
+    }
+    $backupDirectory = "$runDirectory-broken-$([DateTime]::Now.ToString('yyyyMMdd-HHmmss'))"
+    Write-Warning "发现无法访问的 Docker 推理套接字链接，保留原目录并让 Docker Desktop 重建：$socketPath"
+    Move-Item -LiteralPath $runDirectory -Destination $backupDirectory -ErrorAction Stop
+    New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
+    Write-Host "[修复] Docker 运行目录已保留到：$backupDirectory"
+}
+
+function Ensure-DockerEngine {
+    if (Test-DockerEngine) { return }
+
+    $desktopProcess = Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue
+    $backendProcess = Get-Process -Name 'com.docker.backend' -ErrorAction SilentlyContinue
+    if (-not $desktopProcess -and -not $backendProcess) { Repair-DockerInferenceSocket }
+    $desktopPath = Get-DockerDesktopExecutable
+    if (-not $desktopProcess -and $desktopPath) {
+        Write-Host "[准备] Docker Engine 未就绪，启动 Docker Desktop：$desktopPath"
+        Start-Process -FilePath $desktopPath -WorkingDirectory (Split-Path -Parent $desktopPath) -WindowStyle Hidden | Out-Null
+    }
+    elseif ($desktopProcess) {
+        Write-Host '[等待] Docker Desktop 已启动，等待 Linux 引擎就绪...'
+    }
+    else {
+        $context = (& docker context show 2>$null | Select-Object -First 1)
+        throw "Docker Engine 未就绪，且未找到 Docker Desktop。当前 Docker context：$context。请先安装或启动 Docker Desktop。"
+    }
+
+    $deadline = (Get-Date).AddSeconds(180)
+    do {
+        Start-Sleep -Seconds 2
+        if (Test-DockerEngine) {
+            Write-Host '[OK] Docker Linux 引擎已就绪。'
+            return
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    $context = (& docker context show 2>$null | Select-Object -First 1)
+    throw "Docker Desktop 已启动，但 180 秒内 Linux 引擎仍未就绪。当前 Docker context：$context。请检查 Docker Desktop 状态后重试。"
+}
+
 function Test-LocalPort {
     param([Parameter(Mandatory)][int]$Port)
     return [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
@@ -283,11 +375,7 @@ if ($WithQaVideo -and (Test-Endpoint -Uri "http://127.0.0.1:$SimulatorPort/") -a
     throw "设备模拟器端口 $SimulatorPort 已有运行实例，但未启用光电测试推流；请先停止该实例，再使用 -WithQaVideo 重新启动。"
 }
 
-$dockerProbe = & docker info --format '{{.ServerVersion}}' 2>&1
-if ($LASTEXITCODE -ne 0) {
-    $dockerHint = ($dockerProbe | Select-Object -First 1)
-    throw "Docker Desktop 引擎未就绪：$dockerHint"
-}
+Ensure-DockerEngine
 
 $resolvedJavaHome = Resolve-Java17Home -RequestedHome $JavaHome
 if (-not $resolvedJavaHome) {
@@ -317,8 +405,9 @@ else {
         $DbPort = if (Test-LocalPort -Port 5432) { 25432 } else { 5432 }
     }
     $env:DB_PORT = [string]$DbPort
-    try { & docker compose -f $composeFile up -d --wait db } finally { Remove-Item Env:DB_PORT -ErrorAction SilentlyContinue }
+    try { & docker compose -f $composeFile up -d db } finally { Remove-Item Env:DB_PORT -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { throw '数据库容器启动失败。' }
+    Wait-ContainerHealthy -Name 'deploy-db-1' -Seconds $TimeoutSeconds
 }
 if ($DbPort -le 0) { throw '无法解析数据库宿主机端口，请使用 -DbPort 显式指定。' }
 
@@ -328,8 +417,11 @@ if ($WithMqtt -or $WithSimulator) {
         Write-Host '[复用] MQTT 容器 deploy-mosquitto-1 已在运行。'
     }
     else {
-        & docker compose -f $composeFile --profile qa up -d --wait mosquitto
+        & docker compose -f $composeFile --profile qa up -d mosquitto
         if ($LASTEXITCODE -ne 0) { throw 'MQTT 容器启动失败。' }
+        $mqttDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+        while (-not (Test-LocalPort -Port 1883) -and (Get-Date) -lt $mqttDeadline) { Start-Sleep -Seconds 2 }
+        if (-not (Test-LocalPort -Port 1883)) { throw "MQTT 未在 ${TimeoutSeconds}s 内监听 1883。" }
     }
 }
 else {

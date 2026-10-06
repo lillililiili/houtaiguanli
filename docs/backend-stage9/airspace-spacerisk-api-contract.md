@@ -66,7 +66,7 @@ GET/POST /api/v1/flight-plans/{id}/authorizations       POST {document_no, issue
 | `C05.procedure_buffer_m` | 500 | m |
 | `C05.protected_target_pad_m` | 200 | m |
 
-判定：走廊内（点到活动计划航线走廊 ≤ 半宽）+ 同基准高度在带内 + 活动计划 → HIGH；走廊内但高度未知/带外 → MEDIUM；近航线（≤ `corridor_near_m`）→ MEDIUM；无活动计划 → 不生成风险，只计 `targets_seen`；`object_count ≥ flock_count_threshold` 或趋势上升 → 上调一级（上限 CRITICAL）。AGL/AMSL 不互比，基准缺失 → `altitude_band=UNKNOWN`。`source_risk_id = C04:<rule_version_id>:<plan_id>:<target_id>:<window_from>` 幂等；目标 ID 先经 `target_current_alias` 解析到存活目标。C05：进近/离场线缓冲 + 保护目标半径命中 → `affected_area=AIRPORT_ZONE`；无计划时只写 `rule_evaluation_run` 统计并返回 `PLAN_REQUIRED` 消息。定时 `SpaceRiskEvaluationJob`（`app.rule-engine.c04.enabled` 缺省 false，只在 PostGIS 上执行；H2 返回 UNAVAILABLE）。
+判定：当前观测窗口内的目标按同单位/区域关联 `PENDING` 或 `EXECUTING` 计划；不再要求目标观测时刻与计划 `start_at/end_at` 重叠，`COMPLETED/CANCELLED` 计划不参与当前风险预检。走廊内（点到计划航线走廊 ≤ 半宽）+ 同基准高度在带内 → HIGH；走廊内但高度未知/带外 → MEDIUM；近航线（≤ `corridor_near_m`）→ MEDIUM；没有待执行/执行中计划 → 不生成风险，只计 `targets_seen`；`object_count ≥ flock_count_threshold` 或趋势上升 → 上调一级（上限 CRITICAL）。AGL/AMSL 不互比，基准缺失 → `altitude_band=UNKNOWN`。`source_risk_id = C04:<rule_version_id>:<plan_id>:<target_id>:<window_from>` 幂等；目标 ID 先经 `target_current_alias` 解析到存活目标。C05：进近/离场线缓冲 + 保护目标半径命中 → `affected_area=AIRPORT_ZONE`；无计划时只写 `rule_evaluation_run` 统计并返回 `PLAN_REQUIRED` 消息。定时 `SpaceRiskEvaluationJob` 在 QA 显式开启，生产基线仍缺省关闭；只在 PostGIS 上执行，H2 返回 UNAVAILABLE。
 
 ## 前端
 

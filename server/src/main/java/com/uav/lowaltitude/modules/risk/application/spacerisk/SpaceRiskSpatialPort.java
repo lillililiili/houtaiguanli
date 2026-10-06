@@ -14,7 +14,7 @@ public interface SpaceRiskSpatialPort {
     boolean available();
 
     /**
-     * 窗口内命中细类字典的异物目标与其最近的活动计划航线。
+     * 窗口内命中细类字典的异物目标与待执行/执行中计划的航线。
      * 目标经 target_current_alias 解析到存活目标：被合并的历史目标不应各自再生成一条风险。
      */
     List<SpaceObservation> observations(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes);
