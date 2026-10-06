@@ -59,9 +59,16 @@ public class MqttConfigurationService {
         return requiredBroker(id,false);
     }
     public List<Map<String,Object>> scopes() {
-        permissions.requireDevicesOperate();
+        permissions.requireScopeOptionsRead();
         return repository.scopeOptions().stream().filter(r -> access.canAccessTuple((String)r.get("org_id"),(String)r.get("district_id"))).toList();
     }
+    /** 管理端据此给出“数据来源”选项：模拟回放只在显式测试环境（local+qa 或 test）开放，正式环境只有真实来源。 */
+    public Capabilities capabilities() {
+        permissions.requireInterfacesRead();
+        boolean allowed=simulation.allowed();
+        return new Capabilities(allowed?List.of("live","replay"):List.of("live"),allowed);
+    }
+    public record Capabilities(List<String> sourceModes,boolean simulationAllowed) { }
     @Transactional
     public Broker create(BrokerInput p,String key) {
         permissions.requireInterfacesOperate(); validate(p); scope(p.ownerOrgId(),p.districtId());

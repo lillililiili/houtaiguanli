@@ -31,6 +31,7 @@ export const mqttApi = {
   list: () => request({ url: '/v1/mqtt-brokers' }),
   options: () => request({ url: '/v1/devices/mqtt-options' }),
   scopes: () => request({ url: '/v1/mqtt-brokers/scopes' }),
+  capabilities: () => request({ url: '/v1/mqtt-brokers/capabilities' }),
   create: (body, key = newIdempotencyKey('mqtt-create')) => mutation('post', '/v1/mqtt-brokers', body, { idempotencyKey: key }),
   update: (id, body, key = newIdempotencyKey('mqtt-update')) => mutation('put', `/v1/mqtt-brokers/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
   setEnabled: (id, body, key = newIdempotencyKey('mqtt-enabled')) => mutation('patch', `/v1/mqtt-brokers/${encodeURIComponent(id)}/enabled`, body, { idempotencyKey: key })

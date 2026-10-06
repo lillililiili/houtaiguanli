@@ -29,6 +29,13 @@ public class DeviceAccessPolicy {
     public AuthUser requireCommissionOperate() { return require("commissioning.op"); }
     public AuthUser requireInterfacesRead() { return require("interfaces.read"); }
     public AuthUser requireInterfacesOperate() { return require("interfaces.op"); }
+    /** 登记设备（devices.op）和维护 MQTT 连接（interfaces.op）都要选择单位与区域，任一权限即可读取可选范围。 */
+    public AuthUser requireScopeOptionsRead() {
+        AuthUser actor = AuthContext.require();
+        String permission = accessService.permissionCodes(actor.roleCode()).contains("interfaces.op")
+                ? "interfaces.op" : "devices.op";
+        return require(permission);
+    }
 
     public boolean canOperateDevices(AuthUser user) {
         return user != null && accessService.permissionCodes(user.roleCode()).contains("devices.op");
