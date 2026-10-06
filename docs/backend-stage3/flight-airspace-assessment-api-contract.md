@@ -24,6 +24,7 @@
 | --- | --- | --- |
 | `GET /api/v1/flight-plans` | `flight:read` | `start_at DESC NULLS LAST, plan_id ASC` |
 | `GET /api/v1/flight-plans/{plan_id}` | `flight:read` | 返回计划及其精确航线版本摘要；越权 404 |
+| `GET /api/v1/flight-plans/upstream-status` | `flight:read` | 上级（管服平台）计划接口可用性；不要求接口配置权限，见下文 |
 | `GET /api/v1/routes` | `route:read` | `updated_at DESC, route_id ASC` |
 | `GET /api/v1/routes/{route_id}` | `route:read` | 航线根详情；越权 404 |
 | `GET /api/v1/routes/{route_id}/versions` | `route:read` | `version_no DESC, route_version_id ASC` |
@@ -48,6 +49,10 @@ owner_org_id, district_id, window_from, window_to, keyword
 ```
 
 `window_from/window_to` 必须成对，并以计划完整时段与查询时段相交为匹配条件。计划任一时间缺失时，不匹配时间筛选；无时间筛选时仍可返回，并在 `field_issues` 标明缺失。
+
+`keyword` 为 1–128 个字符，不去除首尾空格，不区分大小写地包含匹配计划编号 `plan_no`、无人机编号 `uav_sn`、航线编号 `route_no` 和航线名称；`%`、`_` 按字面匹配。空白或超长返回 400 `VALIDATION_ERROR`。与其他筛选条件取交集，`total` 同样按关键词计数，且不越过数据范围。
+
+`GET /flight-plans/upstream-status` 返回 `status`、`available`、`message`、`configured_at`、`last_received_at`。当前没有管服平台计划适配器：未保存配置为 `NOT_CONFIGURED`，已保存配置为 `AWAITING_ADAPTER`，两者 `available=false`，`message` 说明上级计划数据暂时取不到。`configured_at` 为计划接口配置的保存时间；`last_received_at` 为本人数据范围内最近一次收到或更新上级（`source_mode=live`）计划的时间。从未配置或从未收到时对应字段不返回，不用 0 补值。计划页据此提示列表可能不全，不把“暂无计划”当成上级没有计划。
 
 `GET /routes` 接受：
 

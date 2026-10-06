@@ -71,6 +71,15 @@ public class FlightReadRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public Long latestPlanUpdatedAt(String sourceMode, AccessDecision access) {
+        Where where = planWhere(PlanQuery.empty(), access);
+        add(where, "p.source_mode", "source_mode", sourceMode);
+        List<OffsetDateTime> rows = jdbc.query("SELECT MAX(p.updated_at) AS updated_at" + planFrom() + where.sql,
+                where.parameters, (rs, n) -> time(rs, "updated_at"));
+        OffsetDateTime latest = rows.isEmpty() ? null : rows.get(0);
+        return latest == null ? null : latest.toInstant().toEpochMilli();
+    }
+
     public long countRoutes(RouteQuery query, AccessDecision access) {
         Where where = routeWhere(query, access, "r");
         return count("SELECT COUNT(*)" + routeFrom() + where.sql, where.parameters);
