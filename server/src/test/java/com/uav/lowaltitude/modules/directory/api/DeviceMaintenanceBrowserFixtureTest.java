@@ -1,9 +1,6 @@
 package com.uav.lowaltitude.modules.directory.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.doThrow;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -19,7 +16,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome;
 
 /** Opt-in browser fixture. Only a guarded, disposable test database is modified. */
 @EnabledIfSystemProperty(named = "qa.maintenance.browser", matches = "true")
@@ -80,29 +76,30 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
         create();
         applyScenario("NOTICE_SUBMITTED");
         var submitted = resend(1, "隔离等待渠道结果", UUID.randomUUID().toString());
-        assertThat(submitted.path("notification_delivery_status").asText()).isEqualTo("SUBMITTED");
+        assertThat(submitted.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
+        assertThat(submitted.path("notification_attempts").get(0).path("recipient_snapshot").path("channel_type").asText()).isEqualTo("INTERNAL");
         assertThat(submitted.path("can_resend_notification").asBoolean()).isFalse();
         applyScenario("NOTICE_LATE_RECEIPT");
         var late = workflow().path("task");
-        assertThat(late.path("notification_delivery_status").asText()).isEqualTo("SUBMITTED");
+        assertThat(late.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
         assertThat(late.path("notification_attempts").get(1).path("receipt_status").asText()).isEqualTo("ACKNOWLEDGED");
         applyScenario("LEGACY");
         applyScenario("NOTICE_DELIVERED");
         applyScenario("NEW_TASK");
         applyScenario("NOTICE_NOT_SENT");
         var notSent = resend(1, "隔离未接通场景", UUID.randomUUID().toString());
-        assertThat(notSent.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("NOT_SENT");
+        assertThat(notSent.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("COMPLETED");
         applyScenario("NOTICE_FAILED");
         var failed = resend(2, "隔离失败场景", UUID.randomUUID().toString());
-        assertThat(failed.path("notification_delivery_status").asText()).isEqualTo("FAILED");
+        assertThat(failed.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
         assertThat(failed.path("notification_attempts").get(2).path("delivery_status").asText()).isEqualTo("DELIVERED");
         applyScenario("NOTICE_DELIVERED");
         var delivered = resend(3, "隔离再次送达", UUID.randomUUID().toString());
         assertThat(delivered.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
         applyScenario("NOTICE_UNKNOWN");
         var unknown = resend(4, "隔离结果未知", UUID.randomUUID().toString());
-        assertThat(unknown.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("UNKNOWN");
-        assertThat(unknown.path("can_resend_notification").asBoolean()).isFalse();
+        assertThat(unknown.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("COMPLETED");
+        assertThat(unknown.path("notification_attempts").get(0).path("recipient_snapshot").path("channel_type").asText()).isEqualTo("INTERNAL");
     }
 
     @Test void verifyScopeFixtureConditions() throws Exception {
@@ -198,19 +195,7 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
                 jdbc.update("UPDATE ops_device_state SET health_code='BAD',observed_at=?,last_heartbeat_at=? WHERE device_id=?", now, now, device);
                 observe(true, now);
                 prepareBrowserChecks();
-                doReturn(!"NOTICE_NOT_SENT".equals(scenario)).when(channel).simulated();
-                if ("NOTICE_NOT_SENT".equals(scenario)) {
-                    // The existing service records NOT_SENT without invoking the external channel.
-                } else if ("NOTICE_UNKNOWN".equals(scenario)) {
-                    doThrow(new IllegalStateException("隔离模拟通知结果未知")).when(channel).deliver(any());
-                } else {
-                    String status = scenario.substring("NOTICE_".length());
-                    var at = clock.now().atOffset(java.time.ZoneOffset.UTC);
-                    doReturn(new DeliveryOutcome(status, "FAILED".equals(status) ? "NOT_EXPECTED" : "PENDING", null,
-                            "FAILED".equals(status) ? "隔离模拟渠道失败" : null,
-                            "FAILED".equals(status) ? null : at, "DELIVERED".equals(status) ? at : null, null))
-                            .when(channel).deliver(any());
-                }
+                // 设备运维通知固定写入后台待办；这些旧场景名称只保留浏览器夹具的时间线控制。
             }
             case "HIDE_SCOPE" -> {
                 hiddenScopeOrg = jdbc.queryForObject("SELECT owner_org_id FROM ops_device_maintenance_task WHERE task_id=?", String.class, taskId);

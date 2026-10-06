@@ -17,7 +17,7 @@ import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.RuleV
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
- * C04 定时评估：默认关闭（app.rule-engine.c04.enabled=false），不接入阶段 7 的 RuleEngineWorker——
+ * C04 定时评估：生产基线默认关闭（app.rule-engine.c04.enabled=false），QA 可显式开启；不接入阶段 7 的 RuleEngineWorker——
  * 两者的窗口语义与产出对象不同，共用一个 Worker 会让任一方的失败拖住另一方。
  * 单实例保护用最朴素的进程内标记 + 条件更新式的"上一次窗口"推进：本期只有单节点部署，
  * 多节点时需要换成数据库租约（已在报告的未接入项里说明）。

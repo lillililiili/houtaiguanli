@@ -24,6 +24,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 自动收集设备事实；没有发现飞机或设备异常，都不能证明未起飞。 */
 @Service
 public class FlightDeviceCheckService {
+    private static final String LOCAL_SIMULATOR_PLAN_SOURCE_ID = "local-flight-plan-simulator";
     private static final Set<String> SENSORS = Set.of("RADAR","EO","OE","TDOA","FIVE_G_A","5GA","FUSION_BOX","AOA","DCD","RID");
     private final DeviceService devices;
     private final FlightReadRepository plans;
@@ -32,6 +33,7 @@ public class FlightDeviceCheckService {
     private final AppClock clock;
     private final BigDecimal nearbyMeters;
     private final boolean localMqttDemo;
+    private final boolean localSimulatorDeviceBridge;
     public FlightDeviceCheckService(DeviceService devices, FlightReadRepository plans, AccessControlService access,
             SpatialFactPort spatial, AppClock clock, @Value("${app.flight-device-check.nearby-meters:5000}") BigDecimal nearbyMeters,
             Environment environment) {
@@ -41,6 +43,8 @@ public class FlightDeviceCheckService {
         this.localMqttDemo=environment.acceptsProfiles(Profiles.of("!production & local"))
             && environment.getProperty("app.dev-seed.enabled",Boolean.class,false)
             && environment.getProperty("app.flight-device-check.mqtt-demo-enabled",Boolean.class,false);
+        this.localSimulatorDeviceBridge=environment.acceptsProfiles(Profiles.of("!production & local"))
+            && environment.getProperty("app.flight-device-check.simulator-device-bridge-enabled",Boolean.class,false);
     }
     public record DeviceRow(String deviceId,String name,boolean simulated,BigDecimal distanceM,String connectivity,
             String healthCode,Long lastHeartbeatAt,Long observedAt,boolean abnormal,boolean complete,List<Incident> incidents) { }
@@ -51,7 +55,9 @@ public class FlightDeviceCheckService {
     public Check read(String planId) {
         var plan=plans.findPlan(FlightActualsService.identifier(planId),access.require(PermissionCode.FLIGHT_READ));
         if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行计划不存在或不可见");
-        boolean mqttSimulation=localMqttDemo && "mock".equals(plan.sourceMode());
+        boolean simulatorPlan=localSimulatorDeviceBridge
+            && LOCAL_SIMULATOR_PLAN_SOURCE_ID.equals(plan.sourceId()) && "mock".equals(plan.sourceMode());
+        boolean mqttSimulation=(localMqttDemo && "mock".equals(plan.sourceMode())) || simulatorPlan;
         var routeAccess=access.require(PermissionCode.ROUTE_READ);
         long now=clock.nowMillis();
         if(plan.routeVersionId()==null || plans.findRouteVersion(plan.routeVersionId(),routeAccess)==null)
@@ -64,7 +70,8 @@ public class FlightDeviceCheckService {
         // 起飞前检查当前设备和仍未关闭的告警，不拿未来时段判断是否起飞。
         if(preflight)from=to=now;
         if(to<from)return unknown(planId,now,"计划时段不正确，暂不能检查。",mqttSimulation);
-        // 不用区县文本或来源单位作地理范围；演示与真实模式仍严格隔离。
+        // 不用区县文本作地理范围。普通演示与真实模式仍严格隔离；本地外部接口模拟器
+        // 的 mock 计划有明确来源 ID，才允许检查同一模拟器产生的 replay 设备。
         boolean replaySimulation="replay".equals(plan.sourceMode());
         List<DeviceRow> rows=new ArrayList<>();boolean complete=false;int unchecked=0,seen=0;
         for(int page=1;page<=20;page++) {
@@ -72,10 +79,12 @@ public class FlightDeviceCheckService {
             for(var device:listed.items()) {
                 boolean demoDevice="replay".equals(device.sourceMode())
                     && device.simulated() && device.deviceNo()!=null && device.deviceNo().startsWith("FP-CHECK-");
-                // 回放计划只检查当前启用的回放设备；历史批次停用设备不属于本次计划周边设备。
-                if((mqttSimulation?!demoDevice:!plan.sourceMode().equals(device.sourceMode())) || device.deviceTypeCode()==null
+                boolean simulatorDevice=simulatorPlan && "replay".equals(device.sourceMode()) && device.simulated();
+                boolean sourceCompatible=simulatorPlan?simulatorDevice:(mqttSimulation?demoDevice:plan.sourceMode().equals(device.sourceMode()));
+                // 回放计划和本地模拟器桥接都只检查当前启用的回放设备；历史批次停用设备不属于本次计划周边设备。
+                if(!sourceCompatible || device.deviceTypeCode()==null
                         || !SENSORS.contains(device.deviceTypeCode().toUpperCase(Locale.ROOT))
-                        || (replaySimulation && !device.enabled()))continue;
+                        || ((replaySimulation || simulatorPlan) && !device.enabled()))continue;
                 var detail=devices.detail(device.deviceId());
                 if(!positionKnown(detail)){unchecked++;continue;}
                 var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());

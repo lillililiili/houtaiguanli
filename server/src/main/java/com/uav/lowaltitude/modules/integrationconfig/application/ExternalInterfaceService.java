@@ -67,7 +67,7 @@ public class ExternalInterfaceService {
         // The existing plan reader enforces action permission, object existence and data scope first.
         var plan=flights.flightPlan(planId);
         if (localForecast != null && java.util.Set.of("mock","replay").contains(plan.sourceMode())) {
-            var received=localForecast.read(planId);
+            var received=localForecast.read(plan);
             if(received!=null) return received;
         }
         Row row=required("WEATHER_FORECAST");

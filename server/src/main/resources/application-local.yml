@@ -58,6 +58,8 @@ app:
   flight-device-check:
     # 用户授权使用独立 MQTT 模拟器演示 mock 计划；真实计划不使用这些模拟设备。
     mqtt-demo-enabled: ${FLIGHT_DEVICE_CHECK_MQTT_DEMO_ENABLED:false}
+    # 外部接口模拟器提交的计划使用 mock 来源，设备模拟器上报使用 replay 来源；仅按固定来源 ID 桥接。
+    simulator-device-bridge-enabled: ${FLIGHT_DEVICE_CHECK_SIMULATOR_DEVICE_BRIDGE_ENABLED:true}
   source-mode: live
   evidence-dir: ./data/evidence
   map-package:

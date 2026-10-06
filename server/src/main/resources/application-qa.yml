@@ -5,6 +5,10 @@ spring:
       on-profile: "local & qa & !production"
 
 app:
+  # 本地完整模拟链路提交气象预警时开放 QA 输入接口；不影响生产 profile。
+  weather-risk:
+    qa:
+      enabled: true
   session:
     # 活跃的本地 QA 模拟器会话在接近到期时自动续期；停止使用后仍按 TTL 过期。
     rolling-enabled: true
@@ -25,6 +29,10 @@ app:
       seed-enabled: false
       run-on-start: false
   rule-engine:
+    c04:
+      enabled: ${APP_RULE_ENGINE_C04_ENABLED:true}
+      poll-millis: ${APP_RULE_ENGINE_C04_POLL_MILLIS:60000}
+      window-minutes: ${APP_RULE_ENGINE_C04_WINDOW_MINUTES:30}
     enabled: true
     allow-demo-active: true
     replay:

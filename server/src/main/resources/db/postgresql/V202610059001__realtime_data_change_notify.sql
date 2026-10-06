@@ -90,7 +90,8 @@ BEGIN
             RAISE NOTICE 'realtime notify: table % not found, skipped', binding[1];
             CONTINUE;
         END IF;
-        -- 可重复执行：本脚本原编号 V202610040001 与 main 的同号迁移冲突后改号，已按旧编号装过的库重跑时先删旧触发器。
+        -- 可重复执行：本脚本原编号 V202610040001、V202610050001，两次与 main 的同号迁移冲突后改号（序号用 9xxx 避开 main 的日期编号），
+        -- 已按旧编号装过的库重跑时先删旧触发器。
         EXECUTE format('DROP TRIGGER IF EXISTS trg_app_data_change_ins ON public.%I', binding[1]);
         EXECUTE format('DROP TRIGGER IF EXISTS trg_app_data_change_upd ON public.%I', binding[1]);
         EXECUTE format('DROP TRIGGER IF EXISTS trg_app_data_change_del ON public.%I', binding[1]);

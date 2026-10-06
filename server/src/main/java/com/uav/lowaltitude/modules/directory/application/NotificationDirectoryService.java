@@ -55,6 +55,12 @@ public class NotificationDirectoryService {
     :row!=null&&!"DEVICE_MAINTENANCE".equals(row.purpose())?missing(null,null,"所选配置不是设备运维通知用途，请核查通知设置")
     :row==null?missing(null,null,"尚未确定唯一的运维通知对象，请明确配置接收单位"):snapshot(row,row.id(),name(row));
  }
+ /** 设备异常上报的接收方是本系统后台运维待办，不是外部通知渠道。 */
+ public RecipientSnapshot backendMaintenanceTarget(){
+  return new RecipientSnapshot("backend-maintenance-inbox","后台运维待办",null,null,null,null,null,
+    "INTERNAL","backend-maintenance-inbox",null,null,true,null,clock.nowMillis(),
+    template("DEVICE_MAINTENANCE"),templateVersion("DEVICE_MAINTENANCE"),"后台待办已接收；设备处理结果分别记录",null);
+ }
  public String maintenanceBlocker(RecipientSnapshot target,String sourceMode){
   if(!target.configured())return target.blockedReason();
   if(!supportedChannel(target)||!simulationEnvironment()||!Set.of("mock","replay").contains(sourceMode)||!channel.simulated())return "通知渠道尚未接通或不允许此数据来源";

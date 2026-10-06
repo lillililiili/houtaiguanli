@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.integrationconfig.application;
 
 import java.util.*;
+import java.nio.charset.StandardCharsets;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
@@ -26,19 +27,37 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Service @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class LocalInterfaceSimulatorService {
  private final DeviceAccessPolicy interfaces;private final AccessControlService access;private final FlightReadService flights;
- private final LocalFlightPlanInputService input;private final LocalInterfaceRepository repository;
+ private final LocalFlightPlanInputService input;private final com.uav.lowaltitude.modules.flight.application.LocalRouteInputService routeInput;private final LocalInterfaceRepository repository;
  private final RiskRepository risks;private final UavEventRepository events;private final HandoffRepository handoffs;
  private final ObjectMapper json;private final AppClock clock;private final AuditService audit;
  private final com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService filing;
- public LocalInterfaceSimulatorService(DeviceAccessPolicy interfaces,AccessControlService access,FlightReadService flights,LocalFlightPlanInputService input,LocalInterfaceRepository repository,RiskRepository risks,UavEventRepository events,HandoffRepository handoffs,ObjectMapper json,AppClock clock,AuditService audit,com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService filing){this.interfaces=interfaces;this.access=access;this.flights=flights;this.input=input;this.repository=repository;this.risks=risks;this.events=events;this.handoffs=handoffs;this.json=json;this.clock=clock;this.audit=audit;this.filing=filing;}
+ private final WeatherForecastRiskService weatherRisks;
+ public LocalInterfaceSimulatorService(DeviceAccessPolicy interfaces,AccessControlService access,FlightReadService flights,LocalFlightPlanInputService input,com.uav.lowaltitude.modules.flight.application.LocalRouteInputService routeInput,LocalInterfaceRepository repository,RiskRepository risks,UavEventRepository events,HandoffRepository handoffs,ObjectMapper json,AppClock clock,AuditService audit,com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService filing,WeatherForecastRiskService weatherRisks){this.interfaces=interfaces;this.access=access;this.flights=flights;this.input=input;this.routeInput=routeInput;this.repository=repository;this.risks=risks;this.events=events;this.handoffs=handoffs;this.json=json;this.clock=clock;this.audit=audit;this.filing=filing;this.weatherRisks=weatherRisks;}
  @Transactional public Message plan(PlanInput p){
   var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
   // Existing-message reads still recheck the original business object's visibility.
   Row previous=repository.existing(actor.userId(),"FLIGHT_PLAN",p.messageId());
   if(previous!=null)return replay(previous,p);
-  var result=input.create(p.routeVersionId(),p.uavSn(),p.startAt(),p.endAt(),p.sourceMode(),p.statusCode());
+  var result=input.create(routeVersion(p),p.uavSn(),p.startAt(),p.endAt(),p.sourceMode(),p.statusCode());
   if(p.filing()!=null){preparePlanSource(p.filing());filing.save(result.get("plan_id"),0,p.filing());}
   return save(p.messageId(),"FLIGHT_PLAN",result.get("plan_id"),actor.userId(),p,result);
+ }
+ private String routeVersion(PlanInput p){
+  String version=p.routeVersionId()==null?null:p.routeVersionId().trim();
+  if(p.route()!=null){
+   if(version!=null&&!version.isBlank())throw bad("计划报文不能同时携带 route_version_id 和 route");
+   var route=p.route();var body=new LinkedHashMap<String,Object>();
+   body.put("message_id",UUID.nameUUIDFromBytes(("PLAN_ROUTE:"+p.messageId()).getBytes(StandardCharsets.UTF_8)).toString());
+   body.put("name",route.name());body.put("valid_from",p.startAt());body.put("valid_to",p.endAt());body.put("geometry",route.geometry());
+   body.put("corridor_width_m",route.corridorWidthM());body.put("min_altitude_m",route.minAltitudeM());body.put("max_altitude_m",route.maxAltitudeM());body.put("altitude_datum",route.altitudeDatum());
+   body.put("owner_org_id",route.ownerOrgId());body.put("district_id",route.districtId());
+   Message created=routeInput.create(encode(body),"local-plan-route-"+body.get("message_id"));
+   String createdVersion=created.result()==null?null:created.result().path("route_version_id").asText(null);
+   if(createdVersion==null||createdVersion.isBlank())throw bad("计划航线接收结果缺少航线版本");
+   return createdVersion;
+  }
+  if(version==null||version.isBlank())throw bad("计划报文必须携带 route 或 route_version_id");
+  return version;
  }
  public com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Options planOptions(){interfaces.requireInterfacesRead();return filing.options();}
  public com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Detail planFiling(String id){interfaces.requireInterfacesRead();return filing.detail(id);}
@@ -55,7 +74,7 @@ public class LocalInterfaceSimulatorService {
  private void preparePlanSource(com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing data){if(com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.SIMULATOR_SOURCE_ID.equals(data.sourceId()))repository.ensurePlanSource(clock.nowMillis());}
  @Transactional public Message weather(WeatherInput p){
   var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
-  var plan=flights.flightPlan(p.planId());requireSimulated(plan.sourceMode());
+  if(p.planId()!=null&&!p.planId().isBlank())requireSimulated(flights.flightPlan(p.planId()).sourceMode());
   Row previous=repository.existing(actor.userId(),"WEATHER_FORECAST",p.messageId());if(previous!=null)return replay(previous,p);
   if(p.publishedAt()>clock.nowMillis()+30000)throw bad("预报发布时间不能在未来");
   long last=0;
@@ -63,7 +82,12 @@ public class LocalInterfaceSimulatorService {
    if(period.from()>=period.to()||period.from()<p.publishedAt()||period.from()<last||period.to()-p.publishedAt()>7*86400000L||!Double.isFinite(period.temperatureC())||!Double.isFinite(period.windSpeedMs())||!Double.isFinite(period.gustMs()))throw bad("预报时段须有序、不重叠且在发布时间后7天内，数值须有效");
    last=period.to();
   }
-  return save(p.messageId(),"WEATHER_FORECAST",p.planId(),actor.userId(),p,Map.of("plan_id",p.planId(),"status","READY"));
+  String subject=p.planId()!=null&&!p.planId().isBlank()?p.planId():forecastSubject(p.areaName());
+  var result=new LinkedHashMap<String,Object>();result.put("status","READY");result.put("area_name",p.areaName());
+  if(p.planId()!=null&&!p.planId().isBlank())result.put("plan_id",p.planId());
+  Message saved=save(p.messageId(),"WEATHER_FORECAST",subject,actor.userId(),p,result);
+  weatherRisks.evaluate(p,saved.messageId());
+  return saved;
  }
  @Transactional public Binding bind(BindingInput p){
   var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
@@ -89,7 +113,7 @@ public class LocalInterfaceSimulatorService {
     RouteOption expired=null;
     boolean active=false;
     for(var version:versions){
-     var option=new RouteOption(version.routeVersionId(),route.routeId(),route.name(),route.routeNo(),version.validFrom(),version.validTo(),version.centerline());
+     var option=new RouteOption(version.routeVersionId(),route.routeId(),route.name(),route.routeNo(),version.validFrom(),version.validTo(),version.centerline(),route.ownerOrgId(),route.districtId());
      if(version.validTo()==null||version.validTo()>routeNow+300000){routeOptions.add(option);active=true;break;}
      if(expired==null)expired=option;
     }
@@ -100,7 +124,7 @@ public class LocalInterfaceSimulatorService {
    }
   }catch(ApiException error){permissionSection(error,"航线",unavailable);}
   List<PlanOption> plans=List.of();
-  try { plans=flights.flightPlans(params).items().stream().filter(p->Set.of("mock","replay").contains(p.sourceMode())).map(p->new PlanOption(p.planId(),p.planNo(),p.startAt(),p.endAt())).toList(); }
+  try { plans=flights.flightPlans(params).items().stream().filter(p->Set.of("mock","replay").contains(p.sourceMode())).map(p->new PlanOption(p.planId(),p.planNo(),p.startAt(),p.endAt(),p.districtId(),p.districtName())).toList(); }
   catch(ApiException error){permissionSection(error,"飞行计划",unavailable);}
   List<SourceOption> sources=new ArrayList<>();
   try { sources.addAll(repository.sources(true,access.require(PermissionCode.RISK_READ))); }
@@ -134,6 +158,7 @@ public class LocalInterfaceSimulatorService {
  }
  private com.fasterxml.jackson.databind.JsonNode tree(String value){try{return json.readTree(value);}catch(Exception e){throw new IllegalStateException("模拟消息读取失败",e);}}
  private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception e){throw new IllegalStateException(e);}}
+ private static String forecastSubject(String area){return UUID.nameUUIDFromBytes(("WEATHER_FORECAST:"+area.trim()).getBytes(StandardCharsets.UTF_8)).toString();}
  public static void requireSimulated(String mode){if(!Set.of("mock","replay").contains(mode))throw new ApiException(HttpStatus.CONFLICT,"SIMULATION_SCOPE_REQUIRED","本地模拟接口只接受模拟或回放对象");}
  public static ApiException bad(String message){return new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR",message);}
  public static ApiException conflict(String message){return new ApiException(HttpStatus.CONFLICT,"SIMULATION_CONFLICT",message);}

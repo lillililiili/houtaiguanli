@@ -381,11 +381,14 @@ class Stage9PostgresTest {
     @Order(9)
     void c04EvaluationOnPostgisGeneratesOnlyCorridorAndNearRisks() {
         seedStage9SpaceRisk();
-        // E2 的种子目标观测时刻是固定常量 T0(2026-09-05)，而阶段 3 计划窗口是 clock.now()+5min，两者永不重叠，
-        // 因此种子数据本身跑不出 C04（见报告“给 E2 的发现”）。这里另造落在计划窗口内、几何位置精确可控的目标。
-        OffsetDateTime planFrom = jdbc.queryForObject("select start_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
+        // 当前风险预检只取最近观测窗口，但待执行计划不再要求观测时刻落在 start_at/end_at 内。
+        // 这里故意把观测放到计划结束之后，钉住“当前鸟群 + 待执行计划”仍会参与 C04。
         OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
-        OffsetDateTime observedAt = planFrom.plusMinutes(1);
+        assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?", String.class, LocalStage9SpaceRiskSeeder.PLAN))
+                .as("回归场景必须是待执行计划").isEqualTo("PENDING");
+        OffsetDateTime observedAt = planTo.plusHours(12);
+        OffsetDateTime observationWindowFrom = observedAt.minusMinutes(1);
+        OffsetDateTime observationWindowTo = observedAt.plusMinutes(1);
         double halfWidth = jdbc.queryForObject("select corridor_width_m/2.0 from route_version where route_version_id=?",
                 Double.class, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         double nearM = Double.parseDouble(jdbc.queryForObject("select p.value_text from rule_param p"
@@ -407,11 +410,11 @@ class Stage9PostgresTest {
         assertThat(insideDistance).as("夹具目标应落在走廊内").isLessThanOrEqualTo(halfWidth);
         assertThat(farDistance).as("夹具目标应远超 corridor_near_m").isGreaterThan(nearM);
 
-        SpaceRiskRepository.RunRow run = evaluationService.evaluate("C04", planFrom, planTo, "MANUAL", null);
+        SpaceRiskRepository.RunRow run = evaluationService.evaluate("C04", observationWindowFrom, observationWindowTo, "MANUAL", null);
         assertThat(run.status()).as("PostGIS 可用且规则集已激活时必须真正评估，而不是 UNAVAILABLE：" + run.message()).isEqualTo("SUCCESS");
         assertThat(run.targetsSeen()).as("窗口内有观测的异物目标必须计入 targets_seen").isPositive();
         // targets_seen 是**去重后的目标数**，而风险按 (计划, 目标) 生成（source_risk_id 含 plan_id）：
-        // 同一元组下有多条时间重叠的计划时，风险数会大于目标数，这不是重复入库。
+        // 同一归属下有多条待执行/执行中的计划时，风险数会大于目标数，这不是重复入库。
         assertThat(run.risksCreated()).as("走廊内目标必须产出风险").isPositive();
         assertThat(jdbc.queryForList("select distinct source_mode from flight_risk where target_id=?", String.class, inside))
                 .containsExactly("replay");
@@ -422,16 +425,15 @@ class Stage9PostgresTest {
                 + " where r.risk_type='SPACE_OBJECT' and r.target_id in (?,?,?)", Integer.class, inside, insideOtherDatum, far);
         assertThat(riskedFixtures).as("三个夹具目标里只有走廊内的两个被判成风险").isEqualTo(2);
 
-        // 走廊内：必须命中，关系 INSIDE，等级 HIGH（高度带内 + 有活动计划）。
-        // 同一元组下可能有多条时间重叠的计划，契约的 source_risk_id 含 plan_id，因此每条计划各生成一条风险。
-        // 同一元组下有多条时间重叠的计划，契约的 source_risk_id 含 plan_id，因此每条计划各生成一条风险；
+        // 走廊内：必须命中，关系 INSIDE，等级 HIGH（高度带内 + 有待执行/执行中的计划）。
+        // 同一归属下可能有多条待执行/执行中的计划，契约的 source_risk_id 含 plan_id，因此每条计划各生成一条风险；
         // 而高度带只在该计划航线声明了基准时才可判定，所以逐条断言锁定到声明了 AMSL 的那条航线。
         assertThat(factsOf(inside)).as("走廊内目标（" + insideDistance + " m ≤ 半宽 " + halfWidth + " m）必须生成风险").isNotEmpty();
         // 不断言"每条重叠计划都产出一条风险"：距离是按各自航线算的，元组内还有一条几何相距很远的计划（走廊外，不生成）。
         List<Map<String, Object>> insideOnRoute = factsOnRoute(inside, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         assertThat(insideOnRoute).hasSize(1);
         assertThat(insideOnRoute.get(0)).containsEntry("corridor_relation", "INSIDE").containsEntry("altitude_band", "CLIMB");
-        assertThat(insideOnRoute.get(0).get("severity")).as("走廊内 + 同基准高度在带内 + 有活动计划 → HIGH").isEqualTo("HIGH");
+        assertThat(insideOnRoute.get(0).get("severity")).as("走廊内 + 同基准高度在带内 + 有待执行/执行中计划 → HIGH").isEqualTo("HIGH");
         assertThat(((Number) insideOnRoute.get(0).get("distance_to_route_m")).doubleValue()).isLessThanOrEqualTo(halfWidth);
         // 计划航线没声明高度基准时，高度带只能是 UNKNOWN——不猜，也不拿别的航线的基准顶替。
         assertThat(factsOf(inside)).filteredOn(f -> !LocalStage9SpaceRiskSeeder.ROUTE_VERSION.equals(f.get("route_version_id")))
@@ -448,7 +450,7 @@ class Stage9PostgresTest {
 
         // 幂等：同窗口再评估不新增风险，只累计 deduplicated；事实行不被重写（只增触发器也会挡）。
         long before = jdbc.queryForObject("select count(*) from flight_risk where risk_type='SPACE_OBJECT'", Long.class);
-        SpaceRiskRepository.RunRow again = evaluationService.evaluate("C04", planFrom, planTo, "MANUAL", null);
+        SpaceRiskRepository.RunRow again = evaluationService.evaluate("C04", observationWindowFrom, observationWindowTo, "MANUAL", null);
         assertThat(again.status()).isEqualTo("SUCCESS");
         assertThat(again.risksCreated()).as("同一窗口重复评估不得再造风险").isZero();
         assertThat(again.risksDeduplicated()).isPositive();

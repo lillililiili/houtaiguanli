@@ -18,7 +18,7 @@ import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
 
 /**
- * 监听 V202610050001 触发器发出的 pg_notify 信号并汇总转发给 {@link RealtimeHub}。
+ * 监听 V202610059001 触发器发出的 pg_notify 信号并汇总转发给 {@link RealtimeHub}。
  * 使用独立连接，不占用业务连接池；只在 PostgreSQL 上启用，断线后按退避重连。
  */
 @Component
