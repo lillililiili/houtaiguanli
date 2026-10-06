@@ -29,9 +29,11 @@ import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.I
  * 各用例用独立 id，跑完留下的行都是终态（DONE/FAILED）或租约在远未来的 PROCESSING，都不可被领取，不干扰别人。
  */
 @SpringBootTest(properties = {"app.dev-seed.enabled=false", "app.outbox.enabled=false",
-        // worker 本身默认不注册，要测它就得打开；但把轮询间隔推到一小时，
-        // 让调度器只在启动时空跑一次（那时还没有任何夹具行），之后全程由用例自己调 drain()。
-        "app.fusion.enabled=true", "app.fusion.poll-millis=3600000", "app.fusion.replay.run-on-start=false"})
+        // worker 本身默认不注册，要测它就得打开；但把首轮和轮询间隔都推到一小时，全程由用例自己调 drain()。
+        // 只推轮询间隔不够：单线程调度器上首轮可能排在其他定时任务之后，晚到夹具写入之后才跑，
+        // 抢先把过期租约的行领走，用例自己的 claim 就领到空（CI 上出现过）。
+        "app.fusion.enabled=true", "app.fusion.poll-millis=3600000", "app.fusion.initial-delay-millis=3600000",
+        "app.fusion.replay.run-on-start=false"})
 @ActiveProfiles("test")
 class FusionInboxRecoveryTest {
 

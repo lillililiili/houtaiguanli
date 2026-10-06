@@ -296,7 +296,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         manifest.getMainAttributes().put(java.util.jar.Attributes.Name.CLASS_PATH,java.util.Arrays.stream(cp.split(java.io.File.pathSeparator))
                 .map(value->Path.of(value).toUri().toASCIIString()).collect(java.util.stream.Collectors.joining(" ")));
         try(var archive=new java.util.jar.JarOutputStream(Files.newOutputStream(classpath),manifest)) { }
-        ProcessBuilder builder=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java.exe").toString(),
+        ProcessBuilder builder=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin",System.getProperty("os.name","").startsWith("Windows")?"java.exe":"java").toString(),
                 "-Dspring.devtools.restart.enabled=false","-Dspring.devtools.livereload.enabled=false","-Dfile.encoding=UTF-8",
                 "-Djava.io.tmpdir="+System.getProperty("java.io.tmpdir"),
                 "-Djdk.net.unixdomain.tmpdir="+System.getProperty("jdk.net.unixdomain.tmpdir",System.getProperty("java.io.tmpdir")),
