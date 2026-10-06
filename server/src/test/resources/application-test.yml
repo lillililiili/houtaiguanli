@@ -15,6 +15,9 @@ app:
     enabled: false
   rule-engine:
     enabled: false
+    # C04 定时评估在 application.yml 里默认打开；测试里由用例显式调用，不让后台每分钟插运行记录。
+    c04:
+      enabled: false
   evidence-dir: ./target/evidence-test
   map-package:
     data-dir: ./target/map-data-test

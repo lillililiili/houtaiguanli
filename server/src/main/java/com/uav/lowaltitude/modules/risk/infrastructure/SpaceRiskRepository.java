@@ -83,6 +83,23 @@ public class SpaceRiskRepository {
         return count != null && count > 0;
     }
 
+    /**
+     * 同一计划、同一（存活）目标上还没有解除依据的 C04 风险；没有返回 null。
+     * 异物持续停在航线上时每轮评估都会命中，它就是"这一次"的风险，不能每轮再造一条；
+     * 有了解除依据（已离开）之后再进入，或换了新目标（新一批），才算新的一次。人工排除的风险同样算已处理，不再重复生成。
+     */
+    public String openC04Risk(String planId, String targetId) {
+        List<String> rows = jdbc.queryForList("SELECT r.risk_id FROM flight_risk r"
+                + " JOIN space_risk_fact f ON f.risk_id=r.risk_id"
+                + " JOIN rule_version v ON v.rule_version_id=f.rule_version_id AND v.rule_code='C04'"
+                + " LEFT JOIN target_current_alias alias ON alias.historical_target_id=r.target_id"
+                + " WHERE r.risk_type='SPACE_OBJECT' AND r.plan_id=:plan AND COALESCE(alias.current_target_id,r.target_id)=:target"
+                + " AND NOT EXISTS (SELECT 1 FROM risk_clearance_evidence e WHERE e.risk_id=r.risk_id)"
+                + " ORDER BY r.received_at DESC, r.risk_id ASC FETCH FIRST 1 ROWS ONLY",
+                Map.of("plan", planId, "target", targetId), String.class);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     // ---- 评估运行 ----
 
     public void insertRun(RunRow row) {
