@@ -309,6 +309,29 @@ class RoleActionPermissionApiTest {
         expectGrantError(admin, roleCode, "SYSTEM_PERMISSION_PROTECTED", entry("map:activate", "OP"));
     }
 
+    /**
+     * BUG-01：角色页按目录整组提交动作，只归超管的 `map:activate` 一律带着“无”。
+     * “无”是在声明不授予，不能因此整次保存失败；真要授出去时（上一条用例）照旧拦下。
+     */
+    @Test
+    void protectedActionsSubmittedAsNoneDoNotBlockSavingTheRest() throws Exception {
+        String admin = login("admin1", "changeme");
+        String roleCode = customRole();
+        jdbc.update("insert into app_permission (permission_code,module_name,route_key,sort_order,module_code,"
+                + "permission_kind,action_code,name) values ('audit:purge','Audit purge',null,990,'audit','ACTION',"
+                + "'purge','Purge audit log')");
+        grantActions(admin, roleCode, entry("alarm:read", "READ"), entry("alarm:verify", "OP"),
+                entry("map:activate", "NONE"), entry("audit:purge", "NONE"), entry("disposal:direct", "NONE"));
+        assertThat(jdbc.queryForList("select permission_code from app_role_permission where role_code=?"
+                + " and permission_code like '%:%' order by permission_code", String.class, roleCode))
+                .containsExactly("alarm:read", "alarm:verify");
+        expectGrantError(admin, roleCode, "SYSTEM_PERMISSION_PROTECTED",
+                entry("alarm:read", "READ"), entry("map:activate", "READ"));
+        assertThat(jdbc.queryForList("select permission_code from app_role_permission where role_code=?"
+                + " and permission_code like '%:%' order by permission_code", String.class, roleCode))
+                .as("被拦下的那次提交不能改动已有授权").containsExactly("alarm:read", "alarm:verify");
+    }
+
     @Test
     void roleDetailListsGrantedActions() throws Exception {
         String admin = login("admin1", "changeme");

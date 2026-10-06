@@ -233,6 +233,8 @@ GET `/api/v1/uav-events/{id}/advisory` 新增 `auto_sms`：enabled、status、re
 
 POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_version,note}` 和 Idempotency-Key；复用 alarm:read、alarm:verify、handoff:create 与事件范围，校验版本并只排队，发送仍由后台执行。相同请求重放不重复排队。旧人工短信/联系记录及处罚快照保持兼容。
 
+2026-10-06（BLOCK-03，用户确认）：同一响应顶层新增 `pilot_contact_missing`（boolean）。当前事件按最新研判精确关联的计划没有执行飞手，或执行飞手没有电话时为 `true`；飞手信息只来自上级计划接口，本系统不设补录页面，前台据此在飞手短信/电话通知上写明“缺飞手联系方式”（只在还没发出时改写，已发送、送达、失败或结果未知以发送记录为准）。没有精确关联计划、号码尚未核验、联系人停用或单位对不上都为 `false`，仍按 `auto_sms.reason` / `auto_voice.reason` 显示。纯读取，不改变发送资格，不建任务。
+
 
 ### 研判轨迹航线对照（2026-09-16）
 

@@ -69,8 +69,12 @@ public class TargetVideoService {
         return session == null ? media.resource(stream.streamPath(), resource) : media.resource(stream.streamPath(), resource, session);
     }
 
+    /**
+     * 看画面只是读取（2026-10-06，OBS-03 用户确认值班员要能看光电画面）：与 eo-tracking-status 一样要设备查看权限、
+     * 目标读取资格和设备范围；发起、暂停、结束跟踪等控制仍要 devices.op。
+     */
     private TargetVideoDto tracking(String targetId) {
-        var user = access.requireDevicesOperate();
+        var user = access.requireDevicesRead();
         var target = targets.target(targetId);
         Map<String, Object> task = edges.latestTaskByTarget(targetId);
         if (task == null) return result(targetId, null, "NO_TASK", "当前目标没有光电跟踪任务，暂无可查看画面。");

@@ -161,6 +161,8 @@ public class AutoSmsService {
         return pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能发送短信";
     }
     private static String content(String id){return "【低空安全提醒·模拟】发现疑似违规飞行，请按现场管理要求停止违规飞行，安全飞离相关区域或降落，并配合核查。";}
+    /** 只读：上级计划没有提供执行飞手或飞手电话（BLOCK-03）。不影响发送资格，阻断仍按 eligible 的原因。 */
+    public boolean pilotContactMissing(EventRow event){return directory.pilotContactMissing(event.eventId());}
     public com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot currentRecipient(EventRow event){return directory.currentPilotEvent("ADVISORY_SMS",event.eventId());}
     public com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient(EventRow event){var recorded=directory.advisoryHistoryRecipient("ADVISORY_SMS",event.eventId());if(recorded!=null)return recorded;var task=tasks.find(event.eventId());if(task!=null&&task.attempts()>0)return null;var evaluation=tasks.latestEvaluation(event.eventId());return directory.forPilotEvent("ADVISORY_SMS",event.eventId(),evaluation==null?null:evaluation.id());}
     private record Claim(String eventId,String mode,String token,String providerKey,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient) { }
