@@ -46,6 +46,7 @@ class SystemManagementApiTest {
         jdbc.update("delete from app_user where account like 'itest-%'");
         jdbc.update("delete from app_role_permission where role_code in (select role_code from app_role where name like '集成测试角色%')");
         jdbc.update("delete from app_role where name like '集成测试角色%'");
+        jdbc.update("delete from app_district where district_code like 'ITEST-%'");
     }
 
     @Test
@@ -401,6 +402,49 @@ class SystemManagementApiTest {
                 Integer.class, user.path("user_id").asText(), "%超级管理员直接调整用户角色%")).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where action='user_profile_updated' and object_id=?",
                 Integer.class, user.path("user_id").asText())).isEqualTo(1);
+    }
+
+    /** 新库没有区域时，管理端“区域管理”按这组接口新增和改名；重复提交、编码重复和旧版本都要明确拒绝并留审计。 */
+    @Test
+    void districtCanBeCreatedAndRenamedFromAdminPage() throws Exception {
+        String admin = login("admin1", "changeme");
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        String code = "ITEST-" + suffix;
+        String create = json.createObjectNode().put("district_code", code).put("name", " 集成测试区域 ").toString();
+        JsonNode created = data(mvc.perform(post("/api/v1/districts").header("Authorization", bearer(admin))
+                        .header("Idempotency-Key", "district-create-" + suffix).contentType(MediaType.APPLICATION_JSON).content(create))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.district_code").value(code))
+                .andExpect(jsonPath("$.data.name").value("集成测试区域"))
+                .andExpect(jsonPath("$.data.enabled").value(true))
+                .andExpect(jsonPath("$.data.version").value(0))
+                .andReturn().getResponse().getContentAsString());
+        String districtId = created.path("district_id").asText();
+        mvc.perform(post("/api/v1/districts").header("Authorization", bearer(admin))
+                        .header("Idempotency-Key", "district-create-" + suffix).contentType(MediaType.APPLICATION_JSON).content(create))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_REPLAY"));
+        mvc.perform(post("/api/v1/districts").header("Authorization", bearer(admin))
+                        .header("Idempotency-Key", "district-create-again-" + suffix).contentType(MediaType.APPLICATION_JSON).content(create))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DUPLICATE_DISTRICT_CODE"));
+
+        String rename = json.createObjectNode().put("name", "集成测试区域（改）").put("expected_version", 0).toString();
+        mvc.perform(patch("/api/v1/districts/" + districtId).header("Authorization", bearer(admin))
+                        .header("Idempotency-Key", "district-rename-" + suffix).contentType(MediaType.APPLICATION_JSON).content(rename))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.name").value("集成测试区域（改）"))
+                .andExpect(jsonPath("$.data.district_code").value(code))
+                .andExpect(jsonPath("$.data.version").value(1));
+        mvc.perform(patch("/api/v1/districts/" + districtId).header("Authorization", bearer(admin))
+                        .header("Idempotency-Key", "district-rename-stale-" + suffix).contentType(MediaType.APPLICATION_JSON)
+                        .content(json.createObjectNode().put("name", "旧页面提交").put("expected_version", 0).toString()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+
+        JsonNode listed = data(mvc.perform(get("/api/v1/districts").header("Authorization", bearer(admin)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(listed.findValuesAsText("district_code")).contains(code);
+        assertThat(jdbc.queryForObject("select name from app_district where district_id=?", String.class, districtId)).isEqualTo("集成测试区域（改）");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action='district_created' and object_id=?", Integer.class, districtId)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action='district_updated' and object_id=?", Integer.class, districtId)).isEqualTo(1);
     }
 
     @Test
