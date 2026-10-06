@@ -1,4 +1,5 @@
 package com.uav.lowaltitude.modules.integrationconfig.api;
+import java.math.BigDecimal;
 import java.util.List;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
@@ -8,13 +9,17 @@ import com.uav.lowaltitude.modules.flight.api.FlightDtos.GeoJsonLineStringDto;
 public final class LocalInterfaceDtos {
  private LocalInterfaceDtos(){}
  public record PlanInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
-  @NotBlank @Size(max=36) String routeVersionId,@NotBlank @Size(max=128) String uavSn,
+  @Size(max=36) String routeVersionId,@Valid PlanRoute route,@NotBlank @Size(max=128) String uavSn,
   @NotNull @Positive Long startAt,@NotNull @Positive Long endAt,
   @Valid com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing filing,
   @Pattern(regexp="mock|replay") String sourceMode,
   @Pattern(regexp="PENDING|EXECUTING|COMPLETED|CANCELLED") String statusCode){}
+ public record PlanRoute(@NotBlank @Size(max=128) String name,
+  @NotNull JsonNode geometry,@NotNull @DecimalMin("0.01") BigDecimal corridorWidthM,
+  BigDecimal minAltitudeM,BigDecimal maxAltitudeM,String altitudeDatum,
+  @NotBlank @Size(max=36) String ownerOrgId,@NotBlank @Size(max=36) String districtId){}
  public record WeatherInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
-  @NotBlank @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
+  @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
   @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods){}
  public record Period(@NotNull @Positive Long from,@NotNull @Positive Long to,@NotBlank @Size(max=128) String summary,
   @NotNull @DecimalMin("-90") @DecimalMax("60") Double temperatureC,
@@ -30,8 +35,8 @@ public final class LocalInterfaceDtos {
   @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT|ANSWERED|PLAYED") @NotNull String outcome){}
  public record Message(String messageId,String kind,String direction,String subjectId,String state,long version,
   long createdAt,JsonNode payload,JsonNode result){}
- public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo,GeoJsonLineStringDto centerline){}
- public record PlanOption(String planId,String planNo,Long startAt,Long endAt){}
+ public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo,GeoJsonLineStringDto centerline,String ownerOrgId,String districtId){}
+ public record PlanOption(String planId,String planNo,Long startAt,Long endAt,String districtId,String districtName){}
  public record SourceOption(String sourceKind,String sourceId,String label){}
  public record Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections,List<Message> receiverMessages,List<RouteOption> expiredRoutes){
   public Context(List<RouteOption> routes,List<PlanOption> plans,List<Binding> bindings,List<Message> messages,List<SourceOption> sources,List<String> unavailableSections){this(routes,plans,bindings,messages,sources,unavailableSections,List.of(),List.of());}

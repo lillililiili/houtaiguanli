@@ -15,6 +15,7 @@ import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
+import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.security.AuthUser;
@@ -86,7 +87,7 @@ public class DeviceMaintenanceService {
                 row.lastHeartbeatAt(),row.simulated(),"PENDING",actor.userId(),actorName,clock.nowMillis(),null,null,null,1);
         idempotency.claim(key,"device-maintenance-create:"+planKey+":"+deviceId);
         tasks.insert(task);
-        sendNotice(task,actor,null,null,1,"首次通知",body.notificationSettingId(),plan.sourceMode());
+        sendNotice(task,actor,null,null,1,"首次通知");
         remember(actor,key,task.taskId());
         audit.record(actor.userId(),actor.account(),"device_maintenance_reported","device_maintenance_task",
                 task.taskId(),"通知设备异常；设备="+deviceId+"；计划="+planKey,null);
@@ -189,20 +190,20 @@ public class DeviceMaintenanceService {
             throw conflict("DEVICE_NOT_ABNORMAL","重新检查未发现当前异常或未关闭告警，无需再次通知");
         // 在任何渠道调用前争用用户级幂等键；设备锁本身不能阻止同键跨设备并发。
         idempotency.claim(key,"device-maintenance-resend:"+taskKey+":"+body.expectedAttemptNo()+":"+reason);
-        String selected=latest.recipientSnapshot()==null?null:latest.recipientSnapshot().settingId();
-        sendNotice(task,actor,key,body.expectedAttemptNo(),latest.attemptNo()+1,reason,selected,plan.sourceMode());
+        sendNotice(task,actor,key,body.expectedAttemptNo(),latest.attemptNo()+1,reason);
         audit.record(actor.userId(),actor.account(),"device_maintenance_notice_resent","device_maintenance_task",taskKey,"再次通知；原因="+reason,null);
         return dto(task,actor,false);
     }
 
-    private void sendNotice(Row task,AuthUser actor,String requestKey,Integer expected,int number,String reason,String selected,String sourceMode){
-        var target=notifications.forMaintenance(selected);
+    private void sendNotice(Row task,AuthUser actor,String requestKey,Integer expected,int number,String reason){
+        var target=notifications.backendMaintenanceTarget();
         String attemptId=UUID.randomUUID().toString();long at=clock.nowMillis();
-        var outcome=notifications.dispatchMaintenance(task.taskId(),attemptId,target,sourceMode,
-                "设备="+task.deviceNo()+"；计划="+task.planNo()+"；异常="+task.reason()+"；通知次数="+number);
-        noticeAttempts.insert(attemptId,task.taskId(),number,actor,requestKey,expected,at,reason,target,outcome.result(),outcome.state());
+        var submitted=clock.now().atOffset(java.time.ZoneOffset.UTC);
+        // 设备异常上报本身就是发往后台运维待办；不经过短信、上级交接或数据模拟器通道。
+        var outcome=new DeliveryOutcome("DELIVERED","NOT_EXPECTED",null,null,submitted,submitted,null);
+        noticeAttempts.insert(attemptId,task.taskId(),number,actor,requestKey,expected,at,reason,target,outcome,"COMPLETED");
         // 原待办上的首条通知摘要保持兼容；全部后续快照与时间追加到 attempt，API 汇总取最新一次。
-        if(number==1)notifications.freezeMaintenance(task.taskId(),target,outcome.result());
+        if(number==1)notifications.freezeMaintenance(task.taskId(),target,outcome);
     }
 
     private String resendBlocker(Row task,NoticeAttempt latest,AuthUser actor,boolean checkPermissions){

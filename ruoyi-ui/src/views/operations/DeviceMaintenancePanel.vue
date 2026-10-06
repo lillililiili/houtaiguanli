@@ -45,6 +45,7 @@ function notificationStatus(value, receipt = false) {
 function attemptStatus(attempt) {
   if (attempt.outcome_state === 'UNKNOWN') return '通知结果未知';
   if (attempt.outcome_state === 'NOT_SENT') return '本次未发送';
+  if (attempt.recipient_snapshot?.channel_type === 'INTERNAL' && attempt.delivery_status === 'DELIVERED') return '已进入后台运维待办';
   return notificationStatus(attempt.delivery_status);
 }
 function attemptTone(attempt) {

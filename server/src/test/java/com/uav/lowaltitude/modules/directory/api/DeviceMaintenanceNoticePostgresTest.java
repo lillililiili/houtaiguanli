@@ -5,7 +5,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Propagation;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
-import static org.mockito.ArgumentMatchers.any;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
 import org.springframework.core.io.ClassPathResource;
@@ -25,7 +24,7 @@ class DeviceMaintenanceNoticePostgresTest extends DeviceMaintenanceNoticeApiTest
   var outcomes=concurrent(target,target,java.util.UUID.randomUUID().toString(),java.util.UUID.randomUUID().toString());
   assertThat(outcomes).containsExactlyInAnyOrder(200,409);
   assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_notice_attempt WHERE task_id=?",Long.class,target)).isEqualTo(2);
-  verify(channel,times(2)).deliver(any());
+  verify(channel,never()).deliver(any());
  }
  @Test
  @Transactional(propagation=Propagation.NOT_SUPPORTED)
@@ -39,7 +38,7 @@ class DeviceMaintenanceNoticePostgresTest extends DeviceMaintenanceNoticeApiTest
   String key=java.util.UUID.randomUUID().toString();var outcomes=concurrent(first,second,key,key);
   assertThat(outcomes).containsExactlyInAnyOrder(200,409);
   assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_notice_attempt WHERE task_id IN (?,?)",Long.class,first,second)).isEqualTo(3);
-  verify(channel,times(3)).deliver(any());
+  verify(channel,never()).deliver(any());
  }
  private java.util.List<Integer> concurrent(String first,String second,String firstKey,String secondKey)throws Exception {
   var pool=java.util.concurrent.Executors.newFixedThreadPool(2);var ready=new java.util.concurrent.CountDownLatch(2);var start=new java.util.concurrent.CountDownLatch(1);

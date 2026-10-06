@@ -24,6 +24,6 @@ public class LocalFlightPlanInputService {
   if(start>=end||end-start>7*86400000L||start<rv.validFrom()||(rv.validTo()!=null&&end>rv.validTo()))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","计划时间须在航线有效期内，起止有序且不超过7天");
   String id=UUID.randomUUID().toString(),no="EXT-SIM-"+id;
   repository.insert(id,no,serial,version,route.ownerOrgId(),route.districtId(),start,end,now,mode,status);
-  return Map.of("plan_id",id,"plan_no",no,"source_mode",mode,"status_code",status);
+  var result=new LinkedHashMap<String,String>();result.put("plan_id",id);result.put("plan_no",no);result.put("route_version_id",version);result.put("source_mode",mode);result.put("status_code",status);return result;
  }
 }

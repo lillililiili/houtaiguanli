@@ -16,8 +16,16 @@
 
 推荐使用统一编排脚本。脚本会先复用已健康的数据库/API/前台/模拟器进程，只有缺失服务才启动新进程；数据库宿主机端口会从现有 Compose 容器读取，避免把 25432 的开发库误当成 5432 重建。验收启动显式保持 `APP_DEV_SEED_ENABLED=false`。
 
+Windows 一键启动直接双击仓库根目录的 `start-one-click.cmd`。它会自动启动 Docker Desktop；若检测到已确认损坏的 Docker 推理套接字链接，只隔离并保留原 `Docker\run` 目录后让 Docker 重建；随后等待 PostgreSQL 真正进入 `healthy`，再启动项目全部本地服务并打开三个页面。命令行等价入口为：
+
 ```powershell
 cd E:\houtaiguanlii
+.\scripts\start-one-click.ps1 -OpenBrowser
+```
+
+需要查看详细启动日志或不自动打开浏览器时运行：
+
+```powershell
 .\scripts\start-local.ps1 -WithMqtt -WithSimulator
 .\scripts\smoke-system.ps1 -RequireBusinessFrontend -RequireSimulator
 ```

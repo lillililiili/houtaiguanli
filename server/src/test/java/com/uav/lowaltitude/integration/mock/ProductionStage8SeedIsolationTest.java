@@ -50,10 +50,10 @@ class ProductionStage8SeedIsolationTest {
             assertThat(jdbc.queryForObject("select count(*) from integration_source where source_mode='replay' and source_type is not null", Integer.class)).isZero();
             assertThat(jdbc.queryForObject("select count(*) from inbox_message where source like 'replay:%'", Integer.class)).isZero();
 
-            // 迁移 050 的结构性目录：恰一个 ACTIVE 的 demo-v1（DEMO 状态），五种来源类型。
+            // 迁移登记的结构性目录：恰一个 ACTIVE 的 demo-v1（DEMO 状态）。
             assertThat(jdbc.queryForObject("select count(*) from fusion_config where config_version='demo-v1' and status='ACTIVE' and schema_status='DEMO'", Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("select count(*) from fusion_config where status='ACTIVE'", Integer.class)).isEqualTo(1);
-            // 八行目录、只有雷达 CONFIRMED：口径统一在夹具里（阶段 10.3）。
+            // 设备协议与模拟类型目录均保留，只有雷达 CONFIRMED；目录不代表存在模拟业务数据。
             SourceTypeCatalogFixture.assertCatalog(jdbc);
             assertThat(jdbc.queryForObject("select count(*) from source_type_catalog where schema_status='CONFIRMED'", Integer.class))
                     .isEqualTo(SourceTypeCatalogFixture.CONFIRMED_TYPES.size());

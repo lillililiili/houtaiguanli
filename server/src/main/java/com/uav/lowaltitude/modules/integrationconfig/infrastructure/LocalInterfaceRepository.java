@@ -25,6 +25,7 @@ public class LocalInterfaceRepository {
  public Row find(String id){return first(jdbc.query("SELECT * FROM local_interface_message WHERE message_id=?",ROW,id));}
  public List<Row> messages(String actor){return jdbc.query("SELECT * FROM local_interface_message WHERE created_by=? ORDER BY created_at DESC,message_id DESC FETCH FIRST 100 ROWS ONLY",ROW,actor);}
  public Row weather(String plan){return first(jdbc.query("SELECT * FROM local_interface_message WHERE kind='WEATHER_FORECAST' AND subject_id=? AND direction='IN' ORDER BY created_at DESC,message_id DESC FETCH FIRST 1 ROWS ONLY",ROW,plan));}
+ public List<Row> weatherMessages(){return jdbc.query("SELECT * FROM local_interface_message WHERE kind='WEATHER_FORECAST' AND direction='IN' ORDER BY created_at DESC,message_id DESC FETCH FIRST 100 ROWS ONLY",ROW);}
  public void insert(Row r){jdbc.update("INSERT INTO local_interface_message(message_id,external_id,kind,direction,subject_id,created_by,state,payload,result,created_at,updated_at,version) VALUES(?,?,?,?,?,?,?,?,?,?,?,0)",r.id(),r.externalId(),r.kind(),r.direction(),r.subjectId(),r.actor(),r.state(),r.payload(),r.result(),r.createdAt(),r.createdAt());}
  public int receipt(String id,long expected,String state,String result,long now){return jdbc.update("UPDATE local_interface_message SET state=?,result=?,updated_at=?,version=version+1 WHERE message_id=? AND version=?",state,result,now,id,expected);}
  public record BindingRow(String sourceKind,String sourceId,String actor,boolean enabled,long expiresAt){}

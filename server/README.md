@@ -346,7 +346,7 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 ### 本地计划回放输入（2026-09-28）
 
-`POST /api/v1/local-interface-simulator/plans` 支持可选 `source_mode`：省略时保持 `mock`，显式 `replay` 用于与回放设备进行同来源联测；`live` 和其他值返回 400。此字段仅决定新计划来源，不修改已有计划，不改变模拟环境限制、接口操作权限、幂等与审计。设备检查继续隔离不同来源；不需要开启开发种子数据。
+`POST /api/v1/local-interface-simulator/plans` 支持可选 `source_mode`：省略时保持 `mock`，显式 `replay` 用于与回放设备进行同来源联测；`live` 和其他值返回 400。此字段仅决定新计划来源，不修改已有计划，不改变模拟环境限制、接口操作权限、幂等与审计。设备检查对普通计划继续隔离不同来源；本地外部接口模拟器创建的 `source_id=local-flight-plan-simulator` 的 `mock` 计划，可在本地配置开关开启时只读检查设备模拟器标记的 `replay` 模拟设备。不需要开启开发种子数据。
 
 可选 `status_code` 省略时为 `PENDING`，另支持 `EXECUTING`、`COMPLETED`、`CANCELLED`。执行中要求当前时间处于计划窗口，已完成要求结束时间不晚于当前时间；非法状态或时间返回 400。同一来源消息重放不能改写状态。此能力仅在受限模拟入口创建新计划，不修改旧计划、不启用全库状态推进，也不生成实际轨迹、研判或执行结果。2026-09-29 定向验证：H2 13 项、隔离 PostgreSQL 23 项、环境隔离 3 项全部通过。
 

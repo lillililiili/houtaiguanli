@@ -32,6 +32,21 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select count(*) from flight_plan where plan_id=?",Long.class,id)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?",String.class,id)).isEqualTo("PENDING");
  }
+ @Test void planInputAcceptsEmbeddedRouteGeometryWithoutPriorRouteRegistration() throws Exception {
+  var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
+  long start=System.currentTimeMillis()+300000,end=start+3600000;
+  var route=new LinkedHashMap<String,Object>();route.put("name","上级计划直接携带航线");
+  route.put("geometry",Map.of("type","LineString","coordinates",List.of(List.of(118.60,37.46),List.of(118.61,37.46))));
+  route.put("corridor_width_m",100);route.put("min_altitude_m",20);route.put("max_altitude_m",120);route.put("altitude_datum","AMSL");
+  route.put("owner_org_id",scope.get("owner_org_id"));route.put("district_id",scope.get("district_id"));
+  var body=new LinkedHashMap<String,Object>();body.put("message_id","embedded-route-plan");body.put("route",route);body.put("uav_sn","SIM-EMBEDDED-ROUTE");body.put("start_at",start);body.put("end_at",end);
+  var received=send("/plans",body,200);String planId=received.path("subject_id").asText();
+  String version=jdbc.queryForObject("select route_version_id from flight_plan where plan_id=?",String.class,planId);
+  assertThat(version).isNotBlank();
+  assertThat(jdbc.queryForObject("select count(*) from route_version where route_version_id=?",Long.class,version)).isEqualTo(1);
+  assertThat(jdbc.queryForObject("select source_mode from route where route_id=(select route_id from route_version where route_version_id=?)",String.class,version)).isEqualTo("replay");
+  assertThat(received.path("result").path("route_version_id").asText()).isEqualTo(version);
+ }
  @Test void explicitReplayPlanKeepsSourceAndMessageIdentity() throws Exception {
   var body=plan("input-plan-replay");body.put("source_mode","replay");
   var first=send("/plans",body,200);String id=first.path("subject_id").asText();
@@ -93,6 +108,34 @@ class LocalInterfaceSimulatorApiTest {
    .andExpect(jsonPath("$.data.forecast.periods[0].summary").value("模拟小雨")).andReturn().getResponse().getContentAsString();
   var second=mvc.perform(get("/api/v1/flight-plans/"+id+"/weather-forecast").header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
   assertThat(json.readTree(second).path("data")).isEqualTo(json.readTree(first).path("data"));
+ }
+ @Test void areaWeatherCanBeSubmittedWithoutPlanAndIsMatchedWhenReadingThatArea() throws Exception {
+  var plan=send("/plans",plan("weather-area-plan"),200);String planId=plan.path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long published=System.currentTimeMillis()-3600000L;
+  var period=Map.of("from",published,"to",published+3600000,"summary","区域多云","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",20,"humidity_pct",75);
+  var input=new HashMap<String,Object>();input.put("message_id","weather-area-one");input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));
+  var received=send("/weather",input,200);
+  assertThat(received.path("result").path("status").asText()).isEqualTo("READY");
+  assertThat(received.path("subject_id").asText()).isNotEqualTo(planId);
+  mvc.perform(get("/api/v1/flight-plans/"+planId+"/weather-forecast").header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
+   .andExpect(jsonPath("$.data.forecast.area_name").value(area))
+   .andExpect(jsonPath("$.data.forecast.periods[0].summary").value("区域多云"));
+ }
+ @Test void forecastRuleCreatesPendingRisksOnceAndWaitsForManualVerification() throws Exception {
+  var plan=send("/plans",plan("weather-rule-plan"),200);String planId=plan.path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long now=System.currentTimeMillis(),published=now-1000,from=now+300000,to=now+1200000;
+  var period=Map.of("from",from,"to",to,"summary","雷雨伴强风","temperature_c",22,"wind_speed_ms",12,"gust_ms",18,"wind_direction_deg",180,"precipitation_probability_pct",80,"humidity_pct",90);
+  var input=new HashMap<String,Object>();input.put("message_id","weather-rule-one");input.put("plan_id",planId);input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));
+  send("/weather",input,200);
+  assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
+  assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and state_code='PENDING_VERIFICATION'",Long.class,planId)).isEqualTo(1);
+  assertThat(jdbc.queryForObject("select count(*) from weather_forecast_risk_fact where risk_id in (select risk_id from flight_risk where plan_id=?)",Long.class,planId)).isEqualTo(1);
+  assertThat(jdbc.queryForObject("select reason_text from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",String.class,planId)).contains("WEATHER_THUNDERSTORM").contains("WEATHER_STRONG_WIND");
+  send("/weather",input,200);
+  assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
  }
  @Test void rejectsInvalidInputAndUnauthenticatedAccess() throws Exception {
   mvc.perform(get(BASE+"/context")).andExpect(status().isUnauthorized());

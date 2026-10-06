@@ -55,19 +55,31 @@ class DeviceMaintenanceNoticeApiTest {
         for(String id:createdTaskIds){jdbc.update("DELETE FROM ops_device_maintenance_notice_attempt WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_submission WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_task WHERE task_id=?",id);}
         if(setting!=null)jdbc.update("DELETE FROM notification_setting WHERE setting_id=?",setting);
     }
-    @Test void appendRetainsFirstDeliveryAndChangedRecipientSnapshotWhileLatestFailureIsSeparate()throws Exception {
+    @Test void appendRetainsFirstBackendNoticeAndCreatesASeparateLatestRecord()throws Exception {
         JsonNode first=create();advance();
         jdbc.update("UPDATE app_org SET name='变更后的运维单位' WHERE org_id=?",org);
-        doReturn(new DeliveryOutcome("FAILED","NOT_EXPECTED",null,"模拟渠道返回失败",null,null,null)).when(channel).deliver(any());
         JsonNode second=resend(1,"人工再次通知",UUID.randomUUID().toString());
-        assertThat(second.path("notification_delivery_status").asText()).isEqualTo("FAILED");
+        assertThat(second.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
         assertThat(second.path("notification_attempts")).hasSize(2);
         assertThat(second.path("notification_attempts").get(1)).isEqualTo(first.path("notification_attempts").get(0));
-        assertThat(second.path("notification_attempts").get(0).path("recipient_snapshot").path("org_name").asText()).isEqualTo("变更后的运维单位");
+        assertThat(second.path("notification_attempts").get(0).path("recipient_snapshot").path("channel_type").asText()).isEqualTo("INTERNAL");
         assertThat(second.path("notification_attempts").get(1).path("delivery_status").asText()).isEqualTo("DELIVERED");
         assertThat(jdbc.queryForObject("SELECT notification_delivery_status FROM ops_device_maintenance_task WHERE task_id=?",String.class,taskId)).isEqualTo("DELIVERED");
         JsonNode read=data(auth(get("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks").param("device_id",device))).path("items").get(0);
         assertThat(read.path("notification_attempts")).isEqualTo(second.path("notification_attempts"));
+        verify(channel,never()).deliver(any());
+    }
+    @Test void deviceMaintenanceNoticeIsDeliveredToBackendInboxWithoutUsingSimulatorChannel()throws Exception {
+        JsonNode task=create();
+        JsonNode attempt=task.path("notification_attempts").get(0);
+        assertThat(task.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
+        assertThat(task.path("notification_receipt_status").asText()).isEqualTo("NOT_EXPECTED");
+        assertThat(task.path("notification_blocked_reason").isMissingNode() || task.path("notification_blocked_reason").isNull()).isTrue();
+        assertThat(attempt.path("recipient_snapshot").path("channel_type").asText()).isEqualTo("INTERNAL");
+        assertThat(attempt.path("recipient_snapshot").path("recipient_name").asText()).isEqualTo("后台运维待办");
+        assertThat(attempt.path("delivery_status").asText()).isEqualTo("DELIVERED");
+        assertThat(attempt.path("outcome_state").asText()).isEqualTo("COMPLETED");
+        verify(channel,never()).deliver(any());
     }
     @Test void cooldownExpectedAttemptAndIdempotencyPreventRepeatedDispatch()throws Exception {
         create();String key=UUID.randomUUID().toString();
@@ -77,21 +89,22 @@ class DeviceMaintenanceNoticeApiTest {
         assertThat(replay.path("reused").asBoolean()).isTrue();
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_NOTICE_CHANGED"));
         mvc.perform(resendRequest(1,"更换原因",key)).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_KEY_REUSED"));
-        verify(channel,times(2)).deliver(any());
+        verify(channel,never()).deliver(any());
     }
     @Test void unknownAndSubmittedResultsBlockBlindResend()throws Exception {
-        doThrow(new IllegalStateException("unknown")).when(channel).deliver(any());
-        JsonNode first=create();assertThat(first.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("UNKNOWN");
-        advance();mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict());
-        verify(channel,times(1)).deliver(any());
+        JsonNode first=create();assertThat(first.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("COMPLETED");
+        advance();
+        jdbc.update("UPDATE ops_device_maintenance_notice_attempt SET outcome_state='UNKNOWN',delivery_status='PENDING_DELIVERY' WHERE task_id=?",taskId);
+        mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict());
         jdbc.update("UPDATE ops_device_maintenance_notice_attempt SET outcome_state='SUBMITTED',delivery_status='SUBMITTED' WHERE task_id=?",taskId);
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict());
+        verify(channel,never()).deliver(any());
     }
     @Test void handledTaskCannotSendAgain()throws Exception {
         create();advance();
         jdbc.update("UPDATE ops_device_maintenance_task SET status='HANDLED',workflow_state='LEGACY_HANDLED',active_key=NULL,handled_by=reported_by,handled_by_name=reported_by_name,handled_at=?,handling_note='历史处理反馈' WHERE task_id=?",now,taskId);
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_RESEND_BLOCKED"));
-        verify(channel,times(1)).deliver(any());
+        verify(channel,never()).deliver(any());
     }
     @Test void currentDeviceScopeAbnormalityAndFreshnessAreRechecked()throws Exception {
         create();advance();observe(false,now);
@@ -100,17 +113,17 @@ class DeviceMaintenanceNoticeApiTest {
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_OBSERVATION_STALE"));
         doReturn(new FlightDeviceCheckService.Check(plan,"CHECK_INCOMPLETE","没有附近设备",now,BigDecimal.TEN,false,1,List.of(),false)).when(checks).read(plan);
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DEVICE_NOT_NEAR_PLAN"));
-        verify(channel,times(1)).deliver(any());
+        verify(channel,never()).deliver(any());
     }
-    @Test void unconfiguredAndLiveChannelsNeverDispatchAndKeepExplicitNotSentAttempts()throws Exception {
+    @Test void externalChannelConfigurationDoesNotAffectBackendInbox()throws Exception {
         when(channel.simulated()).thenReturn(false);JsonNode first=create();
-        assertThat(first.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("NOT_SENT");
+        assertThat(first.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("COMPLETED");
         advance();JsonNode second=resend(1,"发送失败后重试",UUID.randomUUID().toString());
-        assertThat(second.path("notification_attempts")).hasSize(2);verify(channel,never()).deliver(any());
+        assertThat(second.path("notification_attempts")).hasSize(2);
         when(channel.simulated()).thenReturn(true);advance();
         jdbc.update("UPDATE flight_plan SET source_mode='live' WHERE plan_id=?",plan);
         JsonNode live=resend(2,null,UUID.randomUUID().toString());
-        assertThat(live.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("NOT_SENT");
+        assertThat(live.path("notification_attempts").get(0).path("outcome_state").asText()).isEqualTo("COMPLETED");
         verify(channel,never()).deliver(any());
     }
     @Test void revokedPermissionAndAnonymousCallerCannotResend()throws Exception {
@@ -118,16 +131,16 @@ class DeviceMaintenanceNoticeApiTest {
         jdbc.update("DELETE FROM app_role_permission WHERE role_code='ROLE-ADMIN' AND permission_code='handoff:create'");sqlSession.clearCache();
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/device-maintenance-tasks/"+taskId+"/notifications/resend").contentType(MediaType.APPLICATION_JSON).content("{\"expected_attempt_no\":1}")).andExpect(status().isUnauthorized());
-        verify(channel,times(1)).deliver(any());
+        verify(channel,never()).deliver(any());
     }
     @Test void currentOfflineFailureCanBeRemindedWithoutNewHeartbeat()throws Exception {
         create();advance();observe(true,now-3600000,"OFFLINE");
         JsonNode sent=resend(1,null,UUID.randomUUID().toString());assertThat(sent.path("latest_notification_attempt_no").asInt()).isEqualTo(2);
-        verify(channel,times(2)).deliver(any());
+        verify(channel,never()).deliver(any());
     }
     @Test void originalCreateStillReusesTaskWithoutAppendingNotice()throws Exception {
         JsonNode first=create();JsonNode repeat=create();assertThat(repeat.path("task_id")).isEqualTo(first.path("task_id"));
-        assertThat(repeat.path("notification_attempts")).hasSize(1);verify(channel,times(1)).deliver(any());
+        assertThat(repeat.path("notification_attempts")).hasSize(1);verify(channel,never()).deliver(any());
     }
     @Test void sameTimestampHistoryCannotHideActiveOrNewlyCompletedTask()throws Exception {
         String first=create().path("task_id").asText();

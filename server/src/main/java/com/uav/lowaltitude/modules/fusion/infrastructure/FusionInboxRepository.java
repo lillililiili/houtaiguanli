@@ -24,6 +24,7 @@ import com.uav.lowaltitude.modules.fusion.ingest.InboxSourceRouter;
 @Repository
 public class FusionInboxRepository {
     public static final String REPLAY_SOURCE_PREFIX = "replay:";
+    public static final String SIM_NORMALIZED_SOURCE_PREFIX = "sim-normalized:";
     public static final String LIVE_RADAR_SOURCE_PREFIX = "live-radar:";
 
     private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
@@ -48,6 +49,7 @@ public class FusionInboxRepository {
         List<String> prefixes = new ArrayList<>();
         for (String prefix : router.prefixes()) {
             if (REPLAY_SOURCE_PREFIX.equals(prefix) && !simulation.allowed()) continue;
+            if (SIM_NORMALIZED_SOURCE_PREFIX.equals(prefix) && !simulation.allowed()) continue;
             if (LIVE_RADAR_SOURCE_PREFIX.equals(prefix) && !properties.getLivePromotion().isEnabled()) continue;
             prefixes.add(prefix);
         }

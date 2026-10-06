@@ -36,9 +36,11 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
         if (!postgis) return List.of();
         Map<String, Object> p = window(windowFrom, windowTo, planWindowPadMinutes);
         // 目标经 target_current_alias 解析到存活目标：被并的历史目标不再单独产生风险。
-        // 计划与航线用 LEFT JOIN：没有活动计划的异物目标也必须出现在结果里——决策 9-5 要求它们计入
+        // 计划与航线用 LEFT JOIN：没有待执行/执行中计划的异物目标也必须出现在结果里——决策 9-5 要求它们计入
         // targets_seen 但不生成风险。用 INNER JOIN 会让这类目标在查询层就消失，"无计划只计数"变成永不可达的死代码。
-        // planId 为 null 时决策表直接返回不生成；距离为 null 时走廊关系为 UNKNOWN，同样不生成。
+        // 计划状态决定是否存在当前受保护的飞行活动；当前观测不再要求落在计划 start/end 内，
+        // 这样待执行计划也能用最新异物位置做起飞前风险预检。planId 为 null 时决策表直接返回不生成；
+        // 距离为 null 时走廊关系为 UNKNOWN，同样不生成。
         return jdbc.query("""
                 SELECT DISTINCT survivor.target_id, survivor.target_no, sub.subtype_code, p.plan_id, p.route_version_id,
                        ST_Distance(rv.centerline::geography, ls.location::geography) AS distance_m,
@@ -58,7 +60,7 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                 JOIN target_latest_state ls ON ls.target_id = survivor.target_id
                 LEFT JOIN flight_plan p
                   ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
-                 AND p.start_at <= :window_to_padded AND p.end_at >= :window_from_padded
+                 AND p.status_code IN ('PENDING','EXECUTING')
                 LEFT JOIN route_version rv ON rv.route_version_id = p.route_version_id AND rv.centerline IS NOT NULL
                 WHERE ls.observed_at >= :window_from AND ls.observed_at < :window_to
                   AND ls.location IS NOT NULL
