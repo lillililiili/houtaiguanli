@@ -53,7 +53,8 @@
 - `legality_review(evaluation_id PK, review_state PENDING_REVIEW|CONFIRMED|REJECTED|OVERRIDDEN|SUPERSEDED, manual_status?, version, owner_org_id, district_id, created_at, updated_at)`
 - `legality_review_history(history_id, evaluation_id, version, previous_state, resulting_state, conclusion CONFIRM|REJECT|OVERRIDE|RECOMPUTE|ESCALATE, status_before, status_after?, note 1–1000, actor_id, related_evaluation_id?, related_alarm_id?, created_at)`，`UNIQUE(evaluation_id, version)`
 - `alarm_merge_group(group_id, target_id, alarm_type, rule_set_id, state OPEN|AUTO_CLOSED, current_severity, first_alarm_id, latest_alarm_id, hit_count, window_opened_at, window_expires_at, last_hit_at, closed_at?, closed_reason?, owner_org_id, district_id, version, created_at, updated_at)`
-- `alarm_merge_member(member_id, group_id, evaluation_id UNIQUE, alarm_id?, member_kind CREATED|MERGED|UPGRADED|DOWNGRADED|MANUAL_ESCALATION, severity_before?, severity_after, created_at)`
+- `alarm_merge_member(member_id, group_id, evaluation_id UNIQUE, alarm_id?, member_kind CREATED|MERGED|UPGRADED|DOWNGRADED|MANUAL_ESCALATION|ESCALATED, severity_before?, severity_after, created_at)`
+- `alarm_escalation(escalation_id, alarm_id, seq, group_id?, evaluation_id UNIQUE, trigger_kind ENGINE|MANUAL, severity_before, severity_after, reasons_added JSONB, reasons_after JSONB, note?, actor_id?, owner_org_id, district_id, created_at)`，`UNIQUE(alarm_id, seq)`，只增（2026-10-06，见文末）
 - 视图 `v_rule_effect_fact(evaluation_id, evaluated_at, mode, subject_kind, target_id, plan_id, rule_set_version_id, param_status, legal_status, manual_status, review_state, has_alarm, merge_kind, alarm_id, group_id, supersedes_evaluation_id, source_mode, owner_org_id, district_id)`
 
 `assessment_result` 仍是计划维度投影：仅 ACTIVE 且 `plan_match_code ∈ {FULL, PARTIAL}` 时同事务追加一行（`checks` 由 `hit_details` 压缩为 `{rule_code,result_code,reason_code}`，`rule_version_id` 取规则集内 C03 的 `rule_version`），重算时 `supersedes_assessment_id` 指旧行。SHADOW 与无计划目标只落 `rule_evaluation`。
@@ -97,7 +98,7 @@
 - SHADOW：只写 `rule_evaluation(mode=SHADOW)`，`alarm_outcome={"kind":"SUPPRESSED_SHADOW"}`，不投影、不告警，默认队列不显示。一个规则集可同时有 ACTIVE 与 SHADOW 版本。
 - 回滚：`previous_active_version_id` 设为 active（头行条件更新）+ `rule_set_activation(ROLLBACK)`；旧研判不改。
 - 重算：新 `rule_evaluation(trigger=RECOMPUTE, supersedes_evaluation_id=旧)`，旧 `legality_review → SUPERSEDED`（version+1，历史 `RECOMPUTE`）。
-- C06（E2）：`AlarmIngestionService.ingest(TrustedAlarmFact(sourceId, sourceAlarmId, targetId, alarmType, severity, occurredAt, receivedAt, detail, sourceMode))` 镜像 `RiskIngestionService`：校验 → `lockSource` → 目标元组存在且目录启用（否则 `INVALID_ALARM_FACT`，引擎记 `alarm_outcome.kind=BLOCKED`）→ `(source_id, source_alarm_id)` 幂等 → 插 `alarm` → `UavEventRepository.createForAlarm(…, PENDING_VERIFICATION)`。来源按目标 `source_mode` 取 `rule-engine-legality-{mode}`；`source_alarm_id = "eval:" + evaluation_id`（手动 `"manual:" + evaluation_id`）；`alarm_type = RULE_LEGALITY`；`severity` 由 `C06.severity_by_grade`。合并：同目标同类型 OPEN 组 `FOR UPDATE`；窗口内 → MERGED 不建告警、`hit_count++`、延长窗口；等级更高且在升级窗 → 新告警 UPGRADED；更低 → DOWNGRADED；过期 → 新组。自动关闭：`window_expires_at + C06.auto_close_min < now` 且最近研判非 ABNORMAL/ILLEGAL → `AUTO_CLOSED`，**不改 `uav_event.state_code`，`alarm` 行永不 UPDATE**。REJECT 复核不删告警/组。
+- C06（E2）：`AlarmIngestionService.ingest(TrustedAlarmFact(sourceId, sourceAlarmId, targetId, alarmType, severity, occurredAt, receivedAt, detail, sourceMode))` 镜像 `RiskIngestionService`：校验 → `lockSource` → 目标元组存在且目录启用（否则 `INVALID_ALARM_FACT`，引擎记 `alarm_outcome.kind=BLOCKED`）→ `(source_id, source_alarm_id)` 幂等 → 插 `alarm` → `UavEventRepository.createForAlarm(…, PENDING_VERIFICATION)`。来源按目标 `source_mode` 取 `rule-engine-legality-{mode}`；`source_alarm_id = "eval:" + evaluation_id`（手动 `"manual:" + evaluation_id`）；`alarm_type = RULE_LEGALITY`；`severity` 由 `C06.severity_by_grade`。合并：同目标同类型 OPEN 组 `FOR UPDATE`；窗口内：等级更高或带来新的违规原因 → ESCALATED 升级组内当前告警（不建告警，2026-10-06 起，见文末）；同级且无新原因 → MERGED 不建告警、`hit_count++`、延长窗口；更低 → DOWNGRADED；当前告警已核实为误报时更高等级且在升级窗 → 新告警 UPGRADED；过期 → 新组。自动关闭：`window_expires_at + C06.auto_close_min < now` 且最近研判非 ABNORMAL/ILLEGAL → `AUTO_CLOSED`，**不改 `uav_event.state_code`，`alarm` 行永不 UPDATE**。REJECT 复核不删告警/组。
 
 ## DEMO 参数目录（`LEGALITY-DEMO` v1，全部 `param_status=DEMO`）
 
@@ -232,3 +233,13 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 权限先于参数解析：需要 `assessment:read`；带目标/类别筛选须 `target:read`，带计划筛选须 `flight:read`；不返回关联实体或动作资格。一次 SQL 条件聚合，无列表 DTO、逐条关联查询或统计缓存；最新记录及历史保护规则不变。
 
 业务前台合法性页一次读取五项可见统计，在列表请求结束后启动，不等待详情和复核历史，以避免两路重查询争抢数据库。后台管理端无此列表消费者，现有列表、详情与写接口未改变；旧服务不支持新端点时前台明确显示读取失败。
+
+
+### 2026-10-06 告警升级并入原告警（BUG-11 偏航告警不升级、BUG-16 同一架无人机两条告警）
+
+- 同目标 `RULE_LEGALITY` 的 OPEN 组在去重窗内再次命中时，与组内当前告警（`latest_alarm_id`）比：等级更高，或带来告警里还没有的违规原因（例如夜航告警之后又进入禁飞区、计划内无人机偏航），记 `member_kind=ESCALATED`：不建告警、不建事件、不另起核实，追加一行 `alarm_escalation`，组 `current_severity` 取较高者、`hit_count++`、延长去重窗。这条规则不受 `upgrade_window_min` 限制。同级且原因都已在告警里仍为 MERGED，更低仍为 DOWNGRADED，都只计数。
+- 当前告警的事件已核实为误报（`FALSE_POSITIVE`）时不往里并：更高等级且在升级窗内仍按原规则新建 UPGRADED 告警重新核实，其余只计数。已核实属实（`CONFIRMED`）的照样升级，事件状态不变，不要求重新核实。
+- 人工转告警 `POST /legality-evaluations/{id}/alarms`：同目标 OPEN 组仍在去重窗内且当前告警不是误报时，并入这条告警，201 返回原告警的 `alarm_id/event_id`，追加 `trigger_kind=MANUAL` 的升级记录并写明操作人与说明（等级、原因都没变也记一行）；否则仍新建 `manual:` 告警。
+- `alarm_escalation`：每条告警的 `seq` 从 1 递增，最近一行就是当前状态；`reasons_added` 是本次新增的原因，`reasons_after` 是升级后的全部原因（按出现顺序、不重复）；`actor_id` 在 MANUAL 时必填、ENGINE 时为空。PG 触发器拒绝 UPDATE/DELETE，并把它与 `alarm` 一起接到实时推送 `alarm` 主题。告警当前等级 = 最近一行 `severity_after`，没有升级过就是 `alarm.severity`；当前原因 = 最近一行 `reasons_after`，没有就是 `alarm.detail.violation_reasons`。`alarm` 行仍永不 UPDATE（证据链对告警入库等级取指纹）。
+- 关联：ESCALATED 成员与本次研判的 `alarm_id` 都指向被升级的原告警，所以“最新研判关联的告警”就是事件所属告警。本节替代 2026-09-18 “合并成员的 `alarm_id` 仍只记录本次新建”：成员 `alarm_id` 记录本次新建或本次升级的告警，MERGED/DOWNGRADED 仍为空。`alarm_outcome.kind=ESCALATED` 计入 `alarm_merged_count` 与 `rule-effects` 的 `alarms_merged`，不计入新增告警。
+- 读接口与页面字段见 `docs/backend-stage4/alarm-risk-api-contract.md` 2026-10-06 一节。未改：自动核实条件、移送材料与证据链里冻结的告警入库等级、导出列。

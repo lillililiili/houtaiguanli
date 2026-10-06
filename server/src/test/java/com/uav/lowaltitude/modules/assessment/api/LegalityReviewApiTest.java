@@ -108,6 +108,7 @@ class LegalityReviewApiTest {
         org.mockito.Mockito.reset(spied);
         jdbc.update("delete from audit_log where account like 's7r-%'");
         jdbc.update("delete from legality_review_history where evaluation_id in (select evaluation_id from rule_evaluation where owner_org_id=?)", orgId);
+        jdbc.update("delete from alarm_escalation where owner_org_id=?", orgId);
         jdbc.update("delete from alarm_merge_member where evaluation_id in (select evaluation_id from rule_evaluation where owner_org_id=?)", orgId);
         jdbc.update("delete from alarm_merge_group where owner_org_id=?", orgId);
         jdbc.update("delete from legality_review where owner_org_id=?", orgId);
@@ -545,6 +546,42 @@ class LegalityReviewApiTest {
         insertEvaluation(legal, run, "LEGAL", "[]", null, null);
         insertReview(legal, "PENDING_REVIEW", 0);
         escalate(session, legal, "合法研判转告警", 0).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));
+    }
+
+    @Test
+    void escalationJoinsLiveAlarmOfSameTargetAndRecordsReviewer() throws Exception {
+        // BUG-16：同一架无人机已有待核实告警时，人工转告警并入并升级这条告警，不另起一条核实；升级记录写明谁、为什么。
+        String engineEvaluation = "s7r-eval-engine-" + suffix, alarm = "s7r-alarm-" + suffix, event = "s7r-event-" + suffix, group = "s7r-group-" + suffix;
+        insertEvaluation(engineEvaluation, run, "ILLEGAL", "[\"NIGHT_FLIGHT\"]", "LOW", new BigDecimal("13"), null, T0, null);
+        OffsetDateTime opened = now().minusMinutes(1);
+        jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,detail,source_mode,owner_org_id,district_id,created_at)"
+                + " values (?,?,'rule-engine-legality-mock',?,'RULE_LEGALITY','LOW',?,?,CAST(? AS JSON),'mock',?,?,?)",
+                alarm, target, "eval:" + engineEvaluation, ts(T0), ts(opened), "{\"violation_reasons\":[\"NIGHT_FLIGHT\"]}", orgId, district, ts(opened));
+        jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'PENDING_VERIFICATION',?,?,?,?,0)",
+                event, alarm, orgId, district, ts(opened), ts(opened));
+        jdbc.update("insert into alarm_merge_group (group_id,target_id,alarm_type,rule_set_id,state,current_severity,first_alarm_id,latest_alarm_id,hit_count,window_opened_at,window_expires_at,last_hit_at,owner_org_id,district_id,version,created_at,updated_at)"
+                + " values (?,?,'RULE_LEGALITY',?,'OPEN','LOW',?,?,1,?,?,?,?,?,0,?,?)",
+                group, target, LocalStage7RuleEngineSeeder.RULE_SET_ID, alarm, alarm, ts(opened), ts(opened.plusMinutes(5)), ts(opened), orgId, district, ts(opened), ts(opened));
+        jdbc.update("insert into alarm_merge_member (member_id,group_id,evaluation_id,alarm_id,member_kind,severity_before,severity_after,created_at) values (?,?,?,?,'CREATED',null,'LOW',?)",
+                "s7r-member-" + suffix, group, engineEvaluation, alarm, ts(opened));
+
+        escalate(session, evaluation, "飞手承认未按报备航线飞行", 0).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.alarm_id").value(alarm)).andExpect(jsonPath("$.data.event_id").value(event));
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select related_alarm_id from legality_review_history where evaluation_id=? and conclusion='ESCALATE'", String.class, evaluation)).isEqualTo(alarm);
+        assertThat(jdbc.queryForObject("select x.trigger_kind||'/'||x.severity_before||'>'||x.severity_after||'/'||x.note||'/'||u.name from alarm_escalation x"
+                + " join app_user u on u.user_id=x.actor_id where x.alarm_id=?", String.class, alarm)).isEqualTo("MANUAL/LOW>MEDIUM/飞手承认未按报备航线飞行/复核测试员");
+        // 原告警的核实事件不动：仍是同一条待核实。
+        assertThat(jdbc.queryForObject("select state_code||'/'||version from uav_event where alarm_id=?", String.class, alarm)).isEqualTo("PENDING_VERIFICATION/0");
+        mvc.perform(get("/api/v1/alarms/" + alarm).header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.severity").value("MEDIUM")).andExpect(jsonPath("$.data.original_severity").value("LOW"))
+                .andExpect(jsonPath("$.data.violation_reasons[1]").value("ROUTE_DEVIATION"));
+        mvc.perform(get("/api/v1/alarms/" + alarm + "/escalations").header("Authorization", bearer(session))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].trigger_kind").value("MANUAL"))
+                .andExpect(jsonPath("$.data.items[0].actor_name").value("复核测试员"))
+                .andExpect(jsonPath("$.data.items[0].note").value("飞手承认未按报备航线飞行"))
+                .andExpect(jsonPath("$.data.items[0].reasons_added[0]").value("ROUTE_DEVIATION"));
+        escalate(session, evaluation, "再转一次", 1).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("ALARM_ALREADY_LINKED"));
     }
 
     @Test

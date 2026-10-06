@@ -22,7 +22,10 @@ import com.uav.lowaltitude.modules.alarm.application.AlarmMergePolicy.MergeInput
 import com.uav.lowaltitude.modules.alarm.application.AlarmMergePolicy.MergeOutcome;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
 
-/** C06 合并：窗口内合并、升级新建、降级不建、过期新组、自动关闭；alarm 行零 UPDATE、uav_event 状态不变。 */
+/**
+ * C06 合并：窗口内合并、升级原告警（更高等级或新违规原因，不另建告警）、误报后升级新建、降级不建、过期新组、自动关闭；
+ * alarm 行零 UPDATE、uav_event 状态不变，升级只追加 alarm_escalation。
+ */
 @SpringBootTest
 @ActiveProfiles("test")
 @Transactional
@@ -31,7 +34,7 @@ class AlarmMergePolicyTest {
     @Autowired AlarmMergePolicy policy;
     @Autowired JdbcTemplate jdbc;
     private final RuleParams params = new StubParams();
-    private String org, district, target, ruleSet, ruleSetVersion, run;
+    private String org, district, target, ruleSet, ruleSetVersion, run, actor;
 
     @BeforeEach
     void fixture() {
@@ -43,6 +46,10 @@ class AlarmMergePolicyTest {
         jdbc.update("insert into rule_set (rule_set_id,rule_set_code,name,version,created_at,updated_at) values (?,?,?,0,current_timestamp,current_timestamp)", ruleSet, "RS-" + suffix, "测试规则集");
         jdbc.update("insert into rule_set_version (rule_set_version_id,rule_set_id,version_no,status_code,param_status,valid_from,description,source_mode,created_at,published_at) values (?,?,1,'PUBLISHED','DEMO',?,'测试','mock',current_timestamp,current_timestamp)", ruleSetVersion, ruleSet, Timestamp.from(T0.toInstant()));
         jdbc.update("insert into rule_run (run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) values (?,?,?,'ACTIVE','MANUAL',?,?,'RUNNING',0,0,0,0,'mock',current_timestamp)", run, ruleSet, ruleSetVersion, Timestamp.from(T0.toInstant()), Timestamp.from(T0.toInstant()));
+        actor = UUID.randomUUID().toString();
+        String role = "ROLE-MERGE-" + suffix;
+        jdbc.update("insert into app_role (role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) values (?,?, '',false,true,0,0,0,false)", role, role);
+        jdbc.update("insert into app_user (user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values (?,?,?,?,'ACTIVE','unused',0,'ALL',0,0,0,0)", actor, "merge-reviewer-" + suffix, "复核员", role);
     }
 
     @Test
@@ -68,24 +75,105 @@ class AlarmMergePolicyTest {
     }
 
     @Test
-    void higherSeverityInsideUpgradeWindowCreatesNewAlarmAndLowerOnlyRecordsDowngrade() {
-        MergeOutcome first = policy.apply(input(evaluation("ABNORMAL", "MEDIUM", T0), "ABNORMAL", "MEDIUM", T0), params);
+    void higherSeverityEscalatesOriginalAlarmInsteadOfCreatingSecondOneAndLowerOnlyRecordsDowngrade() {
+        // BUG-16：夜航告警之后又进禁飞区，同一架无人机只留一条告警，等级升上去、原因累计，不另起一条待核实。
+        MergeOutcome first = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0), "ILLEGAL", "MEDIUM", T0, List.of("NIGHT_FLIGHT")), params);
         Map<String, Object> alarmBefore = alarm(first.alarmId());
-        MergeOutcome upgraded = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0.plusMinutes(3)), "ILLEGAL", "HIGH", T0.plusMinutes(3)), params);
-        assertThat(upgraded.kind()).isEqualTo("UPGRADED");
-        assertThat(upgraded.alarmId()).isNotNull().isNotEqualTo(first.alarmId());
-        assertThat(upgraded.severity()).isEqualTo("HIGH");
-        assertThat(alarmCount()).isEqualTo(2L);
-        assertThat(jdbc.queryForObject("select current_severity||'/'||latest_alarm_id||'/'||first_alarm_id from alarm_merge_group where group_id=?", String.class, first.groupId()))
-                .isEqualTo("HIGH/" + upgraded.alarmId() + "/" + first.alarmId());
-        assertThat(jdbc.queryForObject("select severity_before||'>'||severity_after from alarm_merge_member where alarm_id=?", String.class, upgraded.alarmId())).isEqualTo("MEDIUM>HIGH");
-        MergeOutcome downgraded = policy.apply(input(evaluation("ABNORMAL", "LOW", T0.plusMinutes(4)), "ABNORMAL", "LOW", T0.plusMinutes(4)), params);
+        Map<String, Object> eventBefore = event(first.alarmId());
+        String escalating = evaluation("ILLEGAL", "HIGH", T0.plusMinutes(3));
+        MergeOutcome escalated = policy.apply(input(escalating, "ILLEGAL", "HIGH", T0.plusMinutes(3), List.of("NIGHT_FLIGHT", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(escalated.kind()).isEqualTo("ESCALATED");
+        assertThat(escalated.alarmId()).isEqualTo(first.alarmId());
+        assertThat(escalated.eventId()).isEqualTo(first.eventId());
+        assertThat(escalated.groupId()).isEqualTo(first.groupId());
+        assertThat(escalated.severity()).isEqualTo("HIGH");
+        assertThat(alarmCount()).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select current_severity||'/'||latest_alarm_id||'/'||first_alarm_id||'/'||hit_count from alarm_merge_group where group_id=?", String.class, first.groupId()))
+                .isEqualTo("HIGH/" + first.alarmId() + "/" + first.alarmId() + "/2");
+        assertThat(jdbc.queryForObject("select member_kind||'/'||alarm_id||'/'||severity_before||'>'||severity_after from alarm_merge_member where evaluation_id=?", String.class, escalating))
+                .isEqualTo("ESCALATED/" + first.alarmId() + "/MEDIUM>HIGH");
+        Map<String, Object> escalation = jdbc.queryForMap("select seq,trigger_kind,severity_before,severity_after,cast(reasons_added as varchar) as added,cast(reasons_after as varchar) as reasons,"
+                + "evaluation_id,group_id,actor_id,note from alarm_escalation where alarm_id=?", first.alarmId());
+        assertThat(escalation.get("SEQ")).isEqualTo(1);
+        assertThat(escalation.get("TRIGGER_KIND")).isEqualTo("ENGINE");
+        assertThat(escalation.get("SEVERITY_BEFORE") + ">" + escalation.get("SEVERITY_AFTER")).isEqualTo("MEDIUM>HIGH");
+        assertThat(reasons(escalation.get("ADDED"))).containsExactly("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(reasons(escalation.get("REASONS"))).containsExactly("NIGHT_FLIGHT", "INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(escalation.get("EVALUATION_ID")).isEqualTo(escalating);
+        assertThat(escalation.get("GROUP_ID")).isEqualTo(first.groupId());
+        assertThat(escalation.get("ACTOR_ID")).isNull();
+        // 同一研判重放：只回放既有结果，不再追加升级记录。
+        MergeOutcome replay = policy.apply(input(escalating, "ILLEGAL", "HIGH", T0.plusMinutes(3), List.of("NIGHT_FLIGHT", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(replay.kind()).isEqualTo("ESCALATED");
+        assertThat(replay.alarmId()).isEqualTo(first.alarmId());
+        assertThat(escalationCount(first.alarmId())).isEqualTo(1L);
+        MergeOutcome downgraded = policy.apply(input(evaluation("ILLEGAL", "LOW", T0.plusMinutes(4)), "ILLEGAL", "LOW", T0.plusMinutes(4), List.of("NIGHT_FLIGHT")), params);
         assertThat(downgraded.kind()).isEqualTo("DOWNGRADED");
         assertThat(downgraded.alarmId()).isNull();
-        assertThat(alarmCount()).isEqualTo(2L);
+        assertThat(alarmCount()).isEqualTo(1L);
+        assertThat(escalationCount(first.alarmId())).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select current_severity from alarm_merge_group where group_id=?", String.class, first.groupId())).isEqualTo("HIGH");
+        // 告警行与核实事件都不被升级改写：只有一条待核实事件，状态与版本不变。
         assertThat(alarm(first.alarmId())).isEqualTo(alarmBefore);
-        assertThat(jdbc.queryForObject("select count(*) from uav_event where alarm_id in (?,?) and state_code='PENDING_VERIFICATION' and version=0", Long.class, first.alarmId(), upgraded.alarmId())).isEqualTo(2L);
+        assertThat(event(first.alarmId())).isEqualTo(eventBefore);
+        assertThat(jdbc.queryForObject("select count(*) from uav_event e join alarm a on a.alarm_id=e.alarm_id where a.target_id=? and e.state_code='PENDING_VERIFICATION'", Long.class, target)).isEqualTo(1L);
+    }
+
+    @Test
+    void newViolationReasonAtSameLevelIsAddedToOriginalAlarmOnce() {
+        // BUG-11：计划内无人机偏航，等级没变也要把“偏航”补进原告警，而不是悄悄合并。
+        MergeOutcome first = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0), "ILLEGAL", "MEDIUM", T0, List.of("NIGHT_FLIGHT")), params);
+        MergeOutcome deviated = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0.plusMinutes(1)), "ILLEGAL", "MEDIUM", T0.plusMinutes(1), List.of("ROUTE_DEVIATION", "NIGHT_FLIGHT")), params);
+        assertThat(deviated.kind()).isEqualTo("ESCALATED");
+        assertThat(deviated.alarmId()).isEqualTo(first.alarmId());
+        assertThat(deviated.severity()).isEqualTo("MEDIUM");
+        Map<String, Object> escalation = jdbc.queryForMap("select severity_before,severity_after,cast(reasons_added as varchar) as added,cast(reasons_after as varchar) as reasons from alarm_escalation where alarm_id=?", first.alarmId());
+        assertThat(escalation.get("SEVERITY_BEFORE") + ">" + escalation.get("SEVERITY_AFTER")).isEqualTo("MEDIUM>MEDIUM");
+        assertThat(reasons(escalation.get("ADDED"))).containsExactly("ROUTE_DEVIATION");
+        assertThat(reasons(escalation.get("REASONS"))).containsExactly("NIGHT_FLIGHT", "ROUTE_DEVIATION");
+        // 原因都已在告警里：只合并计数，不再追加升级记录。
+        MergeOutcome again = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0.plusMinutes(2)), "ILLEGAL", "MEDIUM", T0.plusMinutes(2), List.of("ROUTE_DEVIATION")), params);
+        assertThat(again.kind()).isEqualTo("MERGED");
+        assertThat(again.alarmId()).isNull();
+        assertThat(escalationCount(first.alarmId())).isEqualTo(1L);
+        assertThat(alarmCount()).isEqualTo(1L);
+    }
+
+    @Test
+    void escalationIsNotLimitedByUpgradeWindowAndKeepsConfirmedVerification() {
+        MergeOutcome first = policy.apply(input(evaluation("ILLEGAL", "LOW", T0), "ILLEGAL", "LOW", T0, List.of("NIGHT_FLIGHT")), params);
+        jdbc.update("update uav_event set state_code='CONFIRMED',version=version+1 where alarm_id=?", first.alarmId());
+        Map<String, Object> eventBefore = event(first.alarmId());
+        // 每次命中都把去重窗往后延；第 12 分钟已过 10 分钟升级窗，但仍在去重窗内。
+        assertThat(policy.apply(input(evaluation("ILLEGAL", "LOW", T0.plusMinutes(4)), "ILLEGAL", "LOW", T0.plusMinutes(4), List.of("NIGHT_FLIGHT")), params).kind()).isEqualTo("MERGED");
+        assertThat(policy.apply(input(evaluation("ILLEGAL", "LOW", T0.plusMinutes(8)), "ILLEGAL", "LOW", T0.plusMinutes(8), List.of("NIGHT_FLIGHT")), params).kind()).isEqualTo("MERGED");
+        MergeOutcome late = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0.plusMinutes(12)), "ILLEGAL", "HIGH", T0.plusMinutes(12), List.of("NIGHT_FLIGHT", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(late.kind()).isEqualTo("ESCALATED");
+        assertThat(late.alarmId()).isEqualTo(first.alarmId());
+        assertThat(late.severity()).isEqualTo("HIGH");
+        assertThat(alarmCount()).isEqualTo(1L);
+        // 已核实属实的告警升级后不要求重新核实：事件状态与版本保持不变。
+        assertThat(event(first.alarmId())).isEqualTo(eventBefore);
+    }
+
+    @Test
+    void falsePositiveAlarmIsNotEscalatedAndHigherLevelStillOpensNewAlarm() {
+        MergeOutcome first = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0), "ILLEGAL", "MEDIUM", T0, List.of("NIGHT_FLIGHT")), params);
+        jdbc.update("update uav_event set state_code='FALSE_POSITIVE',version=version+1 where alarm_id=?", first.alarmId());
+        // 误报的告警不吸收新违规：同级新原因只计数，更重的违规在升级窗内另建告警重新核实。
+        MergeOutcome sameLevel = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0.plusMinutes(1)), "ILLEGAL", "MEDIUM", T0.plusMinutes(1), List.of("ROUTE_DEVIATION")), params);
+        assertThat(sameLevel.kind()).isEqualTo("MERGED");
+        MergeOutcome upgraded = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0.plusMinutes(3)), "ILLEGAL", "HIGH", T0.plusMinutes(3), List.of("INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(upgraded.kind()).isEqualTo("UPGRADED");
+        assertThat(upgraded.alarmId()).isNotNull().isNotEqualTo(first.alarmId());
+        assertThat(alarmCount()).isEqualTo(2L);
+        assertThat(escalationCount(first.alarmId())).isZero();
+        assertThat(jdbc.queryForObject("select current_severity||'/'||latest_alarm_id from alarm_merge_group where group_id=?", String.class, first.groupId()))
+                .isEqualTo("HIGH/" + upgraded.alarmId());
+        // 新告警成为组里的当前告警：之后的新原因并入新告警。
+        MergeOutcome next = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0.plusMinutes(4)), "ILLEGAL", "HIGH", T0.plusMinutes(4), List.of("INSIDE_RESTRICTED_AIRSPACE", "ROUTE_DEVIATION")), params);
+        assertThat(next.kind()).isEqualTo("ESCALATED");
+        assertThat(next.alarmId()).isEqualTo(upgraded.alarmId());
     }
 
     @Test
@@ -161,23 +249,58 @@ class AlarmMergePolicyTest {
     }
 
     @Test
-    void manualEscalationAlwaysCreatesAlarmAndJoinsOpenGroup() {
-        MergeOutcome first = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0), "ILLEGAL", "HIGH", T0), params);
-        MergeOutcome manual = policy.escalateManually(input(evaluation("UNDETERMINED", null, T0.plusMinutes(1)), "UNDETERMINED", null, T0.plusMinutes(1)));
+    void manualEscalationJoinsOpenAlarmAndRecordsWhoAndWhy() {
+        MergeOutcome first = policy.apply(input(evaluation("ILLEGAL", "MEDIUM", T0), "ILLEGAL", "MEDIUM", T0, List.of("NIGHT_FLIGHT")), params);
+        String manualEvaluation = evaluation("UNDETERMINED", null, T0.plusMinutes(1));
+        MergeOutcome manual = policy.escalateManually(input(manualEvaluation, "UNDETERMINED", null, T0.plusMinutes(1)), actor, "  现场确认机身反光，按违规处理  ");
         assertThat(manual.kind()).isEqualTo("MANUAL_ESCALATION");
-        assertThat(manual.alarmId()).isNotNull().isNotEqualTo(first.alarmId());
+        assertThat(manual.alarmId()).isEqualTo(first.alarmId());
+        assertThat(manual.eventId()).isEqualTo(first.eventId());
         assertThat(manual.groupId()).isEqualTo(first.groupId());
+        assertThat(alarmCount()).isEqualTo(1L);
+        Map<String, Object> escalation = jdbc.queryForMap("select trigger_kind,actor_id,note,severity_before,severity_after,cast(reasons_added as varchar) as added,cast(reasons_after as varchar) as reasons,evaluation_id from alarm_escalation where alarm_id=?", first.alarmId());
+        assertThat(escalation.get("TRIGGER_KIND")).isEqualTo("MANUAL");
+        assertThat(escalation.get("ACTOR_ID")).isEqualTo(actor);
+        assertThat(escalation.get("NOTE")).isEqualTo("现场确认机身反光，按违规处理");
+        assertThat(escalation.get("EVALUATION_ID")).isEqualTo(manualEvaluation);
+        // 人工研判没有等级（UNKNOWN）时不把告警往下拉；带来的新原因照样累计。
+        assertThat(escalation.get("SEVERITY_BEFORE") + ">" + escalation.get("SEVERITY_AFTER")).isEqualTo("MEDIUM>MEDIUM");
+        assertThat(reasons(escalation.get("ADDED"))).containsExactly("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(reasons(escalation.get("REASONS"))).containsExactly("NIGHT_FLIGHT", "INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(jdbc.queryForObject("select member_kind||'/'||alarm_id from alarm_merge_member where evaluation_id=?", String.class, manualEvaluation))
+                .isEqualTo("MANUAL_ESCALATION/" + first.alarmId());
+    }
+
+    @Test
+    void manualEscalationCreatesAlarmWhenTargetHasNoLiveAlarm() {
+        MergeOutcome manual = policy.escalateManually(input(evaluation("UNDETERMINED", null, T0), "UNDETERMINED", null, T0), actor, "人工转告警");
+        assertThat(manual.kind()).isEqualTo("MANUAL_ESCALATION");
+        assertThat(manual.alarmId()).isNotNull();
         assertThat(jdbc.queryForObject("select source_alarm_id from alarm where alarm_id=?", String.class, manual.alarmId())).startsWith("manual:");
         assertThat(jdbc.queryForObject("select severity from alarm where alarm_id=?", String.class, manual.alarmId())).isEqualTo("UNKNOWN");
+        assertThat(escalationCount(manual.alarmId())).isZero();
+        // 当前告警被判误报后再转告警：另建一条重新核实，挂入同一组。
+        jdbc.update("update uav_event set state_code='FALSE_POSITIVE',version=version+1 where alarm_id=?", manual.alarmId());
+        MergeOutcome again = policy.escalateManually(input(evaluation("UNDETERMINED", null, T0.plusMinutes(1)), "UNDETERMINED", null, T0.plusMinutes(1)), actor, "误报后再次出现");
+        assertThat(again.alarmId()).isNotNull().isNotEqualTo(manual.alarmId());
+        assertThat(again.groupId()).isEqualTo(manual.groupId());
         assertThat(alarmCount()).isEqualTo(2L);
     }
 
     private MergeInput input(String evaluationId, String legalStatus, String grade, OffsetDateTime at) { return input(evaluationId, legalStatus, grade, at, at); }
 
+    private MergeInput input(String evaluationId, String legalStatus, String grade, OffsetDateTime at, List<String> reasons) {
+        return input(evaluationId, legalStatus, grade, at, at, reasons);
+    }
+
     /** occurredAt = 研判 as_of（告警 occurred_at）；mergedAt = 评估/操作时刻（窗口算术与 received_at）。 */
     private MergeInput input(String evaluationId, String legalStatus, String grade, OffsetDateTime occurredAt, OffsetDateTime mergedAt) {
+        return input(evaluationId, legalStatus, grade, occurredAt, mergedAt, List.of("INSIDE_RESTRICTED_AIRSPACE"));
+    }
+
+    private MergeInput input(String evaluationId, String legalStatus, String grade, OffsetDateTime occurredAt, OffsetDateTime mergedAt, List<String> reasons) {
         return new MergeInput(evaluationId, target, org, district, "mock", ruleSet, ruleSetVersion, legalStatus, "FULL", grade,
-                grade == null ? null : new BigDecimal("70"), List.of("INSIDE_RESTRICTED_AIRSPACE"), occurredAt, mergedAt);
+                grade == null ? null : new BigDecimal("70"), reasons, occurredAt, mergedAt);
     }
 
     private String evaluation(String legalStatus, String grade, OffsetDateTime at) {
@@ -191,6 +314,20 @@ class AlarmMergePolicyTest {
     }
 
     private long alarmCount() { return jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target); }
+    private long escalationCount(String alarmId) { return jdbc.queryForObject("select count(*) from alarm_escalation where alarm_id=?", Long.class, alarmId); }
+    /** JSON 列在 H2 上可能是带引号的 JSON 字符串：是文本就再解析一层。 */
+    private static List<String> reasons(Object stored) {
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.fasterxml.jackson.databind.JsonNode node = mapper.readTree(String.valueOf(stored));
+            if (node.isTextual()) node = mapper.readTree(node.textValue());
+            List<String> output = new java.util.ArrayList<>();
+            node.forEach(item -> output.add(item.textValue()));
+            return output;
+        } catch (Exception ex) {
+            throw new AssertionError("违规原因不是 JSON 数组: " + stored, ex);
+        }
+    }
     /** JSON 列在 H2 上回读为 byte[]，逐列比较必须转成文本；其余列原样快照。 */
     private Map<String, Object> alarm(String alarmId) {
         return jdbc.queryForMap("select alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,cast(detail as varchar) as detail,"

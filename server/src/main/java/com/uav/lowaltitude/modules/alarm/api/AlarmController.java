@@ -41,4 +41,11 @@ public class AlarmController {
 
     @GetMapping("/alarms/{alarmId}")
     public ApiResponse<AlarmDto> detail(@PathVariable String alarmId) { return ApiResponse.ok(service.detail(alarmId)); }
+
+    /** 告警升级记录：同一目标再次违规时原告警升级的经过（谁、什么时候、为什么）。 */
+    @GetMapping("/alarms/{alarmId}/escalations")
+    public ApiResponse<PageDto<AlarmDtos.EscalationDto>> escalations(@PathVariable String alarmId,
+            @RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(service.escalations(alarmId, parameters));
+    }
 }

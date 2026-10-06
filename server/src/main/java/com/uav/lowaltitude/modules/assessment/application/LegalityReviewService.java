@@ -142,11 +142,12 @@ public class LegalityReviewService {
         EvaluationRow linked = evaluations.find(id, readAccess);
         if (review.engineAlarmId() != null || (linked != null && linked.alarmId() != null)) throw alreadyLinked();
 
-        MergeOutcome outcome = escalation.escalate(review);
+        AuthUser actor = AuthContext.require();
+        // 同一目标已有未判误报的告警时并入并升级那条告警（不另起核实），升级记录写明操作人与说明。
+        MergeOutcome outcome = escalation.escalate(review, actor.userId(), note);
         if (outcome == null || outcome.alarmId() == null) throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "告警入库未返回结果");
         OffsetDateTime at = now();
         if (reviews.bump(id, expectedVersion, at) != 1) throw conflict();
-        AuthUser actor = AuthContext.require();
         reviews.appendHistory(new HistoryInsert(UUID.randomUUID().toString(), id, expectedVersion + 1, review.reviewState(), review.reviewState(), "ESCALATE",
                 review.legalStatus(), review.manualStatus(), note, actor.userId(), null, outcome.alarmId(), at));
         audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "legality_evaluation_escalated", OBJECT_TYPE, id,

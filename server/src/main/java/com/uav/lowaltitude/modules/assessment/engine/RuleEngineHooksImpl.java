@@ -54,6 +54,7 @@ public class RuleEngineHooksImpl implements RuleEngineHooks {
                 outcome.asOf() != null ? outcome.asOf() : now, now);
         MergeOutcome result = merge.apply(input, outcome.params());
         // MERGED/DOWNGRADED 没有新建告警，但仍属于原事件。保存这层关联，供通知重新核验最新依据。
+        // ESCALATED 升级的就是原告警，结果里直接带着原告警与事件。
         String linkedAlarmId = result.alarmId();
         if (linkedAlarmId == null && (AlarmMergePolicy.KIND_MERGED.equals(result.kind())
                 || AlarmMergePolicy.KIND_DOWNGRADED.equals(result.kind()))) {
@@ -68,7 +69,9 @@ public class RuleEngineHooksImpl implements RuleEngineHooks {
         if (result.severity() != null) summary.put("severity", result.severity());
         if (result.reason() != null) summary.put("reason", result.reason());
         boolean created = AlarmMergePolicy.KIND_CREATED.equals(result.kind()) || AlarmMergePolicy.KIND_UPGRADED.equals(result.kind());
-        boolean merged = AlarmMergePolicy.KIND_MERGED.equals(result.kind()) || AlarmMergePolicy.KIND_DOWNGRADED.equals(result.kind());
+        // 升级原告警不新建告警，计入合并数。
+        boolean merged = AlarmMergePolicy.KIND_MERGED.equals(result.kind()) || AlarmMergePolicy.KIND_DOWNGRADED.equals(result.kind())
+                || AlarmMergePolicy.KIND_ESCALATED.equals(result.kind());
         return new HookResult(linkedAlarmId, summary, created, merged);
     }
 

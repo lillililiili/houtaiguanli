@@ -159,7 +159,8 @@ public class LegalityEvaluationReadRepository {
         return jdbc.queryForObject("SELECT COUNT(*) AS evaluations,"
                 + " SUM(CASE WHEN f.mode='ACTIVE' AND f.legal_status IN ('ABNORMAL','ILLEGAL') THEN 1 ELSE 0 END) AS alarm_worthy,"
                 + " SUM(CASE WHEN f.merge_kind IN ('CREATED','UPGRADED') THEN 1 ELSE 0 END) AS alarms_created,"
-                + " SUM(CASE WHEN f.merge_kind IN ('MERGED','DOWNGRADED') THEN 1 ELSE 0 END) AS alarms_merged,"
+                // ESCALATED 是并入原告警并升级它，同样没有新建告警，计入合并。
+                + " SUM(CASE WHEN f.merge_kind IN ('MERGED','DOWNGRADED','ESCALATED') THEN 1 ELSE 0 END) AS alarms_merged,"
                 + " SUM(CASE WHEN f.review_state IN ('CONFIRMED','REJECTED','OVERRIDDEN') THEN 1 ELSE 0 END) AS reviewed,"
                 + " SUM(CASE WHEN f.review_state='REJECTED' THEN 1 ELSE 0 END) AS rejected,"
                 + " SUM(CASE WHEN f.review_state='OVERRIDDEN' THEN 1 ELSE 0 END) AS overridden,"

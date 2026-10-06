@@ -25,13 +25,25 @@ public final class AlarmDtos {
         private final EventId eventId;
         private final Long occurredAt;
         private final long receivedAt;
+        /**
+         * 告警升级（2026-10-06）：severity 是升级后的当前等级，original_severity 是告警产生时的等级；
+         * violation_reasons 是累计的违规原因代码（没有记录时为空数组）；escalation_count 为 0 表示没升级过，
+         * escalated_at 是最近一次升级时刻。升级明细见 GET /alarms/{alarm_id}/escalations。
+         */
+        private final String originalSeverity;
+        private final List<String> violationReasons;
+        private final int escalationCount;
+        private final Long escalatedAt;
         public AlarmDto(String alarmId, String eventId, String state, String alarmType, String severity, Long occurredAt,
                 long receivedAt, String sourceCode, String sourceMode, String ownerOrgId, String districtId, String targetId,
-                String alarmNo, String sourceName, String ownerOrgName, String districtName, String targetNo) {
+                String alarmNo, String sourceName, String ownerOrgName, String districtName, String targetNo,
+                String originalSeverity, List<String> violationReasons, int escalationCount, Long escalatedAt) {
             this.alarmId = alarmId; this.eventId = new EventId(eventId); this.state = state; this.alarmType = alarmType; this.severity = severity;
             this.occurredAt = occurredAt; this.receivedAt = receivedAt; this.sourceCode = sourceCode; this.sourceMode = sourceMode;
             this.ownerOrgId = ownerOrgId; this.districtId = districtId; this.targetId = targetId;
             this.alarmNo = alarmNo; this.sourceName = sourceName; this.ownerOrgName = ownerOrgName; this.districtName = districtName; this.targetNo = targetNo;
+            this.originalSeverity = originalSeverity; this.violationReasons = violationReasons == null ? List.of() : List.copyOf(violationReasons);
+            this.escalationCount = escalationCount; this.escalatedAt = escalatedAt;
         }
         public String getAlarmId() { return alarmId; }
         /** 无事件是稳定业务事实；包装值非空而序列化结果为 null，避免改全局 NON_NULL。 */
@@ -51,6 +63,10 @@ public final class AlarmDtos {
         public String getOwnerOrgName() { return ownerOrgName; }
         public String getDistrictName() { return districtName; }
         public String getTargetNo() { return targetNo; }
+        public String getOriginalSeverity() { return originalSeverity; }
+        public List<String> getViolationReasons() { return violationReasons; }
+        public int getEscalationCount() { return escalationCount; }
+        public Long getEscalatedAt() { return escalatedAt; }
     }
     public record EventId(String value) { }
     public static final class EventIdSerializer extends JsonSerializer<EventId> {
@@ -63,4 +79,10 @@ public final class AlarmDtos {
     public record VerificationDto(String historyId, String previousState, String resultingState, String conclusion,
             String note, long version, String actorId, long createdAt, String actorName) { }
     public record VerifyRequest(String conclusion, String note, Long expectedVersion) { }
+    /**
+     * 告警升级记录：trigger_kind 为 ENGINE（系统研判）或 MANUAL（人工转告警，带操作人与说明）；
+     * reasons_added 是这次新增的违规原因，reasons_after 是升级后的全部原因。
+     */
+    public record EscalationDto(String escalationId, int seq, String triggerKind, String severityBefore, String severityAfter,
+            List<String> reasonsAdded, List<String> reasonsAfter, String note, String actorId, String actorName, long createdAt) { }
 }
