@@ -72,25 +72,45 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
      */
     private static final Map<String, List<String>> MENU_DATA_ONLY_MODULES = Map.of("situation", List.of("devices"));
 
-    /** 演示角色：角色码、名称、说明（说明逐字取自原版演示）、菜单、以及这个角色额外的操作动作。 */
+    /**
+     * 演示角色：角色码、名称、说明（说明逐字取自原版演示）、菜单、这个角色额外的操作动作，
+     * 以及菜单推不出来的模块等级（模块码 → 等级）。后者只决定等级：该模块的菜单仍由 {@code menus} 决定，
+     * 没在菜单里的就只给数据权限、不开菜单。
+     */
     public record DemoRole(String code, String name, String description,
-            List<String> menus, List<String[]> operations) { }
+            List<String> menus, List<String[]> operations, Map<String, String> modules) {
+        public DemoRole(String code, String name, String description, List<String> menus, List<String[]> operations) {
+            this(code, name, description, menus, operations, Map.of());
+        }
+    }
 
     public static final List<DemoRole> ROLES = List.of(
+            // 2026-10-06（BUG-02）：已批准的设备反制由处置授权人下发和停止（原版演示“反制与信号干扰授权仅处置授权人及以上可执行”）。
+            // 执行要同时有 disposal:execute 与 devices.op（决策 13-9）；设备管理只给数据权限、不进菜单。
+            // 执行已批准的申请不需要直接反制：disposal:direct 按 2026-09-17 规则只能逐个显式授予，这里不给。
             new DemoRole("ROLE-DEMO-AUTH", "处置授权人", "反制/干扰授权、案件审批",
                     List.of("situation", "alarms", "punish"),
                     List.of(new String[]{PermissionCode.DISPOSAL_APPROVE.value(), "OP"},
+                            new String[]{PermissionCode.DISPOSAL_EXECUTE.value(), "OP"},
                             new String[]{PermissionCode.DISPOSAL_STOP.value(), "OP"},
-                            new String[]{PermissionCode.PUNISHMENT_REVIEW.value(), "OP"})),
+                            new String[]{PermissionCode.PUNISHMENT_REVIEW.value(), "OP"}),
+                    Map.of("devices", "OP")),
+            // 2026-10-06（OBS-03，用户确认）：值班员要能看态势页的设备事件、光电画面和证据。
+            // 设备事件要 monitoring.read（不开设备实时监测菜单），证据图片与视频要 evidence:preview；不给任何设备操作权。
             new DemoRole("ROLE-DEMO-DUTY", "值班员", "态势监视、告警核实与派发",
                     List.of("situation", "alarms", "flights"),
                     List.of(new String[]{PermissionCode.ALARM_VERIFY.value(), "OP"},
                             new String[]{PermissionCode.RISK_VERIFY.value(), "OP"},
                             new String[]{PermissionCode.DISPOSAL_REQUEST.value(), "OP"},
-                            new String[]{PermissionCode.HANDOFF_CREATE.value(), "OP"})),
+                            new String[]{PermissionCode.HANDOFF_CREATE.value(), "OP"},
+                            new String[]{PermissionCode.EVIDENCE_PREVIEW.value(), "READ"}),
+                    Map.of("monitoring", "READ")),
+            // 2026-10-06（BUG-02）：运维待办的开始、提交核验与完成要 monitoring.op，接入调测要 commissioning.op，
+            // 设备参数与重启等要 devices.op。三个菜单本来就是这个角色的，只是此前只给到了查看。
             new DemoRole("ROLE-DEMO-OPS", "设备运维", "设备接入、调测与监测",
                     List.of("devices", "commission", "monitor"),
-                    List.<String[]>of()),
+                    List.<String[]>of(),
+                    Map.of("devices", "OP", "commissioning", "OP", "monitoring", "OP")),
             new DemoRole("ROLE-DEMO-AUDIT", "审计员", "只读 + 审计日志导出",
                     // 审计日志这一页就是这个角色的本职：没有它，"只读 + 审计日志导出"这条描述在界面上落不了地。
                     List.of("situation", "alarms", "flights", "punish", "evidence", "archive"),
@@ -175,6 +195,7 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
         }
         java.util.Set<String> readable = new java.util.LinkedHashSet<>(menuModules);
         for (String menu : role.menus()) readable.addAll(MENU_DATA_ONLY_MODULES.getOrDefault(menu, List.of()));
+        readable.addAll(role.modules().keySet());
 
         boolean changed = false;
         for (String code : jdbc.queryForList(
@@ -182,11 +203,11 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
             changed |= jdbc.update("INSERT INTO app_role_permission (role_code,permission_code,permission_level,"
                     + "menu_enabled,created_at) SELECT ?,?,?,?,CURRENT_TIMESTAMP WHERE NOT EXISTS"
                     + " (SELECT 1 FROM app_role_permission WHERE role_code=? AND permission_code=?)",
-                    role.code(), code, readable.contains(code) ? level(code) : "NONE", menuModules.contains(code),
+                    role.code(), code, readable.contains(code) ? level(role, code) : "NONE", menuModules.contains(code),
                     role.code(), code) > 0;
         }
         for (String code : readable) {
-            changed |= raiseTo(role.code(), code, level(code));
+            changed |= raiseTo(role.code(), code, level(role, code));
             if (menuModules.contains(code)) {
                 changed |= jdbc.update("UPDATE app_role_permission SET menu_enabled=TRUE"
                         + " WHERE role_code=? AND permission_code=? AND COALESCE(menu_enabled,FALSE)<>TRUE",
@@ -198,6 +219,13 @@ public class LocalDemoRolesSeeder implements ApplicationRunner {
 
     /** 审计日志没有动作码，读与导出都挂在模块等级上，所以它要 OP；其余模块只读。 */
     private static String level(String moduleCode) { return "audit".equals(moduleCode) ? "OP" : "READ"; }
+
+    /** 角色单独声明的模块等级与菜单推出的等级取高者。 */
+    private static String level(DemoRole role, String moduleCode) {
+        String declared = role.modules().get(moduleCode);
+        String derived = level(moduleCode);
+        return declared != null && rank(declared) > rank(derived) ? declared : derived;
+    }
 
     /**
      * 动作权限 = 该角色每个菜单所需的读动作（由 {@link #MENU_READS} 推出）+ 这个角色自己的操作动作。
