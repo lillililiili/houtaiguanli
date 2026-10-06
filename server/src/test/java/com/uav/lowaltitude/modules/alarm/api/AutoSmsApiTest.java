@@ -70,11 +70,32 @@ class AutoSmsApiTest {
         targetId=withoutEvaluation;
         automatic.process(eventId);
         assertNoPilotNoSend();
+        // 没有精确关联计划时无从判断飞手，不写“缺飞手联系方式”，仍按原因说明显示。
+        read().andExpect(jsonPath("$.data.pilot_contact_missing").value(false));
     }
     @Test void missingPilotDirectoryDoesNotSend() throws Exception {
         jdbc.update("update flight_plan set pilot_contact_id=NULL where plan_id in(select plan_id from rule_evaluation where target_id=?)",targetId);
         automatic.process(eventId);
         assertNoPilotNoSend();
+        read().andExpect(jsonPath("$.data.pilot_contact_missing").value(true));
+    }
+    /** BLOCK-03：上级计划带了飞手但没有电话，同样不发送，并明确标出缺飞手联系方式。 */
+    @Test void pilotWithoutPhoneIsReportedAsMissingContact() throws Exception {
+        String contact=jdbc.queryForObject("select pilot_contact_id from flight_plan where plan_id=?",String.class,pilotPlanId);
+        jdbc.update("update business_contact set phone=NULL where contact_id=?",contact);
+        read().andExpect(jsonPath("$.data.pilot_contact_missing").value(true));
+        automatic.process(eventId);
+        assertNoPilotNoSend();
+        read().andExpect(jsonPath("$.data.pilot_contact_missing").value(true));
+    }
+    /** 有电话但尚未核验不是“缺联系方式”：仍不发送，原因保持“尚未有效核验”。 */
+    @Test void unverifiedPilotPhoneIsNotReportedAsMissingContact() throws Exception {
+        String contact=jdbc.queryForObject("select pilot_contact_id from flight_plan where plan_id=?",String.class,pilotPlanId);
+        jdbc.update("update business_contact set verified_at=NULL where contact_id=?",contact);
+        automatic.process(eventId);
+        assertNoPilotNoSend();
+        read().andExpect(jsonPath("$.data.pilot_contact_missing").value(false))
+                .andExpect(jsonPath("$.data.auto_sms.reason").value("执行飞手联系方式尚未有效核验"));
     }
 
     @Test void disabledPilotSettingDoesNotSend()throws Exception {
@@ -115,7 +136,8 @@ class AutoSmsApiTest {
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("AUTO_VOICE_RETRY_BLOCKED"));
     }
     @Test void readingNeverSchedulesOrSends()throws Exception {
-        read().andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"));
+        read().andExpect(status().isOk()).andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.pilot_contact_missing").value(false));
         read().andExpect(status().isOk());
         assertThat(count("uav_auto_sms_task")).isZero();assertThat(count("uav_event_advisory")).isZero();
         verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
