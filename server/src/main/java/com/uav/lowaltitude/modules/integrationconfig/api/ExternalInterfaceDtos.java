@@ -14,6 +14,8 @@ public final class ExternalInterfaceDtos {
             Integer intervalMinutes, Integer validityMinutes, long version, Long updatedAt,
             String status, boolean enabled, String message, String sourceMode) { }
     public record ForecastAvailability(String planId, String status, String message, Forecast forecast) { }
+    /** 上级（管服平台）计划接口是否可用；available=false 时计划页须提示上级计划数据暂时取不到。时间均为 epoch 毫秒，未知时为空。 */
+    public record PlanUpstreamStatus(String status, boolean available, String message, Long configuredAt, Long lastReceivedAt) { }
     public record Forecast(String areaName, String providerName, long publishedAt, String sourceMode,
             java.util.List<ForecastPeriod> periods) { }
     public record ForecastPeriod(long from, long to, String summary, double temperatureC,

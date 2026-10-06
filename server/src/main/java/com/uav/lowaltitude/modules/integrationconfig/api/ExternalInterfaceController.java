@@ -17,6 +17,8 @@ public class ExternalInterfaceController {
     public ApiResponse<Configuration> save(@PathVariable String kind,@Valid @RequestBody Input input) {
         return ApiResponse.ok(service.save(kind,input));
     }
+    @GetMapping("/flight-plans/upstream-status")
+    public ApiResponse<PlanUpstreamStatus> planUpstream() { return ApiResponse.ok(service.planUpstream()); }
     @GetMapping("/flight-plans/{planId}/weather-forecast")
     public ApiResponse<ForecastAvailability> forecast(@PathVariable String planId) { return ApiResponse.ok(service.forecast(planId)); }
 }

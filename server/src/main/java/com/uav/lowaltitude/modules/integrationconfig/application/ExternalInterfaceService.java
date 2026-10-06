@@ -79,6 +79,19 @@ public class ExternalInterfaceService {
         return new ForecastAvailability(plan.planId(), status(row), row.updatedAt()==null
             ? "天气预报尚未接入" : "天气预报尚未接通，暂无预报数据", null);
     }
+    /**
+     * 计划页读者都要知道上级计划能否取到，故只要求 flight:read，不要求接口配置权限。
+     * 当前没有管服平台计划适配器，配置与否都不可用；最近接收时间只统计本人范围内的上级（live）计划。
+     */
+    @Transactional(readOnly=true)
+    public PlanUpstreamStatus planUpstream() {
+        Long lastReceived=flights.latestUpstreamPlanAt();
+        Row row=required("FLIGHT_PLAN");
+        boolean configured=row.updatedAt()!=null;
+        return new PlanUpstreamStatus(configured ? "AWAITING_ADAPTER" : "NOT_CONFIGURED", false,
+            (configured ? "管服平台计划接口已保存配置，尚未接通" : "管服平台计划接口尚未配置")+"，上级计划数据暂时取不到",
+            row.updatedAt(), lastReceived);
+    }
     private Row required(String kind) {
         if (!java.util.Set.of("FLIGHT_PLAN","WEATHER_FORECAST").contains(kind))
             throw new ApiException(HttpStatus.NOT_FOUND,"INTERFACE_NOT_FOUND","接口配置不存在");

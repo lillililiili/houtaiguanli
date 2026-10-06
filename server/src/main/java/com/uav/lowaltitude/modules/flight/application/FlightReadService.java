@@ -75,6 +75,13 @@ public class FlightReadService {
             filing.takeoffLongitude(),filing.takeoffLatitude(),filing.landingLongitude(),filing.landingLatitude()));
     }
 
+    /** 本人数据范围内最近一次收到或更新上级（live 来源）计划的时间；从未收到时为 null。 */
+    @Transactional(readOnly = true)
+    public Long latestUpstreamPlanAt() {
+        AccessDecision access = accessControl.require(PermissionCode.FLIGHT_READ);
+        return repository.latestPlanUpdatedAt("live", access);
+    }
+
     @Transactional(readOnly = true)
     public PageDto<RouteDto> routes(MultiValueMap<String, String> parameters) {
         AccessDecision access = accessControl.require(PermissionCode.ROUTE_READ);

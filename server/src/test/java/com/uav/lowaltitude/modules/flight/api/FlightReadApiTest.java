@@ -195,6 +195,64 @@ class FlightReadApiTest {
         assertError("/api/v1/route-versions/" + crossedVersion, 404, "ROUTE_VERSION_NOT_FOUND");
     }
 
+    @Test
+    void keywordSearchesPlanNumberRouteAndSerialLiterallyWithinScope() throws Exception {
+        // 计划编号不区分大小写；同一关键词也匹配航线编号、航线名称和无人机编号，但不越过数据范围。
+        assertThat(searchIds("plan-a-")).containsExactly(planA);
+        assertThat(searchIds("航线")).containsExactlyInAnyOrder(planA, planNoTime);
+        assertThat(searchIds("route-a-")).containsExactlyInAnyOrder(planA, planNoTime);
+        assertThat(searchIds("uav-sn")).containsExactlyInAnyOrder(planA, planNoTime);
+        assertThat(searchIds("plan-c-")).isEmpty();
+        // LIKE 通配符按字面匹配，不能把 % 或 _ 当成“全部”。
+        assertThat(searchIds("%")).isEmpty();
+        assertThat(searchIds("_")).isEmpty();
+        // 与状态和时间窗组合时取交集。
+        String body = mvc.perform(get("/api/v1/flight-plans").header("Authorization", "Bearer " + sessionId)
+                        .param("keyword", "PLAN-").param("status_code", "PENDING")
+                        .param("window_from", String.valueOf(T0.toInstant().toEpochMilli()))
+                        .param("window_to", String.valueOf(T0.plusDays(1).toInstant().toEpochMilli())))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).path("data").path("items").findValuesAsText("plan_id")).containsExactly(planA);
+        for (String invalid : new String[] {" ", "x".repeat(129)}) {
+            mvc.perform(get("/api/v1/flight-plans").header("Authorization", "Bearer " + sessionId).param("keyword", invalid))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        }
+    }
+
+    @Test
+    void upstreamPlanStatusNeedsOnlyFlightReadAndReportsLastLivePlanInScope() throws Exception {
+        JsonNode initial = getJson("/api/v1/flight-plans/upstream-status").path("data");
+        assertThat(initial.path("status").asText()).isEqualTo("NOT_CONFIGURED");
+        assertThat(initial.path("available").asBoolean(true)).isFalse();
+        assertThat(initial.path("message").asText()).contains("暂时取不到");
+        assertThat(initial.has("configured_at")).isFalse();
+        assertThat(initial.has("last_received_at")).isFalse();
+
+        // 模拟或回放计划不算上级计划；范围外的上级计划也不计入最近接收时间。
+        jdbc.update("update flight_plan set source_mode='live', updated_at=? where plan_id=?", T0.plusHours(3), planA);
+        jdbc.update("update flight_plan set source_mode='live', updated_at=? where plan_id=?", T0.plusHours(9), planOtherScope);
+        long configuredAt = T0.plusDays(1).toInstant().toEpochMilli();
+        jdbc.update("update external_interface_config set name='管服平台计划', updated_at=? where kind='FLIGHT_PLAN'", configuredAt);
+        JsonNode configured = getJson("/api/v1/flight-plans/upstream-status").path("data");
+        assertThat(configured.path("status").asText()).isEqualTo("AWAITING_ADAPTER");
+        assertThat(configured.path("available").asBoolean(true)).isFalse();
+        assertThat(configured.path("message").asText()).contains("尚未接通", "暂时取不到");
+        assertThat(configured.path("configured_at").asLong()).isEqualTo(configuredAt);
+        assertThat(configured.path("last_received_at").asLong()).isEqualTo(T0.plusHours(3).toInstant().toEpochMilli());
+        // 字面路径不能被当成计划 ID。
+        assertError("/api/v1/flight-plans/upstream-status-x", 404, "FLIGHT_PLAN_NOT_FOUND");
+
+        jdbc.update("delete from app_role_permission where role_code=? and permission_code='flight:read'", role);
+        assertError("/api/v1/flight-plans/upstream-status", 403, "FORBIDDEN");
+    }
+
+    private java.util.List<String> searchIds(String keyword) throws Exception {
+        String body = mvc.perform(get("/api/v1/flight-plans").header("Authorization", "Bearer " + sessionId)
+                        .param("keyword", keyword).param("size", "100"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).path("data").path("items").findValuesAsText("plan_id");
+    }
+
     private JsonNode getJson(String path) throws Exception {
         String body = mvc.perform(get(path).header("Authorization", "Bearer " + sessionId))
                 .andExpect(status().isOk())
