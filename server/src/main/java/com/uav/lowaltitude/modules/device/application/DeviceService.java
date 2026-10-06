@@ -124,14 +124,18 @@ public class DeviceService {
         return formalOverview(null);
     }
 
+    /**
+     * 正式接入设备统计：查询本身已限定 source_mode='live' 且 simulated=FALSE，
+     * 所以来源恒为 live、simulated 恒为假——不能再按"模拟数=总数"推断，否则一台正式设备都没有时
+     * （总数 0）会被标成"模拟数据"（ZT-17）。被排除的模拟/回放台数由调用方与 overview() 相减得出。
+     */
     public DeviceOverview formalOverview(Boolean enabled) {
         access.requireOverviewRead();
         Map<String, Object> row = repository.overview(null, true, enabled);
-        int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
-        return new DeviceOverview(total, number(row, "online"), number(row, "offline"), number(row, "abnormal"),
+        return new DeviceOverview(number(row, "total"), number(row, "online"), number(row, "offline"), number(row, "abnormal"),
                 number(row, "unknown_count"), number(row, "alarm"), number(row, "vendor_count"), number(row, "model_count"),
                 groups(repository.overviewGroups("channel", true, enabled)), groups(repository.overviewGroups("type", true, enabled)),
-                live == 0 ? "live" : "live", simulated == total);
+                "live", false);
     }
 
     /** 大屏地图点：只返回有经纬度的启用设备；非 WGS-84 仍带回坐标系，由调用方决定是否绘制。 */

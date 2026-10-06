@@ -118,7 +118,8 @@ public class TargetReadService {
                 seen.from, seen.to,
                 request.optional("owner_org_id", 36),
                 request.optional("district_id", 36),
-                request.flag("include_merged"));
+                request.flag("include_merged"),
+                request.optional("source_mode", 8));
         long total = repository.countTargets(query, access);
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
