@@ -17,6 +17,12 @@ spring:
   jackson:
     property-naming-strategy: SNAKE_CASE
     default-property-inclusion: non_null
+  task:
+    scheduling:
+      # 融合摄取、规则评估、MQTT 续租、通知轮询各有定时任务；Spring 默认只有 1 个调度线程，
+      # 积压时融合连续处理会让规则评估排队，首个告警被拖慢（ZT-06）。本地 profile 也是 4。
+      pool:
+        size: ${APP_SCHEDULING_POOL_SIZE:4}
   servlet:
     multipart:
       # 地图包可明显大于普通证据附件；各业务接口仍在应用层执行自己的更小限制。
@@ -112,7 +118,12 @@ app:
       # 调度回看窗口（分钟）；这是调度参数，不是规则阈值——规则阈值一律在 rule_param 里。
       window-minutes: 30
     enabled: ${APP_RULE_ENGINE_ENABLED:true}
-    poll-millis: ${APP_RULE_ENGINE_POLL_MILLIS:5000}
+    # ZT-06：每秒检查一次待评估目标；新目标（出现不足 fast-window-seconds）每轮都评估，
+    # 老目标同一版本至多每 reevaluate-millis 评估一次；一轮批满时在 drain-budget-millis 内继续取下一批。
+    poll-millis: ${APP_RULE_ENGINE_POLL_MILLIS:1000}
+    fast-window-seconds: ${APP_RULE_ENGINE_FAST_WINDOW_SECONDS:30}
+    reevaluate-millis: ${APP_RULE_ENGINE_REEVALUATE_MILLIS:5000}
+    drain-budget-millis: ${APP_RULE_ENGINE_DRAIN_BUDGET_MILLIS:3000}
     batch-size: ${APP_RULE_ENGINE_BATCH_SIZE:50}
     lease-seconds: ${APP_RULE_ENGINE_LEASE_SECONDS:30}
     instance-id: ${APP_INSTANCE_ID:}
@@ -124,6 +135,10 @@ app:
     enabled: ${APP_FUSION_ENABLED:true}
     poll-millis: ${APP_FUSION_POLL_MILLIS:500}
     batch-size: ${APP_FUSION_BATCH_SIZE:50}
+    # ZT-06：一轮批满时继续取下一批，直到积压清空或用满这段时间，不再每批之间空等 poll-millis。
+    drain-budget-millis: ${APP_FUSION_DRAIN_BUDGET_MILLIS:10000}
+    # ZT-20：报文时刻比平台接收时刻晚超过此值（设备时钟慢或数据积压），按"数据过期/设备时间不准"标注；0 关闭。
+    time-untrusted-lag-millis: ${APP_FUSION_TIME_UNTRUSTED_LAG_MILLIS:30000}
     lease-millis: ${APP_FUSION_LEASE_MILLIS:30000}
     max-attempts: ${APP_FUSION_MAX_ATTEMPTS:5}
     live-promotion:

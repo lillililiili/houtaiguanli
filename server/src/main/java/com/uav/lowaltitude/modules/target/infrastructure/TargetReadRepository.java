@@ -553,9 +553,13 @@ public class TargetReadRepository {
                         rs.getString("severity"), rs.getString("state_code"),
                         rs.getObject("occurred_at", OffsetDateTime.class))); });
         Map<String, LegalitySummaryRow> legality = new HashMap<>();
+        // 类别已改判（例如无人机→鸟，ZT-04）后，按原类别做出的最近一次研判不再是这个目标的"现在怎么样"：摘要不显示它。
+        // 研判记录、告警、通知本身都保留（页面在告警详情里写明类别变化）；目标头行类别为空或研判没记类别时照旧显示。
         jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status,e.grade,e.violation_reasons FROM rule_evaluation e"
+                + " JOIN target t ON t.target_id=e.target_id"
                 + " WHERE e.target_id IN (:ids) AND NOT EXISTS (SELECT 1 FROM rule_evaluation n"
-                + "   WHERE n.target_id=e.target_id AND (n.created_at, n.evaluation_id) > (e.created_at, e.evaluation_id))",
+                + "   WHERE n.target_id=e.target_id AND (n.created_at, n.evaluation_id) > (e.created_at, e.evaluation_id))"
+                + " AND (e.recognition_class_code IS NULL OR t.object_type_code IS NULL OR e.recognition_class_code=t.object_type_code)",
                 params, rs -> { legality.put(rs.getString("target_id"), new LegalitySummaryRow(
                         rs.getString("evaluation_id"), rs.getString("legal_status"), rs.getString("grade"),
                         jsonTextOf(rs.getObject("violation_reasons")))); });

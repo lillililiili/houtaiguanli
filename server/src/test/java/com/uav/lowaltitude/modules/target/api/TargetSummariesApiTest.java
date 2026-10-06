@@ -90,6 +90,20 @@ class TargetSummariesApiTest {
     }
 
     @Test
+    void legalityConclusionMadeForAnotherClassIsNotShownAsCurrent() throws Exception {
+        // ZT-04：按无人机做出的研判，在目标被改判为鸟之后不再是它"现在怎么样"的结论；研判记录本身保留。
+        String targetId = target();
+        jdbc.update("update target set object_type_code='UAV' where target_id=?", targetId);
+        legality(targetId, "ILLEGAL", "MEDIUM");
+        jdbc.update("update rule_evaluation set recognition_class_code='UAV' where target_id=?", targetId);
+        assertThat(detail(targetId).path("legality_summary").path("legal_status").asText()).isEqualTo("ILLEGAL");
+
+        jdbc.update("update target set object_type_code='BIRD' where target_id=?", targetId);
+        assertThat(detail(targetId).has("legality_summary")).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from rule_evaluation where target_id=?", Long.class, targetId)).isEqualTo(1L);
+    }
+
+    @Test
     void onlyTheLatestOfEachKindIsReported() throws Exception {
         String targetId = target();
         risk(targetId, "LOW", "EXCLUDED", Instant.parse("2026-09-08T01:00:00Z"));

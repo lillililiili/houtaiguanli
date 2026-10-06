@@ -110,6 +110,35 @@ class FusionReadApiTest {
         assertThat(plain.path("latest_state").path("field_issues").get(0).path("reason_code").asText()).isEqualTo("UNSUPPORTED");
     }
 
+    /**
+     * ZT-04：类别变化（融合改判 SYSTEM、人工修订 USER）都记在血缘 CLASS_REVISION 上，目标详情的 class_changes
+     * 写明何时、由什么改成什么、谁改的，最新的在前。改前是"识别中/未定类"时不下发 from_class_code。
+     */
+    @Test
+    void targetDetailListsClassChangesNewestFirst() throws Exception {
+        assertThat(data("/api/v1/targets/" + fusedTarget, reader).has("class_changes")).as("没改过类别就不下发").isFalse();
+        classRevision(fusedTarget, FusionFixture.T0.plusSeconds(20), "", "UAV", "SYSTEM");
+        classRevision(fusedTarget, FusionFixture.T0.plusSeconds(40), "UAV", "BIRD", "SYSTEM");
+
+        JsonNode changes = data("/api/v1/targets/" + fusedTarget, reader).path("class_changes");
+        assertThat(changes).hasSize(2);
+        assertThat(changes.get(0).path("changed_at").asLong()).isEqualTo(FusionFixture.T0.plusSeconds(40).toInstant().toEpochMilli());
+        assertThat(changes.get(0).path("from_class_code").asText()).isEqualTo("UAV");
+        assertThat(changes.get(0).path("to_class_code").asText()).isEqualTo("BIRD");
+        assertThat(changes.get(0).path("operator_kind").asText()).isEqualTo("SYSTEM");
+        assertThat(changes.get(1).has("from_class_code")).as("改前是识别中").isFalse();
+        assertThat(changes.get(1).path("to_class_code").asText()).isEqualTo("UAV");
+        // 只有 target:read 也看得到：这是目标本身的事实，不是融合调试信息。
+        assertThat(data("/api/v1/targets/" + fusedTarget, readerWithFusion).path("class_changes")).hasSize(2);
+    }
+
+    private void classRevision(String targetId, java.time.OffsetDateTime at, String from, String to, String operatorKind) {
+        jdbc.update("insert into target_lineage (lineage_id,op,occurred_at,survivor_target_id,origin_target_id,member_target_ids,source_target_ids,basis,algo_version,config_version,operator_kind,operator_id,note,snapshots,created_at)"
+                + " values (?,'CLASS_REVISION',?,?,null,CAST(? AS JSON),CAST('[]' AS JSON),CAST(? AS JSON),'fusion-e1-v1',?,?,null,null,CAST('{}' AS JSON),?)",
+                FusionFixture.id(), at, targetId, "[\"" + targetId + "\"]",
+                "{\"previous_class_code\":\"" + from + "\",\"new_class_code\":\"" + to + "\",\"reason\":\"FUSED_CLASS_CHANGED\"}", CONFIG, operatorKind, at);
+    }
+
     @Test
     void mergedTargetStillResolvesAndPointsToSurvivor() throws Exception {
         // 被并目标不删不改名：详情仍 200，但血缘摘要告诉调用方当前目标是谁。

@@ -19,6 +19,17 @@ public class FusionProperties {
     private long maxFutureSkewMillis = 30_000;
     /** 本地回放可优先仍在上报的来源；不改变同一来源内部的摄取顺序。 */
     private boolean prioritizeFreshSources;
+    /**
+     * 一次调度最多连续处理多久（ZT-06）。有积压时不再"处理一批就睡 poll-millis"，而是接着领下一批，
+     * 直到领空或用完这段预算再把调度线程让出来；0 表示每次调度只处理一批（旧行为）。
+     */
+    private long drainBudgetMillis = 10_000;
+    /**
+     * 报文时刻比平台接收时刻晚多少毫秒就算"设备时间不可信/数据迟到"（ZT-20）。超过的观测在 quality 里记
+     * time_untrusted 与 arrival_lag_ms，目标最新状态带 observed_at 的 TIME_UNTRUSTED 提示，页面据此写明
+     * "数据过期/设备时间不准"，而不是当实时数据显示。0 表示不检查。
+     */
+    private long timeUntrustedLagMillis = 30_000;
     private final LivePromotion livePromotion = new LivePromotion();
     private final Replay replay = new Replay();
 
@@ -36,6 +47,16 @@ public class FusionProperties {
     public void setMaxFutureSkewMillis(long value) {
         if (value < 0 || value > 300_000) throw new IllegalArgumentException("max-future-skew-millis must be between 0 and 300000");
         maxFutureSkewMillis = value;
+    }
+    public long getDrainBudgetMillis() { return drainBudgetMillis; }
+    public void setDrainBudgetMillis(long value) {
+        if (value < 0 || value > 600_000) throw new IllegalArgumentException("drain-budget-millis must be between 0 and 600000");
+        drainBudgetMillis = value;
+    }
+    public long getTimeUntrustedLagMillis() { return timeUntrustedLagMillis; }
+    public void setTimeUntrustedLagMillis(long value) {
+        if (value < 0) throw new IllegalArgumentException("time-untrusted-lag-millis must not be negative");
+        timeUntrustedLagMillis = value;
     }
     public boolean isPrioritizeFreshSources() { return prioritizeFreshSources; }
     public void setPrioritizeFreshSources(boolean value) { prioritizeFreshSources = value; }

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.TrackStatus;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 
@@ -103,5 +104,18 @@ class MergeSplitEvaluatorTest {
         assertThat(evaluator.splitReady(4, 150)).isTrue();
         assertThat(evaluator.splitReady(3, 150)).as("帧数不够").isFalse();
         assertThat(evaluator.splitReady(4, 80)).as("间距不够").isFalse();
+    }
+    @Test
+    void targetsWithDifferentSerialNumbersAreNeverMergeCandidates() {
+        // ZT-01：40 m 内同向飞的两架，序列号不同就是两架，贴得再久也不合并。
+        TargetSnapshot a = new TargetSnapshot("a", TrackStatus.STABLE, lonAt(0), latAt(0), 10, Double.NaN, Double.NaN, T0, Set.of("SN-A"));
+        TargetSnapshot b = new TargetSnapshot("b", TrackStatus.STABLE, lonAt(0), latAt(5), 10, Double.NaN, Double.NaN, T0, Set.of("SN-B"));
+        assertThat(evaluator.mergeCandidates(List.of(a, b))).isEmpty();
+        // 只有一边报出序列号（另一边是雷达目标）不构成否决，照位置判。
+        TargetSnapshot radar = new TargetSnapshot("r", TrackStatus.STABLE, lonAt(0), latAt(5), 10, Double.NaN, Double.NaN, T0, Set.of());
+        assertThat(evaluator.mergeCandidates(List.of(a, radar))).hasSize(1);
+        // 同一个序列号的两段（例如一架飞机被拆成了两个目标）照常可以合并。
+        TargetSnapshot same = new TargetSnapshot("c", TrackStatus.STABLE, lonAt(0), latAt(5), 10, Double.NaN, Double.NaN, T0, Set.of("SN-A"));
+        assertThat(evaluator.mergeCandidates(List.of(a, same))).hasSize(1);
     }
 }

@@ -326,18 +326,42 @@ public class RuleEngineRepository {
      * Worker 待评估主体：最新状态在该目标最近一次同模式、同版本研判的 observed_at 之后更新，且仍新鲜；目录停用的目标不评估。
      */
     public List<Subject> pendingSubjects(RunMode mode, String versionId, OffsetDateTime freshSince, int limit) {
+        return pendingSubjects(mode, versionId, freshSince, null, null, limit);
+    }
+
+    /**
+     * 定时调度的待评估主体（ZT-06/ZT-20）。youngSince 与 recentSince 都给出时在上面的口径上加三条：
+     * <ul>
+     *   <li>新鲜：观测时刻在窗口内，**或者**最新状态是刚收到的（received_at 在窗口内）。后者是报文时刻不可信的目标
+     *       （设备时钟慢、数据积压）：评一次留下 STALE/NOT_APPLICABLE 的研判，写明为什么不判，而不是悄悄跳过。</li>
+     *   <li>节流：建档时刻（平台时间 created_at，不受设备时钟影响）不早于 youngSince 的新目标每个 tick 都评；
+     *       其余目标同模式同版本在 recentSince 之后已有研判的，等下一轮。</li>
+     *   <li>顺序：同模式同版本从没评过的目标排最前——新出现的违规机不排在一长串老目标后面——再按最新状态的更新时间。</li>
+     * </ul>
+     * 判定规则本身（新鲜度、质量门、合法性结论）不在这里，仍由 LegalityEvaluationService 决定。
+     */
+    public List<Subject> pendingSubjects(RunMode mode, String versionId, OffsetDateTime freshSince, OffsetDateTime youngSince, OffsetDateTime recentSince, int limit) {
+        boolean scheduled = youngSince != null && recentSince != null;
         Map<String, Object> p = new HashMap<>();
         p.put("mode", mode.name()); p.put("version", versionId); p.put("fresh_since", freshSince); p.put("limit", limit);
-        return jdbc.query("SELECT t.target_id,t.owner_org_id,t.district_id,t.source_mode FROM target_latest_state s JOIN target t ON t.target_id=s.target_id"
+        if (scheduled) { p.put("young_since", youngSince); p.put("recent_since", recentSince); }
+        String evaluatedBefore = "(CASE WHEN EXISTS (SELECT 1 FROM rule_evaluation b WHERE b.target_id=t.target_id AND b.mode=:mode"
+                + " AND b.rule_set_version_id=:version) THEN 1 ELSE 0 END)";
+        return jdbc.query("SELECT t.target_id,t.owner_org_id,t.district_id,t.source_mode"
+                + (scheduled ? "," + evaluatedBefore + " AS evaluated_before" : "")
+                + " FROM target_latest_state s JOIN target t ON t.target_id=s.target_id"
                 + " LEFT JOIN target_attribute_selection c ON c.target_id=t.target_id"
                 + " JOIN app_org o ON o.org_id=t.owner_org_id AND o.enabled=TRUE JOIN app_district d ON d.district_id=t.district_id AND d.enabled=TRUE"
                 + (simulation.allowed() ? "" : " WHERE t.source_mode='live'")
                 + (simulation.allowed() ? " WHERE" : " AND") + " " + TargetRecognitionSql.type("t", "c") + "='UAV'"
-                + " AND s.observed_at>=:fresh_since AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
+                + (scheduled ? " AND (s.observed_at>=:fresh_since OR s.received_at>=:fresh_since)" : " AND s.observed_at>=:fresh_since")
+                + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
                 + " AND e.rule_set_version_id=:version AND e.observed_at IS NOT NULL AND e.observed_at>=s.observed_at"
                 + " AND e.recognition_class_code=" + TargetRecognitionSql.type("t", "c")
                 + " AND e.recognition_revision=" + TargetRecognitionSql.revision("t", "c") + ")"
-                + " ORDER BY s.updated_at ASC,t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
+                + (scheduled ? " AND (t.created_at>=:young_since OR NOT EXISTS (SELECT 1 FROM rule_evaluation r WHERE r.target_id=t.target_id"
+                        + " AND r.mode=:mode AND r.rule_set_version_id=:version AND r.evaluated_at>:recent_since))" : "")
+                + " ORDER BY " + (scheduled ? "evaluated_before ASC," : "") + "s.updated_at ASC,t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
                 (rs, i) -> new Subject(SubjectKind.TARGET, rs.getString("target_id"), rs.getString("owner_org_id"), rs.getString("district_id"), rs.getString("source_mode")));
     }
 

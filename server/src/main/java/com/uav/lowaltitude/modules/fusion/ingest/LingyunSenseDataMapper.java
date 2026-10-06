@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.fusion.domain.IdentitySerials;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
 /**
@@ -158,6 +159,8 @@ public class LingyunSenseDataMapper implements FrameMapper {
 
         String uavSn = text(extension, "uavSN"), uavModel = text(extension, "uavModel");
         if (uavModel != null) quality.put("uav_model", uavModel);
+        // 序列号单独留痕：identity_clue 在没有序列号时会退回型号，关联的身份否决只能认真正的序列号（ZT-01）。
+        if (uavSn != null) quality.put(IdentitySerials.QUALITY_KEY, uavSn);
         String taskId = text(extension, "taskId");
         if (taskId != null) quality.put("task_id", taskId);
 

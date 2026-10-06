@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -46,6 +47,18 @@ public class FusedTrackRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 多个目标各自未结束的 FUSED 轨迹，一次取回（ZT-06）；每目标取法与 {@link #findOpenTrack} 相同。键是 target_id。 */
+    public Map<String, FusedTrackRow> findOpenTracks(Collection<String> targetIds) {
+        Map<String, FusedTrackRow> out = new HashMap<>();
+        if (targetIds == null || targetIds.isEmpty()) return out;
+        for (FusedTrackRow row : jdbc.query("SELECT track_id,target_id,external_track_id,started_at,ended_at,config_version FROM track"
+                + " WHERE target_id IN (:t) AND layer='FUSED' AND ended_at IS NULL ORDER BY target_id, started_at DESC, track_id DESC",
+                Map.of("t", List.copyOf(targetIds)), FusedTrackRepository::track)) {
+            out.putIfAbsent(row.targetId(), row);
+        }
+        return out;
+    }
+
     public void insertTrack(String trackId, String targetId, String externalTrackId, OffsetDateTime startedAt, String configVersion, OffsetDateTime createdAt) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", trackId); p.put("t", targetId); p.put("ext", externalTrackId); p.put("started", startedAt); p.put("cfg", configVersion); p.put("created", createdAt);
@@ -61,6 +74,21 @@ public class FusedTrackRepository {
         return max == null ? 0 : max + 1;
     }
 
+    /**
+     * 多条轨迹各自的下一个点序号（ZT-06）。每条轨迹单独取 MAX（相关子查询），让 uk_stage2_track_point_sequence 的索引只读最后一条；
+     * 按 GROUP BY 聚合会把长轨迹的全部点扫一遍。没有点的轨迹不在结果里（序号从 0 开始）。
+     */
+    public Map<String, Long> nextPointSeqs(Collection<String> trackIds) {
+        Map<String, Long> out = new HashMap<>();
+        if (trackIds == null || trackIds.isEmpty()) return out;
+        jdbc.query("SELECT tr.track_id,(SELECT MAX(p.point_seq) FROM track_point p WHERE p.track_id=tr.track_id) AS max_seq FROM track tr WHERE tr.track_id IN (:ids)",
+                Map.of("ids", List.copyOf(trackIds)), (ResultSet rs) -> {
+                    long max = rs.getLong("max_seq");
+                    if (!rs.wasNull()) out.put(rs.getString("track_id"), max + 1);
+                });
+        return out;
+    }
+
     /** 最近一个融合点（用于 PRED：位置保留最后可信点，不外推）。 */
     public LastPoint lastPoint(String trackId) {
         String locationText = postgis ? "ST_AsText(location)" : "CAST(location AS VARCHAR)";
@@ -71,15 +99,29 @@ public class FusedTrackRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    private static final String INSERT_POINT = "INSERT INTO track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at,"
+            + "point_kind,observation_id,position_accuracy_m,contributing,position_source_id,source_switched,degradation_level)"
+            + " VALUES (:id,:track,:seq,:observed,:received,CAST(:geom AS GEOMETRY),:amsl,:agl,:created,:kind,:obs,:acc,CAST(:contrib AS JSON),:pos_src,:switched,:level)";
+
     public void insertPoint(FusedPoint point) {
+        jdbc.update(INSERT_POINT, pointParams(point));
+    }
+
+    /** 一帧内多个目标的融合点一次批量写（ZT-06），逐行与 {@link #insertPoint} 相同。 */
+    public void insertPoints(List<FusedPoint> points) {
+        if (points == null || points.isEmpty()) return;
+        List<Map<String, Object>> batch = new ArrayList<>();
+        for (FusedPoint point : points) batch.add(pointParams(point));
+        jdbc.batchUpdate(INSERT_POINT, batchOf(batch));
+    }
+
+    private static Map<String, Object> pointParams(FusedPoint point) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", point.pointId()); p.put("track", point.trackId()); p.put("seq", point.pointSeq()); p.put("observed", point.observedAt()); p.put("received", point.receivedAt());
         p.put("geom", ewkt(point.longitude(), point.latitude())); p.put("amsl", point.altitudeAmslM()); p.put("agl", point.heightAglM()); p.put("created", point.createdAt());
         p.put("kind", point.pointKind()); p.put("obs", point.observationId()); p.put("acc", point.positionAccuracyM()); p.put("contrib", point.contributingJson());
         p.put("pos_src", point.positionSourceId()); p.put("switched", point.sourceSwitched()); p.put("level", point.degradationLevel());
-        jdbc.update("INSERT INTO track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at,"
-                + "point_kind,observation_id,position_accuracy_m,contributing,position_source_id,source_switched,degradation_level)"
-                + " VALUES (:id,:track,:seq,:observed,:received,CAST(:geom AS GEOMETRY),:amsl,:agl,:created,:kind,:obs,:acc,CAST(:contrib AS JSON),:pos_src,:switched,:level)", p);
+        return p;
     }
 
     public OffsetDateTime latestStateObservedAt(String targetId) {
@@ -87,26 +129,69 @@ public class FusedTrackRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 多个目标已落库最新状态的观测时刻，一次取回（ZT-06）；还没有最新状态的目标不在结果里。 */
+    public Map<String, OffsetDateTime> latestStatesObservedAt(Collection<String> targetIds) {
+        Map<String, OffsetDateTime> out = new HashMap<>();
+        if (targetIds == null || targetIds.isEmpty()) return out;
+        jdbc.query("SELECT target_id,observed_at FROM target_latest_state WHERE target_id IN (:t)", Map.of("t", List.copyOf(targetIds)),
+                (ResultSet rs) -> { out.put(rs.getString("target_id"), FusionConfigRepository.time(rs, "observed_at")); });
+        return out;
+    }
+
+    private static final String UPDATE_LATEST = "UPDATE target_latest_state SET location=CAST(:geom AS GEOMETRY), altitude_amsl_m=:amsl, height_agl_m=:agl, speed_mps=:speed, heading_deg=:heading,"
+            + " classification_confidence=:cconf, fusion_confidence=:fconf, observed_at=:observed, received_at=:received, unknown_fields=CAST(:unknown AS JSON),";
+    private static final String UPDATE_LATEST_PILOT = " pilot_location=CAST(:pilot AS GEOMETRY), pilot_observed_at=:pilot_at,";
+    private static final String UPDATE_LATEST_TAIL = " updated_at=:updated WHERE target_id=:t";
+    private static final String INSERT_LATEST = "INSERT INTO target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,unknown_fields,pilot_location,pilot_observed_at,created_at,updated_at,version)"
+            + " VALUES (:t,CAST(:geom AS GEOMETRY),:amsl,:agl,:speed,:heading,:cconf,:fconf,:observed,:received,CAST(:unknown AS JSON),CAST(:pilot AS GEOMETRY),:pilot_at,:updated,:updated,0)";
+
     /** 更新最新状态但不递增 version（决策 8-6）：version 留给人工写操作做 expected_version 校验。 */
     public void upsertLatestState(LatestState s) {
+        Map<String, Object> p = latestParams(s);
+        // 飞手位置只由"携带身份主源的帧"改写（决策 8.5-27）：没有身份主源的帧对"飞手在哪"不表态，
+        // 连同它的观测时刻一起保持原值；SQL 里干脆不出现这两列，而不是写一个看起来像新值的旧值。
+        int updated = jdbc.update(UPDATE_LATEST + (s.pilotDecided() ? UPDATE_LATEST_PILOT : "") + UPDATE_LATEST_TAIL, p);
+        if (updated == 0) {
+            // 新行没有"原值"可留，两列照写（未表态时即为 NULL）。
+            jdbc.update(INSERT_LATEST, p);
+        }
+    }
+
+    /**
+     * 一帧内多个目标的最新状态一次批量写（ZT-06），逐行语义与 {@link #upsertLatestState} 相同：
+     * 按"本帧是否对飞手位置表态"分两批 UPDATE，没有命中行的再批量 INSERT。
+     */
+    public void upsertLatestStates(List<LatestState> states) {
+        if (states == null || states.isEmpty()) return;
+        List<LatestState> missing = new ArrayList<>();
+        for (boolean pilotDecided : new boolean[] { true, false }) {
+            List<LatestState> group = states.stream().filter(s -> s.pilotDecided() == pilotDecided).toList();
+            if (group.isEmpty()) continue;
+            List<Map<String, Object>> batch = new ArrayList<>();
+            for (LatestState s : group) batch.add(latestParams(s));
+            int[] counts = jdbc.batchUpdate(UPDATE_LATEST + (pilotDecided ? UPDATE_LATEST_PILOT : "") + UPDATE_LATEST_TAIL, batchOf(batch));
+            // 驱动报不出行数（SUCCESS_NO_INFO，负数）时按已更新处理；只有明确的 0 才是"还没有这一行"。
+            for (int i = 0; i < counts.length; i++) if (counts[i] == 0) missing.add(group.get(i));
+        }
+        if (missing.isEmpty()) return;
+        List<Map<String, Object>> inserts = new ArrayList<>();
+        for (LatestState s : missing) inserts.add(latestParams(s));
+        jdbc.batchUpdate(INSERT_LATEST, batchOf(inserts));
+    }
+
+    private static Map<String, Object> latestParams(LatestState s) {
         Map<String, Object> p = new HashMap<>();
         p.put("t", s.targetId()); p.put("geom", s.longitude() == null ? null : ewkt(s.longitude(), s.latitude())); p.put("amsl", s.altitudeAmslM()); p.put("agl", s.heightAglM());
         p.put("speed", s.speedMps()); p.put("heading", s.headingDeg()); p.put("cconf", s.classificationConfidence()); p.put("fconf", s.fusionConfidence());
         p.put("observed", s.observedAt()); p.put("received", s.receivedAt()); p.put("unknown", s.unknownFieldsJson()); p.put("updated", s.updatedAt());
-        // 飞手位置只由"携带身份主源的帧"改写（决策 8.5-27）：没有身份主源的帧对"飞手在哪"不表态，
-        // 连同它的观测时刻一起保持原值；SQL 里干脆不出现这两列，而不是写一个看起来像新值的旧值。
         p.put("pilot", s.pilotLongitude() == null || s.pilotLatitude() == null ? null : ewkt(s.pilotLongitude(), s.pilotLatitude()));
         p.put("pilot_at", s.pilotObservedAt());
-        String pilotSet = s.pilotDecided() ? " pilot_location=CAST(:pilot AS GEOMETRY), pilot_observed_at=:pilot_at," : "";
-        int updated = jdbc.update("UPDATE target_latest_state SET location=CAST(:geom AS GEOMETRY), altitude_amsl_m=:amsl, height_agl_m=:agl, speed_mps=:speed, heading_deg=:heading,"
-                + " classification_confidence=:cconf, fusion_confidence=:fconf, observed_at=:observed, received_at=:received, unknown_fields=CAST(:unknown AS JSON),"
-                + pilotSet + " updated_at=:updated"
-                + " WHERE target_id=:t", p);
-        if (updated == 0) {
-            // 新行没有"原值"可留，两列照写（未表态时即为 NULL）。
-            jdbc.update("INSERT INTO target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,unknown_fields,pilot_location,pilot_observed_at,created_at,updated_at,version)"
-                    + " VALUES (:t,CAST(:geom AS GEOMETRY),:amsl,:agl,:speed,:heading,:cconf,:fconf,:observed,:received,CAST(:unknown AS JSON),CAST(:pilot AS GEOMETRY),:pilot_at,:updated,:updated,0)", p);
-        }
+        return p;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object>[] batchOf(List<Map<String, Object>> rows) {
+        return rows.toArray(new Map[0]);
     }
 
     /** 人工修订类别后融合层继续写入时保留人工置信度：只更新类别置信度列。 */

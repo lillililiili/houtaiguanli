@@ -230,6 +230,35 @@ class TargetReadApiTest {
         assertThat(after.path("pilot_location").path("coordinate_system").asText()).isEqualTo("WGS84");
     }
 
+    /**
+     * ZT-20：设备时钟慢两分钟时，融合层给最新状态挂 observed_at 的 TIME_UNTRUSTED。读侧要把它原样交给页面
+     * （页面据此写"数据过期/设备时间不准"），地图到期时刻按平台收到它的时刻算——按观测时刻算，
+     * 一直在上报的目标一出现就已"过期"，会悄悄从地图上消失。
+     */
+    @Test
+    void untrustedObservationTimeIsReportedAndMapExpiryFollowsReceiveTime() throws Exception {
+        jdbc.update("update target_latest_state set received_at=?, unknown_fields=? FORMAT JSON where target_id=?",
+                T0.plusSeconds(129), "[{\"field\":\"heading_deg\",\"reason_code\":\"NOT_REPORTED\"},"
+                        + "{\"field\":\"observed_at\",\"reason_code\":\"TIME_UNTRUSTED\"}]", targetLatest);
+
+        JsonNode item = getJson("/api/v1/targets").path("data").path("items").get(0);
+        assertThat(item.path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(item.path("latest_state").path("observed_at").asLong()).isEqualTo(T0.plusSeconds(9).toInstant().toEpochMilli());
+        assertThat(item.path("latest_state").path("received_at").asLong()).isEqualTo(T0.plusSeconds(129).toInstant().toEpochMilli());
+        assertThat(item.path("map_expires_at").asLong()).as("接收时刻 + 目标终止时长")
+                .isEqualTo(T0.plusSeconds(144).toInstant().toEpochMilli());
+        JsonNode issues = getJson("/api/v1/targets/" + targetLatest).path("data").path("latest_state").path("field_issues");
+        assertThat(issues).anySatisfy(issue -> {
+            assertThat(issue.path("field").asText()).isEqualTo("observed_at");
+            assertThat(issue.path("reason_code").asText()).isEqualTo("TIME_UNTRUSTED");
+        });
+
+        // 时刻可信时仍按观测时刻算到期，不因接收晚一点就延长。
+        jdbc.update("update target_latest_state set unknown_fields=? FORMAT JSON where target_id=?", "[]", targetLatest);
+        assertThat(getJson("/api/v1/targets").path("data").path("items").get(0).path("map_expires_at").asLong())
+                .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
+    }
+
     @Test
     void paginatesAndFiltersTargetsWithoutSourceLinkDuplication() throws Exception {
         String sourceCode = "SRC-MOCK-" + suffix;

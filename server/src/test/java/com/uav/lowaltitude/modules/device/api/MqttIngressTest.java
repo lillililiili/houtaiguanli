@@ -115,6 +115,23 @@ class MqttIngressTest {
         assertThat(inboxCount(b)).isOne();
     }
 
+    @Test void slowDeviceClockIsShownOnTheDeviceInsteadOfLookingCurrent() {
+        // ZT-20：设备时钟慢 2 分钟，感知数据照常进 inbox（融合会把它标成时刻不可信）；设备本身也要写明
+        // "报文时刻比平台收到时晚多少"，超过融合的不可信阈值（默认 30 s）就标 time_untrusted，页面写"设备时间不准"。
+        Binding b = register("tdoa");
+        assertThat(devices.detail(b.opsDeviceId()).device().reportLagMs()).as("还没有感知数据").isNull();
+        assertThat(devices.detail(b.opsDeviceId()).device().timeUntrusted()).isFalse();
+        receive(b, sense(clock.nowMillis() - 120_000, 1), true, 140, false, false);
+        assertThat(inboxCount(b)).isOne();
+        DeviceService.DeviceSummary slow = devices.detail(b.opsDeviceId()).device();
+        assertThat(slow.reportLagMs()).isBetween(120_000L, 130_000L);
+        assertThat(slow.timeUntrusted()).isTrue();
+        receive(b, sense(clock.nowMillis() - 1_000, 2), true, 141, false, false);
+        DeviceService.DeviceSummary fixed = devices.detail(b.opsDeviceId()).device();
+        assertThat(fixed.reportLagMs()).isLessThan(30_000L);
+        assertThat(fixed.timeUntrusted()).isFalse();
+    }
+
     @Test void protocolAFaultIsVisibleAndRecoveryDoesNotInventGoodHealth() {
         Binding b = register("radar");
         receive(b, heartbeat("radar", 1, 1000L), false, 120, false, false);

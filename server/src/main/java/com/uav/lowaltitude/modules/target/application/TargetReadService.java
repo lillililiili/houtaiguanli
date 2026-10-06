@@ -30,6 +30,7 @@ import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.AttributeSelectionDto;
+import com.uav.lowaltitude.modules.target.api.TargetDtos.ClassChangeDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.ContributionDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.DegradationDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.FieldIssueDto;
@@ -73,7 +74,11 @@ public class TargetReadService {
             "NOT_APPLICABLE", "UNSUPPORTED");
     private static final Set<String> ISSUE_FIELDS = Set.of(
             "location", "altitude_amsl_m", "height_agl_m", "speed_mps", "heading_deg",
-            "classification_confidence", "fusion_confidence");
+            "classification_confidence", "fusion_confidence", "observed_at");
+    /** 报文时刻不可信（ZT-20）：设备时钟慢了或数据在路上积压，observed_at 有值但不能当成"现在"。 */
+    static final String TIME_UNTRUSTED = "TIME_UNTRUSTED";
+    /** 详情里最多带回多少条类别变化记录（ZT-04）。 */
+    private static final int CLASS_CHANGE_LIMIT = 20;
 
     /** 阶段 8：融合层轨迹默认与原始层一起返回；点默认只给实测与桥接，PRED 需显式请求。 */
     private static final Set<String> LAYERS = Set.of("RAW", "FUSED");
@@ -160,7 +165,29 @@ public class TargetReadService {
                 status == null ? null : new TrackStatusDto(status.status(), requiredMillis(status.since())),
                 degradationDto(degradation), selectionDto(selection), lineageSummary(id),
                 allowedActions(id, status, links.size()), row.version(),
-                riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries));
+                riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries), classChanges(id));
+    }
+
+    /**
+     * 类别变化记录（ZT-04）：融合改判（系统）与人工修订都记在血缘 CLASS_REVISION 上。告警与研判保留当时的结论，
+     * 页面靠这份记录写明"类别已由 X 改为 Y"。依据读不出来的条目跳过，不让整个详情打不开；没有就返回 null（键省略）。
+     */
+    private List<ClassChangeDto> classChanges(String targetId) {
+        List<ClassChangeDto> changes = new ArrayList<>();
+        for (LineageRow row : lineages.classRevisions(targetId, CLASS_CHANGE_LIMIT)) {
+            try {
+                JsonNode basis = row.basisJson() == null ? null : objectMapper.readTree(row.basisJson());
+                if (basis != null && basis.isTextual()) basis = objectMapper.readTree(basis.textValue());
+                if (basis == null || !basis.isObject() || row.occurredAt() == null) continue;
+                String to = basis.path("new_class_code").asText("");
+                if (to.isBlank()) continue;
+                String from = basis.path("previous_class_code").asText("");
+                changes.add(new ClassChangeDto(row.occurredAt().toInstant().toEpochMilli(), from.isBlank() ? null : from, to, row.operatorKind()));
+            } catch (Exception ignored) {
+                // 单条依据损坏只少显示这一条。
+            }
+        }
+        return changes.isEmpty() ? null : List.copyOf(changes);
     }
 
     @Transactional(readOnly = true)
@@ -221,13 +248,26 @@ public class TargetReadService {
     }
 
     private TargetSummaryDto summary(TargetRow row, TargetSummariesRow summaries, long mapLifetimeMs) {
+        TargetStateDto state = state(row, summaries);
         return new TargetSummaryDto(
                 row.targetId(), row.targetNo(), millis(row.firstSeenAt()), millis(row.lastSeenAt()),
                 row.objectTypeCode(), row.subtype(), row.uavSn(), row.sourceMode(), row.ownerOrgId(),
-                row.districtId(), state(row, summaries), row.ownerOrgName(), row.districtName(),
+                row.districtId(), state, row.ownerOrgName(), row.districtName(),
                 riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries),
-                row.stateObservedAt() == null || mapLifetimeMs <= 0 ? null
-                        : row.stateObservedAt().toInstant().toEpochMilli() + mapLifetimeMs);
+                mapExpiresAt(row, state, mapLifetimeMs));
+    }
+
+    /**
+     * 地图显示到期时刻：最新状态的观测时刻 + 目标终止时长。报文时刻不可信的状态（ZT-20）按平台收到它的时刻算——
+     * 设备时钟慢两分钟时，按观测时刻算会让一直在上报的目标一出现就"过期"、悄悄从地图上消失；
+     * 按接收时刻算，目标留在图上并由 observed_at 的 TIME_UNTRUSTED 提示写明"数据过期/设备时间不准"。
+     */
+    private static Long mapExpiresAt(TargetRow row, TargetStateDto state, long mapLifetimeMs) {
+        if (row.stateObservedAt() == null || mapLifetimeMs <= 0) return null;
+        boolean untrusted = state != null && state.fieldIssues().stream()
+                .anyMatch(issue -> "observed_at".equals(issue.field()) && TIME_UNTRUSTED.equals(issue.reasonCode()));
+        OffsetDateTime base = untrusted && row.stateReceivedAt() != null ? row.stateReceivedAt() : row.stateObservedAt();
+        return base.toInstant().toEpochMilli() + mapLifetimeMs;
     }
 
     private TargetStateDto state(TargetRow row, TargetSummariesRow summaries) {
@@ -293,12 +333,17 @@ public class TargetReadService {
             String field = issue.path("field").asText("");
             String reason = issue.path("reason_code").asText("");
             if (ISSUE_FIELDS.contains(field) && ISSUE_REASONS.contains(reason)
-                    && unavailable(row, field)) {
+                    && (unavailable(row, field) || untrustedTime(field, reason))) {
                 issues.add(new FieldIssueDto(field, reason));
             }
         }
         issues.sort(Comparator.comparing(FieldIssueDto::field).thenComparing(FieldIssueDto::reasonCode));
         return List.copyOf(issues);
+    }
+
+    /** observed_at 总有值，它的问题只有一种：时刻本身不可信（ZT-20）。 */
+    private static boolean untrustedTime(String field, String reason) {
+        return "observed_at".equals(field) && TIME_UNTRUSTED.equals(reason);
     }
 
     private static boolean unavailable(TargetRow row, String field) {

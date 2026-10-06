@@ -4,7 +4,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -33,6 +35,40 @@ public class RawTrackRepository {
         List<LinkRow> rows = jdbc.query("SELECT link_id,target_id,source_id,device_id,source_session_key,external_target_id FROM target_source_link"
                 + " WHERE source_id=:source AND source_session_key=:session AND external_target_id=:external", p, RawTrackRepository::link);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 一帧里同一来源同一会话的全部 link，一次取回（ZT-06）：逐条观测各查一次是每帧 O(观测数) 次往返，
+     * 50 个目标的一帧光这一项就是上百次。键是 external_target_id。
+     */
+    public Map<String, LinkRow> findLinks(String sourceId, String sessionKey, Collection<String> externalTargetIds) {
+        Map<String, LinkRow> out = new LinkedHashMap<>();
+        if (externalTargetIds == null || externalTargetIds.isEmpty()) return out;
+        Map<String, Object> p = Map.of("source", sourceId, "session", sessionKey, "externals", List.copyOf(new java.util.LinkedHashSet<>(externalTargetIds)));
+        for (LinkRow row : jdbc.query("SELECT link_id,target_id,source_id,device_id,source_session_key,external_target_id FROM target_source_link"
+                + " WHERE source_id=:source AND source_session_key=:session AND external_target_id IN (:externals)", p, RawTrackRepository::link)) {
+            out.put(row.externalTargetId(), row);
+        }
+        return out;
+    }
+
+    /**
+     * 多条 link 各自"当前目标名下最新的未结束 RAW 轨迹"，一次取回；与 {@link #findOpenRawTrack} 同一口径（按 started_at、track_id 倒序取第一条）。
+     * 键是 link_id。
+     */
+    public Map<String, TrackRow> findOpenRawTracks(Collection<LinkRow> links) {
+        Map<String, TrackRow> out = new LinkedHashMap<>();
+        if (links == null || links.isEmpty()) return out;
+        Map<String, String> targetByLink = new HashMap<>();
+        for (LinkRow link : links) targetByLink.put(link.linkId(), link.targetId());
+        List<TrackRow> rows = jdbc.query("SELECT track_id,target_id,link_id,external_track_id,started_at,CAST(filter_state AS VARCHAR) AS filter_state_text FROM track"
+                + " WHERE link_id IN (:links) AND layer='RAW' AND ended_at IS NULL ORDER BY link_id, started_at DESC, track_id DESC",
+                Map.of("links", List.copyOf(targetByLink.keySet())), RawTrackRepository::track);
+        for (TrackRow row : rows) {
+            if (out.containsKey(row.linkId()) || !row.targetId().equals(targetByLink.get(row.linkId()))) continue;
+            out.put(row.linkId(), row);
+        }
+        return out;
     }
 
     public void insertLink(String linkId, String targetId, String sourceId, String deviceId, String sessionKey, String externalTargetId, Instant at) {
@@ -68,6 +104,14 @@ public class RawTrackRepository {
         jdbc.update("UPDATE track SET filter_state=CAST(:state AS JSON) WHERE track_id=:id", Map.of("id", trackId, "state", filterStateJson));
     }
 
+    /** 一帧内多条 RAW 轨迹的滤波状态快照，一次批量写（ZT-06）。 */
+    public void updateFilterStates(Map<String, String> stateJsonByTrack) {
+        if (stateJsonByTrack == null || stateJsonByTrack.isEmpty()) return;
+        List<Map<String, Object>> batch = new java.util.ArrayList<>();
+        for (Map.Entry<String, String> entry : stateJsonByTrack.entrySet()) batch.add(Map.of("id", entry.getKey(), "state", entry.getValue()));
+        jdbc.batchUpdate("UPDATE track SET filter_state=CAST(:state AS JSON) WHERE track_id=:id", batchOf(batch));
+    }
+
     public void endTrack(String trackId, Instant endedAt) {
         jdbc.update("UPDATE track SET ended_at=:ended WHERE track_id=:id AND ended_at IS NULL", Map.of("id", trackId, "ended", Timestamp.from(endedAt)));
     }
@@ -76,15 +120,41 @@ public class RawTrackRepository {
         jdbc.update("UPDATE track SET ended_at=:ended WHERE target_id=:target AND layer='RAW' AND ended_at IS NULL", Map.of("target", targetId, "ended", Timestamp.from(endedAt)));
     }
 
+    private static final String INSERT_POINT = "INSERT INTO track_point (point_id,track_id,inbox_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at,"
+            + "point_kind,observation_id,position_accuracy_m) VALUES (:id,:track,:inbox,:seq,:observed,:received,CAST(:location AS GEOMETRY),:amsl,:agl,:created,"
+            + ":kind,:observation,:accuracy)";
+
     public void insertPoint(String pointId, String trackId, String inboxId, long pointSeq, Instant observedAt, Instant receivedAt, double longitude, double latitude,
             Double altitudeAmslM, Double heightAglM, String observationId, double accuracyM, String kind) {
+        jdbc.update(INSERT_POINT, pointParams(pointId, trackId, inboxId, pointSeq, observedAt, receivedAt, longitude, latitude, altitudeAmslM, heightAglM,
+                observationId, accuracyM, kind));
+    }
+
+    private static Map<String, Object> pointParams(String pointId, String trackId, String inboxId, long pointSeq, Instant observedAt, Instant receivedAt,
+            double longitude, double latitude, Double altitudeAmslM, Double heightAglM, String observationId, double accuracyM, String kind) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", pointId); p.put("track", trackId); p.put("inbox", inboxId); p.put("seq", pointSeq); p.put("observed", Timestamp.from(observedAt));
         p.put("received", Timestamp.from(receivedAt)); p.put("location", ObservationRepository.ewkt(longitude, latitude)); p.put("amsl", altitudeAmslM); p.put("agl", heightAglM);
         p.put("observation", observationId); p.put("accuracy", accuracyM); p.put("kind", kind); p.put("created", Timestamp.from(receivedAt));
-        jdbc.update("INSERT INTO track_point (point_id,track_id,inbox_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at,"
-                + "point_kind,observation_id,position_accuracy_m) VALUES (:id,:track,:inbox,:seq,:observed,:received,CAST(:location AS GEOMETRY),:amsl,:agl,:created,"
-                + ":kind,:observation,:accuracy)", p);
+        return p;
+    }
+
+    /** 一条待写的 RAW 轨迹点（字段与 {@link #insertPoint} 一一对应）。 */
+    public record PointInsert(String pointId, String trackId, String inboxId, long pointSeq, Instant observedAt, Instant receivedAt, double longitude,
+            double latitude, Double altitudeAmslM, Double heightAglM, String observationId, double accuracyM, String kind) { }
+
+    /** 一帧的 RAW 轨迹点批量写入（ZT-06）：调用方保证所属 track 已先插入。 */
+    public void insertPoints(List<PointInsert> points) {
+        if (points == null || points.isEmpty()) return;
+        List<Map<String, Object>> batch = new java.util.ArrayList<>();
+        for (PointInsert point : points) batch.add(pointParams(point.pointId(), point.trackId(), point.inboxId(), point.pointSeq(), point.observedAt(),
+                point.receivedAt(), point.longitude(), point.latitude(), point.altitudeAmslM(), point.heightAglM(), point.observationId(), point.accuracyM(), point.kind()));
+        jdbc.batchUpdate(INSERT_POINT, batchOf(batch));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object>[] batchOf(List<Map<String, Object>> rows) {
+        return rows.toArray(new Map[0]);
     }
 
     /** 目标（含别名成员）名下所有 link 及其未结束 RAW 轨迹的状态。 */
