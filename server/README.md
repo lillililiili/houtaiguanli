@@ -247,8 +247,8 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 在无人机事件 advisory 增加独立电话录音通知，与短信按渠道各自防重；两者共享当前目标、规则结论、观测/事件时效及人工联系阻断规则。电话录音按“自动外呼播放预录音频”实现，本轮仅提供明确的本地模拟状态回执，不拨号、不实际播放文件，不代表任何人接听或听取。
 
-- `app.advisory.auto-voice.enabled` 默认 `false`，没有修改 local 配置自动启用。开启后仍必须是非 production 的 local/test 环境、mock/replay 事件来源，且同时配置 `recording-id`、`recording-name`、`recording-path`、`recording-transcript`。
-- `recording-path` 仅由部署配置提供已有 WAV 文件的绝对路径，文件上限 10 MiB；校验实际音频帧完整性并从真实文件计算 SHA-256。没有音频、不完整/截断文件、缺文稿或真实渠道不可用均不会生成模拟成功。没有新增录音上传或管理页面。
+- `app.advisory.auto-voice.enabled` 默认 `false`，没有修改 local 配置自动启用。开启后仍必须是非 production 的 local/test 环境、mock/replay 事件来源，且有可播放的录音：后台选用的上传录音，或同时配置的 `recording-id`、`recording-name`、`recording-path`、`recording-transcript`（2026-10-06 起，见下节）。
+- `recording-path` 仅由部署配置提供已有 WAV 文件的绝对路径，文件上限 10 MiB；校验实际音频帧完整性并从真实文件计算 SHA-256。没有音频、不完整/截断文件、缺文稿或真实渠道不可用均不会生成模拟成功。（原“没有新增录音上传或管理页面”已由下节“电话通知录音上传与选用”替代。）
 - `GET /api/v1/uav-events/{id}/advisory` 追加 `voice_mode` 和 `auto_voice`。`voice_mode=SIMULATED` 也用于已有模拟尝试的来源标记，不表示当前仍允许发起；当前启用状态用 `auto_voice.enabled`。无配置且未尝试时为 `UNAVAILABLE`。
 - `auto_voice` 字段为 `enabled,status,reason,triggered_at,updated_at,can_retry,attempt_count,policy_code,trigger_source,evaluated_at,data_updated_at,recording_id,recording_name,answered_at,playback_completed_at`。缺少接通/播完证据时相应时间不返回。状态为 `DISABLED|WAITING|CALLING|SIMULATED_PLAYED|FAILED|UNKNOWN|UNAVAILABLE|BLOCKED`。
 - `POST /api/v1/uav-events/{id}/advisory/auto-voice/retry` 使用 `{expected_version,note}` 和 `Idempotency-Key`；校验 `alarm:read`、`alarm:verify`、`handoff:create` 与事件范围，只对明确 `FAILED` 且当前条件仍满足的任务排队。`UNKNOWN`（包括接通但播完未知、调用异常、租约失效）不允许盲目重拨。既有任务不允许用同一幂等编号换录音内容重试。
@@ -256,6 +256,18 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 - 关闭策略、后续数据过期或录音移除不会覆盖已有接通/播放结果和模拟来源；关闭策略后后台仍会把过期 CALLING 标记为 UNKNOWN，但不会新呼叫。读取页面不会建任务或发送通知。
 
 迁移仅追加 `V202609160002__automatic_advisory_voice.sql`。详细边界、代码清单和隔离验收记录见[电话录音通知实现与验收](../docs/电话录音通知实现与验收-2026-09-16.md)。管理端 `ruoyi-ui/src` 未发现该 advisory 契约消费者；业务前台同步展示双通道。
+
+### 电话通知录音上传与选用（2026-10-06，BLOCK-04）
+
+验收时电话录音只能用启动参数指定，没有配置时告警核实、短信送达后电话这一步直接跳过。现在后台“运维管理 → 接口配置 → 电话通知录音”可以上传、试听、选用和停止使用录音，删除没用过的录音。
+
+- 生效顺序：后台选用的上传录音优先；没有选用时才用启动参数 `app.advisory.auto-voice.recording-*`；两样都没有时电话这一步跳过（`UNAVAILABLE`，与原来一样）。已选用的上传录音文件缺失或被改动时电话暂停，不悄悄改播启动参数录音。每次拨打前按真实文件内容重新校验；电话任务领取时冻结当时的录音，原有“不能用同一幂等编号换录音重拨”规则不变。
+- 接口 `/api/v1/advisory-voice-recordings`：`GET` 清单与当前生效情况；`POST` multipart（`file`、`name`、`transcript`）上传，只收完整 WAV、≤10 MiB；`GET /{id}/content` 试听；`PATCH /{id}/active` `{active,expected_version}` 选用或停止使用；`DELETE /{id}` 删除。写操作要 `Idempotency-Key`。
+- 权限：查看与试听用 `interfaces.read`；上传、选用、删除与切换模拟器通知通道相同，要 `interfaces.op` + `notificationSettings.auth` + 全部数据范围，没有新增权限码（目前实际只有超级管理员能管理）。
+- 文件存于 `app.evidence-dir` 下 `advisory-voice-recordings/`，库里只存元数据与实际 SHA-256；审计模块 `interfaces`，动作 `advisory_voice_recording_uploaded/activated/deactivated/deleted`。
+- 迁移 `V202610069021__advisory_voice_recording_upload.sql`（H2+PG）和 `db/postgresql/V202610069022__advisory_voice_recording_realtime.sql`（实时信号 `voice_recording`，选用变化另发 `alarm`）。不预置录音。
+
+详细契约、错误码、校验和验证记录见[电话通知录音管理](../docs/电话通知录音管理-2026-10-06.md)。
 
 ## 2026-09-17 合法性自动判定分流
 

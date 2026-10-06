@@ -174,7 +174,7 @@ public class GlobalExceptionHandler {
 
     private static String module(String path) {
         if (path.contains("/map-packages")) return "maps";
-        if (path.contains("/mqtt-brokers")) return "interfaces";
+        if (path.contains("/mqtt-brokers") || path.contains("/advisory-voice-recordings")) return "interfaces";
         if (path.contains("/audit-logs")) return "audit";
         if (path.contains("/roles") || path.contains("/permissions") || path.contains("/access-change")) return "roles";
         if (path.contains("/users") || path.contains("/organizations") || path.contains("/districts")) return "users";

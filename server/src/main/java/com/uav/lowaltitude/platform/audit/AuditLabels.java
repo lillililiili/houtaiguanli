@@ -34,6 +34,8 @@ final class AuditLabels {
             Map.entry("evidence", "证据管理"),
             Map.entry("airport", "机场基础数据"),
             Map.entry("maps", "地图管理"),
+            // 外部接口与消息接入连接的失败审计、电话通知录音的上传与选用都归“接口配置”。
+            Map.entry("interfaces", "接口配置"),
             Map.entry("system", "系统"),
             Map.entry("organizations", "单位档案"),
             Map.entry("notificationSettings", "通知对象配置"),
@@ -181,6 +183,10 @@ final class AuditLabels {
             Map.entry("map_package_activated", "启用离线地图"),
             Map.entry("map_package_rolled_back", "回滚离线地图"),
             Map.entry("map_package_deleted", "删除离线地图包"),
+            Map.entry("advisory_voice_recording_uploaded", "上传电话通知录音"),
+            Map.entry("advisory_voice_recording_activated", "选用电话通知录音"),
+            Map.entry("advisory_voice_recording_deactivated", "停止使用电话通知录音"),
+            Map.entry("advisory_voice_recording_deleted", "删除电话通知录音"),
             Map.entry("automation_rule_changed", "调整自动化规则"),
             Map.entry("countermeasure_4ch_requested", "下发四通道反制指令"),
             Map.entry("device_maintenance_reported", "上报设备维护任务"),
@@ -258,6 +264,7 @@ final class AuditLabels {
             Map.entry("/space-risks", "空间安全风险"),
             Map.entry("/space-object-subtypes", "异物细类"),
             Map.entry("/map-packages", "离线地图包"),
+            Map.entry("/advisory-voice-recordings", "电话通知录音"),
             Map.entry("/rule-evaluations", "风险规则评估"));
 
     private AuditLabels() {
