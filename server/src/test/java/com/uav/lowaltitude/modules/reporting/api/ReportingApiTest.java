@@ -171,7 +171,7 @@ class ReportingApiTest {
         jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,?,?)",user,org,district);
         JsonNode result=operations(token,"2002-01-01");
         assertThat(result.path("summary").path("total").asInt()).isEqualTo(1);
-        jdbc.update("delete from app_role_permission where role_code='ROLE-ADMIN' and permission_code='target:read'");
+        com.uav.lowaltitude.testsupport.ActionRevocationFixture.withoutAction(jdbc,"admin1","target:read");
         sqlSession.clearCache();
         result=operations(token,"2002-01-01");
         assertThat(result.path("summary").path("total").isMissingNode()||result.path("summary").path("total").isNull()).isTrue();
