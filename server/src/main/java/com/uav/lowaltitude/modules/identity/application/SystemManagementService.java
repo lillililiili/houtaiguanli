@@ -860,8 +860,11 @@ public class SystemManagementService {
             // 用户、角色、审计这些域的动作不能授给自定义角色（决策 15-2）。
             // 目前目录里还没有这类动作行，这条守卫先于它们存在，否则谁加谁就顺手把它授出去了。
             // 18-13 放开的是矩阵里的 `audit`（看审计日志），不是审计域的动作（对日志本身动手）。
-            if (PROTECTED_ACTION_DOMAINS.contains(action.getModuleCode())
-                    || PROTECTED_ACTION_CODES.contains(action.getPermissionCode())) {
+            // 与矩阵的受保护项同一口径：整组提交时带着“无”是在声明不授予，不是越权（BUG-01）。
+            // 角色页按目录整组提交，`map:activate` 一律是“无”；只有真要授出去时才拦。
+            if ((PROTECTED_ACTION_DOMAINS.contains(action.getModuleCode())
+                    || PROTECTED_ACTION_CODES.contains(action.getPermissionCode()))
+                    && !"NONE".equals(item.level())) {
                 throw bad("SYSTEM_PERMISSION_PROTECTED", "该高风险动作仅允许超级管理员执行");
             }
             if (PermissionCode.DISPOSAL_DIRECT.value().equals(item.permissionCode())

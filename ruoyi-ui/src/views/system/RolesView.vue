@@ -72,7 +72,9 @@ function actionLabel(action) {
 function actionLevelsFor(action) { return action.permission_code === 'disposal:direct' ? directActionLevels : actionLevels }
 function actionDescription(action) { return action.permission_code === 'disposal:direct' ? '免逐次审批；仍校验反制范围、时效及设备权限。' : '' }
 function isPermissionLocked(row) { return locked.value || protectedCodes.has(row.permission_code) }
-function isActionLocked(action) { return locked.value || action.permission_code === 'map:activate' || ['users', 'roles', 'audit', 'countermeasure'].includes(action.permission_code?.split(':')[0]) }
+// 只归超级管理员的动作：页面上锁定，保存时也不随整组提交（BUG-01）。
+function isProtectedAction(code) { return code === 'map:activate' || ['users', 'roles', 'audit', 'countermeasure'].includes(String(code || '').split(':')[0]) }
+function isActionLocked(action) { return locked.value || isProtectedAction(action.permission_code) }
 function setLevel(row, level) { row.level = level; if (level === 'NONE') row.menu_enabled = false }
 function setMenu(row, enabled) { row.menu_enabled = enabled; if (enabled && row.level === 'NONE') row.level = 'READ' }
 
@@ -116,7 +118,7 @@ async function savePermissions() {
     const body = {
       expected_version: detail.value.version,
       permissions: permissions.value.map(item => ({ permission_code: item.permission_code, level: item.level, menu_enabled: item.menu_enabled })),
-      actions: Object.entries(actionDraft).filter(([, level]) => level !== 'AUTH').map(([permission_code, level]) => ({ permission_code, level }))
+      actions: Object.entries(actionDraft).filter(([code, level]) => level !== 'AUTH' && !isProtectedAction(code)).map(([permission_code, level]) => ({ permission_code, level }))
     }
     const saved = await systemApi.updateRolePermissions(detail.value.role_code, body)
     resetDraft(saved)
