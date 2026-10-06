@@ -101,7 +101,7 @@ class C03DecisionTest {
 
     @Test
     void missingSeverityParameterOnlyLowersTheScoreAndNeverAbortsTheDecision() {
-        // 旧规则集版本没有 C03.severity.BVLOS_EXCEEDED：无计划且超视距仍要给出结论，缺项的原因码按 0 参与评分。
+        // 规则集没有 C03.severity.BVLOS_EXCEEDED（待业务确认，不猜填）：无计划且超视距仍要给出结论，缺项的原因码按 0 参与评分。
         PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
         EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), none);
         List<HitDetail> hits = List.of(pass("C02-1"), fail("C02-6", "BVLOS_EXCEEDED"));
@@ -109,12 +109,12 @@ class C03DecisionTest {
         assertThat(legacy.status()).isEqualTo(LegalStatus.ILLEGAL);
         assertThat(legacy.violationReasons()).containsExactly("NO_AUTHORIZATION", "BVLOS_EXCEEDED");
         assertThat(legacy.reasonCode()).isEqualTo("NO_AUTHORIZATION");
-        // 100*(0.4*0.8+0.25*1+0.1*0.1)=58 → MEDIUM；目录补齐后（0.3，低于无授权 0.8）结论与评分不变。
+        // 100*(0.4*0.8+0.25*1+0.1*0.1)=58 → MEDIUM；将来确认的严重度只要低于无授权 0.8，结论与评分不变。
         assertThat(legacy.score()).isEqualByComparingTo("58.00");
         assertThat(legacy.grade()).isEqualTo("MEDIUM");
-        Decision current = decision.decide(ctx, hits, params);
-        assertThat(current.status()).isEqualTo(LegalStatus.ILLEGAL);
-        assertThat(current.score()).isEqualByComparingTo("58.00");
+        Decision confirmed = decision.decide(ctx, hits, TestRuleParams.demoCatalog().put("C03", "severity.BVLOS_EXCEEDED", "0.3"));
+        assertThat(confirmed.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(confirmed.score()).isEqualByComparingTo("58.00");
         // 只有严重度可以缺项；权重、等级阈值等其他参数缺失仍是部署错误。
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> decision.decide(ctx, hits, TestRuleParams.demoCatalog().without("C03", "w.violation")));

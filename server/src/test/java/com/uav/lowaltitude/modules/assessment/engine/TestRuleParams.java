@@ -31,7 +31,6 @@ final class TestRuleParams implements RuleParams {
                 .put("C03", "severity.TEMPORARY_RESTRICTION_ACTIVE", "0.9").put("C03", "severity.NO_AUTHORIZATION", "0.8")
                 .put("C03", "severity.ROUTE_DEVIATION", "0.6").put("C03", "severity.PLAN_ALTITUDE_EXCEEDED", "0.5")
                 .put("C03", "severity.TIME_WINDOW_OVERRUN", "0.4").put("C03", "severity.NIGHT_FLIGHT", "0.3")
-                .put("C03", "severity.BVLOS_EXCEEDED", "0.3")
                 .put("C03", "grade.high", "67").put("C03", "grade.medium", "34")
                 .put("C06", "dedup_window_min", "5").put("C06", "upgrade_window_min", "10").put("C06", "auto_close_min", "15")
                 .put("C06", "severity_by_grade", "HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW");

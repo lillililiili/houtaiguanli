@@ -116,7 +116,7 @@
 | C03 | no_plan_status | ILLEGAL | STRING |
 | C03 | ignore_undetermined_rules | C02-6 | LIST |
 | C03 | w.violation / w.plan_match / w.airspace / w.track / w.confidence | 0.40 / 0.25 / 0.15 / 0.10 / 0.10 | NUMBER |
-| C03 | severity.INSIDE_RESTRICTED_AIRSPACE / AIRSPACE_ALTITUDE_EXCEEDED / TEMPORARY_RESTRICTION_ACTIVE / NO_AUTHORIZATION / ROUTE_DEVIATION / PLAN_ALTITUDE_EXCEEDED / TIME_WINDOW_OVERRUN / NIGHT_FLIGHT / BVLOS_EXCEEDED | 1.0 / 0.9 / 0.9 / 0.8 / 0.6 / 0.5 / 0.4 / 0.3 / 0.3 | NUMBER（BVLOS_EXCEEDED 后补，已有库由迁移 V202610069001 补行） |
+| C03 | severity.INSIDE_RESTRICTED_AIRSPACE / AIRSPACE_ALTITUDE_EXCEEDED / TEMPORARY_RESTRICTION_ACTIVE / NO_AUTHORIZATION / ROUTE_DEVIATION / PLAN_ALTITUDE_EXCEEDED / TIME_WINDOW_OVERRUN / NIGHT_FLIGHT | 1.0 / 0.9 / 0.9 / 0.8 / 0.6 / 0.5 / 0.4 / 0.3 | NUMBER（`severity.BVLOS_EXCEEDED` 待业务确认、未猜填；某个原因码缺严重度时 C03 按 0 计入评分，研判照常给出结论） |
 | C03 | grade.high / grade.medium | 67 / 34 | NUMBER |
 | C06 | dedup_window_min / upgrade_window_min / auto_close_min | 5 / 10 / 15 | INTEGER min |
 | C06 | severity_by_grade | HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW | LIST |

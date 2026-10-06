@@ -52,7 +52,6 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
      * 阶段 10（决策 10-2）：C02-2.kinds 只写规范值 ALTITUDE_LIMIT、C02-8.kinds 只写 TEMPORARY_CONTROL——迁移 074 起 airspace_version.kind_code 的 CHECK 只留
      * AirspaceKind 的五值，HEIGHT_LIMIT / TEMPORARY 已不可能出现在库里，参数里再列它们只是让读者以为它们仍是合法种类。
      * 注意 param() 只补缺行：已发布版本的参数在 PostgreSQL 上不可改，已有库里的 C02-2.kinds / C02-8.kinds 仍是旧串（含规范值，判定不变）。
-     * C03.severity.BVLOS_EXCEEDED 是后补的缺项（C02-6 超视距不通过时 C03 评分要用），演示值与夜航同级，同样靠只补缺行进入已有库。
      */
     private static final String[][] DEMO_PARAMS = {
             {"C01", "time_window_min", "10", "INTEGER", "min"}, {"C01", "corridor_tolerance_m", "100", "NUMBER", "m"},
@@ -69,7 +68,6 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
             {"C03", "severity.TEMPORARY_RESTRICTION_ACTIVE", "0.9", "NUMBER", null}, {"C03", "severity.NO_AUTHORIZATION", "0.8", "NUMBER", null},
             {"C03", "severity.ROUTE_DEVIATION", "0.6", "NUMBER", null}, {"C03", "severity.PLAN_ALTITUDE_EXCEEDED", "0.5", "NUMBER", null},
             {"C03", "severity.TIME_WINDOW_OVERRUN", "0.4", "NUMBER", null}, {"C03", "severity.NIGHT_FLIGHT", "0.3", "NUMBER", null},
-            {"C03", "severity.BVLOS_EXCEEDED", "0.3", "NUMBER", null},
             {"C03", "grade.high", "67", "NUMBER", null}, {"C03", "grade.medium", "34", "NUMBER", null},
             {"C06", "dedup_window_min", "5", "INTEGER", "min"}, {"C06", "upgrade_window_min", "10", "INTEGER", "min"}, {"C06", "auto_close_min", "15", "INTEGER", "min"},
             {"C06", "severity_by_grade", "HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW", "LIST", null}};
