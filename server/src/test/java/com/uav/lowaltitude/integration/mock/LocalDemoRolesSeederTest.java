@@ -13,10 +13,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -38,7 +36,6 @@ class LocalDemoRolesSeederTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired LocalDemoRolesSeeder seeder;
-    @Autowired javax.sql.DataSource dataSource;
     @Autowired com.uav.lowaltitude.modules.identity.application.SuperAdminIntegrityInitializer superAdminInitializer;
 
     @Test
@@ -152,11 +149,11 @@ class LocalDemoRolesSeederTest {
     }
 
     /**
-     * 既有库的演示角色由旧种子建成，停在“只能看”。迁移按角色码只升不降地补齐，菜单不变，
-     * 并递增这些账号的权限版本，让旧会话失效、重新登录后生效。
+     * 既有库的演示角色由旧种子建成，停在“只能看”。种子每次启动按角色码只升不降地补齐（不写迁移：
+     * 迁移不能混入演示数据），菜单不变，并递增这些账号的权限版本，让旧会话失效、重新登录后生效。
      */
     @Test
-    void theMigrationRaisesExistingDemoRolesAndExpiresTheirSessions() throws Exception {
+    void reseedingRaisesExistingDemoRolesAndExpiresTheirSessions() throws Exception {
         jdbc.update("delete from app_role_permission where role_code='ROLE-DEMO-AUTH' and permission_code='disposal:execute'");
         jdbc.update("update app_role_permission set permission_level='READ' where role_code='ROLE-DEMO-AUTH' and permission_code='devices'");
         jdbc.update("update app_role_permission set permission_level='READ' where role_code='ROLE-DEMO-OPS'"
@@ -167,8 +164,7 @@ class LocalDemoRolesSeederTest {
         jdbc.update("delete from app_role_permission where role_code='ROLE-DEMO-DUTY' and permission_code='evidence:preview'");
         String stale = login("zhangwei");
         try {
-            new ResourceDatabasePopulator(new ClassPathResource(
-                    "db/migration/V202610069011__demo_role_execute_maintenance_duty_view.sql")).execute(dataSource);
+            seeder.run(new DefaultApplicationArguments());
             mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + stale))
                     .andExpect(status().isUnauthorized());
             assertThat(level("ROLE-DEMO-AUTH", "disposal:execute")).isEqualTo("OP");
@@ -182,7 +178,7 @@ class LocalDemoRolesSeederTest {
             assertThat(menu("ROLE-DEMO-DUTY", "monitoring")).as("补的是数据权限，不开菜单").isFalse();
             assertThat(menu("ROLE-DEMO-OPS", "monitoring")).as("运维原有菜单保留").isTrue();
             assertThat(jdbc.queryForObject("select count(*) from app_role_permission where role_code like 'ROLE-DEMO-%'"
-                    + " and permission_code='disposal:direct'", Integer.class)).as("迁移不授直接反制").isZero();
+                    + " and permission_code='disposal:direct'", Integer.class)).as("补权不授直接反制").isZero();
             assertThat(codes(me("zhangwei"))).contains("monitoring.read", "evidence:preview");
         } finally {
             jdbc.update("update app_role_permission set permission_level='OP' where role_code='ROLE-DEMO-OPS' and permission_code='monitoring'");
