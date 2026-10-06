@@ -64,6 +64,8 @@ class ProductionStage85SeedIsolationTest {
                     .as("关闭态必须有兜底实现，否则注入点会因缺 Bean 启动失败").isTrue();
             // 回放种子与摄取 Worker 都不该在生产出现（Worker 归 app.fusion.enabled，这里连它一起钉住）。
             assertThat(context.containsBean("localStage8FusionReplaySeeder")).as("凌云 v2 回放种子不得在 production 注册").isFalse();
+            assertThat(context.containsBean("localInterfaceSimulatorController")).as("生产不得开放模拟输入接口").isFalse();
+            assertThat(context.containsBean("localObservationSimulatorService")).as("生产不得注册模拟观测输入服务").isFalse();
             List<String> fusionRunners = context.getBeansOfType(ApplicationRunner.class).keySet().stream()
                     .filter(name -> name.toLowerCase().contains("replay") || name.toLowerCase().contains("stage85")).toList();
             assertThat(fusionRunners).as("生产不得注册任何回放/8.5 启动任务").isEmpty();
@@ -72,12 +74,13 @@ class ProductionStage85SeedIsolationTest {
 
             // 演示数据：逐表断言为空，不抽查——漏掉哪张表，那张表就是演示数据进生产的通道。
             for (String table : List.of("source_observation", "target", "target_latest_state", "track", "track_point",
-                    "target_lineage", "fusion_event", "inbox_message")) {
+                    "target_lineage", "fusion_event", "inbox_message", "simulator_observation_source",
+                    "simulator_weather_device", "simulator_weather_observation")) {
                 assertThat(jdbc.queryForObject("select count(*) from " + table, Integer.class))
                         .as(table + " 属于业务数据，生产必须为空").isZero();
             }
-            // 四个直连前缀一个都不能出现在 inbox 里（上面的整表断言已覆盖，这里点名是为了让失败信息直接指出是哪条通道）。
-            for (String prefix : List.of("replay:", "lingyun:", "eo-edge:", "live-radar:")) {
+            // 来源前缀均不得出现在 inbox 里（整表断言已覆盖，此处点名以定位违规通道）。
+            for (String prefix : List.of("replay:", "lingyun:", "eo-edge:", "live-radar:", "sim-normalized:")) {
                 assertThat(jdbc.queryForObject("select count(*) from inbox_message where source like ?", Integer.class, prefix + "%"))
                         .as(prefix + " 通道在生产不得有任何报文").isZero();
             }
@@ -90,13 +93,13 @@ class ProductionStage85SeedIsolationTest {
                     .as("规则引擎的回放来源行来自迁移 040，是结构性目录，不在清理范围内").isEqualTo(1);
 
             // 结构性目录：生产也必须有，且必须自述为 DEMO（未联调）。这一段与上面的"为空"断言方向相反，是有意的。
-            // 契约 §2 的八种来源类型是外键与融合参数的前提，生产也要有；口径统一在夹具里（阶段 10.3）。
+            // 设备协议与内部模拟类型是结构性目录，生产也保留；输入服务与业务数据另行隔离。
             SourceTypeCatalogFixture.assertCatalog(jdbc);
             assertThat(jdbc.queryForList(
                     "select source_type from source_type_catalog where schema_status='DEMO' and source_type in ('AOA','DCD','RID') order by source_type",
                     String.class)).as("凌云三路未联调，生产也必须标 DEMO").containsExactlyElementsOf(SourceTypeCatalogFixture.STAGE85_TYPES);
-            assertThat(jdbc.queryForObject("select count(*) from source_type_catalog where spec_ref is null", Integer.class))
-                    .as("每种来源都要能追到协议出处").isZero();
+            assertThat(jdbc.queryForList("select source_type from source_type_catalog where spec_ref is null order by source_type", String.class))
+                    .as("只有内部模拟类型没有设备协议出处").containsExactlyElementsOf(SourceTypeCatalogFixture.SIMULATOR_TYPES);
             assertThat(jdbc.queryForObject("select status from fusion_config where config_version='demo-v1'", String.class))
                     .as("融合参数来自迁移，生产也要有一份 ACTIVE").isEqualTo("ACTIVE");
             assertThat(jdbc.queryForObject("select schema_status from fusion_config where config_version='demo-v1'", String.class))

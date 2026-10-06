@@ -84,7 +84,7 @@ class Stage85PostgresTest {
     private static final OffsetDateTime T0 = OffsetDateTime.of(2026, 9, 7, 12, 0, 0, 0, ZoneOffset.UTC);
 
     /** 契约 §2 的来源类型码表与 070 新增三行：口径统一在 {@link SourceTypeCatalogFixture}（阶段 10.3）。 */
-    private static final List<String> SOURCE_TYPES = SourceTypeCatalogFixture.EXPECTED_TYPES;
+    private static final List<String> SOURCE_TYPES = SourceTypeCatalogFixture.PROTOCOL_TYPES;
     private static final List<String> STAGE85_SOURCE_TYPES = SourceTypeCatalogFixture.STAGE85_TYPES;
     private static final String LINGYUN_SPEC = "设备资料/凌云协议/协议A-设备数据及感知数据接入协议v8.6.pdf";
 
@@ -170,7 +170,7 @@ class Stage85PostgresTest {
     @Test
     @Order(4)
     void sourceTypeCatalogCarriesTheThreeLingyunSourcesAsDemo() {
-        // 八行目录、只有雷达 CONFIRMED、其余 DEMO：在真实 PG 上按同一夹具口径断言。
+        // 协议与模拟类型的完整目录在真实 PG 上按同一夹具口径断言。
         SourceTypeCatalogFixture.assertCatalog(jdbc);
         for (String type : STAGE85_SOURCE_TYPES) {
             Map<String, Object> row = jdbc.queryForMap("select schema_status,spec_ref,display_name from source_type_catalog where source_type=?", type);
@@ -183,8 +183,8 @@ class Stage85PostgresTest {
                 .as("雷达的出处是雷达协议，070 不得覆盖").doesNotContain("凌云");
         assertThat(jdbc.queryForList("select source_type from source_type_catalog where spec_ref=? order by source_type", String.class, LINGYUN_SPEC))
                 .containsExactly("AOA", "DCD", "EO", "FIVE_G_A", "FUSION_BOX", "RID", "TDOA");
-        assertThat(jdbc.queryForObject("select count(*) from source_type_catalog where spec_ref is null", Long.class))
-                .as("每种来源都要能追到协议出处").isZero();
+        assertThat(jdbc.queryForList("select source_type from source_type_catalog where spec_ref is null order by source_type", String.class))
+                .as("只有内部模拟类型没有设备协议出处").containsExactlyElementsOf(SourceTypeCatalogFixture.SIMULATOR_TYPES);
     }
 
     /**

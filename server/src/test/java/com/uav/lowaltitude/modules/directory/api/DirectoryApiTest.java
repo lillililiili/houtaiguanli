@@ -107,20 +107,40 @@ class DirectoryApiTest {
   jdbc.update("update handoff_recipient set display_name='后来误改的目录名' where recipient_id='fixed-superior-recipient'");
   mvc.perform(auth(get("/api/v1/handoffs/"+result.path("handoff_id").asText()))).andExpect(status().isOk()).andExpect(jsonPath("$.data.recipient_name").value("上级")).andExpect(jsonPath("$.data.recipient_snapshot.recipient_name").value("上级"));
  }
- @Test void maintenanceTodoExistsIndependentlyOfNotificationDelivery() throws Exception {
+ @org.junit.jupiter.params.ParameterizedTest
+ @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+ void maintenanceTodoUsesBackendInboxIndependentlyOfLegacyNotificationSetting(boolean withLegacySetting) throws Exception {
   String plan="seed-stage3-plan-legal",device=jdbc.queryForObject("select device_id from ops_device where deleted_at is null order by device_id fetch first 1 row only",String.class);
   var row=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(device,"隔离测试异常设备",true,java.math.BigDecimal.ONE,"OFFLINE","ERROR",1L,1L,true,true,List.of());
   var check=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","隔离测试",System.currentTimeMillis(),java.math.BigDecimal.TEN,true,0,List.of(row),false);
   doReturn(check).when(checks).read(plan);
   String settingId=UUID.randomUUID().toString();
   long now=System.currentTimeMillis();
-  jdbc.update("insert into notification_setting(setting_id,purpose,routing_key,recipient_org_id,channel_type,enabled,created_at,updated_at,version) values(?,?,?,?,'MOCK',true,?,?,0)",settingId,"DEVICE_MAINTENANCE","DEVICE_MAINTENANCE:"+org,org,now,now);
-  JsonNode task=ok(write(post("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks"),Map.of("device_id",device,"notification_setting_id",settingId)));
+  Map<String,Object> body=new HashMap<>();body.put("device_id",device);
+  if(withLegacySetting){
+   jdbc.update("insert into notification_setting(setting_id,purpose,routing_key,recipient_org_id,channel_type,enabled,created_at,updated_at,version) values(?,?,?,?,'MOCK',true,?,?,0)",settingId,"DEVICE_MAINTENANCE","DEVICE_MAINTENANCE:"+org,org,now,now);
+   body.put("notification_setting_id",settingId);
+  }else{
+   jdbc.update("delete from notification_setting where purpose='DEVICE_MAINTENANCE'");
+  }
+  doThrow(new IllegalStateException("外部通知渠道不可用")).when(channel).deliver(any());
+  JsonNode task=ok(write(post("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks"),body));
   assertThat(task.path("status").asText()).isEqualTo("PENDING");
-  assertThat(task.path("recipient_snapshot").path("setting_id").asText()).isEqualTo(settingId);
-  assertThat(task.path("notification_delivery_status").asText()).isEqualTo("PENDING_DELIVERY");
+  assertThat(task.path("recipient_snapshot").path("recipient_id").asText()).isEqualTo("backend-maintenance-inbox");
+  assertThat(task.path("recipient_snapshot").path("channel_type").asText()).isEqualTo("INTERNAL");
+  assertThat(task.path("recipient_snapshot").path("setting_id").isMissingNode()).isTrue();
+  assertThat(task.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
+  assertThat(task.path("notification_receipt_status").asText()).isEqualTo("NOT_EXPECTED");
   assertThat(task.path("handled_at").isMissingNode()).isTrue();
-  mvc.perform(auth(get("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks").param("device_id",device))).andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].recipient_snapshot.setting_id").value(settingId));
+  JsonNode tasks=ok(auth(get("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks").param("device_id",device)));
+  assertThat(tasks.path("items")).anySatisfy(item->{
+   assertThat(item.path("task_id")).isEqualTo(task.path("task_id"));
+   assertThat(item.path("recipient_snapshot")).isEqualTo(task.path("recipient_snapshot"));
+   assertThat(item.path("status").asText()).isEqualTo("PENDING");
+   assertThat(item.path("notification_delivery_status").asText()).isEqualTo("DELIVERED");
+   assertThat(item.path("handled_at").isMissingNode()).isTrue();
+  });
+  verify(channel,never()).deliver(any());
  }
  @Test void changingPhoneClearsPreviousVerificationEvenIfClientReusesIt() throws Exception {
   JsonNode c=contact("PILOT");
