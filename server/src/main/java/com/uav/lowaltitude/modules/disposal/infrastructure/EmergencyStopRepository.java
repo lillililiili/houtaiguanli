@@ -47,10 +47,14 @@ public class EmergencyStopRepository {
         return jdbc.queryForObject("SELECT COUNT(*) FROM disposal_emergency_stop_device WHERE device_id=?"
                 + " AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED'",Long.class,id)>0;
     }
-    public boolean shared(String deviceId, String eventId) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE device_id=?"
+    /**
+     * 同一设备上其他事件或目标尚未了结的授权（已批准或执行中）。
+     * 只用于记录全关对它们的影响；急停本身从不因此被拒绝。
+     */
+    public List<String> othersOnDevice(String deviceId, String eventId) {
+        return jdbc.queryForList("SELECT authorization_id FROM disposal_authorization WHERE device_id=?"
                 + " AND NOT (subject_kind='UAV_EVENT' AND subject_id=?)"
-                + " AND status IN ('APPROVED','EXECUTING')", Long.class, deviceId, eventId) > 0;
+                + " AND status IN ('APPROVED','EXECUTING') ORDER BY authorization_id", String.class, deviceId, eventId);
     }
     public Map<String,Object> latest(String eventId) {
         return first(jdbc.queryForList("SELECT s.*,u.name AS requested_by_name FROM disposal_emergency_stop s"

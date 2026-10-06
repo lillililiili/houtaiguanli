@@ -334,6 +334,38 @@ class EoManualTrackApiTest {
         } finally { jdbc.update("UPDATE app_user SET role_code='ROLE-ADMIN' WHERE account='admin1'"); }
     }
 
+    @Test void noTaskVideoSaysWhetherTheAreaHasAnyOnlineEo() throws Exception {
+        // ZT-18：没有跟踪任务时说清光电本身的状况，而不是只说“没有跟踪任务”。
+        // 光电设备类型有两种写法：接入登记的 EO，和种子/协议缩写 oe，两种都算光电。
+        String target = insertTarget(true);
+        assertThat(videoReason(target)).isEqualTo("当前目标没有光电跟踪任务，暂无可查看画面。");
+        java.util.List<String> online = jdbc.queryForList("""
+                SELECT d.device_id FROM ops_device d JOIN device_business_scope bs ON bs.ops_device_id=d.device_id
+                JOIN ops_device_state st ON st.device_id=d.device_id
+                WHERE UPPER(d.device_type_code) IN ('EO','OE') AND bs.owner_org_id=? AND bs.district_id=? AND st.connectivity='ONLINE'
+                """, String.class, org, district);
+        assertThat(online).contains(binding.opsDeviceId());
+        try {
+            for (String device : online) jdbc.update("UPDATE ops_device_state SET connectivity='OFFLINE' WHERE device_id=?", device);
+            assertThat(videoReason(target)).contains("光电设备都不在线", "离线、异常或状态未知").doesNotContain("共 0 台");
+        } finally {
+            for (String device : online) jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE' WHERE device_id=?", device);
+        }
+        String emptyDistrict = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO app_district(district_id,district_code,name,enabled,created_at,updated_at,version) VALUES (?,?,?,TRUE,0,0,0)",
+                emptyDistrict, "NO-EO-" + emptyDistrict.substring(0, 8), "无光电测试区域" + emptyDistrict.substring(0, 8));
+        String elsewhere = insertTarget(true);
+        jdbc.update("UPDATE target SET district_id=? WHERE target_id=?", emptyDistrict, elsewhere);
+        assertThat(videoReason(elsewhere)).contains("目标所在区域没有光电设备");
+    }
+
+    private String videoReason(String target) throws Exception {
+        JsonNode data = mapper.readTree(mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("NO_TASK"))
+                .andReturn().getResponse().getContentAsString()).path("data");
+        return data.path("reason").asText();
+    }
+
     @Test void videoRequiresMatchingReceiptAndDoesNotManufactureCanvasVideo() throws Exception {
         String target = insertTarget(true);
         String command = UUID.randomUUID().toString(), task = UUID.randomUUID().toString();

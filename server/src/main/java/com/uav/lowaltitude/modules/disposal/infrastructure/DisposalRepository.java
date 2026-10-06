@@ -337,6 +337,20 @@ public class DisposalRepository {
     }
 
     /**
+     * 对目标直接申请反制被挡时，用来说清真实原因（ZT-18）：目标类别，以及该目标最近一条无人机事件的状态与告警编号。
+     * 只在目标范围校验通过后调用。
+     */
+    public TargetCounterFacts targetCounterFacts(String targetId) {
+        List<String> types = jdbc.query("SELECT object_type_code FROM target WHERE target_id=:id",
+                Map.of("id", targetId), (rs, i) -> rs.getString(1));
+        List<String[]> events = jdbc.query("SELECT e.state_code,a.alarm_no FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id"
+                + " WHERE a.target_id=:id ORDER BY e.created_at DESC,e.event_id DESC FETCH FIRST 1 ROWS ONLY",
+                Map.of("id", targetId), (rs, i) -> new String[] { rs.getString(1), rs.getString(2) });
+        return new TargetCounterFacts(types.isEmpty() ? null : types.get(0),
+                events.isEmpty() ? null : events.get(0)[0], events.isEmpty() ? null : events.get(0)[1]);
+    }
+
+    /**
      * 生效规则集的 C03.fresh_seconds。取不到时返回 null——调用方据此拒绝，而不是自己编一个秒数：
      * 编出来的阈值会让"目标是不是还活着"这件事变成没人认账的判断。
      */
@@ -452,6 +466,9 @@ public class DisposalRepository {
 
     public record TargetScope(String targetId, String ownerOrgId, String districtId, String sourceMode,
             OffsetDateTime observedAt) { }
+
+    /** eventState / alarmNo 为空表示该目标还没有无人机事件。 */
+    public record TargetCounterFacts(String objectTypeCode, String eventState, String alarmNo) { }
 
     public record Query(String subjectKind, String subjectId, String status, String excludeStatus, String actionType) { }
 

@@ -86,18 +86,15 @@ class DisposalFaultBrowserFixtureTest extends EmergencyStopApiTest {
         try (var connection = jdbc.getDataSource().getConnection()) {
             assertThat(connection.getMetaData().getURL()).startsWith("jdbc:h2:mem:disposal_fault_browser");
         }
-        directFaultBlockCommitsAuthorizationWithoutExecutionOrApproval();
-        String authorization = jdbc.queryForObject(
-                "select authorization_id from disposal_authorization where subject_id=?", String.class, eventId);
+        // 故障、离线的设备在申请时就被拒绝（BUG-03）；受阻样例改为批准后设备才出状况。
+        String authorization = blockedAfterApproval("FAULT");
         eventId = event();
         differentEventsCannotQueueStartsOnTheSameBusyDevice("QUEUED");
         String busyAuthorization = jdbc.queryForObject(
                 "select authorization_id from disposal_authorization_event where event_kind='DEVICE_BUSY'",
                 String.class);
         eventId = event();
-        unavailableDevicePreservesBlockedAuthorizationWithoutCommand("OFFLINE");
-        String offlineAuthorization = jdbc.queryForObject(
-                "select authorization_id from disposal_authorization where subject_id=?", String.class, eventId);
+        String offlineAuthorization = blockedAfterApproval("OFFLINE");
         Path directory = Path.of("target", "disposal-fault-browser").toAbsolutePath();
         Files.createDirectories(directory);
         Path stop = directory.resolve("stop");

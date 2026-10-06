@@ -62,6 +62,9 @@ class DisposalExecutionTest {
                 "EXEC-" + deviceId, "执行测试设备", "雷达", now, now);
         jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at)"
                 + " values (?,?,?,?,?)", deviceId, ORG, DISTRICT, new Timestamp(now), new Timestamp(now));
+        // 申请时就要求设备在线且未报故障（BUG-03），夹具设备默认是一台正常在线的设备。
+        jdbc.update("insert into ops_device_state (device_id,connectivity,has_alarm,health_code,observed_at,received_at,simulated,version)"
+                + " values (?,'ONLINE',false,'GOOD',?,?,false,0)", deviceId, now, now);
     }
 
     @AfterEach
@@ -73,9 +76,10 @@ class DisposalExecutionTest {
         jdbc.update("delete from disposal_authorization where subject_id like 'exec-event-%'");
         jdbc.update("delete from uav_event_advisory where event_id like 'exec-event-%'");
         jdbc.update("delete from rule_evaluation where alarm_id like 'exec-alarm-%'");
-        jdbc.update("delete from uav_event where event_id like 'exec-event-%'");
+        AutomationRuntimeRows.deleteEvents(jdbc, "exec-event-%");
         jdbc.update("delete from alarm where alarm_id like 'exec-alarm-%'");
         jdbc.update("delete from device_business_scope where ops_device_id=?", deviceId);
+        jdbc.update("delete from ops_device_state where device_id=?", deviceId);
         jdbc.update("delete from ops_device where device_id=?", deviceId);
         jdbc.update("delete from ops_integration_source where source_id=?", sourceId);
     }
@@ -253,7 +257,96 @@ class DisposalExecutionTest {
         assertThat(statusOf(id)).isEqualTo("APPROVED");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"OFFLINE,当前离线", "ABNORMAL,工作异常", "UNKNOWN,还没有上报状态",
+            "DISABLED,已停用", "FAULT,上报故障"})
+    void unusableDeviceIsRefusedWhenApplyingInsteadOfFailingAtExecution(String state, String said) throws Exception {
+        // BUG-03 / ZT-18：离线、异常、状态不明、停用、故障的设备在申请时就拒绝并说明原因。
+        switch (state) {
+            case "OFFLINE", "ABNORMAL" -> jdbc.update("update ops_device_state set connectivity=? where device_id=?", state, deviceId);
+            case "UNKNOWN" -> jdbc.update("delete from ops_device_state where device_id=?", deviceId);
+            case "DISABLED" -> jdbc.update("update ops_device set enabled=false where device_id=?", deviceId);
+            case "FAULT" -> jdbc.update("update ops_device_state set health_code='BAD',has_alarm=true where device_id=?", deviceId);
+            default -> throw new IllegalArgumentException(state);
+        }
+        String subject = event("CONFIRMED");
+        JsonNode error = body(apply(subject, requester).andExpect(status().isConflict())).path("error");
+        assertThat(error.path("code").asText()).isEqualTo("DEVICE_UNAVAILABLE");
+        assertThat(error.path("message").asText()).contains(said);
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?", Long.class, subject)).isZero();
+        // 设备恢复后同一事件可以正常申请。
+        jdbc.update("delete from ops_device_state where device_id=?", deviceId);
+        jdbc.update("update ops_device set enabled=true where device_id=?", deviceId);
+        jdbc.update("insert into ops_device_state (device_id,connectivity,has_alarm,health_code,observed_at,received_at,simulated,version)"
+                + " values (?,'ONLINE',false,'GOOD',?,?,false,0)", deviceId, System.currentTimeMillis(), System.currentTimeMillis());
+        apply(subject, requester).andExpect(status().isCreated());
+    }
+
+    @Test
+    void requesterCanWithdrawAnApprovedButUnexecutedAuthorizationSoANewApplicationCanGoAhead() throws Exception {
+        // BUG-03：批准后还没执行的授权不能只等过期，申请人可以撤回，然后同一事件可以重新申请。
+        String subject = event("CONFIRMED");
+        String id = body(apply(subject, requester).andExpect(status().isCreated())).path("data").path("authorization_id").asText();
+        approve(id).andExpect(status().isOk());
+        assertThat(allowedActions(id, requester)).contains("CANCEL");
+        assertThat(body(apply(subject, requester).andExpect(status().isConflict())).path("error").path("code").asText())
+                .isEqualTo("ACTIVE_AUTHORIZATION_EXISTS");
+        cancel(id, requester, 1).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        assertThat(statusOf(id)).isEqualTo("CANCELLED");
+        assertThat(resultCode(id)).isEqualTo("CANCELLED_BY_REQUESTER");
+        assertThat(kinds(id)).contains("REQUEST", "APPROVE", "CANCEL").doesNotContain("EXECUTE");
+        execute(id, 2).andExpect(status().isConflict());
+        apply(subject, requester).andExpect(status().isCreated());
+    }
+
+    @Test
+    void approverCanWithdrawSomeoneElsesApprovalButAnotherRequesterCannot() throws Exception {
+        String subject = event("CONFIRMED");
+        String id = body(apply(subject, requester).andExpect(status().isCreated())).path("data").path("authorization_id").asText();
+        approve(id).andExpect(status().isOk());
+        String other = user("OTH", List.of("disposal:read", "disposal:request"))[0];
+        assertThat(allowedActions(id, other)).doesNotContain("CANCEL");
+        cancel(id, other, 1).andExpect(status().isForbidden());
+        assertThat(statusOf(id)).isEqualTo("APPROVED");
+        // 只有审批权、没有申请权的值班长也能撤销，结果码如实记成审批人撤销。
+        String[] lead = user("LEAD", List.of("disposal:read", "disposal:approve"));
+        assertThat(allowedActions(id, lead[0])).contains("CANCEL");
+        cancel(id, lead[0], 1).andExpect(status().isOk());
+        assertThat(statusOf(id)).isEqualTo("CANCELLED");
+        assertThat(resultCode(id)).isEqualTo("CANCELLED_BY_APPROVER");
+        assertThat(jdbc.queryForObject("select actor_id from disposal_authorization_event where authorization_id=? and event_kind='CANCEL'",
+                String.class, id)).isEqualTo(lead[1]);
+    }
+
     /* ---- 辅助 ---- */
+
+    private ResultActions apply(String subject, String session) throws Exception {
+        return mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(session))
+                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\"" + subject
+                        + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"" + deviceId + "\",\"reason\":\"设备可用性与撤回测试\"}"));
+    }
+
+    private ResultActions approve(String id) throws Exception {
+        return mvc.perform(post("/api/v1/disposal-authorizations/{id}/approve", id).header("Authorization", bearer(approver))
+                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0}"));
+    }
+
+    private ResultActions cancel(String id, String session, long version) throws Exception {
+        return mvc.perform(post("/api/v1/disposal-authorizations/{id}/cancel", id).header("Authorization", bearer(session))
+                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"expected_version\":" + version + ",\"note\":\"设备另有安排，撤回本次授权\"}"));
+    }
+
+    private String allowedActions(String id, String session) throws Exception {
+        return body(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .get("/api/v1/disposal-authorizations/{id}", id).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())).path("data").path("allowed_actions").toString();
+    }
+
+    private String resultCode(String id) {
+        return jdbc.queryForObject("select result_code from disposal_authorization where authorization_id=?", String.class, id);
+    }
 
     private ResultActions manualResult(String id, String result) throws Exception {
         return mvc.perform(post("/api/v1/disposal-authorizations/{id}/manual-result", id)
