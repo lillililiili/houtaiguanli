@@ -21,7 +21,7 @@ const moduleLabels = {
   organizations: '单位档案', notificationSettings: '通知对象配置', authentication: '认证登录', users: '用户管理', roles: '角色管理', audit: '审计日志', devices: '设备管理',
   mqtt: '设备接入', alarms: '告警事件', monitoring: '设备监测', commissioning: '设备调测', statistics: '运行统计',
   risk: '飞行风险', flights: '飞行计划', airspace: '空域规则', fusion: '融合感知', disposal: '处置授权',
-  punishment: '处罚案件', evidence: '证据管理', airport: '机场基础数据', maps: '地图管理', system: '系统'
+  punishment: '处罚案件', evidence: '证据管理', airport: '机场基础数据', maps: '地图管理', interfaces: '接口配置', system: '系统'
 }
 const actionLabels = {
   device_maintenance_reported: '上报设备维护任务', device_maintenance_handled: '处理设备维护任务',
@@ -46,7 +46,9 @@ const actionLabels = {
   commission_task_created: '创建调测任务（历史编码）', commission_task_cancelled: '取消调测任务（历史编码）',
   eo_track_requested: '下发光电跟踪', eo_track_ended: '停止光电跟踪', alarms_exported: '导出告警列表', risks_exported: '导出风险列表',
   stats_export_requested: '导出运行报表', map_package_uploaded: '上传离线地图包',
-  map_package_activated: '启用离线地图', map_package_rolled_back: '回滚离线地图', map_package_deleted: '删除离线地图包'
+  map_package_activated: '启用离线地图', map_package_rolled_back: '回滚离线地图', map_package_deleted: '删除离线地图包',
+  advisory_voice_recording_uploaded: '上传电话通知录音', advisory_voice_recording_activated: '选用电话通知录音',
+  advisory_voice_recording_deactivated: '停止使用电话通知录音', advisory_voice_recording_deleted: '删除电话通知录音'
 }
 const moduleOptions = Object.entries(moduleLabels).map(([value, label]) => ({ value, label }))
 const actionOptions = Object.entries(actionLabels).map(([value, label]) => ({ value, label }))
