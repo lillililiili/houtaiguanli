@@ -75,6 +75,10 @@ PENDING_VERIFICATION
 
 核实结论只允许属实或误报。`EVIDENCE_REQUIRED` 不再作为可提交结论或当前事件状态；已落库的核实历史仍可保留该结论。终态不由本接口重开。
 
+人工核实依据（2026-10-06，ZT-43）：人工核实为属实（CONFIRMED）前，服务端按系统已有事实检查依据，缺依据时 422 `VERIFICATION_BASIS_MISSING`，`message` 说明缺什么，事件不变、不写历史；核实为误报不受限。依据为：告警关联到与事件同一组织区域的目标（含融合后的当前目标）；有不早于“事件建立时刻 − 有效时长”的正式（ACTIVE）合法性研判；目标数据仍在有效时长内（生效规则集 C03 `fresh_seconds`），或已有关联本事件、或本次告警期间关联该目标的可用光电截图、光电录像、现场照片。缺项码：`NO_TARGET`、`NO_EVALUATION`、`NO_CURRENT_DATA`、`NO_FRESHNESS_RULE`（未配置有效时长）。自动核实规则另行判断，不受此检查影响。
+
+事件详情与写成功响应在当前用户可核实（`allowed_actions` 含 `VERIFY`）时另带 `verification_basis`：`{confirmable,missing[],message?,checked_at}`，读取时现算；页面据此提示“缺少依据，不能核实为属实”，提交时仍以服务端检查为准。不可核实时省略该字段。
+
 ## 飞行风险
 
 ```text

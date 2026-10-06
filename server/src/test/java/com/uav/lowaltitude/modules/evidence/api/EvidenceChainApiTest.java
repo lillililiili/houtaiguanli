@@ -6,7 +6,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -31,7 +30,6 @@ import com.uav.lowaltitude.modules.evidence.domain.EvidenceChainChecksum.Member;
 @ActiveProfiles("test")
 @Transactional
 class EvidenceChainApiTest {
-    private static final byte[] PAYLOAD = "evidence-chain-bytes".getBytes(StandardCharsets.UTF_8);
     private static final Instant T0 = Instant.parse("2026-09-05T12:00:00Z");
 
     @Autowired MockMvc mvc;
@@ -288,7 +286,7 @@ class EvidenceChainApiTest {
 
     private String ingest(String token, String filename, String kind, String subjectKind, String subjectId) throws Exception {
         String body = mvc.perform(multipart("/api/v1/evidence-files")
-                        .file(new MockMultipartFile("file", filename, "application/octet-stream", PAYLOAD))
+                        .file(new MockMultipartFile("file", filename, "application/octet-stream", EvidenceTestFiles.bytes(filename)))
                         .param("kind_code", kind)
                         .param("owner_org_id", org)
                         .param("district_id", district)

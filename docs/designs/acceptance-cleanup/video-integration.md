@@ -20,6 +20,7 @@ FFmpeg 使用已安装的本地程序或在模拟器设置绝对路径；二进�
 - 返回 `stream_id,stream_path,task_id,target_id,device_id,source_mode,expires_at`。推流只能使用返回的 `qa/<UUID>` 路径，不允许传任意网络地址。
 - 登记60秒失效；模拟器每15秒重复登记续租，同一有效任务保持流标识，后端重启或租约失效则新流标识，模拟器关闭旧进程后重推。
 - `DELETE` 同一路径注销，保留业务任务及历史回执；只有设备范围和目标范围校验通过的用户能操作。
+- 跟踪画面截图、录像取证：`POST /api/v1/targets/{targetId}/video/captures`，只认当前任务正在登记的流，契约见[目标视频查询接口契约](../../目标视频查询接口契约.md)。
 - 现有目标视频 GET 保留字段，新增 `video_status,source_mode,stream_id,playback_url`。跟踪确认后 `status=TRACKING`；视频状态独立为 `NOT_CONFIGURED/WAITING/AVAILABLE/INTERRUPTED`。`AVAILABLE` 必须经媒体服务器核验，`playback_type=HLS`。
 - 清单与分片均经 `/api/v1/targets/{targetId}/video/streams/{streamId}/{resource}`，逐次校验 Bearer、目标/设备范围、当前任务和流租约。只允许平台签发的单一 `session=<标准UUID>` 临时播放标识；它不代替平台会话鉴权。禁止其他参数、重复参数、重定向、绝对地址、路径穿越或非媒体文件，返回禁止缓存。
 - MediaMTX真实会话本身可读取媒体，不能透传浏览器。后端将清单中该会话替换为独立随机UUID，在内存按流映射；5分钟未访问失效、最多512项，重启失效。将浏览器URL照搬到媒体端不能读取。初次主清单在后端使用固定 `cookieCheck=1` 选择无Cookie模式，浏览器不能指定该参数，所有HTTP重定向仍被拒绝。

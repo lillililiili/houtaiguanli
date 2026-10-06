@@ -68,6 +68,7 @@ public class EvidenceAssociationService {
             "CASE", "AUTHORIZATION");
     static final Set<String> MODES = Set.of("mock", "replay", "live");
     private static final long MAX_BYTES = 32L * 1024 * 1024;
+    static final String EO_TRACKING_CAPTURE = "EO_TRACKING_CAPTURE";
     private static final Set<String> LIST_PARAMS = Set.of("page", "size", "kind_code", "status", "custody",
             "subject_kind", "subject_id", "q");
     private static final Set<String> CUSTODIES = Set.of("KEPT", "NEARING", "DUE", "HELD");
@@ -254,14 +255,7 @@ public class EvidenceAssociationService {
                 request.originalName(), request.contentType(), "local", objectKey, null, null,
                 request.capturedAt(), null, retainUntil, "PENDING", request.sourceMode(), org, district, now, now, 0));
         repository.storeCapture(evidenceId, capture);
-        StoredObject stored;
-        try (InputStream in = file.getInputStream()) {
-            stored = storage.putNew(objectKey, in);
-        } catch (IOException ex) {
-            throw new UncheckedIOException(ex);
-        }
-        if (stored.sizeBytes() == 0) throw invalid("空文件不能入库");
-        if (stored.sizeBytes() > MAX_BYTES) throw new ApiException(HttpStatus.BAD_REQUEST, "FILE_TOO_LARGE", "文件超过 32 MiB");
+        StoredObject stored = store(objectKey, file);
         repository.updateAvailable(evidenceId, stored.sizeBytes(), stored.sha256(), now, now, 1);
         if (subject != null) {
             repository.insertLink(UUID.randomUUID().toString(), evidenceId, request.subjectKind(), request.subjectId(), now);
@@ -292,6 +286,88 @@ public class EvidenceAssociationService {
             if (!Double.isFinite(lon) || !Double.isFinite(lat) || lon < -180 || lon > 180 || lat < -90 || lat > 90) throw invalid("采集坐标超出有效经纬度范围");
         }
         return new CaptureProvenance(device, name, lon, lat, device == null && lon == null ? null : "UPLOADER_DECLARED");
+    }
+
+    /** 光电跟踪画面取证的入参：设备、任务和视频流由设备模块按当前跟踪任务核定，不取客户端声明。 */
+    public record EoCapture(String kindCode, String targetId, String eventId, String deviceId, String taskId,
+            String streamId, String sourceMode, Instant capturedAt) { }
+
+    /**
+     * 光电跟踪中的截图、录像入库：与普通入库同一套格式校验、存储、幂等和审计。
+     * 归属取关联事件（未带事件时取目标）；同时关联事件、目标和来源光电设备，
+     * 来源设备按跟踪任务登记为 EO_TRACKING_CAPTURE，区别于入库人自行填报的 UPLOADER_DECLARED。
+     */
+    @Transactional
+    public EvidenceDetailDto ingestEoCapture(EoCapture capture, MultipartFile file, String idempotencyKey) {
+        AccessDecision decision = access.require(PermissionCode.EVIDENCE_INGEST);
+        if (!Set.of("EO_STILL", "EO_VIDEO").contains(capture.kindCode())) throw invalid("kind_code 参数无效");
+        if (!MODES.contains(capture.sourceMode())) throw invalid("source_mode 参数无效");
+        if (file == null || file.isEmpty()) throw invalid("必须上传文件");
+        if (file.getSize() > MAX_BYTES) throw new ApiException(HttpStatus.BAD_REQUEST, "FILE_TOO_LARGE", "文件超过 32 MiB");
+        String name = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().trim();
+        if (name.isEmpty() || name.length() > 256 || name.contains("..") || name.contains("/") || name.contains("\\")) {
+            throw invalid("文件名无效");
+        }
+        String declared = file.getContentType();
+        if (declared != null && declared.length() > 128) throw invalid("content_type 无效");
+        String contentType = EvidenceFileTypes.verify(capture.kindCode(), name, declared, IngestRequest.content(file));
+        SubjectRef target = requireVisibleSubject("TARGET", id(capture.targetId()), decision);
+        SubjectRef event = null;
+        if (capture.eventId() != null) {
+            event = requireVisibleSubject("EVENT", id(capture.eventId()), decision);
+            if (!repository.eventConcernsTarget(event.id(), target.id())) throw invalid("事件与当前跟踪目标不对应，请从该目标的告警重新打开");
+        }
+        SubjectRef owner = event != null ? event : target;
+        String org = owner.ownerOrgId(), district = owner.districtId();
+        if (!repository.catalogEnabled(org, district)) throw invalid("组织或区域无效");
+        menuAccess.requireTuple(org, district);
+        CaptureProvenance provenance = new CaptureProvenance(capture.deviceId(),
+                repository.sourceDeviceName(capture.deviceId()), null, null, EO_TRACKING_CAPTURE);
+        idempotency.claim(idempotencyKey, "eo-capture|" + capture.kindCode() + "|" + target.id() + "|"
+                + (event == null ? "" : event.id()) + "|" + capture.taskId() + "|" + capture.streamId() + "|"
+                + name + "|" + file.getSize());
+        Instant now = clock.now();
+        Instant captured = capture.capturedAt() == null ? now : capture.capturedAt();
+        String evidenceId = UUID.randomUUID().toString();
+        String storedName = name.replaceAll("[^A-Za-z0-9._-]", "_");
+        String objectKey = now.toString().substring(0, 10) + "/" + evidenceId + "/" + storedName;
+        repository.insertFile(new FileInsert(evidenceId, evidenceNo(now, evidenceId), capture.kindCode(), name,
+                contentType, "local", objectKey, null, null, captured, null,
+                EvidenceRetention.until(capture.kindCode(), captured, now), "PENDING", capture.sourceMode(),
+                org, district, now, now, 0));
+        repository.storeCapture(evidenceId, provenance);
+        StoredObject stored = store(objectKey, file);
+        repository.updateAvailable(evidenceId, stored.sizeBytes(), stored.sha256(), now, now, 1);
+        if (event != null) repository.insertLink(UUID.randomUUID().toString(), evidenceId, "EVENT", event.id(), now);
+        // 目标、设备与证据不在同一组织区域时不建关联，沿用人工关联的同范围约束；来源设备仍记在采集出处里。
+        if (sameScope(target, org, district)) {
+            repository.insertLink(UUID.randomUUID().toString(), evidenceId, "TARGET", target.id(), now);
+        }
+        SubjectRef device = repository.findSubject("DEVICE", capture.deviceId());
+        if (device != null && sameScope(device, org, district)) {
+            repository.insertLink(UUID.randomUUID().toString(), evidenceId, "DEVICE", device.id(), now);
+        }
+        AuthUser actor = AuthContext.require();
+        audit.record(actor.userId(), actor.account(), actor.roleCode(), "evidence", "evidence_ingested",
+                "evidence_file", evidenceId, "kind=" + capture.kindCode() + "; source=EO_TRACKING; task=" + capture.taskId(),
+                "SUCCESS", "", "");
+        return detail(repository.find(evidenceId), decision);
+    }
+
+    private static boolean sameScope(SubjectRef subject, String org, String district) {
+        return org.equals(subject.ownerOrgId()) && district.equals(subject.districtId());
+    }
+
+    private StoredObject store(String objectKey, MultipartFile file) {
+        StoredObject stored;
+        try (InputStream in = file.getInputStream()) {
+            stored = storage.putNew(objectKey, in);
+        } catch (IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
+        if (stored.sizeBytes() == 0) throw invalid("空文件不能入库");
+        if (stored.sizeBytes() > MAX_BYTES) throw new ApiException(HttpStatus.BAD_REQUEST, "FILE_TOO_LARGE", "文件超过 32 MiB");
+        return stored;
     }
 
     @Transactional
@@ -444,7 +520,7 @@ public class EvidenceAssociationService {
                 "evidence_file", file.evidenceId(), file.originalName(), "SUCCESS", "", "");
         InputStream stream = storage.open(file.objectKey())
                 .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "EVIDENCE_UNAVAILABLE", "文件缺失或校验失败，不能下载"));
-        return new Download(file.originalName(), file.contentType(), file.sizeBytes(), stream);
+        return new Download(file.originalName(), EvidenceFileTypes.downloadType(file.contentType()), file.sizeBytes(), stream);
     }
 
     private void deny(FileRow file, AccessDecision decision, String reason) {
@@ -696,8 +772,14 @@ public class EvidenceAssociationService {
             }
             String stored = name.replaceAll("[^A-Za-z0-9._-]", "_");
             if (stored.isBlank()) stored = "file.bin";
-            return new IngestRequest(kind, name, stored, contentType, mode, org, district, subjectKind, subjectId,
+            // 其余参数都合法后再读内容：入库类型按文件内容识别，不沿用客户端声明。
+            String detected = EvidenceFileTypes.verify(kind, name, contentType, content(file));
+            return new IngestRequest(kind, name, stored, detected, mode, org, district, subjectKind, subjectId,
                     captured, file.getSize());
+        }
+        static byte[] content(MultipartFile file) {
+            try { return file.getBytes(); }
+            catch (IOException ex) { throw new UncheckedIOException(ex); }
         }
         private static String one(MultiValueMap<String, String> form, String name, boolean required) {
             if (!form.containsKey(name)) {

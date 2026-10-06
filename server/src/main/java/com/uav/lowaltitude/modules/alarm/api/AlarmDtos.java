@@ -75,7 +75,9 @@ public final class AlarmDtos {
         }
     }
     public record UavEventDto(String eventId, String alarmId, String targetId, String state, long version,
-            long createdAt, long updatedAt, List<String> allowedActions) { }
+            long createdAt, long updatedAt, List<String> allowedActions, VerificationBasisDto verificationBasis) { }
+    /** 人工核实为属实的依据，只在待核实且当前用户可核实时返回；confirmable=false 时 message 写明缺什么，missing 为稳定代码。 */
+    public record VerificationBasisDto(boolean confirmable, List<String> missing, String message, long checkedAt) { }
     public record VerificationDto(String historyId, String previousState, String resultingState, String conclusion,
             String note, long version, String actorId, long createdAt, String actorName) { }
     public record VerifyRequest(String conclusion, String note, Long expectedVersion) { }

@@ -37,8 +37,6 @@ import com.uav.lowaltitude.platform.config.AppProperties;
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class EvidencePreviewApiTest {
-    private static final byte[] PAYLOAD = "evidence-bytes-v1".getBytes(StandardCharsets.UTF_8);
-
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
@@ -102,7 +100,11 @@ class EvidencePreviewApiTest {
     void forgedImageAndChangedBytesAreDeniedAndDenialSurvives() throws Exception {
         String token = reader("ASSIGNED", org, district);
         grantAction(token, "evidence:read", "evidence:ingest", "evidence:preview");
-        String forged = file(token, "fake.png", "image/png", "<html><script>alert(1)</script></html>".getBytes(StandardCharsets.UTF_8));
+        byte[] html = "<html><script>alert(1)</script></html>".getBytes(StandardCharsets.UTF_8);
+        mvc.perform(upload(token, "fake.png", "image/png", html)).andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error.code").value("EVIDENCE_TYPE_MISMATCH"));
+        // 入库已拒收伪装文件；格式校验上线前已入库的伪装文件，预览仍按内容拒绝。
+        String forged = legacy(token, "fake.png", "image/png", html);
         mvc.perform(get("/api/v1/evidence-files/" + forged + "/preview").header("Authorization", bearer(token))).andExpect(status().isUnsupportedMediaType()).andExpect(jsonPath("$.error.code").value("EVIDENCE_PREVIEW_UNSUPPORTED"));
         assertThat(jdbc.queryForObject("select count(*) from evidence_access_log where evidence_id=? and action='PREVIEW' and result='DENIED'", Long.class, forged)).isEqualTo(1);
         String changed = file(token, "note.txt", "text/plain", "original".getBytes(StandardCharsets.UTF_8));
@@ -132,13 +134,13 @@ class EvidencePreviewApiTest {
     void captureCoordinatesRoundTripAndIncompletePositionIsRejected() throws Exception {
         String token = reader("ASSIGNED", org, district);
         grantAction(token, "evidence:read", "evidence:ingest");
-        var request = multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "position.txt", "text/plain", PAYLOAD))
+        var request = multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "position.jpg", "image/jpeg", EvidenceTestFiles.bytes("position.jpg")))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district)
                 .param("capture_longitude", "118.3").param("capture_latitude", "37.4")
                 .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString());
         mvc.perform(request).andExpect(status().isCreated()).andExpect(jsonPath("$.data.capture_longitude").value(118.3))
                 .andExpect(jsonPath("$.data.capture_latitude").value(37.4)).andExpect(jsonPath("$.data.capture_provenance").value("UPLOADER_DECLARED"));
-        mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "bad.txt", "text/plain", PAYLOAD))
+        mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "bad.jpg", "image/jpeg", EvidenceTestFiles.bytes("bad.jpg")))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district).param("capture_latitude", "37.4")
                 .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isBadRequest());
     }
@@ -150,7 +152,7 @@ class EvidencePreviewApiTest {
         String device = UUID.randomUUID().toString();
         jdbc.update("insert into ops_device (device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at) values (?,?,?,'雷达','融合感知箱',true,'mock',true,0,0,0)", device, "PV-" + suffix, "采集设备原名");
         jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at) values (?,?,?,current_timestamp,current_timestamp)", device, org, district);
-        var result = mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "device.txt", "text/plain", PAYLOAD))
+        var result = mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "device.jpg", "image/jpeg", EvidenceTestFiles.bytes("device.jpg")))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district).param("source_device_id", device)
                 .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString()))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.source_device_name").value("采集设备原名")).andReturn().getResponse();
@@ -159,7 +161,7 @@ class EvidencePreviewApiTest {
         mvc.perform(get("/api/v1/evidence-files/" + id).header("Authorization", bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.source_device_name").value("采集设备原名"));
         jdbc.update("update device_business_scope set owner_org_id=?,district_id=? where ops_device_id=?", otherOrg, otherDistrict, device);
-        mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "bad-device.txt", "text/plain", PAYLOAD))
+        mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "bad-device.jpg", "image/jpeg", EvidenceTestFiles.bytes("bad-device.jpg")))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district).param("source_device_id", device)
                 .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isNotFound());
     }
@@ -189,7 +191,10 @@ class EvidencePreviewApiTest {
             assertThat(result.getContentAsByteArray()).isEqualTo(bytes);
             assertThat(result.getContentType()).isEqualTo(type);
         }
-        String fake = file(token, "fake.webm", "video/webm", "not a video".getBytes(StandardCharsets.UTF_8));
+        byte[] notVideo = "not a video".getBytes(StandardCharsets.UTF_8);
+        mvc.perform(upload(token, "fake.webm", "video/webm", notVideo)).andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.error.code").value("EVIDENCE_TYPE_MISMATCH"));
+        String fake = legacy(token, "fake.webm", "video/webm", notVideo);
         mvc.perform(get("/api/v1/evidence-files/" + fake + "/preview").header("Authorization", bearer(token))).andExpect(status().isUnsupportedMediaType());
     }
 
@@ -222,10 +227,32 @@ class EvidencePreviewApiTest {
     }
 
     private String file(String token, String name, String type, byte[] bytes) throws Exception {
-        return json.readTree(mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", name, type, bytes))
-                .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district)
-                .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString()))
+        return json.readTree(mvc.perform(upload(token, name, type, bytes))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("data").get("evidence_id").asText();
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder upload(String token, String name, String type, byte[] bytes) {
+        return multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", name, type, bytes))
+                .param("kind_code", kind(name)).param("owner_org_id", org).param("district_id", district)
+                .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString());
+    }
+
+    /** 每类证据只收对应格式：按扩展名选一类能收它的证据。 */
+    private static String kind(String name) {
+        if (name.endsWith(".json")) return "TRACK_SNAPSHOT";
+        if (name.endsWith(".txt") || name.endsWith(".pdf")) return "NOTICE_RECEIPT";
+        if (name.endsWith(".webm") || name.endsWith(".mp4")) return "EO_VIDEO";
+        return "EO_STILL";
+    }
+
+    /** 模拟格式校验上线前已入库的文件：字节原样落盘，并登记当时客户端声明的类型。 */
+    private String legacy(String token, String name, String declaredType, byte[] bytes) throws Exception {
+        String id = file(token, "legacy.png", "image/png", EvidenceTestFiles.bytes("legacy.png"));
+        String object = jdbc.queryForObject("select object_key from evidence_file where evidence_id=?", String.class, id);
+        Files.write(Path.of(properties.getEvidenceDir()).resolve(object), bytes);
+        jdbc.update("update evidence_file set kind_code=?,original_name=?,content_type=?,size_bytes=?,sha256=? where evidence_id=?",
+                kind(name), name, declaredType, (long) bytes.length, sha(bytes), id);
+        return id;
     }
 
     private void catalog(String orgId, String districtId) {

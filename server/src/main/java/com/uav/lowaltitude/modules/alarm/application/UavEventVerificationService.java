@@ -18,10 +18,13 @@ import com.fasterxml.jackson.core.JsonToken;
 
 import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.PageDto;
 import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.UavEventDto;
+import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerificationBasisDto;
 import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerificationDto;
 import com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerifyRequest;
 import com.uav.lowaltitude.modules.alarm.domain.UavEventState;
+import com.uav.lowaltitude.modules.alarm.domain.UavVerificationBasis;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository;
+import com.uav.lowaltitude.modules.alarm.infrastructure.UavVerificationBasisRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.VerificationRow;
@@ -44,10 +47,13 @@ public class UavEventVerificationService {
     private final AppClock clock;
     private final AuditService audit;
     private final ObjectMapper objectMapper;
+    private final UavVerificationBasisRepository basis;
 
     public UavEventVerificationService(AccessControlService access, UavEventRepository repository, AlarmReadRepository alarms,
-            IdempotencyGuard idempotency, AppClock clock, AuditService audit, ObjectMapper objectMapper) {
+            IdempotencyGuard idempotency, AppClock clock, AuditService audit, ObjectMapper objectMapper,
+            UavVerificationBasisRepository basis) {
         this.access = access; this.repository = repository; this.alarms = alarms; this.idempotency = idempotency; this.clock = clock; this.audit = audit; this.objectMapper = objectMapper;
+        this.basis = basis;
     }
 
     @Transactional(readOnly = true)
@@ -86,6 +92,11 @@ public class UavEventVerificationService {
         idempotency.claim(idempotencyKey, stableOperation(id, conclusion, note, expectedVersion));
         if (event.version() != expectedVersion) throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
         String next = UavEventState.next(event.state(), conclusion);
+        // 人工核实为属实前检查依据；核实为误报不受限。自动核实另走 AlarmRuleVerification，不经过这里。
+        if ("CONFIRMED".equals(conclusion)) {
+            UavVerificationBasis.Result result = UavVerificationBasis.evaluate(basis.facts(id, clock.nowMillis()));
+            if (!result.confirmable()) throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "VERIFICATION_BASIS_MISSING", result.message());
+        }
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         // 条件更新为 0 行代表竞争写入，绝不追加一条与实际状态不一致的核实历史。
         if (repository.update(id, expectedVersion, next, at) != 1) throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
@@ -98,8 +109,16 @@ public class UavEventVerificationService {
     }
 
     private UavEventDto dto(EventRow event) {
+        boolean verify = UavEventState.verifiable(event.state()) && verifyAllowed();
         return new UavEventDto(event.eventId(), event.alarmId(), targetReferenceVisible(event.targetId(), event.ownerOrgId(), event.districtId()) ? event.targetId() : null, event.state(), event.version(),
-                millis(event.createdAt()), millis(event.updatedAt()), UavEventState.verifiable(event.state()) && verifyAllowed() ? List.of("VERIFY") : List.of());
+                millis(event.createdAt()), millis(event.updatedAt()), verify ? List.of("VERIFY") : List.of(),
+                verify ? verificationBasis(event.eventId()) : null);
+    }
+    /** 只给能核实的人：依据随目标数据时效变化，每次读取现算；页面据此提示“缺少依据”，提交时服务端再算一次。 */
+    private VerificationBasisDto verificationBasis(String eventId) {
+        long now = clock.nowMillis();
+        UavVerificationBasis.Result result = UavVerificationBasis.evaluate(basis.facts(eventId, now));
+        return new VerificationBasisDto(result.confirmable(), result.missing(), result.message(), now);
     }
     private boolean targetReferenceVisible(String targetId, String orgId, String districtId) { try { return alarms.targetVisible(targetId, orgId, districtId, access.require(PermissionCode.TARGET_READ)); } catch (ApiException ignored) { return false; } }
     // allowed_actions 不能只反映状态：读者无核实动作权限时不应得到可提交的误导入口。
