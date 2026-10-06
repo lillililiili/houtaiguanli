@@ -44,7 +44,7 @@ class FormalBusinessGuardTest {
         when(access.requireCommissionOperate()).thenReturn(mock(com.uav.lowaltitude.platform.security.AuthUser.class));
         var commissions=mock(com.uav.lowaltitude.modules.device.infrastructure.CommissionRepository.class);
         when(commissions.deviceInScope(eq("device"),any())).thenReturn(true);
-        var service=new CommissionService(commissions,devices,access,clock,new AppProperties(),null,null,null,formal);
+        var service=new CommissionService(commissions,devices,access,clock,new AppProperties(),null,null,null,formal,null);
         assertThatThrownBy(()->service.create("device",null)).isInstanceOf(ApiException.class);
     }
 }

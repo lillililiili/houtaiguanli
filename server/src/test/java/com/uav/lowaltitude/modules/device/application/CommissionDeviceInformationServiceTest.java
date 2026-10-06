@@ -46,12 +46,14 @@ class CommissionDeviceInformationServiceTest {
         when(data.mqtt("device", false)).thenReturn(Map.of("device_type_abbr", "radar", "device_id", "sensing-id", "last_pt_time", 99_000L, "last_msg_cnt", 0L));
         when(data.latestSense("lingyun:radar:sensing-id", 99_000L, 0L)).thenReturn(Map.of("payload_json", "{\"deviceId\":\"sensor\",\"ptTime\":99000,\"msgCnt\":0,\"objects\":[]}", "received_at", 100_000L));
         var info = service.get("device");
-        assertThat(info.taskSupported()).isFalse();
+        // 现场 MQTT 设备也可调测：平台核对会话、订阅和已接收上报，不向设备下发指令
+        assertThat(info.taskSupported()).isTrue();
+        assertThat(info.notes()).anyMatch(note -> note.contains("工参与感知报文") && note.contains("不向设备下发指令"));
         assertThat(info.sections().stream().filter(s -> s.code().equals("sensing")).findFirst().orElseThrow().fields()).allMatch(f -> f.status().equals("RECEIVED"));
         assertThat(info.sections().stream().filter(s -> s.code().equals("work_parameters")).findFirst().orElseThrow().fields()).allMatch(f -> f.status().equals("NOT_REPORTED"));
         verify(devices, never()).findProfile(anyString());
     }
-    @Test void replaySimulatorMqttDeviceSupportsLogicalCommissioning() {
+    @Test void replaySimulatorMqttDeviceIsCommissionedThroughThePlatformLinkAndMarkedSimulated() {
         when(access.requireCommissionRead()).thenReturn(new AuthUser("user", "test", "测试", "role", 1, false, "ASSIGNED"));
         when(devices.find("device")).thenReturn(Map.of("device_id", "device", "protocol_code", "LINGYUN_MQTT_V8_6",
                 "source_mode", "replay", "simulated", true));
@@ -59,7 +61,8 @@ class CommissionDeviceInformationServiceTest {
         when(data.mqtt("device", false)).thenReturn(Map.of("device_type_abbr", "weather", "device_id", "weather-id"));
         var info = service.get("device");
         assertThat(info.taskSupported()).isTrue();
-        assertThat(info.notes()).anyMatch(note -> note.contains("模拟器对象支持逻辑调测"));
+        assertThat(info.notes()).anyMatch(note -> note.contains("模拟器上报") && note.contains("结果标为模拟"));
+        assertThat(info.notes()).noneMatch(note -> note.contains("感知报文"));
     }
     @Test void preservesEntireEoHeartbeatAndSeparatesCameraReceptionTime() {
         device("EO_EDGE_MQTT_20250826");

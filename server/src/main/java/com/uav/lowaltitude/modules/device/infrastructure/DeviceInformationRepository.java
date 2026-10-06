@@ -16,6 +16,19 @@ public class DeviceInformationRepository {
                 + "l.connection_state,l.last_error,l.lease_until FROM " + table + " m JOIN mqtt_broker b ON b.broker_id=m.broker_id "
                 + "LEFT JOIN mqtt_session_lease l ON l.broker_id=m.broker_id WHERE m.ops_device_id=?", deviceId));
     }
+    /** MQTT 调测用：时间窗内被平台拒收或与已收报文冲突的条数，按原因汇总；重复投递和过期工参不算问题。 */
+    public List<Map<String, Object>> receiveProblems(String deviceId, long since) {
+        return jdbc.queryForList("""
+                SELECT outcome, reason, COUNT(*) AS message_count FROM mqtt_receive_diagnostic
+                WHERE ops_device_id=? AND received_at>=? AND outcome IN ('REJECTED','CONFLICT')
+                GROUP BY outcome, reason ORDER BY message_count DESC, reason
+                """, deviceId, since);
+    }
+    /** 最近一次有效工参中的 workState（协议 A：0 未工作 / 1 工作中 / 2 设备异常）。 */
+    public String reportedWorkState(String deviceId) {
+        return jdbc.queryForList("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, deviceId)
+                .stream().filter(java.util.Objects::nonNull).findFirst().orElse(null);
+    }
     public Map<String, Object> latestSense(String source, Long ptTime, Long msgCnt) {
         if (ptTime == null || msgCnt == null) return Map.of();
         return first(jdbc.queryForList("SELECT CAST(payload AS VARCHAR) AS payload_json,received_at FROM inbox_message "

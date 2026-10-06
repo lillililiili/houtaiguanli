@@ -58,9 +58,10 @@ public class CommissionDeviceInformationService {
         boolean mqttProtocol = LINGYUN_MQTT_V8_6.equals(protocol) || EO_EDGE_MQTT_20250826.equals(protocol);
         boolean simulatorDevice = Boolean.TRUE.equals(device.get("simulated"))
                 && List.of("replay", "mock").contains(text(device, "source_mode"));
-        boolean taskSupported = !mqttProtocol || simulatorDevice;
+        // MQTT 设备同样可调测：平台核对自身的 MQTT 会话、订阅与已接收上报（MqttCommissionCheck）
+        boolean taskSupported = true;
         if (simulatorDevice && mqttProtocol)
-            notes.add("这是设备模拟器对象，可进行逻辑调测；结果不代表现场协议验收。");
+            notes.add("这是设备模拟器对象，调测核对平台实际收到的模拟器上报；结果标为模拟，不代表现场协议验收。");
         if (!mqttProtocol) {
             add(sections, "connection", "连接配置", "平台接入配置", connectionVisible ? "CATALOG" : "REDACTED",
                     connectionVisible ? node(devices.findProfile(id)) : null, null, null, now, "connection");
@@ -123,9 +124,10 @@ public class CommissionDeviceInformationService {
                 }
                 if ("aoa".equals(type)) notes.add("AOA 使用方位角；协议明确其目标经纬度和高度无效，因此不展示为有效位置。");
             }
-            notes.add(simulatorDevice
-                    ? "MQTT 工参为设备主动上报；30 秒未收到视为过期。模拟器对象支持逻辑调测。"
-                    : "MQTT 工参为设备主动上报；30 秒未收到视为过期。当前支持查看接入信息，未提供 TCP 式调测任务。");
+            notes.add("MQTT 工参为设备主动上报；30 秒未收到视为过期。调测核对平台 MQTT 会话、主题订阅和 30 秒内的工参"
+                    + (sensing ? "与感知报文" : "") + "，不向设备下发指令。");
+            if (List.of("dec", "ifr", "bsc", "countermeasure").contains(type))
+                notes.add("反制类设备调测不下发控制指令，不包含射频发射验证。");
         } else if (EO_EDGE_MQTT_20250826.equals(protocol)) {
             Map<String, Object> binding = new LinkedHashMap<>(information.mqtt(id, true));
             binding.put("reporting_topic", "iot-reporting/cmlc/edge/" + text(binding, "edge_id"));
@@ -139,6 +141,7 @@ public class CommissionDeviceInformationService {
                     null, millis(binding, "camera_received_at"), now, "eo_camera");
             notes.add("光电 workState=2 表示自主探测，不是设备异常。心跳应至少每秒一次；镜头状态超过 30 秒显示过期。");
             notes.add("协议 C 对 CameraStatus 支持情况表述不一致，现场支持仍需确认；本页读取已接收心跳和状态回执，不自动发送跟踪或镜头移动指令。");
+            notes.add("调测核对平台 MQTT 会话、主题订阅和心跳时效。");
         } else if (RADAR_TCP_V3_0_0.equals(protocol)) {
             Map<String, Object> runtime = safe(protocolData.runtime(id));
             add(sections, "radar_runtime", "雷达协议链路", "雷达 TCP V3.0.0", "CATALOG", node(runtime), null, null, now, "radar_runtime");
