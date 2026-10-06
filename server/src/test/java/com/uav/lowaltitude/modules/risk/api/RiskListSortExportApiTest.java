@@ -251,6 +251,27 @@ class RiskListSortExportApiTest {
         assertThat(rows.stream().map(r -> r[1]).toList()).contains("空域风险");
     }
 
+    /**
+     * ZT-48：状态列必须覆盖风险的每一个状态码。ACKNOWLEDGED 原先不在字典里，导出就把英文原样给了出去；
+     * 通知与回执的说法也要与页面一致（提交 ≠ 对方已收到）。
+     */
+    @Test
+    void exportTranslatesEveryRiskStateIncludingAcknowledged() throws Exception {
+        cleanup();
+        reader = user();
+        var expected = new java.util.LinkedHashMap<String, String>();
+        expected.put("PENDING_VERIFICATION", "待核验");
+        expected.put("PENDING_NOTIFICATION", "待通知");
+        expected.put("NOTIFIED", "通知已提交");
+        expected.put("ACKNOWLEDGED", "已回执");
+        expected.put("EXCLUDED", "已排除");
+        expected.keySet().forEach(state -> risk("LOW", "AIRSPACE", Instant.parse("2026-09-08T01:00:00Z"), "演示：排序用例", state));
+
+        List<String> states = exportRows().stream().map(r -> r[3]).toList();
+        assertThat(states).containsExactlyInAnyOrderElementsOf(expected.values());
+        assertThat(states).as("状态列不得出现英文原码").doesNotContainAnyElementsOf(expected.keySet());
+    }
+
     /** 导出正文里属于本用例的那几行，按列拆开。 */
     private List<String[]> exportRows() throws Exception {
         byte[] body = mvc.perform(get("/api/v1/risks/export.csv").header("Authorization", bearer(reader)))
