@@ -1,18 +1,31 @@
 package com.uav.lowaltitude.modules.handoff.application;
 
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.DisposalMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EventMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EventVerificationDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceChainItemDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceMaterialDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.JudgmentMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.MaterialV2Dto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.PartyMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.PilotLocationMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.ReferenceMaterialDto;
+import com.uav.lowaltitude.modules.handoff.domain.HandoffParty;
 import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository;
+import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
+import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
+import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
  * 处罚交接材料包 v2 的组装（决策 14-2 / 14-28）。
@@ -28,13 +41,31 @@ public class HandoffMaterialAssembler {
     /** 材料形状版本（决策 14-1）；v1 的风险形状原样保留。 */
     public static final int SCHEMA_V2 = 2;
 
+    /** 证据链四类，与事件页“证据链”及证据台账一致。 */
+    private static final List<String> EVIDENCE_CATEGORIES = List.of("VIDEO", "TRACK", "IMAGE", "COMMAND");
+    /** 每类最多冻结的条数，与事件页证据链每类读取的上限一致。 */
+    private static final int EVIDENCE_PER_CATEGORY = 100;
+
     private final HandoffRepository repository;
     private final com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
     private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets;
+    private final EvidenceLedgerRepository ledger;
+    private final ObjectMapper json;
+    private final AppClock clock;
 
     public HandoffMaterialAssembler(HandoffRepository repository, com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory,
-            com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets) {
+            com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets, EvidenceLedgerRepository ledger,
+            ObjectMapper json, AppClock clock) {
         this.repository = repository; this.advisory = advisory; this.targets = targets;
+        this.ledger = ledger; this.json = json; this.clock = clock;
+    }
+
+    /**
+     * 证据链按谁的可见范围冻结。后台自动移送和种子用 {@link #SYSTEM}（全部范围）；
+     * 人工提交时用提交人的证据读取范围，轨迹和指令再看提交人能否查看目标和设备指令，与提交人在事件页看到的证据链一致。
+     */
+    public record EvidenceScope(AccessDecision decision, boolean tracks, boolean commands) {
+        public static final EvidenceScope SYSTEM = new EvidenceScope(new AccessDecision("system:handoff-material", ScopeMode.ALL), true, true);
     }
 
     /**
@@ -43,6 +74,12 @@ public class HandoffMaterialAssembler {
      *        "没有权限看"和"本案没有证据"是两件完全不同的事，混同会让读卷宗的人得出相反结论（决策 14-4）。
      */
     public MaterialV2Dto assemble(String eventId, boolean includeEvidence) {
+        return assemble(eventId, includeEvidence ? EvidenceScope.SYSTEM : null);
+    }
+
+    /** @param evidenceScope 为 null 时证据段和证据链整段省略，并置 evidence_omitted=true。 */
+    public MaterialV2Dto assemble(String eventId, EvidenceScope evidenceScope) {
+        boolean includeEvidence = evidenceScope != null;
         HandoffRepository.EventMaterialRow event = repository.eventMaterial(eventId);
         EventMaterialDto eventDto = event == null ? null : new EventMaterialDto(event.eventId(), event.alarmId(),
                 event.sourceAlarmId(), event.alarmType(), event.severity(), millis(event.occurredAt()),
@@ -66,9 +103,80 @@ public class HandoffMaterialAssembler {
                 : null;
         ReferenceMaterialDto references = event == null || event.targetId() == null ? null
                 : new ReferenceMaterialDto(null, null, null, event.targetId(), null);
+        PilotLocationMaterialDto pilotLocation = pilotLocation(event);
         // 兼容旧材料对空历史段的省略；劝离记录按提交时事实独立冻结。
         return new MaterialV2Dto(SCHEMA_V2, eventDto, emptyToNull(verifications), emptyToNull(disposals), evidence,
-                includeEvidence ? null : Boolean.TRUE, references, advisory.records(eventId), pilotLocation(event));
+                includeEvidence ? null : Boolean.TRUE, references, advisory.records(eventId), pilotLocation,
+                judgments(eventId), includeEvidence ? evidenceChain(eventId, evidenceScope) : null,
+                event == null ? null : party(eventId, pilotLocation != null));
+    }
+
+    /** 当事人认定：只看关联本事件的报备计划和目标上报的序列号，不取电话等联系方式。 */
+    public PartyMaterialDto party(String eventId, Boolean pilotLocation) {
+        HandoffRepository.PartyRow row = repository.eventParty(eventId);
+        HandoffParty.Assessment assessment = HandoffParty.assess(row.planId(), row.pilotName(), row.operatorName(),
+                row.planSerial(), row.targetSerial(), pilotLocation);
+        return new PartyMaterialDto(assessment.status(), assessment.label(), assessment.reasons().isEmpty() ? null : assessment.reasons(),
+                row.planId(), row.planNo(), assessment.identified() ? row.pilotName() : null,
+                assessment.identified() ? row.operatorName() : null, assessment.uavSn());
+    }
+
+    /** 告警依据的研判在前；提交时同一目标若已有更新的研判，另列一条。一条都没有时保留空数组：那是“移送时没有找到研判”这个事实。 */
+    private List<JudgmentMaterialDto> judgments(String eventId) {
+        List<JudgmentMaterialDto> result = new ArrayList<>();
+        HandoffRepository.JudgmentRow basis = repository.eventJudgment(eventId, true);
+        HandoffRepository.JudgmentRow latest = repository.eventJudgment(eventId, false);
+        if (basis != null) result.add(judgment("EVENT_ALARM", basis));
+        if (latest != null && (basis == null || !latest.evaluationId().equals(basis.evaluationId()))) result.add(judgment("LATEST", latest));
+        return result;
+    }
+
+    private JudgmentMaterialDto judgment(String basis, HandoffRepository.JudgmentRow row) {
+        return new JudgmentMaterialDto(basis, row.evaluationId(), row.legalStatus(), row.manualStatus(), row.reviewState(),
+                row.planMatchCode(), row.planId(), row.planNo(), row.grade(), row.score(), row.freshnessCode(),
+                codes(row.violationReasons()), codes(row.unknownReasons()), row.decisionAssuranceCode(),
+                millis(row.observedAt()), millis(row.evaluatedAt()), row.ruleSetVersionId());
+    }
+
+    /** 研判原因码是 JSON 字符串数组；读不出来就省略，不把半截内容冻进卷宗。 */
+    private List<String> codes(String raw) {
+        if (raw == null) return null;
+        try {
+            JsonNode node = json.readTree(raw);
+            if (node != null && node.isTextual()) node = json.readTree(node.textValue());
+            if (node == null || !node.isArray() || node.isEmpty()) return null;
+            List<String> values = new ArrayList<>();
+            for (JsonNode item : node) { if (!item.isTextual()) return null; values.add(item.textValue()); }
+            return List.copyOf(values);
+        } catch (Exception unreadable) {
+            return null;
+        }
+    }
+
+    /**
+     * 证据链清单，与事件页“证据链”同一查询（证据台账按事件主体取）。文件补上 sha256，处罚部门可以与证据台账逐项比对。
+     * 查到零条时保留空数组：那是“查过了，本案没有关联证据”这个事实。
+     */
+    private List<EvidenceChainItemDto> evidenceChain(String eventId, EvidenceScope scope) {
+        long now = clock.nowMillis();
+        List<EvidenceLedgerRepository.LedgerRow> rows = new ArrayList<>();
+        for (String category : EVIDENCE_CATEGORIES) {
+            var query = new EvidenceLedgerRepository.Query(category, null, null, "EVENT", eventId, null, null, null);
+            rows.addAll(ledger.list(ledger.relation(query, scope.decision(), false, scope.tracks(), scope.commands(), now), 0, EVIDENCE_PER_CATEGORY));
+        }
+        Map<String, String> digests = repository.evidenceDigests(rows.stream()
+                .filter(row -> "FILE".equals(row.sourceKind())).map(EvidenceLedgerRepository.LedgerRow::sourceId).toList());
+        return rows.stream()
+                .sorted(Comparator.comparing((EvidenceLedgerRepository.LedgerRow row) -> occurredAt(row), Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(EvidenceLedgerRepository.LedgerRow::sourceKind).thenComparing(EvidenceLedgerRepository.LedgerRow::sourceId))
+                .map(row -> new EvidenceChainItemDto(row.category(), row.sourceKind(), row.sourceId(), row.evidenceNo(), row.originalName(),
+                        row.kindCode(), row.status(), row.capturedAt(), row.startedAt(), row.endedAt(), row.pointCount(), row.sizeBytes(),
+                        "FILE".equals(row.sourceKind()) ? digests.get(row.sourceId()) : null))
+                .toList();
+    }
+
+    private static Long occurredAt(EvidenceLedgerRepository.LedgerRow row) {
+        return row.capturedAt() != null ? row.capturedAt() : row.storedAt();
     }
 
     /** 设备测算的遥控器位置，按提交时目标的最新状态冻结；没有就省略，由页面写明"没有遥控器位置"。 */

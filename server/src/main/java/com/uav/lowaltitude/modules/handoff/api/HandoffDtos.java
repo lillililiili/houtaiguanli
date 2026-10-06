@@ -54,7 +54,30 @@ public final class HandoffDtos {
     public record MaterialV2Dto(int schemaVersion, EventMaterialDto event, List<EventVerificationDto> verifications,
             List<DisposalMaterialDto> disposals, List<EvidenceMaterialDto> evidence, Boolean evidenceOmitted,
             ReferenceMaterialDto references, List<com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record> advisoryRecords,
-            PilotLocationMaterialDto pilotLocation) { }
+            PilotLocationMaterialDto pilotLocation,
+            // 2026-10-06 起新提交的材料另冻结研判结论、证据链清单和当事人认定；旧材料没有这三段，按原样读出。
+            List<JudgmentMaterialDto> judgments, List<EvidenceChainItemDto> evidenceChain, PartyMaterialDto party) { }
+    /**
+     * 合法性研判结论（提交时冻结）。basis：EVENT_ALARM 是关联本事件告警的那条（告警依据），LATEST 是同一目标提交时的最新一条；
+     * 两条相同时只留 EVENT_ALARM。manual_status/review_state 是人工复核结果，没有复核时省略。
+     */
+    public record JudgmentMaterialDto(String basis, String evaluationId, String legalStatus, String manualStatus, String reviewState,
+            String planMatchCode, String planId, String planNo, String grade, java.math.BigDecimal score, String freshnessCode,
+            List<String> violationReasons, List<String> unknownReasons, String decisionAssuranceCode, Long observedAt,
+            Long evaluatedAt, String ruleSetVersionId) { }
+    /**
+     * 证据链清单（提交时冻结），与事件页“证据链”同一来源：录像、轨迹、图片、指令四类。
+     * 文件带 sha256，可与证据台账逐项比对；轨迹和指令不是文件，没有哈希。
+     */
+    public record EvidenceChainItemDto(String category, String sourceKind, String sourceId, String evidenceNo, String name,
+            String kindCode, String status, Long capturedAt, Long startedAt, Long endedAt, Long pointCount, Long sizeBytes,
+            String sha256) { }
+    /**
+     * 当事人认定（提交时冻结）。IDENTIFIED：关联本事件的报备计划写明了飞手或运营单位；
+     * UNIDENTIFIED：当事人不明，按待补线索移送，reasons 写明原因，uav_sn 等是已有线索。
+     */
+    public record PartyMaterialDto(String status, String label, List<String> reasons, String planId, String planNo,
+            String pilotName, String operatorName, String uavSn) { }
     /**
      * 设备测算的遥控器（飞手）大概位置，提交时冻结（2026-10-04 用户确认用于找飞手）。
      * basis 恒为 DEVICE_ESTIMATE：这是 TDOA/AOA/DCD/RID 等设备推算的位置，不是现场核实的位置。没有位置时整段省略。

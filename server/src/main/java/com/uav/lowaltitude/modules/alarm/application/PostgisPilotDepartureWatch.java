@@ -23,9 +23,14 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
     }
     @Override
     public Presence assess(String eventId, long smsAcceptedAt, long now) {
-        if (!postgis) return Presence.UNKNOWN;
+        return assess(eventId, smsAcceptedAt, smsAcceptedAt, now);
+    }
+    /** 区域取短信发出时目标所在的空域；只认 since 之后的新位置（电话后传录音播完时刻）。 */
+    @Override
+    public Presence assess(String eventId, long smsAcceptedAt, long since, long now) {
+        if (!postgis || since < smsAcceptedAt) return Presence.UNKNOWN;
         Point before = point(eventId, null, smsAcceptedAt);
-        Point after = point(eventId, smsAcceptedAt, now);
+        Point after = point(eventId, since, now);
         if (before == null || after == null || before.lon == null || after.lon == null) return Presence.UNKNOWN;
         Set<String> area = covered(eventId, before, smsAcceptedAt);
         if (area.isEmpty()) return Presence.UNKNOWN;

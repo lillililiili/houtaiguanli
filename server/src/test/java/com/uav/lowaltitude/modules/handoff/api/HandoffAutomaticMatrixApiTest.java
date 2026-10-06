@@ -4,11 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.UUID;
 import java.time.OffsetDateTime;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimePolicy;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeModel.Decision;
@@ -140,11 +142,47 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
         handoffs.automaticAfterJamming(eventId);
         assertThat(jdbc.queryForObject("select count(*) from handoff where event_id=?", Integer.class, eventId)).isZero();
         verify(channel, never()).deliver(any());
+        // 页面如实写明要有权限的人选择接收单位，不再显示“等待自动移送”；当事人不明也提前写明。
+        JsonNode waiting = advisory();
+        assertThat(waiting.path("auto_handoff").path("status").asText()).isEqualTo("MANUAL_REQUIRED");
+        assertThat(waiting.path("auto_handoff").path("reason").asText()).contains("2 个处罚接收单位");
+        assertThat(waiting.path("auto_handoff").path("party_status").asText()).isEqualTo("UNIDENTIFIED");
+        assertThat(waiting.path("auto_handoff").path("party_reasons").toString()).contains("报备计划");
+        assertThat(waiting.path("can_handoff").asBoolean()).isTrue();
         String id = body(submit(submitter, eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
         assertThat(jdbc.queryForObject("select recipient_id from handoff where handoff_id=?", String.class, id)).isEqualTo(chosen);
+        assertThat(jdbc.queryForObject("select trigger_source from handoff where handoff_id=?", String.class, id)).isEqualTo("MANUAL");
+        JsonNode submitted = advisory().path("auto_handoff");
+        assertThat(submitted.path("status").asText()).isEqualTo("SUBMITTED");
+        assertThat(submitted.path("trigger_source").asText()).isEqualTo("MANUAL");
+        assertThat(submitted.path("handoff_id").asText()).isEqualTo(id);
+        assertThat(submitted.has("party_status")).isFalse();
         handoffs.automaticAfterJamming(eventId);
         verify(channel, times(1)).deliver(any());
         assertThat(jdbc.queryForObject("select count(*) from handoff where event_id=?", Integer.class, eventId)).isEqualTo(1);
+    }
+
+    @Test
+    void supplementalNoRecipientIsBlockedAndOneRecipientWaitsForTheBackground() throws Exception {
+        doReturn(false).when(policy).enabled();
+        jdbc.update("update handoff_recipient set enabled=false where handoff_type='UAV_PUNISHMENT'");
+        JsonNode beforeJamming = advisory().path("auto_handoff");
+        assertThat(beforeJamming.path("status").asText()).isEqualTo("WAITING");
+        jdbc.update("update disposal_authorization set action_type='JAMMING' where subject_id=?", eventId);
+        assertThat(advisory().path("auto_handoff").path("status").asText()).isEqualTo("BLOCKED");
+        jdbc.update("update handoff_recipient set enabled=true where recipient_id=?", recipientId);
+        JsonNode one = advisory().path("auto_handoff");
+        assertThat(one.path("status").asText()).isEqualTo("WAITING");
+        assertThat(one.path("reason").asText()).contains("自动移送");
+    }
+
+    @Test
+    void supplementalFalsePositiveNeedsNoHandoff() throws Exception {
+        jdbc.update("update disposal_authorization set action_type='JAMMING' where subject_id=?", eventId);
+        jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where event_id=?", eventId);
+        JsonNode progress = advisory().path("auto_handoff");
+        assertThat(progress.path("status").asText()).isEqualTo("NOT_REQUIRED");
+        assertThat(progress.path("reason").asText()).contains("误报");
     }
 
     private String prepareSupplementalChannel() {
@@ -173,6 +211,10 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
     }
 
     private String handoffId() { return jdbc.queryForObject("select handoff_id from handoff where event_id=?", String.class, eventId); }
+    private JsonNode advisory() throws Exception {
+        return body(mvc.perform(get("/api/v1/uav-events/{id}/advisory", eventId).header("Authorization", "Bearer " + submitter))
+                .andExpect(status().isOk())).path("data");
+    }
     private String frozen(String id) { return jdbc.queryForObject("select CAST(snapshot AS VARCHAR) from handoff_material_snapshot where handoff_id=?", String.class, id); }
     private void manualNotify(String id, int attempt) throws Exception {
         mvc.perform(post("/api/v1/handoffs/{id}/notifications", id).header("Authorization", "Bearer " + submitter)
@@ -221,6 +263,12 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
         boolean waiting = "RULE_OFF".equals(batch) || batch.endsWith("AFTER_WAIT") || batch.startsWith("STALE_");
         assertThat(jdbc.queryForObject("select delivery_status from handoff_delivery where handoff_id=?", String.class, handoff))
                 .isEqualTo(waiting ? "PENDING_DELIVERY" : "FAILED_MANUAL_RETRY".equals(batch) ? "FAILED" : "DELIVERED");
+        assertThat(jdbc.queryForObject("select trigger_source from handoff where handoff_id=?", String.class, handoff)).isEqualTo("JAMMING_COMPLETED");
+        // 交接已建立但还没发出时，页面写“还没发出”，不能说成已移送。
+        JsonNode progress = advisory().path("auto_handoff");
+        assertThat(progress.path("status").asText()).isEqualTo(waiting ? "PENDING" : "FAILED_MANUAL_RETRY".equals(batch) ? "FAILED" : "SUBMITTED");
+        assertThat(progress.path("trigger_source").asText()).isEqualTo("JAMMING_COMPLETED");
+        if (waiting) assertThat(progress.path("reason").asText()).contains("没有自动发出");
         assertThat(jdbc.queryForObject("select submitted_by from handoff where handoff_id=?", String.class, handoff))
                 .isEqualTo(jdbc.queryForObject("select requested_by from disposal_authorization where subject_id=?", String.class, eventId));
         handoffs.automaticAfterJamming(eventId);

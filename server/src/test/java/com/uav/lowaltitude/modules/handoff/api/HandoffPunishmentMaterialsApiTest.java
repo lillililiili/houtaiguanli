@@ -74,6 +74,10 @@ class HandoffPunishmentMaterialsApiTest {
         jdbc.update("delete from disposal_authorization where subject_id like 'pm-event-%'"
                 + " and chained_from_authorization_id is not null");
         jdbc.update("delete from disposal_authorization where subject_id like 'pm-event-%'");
+        jdbc.update("delete from legality_review where evaluation_id like 'pm-eval-%'");
+        jdbc.update("delete from rule_evaluation where evaluation_id like 'pm-eval-%'");
+        jdbc.update("delete from rule_run where run_id like 'pm-run-%'");
+        jdbc.update("delete from flight_plan where plan_id like 'pm-plan-%'");
         jdbc.update("delete from uav_event_verification where event_id like 'pm-event-%'");
         jdbc.update("delete from uav_event where event_id like 'pm-event-%'");
         jdbc.update("delete from alarm where alarm_id like 'pm-alarm-%'");
@@ -159,6 +163,93 @@ class HandoffPunishmentMaterialsApiTest {
 
         assertThat(disposal.path("authorization_mode").asText()).isEqualTo("DIRECT");
         assertThat(disposal.has("approved_by_name")).isFalse();
+    }
+
+    /* ---- 研判、证据链与当事人（2026-10-06）---- */
+
+    /** 材料里要有研判结论和事件页同一份证据链（逐项带文件哈希），处罚部门才能核对认定依据、和证据台账逐项比对。 */
+    @Test
+    void materialCarriesTheJudgmentAndTheEventEvidenceChain() throws Exception {
+        String targetId = target(eventId, "SN-PM-001");
+        String evaluation = judgment(eventId, targetId, null, "ILLEGAL", "NONE", "[\"NO_PLAN\"]");
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+        JsonNode material = detail(handoffId, submitter).path("material");
+        JsonNode judgment = material.path("judgments").get(0);
+        assertThat(material.path("judgments")).hasSize(1);
+        assertThat(judgment.path("basis").asText()).isEqualTo("EVENT_ALARM");
+        assertThat(judgment.path("evaluation_id").asText()).isEqualTo(evaluation);
+        assertThat(judgment.path("legal_status").asText()).isEqualTo("ILLEGAL");
+        assertThat(judgment.path("plan_match_code").asText()).isEqualTo("NONE");
+        assertThat(judgment.path("violation_reasons").get(0).asText()).isEqualTo("NO_PLAN");
+        // 与事件页“证据链”同一来源：条数一致，文件带哈希。
+        JsonNode chain = material.path("evidence_chain");
+        JsonNode page = body(mvc.perform(get("/api/v1/evidence-ledger/materials/EVENT/{id}", eventId)
+                .header("Authorization", bearer(submitter)))).path("data").path("records");
+        assertThat(chain).hasSize(page.size());
+        assertThat(chain).hasSize(1);
+        assertThat(chain.get(0).path("source_id").asText()).isEqualTo(page.get(0).path("record_id").asText());
+        assertThat(chain.get(0).path("category").asText()).isEqualTo("IMAGE");
+        assertThat(chain.get(0).path("sha256").asText()).isEqualTo("a".repeat(64));
+        // 提交后再补的证据不进已冻结的材料；没有证据查看权限的读者看不到证据链。
+        evidence(eventId, "pm-evi-late-" + UUID.randomUUID().toString().substring(0, 6), "后补证据");
+        assertThat(detail(handoffId, submitter).path("material").path("evidence_chain")).isEqualTo(chain);
+        String reader = user("RDC", List.of("handoff:read", "alarm:read"));
+        assertThat(detail(handoffId, reader).path("material").has("evidence_chain")).isFalse();
+        assertThat(detail(handoffId, reader).path("material").path("judgments")).hasSize(1);
+    }
+
+    /** 提交时同一目标已有更新的研判，另列一条，不替换告警当时依据的那条。 */
+    @Test
+    void newerJudgmentIsListedBesideTheAlarmBasis() throws Exception {
+        String targetId = target(eventId, null);
+        String basis = judgment(eventId, targetId, null, "ILLEGAL", "NONE", "[\"NO_PLAN\"]");
+        String later = judgment(eventId, targetId, null, "UNDETERMINED", "UNDETERMINED", "[]", false);
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+        JsonNode judgments = detail(handoffId, submitter).path("material").path("judgments");
+        assertThat(judgments).hasSize(2);
+        assertThat(judgments.get(0).path("evaluation_id").asText()).isEqualTo(basis);
+        assertThat(judgments.get(1).path("basis").asText()).isEqualTo("LATEST");
+        assertThat(judgments.get(1).path("evaluation_id").asText()).isEqualTo(later);
+        assertThat(judgments.get(1).has("violation_reasons")).isFalse();
+    }
+
+    /** 没有匹配到报备计划：写明“当事人不明，按待补线索移送”和原因，已有线索（序列号）照样带上。 */
+    @Test
+    void unidentifiedPartyIsMarkedWithReasonsAndClues() throws Exception {
+        target(eventId, "SN-PM-UNKNOWN");
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+        JsonNode party = detail(handoffId, submitter).path("material").path("party");
+        assertThat(party.path("status").asText()).isEqualTo("UNIDENTIFIED");
+        assertThat(party.path("label").asText()).isEqualTo("当事人不明，按待补线索移送");
+        assertThat(party.path("reasons").toString()).contains("没有匹配到本次飞行的报备计划").contains("没有设备测算的遥控器位置")
+                .doesNotContain("没有获取到无人机序列号");
+        assertThat(party.path("uav_sn").asText()).isEqualTo("SN-PM-UNKNOWN");
+        assertThat(party.has("pilot_name")).isFalse();
+        // 查过了没有研判：留空数组，和旧材料“没有这一段”分得开。
+        JsonNode judgments = detail(handoffId, submitter).path("material").path("judgments");
+        assertThat(judgments.isArray()).isTrue();
+        assertThat(judgments).isEmpty();
+    }
+
+    /** 关联本事件的报备计划写明了飞手和运营单位（来自上游计划接口），当事人即为明确。 */
+    @Test
+    void matchedPlanNamesThePilotAndOperator() throws Exception {
+        String targetId = target(eventId, null);
+        String planId = plan("测试飞手甲", "测试运营单位");
+        judgment(eventId, targetId, planId, "ILLEGAL", "PARTIAL", "[\"OUT_OF_ROUTE\"]");
+        String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
+                .path("data").path("handoff_id").asText();
+        JsonNode material = detail(handoffId, submitter).path("material");
+        JsonNode party = material.path("party");
+        assertThat(party.path("status").asText()).isEqualTo("IDENTIFIED");
+        assertThat(party.has("label")).isFalse();
+        assertThat(party.path("pilot_name").asText()).isEqualTo("测试飞手甲");
+        assertThat(party.path("operator_name").asText()).isEqualTo("测试运营单位");
+        assertThat(party.path("plan_id").asText()).isEqualTo(planId);
+        assertThat(material.path("judgments").get(0).path("plan_no").asText()).isEqualTo(party.path("plan_no").asText());
     }
 
     /* ---- 权限与状态 ---- */
@@ -406,6 +497,48 @@ class HandoffPunishmentMaterialsApiTest {
                 "a".repeat(64), at, at, ORG, DISTRICT, at, at);
         jdbc.update("insert into evidence_link (link_id,evidence_id,subject_kind,subject_id,event_id,created_at)"
                 + " values (?,?,'EVENT',?,?,?)", UUID.randomUUID().toString(), evidenceId, eventId, eventId, at);
+    }
+
+    /** 给事件挂上目标，serial 为目标上报的无人机序列号（可为空）。 */
+    protected String target(String eventId, String serial) {
+        String targetId = "pm-target-" + UUID.randomUUID().toString().substring(0, 8);
+        Timestamp at = Timestamp.from(Instant.parse("2026-09-08T02:00:00Z"));
+        jdbc.update("insert into target (target_id,target_no,object_type_code,uav_sn,first_seen_at,last_seen_at,source_mode,"
+                + "owner_org_id,district_id,created_at,updated_at,version) values (?,?,'UAV',?,?,?,'mock',?,?,?,?,0)",
+                targetId, "MB-" + targetId, serial, at, at, ORG, DISTRICT, at, at);
+        jdbc.update("update alarm set target_id=? where alarm_id=(select alarm_id from uav_event where event_id=?)", targetId, eventId);
+        return targetId;
+    }
+
+    /** 上游计划接口给的报备计划，只写飞手和运营单位名称。 */
+    private String plan(String pilot, String operator) {
+        String planId = "pm-plan-" + UUID.randomUUID().toString().substring(0, 8);
+        jdbc.update("insert into flight_plan (plan_id,plan_no,status_code,source_id,source_mode,start_at,end_at,route_version_id,"
+                + "owner_org_id,district_id,created_at,updated_at,version,pilot_name,operator_name) select ?,?,'VALID',source_id,'mock',"
+                + "start_at,end_at,route_version_id,?,?,current_timestamp,current_timestamp,0,?,? from flight_plan"
+                + " where plan_id='seed-stage3-plan-legal'", planId, "PM-PLAN-" + planId.substring(8), ORG, DISTRICT, pilot, operator);
+        return planId;
+    }
+
+    /** 一条合法性研判；linked 为 true 时关联本事件的告警（告警依据）。 */
+    protected String judgment(String eventId, String targetId, String planId, String legal, String planMatch, String reasons) {
+        return judgment(eventId, targetId, planId, legal, planMatch, reasons, true);
+    }
+
+    private String judgment(String eventId, String targetId, String planId, String legal, String planMatch, String reasons, boolean linked) {
+        var version = jdbc.queryForMap("select rule_set_id,rule_set_version_id from rule_set_version fetch first 1 rows only");
+        String run = "pm-run-" + UUID.randomUUID().toString().substring(0, 8), id = "pm-eval-" + UUID.randomUUID().toString().substring(0, 8);
+        Integer existing = jdbc.queryForObject("select count(*) from rule_evaluation where target_id=?", Integer.class, targetId);
+        Timestamp at = Timestamp.from(Instant.parse("2026-09-08T02:01:00Z").plusSeconds(existing));
+        String alarm = linked ? jdbc.queryForObject("select alarm_id from uav_event where event_id=?", String.class, eventId) : null;
+        jdbc.update("insert into rule_run (run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,source_mode,created_at)"
+                + " values (?,?,?,'ACTIVE','SCHEDULED',?,?,'DONE','mock',?)", run, version.get("rule_set_id"), version.get("rule_set_version_id"), at, at, at);
+        jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,"
+                + "evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,"
+                + "input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at) values (?,?,?,'ACTIVE','TARGET',?,?,?,?,?,'FRESH',?,?,"
+                + "CAST(? AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,'mock',?)",
+                id, run, version.get("rule_set_version_id"), targetId, planId, at, at, at, planMatch, legal, reasons, alarm, ORG, DISTRICT, at);
+        return id;
     }
 
     private String user(String tag, List<String> permissions) { return user(tag, permissions, false); }

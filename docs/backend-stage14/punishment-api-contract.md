@@ -15,6 +15,11 @@
 | `disposals[]` | `authorization_id, authorization_no, action_type, channel, device_id, status, requested_by_name, approved_by_name, valid_from, valid_until, result_code, result_detail, completed_at`（该事件全部终态授权；COMPLETED 至少一条；零条时省略键，14-28） |
 | `evidence[]` | `evidence_id, evidence_no, kind_code, sha256, captured_at, status`（`evidence_link.subject_kind='EVENT'`，只读 A 的表；提交人缺 `evidence:read` 时整段省略并记 `evidence_omitted=true`；有权限查出零条保留 `[]`＝『移送时确无关联证据』） |
 | `references` | `target_id, track_id`（全空则整块省略） |
+| `judgments[]`（2026-10-06 新增） | `basis, evaluation_id, legal_status, manual_status, review_state, plan_match_code, plan_id, plan_no, grade, score, freshness_code, violation_reasons[], unknown_reasons[], decision_assurance_code, observed_at, evaluated_at, rule_set_version_id`。`basis=EVENT_ALARM` 是关联本事件告警的研判（告警依据）；同一目标提交时已有更新的研判时另列一条 `basis=LATEST`。查过了没有研判时保留 `[]` |
+| `evidence_chain[]`（2026-10-06 新增） | `category ∈ VIDEO/TRACK/IMAGE/COMMAND, source_kind ∈ FILE/TRACK/COMMAND, source_id, evidence_no, name, kind_code, status, captured_at, started_at, ended_at, point_count, size_bytes, sha256`。与事件页“证据链”同一查询（证据台账按事件主体取，含关联到目标的证据），每类最多 100 条；文件带 `sha256`，可与证据台账逐项比对。人工提交按提交人的证据查看范围冻结，后台自动移送按全部范围；与 `evidence` 一样，提交人缺 `evidence:read` 时省略，读者缺 `evidence:read` 时读不到 |
+| `party`（2026-10-06 新增） | `status ∈ IDENTIFIED/UNIDENTIFIED, label, reasons[], plan_id, plan_no, pilot_name, operator_name, uav_sn`。关联本事件告警、计划匹配为完全或部分匹配的报备计划写明了飞手或运营单位才算 `IDENTIFIED`；否则 `label="当事人不明，按待补线索移送"`，`reasons` 写明原因，已有线索（序列号、计划号）照样带上。当事人不明不拦提交（待产品确认） |
+
+2026-10-06 起 `handoff.trigger_source` 记录移送是怎么提交的：`JAMMING_COMPLETED`（干扰完成后后台自动移送）、`MANUAL`（有人选定接收单位提交），更早的交接按审计回填，查不到的保持空。启用了多个处罚接收单位时后台不自动移送，事件处置进度 `auto_handoff.status=MANUAL_REQUIRED`，由有移送权限的人选定接收单位后走本接口。
 
 `GET /handoffs/{id}` 的 `material` 按 `schema_version` 返回 v1 或 v2 形状；`availability.material`：UAV_EVENT 来源缺 `alarm:read` → `FORBIDDEN`，事件不在范围 → `SOURCE_NOT_VISIBLE`；新增 `availability.evidence ∈ AVAILABLE|FORBIDDEN|SOURCE_NOT_VISIBLE|OMITTED_AT_SUBMISSION`（以 `availability.material` 为前提，14-25）。
 

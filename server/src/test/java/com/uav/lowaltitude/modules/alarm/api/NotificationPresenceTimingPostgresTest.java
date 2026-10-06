@@ -119,11 +119,11 @@ class NotificationPresenceTimingPostgresTest {
         assertThat(nineCheck-started).isGreaterThanOrEqualTo(10000);
         assertThat(nineCheck-played).isBetween(9000L,9999L);
         assertThat(phase()).isEqualTo("WATCHING"); // Already >10s after dialing, but not after playback.
-        assertThat(departure.assess(event,played,nineCheck)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
+        assertThat(departure.assess(event,delivered,played,nineCheck)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
         observeUntil(played+10000);observe();
         long tenCheck=System.currentTimeMillis();
         assertThat(phase()).isEqualTo("AWAIT_COUNTER");
-        assertThat(departure.assess(event,played,tenCheck)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
+        assertThat(departure.assess(event,delivered,played,tenCheck)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,event)).isEqualTo("CONFIRMED");
         Map<String,Object> evidence=new LinkedHashMap<>();
         evidence.put("acceptance_rows",List.of("R16","R18"));evidence.put("event_id",event);

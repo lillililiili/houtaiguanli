@@ -63,7 +63,8 @@ public class UavAdvisoryService {
         if (!"CONFIRMED".equals(current.state())) return new DepartureObservation(id, null, "NOT_STARTED", "UNKNOWN", null, null, now);
         var sms = automatic.overview(current, false);
         var call = voice.overview(current, false);
-        Long since = automatic.deliveredAt(id);
+        Long smsAt = automatic.deliveredAt(id);
+        Long since = smsAt;
         String channel = "SMS";
         if (call != null && "SIMULATED_PLAYED".equals(call.status())) {
             channel = "VOICE";
@@ -74,7 +75,8 @@ public class UavAdvisoryService {
         if (since == null) return new DepartureObservation(id, channel, "NOT_STARTED", "UNKNOWN", null, null, now);
         long deadline = since + ("VOICE".equals(channel) ? NotifyFlow.CALL_WATCH_MILLIS : NotifyFlow.SMS_WATCH_MILLIS);
         if (now < deadline) return new DepartureObservation(id, channel, "WATCHING", "UNKNOWN", since, deadline, now);
-        return new DepartureObservation(id, channel, "ASSESSED", presence(id, since, now).name(), since, deadline, now);
+        var presence = "VOICE".equals(channel) ? presenceAfterCall(id, smsAt, since, now) : presence(id, since, now);
+        return new DepartureObservation(id, channel, "ASSESSED", presence.name(), since, deadline, now);
     }
     @Transactional
     public Overview retryAutomatic(String id,String raw,String key) {
@@ -94,10 +96,10 @@ public class UavAdvisoryService {
             try{return json.readValue(previous.response(),Overview.class);}catch(Exception invalid){throw new IllegalStateException(invalid);}
         }
         if(event.version()!=version)throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
-        automatic.retry(event);
+        boolean recheck=automatic.retry(event);
         long now=clock.nowMillis();
         if(events.update(id,version,event.state(),java.time.Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC))!=1)throw conflict("VERSION_CONFLICT","事件已更新，请刷新后重试");
-        audit.record(actor.userId(),actor.account(),actor.roleCode(),"alarm","auto_sms_retry_requested","uav_event",id,note,"SUCCESS","","");
+        audit.record(actor.userId(),actor.account(),actor.roleCode(),"alarm",recheck?"auto_sms_recheck_requested":"auto_sms_retry_requested","uav_event",id,note,"SUCCESS","","");
         Overview result=view(events.find(id,scope));
         try { repository.saveReplay(actor.userId(),key.trim(),hash,id,write(result)); }
         catch (org.springframework.dao.DuplicateKeyException duplicate) { throw conflict("IDEMPOTENCY_KEY_REUSED","\u8be5\u8bf7\u6c42\u7f16\u53f7\u5df2\u7528\u4e8e\u5176\u4ed6\u64cd\u4f5c"); }
@@ -165,7 +167,7 @@ public class UavAdvisoryService {
                 !decision.decisionActive() && "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的计划执行飞手"),
-                autoSms,voice.mode(event),autoVoice,!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event.eventId()),decision);
+                autoSms,voice.mode(event),autoVoice,!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event),decision);
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
     private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
@@ -177,30 +179,55 @@ public class UavAdvisoryService {
         if (sms != null && "SIMULATED_DELIVERED".equals(sms.status()) && smsAt != null && now >= smsAt + NotifyFlow.SMS_WATCH_MILLIS && (voice == null || !"SIMULATED_PLAYED".equals(voice.status())))
             afterSms = presence(event.eventId(), smsAt, now);
         if (voice != null && "SIMULATED_PLAYED".equals(voice.status()) && playedAt != null && now >= playedAt + NotifyFlow.CALL_WATCH_MILLIS)
-            afterCall = presence(event.eventId(), playedAt, now);
+            afterCall = presenceAfterCall(event.eventId(), smsAt, playedAt, now);
         return NotifyFlow.phase(event.state(), sms == null ? null : sms.status(), sms == null ? null : sms.reason(), smsAt,
                 voice == null ? null : voice.status(), voice == null ? null : voice.reason(), playedAt, now, afterSms, afterCall);
     }
     private String phaseName(NotifyFlow.Phase phase) { return phase == null ? null : phase.name(); }
-    private AutoHandoff autoHandoff(String eventId) {
+    private AutoHandoff autoHandoff(EventRow event) {
+        String eventId = event.eventId();
         String handoffId = handoffs.existingPunishment(eventId);
         if (handoffId == null) {
-            if(repository.noCounterActive(eventId))return new AutoHandoff(false,"NOT_REQUIRED","已决定不反制；是否移送按事件事实另行判断",null,null,null);
-            if (disposals.completedJammingRequester(eventId) == null)
-                return new AutoHandoff(true, "WAITING", "干扰完成后自动移送到处罚", null, null, null);
-            if (!canInspectHandoffRecipients(eventId))
-                return new AutoHandoff(true, "WAITING", "干扰已完成，处罚移送进度需由有权限人员核查", null, null, null);
+            // 误报不进入处罚移送，不能一直显示“等待移送”。
+            if ("FALSE_POSITIVE".equals(event.state()))
+                return new AutoHandoff(false, "NOT_REQUIRED", "已核实为误报，不需要移送处罚", null, null, null, null, null);
+            if(repository.noCounterActive(eventId))return new AutoHandoff(false,"NOT_REQUIRED","已决定不反制；是否移送按事件事实另行判断",null,null,null,null,null);
+            boolean inspect = canInspectHandoffRecipients(eventId);
             // Match the automatic submission gate, without selecting a recipient or starting any work.
-            int recipients = handoffs.enabledRecipients("UAV_PUNISHMENT").size();
+            int recipients = inspect ? handoffs.enabledRecipients("UAV_PUNISHMENT").size() : -1;
+            if (disposals.completedJammingRequester(eventId) == null)
+                return new AutoHandoff(true, "WAITING", recipients > 1 ? "干扰完成后，需要有权限的人员选择处罚接收单位再移送"
+                        : recipients == 0 ? "干扰完成后移送到处罚。目前还没有启用的处罚接收单位，请联系管理员配置" : "干扰完成后自动移送到处罚",
+                        null, null, null, null, null);
+            if (!inspect)
+                return new AutoHandoff(true, "WAITING", "干扰已完成，处罚移送进度需由有权限人员核查", null, null, null, null, null);
             if (recipients == 0)
-                return new AutoHandoff(true, "BLOCKED", "未配置有效的处罚接收方，暂不能自动移送，请联系管理员核查配置", null, null, null);
-            if (recipients > 1)
-                return new AutoHandoff(true, "BLOCKED", "存在多个有效的处罚接收方，无法确定唯一接收方，暂不能自动移送，请联系管理员核查配置", null, null, null);
-            return new AutoHandoff(true, "WAITING", "干扰已完成，等待后台自动移送", null, null, null);
+                return new AutoHandoff(true, "BLOCKED", "还没有启用的处罚接收单位，暂时不能移送。请联系管理员配置处罚接收单位", null, null, null, null, null);
+            if (recipients > 1) {
+                // 处罚移送不给默认接收单位（决策 18-14）：后台不替人选，提示有权限的人员选定后提交。
+                var party = handoffs.eventParty(eventId);
+                var assessment = com.uav.lowaltitude.modules.handoff.domain.HandoffParty.assess(party.planId(), party.pilotName(),
+                        party.operatorName(), party.planSerial(), party.targetSerial(), null);
+                return new AutoHandoff(true, "MANUAL_REQUIRED", "启用了 " + recipients + " 个处罚接收单位，系统不会替你选择。请选择接收单位后移送到处罚",
+                        null, null, null, assessment.status(), assessment.reasons().isEmpty() ? null : assessment.reasons());
+            }
+            return new AutoHandoff(true, "WAITING", "干扰已完成，等待后台自动移送", null, null, null, null, null);
         }
-        String delivery = handoffs.latestDeliveryStatus(handoffId);
-        String status = "FAILED".equals(delivery) ? "FAILED" : "SUBMITTED";
-        return new AutoHandoff(true, status, "FAILED".equals(status) ? "处罚交接投递失败" : null, handoffId, "JAMMING_COMPLETED", null);
+        var latest = handoffs.latestDelivery(handoffId);
+        String trigger = handoffs.triggerSource(handoffId);
+        Long updatedAt = latest == null || latest.createdAt() == null ? null : latest.createdAt().toInstant().toEpochMilli();
+        String delivery = latest == null ? null : latest.deliveryStatus();
+        if ("FAILED".equals(delivery))
+            return new AutoHandoff(true, "FAILED", "处罚交接投递失败", handoffId, trigger, updatedAt, null, null);
+        // 交接已建立但还没发出（例如通知处罚规则未全部满足、接收单位没配通知方式）：如实写明，不说成“已移送”。
+        if ("PENDING_DELIVERY".equals(delivery))
+            return new AutoHandoff(true, "PENDING", pendingReason(latest.blockedReason()), handoffId, trigger, updatedAt, null, null);
+        return new AutoHandoff(true, "SUBMITTED", null, handoffId, trigger, updatedAt, null, null);
+    }
+    private static String pendingReason(String blocked) {
+        if (blocked == null || blocked.isBlank()) return "处罚交接已建立，还没有发给处罚部门";
+        if ("通知处罚规则尚未全部满足".equals(blocked)) return "通知处罚的规则还没有全部满足，系统没有自动发出。有权限的人员可以打开处罚交接手动发送";
+        return blocked;
     }
     private boolean canInspectHandoffRecipients(String eventId) {
         for (PermissionCode permission : List.of(PermissionCode.HANDOFF_READ, PermissionCode.HANDOFF_CREATE)) {
@@ -211,8 +238,17 @@ public class UavAdvisoryService {
         return false;
     }
     private PilotDepartureWatch.Presence presence(String eventId, long since, long now) {
-        try { return departure.assess(eventId, since, now); }
+        try { return known(departure.assess(eventId, since, now)); }
         catch (RuntimeException unavailable) { return PilotDepartureWatch.Presence.UNKNOWN; }
+    }
+    /** 电话后的观察：区域仍按短信发出时目标所在空域，只看录音播完后的新位置。没有短信送达时刻就无法确定区域。 */
+    private PilotDepartureWatch.Presence presenceAfterCall(String eventId, Long smsAt, long playedAt, long now) {
+        if (smsAt == null || smsAt > playedAt) return PilotDepartureWatch.Presence.UNKNOWN;
+        try { return known(departure.assess(eventId, smsAt, playedAt, now)); }
+        catch (RuntimeException unavailable) { return PilotDepartureWatch.Presence.UNKNOWN; }
+    }
+    private static PilotDepartureWatch.Presence known(PilotDepartureWatch.Presence presence) {
+        return presence == null ? PilotDepartureWatch.Presence.UNKNOWN : presence;
     }
     private static String optionalRetryNote(JsonNode node) {
         if (!node.hasNonNull("note")) return "";

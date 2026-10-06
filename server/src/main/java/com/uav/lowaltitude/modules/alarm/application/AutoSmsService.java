@@ -28,6 +28,11 @@ import com.uav.lowaltitude.platform.time.AppClock;
 public class AutoSmsService {
     private static final AccessDecision SYSTEM_SCOPE=new AccessDecision("system:auto-advisory-sms",ScopeMode.ALL);
     private static final String TRIGGER="ALARM_EVENT";
+    /** 告警超过自动通知时效后，有人核对了最新情况并登记发送；只这一条任务不再按时效拦截。 */
+    static final String RECHECK="MANUAL_RECHECK";
+    /** 页面按这个开头识别“需核对最新情况”，改文案时同步改页面。 */
+    public static final String STALE_REASON="事件已超过自动通知时效，需核对最新情况";
+    public static final String FALSE_POSITIVE_REASON="已核实为误报，不需要发送飞手短信";
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private final AutoSmsRepository tasks;
     private final UavEventRepository events;
@@ -71,7 +76,7 @@ public class AutoSmsService {
             return null;
         }
         if(!policy.enabled()||(current!=null&&Set.of("SIMULATED_DELIVERED","FAILED","UNKNOWN").contains(current.status())))return null;
-        Eligibility eligible=eligible(event);
+        Eligibility eligible=eligible(event,current,false);
         tasks.initialize(eventId,now,AutoSmsPolicy.CODE);
         if(!eligible.allowed()) {tasks.block(eventId,eligible.status(),eligible.reason(),eligible.source(),eligible.evaluation(),eligible.observedAt(),now);return null;}
         var recipient=requiredPilot(eventId);
@@ -122,34 +127,68 @@ public class AutoSmsService {
     public AutoSms overview(EventRow event,boolean mayRetry) {
         Task task=tasks.find(event.eventId());
         var target=recipient(event);
+        // 误报不会再发短信：没有发送过的，直接写明不需要，不显示成“暂不满足条件”或“等待”。
+        if("FALSE_POSITIVE".equals(event.state())&&(task==null||task.attempts()==0))
+            return new AutoSms(policy.enabled(),"NOT_REQUIRED",FALSE_POSITIVE_REASON,null,task==null?null:task.updatedAt(),false,0,AutoSmsPolicy.CODE,null,null,null,target);
         if(!policy.enabled())return task!=null&&task.attempts()>0?new AutoSms(false,task.status(),task.reason(),task.triggeredAt(),task.updatedAt(),false,task.attempts(),AutoSmsPolicy.CODE,task.triggerSource(),task.evaluatedAt(),task.dataUpdatedAt(),target):new AutoSms(false,"DISABLED","后台自动短信尚未启用；"+policy.description(),null,null,false,0,AutoSmsPolicy.CODE,null,null,null,target);
-        Eligibility e=eligible(event);
-        if(task==null)return new AutoSms(true,e.allowed()?"WAITING":e.status(),e.reason(),null,null,false,0,AutoSmsPolicy.CODE,e.source(),e.evaluation()==null?null:e.evaluation().evaluatedAt(),e.observedAt(),target);
-        boolean retry=mayRetry&&Set.of("FAILED","UNAVAILABLE","BLOCKED").contains(task.status())&&e.allowed();
+        Eligibility e=eligible(event,task,false);
+        // 只差时效这一条时，有权限的人核对最新情况后可以登记发送。
+        boolean recheck=mayRetry&&stale(e)&&eligible(event,task,true).allowed();
+        if(task==null)return new AutoSms(true,e.allowed()?"WAITING":e.status(),e.reason(),null,null,recheck,0,AutoSmsPolicy.CODE,e.source(),e.evaluation()==null?null:e.evaluation().evaluatedAt(),e.observedAt(),target);
+        boolean retry=mayRetry&&Set.of("FAILED","UNAVAILABLE","BLOCKED").contains(task.status())&&(e.allowed()||recheck);
         String reason=task.reason(),status=task.status();
         if(!Set.of("SIMULATED_DELIVERED","SENDING","FAILED","UNKNOWN").contains(status)) {
-            if(!e.allowed()){status=e.status();reason=e.reason();}
+            if(!e.allowed()){status=e.status();reason=e.reason();retry=recheck;}
             else if(Set.of("BLOCKED","UNAVAILABLE").contains(status)){status="WAITING";reason=e.reason();retry=false;}
         }
         return new AutoSms(true,status,reason,task.triggeredAt(),task.updatedAt(),retry,task.attempts(),AutoSmsPolicy.CODE,task.triggerSource(),task.evaluatedAt(),task.dataUpdatedAt(),target);
     }
-    /** 调用者已经完成用户动作权限、范围、事件锁和版本检查，只排队不发短信。 */
-    public void retry(EventRow event) {
+    /** 调用者已经完成用户动作权限、范围、事件锁和版本检查，只排队不发短信。返回 true 表示这是超过时效后人工核对再发送。 */
+    public boolean retry(EventRow event) {
         AutoSms view=overview(event,true);
         if(!view.canRetry())throw new ApiException(HttpStatus.CONFLICT,"AUTO_SMS_RETRY_BLOCKED",view.reason());
-        tasks.queueRetry(event.eventId(),clock.nowMillis());
+        long now=clock.nowMillis();
+        Task task=tasks.find(event.eventId());
+        if(stale(eligible(event,task,false))) {
+            // 超过时效后的发送由人核对最新情况后登记，任务记下这次人工核对，后台据此发送这一条。
+            tasks.initialize(event.eventId(),now,AutoSmsPolicy.CODE);
+            tasks.queueRecheck(event.eventId(),RECHECK,now);
+            return true;
+        }
+        tasks.queueRetry(event.eventId(),now);
+        return false;
     }
     public boolean sending(String id){Task task=tasks.find(id);return task!=null&&"SENDING".equals(task.status());}
     public Long deliveredAt(String eventId){return tasks.deliveredAt(eventId);}
-    private Eligibility eligible(EventRow event) {
-        if(records.noCounterActive(event.eventId()))return new Eligibility(false,"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON,TRIGGER,null,null);
-        if("FALSE_POSITIVE".equals(event.state()))return new Eligibility(false,"BLOCKED","已核实为误报，不发送飞手短信",TRIGGER,null,null);
-        if(!"CONFIRMED".equals(event.state()))return new Eligibility(false,"WAITING","事件尚未核实属实，核实后自动发送短信",TRIGGER,null,null);
-        if(!sms.automaticSimulationAvailable(event.sourceMode()))return new Eligibility(false,"UNAVAILABLE","正式短信渠道尚未接入，不能把模拟送达写成真实通知",TRIGGER,null,null);
+    /**
+     * @param ignoreStale 只用来判断“除时效外是否都满足”，决定能否让人核对后登记发送；自动发送永远传 false。
+     */
+    private Eligibility eligible(EventRow event,Task task,boolean ignoreStale) {
+        String source=task!=null&&RECHECK.equals(task.triggerSource())?RECHECK:TRIGGER;
+        if(records.noCounterActive(event.eventId()))return new Eligibility(false,"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON,source,null,null);
+        if("FALSE_POSITIVE".equals(event.state()))return new Eligibility(false,"BLOCKED","已核实为误报，不发送飞手短信",source,null,null);
+        if(!"CONFIRMED".equals(event.state()))return new Eligibility(false,"WAITING","事件尚未核实属实，核实后自动发送短信",source,null,null);
+        // 告警接收后超过事件时效才走到发送（例如过了时效才核实，或通道很晚才接通）：情况可能已经变化，
+        // 不再自动发短信和打电话，等人核对最新情况。页面总是先看到这条提示。
+        if(!ignoreStale&&!RECHECK.equals(source)&&staleEvent(event.eventId())) {
+            String stale=STALE_REASON+"：告警已超过"+(policy.eventMillis()/1000)+"秒，情况可能已经变化，系统不再自动发送短信和拨打电话";
+            Eligibility rest=eligible(event,task,true);
+            if(rest.allowed())return new Eligibility(false,"BLOCKED",stale,source,null,null);
+            // 本来就发不了（通道未接通、没有可通知的飞手）：保留原来的状态和原因，通知阶段照旧进入待反制。
+            return new Eligibility(false,rest.status(),stale+"；同时"+rest.reason(),rest.source(),rest.evaluation(),rest.observedAt());
+        }
+        if(!sms.automaticSimulationAvailable(event.sourceMode()))return new Eligibility(false,"UNAVAILABLE","正式短信渠道尚未接入，不能把模拟送达写成真实通知",source,null,null);
         var pilot=requiredPilot(event.eventId());
-        if(pilot==null||!pilot.configured())return new Eligibility(false,"BLOCKED",pilotReason(pilot),TRIGGER,null,null);
-        return new Eligibility(true,"WAITING","告警已建立，等待后台自动模拟发送",TRIGGER,null,null);
+        if(pilot==null||!pilot.configured())return new Eligibility(false,"BLOCKED",pilotReason(pilot),source,null,null);
+        return new Eligibility(true,"WAITING",RECHECK.equals(source)?"已核对最新情况并登记发送，等待后台发送":"告警已建立，等待后台自动模拟发送",source,null,null);
     }
+    private boolean staleEvent(String eventId) {
+        try {
+            Long receivedAt=tasks.facts(eventId).receivedAt();
+            return receivedAt!=null&&clock.nowMillis()-receivedAt>policy.eventMillis();
+        } catch(org.springframework.dao.EmptyResultDataAccessException unavailable) { return false; }
+    }
+    private static boolean stale(Eligibility e){return e!=null&&!e.allowed()&&e.reason()!=null&&e.reason().startsWith(STALE_REASON);}
     /** 只接受已核验的执行飞手。没有飞手、联系方式未核验或名册不可用时不发送，也不改用单位联系人。 */
     private com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot requiredPilot(String eventId) {
         try {
