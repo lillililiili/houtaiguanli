@@ -25,6 +25,12 @@ class BusinessReportExportTest {
         assertThat(ReportLabels.text("events","state","CONFIRMED")).isEqualTo("告警已确认");
         assertThat(ReportLabels.dictionary()).containsEntry("events.kind.RULE_LEGALITY","飞行违规");
         assertThat(ReportLabels.text("risks","kind","FUTURE_TYPE")).isEqualTo("FUTURE_TYPE");
+        // ZT-48：风险状态的每一个取值都要有中文，少一个导出就把英文原码给出去。
+        assertThat(Map.of("PENDING_VERIFICATION","待核验","PENDING_NOTIFICATION","待通知","NOTIFIED","通知已提交",
+                "ACKNOWLEDGED","已回执","EXCLUDED","已排除"))
+                .allSatisfy((code,label) -> assertThat(ReportLabels.text("risks","state",code)).isEqualTo(label));
+        // 提交成功不等于对方收到：任何小节都不能把 NOTIFIED 说成"已通知"。
+        assertThat(ReportLabels.text("NOTIFIED")).isEqualTo("通知已提交");
     }
     private BusinessReportingService service(BusinessReportSource source) {
         AppClock clock=mock(AppClock.class);when(clock.now()).thenReturn(Instant.parse("2026-09-16T00:00:00Z"));

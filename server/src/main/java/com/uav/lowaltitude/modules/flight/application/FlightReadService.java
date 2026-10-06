@@ -37,7 +37,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 public class FlightReadService {
 
     private static final Set<String> PLAN_PARAMETERS = Set.of("page", "size", "status_code", "source_code",
-            "route_id", "uav_sn", "owner_org_id", "district_id", "window_from", "window_to", "keyword");
+            "route_id", "uav_sn", "owner_org_id", "district_id", "window_from", "window_to", "keyword", "source_mode");
     private static final Set<String> ROUTE_PARAMETERS = Set.of("page", "size", "enabled", "source_mode",
             "owner_org_id", "district_id", "keyword");
 
@@ -58,7 +58,8 @@ public class FlightReadService {
         TimeRange window = request.timeRange("window_from", "window_to");
         PlanQuery query = new PlanQuery(request.optional("status_code", 32), request.optional("source_code", 64),
                 request.optional("route_id", 36), request.optional("uav_sn", 128), request.optional("owner_org_id", 36),
-                request.optional("district_id", 36), window.from(), window.to(), request.optional("keyword", 128));
+                request.optional("district_id", 36), window.from(), window.to(), request.optional("keyword", 128),
+                request.optional("source_mode", 8));
         long total = repository.countPlans(query, access);
         return new PageDto<>(repository.listPlans(query, access, page.offset(), page.size()).stream().map(this::plan).toList(),
                 page.page(), page.size(), total);

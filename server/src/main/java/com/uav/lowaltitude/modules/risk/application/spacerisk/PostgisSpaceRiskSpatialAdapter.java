@@ -35,42 +35,60 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
     public List<SpaceObservation> observations(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes) {
         if (!postgis) return List.of();
         Map<String, Object> p = window(windowFrom, windowTo, planWindowPadMinutes);
-        // 目标经 target_current_alias 解析到存活目标：被并的历史目标不再单独产生风险。
-        // 计划与航线用 LEFT JOIN：没有待执行/执行中计划的异物目标也必须出现在结果里——决策 9-5 要求它们计入
-        // targets_seen 但不生成风险。用 INNER JOIN 会让这类目标在查询层就消失，"无计划只计数"变成永不可达的死代码。
-        // 计划状态决定是否存在当前受保护的飞行活动；当前观测不再要求落在计划 start/end 内，
-        // 这样待执行计划也能用最新异物位置做起飞前风险预检。planId 为 null 时决策表直接返回不生成；
-        // 距离为 null 时走廊关系为 UNKNOWN，同样不生成。
-        return jdbc.query("""
-                SELECT DISTINCT survivor.target_id, survivor.target_no, sub.subtype_code, p.plan_id, p.route_version_id,
-                       ST_Distance(rv.centerline::geography, ls.location::geography) AS distance_m,
-                       rv.corridor_width_m / 2 AS half_width_m,
-                       COALESCE(ls.height_agl_m, ls.altitude_amsl_m) AS altitude_m,
-                       CASE WHEN ls.height_agl_m IS NOT NULL THEN 'AGL'
-                            WHEN ls.altitude_amsl_m IS NOT NULL THEN 'AMSL' END AS altitude_datum,
-                       rv.altitude_datum AS route_altitude_datum,
-                       ST_X(ls.location) AS longitude, ST_Y(ls.location) AS latitude,
-                       survivor.owner_org_id, survivor.district_id, ls.observed_at
-                FROM target t
-                LEFT JOIN target_current_alias alias ON alias.historical_target_id = t.target_id
-                JOIN target survivor ON survivor.target_id = COALESCE(alias.current_target_id, t.target_id)
-                JOIN space_object_subtype sub
-                  ON sub.enabled = TRUE
-                 AND CAST(sub.aliases AS TEXT) LIKE CONCAT('%"', COALESCE(NULLIF(survivor.subtype,''),survivor.object_type_code), '"%')
-                JOIN target_latest_state ls ON ls.target_id = survivor.target_id
-                LEFT JOIN flight_plan p
-                  ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
-                 AND p.status_code IN ('PENDING','EXECUTING')
-                LEFT JOIN route_version rv ON rv.route_version_id = p.route_version_id AND rv.centerline IS NOT NULL
-                WHERE ls.observed_at >= :window_from AND ls.observed_at < :window_to
-                  AND ls.location IS NOT NULL
-                  AND survivor.owner_org_id IS NOT NULL AND survivor.district_id IS NOT NULL
-                ORDER BY survivor.target_id, distance_m ASC
-                """, p, (rs, i) -> new SpaceObservation(rs.getString("target_id"), rs.getString("target_no"), rs.getString("subtype_code"),
+        return jdbc.query(OBSERVATION_SELECT + " AND ls.observed_at >= :window_from AND ls.observed_at < :window_to" + OBSERVATION_ORDER,
+                p, PostgisSpaceRiskSpatialAdapter::observation);
+    }
+
+    @Override
+    public List<SpaceObservation> refreshedObservations(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo, OffsetDateTime observedSince) {
+        if (!postgis) return List.of();
+        Map<String, Object> p = new HashMap<>();
+        p.put("refreshed_from", refreshedFrom);
+        p.put("refreshed_to", refreshedTo);
+        p.put("observed_since", observedSince);
+        // updated_at 是融合写最新状态时的服务器时刻；observed_since 挡住刚灌入、但观测时刻早已过去的历史回放报文。
+        return jdbc.query(OBSERVATION_SELECT + " AND ls.updated_at >= :refreshed_from AND ls.updated_at < :refreshed_to"
+                + " AND ls.observed_at >= :observed_since" + OBSERVATION_ORDER, p, PostgisSpaceRiskSpatialAdapter::observation);
+    }
+
+    // 目标经 target_current_alias 解析到存活目标：被并的历史目标不再单独产生风险。
+    // 计划与航线用 LEFT JOIN：没有待执行/执行中计划的异物目标也必须出现在结果里——决策 9-5 要求它们计入
+    // targets_seen 但不生成风险。用 INNER JOIN 会让这类目标在查询层就消失，"无计划只计数"变成永不可达的死代码。
+    // 计划状态决定是否存在当前受保护的飞行活动；当前观测不再要求落在计划 start/end 内，
+    // 这样待执行计划也能用最新异物位置做起飞前风险预检。planId 为 null 时决策表直接返回不生成；
+    // 距离为 null 时走廊关系为 UNKNOWN，同样不生成。时间条件由调用方追加。
+    private static final String OBSERVATION_SELECT = """
+            SELECT DISTINCT survivor.target_id, survivor.target_no, sub.subtype_code, p.plan_id, p.route_version_id,
+                   ST_Distance(rv.centerline::geography, ls.location::geography) AS distance_m,
+                   rv.corridor_width_m / 2 AS half_width_m,
+                   COALESCE(ls.height_agl_m, ls.altitude_amsl_m) AS altitude_m,
+                   CASE WHEN ls.height_agl_m IS NOT NULL THEN 'AGL'
+                        WHEN ls.altitude_amsl_m IS NOT NULL THEN 'AMSL' END AS altitude_datum,
+                   rv.altitude_datum AS route_altitude_datum,
+                   ST_X(ls.location) AS longitude, ST_Y(ls.location) AS latitude,
+                   survivor.owner_org_id, survivor.district_id, ls.observed_at
+            FROM target t
+            LEFT JOIN target_current_alias alias ON alias.historical_target_id = t.target_id
+            JOIN target survivor ON survivor.target_id = COALESCE(alias.current_target_id, t.target_id)
+            JOIN space_object_subtype sub
+              ON sub.enabled = TRUE
+             AND CAST(sub.aliases AS TEXT) LIKE CONCAT('%"', COALESCE(NULLIF(survivor.subtype,''),survivor.object_type_code), '"%')
+            JOIN target_latest_state ls ON ls.target_id = survivor.target_id
+            LEFT JOIN flight_plan p
+              ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
+             AND p.status_code IN ('PENDING','EXECUTING')
+            LEFT JOIN route_version rv ON rv.route_version_id = p.route_version_id AND rv.centerline IS NOT NULL
+            WHERE ls.location IS NOT NULL
+              AND survivor.owner_org_id IS NOT NULL AND survivor.district_id IS NOT NULL
+            """;
+    private static final String OBSERVATION_ORDER = " ORDER BY survivor.target_id, distance_m ASC";
+
+    private static SpaceObservation observation(java.sql.ResultSet rs, int ignored) throws java.sql.SQLException {
+        return new SpaceObservation(rs.getString("target_id"), rs.getString("target_no"), rs.getString("subtype_code"),
                 rs.getString("plan_id"), rs.getString("route_version_id"), rs.getBigDecimal("distance_m"), rs.getBigDecimal("half_width_m"),
                 rs.getBigDecimal("altitude_m"), rs.getString("altitude_datum"), rs.getString("route_altitude_datum"),
                 null, C04DecisionTable.Trend.UNKNOWN.name(), rs.getString("owner_org_id"), rs.getString("district_id"),
-                rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"), SpaceRiskRepository.time(rs, "observed_at")));
+                rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"), SpaceRiskRepository.time(rs, "observed_at"));
     }
 
     @Override

@@ -34,9 +34,14 @@ public final class CsvLabels {
             "FLIGHT_OPERATION", "飞行作业风险", "AIRSPACE", "空域风险", "WEATHER", "气象风险",
             "SPACE_OBJECT", "空中异物风险", "FOREIGN_OBJECT", "空中异物风险");
 
+    /**
+     * 风险状态的全部取值（迁移 V202609100103 起含 ACKNOWLEDGED）。少一个码，导出就会把英文原样给出去（ZT-48）。
+     * NOTIFIED/ACKNOWLEDGED 的说法同样逐字取自页面：通知提交成功只能说"通知已提交"，
+     * 对方回执之后才是"已回执"——导出里写"已通知"会让人以为对方已经收到了。
+     */
     private static final Map<String, String> RISK_STATE = Map.of(
             "PENDING_VERIFICATION", "待核验", "PENDING_NOTIFICATION", "待通知",
-            "NOTIFIED", "已通知", "EXCLUDED", "已排除");
+            "NOTIFIED", "通知已提交", "ACKNOWLEDGED", "已回执", "EXCLUDED", "已排除");
 
     public static String severity(String code) { return label(SEVERITY, code); }
 

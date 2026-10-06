@@ -21,7 +21,8 @@ public final class ReportLabels {
         entry("ABNORMAL","异常"), entry("DEGRADED","一般"), entry("UAV","无人机"), entry("BIRD","鸟类"),
         entry("HIGH","高"), entry("MEDIUM","中"), entry("LOW","低"), entry("CRITICAL","严重"),
         entry("PENDING_VERIFICATION","待核验"), entry("PENDING_NOTIFICATION","待通知"),
-        entry("NOTIFIED","已通知"), entry("EXCLUDED","已排除"), entry("CONFIRMED","已确认"),
+        // NOTIFIED 一律说"通知已提交"：提交成功不等于对方收到，写"已通知"会让人以为对方已经知道了（ZT-48）。
+        entry("NOTIFIED","通知已提交"), entry("EXCLUDED","已排除"), entry("CONFIRMED","已确认"),
         entry("PENDING_DISPOSAL","待处置"), entry("DISPOSING","处置中"), entry("DISPOSED","已处置"),
         entry("PENDING_HANDOFF","待交接"), entry("HANDED_OFF","已交接"),
         entry("REQUESTED","待审批"), entry("APPROVED","已批准"), entry("REJECTED","已拒绝"),
@@ -43,7 +44,7 @@ public final class ReportLabels {
             if (field.equals("kind")) return CsvLabels.alarmType(value);
         }
         if (section.equals("risks")) {
-            if (field.equals("state")) return value.equals("ACKNOWLEDGED")?"已回执":CsvLabels.riskState(value);
+            if (field.equals("state")) return CsvLabels.riskState(value);
             if (field.equals("kind")) return CsvLabels.riskType(value);
         }
         return text(value);

@@ -108,6 +108,10 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.kpis.alarms_today").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.pending_assessment").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.pending_handoffs").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_excluded.sensed_today").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_excluded.alarms_today").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_excluded.flights_today").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_excluded.devices").value(nullValue()))
                 .andExpect(jsonPath("$.data.trend").value(nullValue()))
                 .andExpect(jsonPath("$.data.devices").value(nullValue()))
                 .andExpect(jsonPath("$.data.flights").value(nullValue()))
@@ -136,21 +140,85 @@ class DashboardSnapshotApiTest {
         String orphanAlarm = "dash-orphan-" + suffix;
         jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,?,'UAV_INTRUSION','LOW',?,?,'mock',?,?,?)",
                 orphanAlarm, noLocation, SOURCE, "SRC-" + orphanAlarm, ts(now()), ts(now()), org, district, ts(now()));
+        // ZT-17：同一批里放一条正式接入的目标与告警，统计卡只能数到它，模拟的那几条进"另有"。
+        String liveTarget = "dash-live-target-" + suffix;
+        jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV','live',?,?,?,?,?,?,0)",
+                liveTarget, "T-L-" + suffix, org, district, ts(now()), ts(now()), ts(now()), ts(now()));
+        String liveAlarm = "dash-live-alarm-" + suffix;
+        jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,?,'UAV_INTRUSION','HIGH',?,?,'live',?,?,?)",
+                liveAlarm, liveTarget, SOURCE, "SRC-" + liveAlarm, ts(now()), ts(now()), org, district, ts(now()));
 
         JsonNode data = json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.availability.targets").value("AVAILABLE"))
                 .andExpect(jsonPath("$.data.availability.alarms").value("AVAILABLE"))
-                .andExpect(jsonPath("$.data.kpis.sensed_today").value(2))
-                .andExpect(jsonPath("$.data.kpis.alarms_today").value(2))
+                // 与运行统计同口径：只数 source_mode=live。
+                .andExpect(jsonPath("$.data.kpis.sensed_today").value(1))
+                .andExpect(jsonPath("$.data.kpis.alarms_today").value(1))
+                // 被排除的模拟/回放条数单独给出，页面才能说明差额从哪来。
+                .andExpect(jsonPath("$.data.simulated_excluded.sensed_today").value(2))
+                .andExpect(jsonPath("$.data.simulated_excluded.alarms_today").value(2))
+                // 最新告警列表是"现在要处理什么"，仍按全部来源，总数与列表同口径。
+                .andExpect(jsonPath("$.data.alarms.total").value(3))
                 .andReturn().getResponse().getContentAsString()).get("data");
 
         assertThat(ids(data.get("map").get("targets"))).contains(target).doesNotContain(hiddenTarget, noLocation);
         assertThat(ids(data.get("map").get("alarms"))).contains(alarmId).doesNotContain(orphanAlarm);
+        assertThat(ids(data.get("alarms").get("items"))).contains(alarmId, orphanAlarm, liveAlarm);
 
         mvc.perform(get("/api/v1/dashboard/snapshot?extra=1").header("Authorization", bearer(token)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+    }
+
+    /** ZT-17：设备总数与今日计划也跟运行统计一个口径；模拟/回放只进"另有"，不进统计卡。 */
+    @Test
+    void deviceAndFlightStatisticsCountLiveOnlyAndReportWhatTheyLeftOut() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantModule(token, "dashboard");
+        grantModule(token, "monitoring");
+        grantAction(token, "device:read", "flight:read");
+        device("live", false);
+        device("mock", true);
+        device("replay", true);
+        plan("live-plan", "live");
+        plan("mock-plan", "mock");
+        plan("replay-plan", "replay");
+
+        mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.availability.devices").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.availability.flights").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.devices.total").value(1))
+                .andExpect(jsonPath("$.data.devices.source_mode").value("live"))
+                .andExpect(jsonPath("$.data.devices.simulated").value(false))
+                .andExpect(jsonPath("$.data.simulated_excluded.devices").value(2))
+                .andExpect(jsonPath("$.data.flights.today").value(1))
+                .andExpect(jsonPath("$.data.flights.executing").value(1))
+                .andExpect(jsonPath("$.data.simulated_excluded.flights_today").value(2));
+    }
+
+    private void device(String sourceMode, boolean simulated) {
+        String id = "dash-device-" + sourceMode + "-" + suffix;
+        jdbc.update("insert into ops_device (device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at)"
+                + " values (?,?,?,'雷达','融合感知箱',true,?,?,0,0,0)", id, "D-" + sourceMode + "-" + suffix, "统计口径设备", sourceMode, simulated);
+        jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at)"
+                + " values (?,?,?,current_timestamp,current_timestamp)", id, org, district);
+    }
+
+    /** 覆盖今日窗口的执行中计划；航线必须与计划同一范围元组，否则读模型本就查不到。 */
+    private void plan(String name, String sourceMode) {
+        String route = "dash-route-" + name + "-" + suffix;
+        String version = "dash-rv-" + name + "-" + suffix;
+        jdbc.update("insert into route (route_id,route_no,name,enabled,source_mode,owner_org_id,district_id,created_at,updated_at,version)"
+                + " values (?,?,?,true,?,?,?,?,?,0)", route, "R-" + name + "-" + suffix, "统计口径航线", sourceMode, org, district,
+                ts(now()), ts(now()));
+        jdbc.update("insert into route_version (route_version_id,route_id,version_no,centerline,corridor_width_m,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at)"
+                + " values (?,?,1,CAST(? AS GEOMETRY),100,10,300,'AGL',?,?)", version, route,
+                "SRID=4326;LINESTRING (118.50 37.40,118.51 37.41)", ts(now()), ts(now()));
+        jdbc.update("insert into flight_plan (plan_id,plan_no,status_code,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version)"
+                + " values (?,?,'EXECUTING',?,?,?,?,?,?,?,?,0)", "dash-plan-" + name + "-" + suffix, "P-" + name + "-" + suffix,
+                sourceMode, ts(now() - 3_600_000), ts(now() + 3_600_000), version, org, district, ts(now()), ts(now()));
     }
 
     @Test
@@ -158,9 +226,10 @@ class DashboardSnapshotApiTest {
         String token = reader("ASSIGNED", org, district);
         grantModule(token, "dashboard");
         grantAction(token, "target:read");
+        // 这一条是正式接入但三天前的目标：地图上要有，今日统计里不能有。
         String stale = "dash-stale-" + suffix;
         long threeDaysAgo = now() - 3L * 24 * 60 * 60 * 1000;
-        jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV','mock',?,?,?,?,?,?,0)",
+        jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV','live',?,?,?,?,?,?,0)",
                 stale, "T-S-" + suffix, org, district, ts(threeDaysAgo), ts(threeDaysAgo), ts(now()), ts(now()));
         jdbc.update("""
                 insert into target_latest_state
@@ -171,7 +240,8 @@ class DashboardSnapshotApiTest {
         JsonNode data = json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data");
-        assertThat(data.path("kpis").path("sensed_today").asInt()).isEqualTo(1);
+        assertThat(data.path("kpis").path("sensed_today").asInt()).isZero();
+        assertThat(data.path("simulated_excluded").path("sensed_today").asInt()).isEqualTo(1);
         assertThat(ids(data.get("map").get("targets"))).contains(target, stale);
     }
 

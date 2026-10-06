@@ -71,6 +71,7 @@ public class CurrentRiskReadService {
 
     private Candidate classify(RiskRow row, long now) {
         var current=presence.read(row,now);
-        return Set.of("EXCLUDED","CLEARED","NOT_STARTED").contains(current.status())?null:new Candidate(row,current);
+        // 已排除、已解除、尚未生效、依据已过期的都不是"当前风险"；其余（含待确认）保留，保守提示（ZT-47）。
+        return Set.of("EXCLUDED","CLEARED","EXPIRED","NOT_STARTED").contains(current.status())?null:new Candidate(row,current);
     }
 }

@@ -17,6 +17,10 @@ app:
     enabled: false
   mqtt:
     enabled: false
+  # C04 定时评估默认打开（OBS-06）；PG 用例里它会在断言中途写风险和运行记录，与 outbox 同理一处关掉。
+  rule-engine:
+    c04:
+      enabled: false
   # 决策 15-39：PG 用例拆 schema 期间这个 400ms 轮询还在跑，日志落 relation ... does not exist；
   # 它还会写（超时指令置 TIMED_OUT + 写设备事件），关掉才不会有后台写手在断言中途改行。
   # 一处覆盖全部 11 个 PG 用例类。H2 的 application-test.yml 不动——Outbox 相关用例仍靠它跑。

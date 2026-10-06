@@ -33,6 +33,7 @@ import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.MapAlarmDto;
 import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.MapDeviceDto;
 import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.MapDto;
 import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.MapTargetDto;
+import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.SimulatedExcludedDto;
 import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.SnapshotDto;
 import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.TargetRiskDto;
 import com.uav.lowaltitude.modules.dashboard.api.DashboardDtos.TrendDayDto;
@@ -58,10 +59,18 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 数据大屏只读聚合：先过 dashboard.read，再按源权限填充各块。
  * 缺权限的计数必须是 null；证据库本切片未建设，恒为 NOT_BUILT。
+ *
+ * <p>ZT-17：统计类计数（今日感知目标、今日告警、今日计划/执行中、设备总数/在线）与"运行统计"同一口径，
+ * 只计正式接入的 {@code source_mode='live'} 数据；模拟与回放不进统计，被排除的条数单独放在
+ * {@code simulated_excluded} 里，页面据此写明"另有模拟/回放 N 条，不计入统计"。
+ * 地图、最新告警列表、办理队列（待核实/已确认/交接待办/待研判）和风险分档表达的是"现在要处理什么"，
+ * 仍按全部来源给，否则演示与模拟器批次在屏幕上会整块消失。</p>
  */
 @Service
 public class DashboardSnapshotService {
     static final String AVAILABLE = "AVAILABLE", FORBIDDEN = "FORBIDDEN", UNCONFIGURED = "UNCONFIGURED";
+    /** 正式接入来源：与 ReportingRepository 的 {@code source_mode='live'} 过滤同一个取值。 */
+    static final String LIVE = "live";
     private static final ZoneId ZONE = ReportingService.ZONE;
     private static final EvidenceDto EVIDENCE_NOT_BUILT = new EvidenceDto("NOT_BUILT");
 
@@ -116,13 +125,22 @@ public class DashboardSnapshotService {
         boolean canAirspace = probe(PermissionCode.AIRSPACE_READ);
         boolean canStats = menuReadable("statistics.read");
 
-        Long sensedToday = canTarget ? countTargets(from, to) : null;
-        Long alarmsToday = canAlarm ? countAlarms(from, to, null) : null;
+        /* ZT-17：统计口径与运行统计一致，只计 live；同时算出被排除的模拟/回放条数，供页面写明。 */
+        Long sensedToday = canTarget ? countTargets(from, to, LIVE) : null;
+        Long alarmsToday = canAlarm ? countAlarms(from, to, null, LIVE) : null;
+        Long allSourceAlarmsToday = canAlarm ? countAlarms(from, to, null, null) : null;
         Long pendingAssessment = canAssessment ? countEvaluations("PENDING_REVIEW") : null;
         Long pendingHandoffs = canHandoff ? countHandoffs() : null;
+        DeviceCounts deviceCounts = canDevice ? deviceCounts() : null;
+        FlightCounts flightCounts = canFlight ? flightCounts(from, to) : null;
+        SimulatedExcludedDto excluded = new SimulatedExcludedDto(
+                canTarget ? countTargets(from, to, null) - sensedToday : null,
+                canAlarm ? allSourceAlarmsToday - alarmsToday : null,
+                flightCounts == null ? null : flightCounts.excludedToday(),
+                deviceCounts == null ? null : deviceCounts.excluded());
 
         /* 地图要的是当前有位置的目标，不是今日 KPI 窗口。演示库 last_seen 往往不在当天，
-           用 seen_from/seen_to 会让大屏只剩设备点。今日计数仍走 countTargets(from, to)。 */
+           用 seen_from/seen_to 会让大屏只剩设备点；同理地图也不按来源过滤。今日计数走 countTargets(from, to, LIVE)。 */
         List<TargetSummaryDto> mapTargetRows = canTarget ? listMapTargets() : List.of();
         Map<String, EvaluationDto> latestByTarget = canAssessment ? latestEvaluationsByTarget() : Map.of();
         List<AlarmDto> todayAlarmRows = canAlarm ? listAlarms(from, to, 8) : List.of();
@@ -139,15 +157,19 @@ public class DashboardSnapshotService {
 
         return new SnapshotDto(asOf, availability,
                 new KpisDto(sensedToday, alarmsToday, pendingAssessment, pendingHandoffs),
+                excluded,
                 canStats ? trend(today) : null,
                 canAssessment ? targetRisk(latestByTarget) : null,
+                /* 办理队列按全部来源：模拟批次里待核实的告警一样要有人处理，用 live 过滤会把它们藏起来。 */
                 new ClosureDto(
-                        canAlarm ? countAlarms(null, null, "PENDING_VERIFICATION") : null,
-                        canAlarm ? countAlarms(null, null, "CONFIRMED") : null,
+                        canAlarm ? countAlarms(null, null, "PENDING_VERIFICATION", null) : null,
+                        canAlarm ? countAlarms(null, null, "CONFIRMED", null) : null,
                         pendingHandoffs, EVIDENCE_NOT_BUILT),
-                canDevice ? devices() : null,
-                canFlight ? flights(from, to) : null,
-                new AlarmsDto(todayAlarmRows.stream().map(DashboardSnapshotService::alarmItem).toList(), alarmsToday),
+                deviceCounts == null ? null : deviceCounts.devices(),
+                flightCounts == null ? null : flightCounts.flights(),
+                // total 与 items 同口径（全部来源的今日告警），不是 KPI 的 live 计数。
+                new AlarmsDto(todayAlarmRows.stream().map(DashboardSnapshotService::alarmItem).toList(),
+                        allSourceAlarmsToday),
                 new MapDto(
                         canTarget ? mapTargets(mapTargetRows, latestByTarget) : List.of(),
                         canDevice ? mapDevices() : List.of(),
@@ -177,35 +199,51 @@ public class DashboardSnapshotService {
         return new TargetRiskDto(high, medium, low, ungraded, latest.size() >= 100);
     }
 
-    private DevicesDto devices() {
-        DeviceOverview overview = devices.overview();
-        Double rate = overview.total() == 0 ? null : Math.round(overview.online() * 1000.0 / overview.total()) / 10.0;
-        return new DevicesDto(overview.total(), overview.online(), overview.offline(), overview.abnormal(),
-                overview.alarm(), rate, overview.sourceMode(), overview.simulated());
+    /** 设备健康按正式接入统计（与运行统计的设备口径一致），另给出被排除的模拟/回放设备数。 */
+    private DeviceCounts deviceCounts() {
+        DeviceOverview formal = devices.formalOverview();
+        Double rate = formal.total() == 0 ? null : Math.round(formal.online() * 1000.0 / formal.total()) / 10.0;
+        long excluded = Math.max(devices.overview().total() - formal.total(), 0);
+        return new DeviceCounts(new DevicesDto(formal.total(), formal.online(), formal.offline(), formal.abnormal(),
+                formal.alarm(), rate, formal.sourceMode(), formal.simulated()), excluded);
     }
 
-    private FlightsDto flights(String from, String to) {
-        long today = flights.flightPlans(q("page", "1", "size", "1", "window_from", from, "window_to", to)).total();
-        long executing = flights.flightPlans(q("page", "1", "size", "1", "status_code", "EXECUTING",
-                "window_from", from, "window_to", to)).total();
-        return new FlightsDto(today, executing);
+    private record DeviceCounts(DevicesDto devices, long excluded) { }
+
+    private FlightCounts flightCounts(String from, String to) {
+        long today = countPlans(from, to, null, LIVE);
+        long executing = countPlans(from, to, "EXECUTING", LIVE);
+        long excluded = Math.max(countPlans(from, to, null, null) - today, 0);
+        return new FlightCounts(new FlightsDto(today, executing), excluded);
     }
 
-    private long countTargets(String from, String to) {
-        return targets.targets(q("page", "1", "size", "1", "seen_from", from, "seen_to", to)).total();
+    private record FlightCounts(FlightsDto flights, long excludedToday) { }
+
+    private long countPlans(String from, String to, String statusCode, String sourceMode) {
+        MultiValueMap<String, String> query = q("page", "1", "size", "1", "window_from", from, "window_to", to);
+        if (statusCode != null) query.add("status_code", statusCode);
+        if (sourceMode != null) query.add("source_mode", sourceMode);
+        return flights.flightPlans(query).total();
+    }
+
+    private long countTargets(String from, String to, String sourceMode) {
+        MultiValueMap<String, String> query = q("page", "1", "size", "1", "seen_from", from, "seen_to", to);
+        if (sourceMode != null) query.add("source_mode", sourceMode);
+        return targets.targets(query).total();
     }
 
     private List<TargetSummaryDto> listMapTargets() {
         return targets.targets(q("page", "1", "size", "100")).items();
     }
 
-    private long countAlarms(String from, String to, String state) {
+    private long countAlarms(String from, String to, String state, String sourceMode) {
         MultiValueMap<String, String> query = q("page", "1", "size", "1");
         if (from != null) {
             query.add("occurred_from", from);
             query.add("occurred_to", to);
         }
         if (state != null) query.add("state", state);
+        if (sourceMode != null) query.add("source_mode", sourceMode);
         return alarms.list(query).total();
     }
 

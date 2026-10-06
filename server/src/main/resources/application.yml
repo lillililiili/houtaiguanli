@@ -105,12 +105,14 @@ app:
       enabled: ${APP_FLIGHT_STATUS_ADVANCE_ENABLED:false}
       poll-millis: ${APP_FLIGHT_STATUS_ADVANCE_POLL_MILLIS:60000}
   rule-engine:
-    # C04 空间安全风险定时评估：默认关闭，只在 PostGIS 部署上按需打开（H2 会记 UNAVAILABLE）。
+    # C04 空间安全风险定时评估：2026-10-06 产品确认默认打开（OBS-06），APP_RULE_ENGINE_C04_ENABLED=false 可关。
+    # 只在 PostGIS 部署上真正计算（H2 记 UNAVAILABLE）；空间风险规则集没有生效版本，或生效版本是未确认的 DEMO 参数
+    # 而 allow-demo-active 未打开时，每轮跳过且不产出风险（原因写日志），打开开关不等于确认了规则参数。
     c04:
-      enabled: false
-      poll-millis: 60000
+      enabled: ${APP_RULE_ENGINE_C04_ENABLED:true}
+      poll-millis: ${APP_RULE_ENGINE_C04_POLL_MILLIS:60000}
       # 调度回看窗口（分钟）；这是调度参数，不是规则阈值——规则阈值一律在 rule_param 里。
-      window-minutes: 30
+      window-minutes: ${APP_RULE_ENGINE_C04_WINDOW_MINUTES:30}
     enabled: ${APP_RULE_ENGINE_ENABLED:true}
     poll-millis: ${APP_RULE_ENGINE_POLL_MILLIS:5000}
     batch-size: ${APP_RULE_ENGINE_BATCH_SIZE:50}

@@ -19,6 +19,13 @@ public interface SpaceRiskSpatialPort {
      */
     List<SpaceObservation> observations(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes);
 
+    /**
+     * 定时评估用：最新状态在 [refreshedFrom, refreshedTo) 内被写入过（服务器处理时间）、且观测时刻不早于 observedSince 的异物目标。
+     * 按观测时刻切定时窗口时，融合积压或设备时钟偏差会让最新状态落进已经算过的窗口，目标被静默跳过（BUG-17）；
+     * 按写入时刻切，每次写入都至少被一轮评估看到。其余口径与 {@link #observations} 相同。
+     */
+    List<SpaceObservation> refreshedObservations(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo, OffsetDateTime observedSince);
+
     /** C05：目标到机场进离场程序中心线与保护目标的最近距离（米），用于缓冲判定。 */
     List<AirportProximity> airportProximity(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes);
 

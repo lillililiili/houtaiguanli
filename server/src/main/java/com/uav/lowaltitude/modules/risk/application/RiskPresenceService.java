@@ -16,7 +16,10 @@ import com.uav.lowaltitude.modules.risk.infrastructure.RiskPresenceRepository.Ob
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.time.AppClock;
 
-/** Physical presence and durable clearance never replace the risk verification/notification state. */
+/**
+ * Physical presence and durable clearance never replace the risk verification/notification state.
+ * 状态取值：CURRENT / CLEARED / EXPIRED（依据的有效时段已结束）/ NOT_STARTED / EXCLUDED / UNKNOWN。
+ */
 @Service
 public class RiskPresenceService {
     private static final AccessDecision SYSTEM = new AccessDecision("system:risk-presence",ScopeMode.ALL);
@@ -42,7 +45,9 @@ public class RiskPresenceService {
             if(fact==null)return unknown("缺少气象有效时段，当前影响待确认");
             if(fact.validFrom()>=fact.validTo()||fact.publishedAt()>now)return unknown("气象依据时间异常，当前影响待确认");
             if(now<fact.validFrom())return new Presence("NOT_STARTED","气象风险尚未进入有效时段",null);
-            if(now>=fact.validTo())return unknown("气象依据已过期，当前影响待确认");
+            // 有效时段结束即"已过期"：依据本身写明了到什么时候，这不是"待确认"（ZT-47）。
+            // 过期不等于解除：没有新的实测依据证明天气条件消失，历史与通知记录照旧保留。
+            if(now>=fact.validTo())return new Presence("EXPIRED","气象依据的有效时段已结束，不再计入当前风险",fact.validTo());
             return new Presence("CURRENT","气象风险仍在有效时段内",null);
         }
         Decision decision=assess(row,now);

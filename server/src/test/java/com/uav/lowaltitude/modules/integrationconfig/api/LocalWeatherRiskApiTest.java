@@ -60,13 +60,22 @@ class LocalWeatherRiskApiTest {
         body.put("severity","LOW");send(body,409);
         assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?",String.class,id)).isEqualTo("HIGH");
     }
-    @Test void expiredEvidenceBecomesUnknownWithoutChangingHistory() throws Exception {
-        var body=input("weather-expired");body.put("valid_from",System.currentTimeMillis()-50000);body.put("valid_to",System.currentTimeMillis()-10000);
+    /** ZT-47：有效时段结束的气象风险标为已过期并移出当前风险，核验与通知历史不变（过期不等于解除）。 */
+    @Test void expiredEvidenceIsMarkedExpiredAndLeavesCurrentRisksWithoutChangingHistory() throws Exception {
+        var valid=input("weather-still-valid");String validId=send(valid,200).path("risk_id").asText();
+        var body=input("weather-expired");long validTo=System.currentTimeMillis()-10000;
+        body.put("valid_from",validTo-40000);body.put("valid_to",validTo);
         String id=send(body,200).path("risk_id").asText();
         var current=json.readTree(mvc.perform(get("/api/v1/risks/current").param("plan_id",plan).param("size","100")
             .header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
-        var found=new ArrayList<JsonNode>();current.path("data").path("items").forEach(x->{if(id.equals(x.path("risk").path("risk_id").asText()))found.add(x);});
-        assertThat(found).hasSize(1);assertThat(found.get(0).path("current_status").asText()).isEqualTo("UNKNOWN");
+        var ids=new ArrayList<String>();current.path("data").path("items").forEach(x->ids.add(x.path("risk").path("risk_id").asText()));
+        assertThat(ids).as("有效时段内的气象风险仍是当前风险").contains(validId);
+        assertThat(ids).as("过期的气象风险不再是当前风险").doesNotContain(id);
+        // 详情仍能看到它，并写明为什么不算当前风险。
+        mvc.perform(get("/api/v1/risks/"+id).header("Authorization",token)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.current_status").value("EXPIRED"))
+            .andExpect(jsonPath("$.data.current_reason").value(org.hamcrest.Matchers.containsString("有效时段已结束")))
+            .andExpect(jsonPath("$.data.current_observed_at").value(validTo));
         assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?",String.class,id)).isEqualTo("PENDING_VERIFICATION");
     }
     @Test void rejectsInvalidWindowAndGeometryWithoutPartialRisk() throws Exception {

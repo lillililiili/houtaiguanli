@@ -102,7 +102,7 @@ public class TargetReadRepository {
     public record PilotFixRow(Coordinate location, OffsetDateTime observedAt) { }
 
     public TargetRow findTarget(String targetId, AccessDecision access) {
-        TargetQuery query = new TargetQuery(null, null, null, null, null, null, null, true);
+        TargetQuery query = new TargetQuery(null, null, null, null, null, null, null, true, null);
         Where where = targetWhere(query, access);
         where.sql.append(" AND t.target_id=:target_id");
         where.parameters.put("target_id", targetId);
@@ -264,6 +264,7 @@ public class TargetReadRepository {
         if (query.ownerOrgId != null) add(where, "t.owner_org_id", "owner_org_id", query.ownerOrgId);
         if (query.districtId != null) add(where, "t.district_id", "district_id", query.districtId);
         if (query.objectTypeCode != null) add(where, "t.object_type_code", "object_type_code", query.objectTypeCode);
+        if (query.sourceMode != null) add(where, "t.source_mode", "source_mode", query.sourceMode);
         if (query.seenFrom != null) {
             where.sql.append(" AND t.last_seen_at IS NOT NULL AND t.last_seen_at>=:seen_from AND t.last_seen_at<=:seen_to");
             where.parameters.put("seen_from", query.seenFrom);
@@ -514,7 +515,9 @@ public class TargetReadRepository {
 
     public record TargetQuery(String sourceCode, String deviceId, String objectTypeCode,
             OffsetDateTime seenFrom, OffsetDateTime seenTo, String ownerOrgId, String districtId,
-            boolean includeMerged) {
+            boolean includeMerged,
+            /** 来源模式（mock/replay/live）：正式统计只认 live，与风险、告警列表同一个参数名（ZT-17）。 */
+            String sourceMode) {
     }
 
     public record TrackQuery(OffsetDateTime startedFrom, OffsetDateTime startedTo,
