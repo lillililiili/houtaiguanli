@@ -233,13 +233,21 @@ class DisposalAuthorizationApiTest {
     @Test
     void eventStreamGrowsAndIsNeverRewritten() throws Exception {
         String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
+        List<JsonNode> requested = eventStream(id);
+        assertThat(requested).hasSize(1);
         approve(id, 0).andExpect(status().isOk());
+        List<JsonNode> approved = eventStream(id);
+        assertThat(approved).hasSize(2).containsAll(requested);
         mvc.perform(post("/api/v1/disposal-authorizations/{id}/stop", id).header("Authorization", bearer(approver))
                         .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"expected_version\":1,\"note\":\"演示停止\"}"))
                 .andExpect(status().isOk());
-        // 四通道设备不存在时，停止仍撤销授权，并留下设备无法全关的事实。
-        assertThat(eventKinds(id)).containsExactly("REQUEST", "APPROVE", "STOP", "DEVICE_CONTROL_UNAVAILABLE");
+        // 同次停止的两条事件共用 occurred_at，随机 event_id 的排序不代表业务先后。
+        // 逐次回读完整事件，确认只追加且旧记录（包括快照、操作者、时间）未被重写。
+        List<JsonNode> stopped = eventStream(id);
+        assertThat(stopped).hasSize(4).containsAll(approved);
+        assertThat(stopped).extracting(event -> event.path("event_kind").asText())
+                .containsExactlyInAnyOrder("REQUEST", "APPROVE", "STOP", "DEVICE_CONTROL_UNAVAILABLE");
         JsonNode detail = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}", id)
                 .header("Authorization", bearer(approver))).andExpect(status().isOk())).path("data");
         assertThat(detail.path("device_stop_result").asText()).isEqualTo("UNAVAILABLE");
@@ -436,6 +444,15 @@ class DisposalAuthorizationApiTest {
     private List<String> eventKinds(String id) {
         return jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?"
                 + " order by occurred_at asc, event_id asc", String.class, id);
+    }
+
+    private List<JsonNode> eventStream(String id) throws Exception {
+        JsonNode data = body(mvc.perform(get("/api/v1/disposal-authorizations/{id}/events", id)
+                .header("Authorization", bearer(approver))).andExpect(status().isOk())).path("data");
+        assertThat(data.isArray()).isTrue();
+        List<JsonNode> events = new java.util.ArrayList<>();
+        data.forEach(events::add);
+        return events;
     }
 
     private String statusOf(String id) {
