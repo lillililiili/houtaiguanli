@@ -99,8 +99,7 @@ class BusinessReportingApiTest {
     @org.springframework.transaction.annotation.Transactional
     void forbiddenSourcesAreNotReportedAsZeroAndExportsEnforcePermissions() throws Exception {
         String auth="Bearer "+token();
-        com.uav.lowaltitude.testsupport.ActionRevocationFixture.withoutAction(jdbc,"admin1","risk:read");
-        sqlSession.clearCache();
+        jdbc.update("DELETE FROM app_role_permission WHERE role_code='ROLE-ADMIN' AND permission_code='risk:read'");
         mvc.perform(get("/api/v1/stats/reports/preview").header("Authorization",auth)
                 .param("report_category","OVERVIEW").param("period_type","DAILY").param("anchor_date",today()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.sections[2].accessible").value(false))
