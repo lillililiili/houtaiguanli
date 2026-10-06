@@ -156,11 +156,14 @@ public class LegalityEvaluationService {
         DecisionAssuranceAlgorithm.Assurance assurance = assuranceAlgorithm.assess(context, hits, verdict, ruleParams);
         // Behaviour deviations require an established plan identity and sufficient evidence.
         // Keep decisive airspace violations on the existing independent evidence path.
+        // 无计划（NO_AUTHORIZATION，来自 C03.no_plan_status）也不靠行为偏差成立：数据质量已过第 2 步质量门、类别明确为无人机，
+        // 不能因为夜航等行为项"依据不足"把它降成不可判定、不出告警；计划授权待核对仍由 decision_assurance 交给人工复核。
         boolean behaviourViolation = hits.stream().anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode())
                 && hit.resultCode() == RuleContracts.ResultCode.FAIL);
         boolean airspaceViolation = hits.stream().anyMatch(hit -> RuleCodes.AIRSPACE_CHECKS.contains(hit.ruleCode())
                 && hit.resultCode() == RuleContracts.ResultCode.FAIL);
-        if (verdict.status() == LegalStatus.ILLEGAL && behaviourViolation && !airspaceViolation
+        boolean noAuthorization = verdict.violationReasons().contains(RuleCodes.NO_AUTHORIZATION);
+        if (verdict.status() == LegalStatus.ILLEGAL && behaviourViolation && !airspaceViolation && !noAuthorization
                 && !DecisionAssuranceAlgorithm.SUFFICIENT.equals(assurance.status())) {
             verdict = Decision.undetermined(new java.util.LinkedHashSet<>(assurance.reasons()), verdict.violationReasons());
         }
@@ -271,7 +274,8 @@ public class LegalityEvaluationService {
 
     private List<PlanFact> candidates(Resolved resolved, RuleParams ruleParams, OffsetDateTime asOf, Map<String, MemberRow> members) {
         if (!members.containsKey(RuleCodes.C01)) return List.of();
-        if (resolved.plan() != null) return List.of(resolved.plan());
+        // 计划主体：只拿这条计划做候选；已取消的计划不授权飞行，按没有候选计划处理。
+        if (resolved.plan() != null) return repository.planCancelled(resolved.plan().planId()) ? List.of() : List.of(resolved.plan());
         int window = ruleParams.integer(RuleCodes.C01, PARAM_TIME_WINDOW_MIN);
         return repository.candidatePlans(resolved.ownerOrgId(), resolved.districtId(), resolved.uavSn(), asOf, window);
     }

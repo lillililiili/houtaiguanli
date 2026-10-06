@@ -12,12 +12,17 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationContext;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.HitDetail;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.ParamRef;
+import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanFact;
+import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanMatch;
+import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanMatchCode;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleCheck;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
 
 /**
- * C02-5 夜航：按 C02-5.timezone 换算本地时，本地小时 ∈ [night_from, 24) ∪ [0, night_to) 即夜航。
- * 夜航是行为事实，不依赖计划；时区来自参数而不是服务器默认时区，回放与生产才能得到同一结论。
+ * C02-5 夜航：按 C02-5.timezone 换算本地时，本地小时 ∈ [night_from, 24) ∪ [0, night_to) 即夜航时段。
+ * 夜航时段内飞行是否违规看计划：C01 已匹配上计划（FULL/PARTIAL，时间窗按 C01 的计划时段与容差已对上），
+ * 说明这段夜间飞行已经报备，判通过；没有计划、计划不明或已超出计划时段（C01 对不上）的夜间飞行仍记 NIGHT_FLIGHT。
+ * 计划时段的容差与白天一致，超出宽限的超时仍由 C02-4 单独判。时区来自参数而不是服务器默认时区，回放与生产才能得到同一结论。
  */
 @Component
 public class NightFlightCheck implements RuleCheck {
@@ -46,11 +51,23 @@ public class NightFlightCheck implements RuleCheck {
         Map<String, Object> facts = CheckSupport.facts();
         facts.put("timezone", timezone);
         facts.put("local_hour", hour);
-        facts.put("local_time", local.toLocalTime().withNano(0).toString());
+        String time = local.toLocalTime().withNano(0).toString();
+        facts.put("local_time", time);
         boolean night = hour >= from || hour < to;
-        if (night) {
-            return CheckSupport.fail(ruleCode(), RuleCodes.NIGHT_FLIGHT, facts, refs, List.of(), "本地时间 " + local.toLocalTime().withNano(0) + " 处于夜航时段");
+        if (!night) return CheckSupport.pass(ruleCode(), facts, refs, List.of(), "本地时间 " + time + " 不在夜航时段");
+        PlanFact plan = matchedPlan(context.planMatch());
+        if (plan == null) {
+            String why = context.planMatch() != null && context.planMatch().plan() != null ? "已超出本机飞行计划的计划时段或航线" : "没有匹配上的飞行计划";
+            return CheckSupport.fail(ruleCode(), RuleCodes.NIGHT_FLIGHT, facts, refs, List.of(), "本地时间 " + time + " 处于夜航时段，" + why);
         }
-        return CheckSupport.pass(ruleCode(), facts, refs, List.of(), "本地时间 " + local.toLocalTime().withNano(0) + " 不在夜航时段");
+        facts.put("plan_id", plan.planId());
+        return CheckSupport.pass(ruleCode(), facts, refs, CheckSupport.evidence(CheckSupport.EVIDENCE_FLIGHT_PLAN, plan.planId()),
+                "本地时间 " + time + " 处于夜航时段，已匹配上飞行计划，在计划时段内飞行");
+    }
+
+    /** 只认 C01 已匹配上的计划；NONE 时挂着的本机计划、计划不明（UNDETERMINED）都不能为夜间飞行作保。 */
+    private static PlanFact matchedPlan(PlanMatch match) {
+        if (match == null || match.plan() == null) return null;
+        return match.code() == PlanMatchCode.FULL || match.code() == PlanMatchCode.PARTIAL ? match.plan() : null;
     }
 }

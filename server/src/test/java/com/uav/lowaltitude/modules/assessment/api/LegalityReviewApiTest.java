@@ -111,7 +111,15 @@ class LegalityReviewApiTest {
         jdbc.update("delete from alarm_merge_member where evaluation_id in (select evaluation_id from rule_evaluation where owner_org_id=?)", orgId);
         jdbc.update("delete from alarm_merge_group where owner_org_id=?", orgId);
         jdbc.update("delete from legality_review where owner_org_id=?", orgId);
-        jdbc.update("delete from uav_event_verification where event_id in (select event_id from uav_event where owner_org_id=?)", orgId);
+        // 告警自动规则引擎每 2 秒检查一次新鲜无人机的事件（转告警、无计划判非法都会建事件），会给本测试的事件留下判定记录：
+        // 先把事件标成误报退出候选，再按外键顺序删掉这些记录，否则删事件会撞外键、后续用例的清理跟着失败。
+        String events = "select event_id from uav_event where owner_org_id=?";
+        jdbc.update("update uav_event set state_code='FALSE_POSITIVE' where owner_org_id=?", orgId);
+        jdbc.update("delete from automation_runtime_state where event_id in (" + events + ")", orgId);
+        jdbc.update("delete from uav_event_verification where event_id in (" + events + ")", orgId);
+        jdbc.update("delete from automation_runtime_run_action where run_id in (select run_id from automation_runtime_run where event_id in (" + events + "))", orgId);
+        jdbc.update("delete from automation_runtime_action where event_id in (" + events + ")", orgId);
+        jdbc.update("delete from automation_runtime_run where event_id in (" + events + ")", orgId);
         jdbc.update("delete from uav_event where owner_org_id=?", orgId);
         jdbc.update("update rule_evaluation set alarm_id=null where owner_org_id=?", orgId);
         jdbc.update("delete from alarm where owner_org_id=?", orgId);

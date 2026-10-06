@@ -1,12 +1,14 @@
 package com.uav.lowaltitude.modules.assessment.engine.checks;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.stereotype.Component;
 
@@ -37,6 +39,7 @@ public class PlanMatchCheck implements RuleCheck {
     private static final String MATCH = "MATCH", MISMATCH = "MISMATCH", UNDETERMINED = "UNDETERMINED";
     private static final String DIM_TIME = "time_window", DIM_CORRIDOR = "corridor", DIM_IDENTITY = "identity";
     private static final String DIM_TAKEOFF = "takeoff_point", DIM_PILOT = "pilot_unit";
+    private static final String REASON_NO_PLAN_CANDIDATE = "NO_PLAN_CANDIDATE", REASON_IDENTITY_MISMATCH = "IDENTITY_MISMATCH", REASON_PLAN_AMBIGUOUS = "PLAN_AMBIGUOUS";
 
     /** 航线距离来源：引擎用 {@code rv -> spatialFactPort.distanceToRoute(state, rv)} 适配，测试用固定桩。 */
     @FunctionalInterface
@@ -64,18 +67,50 @@ public class PlanMatchCheck implements RuleCheck {
             candidates.add(grade(plan, state, targetSn, distances, asOf, windowMinutes, tolerance));
         }
         if (candidates.isEmpty()) {
-            return new PlanMatch(PlanMatchCode.NONE, null, unavailableDimensions(), List.of("NO_PLAN_CANDIDATE"));
+            return new PlanMatch(PlanMatchCode.NONE, null, unavailableDimensions(), List.of(REASON_NO_PLAN_CANDIDATE));
         }
         candidates.sort(Comparator.comparingInt((Candidate c) -> rank(c.code)).reversed().thenComparing(c -> c.plan.planId()));
         Candidate best = candidates.get(0);
         // 多候选同优（且不是全部 NONE）时不能随意挑一个计划做后续偏航/高度判定，只能报歧义。
         boolean ambiguous = best.code != PlanMatchCode.NONE && candidates.size() > 1 && candidates.get(1).code == best.code;
         if (ambiguous) {
-            List<String> reasons = new ArrayList<>(List.of("PLAN_AMBIGUOUS"));
+            List<String> reasons = new ArrayList<>(List.of(REASON_PLAN_AMBIGUOUS));
             best.reasons.stream().filter(r -> !reasons.contains(r)).forEach(reasons::add);
             return new PlanMatch(PlanMatchCode.UNDETERMINED, null, best.dimensions, List.copyOf(reasons));
         }
+        if (best.code == PlanMatchCode.NONE) return noMatch(candidates, asOf);
         return new PlanMatch(best.code, best.plan, best.dimensions, List.copyOf(best.reasons));
+    }
+
+    /**
+     * 全部候选都对不上（NONE）时只说本机自己的情况，不拿无关计划当理由：
+     * 有同编号的计划 → 挂上本机计划（优先时段对得上的，其次时段离评估时刻最近的），原因写它哪一维没对上（不在计划时段 / 不在航线走廊内），
+     * 后续时间窗、偏航、高度检查也按本机计划给出；
+     * 没有同编号的计划 → 不挂任何计划：别的编号的计划不能拿来比偏航和高度，也不能让这架无人机出现在别人计划的实际轨迹里。
+     * 此时目标有编号就以"编号不匹配"为首要原因，没有编号则说明不在任何候选计划的航线走廊内；维度取最接近的那条候选，但不记它的计划 ID。
+     */
+    private static PlanMatch noMatch(List<Candidate> candidates, OffsetDateTime asOf) {
+        Optional<Candidate> own = candidates.stream().filter(c -> MATCH.equals(c.dimensions.get(DIM_IDENTITY)))
+                .min(Comparator.comparing((Candidate c) -> MISMATCH.equals(c.dimensions.get(DIM_TIME)))
+                        .thenComparingLong(c -> secondsOutside(c.plan, asOf)).thenComparing(c -> c.plan.planId()));
+        if (own.isPresent()) return new PlanMatch(PlanMatchCode.NONE, own.get().plan, own.get().dimensions, List.copyOf(own.get().reasons));
+        Candidate nearest = candidates.stream()
+                .min(Comparator.comparingInt((Candidate c) -> -coreMatches(c)).thenComparing(c -> c.plan.planId())).orElseThrow();
+        List<String> reasons = new ArrayList<>(nearest.reasons);
+        if (reasons.remove(REASON_IDENTITY_MISMATCH)) reasons.add(0, REASON_IDENTITY_MISMATCH);
+        return new PlanMatch(PlanMatchCode.NONE, null, nearest.dimensions, List.copyOf(reasons));
+    }
+
+    /** 评估时刻落在计划起止之外的秒数（在时段内为 0）；起止缺失的计划排在最后。 */
+    private static long secondsOutside(PlanFact plan, OffsetDateTime asOf) {
+        if (plan.startAt() == null || plan.endAt() == null || asOf == null) return Long.MAX_VALUE;
+        if (asOf.isBefore(plan.startAt())) return Duration.between(asOf, plan.startAt()).getSeconds();
+        if (asOf.isAfter(plan.endAt())) return Duration.between(plan.endAt(), asOf).getSeconds();
+        return 0;
+    }
+
+    private static int coreMatches(Candidate candidate) {
+        return (MATCH.equals(candidate.dimensions.get(DIM_TIME)) ? 1 : 0) + (MATCH.equals(candidate.dimensions.get(DIM_CORRIDOR)) ? 1 : 0);
     }
 
     @Override
@@ -140,7 +175,7 @@ public class PlanMatchCheck implements RuleCheck {
         if (targetSn == null) { dims.put(DIM_IDENTITY, UNDETERMINED); reasons.add("IDENTITY_CLUE_MISSING"); }
         else if (planSn == null) { dims.put(DIM_IDENTITY, UNDETERMINED); reasons.add("PLAN_IDENTITY_UNKNOWN"); }
         else if (targetSn.equals(planSn)) dims.put(DIM_IDENTITY, MATCH);
-        else { dims.put(DIM_IDENTITY, MISMATCH); reasons.add("IDENTITY_MISMATCH"); }
+        else { dims.put(DIM_IDENTITY, MISMATCH); reasons.add(REASON_IDENTITY_MISMATCH); }
         // 起降点与飞手/单位：数据源尚未接入，恒为未知并带原因码。
         dims.put(DIM_TAKEOFF, UNDETERMINED); reasons.add("TAKEOFF_POINT_UNAVAILABLE");
         dims.put(DIM_PILOT, UNDETERMINED); reasons.add("PILOT_UNIT_UNAVAILABLE");
@@ -162,7 +197,7 @@ public class PlanMatchCheck implements RuleCheck {
     /** 选中计划时为 1；确定无候选时为 0；歧义/不适用时无法从 PlanMatch 还原候选数，保持 null 而不是编造。 */
     private static Integer candidateCount(PlanMatch match, String reason) {
         if (match.plan() != null) return 1;
-        if (match.code() == PlanMatchCode.NONE && "NO_PLAN_CANDIDATE".equals(reason)) return 0;
+        if (match.code() == PlanMatchCode.NONE && REASON_NO_PLAN_CANDIDATE.equals(reason)) return 0;
         return null;
     }
 
@@ -174,11 +209,39 @@ public class PlanMatchCheck implements RuleCheck {
         String base = switch (match.code()) {
             case FULL -> "时间窗、走廊与身份均匹配计划 " + match.plan().planId();
             case PARTIAL -> "时间窗与走廊匹配计划 " + match.plan().planId() + "，身份线索缺失";
-            case NONE -> "NO_PLAN_CANDIDATE".equals(reason) ? "没有可匹配的飞行计划" : "候选计划维度不匹配（" + reason + "）";
-            case UNDETERMINED -> "计划匹配不可判定（" + reason + "）";
+            case NONE -> noMatchMessage(match, reason);
+            case UNDETERMINED -> undeterminedMessage(reason);
             case NOT_APPLICABLE -> "计划匹配不适用";
         };
         return demo ? base + "；参数为 DEMO 演示值，尚未确认" : base;
+    }
+
+    /** 对不上计划时用业务话说清是哪一点没对上；不出现原因码，也不点名与本机无关的计划。 */
+    private static String noMatchMessage(PlanMatch match, String reason) {
+        if (REASON_NO_PLAN_CANDIDATE.equals(reason)) return "没有可匹配的飞行计划";
+        boolean outOfTime = MISMATCH.equals(match.dimensions().get(DIM_TIME));
+        boolean offCorridor = MISMATCH.equals(match.dimensions().get(DIM_CORRIDOR));
+        if (match.plan() != null) {
+            if (outOfTime && offCorridor) return "不在计划时段，也不在计划航线走廊内：本机编号的飞行计划对不上当前时刻和位置";
+            if (outOfTime) return "不在计划时段：本机编号的飞行计划时段不包含当前时刻";
+            if (offCorridor) return "不在计划航线走廊内：已偏离本机编号飞行计划的航线";
+            return "本机编号的飞行计划对不上当前飞行";
+        }
+        if (REASON_IDENTITY_MISMATCH.equals(reason)) return "编号不匹配：当前时段的飞行计划登记的无人机编号都与该机不符";
+        if (offCorridor) return "不在任何候选飞行计划的航线走廊内";
+        return "没有对得上的飞行计划";
+    }
+
+    /** 计划说不清是否对得上时，同样用业务话说明卡在哪一点，不直接显示原因码。 */
+    private static String undeterminedMessage(String reason) {
+        String why = reason == null ? null : switch (reason) {
+            case REASON_PLAN_AMBIGUOUS -> "附近有多个飞行计划都可能对应这架无人机，分不清属于哪一个";
+            case "PLAN_TIME_UNKNOWN" -> "候选飞行计划缺少起止时间，无法核对计划时段";
+            case "POSITION_UNKNOWN" -> "目标位置未知，无法核对计划航线";
+            case "CORRIDOR_WIDTH_UNKNOWN", "ROUTE_GEOMETRY_UNKNOWN" -> "候选飞行计划的航线走廊无法确认";
+            default -> null;
+        };
+        return why == null ? "计划匹配暂时无法判定" : "计划匹配不可判定：" + why;
     }
 
     private static String blankToNull(String value) { return value == null || value.isBlank() ? null : value.trim(); }

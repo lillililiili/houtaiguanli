@@ -23,11 +23,12 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TrackQuality;
  * 1. NO_STATE / STALE → NOT_APPLICABLE：过期或缺失的位置不能用来判合法性——目标可能早已离开该点，
  *    据此产生 ILLEGAL 会制造假告警，产生 LEGAL 又会掩盖真实违规，所以只能"不适用"。
  * 2. 质量门（置信度、轨迹点数、相邻间隔）任一不达标 → UNDETERMINED。
- * 3. C01 NONE → C03.no_plan_status；C01 UNDETERMINED → UNDETERMINED。
+ * 3. C01 NONE → C03.no_plan_status（空域类 FAIL 时仍为 ILLEGAL）；C01 UNDETERMINED 且没有空域类 FAIL → UNDETERMINED。
+ *    进禁飞/限高/临管空域本身就是违规，不取决于属于哪个计划：计划不唯一或身份未明时照样走第 4 步判 ILLEGAL。
  * 4. 空域类（C02-1/2/8）任一 FAIL → ILLEGAL；任一 UNDETERMINED（无 FAIL）→ UNDETERMINED。
  * 5. 行为类（C02-3/4/5/7）任一 FAIL → ILLEGAL；应用服务再校验证据充分性。
  * 6. 其余检查有 UNDETERMINED（排除 ignore_undetermined_rules）→ UNDETERMINED；否则 LEGAL。
- * 评分只在 ILLEGAL/ABNORMAL 给出，权重、严重度、等级阈值全部来自参数。
+ * 评分只在 ILLEGAL/ABNORMAL 给出，权重、严重度、等级阈值全部来自参数；某个原因码缺严重度参数时按 0 计入评分，不让整次研判失败。
  */
 public final class C03Decision {
     public static final String RULE_CODE = RuleCodes.C03;
@@ -47,7 +48,7 @@ public final class C03Decision {
     static final String GRADE_HIGH = "HIGH", GRADE_MEDIUM = "MEDIUM", GRADE_LOW = "LOW";
     private static final BigDecimal PERCENT = BigDecimal.valueOf(100);
     private static final int SCORE_SCALE = 2;
-    /** 因子取值是契约定义的定性映射（NONE 1 / PARTIAL 0.5 / FULL 0，桥接 0.6），不是可调阈值。 */
+    /** 因子取值是契约定义的定性映射（NONE 1 / PARTIAL、UNDETERMINED 0.5 / FULL 0，桥接 0.6），不是可调阈值。 */
     private static final BigDecimal FACTOR_FULL = BigDecimal.ZERO;
     private static final BigDecimal FACTOR_PARTIAL = new BigDecimal("0.5");
     private static final BigDecimal FACTOR_NONE = BigDecimal.ONE;
@@ -85,7 +86,8 @@ public final class C03Decision {
         boolean airspaceUnknown = anyResult(details, RuleCodes.AIRSPACE_CHECKS, ResultCode.UNDETERMINED);
         boolean behaviourFail = anyResult(details, RuleCodes.BEHAVIOUR_CHECKS, ResultCode.FAIL);
         List<String> allUnknowns = reasons(details, ResultCode.UNDETERMINED);
-        if (match.code() == PlanMatchCode.UNDETERMINED) {
+        // 计划不明（如附近多个执行中计划分不清，PLAN_AMBIGUOUS）只挡住依赖计划的结论；已判明的空域违规直接进第 4 步。
+        if (match.code() == PlanMatchCode.UNDETERMINED && !airspaceFail) {
             unknowns.addAll(match.reasonCodes().isEmpty() ? List.of(RuleCodes.PLAN_MATCH_UNDETERMINED) : match.reasonCodes());
             unknowns.addAll(allUnknowns);
             return Decision.undetermined(unknowns, violations);
@@ -144,12 +146,16 @@ public final class C03Decision {
         BigDecimal severity = BigDecimal.ZERO;
         String primary = null;
         for (String reason : violations) {
-            BigDecimal value = params.number(RULE_CODE, PARAM_SEVERITY_PREFIX + reason);
+            // 严重度只影响评分与等级，不改变结论：旧规则集版本缺某个原因码的严重度（如 severity.BVLOS_EXCEEDED）时按 0 计，
+            // 不能因为一个评分参数缺项让整次研判抛错、这架目标之后再也判不出来。
+            String key = PARAM_SEVERITY_PREFIX + reason;
+            BigDecimal value = params.has(RULE_CODE, key) ? params.number(RULE_CODE, key) : BigDecimal.ZERO;
             if (primary == null || value.compareTo(severity) > 0) { severity = value; primary = reason; }
         }
+        // 计划不明（UNDETERMINED）既不能当作有计划也不能当作无计划，取与 PARTIAL 相同的中间值。
         BigDecimal planFactor = switch (match.code()) {
             case NONE -> FACTOR_NONE;
-            case PARTIAL -> FACTOR_PARTIAL;
+            case PARTIAL, UNDETERMINED -> FACTOR_PARTIAL;
             default -> FACTOR_FULL;
         };
         TargetState state = context.state();

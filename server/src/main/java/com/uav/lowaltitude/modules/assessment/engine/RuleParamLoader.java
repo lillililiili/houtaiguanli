@@ -50,6 +50,11 @@ public class RuleParamLoader {
         @Override public String ruleSetVersionId() { return ruleSetVersionId; }
         @Override public String paramStatus(String ruleCode, String key) { return require(ruleCode, key).status(); }
 
+        @Override public boolean has(String ruleCode, String key) {
+            Entry entry = values.get(RuleParamLoader.key(ruleCode, key));
+            return entry != null && entry.value() != null && !entry.value().isBlank();
+        }
+
         @Override public BigDecimal number(String ruleCode, String key) {
             Entry entry = require(ruleCode, key);
             try { return new BigDecimal(entry.value().trim()); }
