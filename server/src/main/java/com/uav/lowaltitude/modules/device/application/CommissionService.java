@@ -21,7 +21,6 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 import com.uav.lowaltitude.integration.DeviceAdapterRegistry;
 import com.uav.lowaltitude.integration.SourceMode;
-import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
 
 @Service
 public class CommissionService {
@@ -35,11 +34,14 @@ public class CommissionService {
     private final AuditService audit;
     private final ObjectMapper objectMapper;
     private final DeviceAdapterRegistry adapters;
+    private final MqttCommissionCheck mqtt;
 
     public CommissionService(CommissionRepository repository, DeviceRepository devices, DeviceAccessPolicy access,
                              AppClock clock, AppProperties properties, AuditService audit, ObjectMapper objectMapper,
-                             DeviceAdapterRegistry adapters, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+                             DeviceAdapterRegistry adapters, com.uav.lowaltitude.platform.config.SimulationPolicy simulation,
+                             MqttCommissionCheck mqtt) {
         this.simulation=simulation;
+        this.mqtt = mqtt;
         this.repository = repository;
         this.devices = devices;
         this.access = access;
@@ -67,10 +69,6 @@ public class CommissionService {
         AuthUser user = access.requireCommissionOperate();
         Map<String, Object> device = devices.find(deviceId);
         if (device == null || !repository.deviceInScope(deviceId, user)) throw notFound("DEVICE_NOT_FOUND", "设备不存在或不在授权范围内");
-        if ((DeviceProtocolCodes.LINGYUN_MQTT_V8_6.equals(device.get("protocol_code"))
-                || DeviceProtocolCodes.EO_EDGE_MQTT_20250826.equals(device.get("protocol_code")))
-                && !isLogicalSimulation(device))
-            throw new ApiException(HttpStatus.CONFLICT,"PROTOCOL_UNSUPPORTED","MQTT 协议本轮不提供调测能力");
         if (!asBoolean(device.get("enabled")))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "停用设备不能发起调测");
         if (previousTaskId != null) {
@@ -116,12 +114,14 @@ public class CommissionService {
         String sourceMode = text(device, "source_mode");
         simulation.requireSourceMode(sourceMode);
         if (asBoolean(device.get("simulated"))) simulation.requireSimulation();
-        if (!adapters.supports(SourceMode.valueOf(sourceMode), text(device, "protocol_code")))
+        boolean mqttTask = MqttCommissionCheck.supports(before.protocolCode());
+        if (!mqttTask && !adapters.supports(SourceMode.valueOf(sourceMode), text(device, "protocol_code")))
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "ADAPTER_UNAVAILABLE", "设备协议适配器不可用");
         long now = clock.nowMillis();
         if (repository.transition(id, version, "CREATED", "CONNECTING", now) != 1) throw conflict();
         repository.addEvent(UUID.randomUUID().toString(), id, "CONNECTING", "INFO",
-                before.simulated() ? "模拟适配器正在建立逻辑连接" : "协议适配器正在建立只读连接",
+                mqttTask ? "正在核对平台 MQTT 会话和设备主题订阅" + (before.simulated() ? "（模拟器设备）" : "")
+                        : before.simulated() ? "模拟适配器正在建立逻辑连接" : "协议适配器正在建立只读连接",
                 now, before.simulated());
         devices.addOutbox(UUID.randomUUID().toString(), "commission.connect", id, now, now + 600L);
         audit.record(user.userId(), user.account(), "commission_connect", "commission_task", id, null, null);
@@ -133,12 +133,21 @@ public class CommissionService {
         AuthUser user = access.requireCommissionOperate();
         Task before = required(id, user);
         if (!"CONNECTED".equals(before.status())) throw illegal("仅已连接任务可以保存配置");
-        validate(configuration, isLogicalSimulation(before));
+        String json, message = "连接参数快照已保存，任务可以开始";
+        if (MqttCommissionCheck.supports(before.protocolCode())) {
+            // MQTT 设备不由平台直连：快照取当前平台侧 MQTT 连接，忽略请求中的主机和端口
+            Map<String, Object> endpoint = mqtt.endpoint(before.deviceId(), before.protocolCode());
+            if (endpoint == null)
+                throw new ApiException(HttpStatus.CONFLICT, "MQTT_BINDING_MISSING", "设备未绑定 MQTT 连接，不能保存调测快照");
+            json = write(endpoint);
+            message = "MQTT 连接快照已保存（" + endpoint.get("host") + ":" + endpoint.get("port") + "），任务可以开始";
+        } else {
+            validate(configuration, isLogicalSimulation(before));
+            json = write(configuration);
+        }
         long now = clock.nowMillis();
-        String json = write(configuration);
         if (repository.saveConfiguration(id, version, json, now) != 1) throw conflict();
-        repository.addEvent(UUID.randomUUID().toString(), id, "READY", "INFO",
-                "连接参数快照已保存，任务可以开始", now, before.simulated());
+        repository.addEvent(UUID.randomUUID().toString(), id, "READY", "INFO", message, now, before.simulated());
         audit.record(user.userId(), user.account(), "commission_configuration", "commission_task", id, null, null);
         return required(id, user);
     }
@@ -195,6 +204,7 @@ public class CommissionService {
 
     private static String reportWarning(Task task) {
         if (task.simulated()) return "开发模拟结果，不代表真实设备验收或投运依据";
+        if (MqttCommissionCheck.supports(task.protocolCode())) return MqttCommissionCheck.WARNING;
         if ("COUNTERMEASURE_TCP_4CH_V2_0".equals(task.protocolCode()))
             return "协议链路调测结果；不包含射频发射验证";
         if ("RADAR_TCP_V3_0_0".equals(task.protocolCode()))
@@ -251,10 +261,6 @@ public class CommissionService {
     private static long longNumber(Map<String, Object> r, String key) { Object v = r.get(key); return v instanceof Number n ? n.longValue() : 0; }
     private static Long longValue(Map<String, Object> r, String key) { return r.get(key) == null ? null : longNumber(r, key); }
     private static boolean asBoolean(Object v) { return v instanceof Boolean b ? b : v != null && Boolean.parseBoolean(String.valueOf(v)); }
-    private static boolean isLogicalSimulation(Map<String, Object> device) {
-        return device != null && asBoolean(device.get("simulated"))
-                && List.of("replay", "mock").contains(text(device, "source_mode"));
-    }
     private static boolean isLogicalSimulation(Task task) {
         return task != null && task.simulated() && List.of("replay", "mock").contains(task.sourceMode());
     }

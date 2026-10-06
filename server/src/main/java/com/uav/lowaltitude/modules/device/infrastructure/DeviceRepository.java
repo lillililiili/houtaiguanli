@@ -364,9 +364,10 @@ public class DeviceRepository {
                 """, Map.of("device_id", deviceId, "metric_code", metricCode, "from_time", from, "to_time", to, "limit", limit));
     }
 
+    /** 已删除设备的异常不再进入处理队列（与设备事件一致）；记录本身保留。 */
     public List<Map<String, Object>> incidents(String deviceId, String severity, String stage, int offset, int size) {
         Map<String, Object> p = new HashMap<>();
-        StringBuilder sql = new StringBuilder("SELECT i.*, d.device_no, d.name AS device_name FROM device_incident i JOIN ops_device d ON d.device_id=i.device_id WHERE 1=1");
+        StringBuilder sql = new StringBuilder("SELECT i.*, d.device_no, d.name AS device_name FROM device_incident i JOIN ops_device d ON d.device_id=i.device_id WHERE d.deleted_at IS NULL");
         add(sql, p, "i.device_id", "device_id", deviceId);
         add(sql, p, "i.severity", "severity", severity);
         add(sql, p, "i.stage", "stage", stage);
@@ -377,7 +378,7 @@ public class DeviceRepository {
 
     public long countIncidents(String deviceId, String severity, String stage) {
         Map<String, Object> p = new HashMap<>();
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM device_incident i WHERE 1=1");
+        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM device_incident i JOIN ops_device d ON d.device_id=i.device_id WHERE d.deleted_at IS NULL");
         add(sql, p, "i.device_id", "device_id", deviceId);
         add(sql, p, "i.severity", "severity", severity);
         add(sql, p, "i.stage", "stage", stage);

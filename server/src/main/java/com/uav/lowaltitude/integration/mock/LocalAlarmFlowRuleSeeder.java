@@ -7,13 +7,18 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
 import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 
-/** 本地告警到处罚每类预置两条自动执行条件。重启时替换本预置，不改人工另建的规则。 */
+/**
+ * 本地告警到处罚每类预置两条自动执行条件。只补缺失的预置，不删除、不覆盖任何规则：
+ * 管理员改过（含启停）的预置原样保留；管理员在规则页删掉的预置不再补回；
+ * 同类已有同判定项或同名规则时不再插入，重启可重复执行。
+ */
 @Component
 @Profile("local & qa & !prod & !production")
 @ConditionalOnProperty(prefix = "app.dev-seed", name = "enabled", havingValue = "true")
@@ -28,14 +33,13 @@ public class LocalAlarmFlowRuleSeeder implements ApplicationRunner {
     }
     @Override public void run(ApplicationArguments args) {
         seedPrincipal();
-        jdbc.update("DELETE FROM automation_rule_condition WHERE updated_by='alarm-flow-preset'");
-        preset("verify", "alarm-flow-verify-confidence", "高置信度自动核实", "confidence", "80");
-        preset("verify", "alarm-flow-verify-freshness", "核实观测仍有效", "freshness", "60");
-        preset("counter", "alarm-flow-counter-freshness", "反制观测仍有效", "counterFreshness", "60");
-        preset("counter", "alarm-flow-counter-risk", "达到高风险", "riskLevel", "高风险");
-        preset("dispose", "alarm-flow-dispose-link", "事件已关联当前目标", "eventLink", "风险与当前目标已关联");
-        preset("dispose", "alarm-flow-dispose-freshness", "通知依据仍有效", "disposeFreshness", "120");
-        log.info("preset two automatic rules for each alarm-to-punishment category");
+        int added = preset("verify", "alarm-flow-verify-confidence", "高置信度自动核实", "confidence", "80")
+                + preset("verify", "alarm-flow-verify-freshness", "核实观测仍有效", "freshness", "60")
+                + preset("counter", "alarm-flow-counter-freshness", "反制观测仍有效", "counterFreshness", "60")
+                + preset("counter", "alarm-flow-counter-risk", "达到高风险", "riskLevel", "高风险")
+                + preset("dispose", "alarm-flow-dispose-link", "事件已关联当前目标", "eventLink", "风险与当前目标已关联")
+                + preset("dispose", "alarm-flow-dispose-freshness", "通知依据仍有效", "disposeFreshness", "120");
+        log.info("alarm-to-punishment automatic rule presets checked, {} missing preset(s) added", added);
     }
     /** 停用账号，密码不可登录，角色没有任何菜单或操作权限。 */
     private void seedPrincipal() {
@@ -59,9 +63,27 @@ public class LocalAlarmFlowRuleSeeder implements ApplicationRunner {
         log.info("seeded disabled automation principal {}", AutomationPrincipal.ACCOUNT);
     }
 
-    private void preset(String category, String ruleId, String name, String item, String value) {
+    /** 预置缺失时补一条；已存在、与已有规则冲突或被管理员删掉过时跳过。返回插入条数。 */
+    private int preset(String category, String ruleId, String name, String item, String value) {
+        Integer existing = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM automation_rule_condition
+                 WHERE rule_id=? OR (category=? AND (item_code=? OR name=?))
+                """, Integer.class, ruleId, category, item, name);
+        if (existing != null && existing > 0) return 0;
+        // 规则页每次保存都留变更记录：删除前快照有这条、删除后快照没有，说明是管理员删的，不再补回。
+        String quoted = "%\"" + ruleId + "\"%";
+        Integer removed = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM automation_rule_change
+                 WHERE category=? AND before_json LIKE ? AND after_json NOT LIKE ?
+                """, Integer.class, category, quoted, quoted);
+        if (removed != null && removed > 0) return 0;
         long now = System.currentTimeMillis();
-        jdbc.update("INSERT INTO automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) VALUES(?,?,?,?,?,0,TRUE,?,?, 'alarm-flow-preset')",
-                ruleId, category, name, item, value, now, now);
+        try {
+            return jdbc.update("INSERT INTO automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) VALUES(?,?,?,?,?,0,TRUE,?,?, 'alarm-flow-preset')",
+                    ruleId, category, name, item, value, now, now);
+        } catch (DuplicateKeyException concurrent) {
+            log.info("automatic rule preset {} already configured, skipped", ruleId);
+            return 0;
+        }
     }
 }

@@ -122,6 +122,12 @@ public class CommissionRepository {
                 """, success ? "CONNECTED" : "UNTESTABLE", success ? null : detail, now, success, now, id);
     }
 
+    /** MQTT 任务连接成功时记下平台侧连接快照，参数配置页据此显示服务器地址；不改状态和版本。 */
+    public int recordConnection(String id, String json) {
+        return jdbc.update("UPDATE commission_task SET configuration_json=? WHERE commission_id=? AND status='CONNECTED'",
+                json, id);
+    }
+
     public int completeRun(String id, String status, String criteriaJson, String resultsJson, long now) {
         return jdbc.update("""
                 UPDATE commission_task SET status=?,criteria_snapshot=?,results_json=?,finished_at=?,

@@ -13,6 +13,9 @@
 **/*.pyc
 **/*.log
 **/.env.local
+# 部署口令只放本机 env 文件，仓库只保留 *.example。
+deploy/.env
+deploy/.env.integration
 ruoyi-ui/.env.development
 ruoyi-ui/.env.production
 server/data/

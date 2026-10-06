@@ -5,8 +5,8 @@ import ElementPlus from 'element-plus';
 import CommissionView from '@/views/operations/CommissionView.vue';
 import { commissionApi, deviceApi } from '@/api/devices.js';
 
-const permissions = vi.hoisted(() => ({ operate: true }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: key => key !== 'commissioning.op' || permissions.operate, hasMenu: () => true }) }));
+const permissions = vi.hoisted(() => ({ operate: true, devices: true }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: key => (key !== 'commissioning.op' || permissions.operate) && (key !== 'devices.op' || permissions.devices), hasMenu: () => true }) }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn() }, commissionApi: Object.fromEntries(['information', 'list', 'report', 'get', 'events', 'create', 'connect', 'configure', 'start', 'cancel'].map(key => [key, vi.fn()])) }));
 let app, host, task;
 const device = { device_id: 'qa', name: '本机协议模拟器', device_no: 'QA', source_mode: 'live', simulated: true };
@@ -20,7 +20,7 @@ async function mount() {
 }
 const button = text => [...host.querySelectorAll('button')].find(el => el.textContent.trim() === text);
 beforeEach(() => {
-  vi.clearAllMocks(); permissions.operate = true; task = null;
+  vi.clearAllMocks(); permissions.operate = true; permissions.devices = true; task = null;
   deviceApi.list.mockResolvedValue({ items: [device], total: 1 });
   deviceApi.detail.mockResolvedValue({ connection: { transport: 'TCP', host: '127.0.0.1', port: 10007 } });
   commissionApi.information.mockResolvedValue(info());
@@ -67,17 +67,37 @@ describe('调测模拟来源使用服务端明确许可', () => {
     expect(host.textContent).toContain('非正式');
     expect(host.textContent).toContain('模拟数据');
   });
-  it('回放模拟器设备使用逻辑调测配置，不读取真实连接参数', async () => {
-    const simulator = { ...device, source_mode: 'replay', simulated: true, protocol_code: 'LINGYUN_MQTT_V8_6' };
-    deviceApi.list.mockResolvedValue({ items: [simulator], total: 1 });
-    commissionApi.information.mockResolvedValue(info({ task_supported: true }));
+  it.each([['live', false], ['replay', true]])('%s MQTT 设备显示平台侧 MQTT 服务器，保存配置只提交版本', async (sourceMode, simulated) => {
+    const radar = { ...device, source_mode: sourceMode, simulated, protocol_code: 'LINGYUN_MQTT_V8_6' };
+    deviceApi.list.mockResolvedValue({ items: [radar], total: 1 });
+    commissionApi.information.mockResolvedValue(info({ sections: [{ code: 'mqtt_endpoint', fields: [
+      { key: 'host', value: '10.8.0.5', status: 'CONFIGURED' }, { key: 'port', value: 8883, status: 'CONFIGURED' },
+      { key: 'tls', value: true, status: 'CONFIGURED' }] }] }));
     await mount();
+    const broker = host.querySelector('input[placeholder="建立连接后显示平台 MQTT 服务器"]');
+    expect(broker.value).toBe('10.8.0.5'); expect(broker.disabled).toBe(true);
+    expect([...host.querySelectorAll('input')].map(el => el.value)).toEqual(expect.arrayContaining(['8883', 'MQTT（TLS）', '工参与感知报文 30 秒内']));
+    expect(host.textContent).not.toContain('此协议使用主动上报');
     button('创建新任务').click(); await settle();
     button('建立连接').click(); await settle();
-    expect(host.querySelector('input[placeholder="建立连接后配置"]').value).toBe('simulator');
-    expect([...host.querySelectorAll('input')].map(el => el.value)).toContain('8766');
     button('保存配置').click(); await settle();
-    expect(commissionApi.configure).toHaveBeenCalledWith('task', expect.objectContaining({ transport: 'SIMULATOR', host: 'simulator', port: 8766 }));
+    expect(commissionApi.configure).toHaveBeenCalledWith('task', { version: 1, transport: 'MQTT' });
+    expect(deviceApi.detail).not.toHaveBeenCalled();
+  });
+  it('无设备运维权限时提示连接参数不可见，MQTT 任务连接后显示任务快照中的服务器', async () => {
+    permissions.devices = false;
+    await mount();
+    expect(host.textContent).toContain('看不到设备登记的连接参数');
+    expect(deviceApi.detail).not.toHaveBeenCalled();
+    app.unmount(); host.remove();
+    deviceApi.list.mockResolvedValue({ items: [{ ...device, protocol_code: 'EO_EDGE_MQTT_20250826' }], total: 1 });
+    commissionApi.information.mockResolvedValue(info({ sections: [{ code: 'mqtt_endpoint', fields: [{ key: 'host', value: null, status: 'REDACTED' }] }] }));
+    task = { ...device, commission_id: 'task', status: 'CONNECTED', version: 2, protocol_code: 'EO_EDGE_MQTT_20250826',
+      configuration: { transport: 'MQTT', broker_name: '现场 MQTT', host: '10.8.0.6', port: 1883, tls: false } };
+    await mount();
+    expect(host.querySelector('input[placeholder="建立连接后显示平台 MQTT 服务器"]').value).toBe('10.8.0.6');
+    expect([...host.querySelectorAll('input')].map(el => el.value)).toEqual(expect.arrayContaining(['1883', 'MQTT（未加密）', '心跳按平台心跳超时判定']));
+    expect(host.textContent).not.toContain('看不到设备登记的连接参数');
   });
   it.each([{ simulation_allowed: false }, { simulation_allowed: undefined }, { simulation_allowed: 'true' }, { device_id: 'other' }])('未获同设备的明确许可时禁用创建：%j', async fields => {
     commissionApi.information.mockResolvedValue(info(fields)); await mount();

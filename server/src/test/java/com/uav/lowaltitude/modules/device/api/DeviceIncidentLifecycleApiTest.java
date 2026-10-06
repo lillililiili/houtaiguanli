@@ -1,7 +1,9 @@
 package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -193,6 +195,45 @@ class DeviceIncidentLifecycleApiTest {
                         .header("Authorization", bearer(reader)).header("Idempotency-Key", "inc-denied-" + UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"无操作权限\"}"))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void deletingTheDeviceTakesItsOpenIncidentOutOfTheMonitoringQueue() throws Exception {
+        String ops = login("admin1");
+        String deviceId = deviceId("DEV-MOCK-007", ops);
+        String incidentId = pendingIncident(deviceId);
+        JsonNode before = incidents(ops);
+        assertThat(before.path("items").findValuesAsText("incident_id")).contains(incidentId);
+
+        long version = deviceVersion(deviceId, ops);
+        mvc.perform(patch("/api/v1/devices/{id}/enabled", deviceId).header("Authorization", bearer(ops))
+                        .header("Idempotency-Key", "inc-disable-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"enabled\":false,\"version\":" + version + ",\"reason\":\"清理不再上报的模拟设备\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(delete("/api/v1/devices/{id}", deviceId).header("Authorization", bearer(ops))
+                        .header("Idempotency-Key", "inc-delete-" + UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":" + deviceVersion(deviceId, ops) + ",\"reason\":\"清理不再上报的模拟设备\"}"))
+                .andExpect(status().isOk());
+
+        JsonNode after = incidents(ops);
+        assertThat(after.path("items").findValuesAsText("incident_id")).doesNotContain(incidentId);
+        assertThat(after.path("total").asLong()).isEqualTo(before.path("total").asLong() - 1);
+        assertThat(jdbc.queryForObject("select stage from device_incident where incident_id=?", String.class, incidentId))
+                .isEqualTo("PENDING");
+    }
+
+    private JsonNode incidents(String token) throws Exception {
+        String body = mvc.perform(get("/api/v1/device-incidents?stage=PENDING&page=1&size=100").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).path("data");
+    }
+
+    private long deviceVersion(String deviceId, String token) throws Exception {
+        String body = mvc.perform(get("/api/v1/devices/{id}", deviceId).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(body).path("data").path("device").path("version").asLong();
     }
 
     private String pendingIncident(String deviceId) {

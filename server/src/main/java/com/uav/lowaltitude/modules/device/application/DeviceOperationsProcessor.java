@@ -30,12 +30,14 @@ public class DeviceOperationsProcessor {
     private final EoEdgeCommandService eoCommands;
     private final LingyunControlService lingyunControl;
     private final Countermeasure4ChControlService countermeasureControl;
+    private final MqttCommissionCheck mqtt;
 
     public DeviceOperationsProcessor(DeviceRepository devices, CommissionRepository commissions,
                                      DeviceAdapterRegistry adapters, AppProperties properties,
                                      AppClock clock, ObjectMapper objectMapper, EoEdgeCommandService eoCommands,
                                      LingyunControlService lingyunControl,
-                                     Countermeasure4ChControlService countermeasureControl) {
+                                     Countermeasure4ChControlService countermeasureControl,
+                                     MqttCommissionCheck mqtt) {
         this.devices = devices;
         this.commissions = commissions;
         this.clock = clock;
@@ -44,6 +46,7 @@ public class DeviceOperationsProcessor {
         this.eoCommands = eoCommands;
         this.lingyunControl = lingyunControl;
         this.countermeasureControl = countermeasureControl;
+        this.mqtt = mqtt;
     }
 
     @Transactional
@@ -151,11 +154,22 @@ public class DeviceOperationsProcessor {
     private void connect(String taskId) {
         Map<String, Object> row = commissions.findTask(taskId);
         if (row == null || !"CONNECTING".equals(text(row, "status"))) return;
-        DeviceAdapterPort adapter = adapter(row);
-        AdapterResult result = adapter.connect(new DeviceAdapterPort.CommissionWork(taskId, text(row, "commission_no"),
-                text(row, "device_id"), text(row, "device_no"), text(row, "resolved_protocol_code"), adapterConfiguration(row)));
+        String protocol = text(row, "resolved_protocol_code");
+        AdapterResult result;
+        String endpoint = null;
+        if (MqttCommissionCheck.supports(protocol)) {
+            // MQTT 设备主动上报：核对平台会话与订阅，并记下平台侧连接快照供参数配置显示
+            result = mqtt.connect(text(row, "device_id"), protocol);
+            Map<String, Object> snapshot = result.success() ? mqtt.endpoint(text(row, "device_id"), protocol) : null;
+            if (snapshot != null) endpoint = json(snapshot);
+        } else {
+            DeviceAdapterPort adapter = adapter(row);
+            result = adapter.connect(new DeviceAdapterPort.CommissionWork(taskId, text(row, "commission_no"),
+                    text(row, "device_id"), text(row, "device_no"), protocol, adapterConfiguration(row)));
+        }
         long now = clock.nowMillis();
         if (commissions.completeConnect(taskId, result.success(), now, result.detail()) == 1) {
+            if (endpoint != null) commissions.recordConnection(taskId, endpoint);
             commissions.addEvent(UUID.randomUUID().toString(), taskId,
                     result.success() ? "CONNECTED" : "UNTESTABLE", result.success() ? "INFO" : "ERROR",
                     result.detail(), now, bool(row, "simulated"));
@@ -165,22 +179,25 @@ public class DeviceOperationsProcessor {
     private void commission(String taskId) {
         Map<String, Object> row = commissions.findTask(taskId);
         if (row == null || !"RUNNING".equals(text(row, "status"))) return;
-        DeviceAdapterPort adapter = adapter(row);
-        CommissionResult result = adapter.commission(new DeviceAdapterPort.CommissionWork(taskId,
-                text(row, "commission_no"), text(row, "device_id"), text(row, "device_no"),
-                text(row, "resolved_protocol_code"), adapterConfiguration(row)));
+        String protocol = text(row, "resolved_protocol_code");
+        boolean mqttTask = MqttCommissionCheck.supports(protocol);
+        CommissionResult result = mqttTask ? mqtt.run(text(row, "device_id"), protocol)
+                : adapter(row).commission(new DeviceAdapterPort.CommissionWork(taskId,
+                        text(row, "commission_no"), text(row, "device_id"), text(row, "device_no"),
+                        protocol, adapterConfiguration(row)));
         long now = clock.nowMillis();
         Map<String, Object> criteria = new LinkedHashMap<>();
         boolean simulated = bool(row, "simulated");
-        criteria.put("source", simulated ? "DEVELOPMENT_SIMULATION" : text(row, "resolved_protocol_code"));
+        criteria.put("source", simulated ? "DEVELOPMENT_SIMULATION" : protocol);
         criteria.put("confirmed", false);
-        String protocol = text(row, "resolved_protocol_code");
         criteria.put("warning", simulated ? "甲方设备协议与正式调测判据尚未确认"
+                : mqttTask ? MqttCommissionCheck.WARNING
                 : "COUNTERMEASURE_TCP_4CH_V2_0".equals(protocol)
                     ? "协议链路调测结果；不包含射频发射验证"
                     : "RADAR_TCP_V3_0_0".equals(protocol)
                         ? "协议链路调测结果；雷达待机无航迹时结论可为不可判定"
                         : "协议链路调测结果");
+        if (mqttTask) criteria.put("thresholds", mqtt.thresholds(protocol));
         Map<String, Object> results = new LinkedHashMap<>();
         results.put("result_code", result.resultCode());
         results.put("detail", result.detail());

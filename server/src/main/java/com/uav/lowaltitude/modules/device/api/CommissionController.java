@@ -84,8 +84,9 @@ public class CommissionController {
 
     public record CreateRequest(@NotBlank String deviceId, String previousTaskId) { }
     public record VersionRequest(@NotNull Long version) { }
+    /** TCP 等直连协议的传输方式、主机和端口由服务端校验必填；MQTT 任务只需 version，快照取平台侧 MQTT 连接。 */
     public record ConfigurationRequest(
-            @NotNull Long version, @NotBlank String transport, @NotBlank String host, @NotNull Integer port,
+            @NotNull Long version, String transport, String host, Integer port,
             String path, String dataFormat, String charsetName, String authMode, String credentialRef,
             Integer heartbeatIntervalSeconds, Integer reportIntervalMillis, BigDecimal samplingRateHz,
             Boolean compressionEnabled, Boolean retransmissionEnabled, Integer timeoutMillis, Integer retryCount,

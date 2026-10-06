@@ -108,6 +108,23 @@ class DeviceBusinessScopeTest {
     }
 
     @Test
+    void deletedDeviceLeavesTheIncidentQueueButKeepsTheRecord() {
+        String dev = device("STAGE5-DELETED", "已删除设备");
+        map(dev, ORG_A, DISTRICT_A);
+        incident("stage5-inc-deleted", dev, 6_500);
+        AccessDecision all = new AccessDecision(userId, ScopeMode.ALL);
+        long before = repository.countIncidents(all);
+        assertThat(countMine(all)).isEqualTo(1);
+
+        jdbc.update("update ops_device set enabled=false, deleted_at=1 where device_id=?", dev);
+        assertThat(countMine(all)).isZero();
+        assertThat(repository.countIncidents(all)).isEqualTo(before - 1);
+        assertThat(repository.findIncident("stage5-inc-deleted", all)).isNull();
+        assertThat(jdbc.queryForObject("select stage from device_incident where incident_id='stage5-inc-deleted'", String.class))
+                .isEqualTo("PENDING");
+    }
+
+    @Test
     void emptyMappingTableMeansUnconfiguredRatherThanNoIncidents() {
         String dev = device("STAGE5-UNCONF", "未配置设备");
         incident("stage5-inc-unconf", dev, 7_000);

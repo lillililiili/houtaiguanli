@@ -74,8 +74,11 @@ cd ..\server
 .\mvnw.cmd package
 
 cd ..\deploy
+Copy-Item .env.example .env   # 仅首次部署：编辑 .env，填写 APP_SUPER_ADMIN_PASSWORD
 docker compose up -d --build
 ```
+
+首次部署（空库）时 api 用 `deploy/.env` 里的 `APP_SUPER_ADMIN_PASSWORD` 一次性创建唯一超级管理员 `admin1`（可用 `APP_SUPER_ADMIN_ACCOUNT` 指定其他账号，创建后不再改）。初始密码须为 6–32 位，含大写字母、小写字母、数字和特殊字符，且不含账号；首次登录管理端后须改密，改好后删除 `deploy/.env` 里的初始密码，之后重启不会再创建或改动管理员。空库没填初始密码时 api 拒绝启动，日志提示 `APP_SUPER_ADMIN_PASSWORD must be configured`，填写后执行 `docker compose up -d api`。`deploy/.env` 已被 Git 忽略，不要提交。
 
 Compose 默认把同级业务前台目录 `../demo-ronghe/dongying-vue/dist` 挂载到 5173，并把 `../demo-ronghe/map-data` 作为 API 可写、业务 Nginx 只读的共享地图目录；可用 `BUSINESS_UI_DIST` 和 `MAP_PACKAGE_DATA_DIR` 覆盖。后台静态站点使用 5175，两个站点均反向代理到同一个 API 服务。
 
