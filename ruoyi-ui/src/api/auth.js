@@ -4,5 +4,6 @@ export const authApi = {
   login: body => request({ method: 'post', url: '/v1/auth/login', data: body }),
   me: () => request({ url: '/v1/auth/me' }),
   logout: () => request({ method: 'post', url: '/v1/auth/logout' }),
-  changePassword: body => request({ method: 'post', url: '/v1/auth/change-password', data: body })
+  changePassword: body => request({ method: 'post', url: '/v1/auth/change-password', data: body }),
+  updateProfile: body => request({ method: 'patch', url: '/v1/auth/profile', data: body })
 };

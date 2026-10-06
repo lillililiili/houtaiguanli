@@ -10,6 +10,7 @@ import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
+import { DATA_SCOPE_OPTIONS, DEFAULT_DATA_SCOPE, dataScopeHint, dataScopeLabel, followsOrganization, isAssignableDataScope } from '@/utils/dataScope'
 
 const auth = useAuthStore()
 const ALL_ORGS = '__all__'
@@ -32,6 +33,10 @@ const canEditBasic = computed(() => canReadUsers.value && auth.hasPermission('us
 const canManageOrganization = computed(() => canEditDirectory.value || canEditBasic.value)
 const selectedOrg = computed(() => organizations.value.find(item => item.org_id === selectedOrgId.value))
 const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false))
+// 数据范围或（按单位维护时）所属单位变了，服务端会让该用户的登录失效，按新范围重新登录。
+const scopeChanged = computed(() => userDialog.mode === 'edit' && userDialog.form.data_scope !== userDialog.row?.data_scope)
+const scopeNeedsRelogin = computed(() => scopeChanged.value
+  || (userDialog.mode === 'edit' && userDialog.form.org_id !== userDialog.row?.org_id && followsOrganization(userDialog.form.data_scope)))
 
 const treeData = computed(() => {
   const nodes = new Map(organizations.value.map(item => [item.org_id, { ...item, label: item.name, children: [] }]))
@@ -104,7 +109,8 @@ function openUser(mode, row = null) {
   userDialog.form = {
     account: '', name: row?.name || '', phone: row?.phone || '',
     org_id: row?.org_id || selectedOrg.value?.org_id || '',
-    role_code: row?.role_code || '', temporary_password: ''
+    role_code: row?.role_code || '', temporary_password: '',
+    data_scope: row ? row.data_scope : DEFAULT_DATA_SCOPE
   }
   userDialog.visible = true
 }
@@ -119,14 +125,17 @@ async function saveUser() {
   userDialog.busy = true
   try {
     if (userDialog.mode === 'create') {
-      await systemApi.createUser({ account: form.account.trim(), name: form.name.trim(), phone: form.phone?.trim() || '', org_id: form.org_id, role_code: form.role_code, temporary_password: form.temporary_password })
+      await systemApi.createUser({ account: form.account.trim(), name: form.name.trim(), phone: form.phone?.trim() || '', org_id: form.org_id, role_code: form.role_code, temporary_password: form.temporary_password, data_scope: form.data_scope })
     } else {
       const body = { name: form.name.trim(), phone: form.phone?.trim() || '', org_id: form.org_id, expected_version: userDialog.row.version }
       if (!isAdmin(userDialog.row)) body.role_code = form.role_code
+      // 只在管理员改了范围时发送；早期账号的“指定单位和区域”不动就原样保留。
+      if (scopeChanged.value && isAssignableDataScope(form.data_scope)) body.data_scope = form.data_scope
       await systemApi.updateUser(userDialog.row.user_id, body)
     }
+    const relogin = scopeNeedsRelogin.value
     userDialog.visible = false
-    ElMessage.success(userDialog.mode === 'create' ? '用户已创建并立即生效。' : '用户资料已保存。')
+    ElMessage.success(userDialog.mode === 'create' ? '用户已创建并立即生效。' : relogin ? '用户资料已保存，该用户需要重新登录后按新的数据范围查看。' : '用户资料已保存。')
     await loadUsers()
   } catch (e) { ElMessage.error(e.message || '用户保存失败。') }
   finally { userDialog.busy = false }
@@ -224,6 +233,7 @@ onMounted(refreshAll)
         <div v-else class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
           <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" />
+          <el-table-column label="数据范围" min-width="128"><template #default="{ row }">{{ dataScopeLabel(row.data_scope) }}</template></el-table-column>
           <el-table-column label="状态" width="82"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
           <el-table-column label="最后登录" min-width="168"><template #default="{ row }">{{ row.last_login_at ? formatTime(row.last_login_at) : '从未登录' }}</template></el-table-column>
           <el-table-column label="操作" width="276" fixed="right"><template #default="{ row }">
@@ -245,6 +255,15 @@ onMounted(refreshAll)
         <el-form-item label="所属单位" required><el-select v-model="userDialog.form.org_id" filterable><el-option v-for="org in organizations" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item>
         <el-form-item label="角色" required><el-select v-model="userDialog.form.role_code" :disabled="isAdmin(userDialog.row)"><el-option v-for="role in activeRoles" :key="role.role_code" :label="role.name" :value="role.role_code" :disabled="role.role_code === 'ROLE-ADMIN' && !isAdmin(userDialog.row)" /></el-select></el-form-item>
         <el-form-item v-if="userDialog.mode === 'create'" label="临时密码" required><el-input v-model="userDialog.form.temporary_password" type="password" show-password autocomplete="new-password" maxlength="32" /><small>6–32 位，包含大小写字母、数字和特殊字符。</small></el-form-item>
+        <el-form-item label="数据范围" required class="dialog-grid__wide">
+          <el-radio-group v-model="userDialog.form.data_scope" :disabled="isAdmin(userDialog.row)">
+            <el-radio v-for="option in DATA_SCOPE_OPTIONS" :key="option.value" :label="option.value">{{ option.label }}</el-radio>
+          </el-radio-group>
+          <small v-if="isAdmin(userDialog.row)">超级管理员固定能看到全部单位的数据。</small>
+          <small v-else-if="!isAssignableDataScope(userDialog.form.data_scope)">当前为“{{ dataScopeLabel(userDialog.form.data_scope) }}”（早期审批设置）。不选就保持原样；选择后改为按所属单位确定范围。</small>
+          <small v-else>{{ dataScopeHint(userDialog.form.data_scope) }}告警、统计、导出和证据都按这个范围显示。</small>
+        </el-form-item>
+        <el-alert v-if="scopeNeedsRelogin" class="dialog-grid__wide" title="保存后该用户需要重新登录，之后按新的数据范围查看。" type="warning" show-icon :closable="false" />
       </el-form>
       <template #footer><el-button @click="userDialog.visible=false">取消</el-button><el-button type="primary" :loading="userDialog.busy" @click="saveUser">保存并立即生效</el-button></template>
     </el-dialog>
@@ -273,7 +292,7 @@ onMounted(refreshAll)
 .org-node__more:hover,.org-node__more:focus-visible{color:var(--admin-secondary);background:#fff;opacity:1}
 :deep(.org-tree .el-tree-node__content:hover) .org-node__more,:deep(.org-tree .el-tree-node.is-current>.el-tree-node__content) .org-node__more{opacity:1}
 .org-panel__hint{margin:0;padding:11px 16px;border-top:1px solid var(--admin-border);color:var(--admin-muted);background:#fff;font-size:12px}
-.table-toolbar{display:flex;align-items:center;justify-content:space-between}.table-panel{display:flex;min-width:0;min-height:0;flex-direction:column;padding:16px}.filter-bar{flex:none}.table-toolbar{padding:4px 0 12px;color:var(--admin-muted)}.pagination{justify-content:flex-end;margin-top:16px}.dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.dialog-grid small{display:block;margin-top:5px;color:var(--admin-muted)}
+.table-toolbar{display:flex;align-items:center;justify-content:space-between}.table-panel{display:flex;min-width:0;min-height:0;flex-direction:column;padding:16px}.filter-bar{flex:none}.table-toolbar{padding:4px 0 12px;color:var(--admin-muted)}.pagination{justify-content:flex-end;margin-top:16px}.dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}.dialog-grid__wide{grid-column:1/-1}.dialog-grid>.el-alert{margin-bottom:12px}.dialog-grid small{display:block;margin-top:5px;color:var(--admin-muted)}
 @media(max-width:900px){.user-management{min-height:620px;grid-template-columns:1fr}.org-panel{max-height:320px;border-right:0;border-bottom:1px solid var(--admin-border)}.org-panel__header{min-height:68px}.dialog-grid{grid-template-columns:1fr}}
 .user-management{border:1px solid var(--admin-border);border-radius:12px;background:var(--admin-card);box-shadow:var(--admin-shadow);isolation:isolate}
 .org-panel{background:linear-gradient(rgba(238,242,246,.94),rgba(238,242,246,.94)),url('/assets/img/admin/aviation-ambient.webp') center/cover}.org-panel__header{background:rgba(255,255,255,.82);backdrop-filter:blur(10px)}
