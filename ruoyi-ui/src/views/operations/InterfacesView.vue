@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import VoiceRecordingPanel from './VoiceRecordingPanel.vue';
+import MqttConnectionPanel from './MqttConnectionPanel.vue';
 import { externalInterfacesApi } from '@/api/externalInterfaces.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { formatTime } from '@/utils/format.js';
@@ -15,6 +16,10 @@ const isPlan = computed(() => kind.value === 'FLIGHT_PLAN');
 const isWeather = computed(() => kind.value === 'WEATHER_FORECAST');
 // 电话通知录音有自己的面板和接口，不读外部接口配置。
 const isVoice = computed(() => kind.value === 'VOICE_RECORDING');
+// 设备数据连接（MQTT）有自己的列表和保存逻辑，不走外部接口配置的单条读写。
+const isMqtt = computed(() => kind.value === 'MQTT');
+const OWN_PANELS = ['VOICE_RECORDING', 'MQTT'];
+const isOwnPanel = computed(() => OWN_PANELS.includes(kind.value));
 const fields = ['name', 'source_code', 'direction', 'endpoint', 'credential_ref', 'allowed_cidrs', 'area_name', 'interval_minutes', 'validity_minutes', 'source_mode'];
 const form = reactive({});
 let sequence = 0;
@@ -33,7 +38,7 @@ async function load() {
 async function select(value) {
   if (saving.value || kind.value === value) return;
   kind.value = value;
-  if (value === 'VOICE_RECORDING') { sequence++; loading.value = false; error.value = ''; saveError.value = ''; config.value = null; return; }
+  if (OWN_PANELS.includes(value)) { sequence++; loading.value = false; error.value = ''; saveError.value = ''; config.value = null; return; }
   await load();
 }
 async function save() {
@@ -58,11 +63,13 @@ onBeforeUnmount(() => { sequence++; });
     <div class="interface-choices" role="tablist" aria-label="接口类别">
       <button type="button" role="tab" :aria-selected="isPlan" :class="{ active: isPlan }" :disabled="saving" @click="select('FLIGHT_PLAN')"><b>飞行计划输入</b><span>外部计划系统</span></button>
       <button type="button" role="tab" :aria-selected="isWeather" :class="{ active: isWeather }" :disabled="saving" @click="select('WEATHER_FORECAST')"><b>天气预报</b><span>天气预报服务</span></button>
+      <button type="button" role="tab" :aria-selected="isMqtt" :class="{ active: isMqtt }" :disabled="saving" @click="select('MQTT')"><b>设备数据连接</b><span>设备上报通道（MQTT）</span></button>
       <button type="button" role="tab" :aria-selected="isVoice" :class="{ active: isVoice }" :disabled="saving" @click="select('VOICE_RECORDING')"><b>电话通知录音</b><span>自动拨打飞手电话时播放</span></button>
     </div>
+    <MqttConnectionPanel v-if="isMqtt" />
     <VoiceRecordingPanel v-if="isVoice" />
-    <ErrorAlert v-if="!isVoice" :message="error" @retry="load" />
-    <div v-if="!isVoice" v-loading="loading" class="interface-workspace">
+    <ErrorAlert v-if="!isOwnPanel" :message="error" @retry="load" />
+    <div v-if="!isOwnPanel" v-loading="loading" class="interface-workspace">
       <el-card v-if="config" class="config-card">
         <template #header><b>{{ isPlan ? '飞行计划输入接口' : '天气预报接口' }}</b></template>
         <el-form ref="formRef" :model="form" :disabled="!canEdit || saving" label-position="top" class="interface-form">

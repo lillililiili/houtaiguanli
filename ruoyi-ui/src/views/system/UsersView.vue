@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled, OfficeBuilding, Plus } from '@element-plus/icons-vue'
 import OrganizationDialog from './organization/OrganizationDialog.vue'
+import DistrictsDialog from './DistrictsDialog.vue'
 import { directoryApi } from '@/api/organizationDirectory'
 import { hasUserAccess, hasOrganizationAccess } from '@/config/navigation'
 import PageHeader from '@/components/PageHeader.vue'
@@ -24,6 +25,7 @@ const filters = reactive({ keyword: '', roleCode: '', status: '', page: 1, size:
 const userDialog = reactive({ visible: false, busy: false, mode: 'create', row: null, form: {} })
 const orgDialog = reactive({ visible: false, row: null, parent: null, mode: 'view' })
 const resetDialog = reactive({ visible: false, busy: false, row: null, password: '' })
+const districtDialogVisible = ref(false)
 const canOperate = computed(() => auth.hasPermission('users.op'))
 const canReadUsers = computed(() => hasUserAccess(auth.user))
 const canReadDirectory = computed(() => auth.hasPermission('organizations.read'))
@@ -183,7 +185,8 @@ onMounted(refreshAll)
 
 <template>
   <div class="page-stack page-stack--viewport">
-    <PageHeader title="用户管理" description="单位、账号、角色与状态统一管理；唯一超级管理员受服务端保护。">
+    <PageHeader title="用户管理" description="单位、区域、账号、角色与状态统一管理；唯一超级管理员受服务端保护。">
+      <el-button v-if="canReadUsers" @click="districtDialogVisible = true">区域管理</el-button>
       <el-button v-if="canReadUsers" :disabled="!canOperate" type="primary" @click="openUser('create')">新增用户</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="refreshAll" />
@@ -254,6 +257,7 @@ onMounted(refreshAll)
       <template #footer><el-button @click="resetDialog.visible=false">取消</el-button><el-button type="primary" :loading="resetDialog.busy" @click="resetPassword">重置密码</el-button></template>
     </el-dialog>
     <OrganizationDialog v-model:visible="orgDialog.visible" :row="orgDialog.row" :parent="orgDialog.parent" :mode="orgDialog.mode" :organizations="organizations" :can-read-directory="canReadDirectory" :can-edit-directory="canEditDirectory" :can-edit-basic="canEditBasic" @saved="orgSaved" />
+    <DistrictsDialog v-if="canReadUsers" v-model:visible="districtDialogVisible" :can-edit="canEditBasic" />
   </div>
 </template>
 

@@ -16,6 +16,7 @@ public class MqttBrokerController {
     public MqttBrokerController(MqttConfigurationService service) { this.service=service; }
     @GetMapping public ApiResponse<List<Broker>> list() { return ApiResponse.ok(service.list()); }
     @GetMapping("/scopes") public ApiResponse<List<Map<String,Object>>> scopes() { return ApiResponse.ok(service.scopes()); }
+    @GetMapping("/capabilities") public ApiResponse<MqttConfigurationService.Capabilities> capabilities() { return ApiResponse.ok(service.capabilities()); }
     @GetMapping("/{id}") public ApiResponse<Broker> get(@PathVariable String id) { return ApiResponse.ok(service.get(id)); }
     @PostMapping public ApiResponse<Broker> create(@RequestBody BrokerInput body,@RequestHeader(value="Idempotency-Key",required=false) String key) {
         return ApiResponse.ok(service.create(body,key));

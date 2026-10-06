@@ -125,7 +125,7 @@
 
 ```text
 GET  /api/v1/rule-sets                                   rule:read
-GET  /api/v1/rule-sets/{code}/versions                   rule:read   items:{rule_set_version_id,version_no,status_code,param_status,valid_from,valid_to,is_active,is_shadow}
+GET  /api/v1/rule-sets/{code}/versions                   rule:read   items:{rule_set_version_id,version_no,status_code,param_status,valid_from,valid_to,is_active,is_shadow,activation_allowed,activation_block_reason?}
 GET  /api/v1/rule-set-versions/{id}                      rule:read   {…, members:[{rule_code,rule_version_id,priority,enabled}], params:[{rule_code,key,value,type,unit,status,note}]}
 POST /api/v1/rule-sets/{code}/activate                   rule:manage {rule_set_version_id,note,expected_version}
 POST /api/v1/rule-sets/{code}/rollback                   rule:manage {note,expected_version}
@@ -145,6 +145,8 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 ```
 
 `summary`：`evaluations, alarm_worthy, alarms_created, alarms_merged, convergence_ratio, reviewed, false_positive_rate(REJECTED/reviewed), miss_rate(OVERRIDE 由 LEGAL|UNDETERMINED 改为 ILLEGAL|ABNORMAL / reviewed), manual_override_rate((REJECTED+OVERRIDDEN)/reviewed)`；分母 0 → `{value:null, availability:"NO_DENOMINATOR"}`。`allowed_actions`：PENDING_REVIEW 且有 revise → `REVIEW`；非 SUPERSEDED 且有 evaluate → `RECOMPUTE`；`legal_status ≠ LEGAL` 且无 `alarm_id` 且有 escalate → `ESCALATE`。`hit_details` 元素：`{rule_code, rule_version_id, result_code, reason_code, severity, facts{…}, params[{key,value,status}], evidence[{kind,id}], message}`。
+
+版本列表的 `activation_allowed` 与激活接口的守卫同源：已发布、参数为 `CONFIRMED`（或显式测试环境 `local`+`qa`/`test` 且 `allow-demo-active=true` 时的 `DEMO`）、且尚未生效；为 `false` 时 `activation_block_reason` 给出中文原因（版本尚未发布 / 演示参数尚未经业务方确认，正式环境不能启用 / 该版本已是生效版本）。管理端“规则管理 → 研判规则集”据此给出“启用此版本”；账号是否有 `rule:manage` 仍由激活接口单独校验。
 
 ## 2026-09-17 合法性页面无人机范围
 

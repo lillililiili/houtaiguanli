@@ -128,7 +128,7 @@ class DeviceMaintenanceNoticeApiTest {
     }
     @Test void revokedPermissionAndAnonymousCallerCannotResend()throws Exception {
         create();advance();
-        jdbc.update("DELETE FROM app_role_permission WHERE role_code='ROLE-ADMIN' AND permission_code='handoff:create'");sqlSession.clearCache();
+        com.uav.lowaltitude.testsupport.ActionRevocationFixture.withoutAction(jdbc,"admin1","handoff:create");sqlSession.clearCache();
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isForbidden());
         mvc.perform(post("/api/v1/device-maintenance-tasks/"+taskId+"/notifications/resend").contentType(MediaType.APPLICATION_JSON).content("{\"expected_attempt_no\":1}")).andExpect(status().isUnauthorized());
         verify(channel,never()).deliver(any());
