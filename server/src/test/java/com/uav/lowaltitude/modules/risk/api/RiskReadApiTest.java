@@ -281,10 +281,13 @@ class RiskReadApiTest {
         mvc.perform(get(url+"&page=2").header("Authorization",bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(3))
                 .andExpect(jsonPath("$.data.items[0].current_status").value("UNKNOWN"));
+        // ZT-47：有效时段结束的气象风险投影为 EXPIRED 并移出当前风险——依据失效不是"位置待确认"，
+        // 所以它既不计入 current_total 也不计入 uncertain_total，历史记录仍在普通列表里。
         jdbc.update("update weather_risk_fact set valid_to=? where risk_id='current-weather'",ts(now-1));
         mvc.perform(get(url).header("Authorization",bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(0))
-                .andExpect(jsonPath("$.data.uncertain_total").value(53));
+                .andExpect(jsonPath("$.data.uncertain_total").value(52))
+                .andExpect(jsonPath("$.data.total").value(52));
         jdbc.update("update weather_risk_fact set valid_from=?,valid_to=? where risk_id='current-weather'",ts(now+60_000),ts(now+120_000));
         mvc.perform(get(url).header("Authorization",bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(52));
