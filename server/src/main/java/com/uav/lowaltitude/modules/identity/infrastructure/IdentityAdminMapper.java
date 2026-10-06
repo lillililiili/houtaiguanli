@@ -85,7 +85,8 @@ public interface IdentityAdminMapper {
     @Select("""
             SELECT u.user_id AS userId, u.account, u.name, u.phone, u.org_id AS orgId,
                    o.name AS orgName, u.role_code AS roleCode, r.name AS roleName,
-                   u.status, u.scope_mode AS scopeMode, u.must_change_password AS mustChangePassword,
+                   u.status, u.scope_mode AS scopeMode, u.scope_org_rule AS scopeOrgRule,
+                   u.must_change_password AS mustChangePassword,
                    CASE WHEN EXISTS (SELECT 1 FROM app_session s WHERE s.user_id = u.user_id AND s.expire_at > #{now})
                         THEN TRUE ELSE FALSE END AS online,
                    u.last_login_at AS lastLoginAt, u.last_login_ip AS lastLoginIp,
@@ -101,7 +102,8 @@ public interface IdentityAdminMapper {
     @Select("""
             SELECT u.user_id AS userId, u.account, u.name, u.phone, u.org_id AS orgId,
                    o.name AS orgName, u.role_code AS roleCode, r.name AS roleName,
-                   u.status, u.scope_mode AS scopeMode, u.must_change_password AS mustChangePassword,
+                   u.status, u.scope_mode AS scopeMode, u.scope_org_rule AS scopeOrgRule,
+                   u.must_change_password AS mustChangePassword,
                    CASE WHEN EXISTS (SELECT 1 FROM app_session s WHERE s.user_id = u.user_id AND s.expire_at > #{now})
                         THEN TRUE ELSE FALSE END AS online,
                    u.last_login_at AS lastLoginAt, u.last_login_ip AS lastLoginIp,
@@ -229,7 +231,12 @@ public interface IdentityAdminMapper {
     int setDistrictEnabled(@Param("districtId") String districtId, @Param("enabled") boolean enabled,
             @Param("at") long at, @Param("expectedVersion") int expectedVersion);
 
-    @Select("SELECT COUNT(*) FROM app_user_data_scope WHERE district_id = #{districtId}")
+    /** 只数手工授权：按“本单位 / 本单位及下级”维护的元组覆盖全部区域，不能因此让区域永远停用不了。 */
+    @Select("""
+            SELECT COUNT(*) FROM app_user_data_scope s
+            JOIN app_user u ON u.user_id = s.user_id
+            WHERE s.district_id = #{districtId} AND u.scope_org_rule IS NULL
+            """)
     int countDistrictScopes(@Param("districtId") String districtId);
 
     @Update("""
@@ -253,7 +260,8 @@ public interface IdentityAdminMapper {
             UPDATE app_user
             SET status = 'DELETED', deleted_account = account, account = #{tombstoneAccount},
                 deleted_role_code = role_code, role_code = NULL,
-                scope_mode = 'NONE', must_change_password = TRUE, fail_count = 0, locked_until = NULL,
+                scope_mode = 'NONE', scope_org_rule = NULL,
+                must_change_password = TRUE, fail_count = 0, locked_until = NULL,
                 deleted_at = #{at}, deleted_by = #{deletedBy}, updated_at = #{at},
                 version = version + 1, permission_version = permission_version + 1
             WHERE user_id = #{userId} AND version = #{expectedVersion}
@@ -358,15 +366,16 @@ public interface IdentityAdminMapper {
     @Insert("""
             INSERT INTO app_user
               (user_id, account, name, phone, org_id, role_code, status, password_hash, fail_count,
-               scope_mode, must_change_password, permission_version, created_at, updated_at, version)
+               scope_mode, scope_org_rule, must_change_password, permission_version, created_at, updated_at, version)
             VALUES
               (#{userId}, #{account}, #{name}, #{phone}, #{orgId}, #{roleCode}, 'ACTIVE', #{passwordHash}, 0,
-               #{scopeMode}, TRUE, 0, #{at}, #{at}, 0)
+               #{scopeMode}, #{scopeOrgRule}, TRUE, 0, #{at}, #{at}, 0)
             """)
     int insertUser(@Param("userId") String userId, @Param("account") String account,
             @Param("name") String name, @Param("phone") String phone, @Param("orgId") String orgId,
             @Param("roleCode") String roleCode, @Param("passwordHash") String passwordHash,
-            @Param("scopeMode") String scopeMode, @Param("at") long at);
+            @Param("scopeMode") String scopeMode, @Param("scopeOrgRule") String scopeOrgRule,
+            @Param("at") long at);
 
     @Update("""
             UPDATE app_user SET role_code = #{roleCode}, scope_mode = #{scopeMode},
@@ -375,6 +384,16 @@ public interface IdentityAdminMapper {
             """)
     int updateUserAccess(@Param("userId") String userId, @Param("roleCode") String roleCode,
             @Param("scopeMode") String scopeMode, @Param("at") long at,
+            @Param("expectedVersion") int expectedVersion);
+
+    /** 调整数据范围（ZT-14）；同改角色一样提升权限版本，旧会话随之失效。 */
+    @Update("""
+            UPDATE app_user SET scope_mode = #{scopeMode}, scope_org_rule = #{scopeOrgRule},
+                permission_version = permission_version + 1, updated_at = #{at}, version = version + 1
+            WHERE user_id = #{userId} AND version = #{expectedVersion}
+            """)
+    int updateUserScope(@Param("userId") String userId, @Param("scopeMode") String scopeMode,
+            @Param("scopeOrgRule") String scopeOrgRule, @Param("at") long at,
             @Param("expectedVersion") int expectedVersion);
 
     @Delete("DELETE FROM app_user_data_scope WHERE user_id = #{userId}")

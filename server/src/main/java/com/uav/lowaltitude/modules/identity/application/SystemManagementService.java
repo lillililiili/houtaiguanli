@@ -52,6 +52,7 @@ import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserProfileRequest;
 import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserResponse;
 import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserStatusRequest;
 import com.uav.lowaltitude.modules.identity.domain.AppUser;
+import com.uav.lowaltitude.modules.identity.domain.DataScope;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.ActionRow;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.AccessChangeRow;
@@ -87,7 +88,10 @@ public class SystemManagementService {
     private static final Set<String> PROTECTED_ACTION_DOMAINS = Set.of("users", "roles", "audit", "countermeasure");
     // 全局切图会同时影响所有业务页面，只允许内置超级管理员执行；运维角色仍可上传和清理候选包。
     private static final Set<String> PROTECTED_ACTION_CODES = Set.of("map:activate");
-    private static final String DEFAULT_USER_SCOPE_MODE = "ALL";
+    /** 只剩已下线的旧审批建号接口沿用：建出来是全部单位。 */
+    private static final String LEGACY_REQUEST_SCOPE_MODE = "ALL";
+    /** ZT-14：新建账号默认只看本单位，需要更大范围由管理员明确选择。 */
+    private static final DataScope DEFAULT_DATA_SCOPE = DataScope.OWN_ORG;
 
     private final IdentityAdminMapper mapper;
     private final UserMapper userMapper;
@@ -99,6 +103,7 @@ public class SystemManagementService {
     private final ObjectMapper objectMapper;
     private final AppClock appClock;
     private final IdempotencyGuard idempotencyGuard;
+    private final UserDataScopeService dataScopes;
 
     public SystemManagementService(
             IdentityAdminMapper mapper,
@@ -110,7 +115,8 @@ public class SystemManagementService {
             AuditService auditService,
             ObjectMapper objectMapper,
             AppClock appClock,
-            IdempotencyGuard idempotencyGuard) {
+            IdempotencyGuard idempotencyGuard,
+            UserDataScopeService dataScopes) {
         this.mapper = mapper;
         this.userMapper = userMapper;
         this.sessionMapper = sessionMapper;
@@ -121,6 +127,7 @@ public class SystemManagementService {
         this.objectMapper = objectMapper;
         this.appClock = appClock;
         this.idempotencyGuard = idempotencyGuard;
+        this.dataScopes = dataScopes;
     }
 
     public PageResponse<UserResponse> listUsers(String keyword, String status, String roleCode, String orgId,
@@ -163,14 +170,22 @@ public class SystemManagementService {
             }
             nextRole = requireAssignableRole(request.roleCode().trim());
         }
+        DataScope currentScope = dataScope(current);
+        DataScope nextScope = request.dataScope() == null ? currentScope : assignableDataScope(request.dataScope());
+        boolean scopeChanged = nextScope != currentScope;
+        if (scopeChanged && "ROLE-ADMIN".equals(current.getRoleCode())) {
+            throw bad("SUPER_ADMIN_PROTECTED", "超级管理员的数据范围固定为全部单位");
+        }
+        boolean orgChanged = !org.getOrgId().equals(current.getOrgId());
         long now = appClock.nowMillis();
+        int version = request.expectedVersion();
         if (mapper.updateUserProfile(userId, request.name().trim(), nullable(request.phone()), org.getOrgId(),
-                now, request.expectedVersion()) != 1) {
+                now, version++) != 1) {
             conflict();
         }
         if (roleChanged) {
             if (mapper.updateUserAccess(userId, nextRole.getRoleCode(), current.getScopeMode(), now,
-                    request.expectedVersion() + 1) != 1) {
+                    version++) != 1) {
                 conflict();
             }
             sessionMapper.expireAllForUser(userId);
@@ -178,6 +193,20 @@ public class SystemManagementService {
             audit("users", "user_access_updated", "user", userId,
                     json(Map.of("from_role", current.getRoleCode(), "to_role", nextRole.getRoleCode(),
                             "reason", reason)), meta);
+        }
+        if (scopeChanged) {
+            if (mapper.updateUserScope(userId, nextScope.scopeMode(), nextScope.orgRule(), now, version) != 1) {
+                conflict();
+            }
+            if (nextScope.orgRule() == null) mapper.deleteUserScopes(userId);
+        }
+        // 按单位维护的范围随所属单位走：换单位同样改变能看到的数据，按权限变更处理，旧会话失效。
+        if (scopeChanged || (orgChanged && nextScope.orgRule() != null)) {
+            dataScopes.refreshUser(userId);
+            sessionMapper.expireAllForUser(userId);
+            audit("users", "user_data_scope_changed", "user", userId,
+                    json(Map.of("from", currentScope.name(), "to", nextScope.name(),
+                            "from_org_id", nullToEmpty(current.getOrgId()), "to_org_id", org.getOrgId())), meta);
         }
         audit("users", "user_profile_updated", "user", userId,
                 json(Map.of("name", request.name().trim(), "org_id", org.getOrgId())), meta);
@@ -241,7 +270,7 @@ public class SystemManagementService {
         passwordPolicy.validateTemporary(request.temporaryPassword(), account);
         String changeId = UUID.randomUUID().toString();
         UserCreationSnapshot snapshot = new UserCreationSnapshot(account, request.name().trim(),
-                nullable(request.phone()), org.getOrgId(), role.getRoleCode(), DEFAULT_USER_SCOPE_MODE, scopes);
+                nullable(request.phone()), org.getOrgId(), role.getRoleCode(), LEGACY_REQUEST_SCOPE_MODE, scopes);
         AccessChangeRow change = newChange(changeId, "USER_CREATE", "USER", account, "{}", json(snapshot),
                 legacyReason, -1);
         PendingUserRow pending = new PendingUserRow();
@@ -277,17 +306,21 @@ public class SystemManagementService {
         if (userMapper.findByAccount(account) != null) throw conflict("DUPLICATE_ACCOUNT", "登录账号已存在");
         RoleRow role = requireAssignableRole(request.roleCode());
         OrgRow org = requireEnabledOrg(request.orgId());
+        DataScope dataScope = request.dataScope() == null ? DEFAULT_DATA_SCOPE
+                : assignableDataScope(request.dataScope());
         passwordPolicy.validateTemporary(request.temporaryPassword(), account);
         String userId = UUID.randomUUID().toString();
         long now = appClock.nowMillis();
         try {
             mapper.insertUser(userId, account, request.name().trim(), nullable(request.phone()), org.getOrgId(),
-                    role.getRoleCode(), passwordEncoder.encode(request.temporaryPassword()), DEFAULT_USER_SCOPE_MODE, now);
+                    role.getRoleCode(), passwordEncoder.encode(request.temporaryPassword()),
+                    dataScope.scopeMode(), dataScope.orgRule(), now);
         } catch (DuplicateKeyException ex) {
             throw conflict("DUPLICATE_ACCOUNT", "登录账号已存在");
         }
+        dataScopes.refreshUser(userId);
         audit("users", "user_created", "user", userId,
-                json(Map.of("account", account, "role_code", role.getRoleCode(),
+                json(Map.of("account", account, "role_code", role.getRoleCode(), "data_scope", dataScope.name(),
                         "reason", "超级管理员直接创建用户")), meta);
         return toUser(requireUserRow(userId));
     }
@@ -375,6 +408,8 @@ public class SystemManagementService {
         } catch (DuplicateKeyException ex) {
             throw conflict("DUPLICATE_ORG_CODE", "组织编码已存在");
         }
+        // 新下级单位要并入“本单位及下级单位”账号的范围。
+        dataScopes.refreshAll();
         audit("users", "organization_created", "organization", id,
                 json(Map.of("org_code", orgCode, "name", name)), meta);
         return toOrganization(mapper.findOrganization(id));
@@ -390,6 +425,8 @@ public class SystemManagementService {
         validateOrgParent(orgId, parentId);
         if (mapper.updateOrganization(orgId, parentId, request.name().trim(), appClock.nowMillis(),
                 request.expectedVersion()) != 1) conflict();
+        // 换上级会改变“本单位及下级单位”的范围：移出去的单位必须同一事务里收回。
+        dataScopes.refreshAll();
         audit("users", "organization_updated", "organization", orgId,
                 json(Map.of("name", request.name().trim())), meta);
         return toOrganization(mapper.findOrganization(orgId));
@@ -411,6 +448,8 @@ public class SystemManagementService {
         } catch (DuplicateKeyException ex) {
             throw conflict("DUPLICATE_DISTRICT_CODE", "区域编码已存在");
         }
+        // 按单位维护的范围覆盖全部区域，新区域一并纳入。
+        dataScopes.refreshAll();
         audit("users", "district_created", "district", id,
                 json(Map.of("district_code", request.districtCode().trim(), "name", request.name().trim())), meta);
         return toDistrict(mapper.findDistrict(id));
@@ -669,7 +708,7 @@ public class SystemManagementService {
         validateScopes(pending.getScopeMode(), scopes);
         String userId = UUID.randomUUID().toString();
         mapper.insertUser(userId, pending.getAccount(), pending.getName(), pending.getPhone(), pending.getOrgId(),
-                pending.getRoleCode(), pending.getPasswordHash(), pending.getScopeMode(), appClock.nowMillis());
+                pending.getRoleCode(), pending.getPasswordHash(), pending.getScopeMode(), null, appClock.nowMillis());
         replaceScopes(userId, pending.getScopeMode(), scopes);
         mapper.deletePendingUser(change.getChangeId());
     }
@@ -684,6 +723,8 @@ public class SystemManagementService {
                 && "ACTIVE".equals(user.getStatus()) && mapper.countActiveAdmins() <= 1) {
             throw conflict("LAST_ADMIN_PROTECTED", "不能移除最后一个有效系统管理员");
         }
+        // 旧审批单按快照写手工授权元组，批准后不再按所属单位自动维护。
+        dataScopes.clearRule(user.getUserId());
         if (mapper.updateUserAccess(user.getUserId(), after.roleCode(), after.scopeMode(), appClock.nowMillis(),
                 change.getSubjectVersion()) != 1) conflict();
         replaceScopes(user.getUserId(), after.scopeMode(), scopes);
@@ -794,9 +835,19 @@ public class SystemManagementService {
 
     private UserResponse toUser(UserAdminRow row) {
         return new UserResponse(row.getUserId(), row.getAccount(), row.getName(), row.getPhone(), row.getOrgId(),
-                row.getOrgName(), row.getRoleCode(), row.getRoleName(), row.getStatus(),
+                row.getOrgName(), row.getRoleCode(), row.getRoleName(), row.getStatus(), dataScope(row).name(),
                 row.isMustChangePassword(), row.isOnline(), row.getLastLoginAt(), row.getLastLoginIp(),
                 row.getCreatedAt(), row.getVersion());
+    }
+
+    private static DataScope dataScope(UserAdminRow row) {
+        return DataScope.of(row.getScopeMode(), row.getScopeOrgRule());
+    }
+
+    private static DataScope assignableDataScope(String value) {
+        DataScope scope = DataScope.assignable(value);
+        if (scope == null) throw bad("INVALID_DATA_SCOPE", "数据范围只能选全部单位、本单位或本单位及下级单位");
+        return scope;
     }
 
     private OrganizationResponse toOrganization(OrgRow row) {
@@ -1038,6 +1089,10 @@ public class SystemManagementService {
     private static String nullable(String value) {
         String normalized = normalized(value);
         return normalized.isEmpty() ? null : normalized;
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private static boolean blank(String value) {

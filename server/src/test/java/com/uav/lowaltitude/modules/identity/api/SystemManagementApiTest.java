@@ -119,6 +119,8 @@ class SystemManagementApiTest {
                 .andExpect(jsonPath("$.data.must_change_password").value(true))
                 .andExpect(jsonPath("$.data.scope_mode").doesNotExist())
                 .andExpect(jsonPath("$.data.scope_grants").doesNotExist())
+                // ZT-14：没选数据范围的新账号默认只看本单位。
+                .andExpect(jsonPath("$.data.data_scope").value("OWN_ORG"))
                 .andReturn().getResponse().getContentAsString();
         JsonNode user = data(userBody);
 
@@ -139,7 +141,8 @@ class SystemManagementApiTest {
                 .andExpect(jsonPath("$.data.menu_keys[?(@ == 'devices')]").exists())
                 .andExpect(jsonPath("$.data.menu_keys[?(@ == 'users')]").doesNotExist())
                 .andExpect(jsonPath("$.data.permission_codes[?(@ == 'devices.read')]").exists())
-                .andExpect(jsonPath("$.data.scope_mode").value("ALL"));
+                .andExpect(jsonPath("$.data.scope_mode").value("ASSIGNED"))
+                .andExpect(jsonPath("$.data.data_scope").value("OWN_ORG"));
         mvc.perform(get("/api/v1/users").header("Authorization", bearer(userSession)))
                 .andExpect(status().isForbidden());
 
@@ -165,7 +168,14 @@ class SystemManagementApiTest {
                 user.path("user_id").asText(), "%超级管理员直接创建用户%")).isEqualTo(1);
         assertThat(user.path("role_code").asText()).isEqualTo(roleCode);
         assertThat(jdbc.queryForObject("select scope_mode from app_user where account=?", String.class, account))
-                .isEqualTo("ALL");
+                .isEqualTo("ASSIGNED");
+        assertThat(jdbc.queryForObject("select scope_org_rule from app_user where account=?", String.class, account))
+                .isEqualTo("OWN_ORG");
+        assertThat(jdbc.queryForObject("select count(*) from app_user_data_scope s join app_user u on u.user_id=s.user_id"
+                + " where u.account=? and s.org_id<>?", Integer.class, account, orgId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from app_user_data_scope s join app_user u on u.user_id=s.user_id"
+                + " where u.account=?", Integer.class, account))
+                .isEqualTo(jdbc.queryForObject("select count(*) from app_district", Integer.class));
     }
 
     /**

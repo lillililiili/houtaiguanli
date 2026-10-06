@@ -89,6 +89,7 @@ public final class IdentityRows {
         private String roleName;
         private String status;
         private String scopeMode;
+        private String scopeOrgRule;
         private boolean mustChangePassword;
         private boolean online;
         private Long lastLoginAt;
@@ -116,6 +117,8 @@ public final class IdentityRows {
         public void setStatus(String status) { this.status = status; }
         public String getScopeMode() { return scopeMode; }
         public void setScopeMode(String scopeMode) { this.scopeMode = scopeMode; }
+        public String getScopeOrgRule() { return scopeOrgRule; }
+        public void setScopeOrgRule(String scopeOrgRule) { this.scopeOrgRule = scopeOrgRule; }
         public boolean isMustChangePassword() { return mustChangePassword; }
         public void setMustChangePassword(boolean mustChangePassword) { this.mustChangePassword = mustChangePassword; }
         public boolean isOnline() { return online; }
@@ -271,5 +274,19 @@ public final class IdentityRows {
         public void setScopeGrants(String scopeGrants) { this.scopeGrants = scopeGrants; }
         public String getPasswordHash() { return passwordHash; }
         public void setPasswordHash(String passwordHash) { this.passwordHash = passwordHash; }
+    }
+
+    /** 账号的数据范围规则（ZT-14）；scopeOrgRule 为空表示不按所属单位自动维护授权元组。 */
+    public static class ScopeRuleRow {
+        private String userId;
+        private String orgId;
+        private String scopeOrgRule;
+
+        public String getUserId() { return userId; }
+        public void setUserId(String userId) { this.userId = userId; }
+        public String getOrgId() { return orgId; }
+        public void setOrgId(String orgId) { this.orgId = orgId; }
+        public String getScopeOrgRule() { return scopeOrgRule; }
+        public void setScopeOrgRule(String scopeOrgRule) { this.scopeOrgRule = scopeOrgRule; }
     }
 }

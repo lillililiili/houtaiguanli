@@ -150,6 +150,8 @@ public class GlobalExceptionHandler {
             Map.entry("org_id", "所属组织"),
             Map.entry("roleCode", "角色"),
             Map.entry("role_code", "角色"),
+            Map.entry("dataScope", "数据范围"),
+            Map.entry("data_scope", "数据范围"),
             Map.entry("reason", "操作原因"),
             Map.entry("orgCode", "组织编码"),
             Map.entry("org_code", "组织编码"),
