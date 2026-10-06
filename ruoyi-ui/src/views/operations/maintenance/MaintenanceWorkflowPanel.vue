@@ -3,6 +3,7 @@ import { userFacingMessage } from '@/utils/userMessages';
 import { computed, ref } from 'vue';
 import { formatTime } from '@/utils/format.js';
 import { maintenanceMeta } from './useMaintenanceWorkflow.js';
+import { useAuthStore } from '@/stores/auth.js';
 const props = defineProps({ workflow: Object, section: { type: String, default: 'context' }, busy: Boolean, locked: Boolean, actionError: String, pending: Boolean });
 const emit = defineEmits(['action', 'retry', 'refresh', 'report', 'recover-incident']);
 const note = ref(''), details = ref(false);
@@ -10,6 +11,10 @@ const meta = computed(() => maintenanceMeta(props.workflow?.state));
 const task = computed(() => props.workflow?.task || {});
 const recentEvents = computed(() => [...(props.workflow?.events || [])].reverse());
 const allowed = action => !props.busy && !props.pending && !props.locked && props.workflow?.allowed_actions?.includes(action);
+const auth = useAuthStore();
+// BUG-02：没有设备实时监测的操作权限时后端不给任何待办动作，按钮只会灰着；这里说清原因。按钮能否点仍只看 allowed_actions。
+const permissionHint = computed(() => ['PENDING', 'PROCESSING', 'PENDING_VERIFICATION'].includes(props.workflow?.state) && !auth.hasPermission('monitoring.op')
+  ? '当前账号只能查看这条运维待办：开始处理、保存进展、提交恢复核验和完成待办需要“设备实时监测”的操作权限，请联系管理员在角色权限中开通。' : '');
 const primary = computed(() => ({ PENDING:['START','开始处理'],PROCESSING:['SUBMIT_VERIFICATION','提交恢复核验'],PENDING_VERIFICATION:['VERIFY_RECOVERY','执行恢复核验'] })[props.workflow?.state]);
 function save() { if (allowed('SAVE_PROGRESS') && note.value.trim().length <= 1000) emit('action', 'SAVE_PROGRESS', { note: note.value.trim() }, () => { note.value = ''; }); }
 </script>
@@ -22,6 +27,7 @@ function save() { if (allowed('SAVE_PROGRESS') && note.value.trim().length <= 10
     <el-steps v-if="workflow.state!=='LEGACY_HANDLED'" :active="meta.step" finish-status="success" align-center class="maintenance-steps"><el-step title="待处理" /><el-step title="处理中" /><el-step title="待恢复核验" /><el-step title="已完成" /></el-steps>
     <el-alert v-else title="此记录为旧流程已反馈，不能作为设备恢复凭据。" type="info" :closable="false" show-icon />
     <el-alert v-if="workflow.blocked_reason" :title="userFacingMessage(workflow.blocked_reason)" type="warning" :closable="false" show-icon />
+    <el-alert v-if="permissionHint" class="maintenance-permission" :title="permissionHint" type="info" :closable="false" show-icon />
     <div v-if="workflow.open_incidents?.length" class="maintenance-incident-list"><p class="muted">设备尚有未恢复的异常事件。支持恢复核验的事件可在此核查，核验后再确认待办恢复。</p><article v-for="incident in workflow.open_incidents" :key="incident.incident_id"><span>{{ incident.reason }}</span><el-button v-if="incident.allowed_actions?.includes('VERIFY_RECOVERY') && !['COMPLETED','LEGACY_HANDLED'].includes(workflow.state)" :disabled="busy || locked || pending" link type="primary" @click="emit('recover-incident',incident)">核验事件恢复</el-button><small v-else class="muted">{{ incident.stage==='REBOOTING' ? '等待设备指令回执' : '需先按设备异常流程处理' }}</small></article></div>
     <el-alert v-if="actionError" :title="actionError" type="error" :closable="false" show-icon />
     <el-button v-if="pending" type="primary" :loading="busy" @click="emit('retry')">按原请求重试确认</el-button>
