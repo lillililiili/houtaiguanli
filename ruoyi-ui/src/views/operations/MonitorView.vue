@@ -33,11 +33,10 @@ const loading = ref(false);
 const selectedLoading = ref(false);
 const paused = ref(false);
 const error = ref('');
-let aggregateTimer;
-let selectedTimer;
 let aggregateInFlight = false;
+let aggregatePending = false;
 let selectedInFlight = false;
-let selectedPending = false;
+let selectedPending = null;
 let selectedGeneration = 0;
 let alive = true;
 
@@ -79,44 +78,66 @@ function metricLabel(item) { return item?.label || METRIC_LABELS[item?.code] || 
 function metricValue(value) { return value === 'ON' ? '开' : value === 'OFF' ? '关' : display(value); }
 function healthText(value) { return ({ GOOD: '良好', DEGRADED: '一般', BAD: '异常', UNKNOWN: '未知' })[value] || '未知'; }
 
+/* 页面靠实时推送更新（ZT-49）：设备资料、在线状态、上报或运维告警有变化时重读，不再每 10 秒、每 2 秒定时轮询；
+   推送暂不可用时由实时服务每 15 秒补读一次。设备上线离线、健康状态和告警任何时候都照常更新；
+   “暂停读数刷新”只停住当前设备的指标读数、雷达航迹、运行趋势和事件记录，方便对照查看。
+   两个读取函数返回失败原因，实时刷新据此退避重试；进行中又有新的读取要求时，结束后再补读一次。 */
 async function loadAggregate(showBusy = false) {
-  if (aggregateInFlight || paused.value) return;
+  if (aggregateInFlight) { aggregatePending = true; return null; }
   aggregateInFlight = true; if (showBusy) loading.value = true;
+  let failure = null;
   try {
     const [summary, deviceTree, incidentPage] = await Promise.all([deviceApi.overview(), deviceApi.tree(filters), deviceApi.incidents({ page: 1, size: 20, stage: 'PENDING' })]);
-    if (!alive) return;
+    if (!alive) return null;
     overview.value = summary; tree.value = deviceTree.items || []; treeTotal.value = deviceTree.total ?? tree.value.length; treeTruncated.value = Boolean(deviceTree.truncated); incidents.value = incidentPage.items || []; incidentTotal.value = incidentPage.total ?? incidents.value.length;
     if (!tree.value.some(item => item.device_id === selectedId.value)) selectedId.value = tree.value[0]?.device_id || '';
     error.value = '';
-  } catch (e) { error.value = e.message || '实时监测数据加载失败'; }
-  finally { loading.value = false; aggregateInFlight = false; }
+  } catch (e) { error.value = e.message || '实时监测数据加载失败'; failure = e; }
+  finally {
+    loading.value = false; aggregateInFlight = false;
+    if (aggregatePending && alive) { aggregatePending = false; void loadAggregate(); }
+  }
+  return failure;
 }
 
 async function loadSelected(showBusy = false, manual = false) {
-  if (!alive || !selectedId.value || (paused.value && !manual)) return;
-  void loadEvents(manual);
-  if (selectedInFlight) { if (manual) selectedPending = true; return; }
+  if (!alive || !selectedId.value) return null;
+  // 暂停时自动刷新只读连接、健康和心跳，指标读数、航迹和事件记录停在暂停时刻；手动刷新照常全部重读。
+  const statusOnly = paused.value && !manual;
+  if (!statusOnly) void loadEvents(manual);
+  if (selectedInFlight) {
+    selectedPending = { showBusy: Boolean(selectedPending?.showBusy || showBusy), manual: Boolean(selectedPending?.manual || manual) };
+    return null;
+  }
   selectedInFlight = true; if (showBusy) selectedLoading.value = true;
   const deviceId = selectedId.value;
   const generation = selectedGeneration;
+  let failure = null;
   try {
     const [deviceState, protocol, targetPage] = await Promise.all([
       deviceApi.state(deviceId),
       deviceApi.protocolStatus(deviceId),
-      selected.value?.protocol_code === 'RADAR_TCP_V3_0_0' ? deviceApi.targets({ device_id: deviceId, active: true, page: 1, size: 20 }) : Promise.resolve({ items: [] })
+      !statusOnly && selected.value?.protocol_code === 'RADAR_TCP_V3_0_0' ? deviceApi.targets({ device_id: deviceId, active: true, page: 1, size: 20 }) : Promise.resolve(null)
     ]);
-    if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return;
-    state.value = deviceState; protocolStatus.value = protocol; radarTargets.value = targetPage.items || [];
+    if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return null;
+    state.value = statusOnly && state.value ? { ...deviceState, metrics: state.value.metrics } : deviceState;
+    protocolStatus.value = protocol;
+    if (targetPage) radarTargets.value = targetPage.items || [];
+    else if (!statusOnly) radarTargets.value = [];
     selectedError.value = '';
   } catch (e) {
-    if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return;
+    if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return null;
     state.value = null; protocolStatus.value = null; radarTargets.value = [];
     selectedError.value = e.message || '所选设备状态加载失败';
+    failure = e;
   }
   finally {
     selectedLoading.value = false; selectedInFlight = false;
-    if (selectedPending) { selectedPending = false; void loadSelected(true, true); }
+    const pending = selectedPending;
+    selectedPending = null;
+    if (pending && alive) void loadSelected(pending.showBusy, pending.manual);
   }
+  return failure;
 }
 
 async function loadEvents(manual = false) {
@@ -161,22 +182,20 @@ watch(selectedId, () => {
   selectedError.value = '';
   if (selectedId.value) loadSelected(true, true);
 });
-onMounted(async () => {
-  await loadAggregate(true);
-  if (!alive) return;
-  aggregateTimer = window.setInterval(loadAggregate, 10000); selectedTimer = window.setInterval(loadSelected, 2000);
-});
-onBeforeUnmount(() => { alive = false; clearInterval(aggregateTimer); clearInterval(selectedTimer); });
-// 设备资料或在线状态变化后重读总览与设备树；选中设备的状态已由 2 秒定时器读取，推送不再重复读。
-// 暂停时不刷新，定时器保留为推送不可用时的兜底。
-useRealtimeRefresh(['device', 'device_state'], () => loadAggregate(), { minIntervalMs: 3_000 });
+onMounted(() => loadAggregate(true));
+onBeforeUnmount(() => { alive = false; });
+// 设备资料、在线状态、上报或运维告警有变化：重读总览、设备树、告警和当前设备，两次至少间隔 2 秒；读取失败按退避重试。
+useRealtimeRefresh(['device', 'device_state'], async () => {
+  const failure = (await Promise.all([loadAggregate(), loadSelected()])).find(Boolean);
+  if (failure) throw failure;
+}, { minIntervalMs: 2_000 });
 </script>
 
 <template>
   <section class="page-stack operation-page monitor-reference">
-    <PageHeader title="设备实时监测" description="总览每 10 秒、当前设备每 2 秒增量刷新；暂停后不再发起轮询。">
-      <el-tag :type="paused?'warning':'success'" effect="plain">{{ paused?'刷新已暂停':'实时刷新中' }}</el-tag>
-      <el-button @click="togglePause">{{ paused?'继续刷新':'暂停刷新' }}</el-button>
+    <PageHeader title="设备实时监测" description="设备状态、总览和告警随实时推送更新，推送暂不可用时每 15 秒补读一次。暂停读数刷新只停住当前设备的指标读数、雷达航迹、运行趋势和事件记录，设备上线离线、健康状态和告警照常更新。">
+      <el-tag :type="paused?'warning':'success'" effect="plain">{{ paused?'读数已暂停，状态和告警仍实时更新':'实时更新中' }}</el-tag>
+      <el-button @click="togglePause">{{ paused?'继续读数刷新':'暂停读数刷新' }}</el-button>
     </PageHeader>
     <OperationMetrics :items="metrics" />
     <ErrorAlert :message="error" @retry="applyFilters" />
@@ -202,6 +221,7 @@ useRealtimeRefresh(['device', 'device_state'], () => loadAggregate(), { minInter
           <template v-else>
             <div class="state-hero"><article><small>连接状态</small><strong>{{ statusText(state.connectivity) }}</strong></article><article><small>健康状态</small><strong>{{ healthText(state.health_code) }}</strong></article><article><small>最后心跳</small><strong class="mono">{{ formatTime(state.last_heartbeat_at) }}</strong></article></div>
             <el-alert v-if="state.connectivity==='OFFLINE'" title="设备当前离线；曲线继续按实际接收的有效报文展示，缺失数据不补零。" type="warning" :closable="false" />
+            <p v-if="paused && state.connectivity!=='OFFLINE'" class="tree-note">读数已暂停：指标停在暂停时刻；连接、健康和心跳仍实时更新。</p>
             <template v-if="state.connectivity!=='OFFLINE' && visibleMetrics.length">
               <div v-if="visibleMetrics.length" class="metric-values"><article v-for="item in visibleMetrics" :key="item.code"><small>{{ metricLabel(item) }}</small><b>{{ metricValue(item.value) }} {{ item.unit||'' }}</b><span class="muted">{{ SOURCE_LABELS[item.source] || '来源未声明' }}</span></article></div>
               <p v-else class="tree-note">设备协议尚未上报此类指标。</p>

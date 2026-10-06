@@ -151,8 +151,8 @@ public class LingyunControlService {
                 prepared.supervisor().publish(prepared.brokerId(), prepared.topic(), prepared.payload());
             } catch (RuntimeException uncertain) {
                 // Publication may have reached the device. A failed acknowledgment must not cause another start.
-                controls.updateCommand(commandId,"SENT","TIMED_OUT",clock.nowMillis(),"PUBLISH_RESULT_UNKNOWN",
-                        "指令发送结果未知，等待设备回执或现场核查；不自动重复下发");
+                if (controls.updateCommand(commandId,"SENT","TIMED_OUT",clock.nowMillis(),"PUBLISH_RESULT_UNKNOWN",
+                        "指令发送结果未知，等待设备回执或现场核查；不自动重复下发") == 1) finished(commandId);
             }
         });
     }
@@ -182,26 +182,35 @@ public class LingyunControlService {
     private boolean dispatchAllowed(Map<String,Object> command, boolean allowed) {
         String commandId = text(command,"command_id");
         if (!allowed) {
-            controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
-                    "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查");
+            if (controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
+                    "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
+                finished(commandId);
+            }
             return false;
         }
         long now = clock.nowMillis();
         String status = text(command, "status");
         if (((Number)command.get("deadline_at")).longValue()<=now) {
-            controls.updateCommand(commandId,status,"TIMED_OUT",now,"COMMAND_EXPIRED","发送窗口已到期，不重复下发；实际设备状态需回执核查");
+            if (controls.updateCommand(commandId,status,"TIMED_OUT",now,"COMMAND_EXPIRED","发送窗口已到期，不重复下发；实际设备状态需回执核查") == 1) {
+                finished(commandId);
+            }
             return false;
         }
         Map<String, Object> device = devices.find(text(command,"device_id"));
         if (((Number)command.get("operation_type")).intValue()!=0
                 && (device==null || !bool(device,"enabled") || !"ONLINE".equals(text(device,"connectivity"))
                     || "BAD".equals(text(device,"health_code")))) {
-            controls.updateCommand(commandId,status,"CANCELLED",now,"DEVICE_NOT_OPERABLE",
-                    "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查");
+            if (controls.updateCommand(commandId,status,"CANCELLED",now,"DEVICE_NOT_OPERABLE",
+                    "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查") == 1) {
+                finished(commandId);
+            }
             return false;
         }
         return true;
     }
+
+    /** 指令进入任一终态都通知处置结案（含取消和发送结果未知），处置授权不能停在“执行中”等人打开详情才同步。 */
+    private void finished(String commandId) { events.publishEvent(new DeviceCommandFinished(commandId)); }
 
     private record PreparedDispatch(MqttSessionSupervisor supervisor,String brokerId,String topic,byte[] payload) { }
 

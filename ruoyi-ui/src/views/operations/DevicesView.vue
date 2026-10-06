@@ -120,6 +120,7 @@ async function loadDetail(id) {
   finally { if (sequence === detailSequence) detailLoading.value = false; }
 }
 
+let listFailure = null;
 async function loadList(keepSelection = true, refreshOverview = true) {
   const sequence = ++listSequence;
   loading.value = true; error.value = '';
@@ -136,14 +137,19 @@ async function loadList(keepSelection = true, refreshOverview = true) {
     Object.assign(table, data);
     if (!keepSelection || !data.items.some(item => item.device_id === selectedId.value)) selectedId.value = data.items[0]?.device_id || '';
     await loadDetail(selectedId.value);
-  } catch (e) { if (alive && sequence === listSequence) error.value = e.message || '设备台账加载失败'; }
+  } catch (e) { if (alive && sequence === listSequence) { listFailure = e; error.value = e.message || '设备台账加载失败'; } }
   finally { await summaryRequest; if (sequence === listSequence) loading.value = false; }
 }
 
 /* 实时刷新：设备数据变化后静默重读当前筛选和分页下的台账与概况，保留选中设备；
-   选中行本身有变化时才重读设备档案。 */
+   选中行本身有变化时才重读设备档案。读取失败抛给实时刷新按退避重试；台账上次就读取失败时按正常流程重读。 */
 async function realtimeRefresh() {
-  if (loading.value || error.value) return;
+  if (loading.value) return;
+  if (error.value) {
+    await loadList(true);
+    if (error.value) throw listFailure || new Error(error.value);
+    return;
+  }
   const sequence = ++listSequence;
   const before = JSON.stringify(table.items?.find(item => item.device_id === selectedId.value) || null);
   void loadOverview();
@@ -153,7 +159,10 @@ async function realtimeRefresh() {
     Object.assign(table, data);
     const after = JSON.stringify(data.items.find(item => item.device_id === selectedId.value) || null);
     if (selectedId.value && after !== before && after !== 'null' && !detailLoading.value) await loadDetail(selectedId.value);
-  } catch { /* 静默刷新失败保留当前台账 */ }
+  } catch (e) {
+    // 静默刷新失败保留当前台账，抛给实时刷新退避重试。
+    if (alive && sequence === listSequence) throw e;
+  }
 }
 useRealtimeRefresh(['device', 'device_state'], realtimeRefresh, { minIntervalMs: 3_000 });
 

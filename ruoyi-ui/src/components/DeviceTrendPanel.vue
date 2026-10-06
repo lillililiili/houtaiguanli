@@ -3,25 +3,38 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts';
 import { deviceApi } from '@/api/devices.js';
 import { chartOption, trendLabel, trendModel } from '@/utils/deviceTrends.js';
+import { refreshFailureText, useRealtimeRefresh } from '@/services/realtime.js';
 const props = defineProps({ deviceId: { type: String, required: true }, paused: Boolean });
-const data = ref(null), error = ref(''), loading = ref(false), tab = ref('reports'), range = ref('1h'), reportCode = ref('');
+const data = ref(null), error = ref(''), refreshError = ref(''), loading = ref(false), tab = ref('reports'), range = ref('1h'), reportCode = ref('');
+// 设备有上报（device_state 信号）时重读，至少间隔 10 秒；长时间没有上报也每分钟补读一次，让统计时段跟上当前时间。暂停时都不读。
+const SLOW_REFRESH_MS = 60_000;
 const nodes = [], charts = [];
 let observer, timer, generation = 0, alive = true, inFlight = false;
 const reportCodes = computed(() => [...new Set((data.value?.reports || []).map(r => r.code))]);
 const model = computed(() => trendModel(data.value, tab.value, reportCode.value));
 const cards = computed(() => model.value.cards);
-async function load(manual = false) {
+/* quiet：自动刷新。已有曲线时读取失败保留曲线并注明，错误抛给实时刷新按退避重试；手动刷新失败照旧清空读数。 */
+async function load(manual = false, { quiet = false } = {}) {
   if (!props.deviceId || (!manual && (props.paused || inFlight))) return;
   const current = ++generation, id = props.deviceId, period = range.value;
+  let failure = null;
   inFlight = true; loading.value = true;
   try {
     const result = await deviceApi.trends(id, { range: period });
     if (!alive || current !== generation) return;
-    data.value = result; error.value = '';
+    data.value = result; error.value = ''; refreshError.value = '';
     if (!reportCodes.value.includes(reportCode.value)) reportCode.value = reportCodes.value[0] || '';
-  } catch (e) { if (alive && current === generation) { data.value = null; error.value = e.message || '运行趋势加载失败'; } }
+  } catch (e) {
+    if (alive && current === generation) {
+      failure = e;
+      if (quiet && data.value && !error.value) refreshError.value = refreshFailureText(e, '运行趋势加载失败');
+      else { data.value = null; error.value = e.message || '运行趋势加载失败'; refreshError.value = ''; }
+    }
+  }
   finally { if (alive && current === generation) { loading.value = false; inFlight = false; await paint(); } }
+  if (failure && quiet) throw failure;
 }
+useRealtimeRefresh(['device_state'], () => load(false, { quiet: true }), { minIntervalMs: 10_000 });
 async function paint() {
   await nextTick();
   if (!alive) return;
@@ -36,7 +49,7 @@ async function paint() {
 watch(() => [props.deviceId, range.value], () => { generation++; data.value = null; error.value = ''; reportCode.value = ''; void load(true); }, { immediate: true });
 watch(() => props.paused, paused => { if (!paused) void load(); });
 watch([tab, reportCode], paint);
-onMounted(() => { if (typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(paint); nodes.forEach(node => node && observer.observe(node)); } timer = window.setInterval(() => load(), 10000); });
+onMounted(() => { if (typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(paint); nodes.forEach(node => node && observer.observe(node)); } timer = window.setInterval(() => { load(false, { quiet: true }).catch(() => {}); }, SLOW_REFRESH_MS); });
 onBeforeUnmount(() => { alive = false; generation++; clearInterval(timer); observer?.disconnect(); charts.forEach(chart => chart?.dispose()); });
 </script>
 
@@ -45,6 +58,7 @@ onBeforeUnmount(() => { alive = false; generation++; clearInterval(timer); obser
     <template #header><div class="trend-toolbar"><b>设备历史趋势</b><div class="trend-actions"><el-radio-group v-model="range" size="small" aria-label="统计时间范围"><el-radio-button label="1h">近1小时</el-radio-button><el-radio-button label="24h">近24小时</el-radio-button><el-radio-button label="7d">近7天</el-radio-button></el-radio-group><el-button size="small" :loading="loading" @click="load(true)">刷新统计</el-button></div></div></template>
     <el-tabs v-model="tab" aria-label="运行统计分类"><el-tab-pane label="上报趋势" name="reports" /><el-tab-pane label="状态历史" name="state" /></el-tabs>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+    <el-alert v-else-if="refreshError" :title="`自动刷新失败（${refreshError}），正在重试；下面是上次读到的统计。`" type="warning" :closable="false" show-icon />
     <div v-show="!error">
     <div v-if="data?.simulated" class="trend-note">模拟 / 回放设备数据</div>
     <div v-if="cards.length" class="trend-cards"><article v-for="(card, i) in cards" :key="i"><small>{{ card.label }}</small><strong>{{ card.value }} <span>{{ card.unit }}</span></strong></article></div>

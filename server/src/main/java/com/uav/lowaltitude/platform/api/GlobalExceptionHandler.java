@@ -16,6 +16,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
@@ -115,13 +116,34 @@ public class GlobalExceptionHandler {
         return response.body(ApiResponse.fail("METHOD_NOT_ALLOWED", "请求方法不支持"));
     }
 
+    /**
+     * 页面关闭、刷新或断网时，浏览器会断开实时推送（SSE）等长连接，服务端下一次写入才发现对方已走：
+     * Spring 报 {@link AsyncRequestNotUsableException}，Tomcat 报 ClientAbortException（Broken pipe）。
+     * 这是正常现象，不是服务故障：只记 debug，不写失败审计；响应已不可用，也不再写回错误体。
+     * 其余未处理异常仍按 ERROR 记录并返回 500。
+     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnknown(Exception ex, HttpServletRequest request) {
+        if (clientDisconnected(ex)) {
+            log.debug("Client disconnected on {}: {}", request == null ? "" : request.getRequestURI(), ex.getMessage());
+            return null;
+        }
         log.error("Unhandled {} on {}", ex.getClass().getSimpleName(),
                 request == null ? "" : request.getRequestURI(), ex);
         auditFailure(request, "INTERNAL_ERROR", "服务内部错误");
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.fail("INTERNAL_ERROR", "服务内部错误"));
+    }
+
+    /** 只认容器和 Spring 明确标记的“客户端已断开”，不按报错文字猜，免得把对外调用失败也当成正常断开。 */
+    static boolean clientDisconnected(Throwable ex) {
+        for (Throwable cause = ex; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof AsyncRequestNotUsableException
+                    || "ClientAbortException".equals(cause.getClass().getSimpleName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void auditFailure(HttpServletRequest request, String code, String message) {
