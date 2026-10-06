@@ -30,8 +30,11 @@ async function reload(force = false) {
     if (!alive || current !== generation) return;
     items.value = result.items || []; total.value = result.total; error.value = '';
     if (page.value > pages.value) { page.value = pages.value; void reload(true); }
-  } catch (reason) { if (alive && current === generation) error.value = reason.message || '运维待办读取失败'; }
+  } catch (reason) {
+    if (alive && current === generation) { error.value = reason.message || '运维待办读取失败'; return reason; }
+  }
   finally { if (alive && current === generation) loading.value = false; }
+  return null;
 }
 function filterChanged() { page.value = 1; void reload(true); }
 function changePage(value) { page.value = value; void reload(true); }
@@ -64,8 +67,8 @@ function notificationChannel(snapshot) {
     INTERNAL: '平台待办', SMS_SIMULATED: '模拟短信', VOICE_SIMULATED: '模拟语音' })[snapshot?.channel_type] || snapshot?.channel_type || '未记录';
 }
 onMounted(() => reload());
-// 运维待办变化后立即重读当前页。
-useRealtimeRefresh(['device'], () => reload(), { minIntervalMs: 2_000 });
+// 运维待办变化后立即重读当前页；读取失败返回原因，实时刷新据此退避重试。
+useRealtimeRefresh(['device'], async () => { const failure = await reload(); if (failure) throw failure; }, { minIntervalMs: 2_000 });
 onBeforeUnmount(() => { alive = false; generation++; });
 defineExpose({ reload });
 </script>
