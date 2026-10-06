@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router';
+import { createRouter, createWebHistory, START_LOCATION } from 'vue-router';
 import NProgress from 'nprogress';
 import AdminLayout from '@/layout/AdminLayout.vue';
 import { canAccessMenu, firstAccessiblePath } from '@/config/navigation.js';
@@ -41,6 +41,11 @@ function safeRedirect(value, user) {
   return value;
 }
 
+/** 回登录页；原来有会话的说明是登录过期，登录页据此提示。 */
+function loginRoute(redirect, expired) {
+  return { path: '/login', query: expired ? { redirect, expired: '1' } : { redirect } };
+}
+
 router.beforeEach(async to => {
   NProgress.start();
   const auth = useAuthStore();
@@ -52,11 +57,17 @@ router.beforeEach(async to => {
     return true;
   }
 
+  // 会话过期、原地重新登录的弹窗还开着：先留在当前页，免得已填内容随页面切换丢失（ZT-29）。
+  if (auth.sessionExpired && auth.canReloginInPlace) return false;
+  const hadSession = Boolean(auth.token || auth.user);
   await auth.restore();
+  // 切换页面时才发现过期、重新登录弹窗在场：同样留在当前页，由弹窗提示重新登录。
+  if (auth.sessionExpired && auth.canReloginInPlace) return false;
   if (auth.token && !auth.user && auth.restoreError) return { path: '/service-unavailable', query: { from: to.fullPath } };
-  if (!auth.authenticated) return { path: '/login', query: { redirect: to.fullPath } };
+  if (!auth.authenticated) return loginRoute(to.fullPath, hadSession);
   if (auth.mustChangePassword && to.path !== '/change-password') return '/change-password';
-  if (!auth.mustChangePassword && to.path === '/change-password') return firstAccessiblePath(auth.user);
+  // 主动改密在个人资料里，旧地址转过去。
+  if (!auth.mustChangePassword && to.path === '/change-password') return { path: '/profile', query: { section: 'password' } };
   if (to.name === 'AdminHome') return firstAccessiblePath(auth.user);
   if (to.meta.menuKey && !canAccessMenu(auth.user, to.meta.menuKey)) return { path: '/forbidden', query: { page: to.meta.title } };
   return true;
@@ -70,10 +81,17 @@ router.afterEach(to => {
 
 router.onError(() => NProgress.done());
 
-window.addEventListener('admin:unauthorized', () => {
+// 会话被服务端拒绝（过期、被撤销）。在后台页面里就地弹窗重新登录，页面和已填内容都留着；
+// 其他页面（如首次改密）回登录页并说明登录已过期（ZT-29）。
+window.addEventListener('admin:unauthorized', event => {
   const auth = useAuthStore();
+  if (auth.canReloginInPlace) { auth.markSessionExpired(event.detail); return; }
+  const hadSession = Boolean(auth.token || auth.user);
   auth.clear();
-  if (router.currentRoute.value.name !== 'Login') router.replace({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } });
+  const current = router.currentRoute.value;
+  // 打开页面时的首次校验由路由守卫带着目标地址转登录页，这里再跳会把目标地址冲掉。
+  if (current === START_LOCATION) return;
+  if (current.name !== 'Login') router.replace(loginRoute(current.fullPath, hadSession));
 });
 
 export { safeRedirect };

@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -14,6 +15,7 @@ import com.uav.lowaltitude.modules.identity.api.AuthDtos.ChangePasswordRequest;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.LoginRequest;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.LoginResponse;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.MeResponse;
+import com.uav.lowaltitude.modules.identity.api.AuthDtos.ProfileUpdateRequest;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 import com.uav.lowaltitude.platform.security.AuthContext;
 import com.uav.lowaltitude.platform.security.AuthUser;
@@ -44,6 +46,12 @@ public class AuthController {
     @GetMapping("/me")
     public ApiResponse<MeResponse> me() {
         return ApiResponse.ok(authService.me(AuthContext.require()));
+    }
+
+    /** 本人修改姓名和电话；返回更新后的当前用户信息。 */
+    @PatchMapping("/profile")
+    public ApiResponse<MeResponse> updateProfile(@Valid @RequestBody ProfileUpdateRequest req, HttpServletRequest http) {
+        return ApiResponse.ok(authService.updateProfile(AuthContext.require(), req, clientIp(http), userAgent(http)));
     }
 
     @PostMapping("/change-password")

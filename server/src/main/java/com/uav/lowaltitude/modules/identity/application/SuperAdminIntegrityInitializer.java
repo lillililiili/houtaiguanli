@@ -38,7 +38,8 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
             throw new IllegalStateException("APP_SUPER_ADMIN_ACCOUNT must identify the unique super administrator");
         }
         List<Map<String, Object>> selected = jdbcTemplate.queryForList(
-                "SELECT user_id, role_code, status, scope_mode FROM app_user WHERE account = ?", account);
+                "SELECT user_id, role_code, status, scope_mode, scope_org_rule FROM app_user WHERE account = ?",
+                account);
         if (selected.size() != 1) {
             throw new IllegalStateException("APP_SUPER_ADMIN_ACCOUNT does not identify an existing unique account");
         }
@@ -49,7 +50,8 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
             ensureMigrationRole();
             jdbcTemplate.update("""
                     UPDATE app_user
-                    SET role_code = ?, status = 'DISABLED', scope_mode = 'NONE', must_change_password = TRUE,
+                    SET role_code = ?, status = 'DISABLED', scope_mode = 'NONE', scope_org_rule = NULL,
+                        must_change_password = TRUE,
                         permission_version = permission_version + 1, updated_at = ?, version = version + 1
                     WHERE role_code = 'ROLE-ADMIN' AND account <> ?
                     """, MIGRATED_ADMIN_ROLE, System.currentTimeMillis(), account);
@@ -62,11 +64,12 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
 
         Map<String, Object> current = selected.get(0);
         boolean changed = !"ROLE-ADMIN".equals(current.get("role_code"))
-                || !"ACTIVE".equals(current.get("status")) || !"ALL".equals(current.get("scope_mode"));
+                || !"ACTIVE".equals(current.get("status")) || !"ALL".equals(current.get("scope_mode"))
+                || current.get("scope_org_rule") != null;
         if (changed) {
             jdbcTemplate.update("""
                     UPDATE app_user
-                    SET role_code = 'ROLE-ADMIN', status = 'ACTIVE', scope_mode = 'ALL',
+                    SET role_code = 'ROLE-ADMIN', status = 'ACTIVE', scope_mode = 'ALL', scope_org_rule = NULL,
                         permission_version = permission_version + 1, updated_at = ?, version = version + 1
                     WHERE account = ?
                     """, System.currentTimeMillis(), account);

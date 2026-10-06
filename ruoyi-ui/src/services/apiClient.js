@@ -37,11 +37,21 @@ client.interceptors.request.use(config => {
   return config;
 });
 
+// 登录、退出返回 401 不是会话过期：登录是账号或密码不对，退出时会话本来就要作废。
+const SESSION_FREE_URLS = new Set(['/v1/auth/login', '/v1/auth/logout']);
+
+function notifyUnauthorized(config = {}) {
+  if (SESSION_FREE_URLS.has(config.url)) return;
+  const method = String(config.method || 'get').toLowerCase();
+  // submitting：被拒的是提交类请求，界面要告诉用户这次没有保存。
+  window.dispatchEvent(new CustomEvent('admin:unauthorized', { detail: { submitting: method !== 'get' && method !== 'head' } }));
+}
+
 function normalizeError(error) {
   if (error instanceof ApiError) return error;
   const response = error?.response;
   const payload = response?.data?.error || {};
-  if (response?.status === 401) window.dispatchEvent(new CustomEvent('admin:unauthorized'));
+  if (response?.status === 401) notifyUnauthorized(error.config || response.config);
   if (!response) return new ApiError('暂时无法连接系统，请检查网络；若刚提交过操作，请先核对最新记录，避免重复提交。', 'NETWORK_ERROR', 0);
   return new ApiError(payload.message || '系统暂时无法完成操作，请查看最新记录；仍有问题请联系管理员。', payload.code || 'REQUEST_FAILED', response.status);
 }

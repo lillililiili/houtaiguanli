@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowDown, Expand, Fold, SwitchButton, User } from '@element-plus/icons-vue';
+import { ArrowDown, Expand, Fold, Lock, SwitchButton, User } from '@element-plus/icons-vue';
 import { navigationGroups } from '@/config/navigation.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { useTagsStore } from '@/stores/tags.js';
 import MaintenanceMessages from '@/components/MaintenanceMessages.vue';
+import SessionExpiredDialog from '@/components/SessionExpiredDialog.vue';
 
 const auth = useAuthStore();
 const tags = useTagsStore();
@@ -81,6 +82,7 @@ function closeTag(item) {
           </button>
           <template #dropdown><el-dropdown-menu>
             <el-dropdown-item command="/profile" :icon="User">个人资料</el-dropdown-item>
+            <el-dropdown-item command="/profile?section=password" :icon="Lock">修改密码</el-dropdown-item>
             <el-dropdown-item divided command="logout" :icon="SwitchButton">退出登录</el-dropdown-item>
           </el-dropdown-menu></template>
         </el-dropdown>
@@ -95,5 +97,6 @@ function closeTag(item) {
 
       <main class="admin-content"><router-view /></main>
     </section>
+    <SessionExpiredDialog />
   </div>
 </template>

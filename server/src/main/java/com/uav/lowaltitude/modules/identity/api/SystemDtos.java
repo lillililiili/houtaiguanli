@@ -16,6 +16,10 @@ public final class SystemDtos {
     private SystemDtos() {
     }
 
+    /** 管理端可设置的账号数据范围（ZT-14）。 */
+    static final String DATA_SCOPE_PATTERN = "ALL|OWN_ORG|OWN_ORG_TREE";
+    static final String DATA_SCOPE_MESSAGE = "数据范围只能选全部单位、本单位或本单位及下级单位";
+
     public record PageResponse<T>(List<T> items, int page, int size, long total) {
     }
 
@@ -28,10 +32,11 @@ public final class SystemDtos {
     public record ScopeGrantInput(@NotBlank String orgId, @NotBlank String districtId) {
     }
 
+    /** data_scope：ALL 全部单位、OWN_ORG 本单位、OWN_ORG_TREE 本单位及下级单位；CUSTOM/NONE 仅展示存量账号。 */
     public record UserResponse(
             String userId, String account, String name, String phone,
             String orgId, String orgName, String roleCode, String roleName,
-            String status,
+            String status, String dataScope,
             boolean mustChangePassword, boolean online, Long lastLoginAt,
             String lastLoginIp, long createdAt, int version) {
     }
@@ -45,10 +50,12 @@ public final class SystemDtos {
             @NotBlank(message = "临时密码不能为空")
             @Size(min = 6, max = 32, message = "临时密码长度必须在6到32位之间")
             String temporaryPassword,
-            @Size(max = 1000) String reason) {
+            @Size(max = 1000) String reason,
+            // 缺省为 OWN_ORG（本单位）。
+            @Pattern(regexp = DATA_SCOPE_PATTERN, message = DATA_SCOPE_MESSAGE) String dataScope) {
         @Override public String toString() {
             return "UserCreationRequest[account=" + account + ", roleCode=" + roleCode
-                    + ", temporaryPassword=***]";
+                    + ", dataScope=" + dataScope + ", temporaryPassword=***]";
         }
     }
 
@@ -58,7 +65,9 @@ public final class SystemDtos {
             @NotBlank String orgId,
             @Size(max = 64) String roleCode,
             @Size(max = 1000) String reason,
-            @Min(0) int expectedVersion) {
+            @Min(0) int expectedVersion,
+            // 缺省表示不改数据范围。
+            @Pattern(regexp = DATA_SCOPE_PATTERN, message = DATA_SCOPE_MESSAGE) String dataScope) {
     }
 
     public record UserStatusRequest(

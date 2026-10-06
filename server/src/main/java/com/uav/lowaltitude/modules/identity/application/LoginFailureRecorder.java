@@ -46,4 +46,20 @@ public class LoginFailureRecorder {
         auditService.record(user.getUserId(), account, user.getRoleCode(), "authentication", "login_fail",
                 "user", user.getUserId(), "bad_password", "FAILURE", ip, userAgent);
     }
+
+    /**
+     * 已登录用户改密时当前密码输错（ZT-28）：与登录失败共用计数和锁定，独立事务提交，业务回滚也留痕。
+     *
+     * @return 这一次是否达到上限并锁定
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean badCurrentPassword(AppUser user, String ip, String userAgent,
+            long now, int failLimit, int lockMinutes) {
+        int fails = user.getFailCount() + 1;
+        Long lockedUntil = fails >= failLimit ? now + lockMinutes * 60_000L : null;
+        userMapper.updateLock(user.getUserId(), fails, lockedUntil);
+        auditService.record(user.getUserId(), user.getAccount(), user.getRoleCode(), "authentication",
+                "password_change_failed", "user", user.getUserId(), "bad_current_password", "FAILURE", ip, userAgent);
+        return lockedUntil != null;
+    }
 }

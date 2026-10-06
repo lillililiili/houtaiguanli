@@ -13,7 +13,7 @@ public interface UserMapper {
     String USER_COLUMNS = """
             user_id AS userId, account, name, role_code AS roleCode, status,
             password_hash AS passwordHash, fail_count AS failCount, locked_until AS lockedUntil,
-            phone, org_id AS orgId, scope_mode AS scopeMode,
+            phone, org_id AS orgId, scope_mode AS scopeMode, scope_org_rule AS scopeOrgRule,
             must_change_password AS mustChangePassword, permission_version AS permissionVersion,
             last_login_at AS lastLoginAt, last_login_ip AS lastLoginIp,
             created_at AS createdAt, updated_at AS updatedAt, version
@@ -42,6 +42,14 @@ public interface UserMapper {
             WHERE user_id = #{userId}
             """)
     int changePassword(@Param("userId") String userId, @Param("passwordHash") String passwordHash, @Param("at") long at);
+
+    /** 本人修改资料（ZT-28）：只有姓名和电话；所属单位、角色、数据范围仍由管理员调整。 */
+    @Update("""
+            UPDATE app_user SET name = #{name}, phone = #{phone}, updated_at = #{at}, version = version + 1
+            WHERE user_id = #{userId} AND version = #{expectedVersion} AND status = 'ACTIVE'
+            """)
+    int updateOwnProfile(@Param("userId") String userId, @Param("name") String name,
+            @Param("phone") String phone, @Param("at") long at, @Param("expectedVersion") int expectedVersion);
 
     @Update("""
             UPDATE app_user

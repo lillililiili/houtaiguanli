@@ -44,6 +44,7 @@ async function submit() {
     <section class="login-panel">
       <div class="login-card">
         <header><span class="brand__mark brand__mark--login"><img src="/assets/img/brand/logo-mark.png" alt="" aria-hidden="true" width="1251" height="559" /></span><div><h2>后台管理系统</h2><p>请使用平台账号登录</p></div></header>
+        <el-alert v-if="route.query.expired === '1'" class="login-expired" title="登录已过期，请重新登录。" type="warning" show-icon :closable="false" />
         <el-form ref="formRef" :model="form" :rules="rules" label-position="top" size="large" @submit.prevent="submit">
           <el-form-item label="账号" prop="account"><el-input v-model="form.account" autocomplete="username" placeholder="请输入账号" :prefix-icon="User" /></el-form-item>
           <el-form-item label="密码" prop="password"><el-input v-model="form.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :prefix-icon="Lock" @keyup.enter="submit" /></el-form-item>
@@ -55,3 +56,7 @@ async function submit() {
     </section>
   </main>
 </template>
+
+<style scoped>
+.login-expired{margin-bottom:16px}
+</style>

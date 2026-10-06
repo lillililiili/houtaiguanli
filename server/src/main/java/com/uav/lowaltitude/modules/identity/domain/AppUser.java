@@ -10,6 +10,7 @@ public class AppUser {
     private String phone;
     private String orgId;
     private String scopeMode;
+    private String scopeOrgRule;
     private boolean mustChangePassword;
     private int permissionVersion;
     private Long lastLoginAt;
@@ -90,6 +91,14 @@ public class AppUser {
 
     public void setScopeMode(String scopeMode) {
         this.scopeMode = scopeMode;
+    }
+
+    public String getScopeOrgRule() {
+        return scopeOrgRule;
+    }
+
+    public void setScopeOrgRule(String scopeOrgRule) {
+        this.scopeOrgRule = scopeOrgRule;
     }
 
     public boolean isMustChangePassword() {
