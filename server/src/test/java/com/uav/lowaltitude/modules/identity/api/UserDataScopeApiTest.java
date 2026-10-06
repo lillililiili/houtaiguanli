@@ -32,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.uav.lowaltitude.modules.evidence.api.EvidenceTestFiles;
 import com.uav.lowaltitude.modules.identity.application.UserDataScopeService;
 
 /**
@@ -312,8 +313,9 @@ class UserDataScopeApiTest {
                 target, "T-" + target, orgId, district, now, now, now, now);
         sqlSession.clearCache();
         String body = mvc.perform(multipart("/api/v1/evidence-files")
-                        .file(new MockMultipartFile("file", filename, "application/octet-stream",
-                                ("scope-" + filename).getBytes(StandardCharsets.UTF_8)))
+                        // 证据入库按格式和文件内容核对（ZT-15），用与扩展名一致的最小合法文件。
+                        .file(new MockMultipartFile("file", filename, EvidenceTestFiles.type(filename),
+                                EvidenceTestFiles.bytes(filename)))
                         .param("kind_code", "EO_STILL").param("owner_org_id", orgId).param("district_id", district)
                         .param("subject_kind", "TARGET").param("subject_id", target)
                         .header("Authorization", bearer(token)).header("Idempotency-Key", "ds-ev-" + filename))
