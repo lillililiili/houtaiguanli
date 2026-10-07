@@ -65,6 +65,7 @@ public class AlarmReadRepository {
 
     public long count(AlarmQuery query, AccessDecision access) {
         Where where = where(query, access);
+        if (query.attentionGroups() != null) putAttentionTime(where.parameters);
         Long total = jdbc.queryForObject("SELECT COUNT(*)" + from() + where.sql, where.parameters, Long.class);
         return total == null ? 0 : total;
     }
@@ -216,6 +217,11 @@ public class AlarmReadRepository {
         add(sql, parameters, "a.district_id", "district_id", query.districtId());
         add(sql, parameters, "a.source_mode", "source_mode", query.sourceMode());
         add(sql, parameters, "a.alarm_type", "alarm_type", query.alarmType());
+        if (query.attentionGroups() != null) {
+            // 与每行返回的 attention_group 同一个分类表达式，筛出来的和页面分组一致；时刻参数由调用方放入。
+            sql.append(" AND (").append(AlarmAttentionSql.GROUP).append(") IN (:attention_groups)");
+            parameters.put("attention_groups", query.attentionGroups());
+        }
         if (query.targetId() != null) {
             // filter 也只接受与每条 alarm 同域的目标，错连 target 不能影响列表 total。
             sql.append(" AND EXISTS (SELECT 1 FROM target filter_target WHERE filter_target.target_id=a.target_id AND filter_target.target_id=:target_id AND filter_target.owner_org_id=a.owner_org_id AND filter_target.district_id=a.district_id)");
@@ -259,9 +265,11 @@ public class AlarmReadRepository {
     public record AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
             OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
             /* 阶段 15（决策 15-7）：按告警类别筛。 */
-            String alarmType) {
+            String alarmType,
+            /* 2026-10-07：按关注分组筛（待处置统计、状态筛选）；null 表示不限。 */
+            List<String> attentionGroups) {
         public static AlarmQuery empty() {
-            return new AlarmQuery(null, null, null, null, null, null, null, null, null);
+            return new AlarmQuery(null, null, null, null, null, null, null, null, null, null);
         }
     }
     /**

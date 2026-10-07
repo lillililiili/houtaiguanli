@@ -36,9 +36,10 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @Service
 public class AlarmReadService {
     // 参数白名单：写错的参数必须报错而不是被忽略，否则调用方以为筛过了、拿到的却是全量。
-    // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）。
+    // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group。
     private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "occurred_from", "occurred_to",
-            "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type");
+            "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group");
+    private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
     private final AccessControlService access;
     private final AlarmReadRepository repository;
     private final AuditService audit;
@@ -62,11 +63,7 @@ public class AlarmReadService {
     public ResponseEntity<byte[]> export(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.ALARM_READ);
         AccessDecision targetDecision = values.containsKey("target_id") ? access.require(PermissionCode.TARGET_READ) : null;
-        Request request = new Request(values);
-        AlarmQuery query = new AlarmQuery(request.optional("state", 32), request.optional("severity", 16),
-                request.optional("target_id", 36), request.timeFrom(), request.timeTo(),
-                request.optional("owner_org_id", 36), request.optional("district_id", 36),
-                request.optional("source_mode", 8), request.optional("alarm_type", 32));
+        AlarmQuery query = new Request(values).query();
         if (query.targetId() != null && !repository.targetReadable(query.targetId(), targetDecision)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权筛选该关联目标");
         }
@@ -117,6 +114,7 @@ public class AlarmReadService {
     /** 审计里记下筛选条件与行数：事后要能回答"这份表是谁、按什么条件导出去的"。 */
     private static String describe(AlarmQuery query, String sort, String order) {
         return "state=" + query.state() + ",severity=" + query.severity() + ",alarm_type=" + query.alarmType()
+                + ",attention_group=" + (query.attentionGroups() == null ? null : String.join("|", query.attentionGroups()))
                 + ",district_id=" + query.districtId() + ",target_id=" + query.targetId()
                 + ",sort=" + sort + ",order=" + order;
     }
@@ -128,10 +126,7 @@ public class AlarmReadService {
         AccessDecision targetDecision = values.containsKey("target_id") ? access.require(PermissionCode.TARGET_READ) : null;
         Request request = new Request(values);
         Page page = request.page();
-        AlarmQuery query = new AlarmQuery(request.optional("state", 32), request.optional("severity", 16),
-                request.optional("target_id", 36), request.timeFrom(), request.timeTo(),
-                request.optional("owner_org_id", 36), request.optional("district_id", 36),
-                request.optional("source_mode", 8), request.optional("alarm_type", 32));
+        AlarmQuery query = request.query();
         String sort = sortKey(values), order = orderDirection(values);
         if (query.targetId() != null) {
             // target_id 是关联对象筛选，不允许仅以告警读权限用 total 是否变化猜测目标存在或归属。
@@ -258,6 +253,24 @@ public class AlarmReadService {
             values.keySet().stream().filter(key -> !ALLOWED.contains(key)).findFirst().ifPresent(key -> { throw invalid("参数无效"); });
         }
         private Page page() { int page = integer("page", 1), size = integer("size", 20); if (page < 1 || size < 1 || size > 100) throw invalid("分页参数无效"); return new Page(page, size); }
+        /** 列表与导出共用同一套筛选解析，两边条件不能各写一份。 */
+        private AlarmQuery query() {
+            return new AlarmQuery(optional("state", 32), optional("severity", 16), optional("target_id", 36), timeFrom(), timeTo(),
+                    optional("owner_org_id", 36), optional("district_id", 36), optional("source_mode", 8), optional("alarm_type", 32),
+                    attentionGroups());
+        }
+        /** attention_group 是逗号分隔集合（如 CURRENT,AWAITING_CONFIRMATION）；未知、重复或空项一律 400，不悄悄忽略。 */
+        private List<String> attentionGroups() {
+            String raw = optional("attention_group", 64);
+            if (raw == null) return null;
+            List<String> groups = new java.util.ArrayList<>();
+            for (String part : raw.split(",", -1)) {
+                String group = part.trim();
+                if (!ATTENTION_GROUPS.contains(group) || groups.contains(group)) throw invalid("attention_group 参数无效");
+                groups.add(group);
+            }
+            return List.copyOf(groups);
+        }
         private int integer(String name, int fallback) { if (!values.containsKey(name)) return fallback; String value = single(name); try { return Integer.parseInt(value); } catch (RuntimeException ex) { throw invalid("分页参数无效"); } }
         private String optional(String name, int max) { if (!values.containsKey(name)) return null; String value = single(name); if (value.length() > max) throw invalid(name + " 参数无效"); return value; }
         private OffsetDateTime timeFrom() { return time("occurred_from", true); }
