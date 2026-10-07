@@ -56,10 +56,17 @@ public final class IdentityStateMachine {
 
     /** 本帧没有命中该目标：按距最近一次观测的间隙判断短失/终止。frameAt 是本帧时刻（回放用回放时钟，不用墙钟）。 */
     public Transition onFrame(TrackState state, Instant frameAt) {
+        Instant reference = state.lastObservedAt() != null ? state.lastObservedAt() : state.since();
+        return onMiss(state, Duration.between(reference, frameAt).toMillis(), frameAt);
+    }
+
+    /**
+     * 本帧没有命中该目标，间隙由调用方按合适的时钟算好（ZT-20：跨设备比较用平台收到数据的时刻，设备时钟可能不准）。
+     * frameAt 只用作状态变化的时刻。
+     */
+    public Transition onMiss(TrackState state, long gap, Instant frameAt) {
         if (state.terminal()) return new Transition(state, false);
         int misses = state.missFrames() + 1;
-        Instant reference = state.lastObservedAt() != null ? state.lastObservedAt() : state.since();
-        long gap = Duration.between(reference, frameAt).toMillis();
         TrackStatus next = state.status();
         if (gap > terminateAfterMillis) next = TrackStatus.TERMINATED;
         else if (gap > shortLostAfterMillis) next = TrackStatus.SHORT_LOST;
