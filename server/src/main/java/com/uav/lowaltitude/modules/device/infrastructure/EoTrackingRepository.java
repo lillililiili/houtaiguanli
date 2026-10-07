@@ -20,8 +20,13 @@ public class EoTrackingRepository {
     }
     public boolean deviceScope(String id,String user,String scope) {return devices.canDeleteInScope(id,user,scope);}
     public boolean roleEnabled(String role) {return Boolean.TRUE.equals(jdbc.queryForObject("SELECT enabled FROM app_role WHERE role_code=?",Boolean.class,role));}
-    public void lock(String target) {
-        jdbc.queryForList("SELECT target_id FROM target WHERE target_id=? FOR UPDATE", target);
+    /**
+     * 自动轮询锁目标：目标行正被别的事务（主要是融合写目标）锁着时跳过、返回 false，下一轮轮询再看。
+     * 调度有多个线程（ZT-06），融合一帧按自己的次序更新多个目标，这里按候选次序逐个加锁，两边都等锁就会互相卡住，
+     * PostgreSQL 判死锁后回滚一方；回滚的若是融合，那一帧记为失败、数据就丢了（2026-10-07 QA 默认开启自动跟踪后发现）。
+     */
+    public boolean tryLock(String target) {
+        return !jdbc.queryForList("SELECT target_id FROM target WHERE target_id=? FOR UPDATE SKIP LOCKED", target).isEmpty();
     }
     public Map<String,Object> snapshot(String target) {
         String location = postgres ? "ST_AsText(s.location)" : "CAST(s.location AS VARCHAR)";

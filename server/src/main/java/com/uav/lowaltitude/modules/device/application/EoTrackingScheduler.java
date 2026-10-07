@@ -27,7 +27,8 @@ public class EoTrackingScheduler {
         if(edges.lockCursor()==null) return 0;
         int count=0;
         for(var task:repository.openAutomaticTasks(batch)) {
-            String target=text(task,"target_id");repository.lock(target);
+            String target=text(task,"target_id");
+            if(!repository.tryLock(target)) continue;
             if(!policy.enabledFor(repository.snapshot(target))) continue;
             if(!repository.paused(target) && policy.block(repository.snapshot(target))==null && !policy.demand(target).isEmpty()) continue;
             var device=edges.binding(text(task,"ops_device_id"),true);
@@ -37,7 +38,7 @@ public class EoTrackingScheduler {
         }
         for(String target:repository.candidates(policy.cutoff(),clock.nowMillis(),Math.max(batch*10,batch))) {
             if(count>=batch) break;
-            repository.lock(target);
+            if(!repository.tryLock(target)) continue;
             var snapshot=repository.snapshot(target);
             if(!policy.enabledFor(snapshot)||repository.paused(target)||edges.targetHasOpenTask(target)||policy.block(snapshot)!=null||policy.demand(target).isEmpty()) continue;
             var device=edges.idleDeviceForMode(text(snapshot,"owner_org_id"),text(snapshot,"district_id"),null,EoTrackingPolicy.mode(snapshot),policy.heartbeatCutoff(),policy.now());
