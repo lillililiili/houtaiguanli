@@ -8,6 +8,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.UUID;
@@ -103,7 +105,9 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.availability.devices").value("FORBIDDEN"))
                 .andExpect(jsonPath("$.data.availability.flights").value("FORBIDDEN"))
                 .andExpect(jsonPath("$.data.availability.airspaces").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.data.availability.risks").value("FORBIDDEN"))
                 .andExpect(jsonPath("$.data.availability.stats").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.data.target_risk").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.sensed_today").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.alarms_today").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.pending_assessment").value(nullValue()))
@@ -175,6 +179,9 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.closure.pending_verification").value(1))
                 // 最新告警列表不是计数，仍按全部来源，总数与列表同口径。
                 .andExpect(jsonPath("$.data.alarms.total").value(4))
+                // 能读目标、不能读风险：今日目标照给，风险分档不给。
+                .andExpect(jsonPath("$.data.availability.risks").value("FORBIDDEN"))
+                .andExpect(jsonPath("$.data.target_risk").value(nullValue()))
                 .andReturn().getResponse().getContentAsString()).get("data");
 
         assertThat(ids(data.get("map").get("targets"))).contains(target).doesNotContain(hiddenTarget, noLocation);
@@ -235,33 +242,79 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
     }
 
-    /** 风险分档按统计口径逐个来源取最新研判：真实设备和设备模拟器的算，系统自带的演示样例不算。 */
+    /**
+     * ZT-17 复测 2：今日感知目标和风险分档就是运行统计选今天时的那一份。原先大屏按"今天出现过、不含被合并"数目标、
+     * 按研判等级抽样 100 条分档，运行统计按首次发现、含被合并的目标数、按风险记录分档，两处对不上（393 对 414，高风险 3 对 0）。
+     * 现在同一批目标（被合并的不另计，系统自带的演示样例不计），同一套分档（超高/高/中/低/未识别），五档相加等于今日感知目标。
+     */
     @Test
-    void riskTiersCountLiveAndSimulatorEvaluationsButNotDemoSamples() throws Exception {
+    void todayTargetsAndRiskTiersAreTheOperationsStatisticsForToday() throws Exception {
         String token = reader("ASSIGNED", org, district);
         grantModule(token, "dashboard");
-        // 研判里的目标只对能读目标的账号可见；看不到目标的研判本来就不进分档。
-        grantAction(token, "assessment:read", "target:read");
+        grantModule(token, "statistics");
+        grantAction(token, "target:read", "risk:read");
+        todayTarget("live-critical", "live");
+        risk("live-critical", "live", "CRITICAL");
+        todayTarget("live-plain", "live");
+        todayTarget("replay-medium", "replay");
+        risk("replay-medium", "replay", "MEDIUM");
+        // 模拟器目标挂着的是一条演示样例的风险：风险不计，目标照计，归入未识别。
+        todayTarget("replay-demo-risk", "replay");
+        risk("replay-demo-risk", "mock", "LOW");
+        // 被合并的目标是存活目标的别名：目标和它名下的风险都不另计。
+        todayTarget("replay-merged", "replay");
+        risk("replay-merged", "replay", "HIGH");
+        jdbc.update("insert into target_track_status (target_id,status,since,updated_at) values (?,'MERGE',?,?)",
+                "dash-today-replay-merged-" + suffix, ts(now()), ts(now()));
+        // 分档看风险记录的等级，不再看研判等级。
         String run = "dash-run-" + suffix;
         jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at)"
-                + " select ?,v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',3,3,0,0,'replay',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only",
+                + " select ?,v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',1,1,0,0,'live',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only",
                 run, ts(now()), ts(now()), ts(now()));
-        evaluation(run, target, "mock", "LOW");
-        for (String mode : new String[]{"live", "replay"}) {
-            jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV',?,?,?,?,?,?,?,0)",
-                    "dash-risk-" + mode + "-" + suffix, "T-RISK-" + mode + "-" + suffix, mode, org, district, ts(now()), ts(now()), ts(now()), ts(now()));
-        }
-        evaluation(run, "dash-risk-live-" + suffix, "live", "HIGH");
-        evaluation(run, "dash-risk-replay-" + suffix, "replay", "MEDIUM");
+        evaluation(run, "dash-today-live-plain-" + suffix, "live", "HIGH");
 
-        mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
+        JsonNode dashboard = json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.availability.assessments").value("AVAILABLE"))
-                .andExpect(jsonPath("$.data.target_risk.high").value(1))
+                .andExpect(jsonPath("$.data.availability.risks").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.kpis.sensed_today").value(4))
+                .andExpect(jsonPath("$.data.simulated_included.sensed_today").value(2))
+                .andExpect(jsonPath("$.data.target_risk.critical").value(1))
+                .andExpect(jsonPath("$.data.target_risk.high").value(0))
                 .andExpect(jsonPath("$.data.target_risk.medium").value(1))
                 .andExpect(jsonPath("$.data.target_risk.low").value(0))
-                .andExpect(jsonPath("$.data.target_risk.ungraded").value(0))
-                .andExpect(jsonPath("$.data.target_risk.truncated").value(false));
+                .andExpect(jsonPath("$.data.target_risk.ungraded").value(2))
+                .andExpect(jsonPath("$.data.target_risk.truncated").value(false))
+                // 趋势的今天一格也是这一份；不能读研判时非法数为空（原先拆箱空值，整个大屏 500）。
+                .andExpect(jsonPath("$.data.trend.days[6].total").value(4))
+                .andExpect(jsonPath("$.data.trend.days[6].illegal").value(nullValue()))
+                .andReturn().getResponse().getContentAsString()).get("data");
+
+        String today = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString();
+        JsonNode stats = json.readTree(mvc.perform(get("/api/v1/stats/operations").param("from", today).param("to", today)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("data");
+        assertThat(stats.path("summary").path("total").asLong()).isEqualTo(dashboard.path("kpis").path("sensed_today").asLong());
+        JsonNode tiers = dashboard.path("target_risk");
+        assertThat(stats.path("by_risk").findValuesAsText("name")).containsExactly("超高风险", "高风险", "中风险", "低风险", "未识别");
+        assertThat(stats.path("by_risk").findValues("value").stream().map(JsonNode::asInt).toList())
+                .containsExactly(tiers.path("critical").asInt(), tiers.path("high").asInt(), tiers.path("medium").asInt(),
+                        tiers.path("low").asInt(), tiers.path("ungraded").asInt());
+        assertThat(stats.path("summary").path("high_risk").asInt()).isEqualTo(tiers.path("critical").asInt() + tiers.path("high").asInt());
+    }
+
+    /** 今天首次发现的目标，在读者的单位与区域里。 */
+    private void todayTarget(String name, String sourceMode) {
+        String id = "dash-today-" + name + "-" + suffix;
+        jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV',?,?,?,?,?,?,?,0)",
+                id, "T-TODAY-" + name + "-" + suffix, sourceMode, org, district, ts(now()), ts(now()), ts(now()), ts(now()));
+    }
+
+    private void risk(String name, String sourceMode, String severity) {
+        String id = "dash-risk-" + name + "-" + suffix;
+        jdbc.update("insert into flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,target_id,risk_type,severity,state_code,reason_code,reason_text,received_at,source_mode,owner_org_id,district_id,created_at,updated_at,version)"
+                + " values(?,?,?,'seed-stage3-plan-legal','seed-stage3-rv-legal',?,'AIRSPACE',?,'PENDING_VERIFICATION','PROHIBITED_AIRSPACE_OVERLAP','大屏统计口径测试',?,?,?,?,?,?,0)",
+                id, SOURCE, id, "dash-today-" + name + "-" + suffix, severity, ts(now()), sourceMode, org, district, ts(now()), ts(now()));
     }
 
     private void evaluation(String run, String targetId, String sourceMode, String grade) {

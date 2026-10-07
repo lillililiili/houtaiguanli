@@ -49,7 +49,9 @@ import com.uav.lowaltitude.modules.identity.application.AccessService;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.reporting.application.ReportingService;
 import com.uav.lowaltitude.modules.reporting.application.ReportingService.DayPoint;
+import com.uav.lowaltitude.modules.reporting.application.ReportingService.DayTargets;
 import com.uav.lowaltitude.modules.reporting.application.ReportingService.OperationsReport;
+import com.uav.lowaltitude.modules.reporting.application.ReportingService.RiskTiers;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.LocationDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TargetStateDto;
 import com.uav.lowaltitude.modules.target.api.TargetDtos.TargetSummaryDto;
@@ -67,6 +69,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 与"运行统计"同一口径，算真实设备和设备模拟器的数据，不算建库时系统自带的演示样例。
  * 其中来自设备模拟器的条数放在 {@code simulated_included} 里，页面据此写明，免得被当成现场真实数据。
  * 地图和最新告警列表不是计数，仍按全部来源给。</p>
+ *
+ * <p>今日感知目标与风险分档直接用运行统计的取数（{@link ReportingService#dayTargets}，ZT-17 复测 2）：
+ * 原先各算各的——大屏按今天出现过、不含被合并的目标数，运行统计按首次发现、含被合并的目标数，差了 21 个；
+ * 风险分档大屏按研判等级抽样 100 条，运行统计按风险记录的等级，对不上。现在两处同一批目标、同一套分档。</p>
  */
 @Service
 public class DashboardSnapshotService {
@@ -125,13 +131,14 @@ public class DashboardSnapshotService {
         boolean canDevice = probe(PermissionCode.DEVICE_READ) && menuReadable("monitoring.read");
         boolean canFlight = probe(PermissionCode.FLIGHT_READ);
         boolean canAirspace = probe(PermissionCode.AIRSPACE_READ);
+        boolean canRisk = probe(PermissionCode.RISK_READ);
         boolean canStats = menuReadable("statistics.read");
 
         /* 统计口径与运行统计一致（StatisticsScope）：真实设备和设备模拟器的数据都算，演示样例不算；
-           同时记下其中来自设备模拟器的条数，供页面写明。 */
-        Scoped targetCount = canTarget ? scoped(mode -> countTargets(from, to, mode)) : null;
+           同时记下其中来自设备模拟器的条数，供页面写明。今日目标与风险分档就是运行统计选今天时的那一份。 */
+        DayTargets todayTargets = canTarget ? reporting.dayTargets(today) : null;
         Scoped alarmCount = canAlarm ? scoped(mode -> countAlarms(from, to, null, mode)) : null;
-        Long sensedToday = targetCount == null ? null : targetCount.total();
+        Long sensedToday = todayTargets == null ? null : (long) todayTargets.total();
         Long alarmsToday = alarmCount == null ? null : alarmCount.total();
         Long allSourceAlarmsToday = canAlarm ? countAlarms(from, to, null, null) : null;
         Long pendingAssessment = canAssessment ? scoped(mode -> countEvaluations("PENDING_REVIEW", mode)).total() : null;
@@ -139,7 +146,7 @@ public class DashboardSnapshotService {
         DeviceCounts deviceCounts = canDevice ? deviceCounts() : null;
         FlightCounts flightCounts = canFlight ? flightCounts(from, to) : null;
         SimulatedIncludedDto simulated = new SimulatedIncludedDto(
-                targetCount == null ? null : targetCount.simulated(),
+                todayTargets == null ? null : (long) todayTargets.simulated(),
                 alarmCount == null ? null : alarmCount.simulated(),
                 flightCounts == null ? null : flightCounts.simulatedToday(),
                 deviceCounts == null ? null : deviceCounts.simulated());
@@ -158,13 +165,14 @@ public class DashboardSnapshotService {
         availability.put("devices", flag(canDevice));
         availability.put("flights", flag(canFlight));
         availability.put("airspaces", flag(canAirspace));
+        availability.put("risks", flag(canRisk));
         availability.put("stats", flag(canStats));
 
         return new SnapshotDto(asOf, availability,
                 new KpisDto(sensedToday, alarmsToday, pendingAssessment, pendingHandoffs),
                 simulated, statistics.sourceModes(),
                 canStats ? trend(today) : null,
-                canAssessment ? targetRisk() : null,
+                targetRisk(todayTargets),
                 /* 办理队列也按统计口径：设备模拟器批次里待核实的告警照样计入，系统自带的演示样例不计。 */
                 new ClosureDto(
                         canAlarm ? scoped(mode -> countAlarms(null, null, "PENDING_VERIFICATION", mode)).total() : null,
@@ -193,28 +201,13 @@ public class DashboardSnapshotService {
     }
 
     /**
-     * 风险分档也是计数，按统计口径逐个来源各取最新研判（每个来源抽样上限 100 条），
-     * 免得系统自带的演示样例占满抽样、把设备模拟器的目标挤出去；地图上的研判标签仍按全部来源。
+     * 风险分档：今日感知目标按各自最新的风险等级分档，与运行统计选今天时的"各风险等级分布"一致（ZT-17 复测 2）。
+     * 今日目标全量统计，不再抽样，truncated 恒为 false；不能读目标或风险时整块为 null。地图上的研判标签不变。
      */
-    private TargetRiskDto targetRisk() {
-        int high = 0, medium = 0, low = 0, ungraded = 0;
-        boolean truncated = false;
-        for (String mode : statistics.sourceModes()) {
-            Map<String, EvaluationDto> latest = new LinkedHashMap<>();
-            for (EvaluationDto row : evaluations.list(q("page", "1", "size", "100", "latest_only", "true",
-                    "subject_kind", "TARGET", "source_mode", mode)).items()) {
-                if (row.targetId() != null) latest.putIfAbsent(row.targetId(), row);
-            }
-            truncated |= latest.size() >= 100;
-            for (EvaluationDto row : latest.values()) {
-                String grade = row.grade();
-                if ("HIGH".equals(grade)) high++;
-                else if ("MEDIUM".equals(grade)) medium++;
-                else if ("LOW".equals(grade)) low++;
-                else ungraded++;
-            }
-        }
-        return new TargetRiskDto(high, medium, low, ungraded, truncated);
+    private static TargetRiskDto targetRisk(DayTargets today) {
+        if (today == null || today.risks() == null) return null;
+        RiskTiers tiers = today.risks();
+        return new TargetRiskDto(tiers.critical(), tiers.high(), tiers.medium(), tiers.low(), tiers.unknown(), false);
     }
 
     /** 设备健康按统计口径（与运行统计的设备口径一致）；统计里的模拟设备台数 = 统计口径台数 - 正式接入台数。 */
@@ -256,12 +249,6 @@ public class DashboardSnapshotService {
         if (statusCode != null) query.add("status_code", statusCode);
         if (sourceMode != null) query.add("source_mode", sourceMode);
         return flights.flightPlans(query).total();
-    }
-
-    private long countTargets(String from, String to, String sourceMode) {
-        MultiValueMap<String, String> query = q("page", "1", "size", "1", "seen_from", from, "seen_to", to);
-        if (sourceMode != null) query.add("source_mode", sourceMode);
-        return targets.targets(query).total();
     }
 
     private List<TargetSummaryDto> listMapTargets() {

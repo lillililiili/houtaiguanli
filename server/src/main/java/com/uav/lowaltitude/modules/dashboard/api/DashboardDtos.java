@@ -44,9 +44,16 @@ public final class DashboardDtos {
 
     public record TrendDto(String from, String to, String sourceMode, boolean simulated, List<TrendDayDto> days) { }
 
-    public record TrendDayDto(String date, String md, int total, int illegal) { }
+    /** 运行统计不给的数（不能读目标或研判）为 null，页面显示"—"；原先是 int，拆箱空值让整个大屏 500。 */
+    public record TrendDayDto(String date, String md,
+            @JsonInclude(JsonInclude.Include.ALWAYS) Integer total,
+            @JsonInclude(JsonInclude.Include.ALWAYS) Integer illegal) { }
 
-    public record TargetRiskDto(int high, int medium, int low, int ungraded, boolean truncated) { }
+    /**
+     * 今日感知目标按最新风险等级分档，与运行统计"各风险等级分布"同一套：超高风险、高风险、中风险、低风险、未识别（ungraded）。
+     * 五档相加等于 kpis.sensed_today；全量统计，truncated 恒为 false（保留字段兼容旧页面）。
+     */
+    public record TargetRiskDto(int critical, int high, int medium, int low, int ungraded, boolean truncated) { }
 
     public record ClosureDto(
             @JsonInclude(JsonInclude.Include.ALWAYS) Long pendingVerification,

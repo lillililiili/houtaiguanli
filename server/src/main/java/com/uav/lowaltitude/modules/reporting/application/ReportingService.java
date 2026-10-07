@@ -20,6 +20,7 @@ import com.uav.lowaltitude.modules.reporting.infrastructure.ReportingRepository;
 import com.uav.lowaltitude.modules.reporting.infrastructure.ReportingRepository.Scope;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
+import com.uav.lowaltitude.platform.query.StatisticsScope;
 import com.uav.lowaltitude.platform.security.AuthContext;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -87,14 +88,7 @@ public class ReportingService {
         boolean devicesAllowed = access.permissionCodes(user.roleCode()).contains("devices.read");
         var targets = targetsAllowed ? repository.targets(range.from(),range.to(),scope) : List.<ReportingRepository.TargetFact>of();
         var cases = casesAllowed ? repository.cases(range.from(),range.to(),scope) : List.<ReportingRepository.CaseFact>of();
-        Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries = new java.util.HashMap<>();
-        var formalEvaluations=new java.util.HashSet<String>(); var formalRisks=new java.util.HashSet<String>();
-        for (int start=0; start<targets.size(); start+=500) {
-            var batchIds=targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList();
-            formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
-            formalRisks.addAll(repository.formalRiskIds(batchIds));
-            summaries.putAll(targetRepository.summaries(targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList()));
-        }
+        TargetStates states = states(targets);
         Map<String,int[]> days = new LinkedHashMap<>();
         for(LocalDate date=range.from();!date.isAfter(range.to());date=date.plusDays(1)) days.put(date.toString(),new int[4]);
         Map<String,int[]> regions = new LinkedHashMap<>();
@@ -105,9 +99,7 @@ public class ReportingService {
         int illegal=0,highRisk=0,uav=0,abnormal=0,altTotal=0,unknownLegality=0,unknownRisk=0;
         for(var target:targets) {
             modes.add(target.sourceMode());
-            var state=summaries.get(target.id());
-            String legal=state==null||state.legality()==null||!formalEvaluations.contains(state.legality().evaluationId())?null:state.legality().legalStatus();
-            String risk=state==null||state.risk()==null||!formalRisks.contains(state.risk().riskId())?null:state.risk().severity();
+            String legal=states.legal(target.id()), risk=states.risk(target.id());
             boolean bad="ILLEGAL".equals(legal), high="HIGH".equals(risk)||"CRITICAL".equals(risk);
             if(bad) illegal++; if(high) highRisk++;
             if(legal==null||(!"LEGAL".equals(legal)&&!"ILLEGAL".equals(legal)&&!"ABNORMAL".equals(legal)&&!"NOT_APPLICABLE".equals(legal))) { unknownLegality++; }
@@ -137,7 +129,7 @@ public class ReportingService {
             return new PartnerRank(entry.getKey(),entry.getValue().size(),fine);
         }).sorted(java.util.Comparator.comparingInt(PartnerRank::caseCount).reversed().thenComparing(PartnerRank::name)).limit(5).toList();
         Map<String,MetricAvailability> availability=new LinkedHashMap<>();
-        availability.put("total",metric(targetsAllowed,0,"按首次发现时间去重统计新增目标"));
+        availability.put("total",metric(targetsAllowed,0,"按首次发现时间去重统计新增目标；被合并进其他目标的不另计"));
         availability.put("illegal",metric(legalityAllowed,unknownLegality,"按生成时最新研判统计明确非法目标；无明确结论的目标不计入"));
         availability.put("high_risk",metric(risksAllowed,unknownRisk,"按生成时最新风险等级统计高风险及超高风险目标；无等级目标不计入"));
         availability.put("punish",metric(casesAllowed,0,"按立案时间统计案件，移送及通知不计作立案"));
@@ -156,6 +148,57 @@ public class ReportingService {
         return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),
             new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
             risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId);
+    }
+
+    /**
+     * 某一天新增的目标，与运行统计选这一天时同一份取数（ZT-17 复测 2）。数据大屏的"今日感知目标"和"重点目标风险态势"用它，
+     * 与运行统计的"新增目标数""各风险等级分布"才对得上：同一批目标（按首次发现时间归属，被合并的目标不另计，
+     * 同一套来源与数据范围），同一套风险分档。只要求能读目标，风险分档另要能读风险，不要求能打开运行统计菜单。
+     * 不能读目标时返回 null；能读目标、不能读风险时 risks 为 null。
+     */
+    public DayTargets dayTargets(LocalDate day) {
+        if (!allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.TARGET_READ)) return null;
+        AuthUser user = AuthContext.require();
+        var targets = repository.targets(day, day, new Scope("ALL".equals(user.scopeMode()), user.userId()));
+        int simulated = (int) targets.stream().filter(target -> StatisticsScope.SIMULATOR.equals(target.sourceMode())).count();
+        if (!allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.RISK_READ)) return new DayTargets(targets.size(), simulated, null);
+        TargetStates states = states(targets);
+        int critical=0,high=0,medium=0,low=0,unknown=0;
+        for (var target : targets) {
+            // 分档同"各风险等级分布"（riskLabel）：超高、高、中、低，其余（含没有风险记录）为未识别。
+            String risk = states.risk(target.id());
+            if ("CRITICAL".equals(risk)) critical++;
+            else if ("HIGH".equals(risk)) high++;
+            else if ("MEDIUM".equals(risk)) medium++;
+            else if ("LOW".equals(risk)) low++;
+            else unknown++;
+        }
+        return new DayTargets(targets.size(), simulated, new RiskTiers(critical, high, medium, low, unknown));
+    }
+
+    /** 每个目标生成时的最新研判与风险，只认计入统计的记录；运行统计和大屏共用。 */
+    private TargetStates states(List<ReportingRepository.TargetFact> targets) {
+        Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries = new java.util.HashMap<>();
+        var formalEvaluations=new java.util.HashSet<String>(); var formalRisks=new java.util.HashSet<String>();
+        for (int start=0; start<targets.size(); start+=500) {
+            var batchIds=targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList();
+            formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
+            formalRisks.addAll(repository.formalRiskIds(batchIds));
+            summaries.putAll(targetRepository.summaries(batchIds));
+        }
+        return new TargetStates(summaries, formalEvaluations, formalRisks);
+    }
+
+    private record TargetStates(Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries,
+            java.util.Set<String> formalEvaluations, java.util.Set<String> formalRisks) {
+        String legal(String targetId) {
+            var state=summaries.get(targetId);
+            return state==null||state.legality()==null||!formalEvaluations.contains(state.legality().evaluationId())?null:state.legality().legalStatus();
+        }
+        String risk(String targetId) {
+            var state=summaries.get(targetId);
+            return state==null||state.risk()==null||!formalRisks.contains(state.risk().riskId())?null:state.risk().severity();
+        }
     }
 
     private boolean allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode permission) {
@@ -344,4 +387,10 @@ public class ReportingService {
     public record PartnerRank(String name, int caseCount, java.math.BigDecimal fine) { }
 
     public record CsvExport(String filename, String body) { }
+
+    /** 某一天新增的目标数、其中来自设备模拟器的个数、各风险等级的个数（不能读风险时为 null）。 */
+    public record DayTargets(int total, int simulated, RiskTiers risks) { }
+
+    /** 与"各风险等级分布"同一套分档：超高风险、高风险、中风险、低风险、未识别。 */
+    public record RiskTiers(int critical, int high, int medium, int low, int unknown) { }
 }
