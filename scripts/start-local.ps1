@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$SkipBusinessFrontend,
     [switch]$WithMqtt,
@@ -45,7 +45,8 @@ $businessDir = if ($BusinessRoot) { (Resolve-Path -LiteralPath $BusinessRoot).Pa
 $simulatorDir = if ($SimulatorRoot) { (Resolve-Path -LiteralPath $SimulatorRoot).Path } else { $simulatorCandidates | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'server.py') } | Select-Object -First 1 }
 if (-not $businessDir) { $businessDir = '' }
 if (-not $simulatorDir) { $simulatorDir = '' }
-$runtimeDir = Join-Path ([System.IO.Path]::GetTempPath()) 'houtaiguanlii-local-runtime'
+. (Join-Path $PSScriptRoot 'local-service-state.ps1')
+$runtimeDir = Get-LocalRuntimeDirectory -RepositoryRoot $repoRoot
 $stateFile = Join-Path $runtimeDir 'services.json'
 $powershell = (Get-Process -Id $PID).Path
 if (-not $powershell) { $powershell = Join-Path $PSHOME 'powershell.exe' }
@@ -80,7 +81,7 @@ function Resolve-Java17Home {
         try { $resolvedHome = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path } catch { continue }
         $javaExe = Join-Path $resolvedHome 'bin\java.exe'
         if (-not (Test-Path -LiteralPath $javaExe)) { continue }
-        $version = (& $javaExe --version 2>$null | Select-Object -First 1) -join ' '
+        $version = (& $javaExe --version 2>$null) -join ' '
         if ($version -match '\b17(?:\.\d+)?') { return $resolvedHome }
     }
     return $null
@@ -93,20 +94,40 @@ function Start-LoggedService {
         [Parameter(Mandatory)][string]$Command
     )
 
-    $stdout = Join-Path $runtimeDir "$Name.out.log"
-    $stderr = Join-Path $runtimeDir "$Name.err.log"
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    $launchId = [Guid]::NewGuid().ToString('N')
+    $stdout = Join-Path $runtimeDir "$Name-$launchId.out.log"
+    $stderr = Join-Path $runtimeDir "$Name-$launchId.err.log"
+    $entryFile = Join-Path $runtimeDir "$Name-$launchId.ps1"
+    [IO.File]::WriteAllText($entryFile, ("`$ErrorActionPreference = 'Stop'`r`n" + $Command + "`r`nexit `$LASTEXITCODE"), [Text.UTF8Encoding]::new($true))
     $process = Start-Process -FilePath $powershell -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $entryFile + '"')
     ) -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
     return [ordered]@{
         name = $Name
+        kind = 'process'
+        reused = $false
         pid = $process.Id
+        start_ticks = $process.StartTime.ToUniversalTime().Ticks.ToString()
+        entry_file = $entryFile
+        members = @()
         cwd = $WorkingDirectory
         stdout = $stdout
         stderr = $stderr
         started_at = [DateTimeOffset]::Now.ToString('o')
     }
+}
+
+function Register-LocalService {
+    param([string]$Name, $Service)
+    $services[$Name] = $Service
+    Save-LocalServiceState -Path $stateFile -Services $services
+}
+
+function Register-LocalContainer {
+    param([string]$Name)
+    $containerId = & docker inspect -f '{{.Id}}' $Name 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $containerId) { throw "无法记录容器：$Name" }
+    Register-LocalService -Name $Name -Service ([ordered]@{name=$Name; kind='container'; container_id=$containerId})
 }
 
 function Wait-Http {
@@ -176,16 +197,20 @@ function Find-MapProviderOrigin {
 
 function Get-ContainerHealth {
     param([Parameter(Mandatory)][string]$Name)
-    $value = (& docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $Name 2>$null | Select-Object -First 1)
+    $ErrorActionPreference = 'Continue'
+    $value = & docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $Name 2>$null
     if (-not $value) { return $null }
     return [string]$value
 }
 
 function Get-ContainerHostPort {
     param([Parameter(Mandatory)][string]$Name)
-    $value = (& docker port $Name 5432/tcp 2>$null | Select-Object -First 1)
-    if (-not $value -or $value -notmatch ':(\d+)$') { return 0 }
-    return [int]$Matches[1]
+    # HostConfig persists for stopped containers; `docker port` only sees live bindings.
+    $bindings = & docker inspect -f '{{json .HostConfig.PortBindings}}' $Name
+    if ($LASTEXITCODE -ne 0) { return 0 }
+    $configured = $bindings | ConvertFrom-Json
+    if (-not $configured.'5432/tcp') { return 0 }
+    return [int]$configured.'5432/tcp'[0].HostPort
 }
 
 function Wait-ContainerHealthy {
@@ -228,24 +253,47 @@ function Get-DockerDesktopExecutable {
 }
 
 function Test-DockerEngine {
-    $null = & docker info --format '{{.ServerVersion}}' 2>$null
-    return $LASTEXITCODE -eq 0
+    $probe = [Diagnostics.Process]::new()
+    $probe.StartInfo.FileName = (Get-Command docker).Source
+    $probe.StartInfo.Arguments = 'info --format "{{.ServerVersion}}"'
+    $probe.StartInfo.UseShellExecute = $false
+    $probe.StartInfo.CreateNoWindow = $true
+    $probe.StartInfo.RedirectStandardOutput = $true
+    $probe.StartInfo.RedirectStandardError = $true
+    try {
+        [void]$probe.Start()
+        $stdoutRead = $probe.StandardOutput.ReadToEndAsync()
+        $stderrRead = $probe.StandardError.ReadToEndAsync()
+        if (-not $probe.WaitForExit(5000)) {
+            $probe.Kill() # Only this function's own disposable health probe.
+            return $false
+        }
+        return $probe.ExitCode -eq 0
+    } finally { $probe.Dispose() }
 }
 
-function Repair-DockerInferenceSocket {
-    $runDirectory = Join-Path $env:LOCALAPPDATA 'Docker\run'
-    $socketPath = Join-Path $runDirectory 'dockerInference'
-    $socket = Get-Item -LiteralPath $socketPath -Force -ErrorAction SilentlyContinue
-    if (-not $socket -or -not ($socket.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return }
-    $otherEntries = @(Get-ChildItem -LiteralPath $runDirectory -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'dockerInference' })
-    if ($otherEntries.Count -gt 0) {
-        throw "Docker 推理套接字链接损坏，但 Docker\run 目录还有其它运行文件，未自动处理：$runDirectory"
+function Repair-DockerRuntimeSockets {
+    if (Get-Process -Name 'Docker Desktop','com.docker.backend' -ErrorAction SilentlyContinue) { return }
+    $locations = @(
+        @{ relative='Docker\run'; allowed=@('dockerInference','dockerEthernetVfkit','userAnalyticsOtlpHttp.sock') },
+        @{ relative='docker-secrets-engine'; allowed=@('engine.sock') }
+    )
+    foreach ($location in $locations) {
+        $expected = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA $location.relative))
+        if (-not (Test-Path -LiteralPath $expected)) { continue }
+        $directory = (Resolve-Path -LiteralPath $expected).Path
+        if ($directory -ne $expected) { throw 'Docker 临时目录不在预期位置，未执行修复。' }
+        $entries = @(Get-ChildItem -LiteralPath $directory -Force)
+        if ($entries.Count -eq 0) { continue }
+        $otherEntries = @($entries | Where-Object {
+            $_.Name -notin $location.allowed -or -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        })
+        if ($otherEntries.Count -gt 0) { throw "Docker 临时目录含其他内容，未自动处理：$directory" }
+        $backup = "$directory-socket-backup-$([Guid]::NewGuid().ToString('N'))"
+        Move-Item -LiteralPath $directory -Destination $backup
+        New-Item -ItemType Directory -Path $directory | Out-Null
+        Write-Host "[修复] 已保留 Docker 遗留套接字目录：$backup"
     }
-    $backupDirectory = "$runDirectory-broken-$([DateTime]::Now.ToString('yyyyMMdd-HHmmss'))"
-    Write-Warning "发现无法访问的 Docker 推理套接字链接，保留原目录并让 Docker Desktop 重建：$socketPath"
-    Move-Item -LiteralPath $runDirectory -Destination $backupDirectory -ErrorAction Stop
-    New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
-    Write-Host "[修复] Docker 运行目录已保留到：$backupDirectory"
 }
 
 function Ensure-DockerEngine {
@@ -253,7 +301,7 @@ function Ensure-DockerEngine {
 
     $desktopProcess = Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue
     $backendProcess = Get-Process -Name 'com.docker.backend' -ErrorAction SilentlyContinue
-    if (-not $desktopProcess -and -not $backendProcess) { Repair-DockerInferenceSocket }
+    if (-not $desktopProcess -and -not $backendProcess) { Repair-DockerRuntimeSockets }
     $desktopPath = Get-DockerDesktopExecutable
     if (-not $desktopProcess -and $desktopPath) {
         Write-Host "[准备] Docker Engine 未就绪，启动 Docker Desktop：$desktopPath"
@@ -301,50 +349,31 @@ function Test-ApiRoute {
     }
 }
 
-function Restart-ManagedApi {
-    param([Parameter(Mandatory)][int]$Port)
-    $connections = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
-    if (-not $connections) { return }
-    $root = $null
-    foreach ($connection in $connections) {
-        $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($connection.OwningProcess)"
-        while ($current) {
-            if ($current.CommandLine -like '*spring-boot:run*' -and $current.CommandLine -like "*$serverDir*") {
-                $root = $current
-                break
-            }
-            if ($current.ParentProcessId -le 0) { break }
-            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($current.ParentProcessId)"
-        }
-        if ($root) { break }
-    }
-    if (-not $root) {
-        throw "后端端口 $Port 已被占用，但不是本仓库启动链；请先停止占用该端口的服务。"
-    }
-    Write-Host "[重启] 后端缺少当前启动所需的 QA 接口，停止旧进程树 PID $($root.ProcessId) ..."
-    & taskkill.exe /PID ([int]$root.ProcessId) /T /F | Out-Null
-    $deadline = (Get-Date).AddSeconds(15)
-    while (Test-LocalPort -Port $Port) {
-        if ((Get-Date) -ge $deadline) { throw "后端端口 $Port 未能释放。" }
-        Start-Sleep -Milliseconds 250
-    }
-}
-
 function Reuse-Or-Start {
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$ProbeUri,
         [Parameter(Mandatory)][string]$WorkingDirectory,
-        [Parameter(Mandatory)][string]$Command,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Command,
         [switch]$RequireMapConfig
     )
     if (Test-Endpoint -Uri $ProbeUri -RequireMapConfig:$RequireMapConfig) {
         Write-Host "[复用] $Name 已在运行：$ProbeUri"
-        return [ordered]@{ name = $Name; reused = $true; probe = $ProbeUri; started_at = $null }
+        if ($services.Contains($Name) -and (Test-OwnedService $services[$Name])) { return $services[$Name] }
+        return [ordered]@{ name = $Name; kind = 'process'; reused = $true; probe = $ProbeUri; started_at = $null }
     }
-    return Start-LoggedService -Name $Name -WorkingDirectory $WorkingDirectory -Command $Command
+    $port = ([Uri]$ProbeUri).Port
+    if (Test-LocalPort -Port $port) { throw "$Name 端口 $port 已被占用但健康检查未通过；未停止或覆盖已有进程。" }
+    $started = Start-LoggedService -Name $Name -WorkingDirectory $WorkingDirectory -Command $Command
+    $started.probe = $ProbeUri
+    $started.port = $port
+    return $started
 }
 
+New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+$operationLock = [IO.File]::Open((Join-Path $runtimeDir 'operation.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+try {
+$services = Read-LocalServiceState -Path $stateFile
 Assert-Command docker
 Assert-Command node
 Assert-Command npm
@@ -396,9 +425,15 @@ New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 
 Write-Host '[1/5] 启动隔离 PostgreSQL/PostGIS...'
 $dbHealth = Get-ContainerHealth -Name 'deploy-db-1'
-if ($dbHealth -eq 'healthy') {
+if ($dbHealth) {
     $DbPort = Get-ContainerHostPort -Name 'deploy-db-1'
-    Write-Host "[复用] 数据库容器 deploy-db-1 已健康，宿主机端口 $DbPort"
+    if ($dbHealth -ne 'healthy') {
+        & docker start deploy-db-1
+        if ($LASTEXITCODE -ne 0) { throw '现有数据库容器启动失败。' }
+        Register-LocalContainer -Name 'deploy-db-1'
+        Wait-ContainerHealthy -Name 'deploy-db-1' -Seconds $TimeoutSeconds
+    }
+    Write-Host "[复用] 数据库容器 deploy-db-1，保留现有数据卷与宿主机端口 $DbPort"
 }
 else {
     if ($DbPort -le 0) {
@@ -407,22 +442,32 @@ else {
     $env:DB_PORT = [string]$DbPort
     try { & docker compose -f $composeFile up -d db } finally { Remove-Item Env:DB_PORT -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE -ne 0) { throw '数据库容器启动失败。' }
+    Register-LocalContainer -Name 'deploy-db-1'
     Wait-ContainerHealthy -Name 'deploy-db-1' -Seconds $TimeoutSeconds
 }
 if ($DbPort -le 0) { throw '无法解析数据库宿主机端口，请使用 -DbPort 显式指定。' }
+Register-LocalContainer -Name 'deploy-db-1'
+# Read credentials into inherited process environment only, never the launcher or logs.
+$env:DB_USER = & docker exec deploy-db-1 printenv POSTGRES_USER
+$env:DB_PASSWORD = & docker exec deploy-db-1 printenv POSTGRES_PASSWORD
+if (-not $env:DB_USER -or -not $env:DB_PASSWORD) { throw '无法读取本机数据库连接配置。' }
 
 if ($WithMqtt -or $WithSimulator) {
     Write-Host '[2/5] 启动本机 MQTT（qa profile）...'
-    if ((Get-ContainerHealth -Name 'deploy-mosquitto-1') -eq 'running') {
+    $mqttHealth = Get-ContainerHealth -Name 'deploy-mosquitto-1'
+    if ($mqttHealth -eq 'running') {
         Write-Host '[复用] MQTT 容器 deploy-mosquitto-1 已在运行。'
     }
     else {
-        & docker compose -f $composeFile --profile qa up -d mosquitto
+        if ($mqttHealth) { & docker start deploy-mosquitto-1 }
+        else { & docker compose -f $composeFile --profile qa up -d mosquitto }
         if ($LASTEXITCODE -ne 0) { throw 'MQTT 容器启动失败。' }
+        Register-LocalContainer -Name 'deploy-mosquitto-1'
         $mqttDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
         while (-not (Test-LocalPort -Port 1883) -and (Get-Date) -lt $mqttDeadline) { Start-Sleep -Seconds 2 }
         if (-not (Test-LocalPort -Port 1883)) { throw "MQTT 未在 ${TimeoutSeconds}s 内监听 1883。" }
     }
+    Register-LocalContainer -Name 'deploy-mosquitto-1'
 }
 else {
     Write-Host '[2/5] 未请求 MQTT；跳过 Mosquitto。'
@@ -457,7 +502,6 @@ if ($WithQaVideo) {
     }
 }
 
-$services = [ordered]@{}
 $springProfiles = if ($WithSimulator) { 'local,qa' } else { 'local' }
 $backendVideoEnvironment = if ($WithQaVideo) {
     "`$env:APP_VIDEO_QA_ENABLED = 'true'`n" +
@@ -469,12 +513,11 @@ $backendVideoEnvironment = if ($WithQaVideo) {
 $backendCommand = @"
 ${backendVideoEnvironment}
 `$env:DB_URL = 'jdbc:postgresql://127.0.0.1:5432/houtaiguanli'
-`$env:DB_USER = 'uav'
-`$env:DB_PASSWORD = 'uav'
 `$env:APP_DEV_SEED_ENABLED = 'false'
+`$env:APP_WEATHER_RISK_QA_ENABLED = 'false'
 `$env:SPRING_PROFILES_ACTIVE = '$springProfiles'
 `$env:SERVER_PORT = '$ApiPort'
-& '.\mvnw.cmd' 'spring-boot:run' '-Dspring-boot.run.profiles=$springProfiles' '-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=$javaTempDirJvm -Djdk.net.unixdomain.tmpdir=$javaTempDirJvm'
+& '.\mvnw.cmd' 'spring-boot:run' '-Dspring-boot.run.profiles=$springProfiles' '-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=$javaTempDirJvm -Djdk.net.unixdomain.tmpdir=$javaTempDirJvm' '-Dspring-boot.run.arguments=--app.dev-seed.enabled=false --app.weather-risk.qa.enabled=false'
 "@
 $apiReady = Test-Endpoint -Uri "http://127.0.0.1:$ApiPort/actuator/health/readiness"
 $apiNeedsSimulatorRoute = $false
@@ -484,11 +527,11 @@ if ($apiReady) {
     $apiNeedsQaVideoRoute = $WithQaVideo -and -not (Test-ApiRoute -Port $ApiPort -Path '/api/v1/local-interface-simulator/video-streams/not-a-task')
 }
 if ($apiNeedsSimulatorRoute -or $apiNeedsQaVideoRoute) {
-    Restart-ManagedApi -Port $ApiPort
+    throw '现有后端没有所需模拟接口，请先使用关闭脚本停止本项目服务，再启动。'
 }
 Write-Host "[3/5] 启动后端（$springProfiles，演示种子保持关闭）..."
 $backendCommand = $backendCommand.Replace('127.0.0.1:5432', "127.0.0.1:$DbPort").Replace('127.0.0.1:8081', "127.0.0.1:$ApiPort")
-$services.api = Reuse-Or-Start -Name 'api' -ProbeUri "http://127.0.0.1:$ApiPort/actuator/health/readiness" -WorkingDirectory $serverDir -Command $backendCommand
+Register-LocalService -Name 'api' -Service (Reuse-Or-Start -Name 'api' -ProbeUri "http://127.0.0.1:$ApiPort/actuator/health/readiness" -WorkingDirectory $serverDir -Command $backendCommand)
 
 if (-not $SkipFrontendInstall -and -not (Test-Path -LiteralPath (Join-Path $adminDir 'node_modules'))) {
     Write-Host '安装管理前端依赖...'
@@ -503,7 +546,7 @@ $businessOrigin = if ($existingBusinessOrigin) { $existingBusinessOrigin } else 
 if ($runBusiness) {
     if ($existingBusinessOrigin) {
         Write-Host "[复用] 业务前台地图服务已就绪：$existingBusinessOrigin"
-        $services.business = [ordered]@{ name = 'business'; reused = $true; probe = "$businessOrigin/map-config.json"; started_at = $null }
+        Register-LocalService -Name 'business' -Service (Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command '' -RequireMapConfig)
     }
     else {
         if (Test-LocalPort -Port $BusinessPort) {
@@ -515,9 +558,9 @@ if ($runBusiness) {
             try { npm ci } finally { Pop-Location }
             if ($LASTEXITCODE -ne 0) { throw '业务前台依赖安装失败。' }
         }
-        $businessCommand = "& 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1' '--port' '$BusinessPort'"
+        $businessCommand = "`$env:APP_API_PROXY_TARGET = 'http://127.0.0.1:$ApiPort'`n& 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1' '--port' '$BusinessPort' '--strictPort'"
         Write-Host '[4/5] 启动业务前台（地图资源提供方）...'
-        $services.business = Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command $businessCommand -RequireMapConfig
+        Register-LocalService -Name 'business' -Service (Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command $businessCommand -RequireMapConfig)
     }
 }
 else {
@@ -526,10 +569,11 @@ else {
 
 $adminCommand = @"
 `$env:ADMIN_MAP_PROXY_TARGET = '$businessOrigin'
-& 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1'
+`$env:ADMIN_API_PROXY_TARGET = 'http://127.0.0.1:$ApiPort'
+& 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1' '--port' '$AdminPort' '--strictPort'
 "@
 Write-Host '[4/5] 启动管理前端（地图代理指向业务前台）...'
-$services.admin = Reuse-Or-Start -Name 'admin' -ProbeUri "http://127.0.0.1:$AdminPort/map-config.json" -WorkingDirectory $adminDir -Command $adminCommand -RequireMapConfig
+Register-LocalService -Name 'admin' -Service (Reuse-Or-Start -Name 'admin' -ProbeUri "http://127.0.0.1:$AdminPort/map-config.json" -WorkingDirectory $adminDir -Command $adminCommand -RequireMapConfig)
 
 if ($WithSimulator) {
     $simulatorVideoEnvironment = if ($WithQaVideo) {
@@ -539,16 +583,16 @@ if ($WithSimulator) {
     } else { '' }
     $simulatorCommand = @"
 ${simulatorVideoEnvironment}
-& 'python.exe' 'server.py' '--port' '$SimulatorPort' '--map-origin' 'http://127.0.0.1:$BusinessPort'
+& 'python.exe' $(Quote-PowerShell (Join-Path $simulatorDir 'server.py')) '--port' '$SimulatorPort' '--map-origin' 'http://127.0.0.1:$BusinessPort'
 "@
     Write-Host "[5/5] 启动设备模拟器（仅本机 $SimulatorPort）..."
-    $services.simulator = Reuse-Or-Start -Name 'simulator' -ProbeUri "http://127.0.0.1:$SimulatorPort/" -WorkingDirectory $simulatorDir -Command $simulatorCommand
+    Register-LocalService -Name 'simulator' -Service (Reuse-Or-Start -Name 'simulator' -ProbeUri "http://127.0.0.1:$SimulatorPort/" -WorkingDirectory $simulatorDir -Command $simulatorCommand)
 }
 else {
     Write-Host '[5/5] 未请求设备模拟器。'
 }
 
-$services | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $stateFile -Encoding UTF8
+Save-LocalServiceState -Path $stateFile -Services $services
 Write-Host "运行状态与日志目录：$runtimeDir"
 Write-Host "进程清单：$stateFile"
 
@@ -564,7 +608,17 @@ if (-not $SkipWait) {
     }
     if ($services.Contains('simulator')) { Wait-Http -Name '设备模拟器' -Uri "http://127.0.0.1:$SimulatorPort/" }
 }
+foreach ($name in @($services.Keys)) {
+    $service = $services[$name]
+    if ($service.kind -eq 'process' -and -not $service.reused -and (Test-OwnedService $service)) {
+        $service.members = @(Get-OwnedProcessTree $service)
+    }
+}
+Save-LocalServiceState -Path $stateFile -Services $services
 
 Write-Host ''
 Write-Host '启动完成。建议随后执行：'
 Write-Host "  & '$PSScriptRoot\smoke-system.ps1' -RequireBusinessFrontend:$($services.Contains('business')) -RequireSimulator:$($services.Contains('simulator'))"
+} finally {
+    $operationLock.Dispose()
+}

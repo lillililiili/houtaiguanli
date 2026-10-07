@@ -21,6 +21,19 @@ public class LocalInterfaceRepository {
   jdbc.update("INSERT INTO integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) SELECT ?,?, ?,TRUE,'mock',?,?,0 WHERE NOT EXISTS(SELECT 1 FROM integration_source WHERE source_id=?)",id,"LOCAL_FLIGHT_PLAN_SIMULATOR",com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.SIMULATOR_SOURCE_NAME,new java.sql.Timestamp(now),new java.sql.Timestamp(now),id);
  }
  public Row existing(String actor,String kind,String external){return first(jdbc.query("SELECT * FROM local_interface_message WHERE created_by=? AND kind=? AND external_id=?",ROW,actor,kind,external));}
+ public List<Row> planCandidates(String actor,String serial,long start,long end,String mode){
+  return jdbc.query("SELECT m.* FROM local_interface_message m JOIN flight_plan p ON p.plan_id=m.subject_id"
+   +" WHERE m.created_by=? AND m.kind='FLIGHT_PLAN' AND m.direction='IN' AND m.state='ACCEPTED'"
+   +" AND p.uav_sn=? AND p.start_at=? AND p.end_at=? AND p.source_mode=?"
+   +" AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)"
+   +" ORDER BY m.created_at,m.message_id",ROW,actor,serial,new java.sql.Timestamp(start),new java.sql.Timestamp(end),mode);
+ }
+ public Row canonicalPlanReceipt(Row receipt){
+  Row canonical=first(jdbc.query("SELECT m.* FROM flight_plan_duplicate d JOIN local_interface_message m ON m.subject_id=d.canonical_plan_id"
+   +" WHERE d.duplicate_plan_id=? AND m.created_by=? AND m.kind='FLIGHT_PLAN' AND m.state='ACCEPTED'"
+   +" ORDER BY m.created_at,m.message_id FETCH FIRST 1 ROWS ONLY",ROW,receipt.subjectId(),receipt.actor()));
+  return canonical==null?receipt:canonical;
+ }
  public Row lock(String id){return first(jdbc.query("SELECT * FROM local_interface_message WHERE message_id=? FOR UPDATE",ROW,id));}
  public Row find(String id){return first(jdbc.query("SELECT * FROM local_interface_message WHERE message_id=?",ROW,id));}
  public List<Row> messages(String actor){return jdbc.query("SELECT * FROM local_interface_message WHERE created_by=? ORDER BY created_at DESC,message_id DESC FETCH FIRST 100 ROWS ONLY",ROW,actor);}

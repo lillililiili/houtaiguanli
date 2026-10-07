@@ -38,6 +38,7 @@ public class WeatherForecastRiskRepository {
                   JOIN app_org o ON o.org_id=p.owner_org_id AND o.enabled=TRUE
                   JOIN app_district d ON d.district_id=p.district_id AND d.enabled=TRUE
                  WHERE p.source_mode IN ('mock','replay')
+                   AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate duplicate WHERE duplicate.duplicate_plan_id=p.plan_id)
                    AND (LOWER(REPLACE(d.name,' ','')) LIKE '%' || :area || '%'
                         OR :area LIKE '%' || LOWER(REPLACE(d.name,' ','')) || '%')
                 """);

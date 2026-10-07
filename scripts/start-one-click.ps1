@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$OpenBrowser,
     [switch]$SkipBusinessFrontend,
@@ -46,4 +46,4 @@ Write-Host '一键启动完成：'
 Write-Host '  管理端： http://127.0.0.1:5175/login?redirect=/'
 Write-Host '  业务端： http://127.0.0.1:5173/'
 Write-Host '  模拟器： http://127.0.0.1:8766/'
-Write-Host '  停止本次应用进程： .\scripts\stop-local.ps1'
+Write-Host '  一键关闭服务：双击 一键关闭.cmd（保留数据库和模拟历史）'

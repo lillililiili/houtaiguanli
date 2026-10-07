@@ -1,5 +1,6 @@
 package com.uav.lowaltitude.modules.handoff.api;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 public final class HandoffDtos {
@@ -46,7 +47,15 @@ public final class HandoffDtos {
     public record MaterialDto(int schemaVersion, RiskMaterialDto risk, List<VerificationMaterialDto> verifications,
             ReferenceMaterialDto references) { }
     public record RiskMaterialDto(String riskId, String sourceRiskId, String riskType, String severity, String state,
-            String reasonCode, String reasonText, Long occurredAt, long receivedAt, long version) { }
+            String reasonCode, String reasonText, Long occurredAt, long receivedAt, long version, RiskLocationDto location) {
+        public RiskMaterialDto(String riskId, String sourceRiskId, String riskType, String severity, String state,
+                String reasonCode, String reasonText, Long occurredAt, long receivedAt, long version) {
+            this(riskId, sourceRiskId, riskType, severity, state, reasonCode, reasonText, occurredAt, receivedAt, version, null);
+        }
+    }
+    /** 风险观测位置，随通知冻结；不是目标当前位置。缺失时不提供 location，不回填历史材料。 */
+    public record RiskLocationDto(BigDecimal longitude, BigDecimal latitude, String coordinateSystem, Long observedAt,
+            BigDecimal altitudeM, String altitudeDatum) { }
     public record VerificationMaterialDto(String conclusion, String note, String resultingState, long version, long createdAt,
             String actorId) { }
     /* 材料快照 schema_version=2：处罚交接的事件形状（决策 14-1…14-4）。

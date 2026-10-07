@@ -15,6 +15,8 @@ public class EoTrackingPolicy {
     private final AppClock clock;
     private final boolean enabled;
     private final boolean mqttEnabled;
+    @Value("${app.eo-edge.auto-track-source-modes:live,replay}")
+    private String autoSourceModes="live,replay";
     private final com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch departure;
     private final com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository edges;
     private final long positionAge, heartbeatAge, demandAge;
@@ -32,6 +34,11 @@ public class EoTrackingPolicy {
         this.positionAge=positionAge;this.heartbeatAge=heartbeatAge;this.demandAge=demandAge;
     }
     public boolean enabled() { return enabled && mqttEnabled; }
+    public boolean enabledFor(Map<String,Object> target) {
+        if(target==null) return false;
+        String targetMode=mode(target);
+        return enabled() && targetMode!=null && Arrays.stream(autoSourceModes.split(",")).map(String::trim).anyMatch(targetMode::equals);
+    }
     public long cutoff() { return clock.nowMillis()-positionAge; }
     public long heartbeatCutoff() {return clock.nowMillis()-heartbeatAge;}
     public long now() {return clock.nowMillis();}

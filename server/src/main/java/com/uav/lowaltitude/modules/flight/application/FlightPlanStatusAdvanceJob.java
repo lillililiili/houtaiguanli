@@ -51,9 +51,11 @@ public class FlightPlanStatusAdvanceJob {
         Instant now = clock.now();
         Map<String, Object> params = Map.of("now", Timestamp.from(now));
         int completed = jdbc.update("UPDATE flight_plan SET status_code='COMPLETED', updated_at=:now, version=version+1"
-                + " WHERE status_code IN ('PENDING','EXECUTING') AND end_at IS NOT NULL AND end_at <= :now", params);
+                + " WHERE status_code IN ('PENDING','EXECUTING') AND end_at IS NOT NULL AND end_at <= :now"
+                + " AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=flight_plan.plan_id)", params);
         int executing = jdbc.update("UPDATE flight_plan SET status_code='EXECUTING', updated_at=:now, version=version+1"
-                + " WHERE status_code='PENDING' AND start_at IS NOT NULL AND start_at <= :now AND (end_at IS NULL OR end_at > :now)", params);
+                + " WHERE status_code='PENDING' AND start_at IS NOT NULL AND start_at <= :now AND (end_at IS NULL OR end_at > :now)"
+                + " AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=flight_plan.plan_id)", params);
         return new int[] { executing, completed };
     }
 }

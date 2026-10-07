@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$SeedAccount = 'admin1',
     # 不再猜测本地 admin1 密码。账号改密后，使用旧默认值做冒烟会累计真实失败次数并触发锁定。

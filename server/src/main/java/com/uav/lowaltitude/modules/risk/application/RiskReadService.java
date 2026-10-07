@@ -193,13 +193,15 @@ public class RiskReadService {
         boolean targetVisible=visible(PermissionCode.TARGET_READ);
         String targetId=targetVisible&&repository.targetReferenceVisible(row)?row.targetId():null;
         String trackId=targetVisible&&repository.trackReferenceVisible(row)?row.trackId():null;
+        boolean simulated=repository.simulatedObservation(row);
+        String sourceName=simulated&&row.sourceName()!=null?row.sourceName().replace("（回放）","（模拟）"):row.sourceName();
         return new RiskDto(row.riskId(), row.sourceRiskId(), planId, routeVersionId, assessmentId,
                 targetId, trackId, row.riskType(), row.severity(), row.state(), row.reasonCode(), row.reasonText(),
                 millis(row.occurredAt()), requiredMillis(row.receivedAt()), row.observedAltitudeM(), row.observedAltitudeDatum(),
                 row.heightRelation(), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), row.version(),
                 RiskState.verifiable(row.state())&&visible(PermissionCode.RISK_VERIFY) ? List.of("VERIFY") : List.of(),
-                row.sourceName(), row.ownerOrgName(), row.districtName(), planId == null ? null : row.planNo(), targetId == null ? null : row.targetNo(),
-                spaceFact(row), row.displayNo(),current.status(),current.reason(),current.observedAt());
+                sourceName, row.ownerOrgName(), row.districtName(), planId == null ? null : row.planNo(), targetId == null ? null : row.targetNo(),
+                spaceFact(row), row.displayNo(),current.status(),current.reason(),current.observedAt(),simulated?"mock":row.sourceMode());
     }
 
     private boolean visible(PermissionCode permission){try{access.require(permission);return true;}catch(ApiException ignored){return false;}}

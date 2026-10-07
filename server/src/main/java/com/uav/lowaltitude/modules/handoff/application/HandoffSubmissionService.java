@@ -1,5 +1,6 @@
 package com.uav.lowaltitude.modules.handoff.application;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -26,6 +27,7 @@ import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.MaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.ReferenceMaterialDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RiskMaterialDto;
+import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RiskLocationDto;
 import com.uav.lowaltitude.modules.handoff.api.HandoffDtos.VerificationMaterialDto;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimePolicy;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility;
@@ -261,8 +263,20 @@ public class HandoffSubmissionService {
                 visible.targetId(), visible.trackId());
         RiskMaterialDto material = new RiskMaterialDto(risk.riskId(), risk.sourceRiskId(), risk.riskType(), risk.severity(), risk.state(),
                 risk.reasonCode(), risk.reasonText(), risk.occurredAt() == null ? null : risk.occurredAt().toInstant().toEpochMilli(),
-                risk.receivedAt().toInstant().toEpochMilli(), risk.version());
+                risk.receivedAt().toInstant().toEpochMilli(), risk.version(), riskLocation(visible));
         return new MaterialDto(HandoffRules.SNAPSHOT_SCHEMA_VERSION, material, history, empty(references) ? null : references);
+    }
+
+    private static RiskLocationDto riskLocation(RiskDto risk) {
+        var fact = risk.spaceFact();
+        if (fact == null || fact.longitude() == null || fact.latitude() == null
+                || fact.longitude().abs().compareTo(BigDecimal.valueOf(180)) > 0
+                || fact.latitude().abs().compareTo(BigDecimal.valueOf(90)) > 0) return null;
+        // Space facts expose only SRID 4326. For C04, occurredAt is the observation time of this frozen point.
+        boolean hasAltitude = fact.targetAltitudeRaw() != null && Set.of("AGL", "AMSL").contains(
+                fact.altitudeDatum() == null ? "" : fact.altitudeDatum());
+        return new RiskLocationDto(fact.longitude(), fact.latitude(),
+                "WGS84", risk.occurredAt(), hasAltitude ? fact.targetAltitudeRaw() : null, hasAltitude ? fact.altitudeDatum() : null);
     }
 
     private static boolean empty(ReferenceMaterialDto references) {

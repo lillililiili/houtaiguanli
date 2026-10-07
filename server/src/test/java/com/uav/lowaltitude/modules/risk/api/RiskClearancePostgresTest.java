@@ -10,10 +10,12 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.UUID;
+import java.util.List;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,6 +33,8 @@ import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskEvaluatio
 import com.uav.lowaltitude.modules.risk.infrastructure.RiskRepository;
 import com.uav.lowaltitude.modules.identity.domain.*;
 import com.uav.lowaltitude.platform.time.AppClock;
+import com.uav.lowaltitude.modules.fusion.FusionContracts.*;
+import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort;
 
 @SpringBootTest(properties="app.rule-engine.allow-demo-active=true")
 @AutoConfigureMockMvc
@@ -48,6 +52,8 @@ class RiskClearancePostgresTest {
     @Autowired RiskPresenceService presence;
     @Autowired RiskRepository risks;
     @Autowired SpaceRiskEvaluationService evaluation;
+    @Autowired SpaceRiskSpatialPort spatial;
+    @Autowired FusedLayerWriter writer;
     @SpyBean AppClock clock;
     @SpyBean com.uav.lowaltitude.modules.assessment.engine.RuleParamLoader parameters;
     static final String ORG="seed-stage3-org",DISTRICT="seed-stage3-district";
@@ -74,6 +80,59 @@ class RiskClearancePostgresTest {
         jdbc.update("insert into app_session(session_id,user_id,expire_at,ip,permission_version) select ?,user_id,?,'127.0.0.1',permission_version from app_user where account='admin1'",session,now+3600000);
     }
     @AfterEach void restoreClock(){reset(clock);reset(parameters);}
+
+    @ParameterizedTest
+    @CsvSource({"mock,PRED", "replay,PRED", "live,PRED", "mock,BRIDGE", "replay,BRIDGE", "live,BRIDGE"})
+    void retainedFusionPositionCannotGenerateAnotherRisk(String mode,String kind) {
+        position(37);
+        jdbc.update("update target set source_mode=? where target_id=?",mode,target);
+        String airport=id();
+        jdbc.update("insert into airport(airport_id,icao_code,name,reference_point,owner_org_id,district_id,created_at) values(?,?,'QA prediction guard',ST_SetSRID(ST_MakePoint(118.05,37),4326),?,?,?)",airport,airport.substring(0,8),ORG,DISTRICT,ts(now));
+        var from=Instant.ofEpochMilli(now-2000).atOffset(ZoneOffset.UTC);
+        var to=Instant.ofEpochMilli(now+1).atOffset(ZoneOffset.UTC);
+        assertThat(spatial.observations(from,to,15)).anyMatch(o -> target.equals(o.targetId()) && plan.equals(o.planId()));
+        assertThat(spatial.airportProximity(from,to,15)).anyMatch(o -> target.equals(o.targetId()) && airport.equals(o.airportId()));
+        // Exercise the production terminal-frame writer: its retained coordinate gets a new frame time.
+        writer.write(new TargetFrameResult(target,new FusionDomainKey(mode,ORG,DISTRICT),
+                Instant.ofEpochMilli(now),List.of(),TrackStatus.TERMINATED,1,"demo-v1"));
+        jdbc.update("update track_point set point_kind=? where track_id=? and observed_at=?",kind,track,ts(now));
+        assertThat(jdbc.queryForObject("select location is not null from target_latest_state where target_id=?",Boolean.class,target)).isTrue();
+        assertThat(spatial.observations(from,to,15)).noneMatch(o -> target.equals(o.targetId()));
+        assertThat(spatial.airportProximity(from,to,15)).noneMatch(o -> target.equals(o.targetId()));
+        long before=jdbc.queryForObject("select count(*) from flight_risk where target_id=?",Long.class,target);
+        assertThat(evaluation.evaluate("C04",from,to,"SCHEDULED",null).status()).isEqualTo("SUCCESS");
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=?",Long.class,target)).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"mock,PRED", "replay,PRED", "live,PRED", "mock,BRIDGE", "replay,BRIDGE", "live,BRIDGE"})
+    void predictionOnlyHistoricalEvaluationDoesNotReplaceGenuineRisk(String mode,String kind) throws Exception {
+        position(37);
+        jdbc.update("update target set source_mode=? where target_id=?",mode,target);
+        writer.write(new TargetFrameResult(target,new FusionDomainKey(mode,ORG,DISTRICT),
+                Instant.ofEpochMilli(now),List.of(),TrackStatus.TERMINATED,1,"demo-v1"));
+        jdbc.update("update track_point set point_kind=? where track_id=? and observed_at=?",kind,track,ts(now));
+        String predictedRisk=id();originalRisk(predictedRisk,now);
+        jdbc.update("update flight_risk set source_mode=?,source_id=? where target_id=?",mode,"rule-engine-space-risk-"+mode,target);
+        var before=jdbc.queryForList("select * from flight_risk where target_id=? order by risk_id",target);
+        mvc.perform(get("/api/v1/risks/current?plan_id="+plan).header("Authorization","Bearer "+session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].risk.risk_id").value(risk));
+        mvc.perform(get("/api/v1/risks/"+predictedRisk).header("Authorization","Bearer "+session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.current_reason").value(org.hamcrest.Matchers.containsString("预测")));
+        mvc.perform(get("/api/v1/risks?plan_id="+plan).header("Authorization","Bearer "+session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2));
+        // A later real measurement must not rehabilitate an assessment originally based on prediction.
+        now+=5000;doReturn(now).when(clock).nowMillis();doReturn(Instant.ofEpochMilli(now)).when(clock).now();
+        point=jdbc.queryForObject("select point_id from track_point where track_id=? order by point_seq desc limit 1",String.class,track);
+        appendPosition(37);
+        mvc.perform(get("/api/v1/risks/current?plan_id="+plan).header("Authorization","Bearer "+session))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].risk.risk_id").value(risk));
+        presence.recordC04Clearances();
+        assertThat(jdbc.queryForList("select * from flight_risk where target_id=? order by risk_id",target)).isEqualTo(before);
+        assertThat(jdbc.queryForObject("select count(*) from risk_clearance_evidence where risk_id in (?,?)",Integer.class,risk,predictedRisk)).isZero();
+    }
 
     @Test @Order(1) void pipelinePersistsClearanceWithoutChangingNotificationAndReadsNeverWrite() throws Exception {
         var before=jdbc.queryForMap("select * from flight_risk where risk_id=?",risk);

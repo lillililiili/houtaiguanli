@@ -287,6 +287,7 @@ public class RuleEngineRepository {
         return jdbc.query("SELECT p.plan_id,p.route_version_id,p.uav_sn,p.start_at,p.end_at,rv.corridor_width_m,rv.min_altitude_m,rv.max_altitude_m,rv.altitude_datum,"
                 + "p.owner_org_id,p.district_id FROM flight_plan p JOIN route_version rv ON rv.route_version_id=p.route_version_id"
                 + " WHERE p.owner_org_id=:org AND p.district_id=:district"
+                + " AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)"
                 + " AND (" + bySn + "(p.start_at IS NOT NULL AND p.end_at IS NOT NULL AND p.start_at<=:latest_start AND :earliest_end<p.end_at))"
                 + " ORDER BY p.start_at ASC,p.plan_id ASC", p,
                 (rs, i) -> new PlanFact(rs.getString("plan_id"), rs.getString("route_version_id"), rs.getString("uav_sn"), time(rs, "start_at"), time(rs, "end_at"),
@@ -297,7 +298,8 @@ public class RuleEngineRepository {
     /** 计划主体：计划本身作为唯一候选进入 C01。 */
     public PlanFact planSubject(String planId) {
         List<PlanFact> rows = jdbc.query("SELECT p.plan_id,p.route_version_id,p.uav_sn,p.start_at,p.end_at,rv.corridor_width_m,rv.min_altitude_m,rv.max_altitude_m,rv.altitude_datum,"
-                + "p.owner_org_id,p.district_id FROM flight_plan p JOIN route_version rv ON rv.route_version_id=p.route_version_id WHERE p.plan_id=:id", Map.of("id", planId),
+                + "p.owner_org_id,p.district_id FROM flight_plan p JOIN route_version rv ON rv.route_version_id=p.route_version_id WHERE p.plan_id=:id"
+                + " AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)", Map.of("id", planId),
                 (rs, i) -> new PlanFact(rs.getString("plan_id"), rs.getString("route_version_id"), rs.getString("uav_sn"), time(rs, "start_at"), time(rs, "end_at"),
                         rs.getBigDecimal("corridor_width_m"), rs.getBigDecimal("min_altitude_m"), rs.getBigDecimal("max_altitude_m"), rs.getString("altitude_datum"),
                         rs.getString("owner_org_id"), rs.getString("district_id")));

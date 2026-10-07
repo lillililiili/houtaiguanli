@@ -34,6 +34,7 @@ class FlightPlanStatusAdvanceConfigTest {
         jdbc.execute("CREATE TABLE flight_plan (plan_id VARCHAR(36) PRIMARY KEY, status_code VARCHAR(32),"
                 + " start_at TIMESTAMP WITH TIME ZONE, end_at TIMESTAMP WITH TIME ZONE,"
                 + " updated_at TIMESTAMP WITH TIME ZONE, version BIGINT DEFAULT 0)");
+        jdbc.execute("CREATE TABLE flight_plan_duplicate (duplicate_plan_id VARCHAR(36) PRIMARY KEY, canonical_plan_id VARCHAR(36))");
         return jdbc;
     }
 
@@ -95,6 +96,18 @@ class FlightPlanStatusAdvanceConfigTest {
         context(database(), END, "local,qa")
                 .withPropertyValues("app.flight.status-advance.enabled=false")
                 .run(ctx -> assertThat(ctx).doesNotHaveBean(FlightPlanStatusAdvanceJob.class));
+    }
+
+    @Test void duplicateHistoryIsNotAdvanced() {
+        JdbcTemplate jdbc = database();
+        plan(jdbc, "original", "PENDING", END.minusSeconds(3600), END);
+        plan(jdbc, "duplicate", "PENDING", END.minusSeconds(3600), END);
+        jdbc.update("INSERT INTO flight_plan_duplicate VALUES(?,?)", "duplicate", "original");
+        context(jdbc, END, "local,qa").run(ctx -> {
+            assertThat(ctx.getBean(FlightPlanStatusAdvanceJob.class).advanceOnce()).containsExactly(0, 1);
+            assertThat(status(jdbc, "original")).isEqualTo("COMPLETED");
+            assertThat(status(jdbc, "duplicate")).isEqualTo("PENDING");
+        });
     }
 
     @Test void qaDoesNotEnableAdvancementInProduction() {

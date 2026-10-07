@@ -49,7 +49,7 @@ class EoTrackingCommandSafetyTest {
         when(edges.taskByBegin("c")).thenReturn(Map.of("task_id","t","target_id","target","origin","AUTO","status","OPEN"));
         when(tracking.snapshot("target")).thenReturn(Map.of("source_mode","replay","owner_org_id","org","district_id","district"));
         when(policy.deviceReady(binding)).thenReturn(true);
-        when(policy.enabled()).thenReturn(true);
+        when(policy.enabledFor(anyMap())).thenReturn(true);
         when(tracking.paused("target")).thenReturn(true);
         service.dispatch(EoEdgeCommandService.TOPIC_BEGIN,"c");
         verify(edges).updateCommand("c","QUEUED","CANCELLED",now,"TRACK_ELIGIBILITY_CHANGED","下发前资格已失效");
@@ -69,6 +69,31 @@ class EoTrackingCommandSafetyTest {
     @Test void repeatedEndReturnsOriginalCommand() {
         when(edges.openTask("device")).thenReturn(Map.of("task_id","t","status","ENDING","end_command_id","end"));
         assertThat(service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"pause")).isEqualTo("end");
+        verify(edges,never()).addOutbox(anyString(),anyString(),anyString(),anyLong());
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"TIMED_OUT","FAILED","CANCELLED","UNKNOWN"})
+    void explicitStopCanRetryUnconfirmedEndWithoutFreeingDevice(String status) {
+        String task=UUID.randomUUID().toString(), previous=UUID.randomUUID().toString();
+        when(edges.openTask("device")).thenReturn(Map.of("task_id",task,"status","ENDING","end_command_id",previous));
+        when(edges.command(previous)).thenReturn(command(status,"EO_END_TRACK"));
+        String next=service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"operator retry","operator");
+        assertThat(next).isNotEqualTo(previous);
+        verify(edges).updateTask(task,"ENDING","ENDING",next,now);
+        verify(edges).addOutbox(anyString(),eq(EoEdgeCommandService.TOPIC_END),eq(next),eq(now));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"QUEUED","SENT","ACCEPTED","SUCCEEDED"})
+    void explicitStopNeverDuplicatesPendingOrCompletedCommand(String status) {
+        when(edges.openTask("device")).thenReturn(Map.of("task_id","t","status","ENDING","end_command_id","end"));
+        when(edges.command("end")).thenReturn(command(status,"EO_END_TRACK"));
+        assertThat(service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"retry","operator")).isEqualTo("end");
+        verify(edges,never()).addOutbox(anyString(),anyString(),anyString(),anyLong());
+    }
+    @Test void automaticStopNeverRetriesTimedOutCommand() {
+        when(edges.openTask("device")).thenReturn(Map.of("task_id","t","status","ENDING","end_command_id","end"));
+        when(edges.command("end")).thenReturn(command("TIMED_OUT","EO_END_TRACK"));
+        assertThat(service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"auto stop")).isEqualTo("end");
         verify(edges,never()).addOutbox(anyString(),anyString(),anyString(),anyLong());
     }
     private Map<String,Object> command(String status,String type) {return Map.of("command_id","c","status",status,"device_id","device","command_type",type,"deadline_at",now+10000,"source_mode","replay","simulated",true);}
