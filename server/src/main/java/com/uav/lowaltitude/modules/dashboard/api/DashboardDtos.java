@@ -16,6 +16,8 @@ public final class DashboardDtos {
             Map<String, String> availability,
             KpisDto kpis,
             SimulatedIncludedDto simulatedIncluded,
+            /* 计数计入哪些来源（StatisticsScope）：允许模拟的环境为 [live, replay]，正式环境为 [live]。页面据此写口径说明。 */
+            List<String> statisticsSourceModes,
             @JsonInclude(JsonInclude.Include.ALWAYS) TrendDto trend,
             @JsonInclude(JsonInclude.Include.ALWAYS) TargetRiskDto targetRisk,
             ClosureDto closure,
@@ -57,7 +59,8 @@ public final class DashboardDtos {
     public record DevicesDto(int total, int online, int offline, int abnormal, int alarm, Double onlineRate,
             String sourceMode, boolean simulated) { }
 
-    public record FlightsDto(long today, long executing) { }
+    /** 今日窗口内的计划数、其中执行中和已完成的数，都按统计口径（StatisticsScope）。 */
+    public record FlightsDto(long today, long executing, long completed) { }
 
     public record AlarmsDto(List<AlarmItemDto> items, @JsonInclude(JsonInclude.Include.ALWAYS) Long total) { }
 

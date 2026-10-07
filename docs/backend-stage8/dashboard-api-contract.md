@@ -34,7 +34,7 @@
 
 ## 响应
 
-`data` 固定字段：`as_of`、`availability`、`kpis`、`simulated_included`、`trend`、`target_risk`、`closure`、`devices`、`flights`、`alarms`、`map`。
+`data` 固定字段：`as_of`、`availability`、`kpis`、`simulated_included`、`statistics_source_modes`、`trend`、`target_risk`、`closure`、`devices`、`flights`、`alarms`、`map`。
 
 `availability` 键：`targets,alarms,assessments,handoffs,devices,flights,airspaces,stats`，值 `AVAILABLE|FORBIDDEN|UNCONFIGURED`。
 
@@ -45,14 +45,15 @@
 | `kpis.pending_assessment` | `latest_only=true` 且 `review_state=PENDING_REVIEW`、统计口径的研判总数 | `null` |
 | `kpis.pending_handoffs` | `delivery_status=PENDING_DELIVERY`、统计口径的交接总数 | `null` |
 | `trend` | 近 7 日（含今日）`days[{date,md,total,illegal}]`，以及 `simulated`/`source_mode` | 整块 `null` |
+| `statistics_source_modes` | 计数计入的来源：允许模拟的环境为 `["live","replay"]`，正式环境为 `["live"]`；页面据此写口径说明 | 同左（与权限无关） |
 | `simulated_included` | 统计卡里来自设备模拟器的条数：`sensed_today`、`alarms_today`、`flights_today`（`replay` 计划）、`devices`（统计口径台数减正式接入台数） | 对应字段 `null` |
-| `target_risk` | 最新研判 `grade`：`high/medium/low/ungraded`（抽样上限 100 条 latest_only，只数统计口径的目标） | 整块 `null` |
+| `target_risk` | 最新研判 `grade`：`high/medium/low/ungraded`，按统计口径逐个来源各取 latest_only 研判（每个来源抽样上限 100 条，任一来源到上限时 `truncated=true`） | 整块 `null` |
 | `closure.pending_verification` | 告警状态 `PENDING_VERIFICATION` 计数（统计口径，不限今日） | `null` |
 | `closure.confirmed_blocked` | 告警状态 `CONFIRMED` 计数（统计口径，反制未接入，只计数） | `null` |
 | `closure.pending_handoffs` | 同 KPI | `null` |
 | `closure.evidence` | 恒为 `{status:"NOT_BUILT"}`，本切片不建设证据库 | 同左 |
 | `devices` | `GET /device-monitor/overview?statistics_scope=true` 的 total/online/offline/abnormal/alarm/online_rate；统计口径内的设备：正式接入设备（`live` 且非模拟设备），允许模拟的环境再加设备模拟器的设备（`replay`）；`live` 但标了 `simulated` 的本机模拟设备与设备列表一样当作演示样例，不计。`source_mode` 为 `live`（没有模拟设备或一台都没有）、`replay` 或 `mixed`，`simulated` 只在全部是模拟设备时为真 | 整块 `null` |
-| `flights.today` / `flights.executing` | 今日窗口内统计口径的计划总数、其中 `status_code=EXECUTING` 数 | 整块 `null` |
+| `flights.today` / `flights.executing` / `flights.completed` | 今日窗口内统计口径的计划总数、其中 `status_code=EXECUTING` 数、`status_code=COMPLETED` 数 | 整块 `null` |
 | `alarms.items` / `alarms.total` | 今日告警最多 8 条（全部来源，按 `received_at DESC`）与同口径总数 | `[]` / `null` |
 | `map.targets` | 有 WGS-84 位置的目标（最多 100，按 `last_seen` 倒序，不按今日窗口过滤） | `[]` |
 | `map.devices` | 有经纬度的启用设备（最多 46）；非 WGS-84 不画 | `[]` |

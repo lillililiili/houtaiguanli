@@ -162,9 +162,9 @@ public class DashboardSnapshotService {
 
         return new SnapshotDto(asOf, availability,
                 new KpisDto(sensedToday, alarmsToday, pendingAssessment, pendingHandoffs),
-                simulated,
+                simulated, statistics.sourceModes(),
                 canStats ? trend(today) : null,
-                canAssessment ? targetRisk(latestByTarget) : null,
+                canAssessment ? targetRisk() : null,
                 /* 办理队列也按统计口径：设备模拟器批次里待核实的告警照样计入，系统自带的演示样例不计。 */
                 new ClosureDto(
                         canAlarm ? scoped(mode -> countAlarms(null, null, "PENDING_VERIFICATION", mode)).total() : null,
@@ -192,18 +192,29 @@ public class DashboardSnapshotService {
         return new TrendDto(report.from(), report.to(), report.sourceMode(), report.simulated(), List.copyOf(days));
     }
 
-    /** 风险分档也是计数，按统计口径只数真实设备和设备模拟器的目标；地图上的研判标签不受影响。 */
-    private TargetRiskDto targetRisk(Map<String, EvaluationDto> latest) {
+    /**
+     * 风险分档也是计数，按统计口径逐个来源各取最新研判（每个来源抽样上限 100 条），
+     * 免得系统自带的演示样例占满抽样、把设备模拟器的目标挤出去；地图上的研判标签仍按全部来源。
+     */
+    private TargetRiskDto targetRisk() {
         int high = 0, medium = 0, low = 0, ungraded = 0;
-        for (EvaluationDto row : latest.values()) {
-            if (!statistics.counted(row.sourceMode())) continue;
-            String grade = row.grade();
-            if ("HIGH".equals(grade)) high++;
-            else if ("MEDIUM".equals(grade)) medium++;
-            else if ("LOW".equals(grade)) low++;
-            else ungraded++;
+        boolean truncated = false;
+        for (String mode : statistics.sourceModes()) {
+            Map<String, EvaluationDto> latest = new LinkedHashMap<>();
+            for (EvaluationDto row : evaluations.list(q("page", "1", "size", "100", "latest_only", "true",
+                    "subject_kind", "TARGET", "source_mode", mode)).items()) {
+                if (row.targetId() != null) latest.putIfAbsent(row.targetId(), row);
+            }
+            truncated |= latest.size() >= 100;
+            for (EvaluationDto row : latest.values()) {
+                String grade = row.grade();
+                if ("HIGH".equals(grade)) high++;
+                else if ("MEDIUM".equals(grade)) medium++;
+                else if ("LOW".equals(grade)) low++;
+                else ungraded++;
+            }
         }
-        return new TargetRiskDto(high, medium, low, ungraded, latest.size() >= 100);
+        return new TargetRiskDto(high, medium, low, ungraded, truncated);
     }
 
     /** 设备健康按统计口径（与运行统计的设备口径一致）；统计里的模拟设备台数 = 统计口径台数 - 正式接入台数。 */
@@ -220,7 +231,9 @@ public class DashboardSnapshotService {
     private FlightCounts flightCounts(String from, String to) {
         Scoped today = scoped(mode -> countPlans(from, to, null, mode));
         long executing = scoped(mode -> countPlans(from, to, "EXECUTING", mode)).total();
-        return new FlightCounts(new FlightsDto(today.total(), executing), today.simulated());
+        // 已完成也在这里按统计口径算好，页面不再自己按来源拼查询，免得口径两处各写一份。
+        long completed = scoped(mode -> countPlans(from, to, "COMPLETED", mode)).total();
+        return new FlightCounts(new FlightsDto(today.total(), executing, completed), today.simulated());
     }
 
     private record FlightCounts(FlightsDto flights, long simulatedToday) { }

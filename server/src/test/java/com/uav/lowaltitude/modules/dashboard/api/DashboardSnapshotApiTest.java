@@ -164,6 +164,10 @@ class DashboardSnapshotApiTest {
                 // 与运行统计同口径：真实设备和设备模拟器的数据都算，演示样例不算。
                 .andExpect(jsonPath("$.data.kpis.sensed_today").value(2))
                 .andExpect(jsonPath("$.data.kpis.alarms_today").value(2))
+                // 测试环境允许模拟：口径是真实设备加设备模拟器，页面据此写说明。
+                .andExpect(jsonPath("$.data.statistics_source_modes[0]").value("live"))
+                .andExpect(jsonPath("$.data.statistics_source_modes[1]").value("replay"))
+                .andExpect(jsonPath("$.data.statistics_source_modes.length()").value(2))
                 // 其中来自设备模拟器的条数单独给出，页面写明，免得被当成现场真实数据。
                 .andExpect(jsonPath("$.data.simulated_included.sensed_today").value(1))
                 .andExpect(jsonPath("$.data.simulated_included.alarms_today").value(1))
@@ -196,9 +200,11 @@ class DashboardSnapshotApiTest {
         device("local-sim", "live", true);
         device("mock", "mock", true);
         device("replay", "replay", true);
-        plan("live-plan", "live");
-        plan("mock-plan", "mock");
-        plan("replay-plan", "replay");
+        plan("live-plan", "live", "EXECUTING");
+        plan("mock-plan", "mock", "EXECUTING");
+        plan("replay-plan", "replay", "EXECUTING");
+        plan("mock-done", "mock", "COMPLETED");
+        plan("replay-done", "replay", "COMPLETED");
 
         mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
@@ -208,9 +214,10 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.devices.source_mode").value("mixed"))
                 .andExpect(jsonPath("$.data.devices.simulated").value(false))
                 .andExpect(jsonPath("$.data.simulated_included.devices").value(1))
-                .andExpect(jsonPath("$.data.flights.today").value(2))
+                .andExpect(jsonPath("$.data.flights.today").value(3))
                 .andExpect(jsonPath("$.data.flights.executing").value(2))
-                .andExpect(jsonPath("$.data.simulated_included.flights_today").value(1));
+                .andExpect(jsonPath("$.data.flights.completed").value(1))
+                .andExpect(jsonPath("$.data.simulated_included.flights_today").value(2));
 
         // 大屏页面直接调的设备概况接口，同一口径。
         mvc.perform(get("/api/v1/device-monitor/overview?statistics_scope=true").header("Authorization", bearer(token)))
@@ -225,6 +232,41 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
     }
 
+    /** 风险分档按统计口径逐个来源取最新研判：真实设备和设备模拟器的算，系统自带的演示样例不算。 */
+    @Test
+    void riskTiersCountLiveAndSimulatorEvaluationsButNotDemoSamples() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantModule(token, "dashboard");
+        // 研判里的目标只对能读目标的账号可见；看不到目标的研判本来就不进分档。
+        grantAction(token, "assessment:read", "target:read");
+        String run = "dash-run-" + suffix;
+        jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at)"
+                + " select ?,v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',3,3,0,0,'replay',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only",
+                run, ts(now()), ts(now()), ts(now()));
+        evaluation(run, target, "mock", "LOW");
+        for (String mode : new String[]{"live", "replay"}) {
+            jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV',?,?,?,?,?,?,?,0)",
+                    "dash-risk-" + mode + "-" + suffix, "T-RISK-" + mode + "-" + suffix, mode, org, district, ts(now()), ts(now()), ts(now()), ts(now()));
+        }
+        evaluation(run, "dash-risk-live-" + suffix, "live", "HIGH");
+        evaluation(run, "dash-risk-replay-" + suffix, "replay", "MEDIUM");
+
+        mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.availability.assessments").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data.target_risk.high").value(1))
+                .andExpect(jsonPath("$.data.target_risk.medium").value(1))
+                .andExpect(jsonPath("$.data.target_risk.low").value(0))
+                .andExpect(jsonPath("$.data.target_risk.ungraded").value(0))
+                .andExpect(jsonPath("$.data.target_risk.truncated").value(false));
+    }
+
+    private void evaluation(String run, String targetId, String sourceMode, String grade) {
+        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at)"
+                + " select ?,r.run_id,r.rule_set_version_id,'ACTIVE','TARGET',?,r.as_of,r.started_at,'FRESH','FULL','ILLEGAL',60,?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,? from rule_run r where r.run_id=?",
+                "dash-eval-" + sourceMode + "-" + suffix, targetId, grade, org, district, sourceMode, ts(now()), run);
+    }
+
     private void device(String name, String sourceMode, boolean simulated) {
         String id = "dash-device-" + name + "-" + suffix;
         jdbc.update("insert into ops_device (device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at)"
@@ -233,8 +275,8 @@ class DashboardSnapshotApiTest {
                 + " values (?,?,?,current_timestamp,current_timestamp)", id, org, district);
     }
 
-    /** 覆盖今日窗口的执行中计划；航线必须与计划同一范围元组，否则读模型本就查不到。 */
-    private void plan(String name, String sourceMode) {
+    /** 覆盖今日窗口的计划；航线必须与计划同一范围元组，否则读模型本就查不到。 */
+    private void plan(String name, String sourceMode, String status) {
         String route = "dash-route-" + name + "-" + suffix;
         String version = "dash-rv-" + name + "-" + suffix;
         jdbc.update("insert into route (route_id,route_no,name,enabled,source_mode,owner_org_id,district_id,created_at,updated_at,version)"
@@ -244,7 +286,7 @@ class DashboardSnapshotApiTest {
                 + " values (?,?,1,CAST(? AS GEOMETRY),100,10,300,'AGL',?,?)", version, route,
                 "SRID=4326;LINESTRING (118.50 37.40,118.51 37.41)", ts(now()), ts(now()));
         jdbc.update("insert into flight_plan (plan_id,plan_no,status_code,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version)"
-                + " values (?,?,'EXECUTING',?,?,?,?,?,?,?,?,0)", "dash-plan-" + name + "-" + suffix, "P-" + name + "-" + suffix,
+                + " values (?,?,?,?,?,?,?,?,?,?,?,0)", "dash-plan-" + name + "-" + suffix, "P-" + name + "-" + suffix, status,
                 sourceMode, ts(now() - 3_600_000), ts(now() + 3_600_000), version, org, district, ts(now()), ts(now()));
     }
 
