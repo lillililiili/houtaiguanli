@@ -126,6 +126,21 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select source_mode from route where route_id=(select route_id from route_version where route_version_id=?)",String.class,version)).isEqualTo("replay");
   assertThat(received.path("result").path("route_version_id").asText()).isEqualTo(version);
  }
+ @Test void embeddedRouteWithoutOwnerIsRejectedWithChineseReasonWhateverTheClientLanguage() throws Exception {
+  long start=System.currentTimeMillis()+300000,end=start+3600000;
+  var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
+  for(var missing:List.of("owner_org_id","district_id")){
+   var route=new LinkedHashMap<String,Object>();route.put("name","上级计划直接携带航线");
+   route.put("geometry",Map.of("type","LineString","coordinates",List.of(List.of(118.60,37.46),List.of(118.61,37.46))));
+   route.put("corridor_width_m",100);route.put("owner_org_id",scope.get("owner_org_id"));route.put("district_id",scope.get("district_id"));route.put(missing,"");
+   var body=new LinkedHashMap<String,Object>();body.put("message_id","route-without-"+missing.replace('_','-'));body.put("route",route);body.put("uav_sn","SIM-NO-OWNER");body.put("start_at",start);body.put("end_at",end);
+   var error=json.readTree(mvc.perform(post(BASE+"/plans").header("Authorization",token).header("Accept-Language","en-US").header("Idempotency-Key",UUID.randomUUID().toString())
+     .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body))).andExpect(status().isBadRequest()).andReturn().getResponse().getContentAsString()).path("error");
+   assertThat(error.path("code").asText()).isEqualTo("VALIDATION_ERROR");
+   assertThat(error.path("message").asText()).isEqualTo("owner_org_id".equals(missing)?"航线归属单位不能为空":"航线所在区县不能为空");
+  }
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn='SIM-NO-OWNER'",Long.class)).isZero();
+ }
  @Test void explicitReplayPlanKeepsSourceAndMessageIdentity() throws Exception {
   var body=plan("input-plan-replay");body.put("source_mode","replay");
   var first=send("/plans",body,200);String id=first.path("subject_id").asText();
