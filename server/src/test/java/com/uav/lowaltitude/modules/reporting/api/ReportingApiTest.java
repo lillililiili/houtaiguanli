@@ -235,6 +235,36 @@ class ReportingApiTest {
         assertThat(result.path("simulated").asBoolean()).isTrue();
     }
 
+    /**
+     * ZT-17 复测 2：被合并的目标是存活目标的别名（决策 16-6），新增目标数不另计——目标列表、态势页、大屏同样不列它；
+     * 原先运行统计把它也算一个，比大屏多出 21 个。它名下的风险也不另计，存活目标按它自己的最新风险计。
+     */
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void mergedTargetsAreNotCountedAgain() throws Exception {
+        String token=login("admin1","changeme");
+        var at=java.time.OffsetDateTime.parse("2007-01-01T00:00:00+08:00");
+        String org="seed-stage3-org", district="seed-stage3-district";
+        for(String id:java.util.List.of("stats-merge-survivor","stats-merge-alias"))
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','live',?,?,?,?)",id,id,at,at,org,district,at,at);
+        jdbc.update("insert into flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,target_id,risk_type,severity,state_code,reason_code,reason_text,received_at,source_mode,owner_org_id,district_id,created_at,updated_at,version) values('stats-merge-risk','seed-stage3-source','stats-merge-risk','seed-stage3-plan-legal','seed-stage3-rv-legal','stats-merge-alias','AIRSPACE','HIGH','PENDING_VERIFICATION','PROHIBITED_AIRSPACE_OVERLAP','隔离统计测试',?,'live',?,?,?,?,0)",at,org,district,at,at);
+        JsonNode before=operations(token,"2007-01-01");
+        assertThat(before.path("summary").path("total").asInt()).isEqualTo(2);
+        assertThat(before.path("summary").path("high_risk").asInt()).isEqualTo(1);
+        jdbc.update("insert into target_track_status(target_id,status,since,updated_at) values('stats-merge-alias','MERGE',?,?)",at,at);
+        JsonNode after=operations(token,"2007-01-01");
+        assertThat(after.path("summary").path("total").asInt()).isEqualTo(1);
+        assertThat(after.path("summary").path("high_risk").asInt()).isZero();
+        assertThat(sum(after.path("by_risk"),"value")).isEqualTo(1);
+        assertThat(sum(after.path("days"),"total")).isEqualTo(1);
+        assertThat(after.path("availability").path("total").path("reason").asText()).contains("被合并");
+        // 与目标列表一致：列表默认也不列被合并的目标。
+        long from=at.toInstant().toEpochMilli(), to=at.plusDays(1).toInstant().toEpochMilli()-1;
+        mvc.perform(get("/api/v1/targets").param("seen_from",String.valueOf(from)).param("seen_to",String.valueOf(to)).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].target_id").value("stats-merge-survivor"));
+    }
+
     private JsonNode operations(String token,String day) throws Exception {
         return data(mvc.perform(get("/api/v1/stats/operations").param("from",day).param("to",day).header("Authorization",bearer(token)))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());

@@ -25,6 +25,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 来得再多也只能越积越多；现在领空或用完 drain-budget-millis 才让出调度线程。
  * 不扩展 OutboxWorker（那是设备命令的下行通道，主题词表与死信策略都属设备模块）。
  * @ConditionalOnProperty 默认关闭：生产不跑回放摄取；种子与测试直接调用 {@link #drain()} 同步驱动。
+ * 另一个定时任务按平台时钟推进长时间没有数据的目标（{@link FusionLossSweeper}，ZT-20 复测 2）：与摄取各占一个调度线程，
+ * 积压时摄取连续处理十来秒，失联判断也不会被拖住。
  */
 @Component
 @ConditionalOnProperty(prefix = "app.fusion", name = "enabled", havingValue = "true")
@@ -33,13 +35,14 @@ public class FusionIngestWorker {
 
     private final FusionInboxRepository inbox;
     private final FusionPipeline pipeline;
+    private final FusionLossSweeper sweeper;
     private final FusionProperties properties;
     private final AppClock clock;
     private final TransactionTemplate perFrame;
 
-    public FusionIngestWorker(FusionInboxRepository inbox, FusionPipeline pipeline, FusionProperties properties, AppClock clock,
+    public FusionIngestWorker(FusionInboxRepository inbox, FusionPipeline pipeline, FusionLossSweeper sweeper, FusionProperties properties, AppClock clock,
             PlatformTransactionManager transactionManager) {
-        this.inbox = inbox; this.pipeline = pipeline; this.properties = properties; this.clock = clock;
+        this.inbox = inbox; this.pipeline = pipeline; this.sweeper = sweeper; this.properties = properties; this.clock = clock;
         this.perFrame = new TransactionTemplate(transactionManager);
     }
 
@@ -53,6 +56,17 @@ public class FusionIngestWorker {
             int claimed = drainOnce();
             // 不足一批说明已经领空；预算为 0 时保持旧行为：每次调度只处理一批。
             if (claimed < properties.getBatchSize() || budgetNanos == 0 || System.nanoTime() - started >= budgetNanos) return;
+        }
+    }
+
+    // 设备停报、同一分区再没有别的帧时，目标也要按平台时钟按时短失、终止（ZT-20 复测 2）。推迟首轮的测试同样推迟它。
+    @Scheduled(fixedDelayString = "${app.fusion.loss-sweep.interval-millis:500}", initialDelayString = "${app.fusion.initial-delay-millis:0}")
+    public void sweepSilentTargets() {
+        if (!properties.getLossSweep().isEnabled()) return;
+        try {
+            sweeper.sweep(clock.now());
+        } catch (RuntimeException ex) {
+            log.warn("fusion silent target sweep failed: {}", ex.toString());
         }
     }
 

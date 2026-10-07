@@ -3,6 +3,7 @@ package com.uav.lowaltitude.modules.fusion.application;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -293,7 +294,7 @@ public class FusionPipeline {
                     : new StatusRow(entry.getKey(), TrackState.created(frame.observedAt()), null, 0);
             Transition transition = machine.onHit(status.state(), observedByTarget.get(entry.getKey()));
             String primarySource = entry.getValue().get(0).sourceId();
-            statusWrites.add(new StatusUpdate(entry.getKey(), transition.state(), primarySource));
+            statusWrites.add(new StatusUpdate(entry.getKey(), transition.state(), primarySource, receivedAt));
             if (status.primarySourceId() != null && !status.primarySourceId().equals(primarySource)) {
                 identities.insertLineage("SWITCH", frame.observedAt(), entry.getKey(), null, write(List.of(entry.getKey())), write(List.of()),
                         write(Map.of("from_source_id", status.primarySourceId(), "to_source_id", primarySource)), ALGO_VERSION, params.configVersion(), write(Map.of()));
@@ -308,9 +309,10 @@ public class FusionPipeline {
         for (ActiveTarget candidate : active) {
             String targetId = candidate.target().targetId();
             if (estimatesByTarget.containsKey(targetId)) continue;
-            Instant lastObserved = candidate.status().state().lastObservedAt();
-            if (lastObserved != null && !frame.observedAt().isAfter(lastObserved.plusMillis(machine.shortLostAfterMillis()))) continue;
-            Transition transition = machine.onFrame(candidate.status().state(), frame.observedAt());
+            long gap = sinceLastHit(candidate.status(), frame.observedAt(), receivedAt);
+            boolean hitBefore = candidate.status().lastReceivedAt() != null || candidate.status().state().lastObservedAt() != null;
+            if (hitBefore && gap <= machine.shortLostAfterMillis()) continue;
+            Transition transition = machine.onMiss(candidate.status().state(), gap, frame.observedAt());
             if (transition.changed() || transition.state().missFrames() != candidate.status().state().missFrames()) {
                 statusWrites.add(new StatusUpdate(targetId, transition.state(), candidate.status().primarySourceId()));
             }
@@ -322,7 +324,10 @@ public class FusionPipeline {
             statuses.put(targetId, transition.state().status());
             missFrames.put(targetId, transition.state().missFrames());
             estimatesByTarget.putIfAbsent(targetId, List.of());
-            observedByTarget.putIfAbsent(targetId, frame.observedAt());
+            // 这一帧没看到它：交给融合层的观测时刻用它自己最近一次被观测的时刻，不用别的设备这一帧的报文时刻（与 FusionLossSweeper 同一口径）。
+            // 用别的设备的时刻，停报后最新状态的 observed_at 会一路跟着往后推到判终止为止：告警"观测已过期"晚一个终止时长才下沉，
+            // 识别结论、光电跟踪候选等按 observed_at 判"当前有观测"的地方把停报的目标当成还在报；时钟慢的设备短暂中断再恢复，恢复后的帧成了迟到帧。
+            observedByTarget.putIfAbsent(targetId, ownLatestObservation(candidate.status().state()));
         }
         // 状态推进必须在自动合并之前落库：合并把被并目标的状态改成 MERGE，晚写的命中状态会把它覆盖回活跃。
         identities.updateStatuses(statusWrites, receivedAt);
@@ -347,6 +352,17 @@ public class FusionPipeline {
         }
         writer.writeAll(results);
         return new FrameOutcome(parsed.size(), targetIds.size(), List.copyOf(targetIds));
+    }
+
+    /**
+     * 本帧离该目标最近一次命中隔了多久，用来判断它是否短失/终止（ZT-20）。各设备的时钟可能不准：拿别的设备的报文时刻
+     * 去比，时钟慢两分钟的雷达报上来的目标一出现就被判终止，下一帧又新建一个。所以按平台收到数据的时刻比——这是所有来源
+     * 共用的一个时钟（回放数据集的到达时刻同样在回放时钟上）。升级前建的状态还没有最近命中的到达时刻，仍按报文时刻比。
+     */
+    static long sinceLastHit(StatusRow status, Instant frameObservedAt, Instant frameReceivedAt) {
+        if (status.lastReceivedAt() != null) return Duration.between(status.lastReceivedAt(), frameReceivedAt).toMillis();
+        Instant reference = status.state().lastObservedAt() != null ? status.state().lastObservedAt() : status.state().since();
+        return Duration.between(reference, frameObservedAt).toMillis();
     }
 
     /**
@@ -538,6 +554,11 @@ public class FusionPipeline {
     }
 
     private static Instant later(Instant a, Instant b) { return a.isAfter(b) ? a : b; }
+
+    /** 目标自己最近一次被观测的时刻（它自己设备的报文时刻）；升级前没有记下时取状态起始时刻。 */
+    static Instant ownLatestObservation(TrackState state) {
+        return state.lastObservedAt() != null ? state.lastObservedAt() : state.since();
+    }
 
     /**
      * 自动合并（决策 16-1）：同域两个 STABLE 目标连续 `merge_min_frames` 帧落在 `merge_max_dist_sigma·σ` 内就并掉。

@@ -141,6 +141,10 @@ app:
     drain-budget-millis: ${APP_FUSION_DRAIN_BUDGET_MILLIS:10000}
     # ZT-20：报文时刻比平台接收时刻晚超过此值（设备时钟慢或数据积压），按"数据过期/设备时间不准"标注；0 关闭。
     time-untrusted-lag-millis: ${APP_FUSION_TIME_UNTRUSTED_LAG_MILLIS:30000}
+    # ZT-20 复测 2：设备停报、同一分区再没有别的数据时，也按平台多久没收到它的数据把目标判为短失、终止。
+    loss-sweep:
+      enabled: ${APP_FUSION_LOSS_SWEEP_ENABLED:true}
+      interval-millis: ${APP_FUSION_LOSS_SWEEP_INTERVAL_MILLIS:500}
     lease-millis: ${APP_FUSION_LEASE_MILLIS:30000}
     max-attempts: ${APP_FUSION_MAX_ATTEMPTS:5}
     live-promotion:

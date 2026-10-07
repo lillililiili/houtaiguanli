@@ -116,6 +116,9 @@ public class TargetReadService {
         RequestValues request = new RequestValues(parameters);
         Pagination page = request.pagination();
         TimeRange seen = request.timeRange("seen_from", "seen_to");
+        Long mapVisibleAt = request.epochMillis("map_visible_at");
+        // map_visible_at：只要此刻地图显示还没到期的目标（ZT-20 复测 2）。态势页只画这些，不必每轮把当天几百个目标分页拉完再在页面上筛。
+        long visibleLifetimeMs = mapVisibleAt == null ? 0 : configuredMapLifetimeMs();
         TargetQuery query = new TargetQuery(
                 request.optional("source_code", 64),
                 request.optional("device_id", 36),
@@ -124,16 +127,23 @@ public class TargetReadService {
                 request.optional("owner_org_id", 36),
                 request.optional("district_id", 36),
                 request.flag("include_merged"),
-                request.optional("source_mode", 8));
+                request.optional("source_mode", 8),
+                mapVisibleAt == null ? null : Instant.ofEpochMilli(mapVisibleAt - visibleLifetimeMs).atOffset(ZoneOffset.UTC),
+                mapVisibleAt == null ? null : Instant.ofEpochMilli(mapVisibleAt).atOffset(ZoneOffset.UTC));
         long total = repository.countTargets(query, access);
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
         Map<String, TargetSummariesRow> summaries = repository.summaries(rows.stream().map(TargetRow::targetId).toList());
-        long mapLifetimeMs = rows.isEmpty() ? 0 : fusionConfig.params(null).integer("identity", "terminate_after_ms");
+        long mapLifetimeMs = rows.isEmpty() ? 0 : mapVisibleAt != null ? visibleLifetimeMs : configuredMapLifetimeMs();
         List<TargetSummaryDto> items = rows.stream()
                 .map(row -> summary(row, summaries.get(row.targetId()), mapLifetimeMs))
                 .toList();
         return new PageDto<>(items, page.page, page.size, total);
+    }
+
+    /** 地图显示时长：目标最新状态之后多久从地图上退出，与融合终止时长相同。 */
+    private long configuredMapLifetimeMs() {
+        return fusionConfig.params(null).integer("identity", "terminate_after_ms");
     }
 
     /** The caller's transaction retains this lock while claiming a target operation. */
@@ -255,20 +265,27 @@ public class TargetReadService {
                 row.objectTypeCode(), row.subtype(), row.uavSn(), row.sourceMode(), row.ownerOrgId(),
                 row.districtId(), state, row.ownerOrgName(), row.districtName(),
                 riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries),
-                mapExpiresAt(row, state, mapLifetimeMs));
+                mapExpiresAt(row, mapLifetimeMs));
     }
 
     /**
-     * 地图显示到期时刻：最新状态的观测时刻 + 目标终止时长。报文时刻不可信的状态（ZT-20）按平台收到它的时刻算——
-     * 设备时钟慢两分钟时，按观测时刻算会让一直在上报的目标一出现就"过期"、悄悄从地图上消失；
-     * 按接收时刻算，目标留在图上并由 observed_at 的 TIME_UNTRUSTED 提示写明"数据过期/设备时间不准"。
+     * 地图显示到期时刻：最新状态的观测时刻与平台收到它的时刻取较晚者 + 目标终止时长（ZT-20）。
+     * 融合按平台收到数据的时刻判断失联，地图用同一把尺：设备时钟慢多少，一直在上报的目标都留在图上，
+     * 平台 terminate_after_ms 内收不到它的数据才与融合终止一起从图上消失；慢得超过 time-untrusted 阈值的，
+     * 由 observed_at 的 TIME_UNTRUSTED 提示写明"数据过期/设备时间不准"。只按观测时刻算时，
+     * 慢 15–30 s（还不到"时间不准"阈值）的设备报上来的目标一到就已过期，悄悄从地图上消失。
+     *
+     * 已被融合判为终止的目标到终止时刻为止（ZT-20 复测 3）：判短失、判终止时融合写的那一笔最新状态也刷新接收时刻，
+     * 不截断的话，结束的目标还要在图上再留一个终止时长（复测：最后一帧后约 31 s 才从接口消失）。
      */
-    private static Long mapExpiresAt(TargetRow row, TargetStateDto state, long mapLifetimeMs) {
+    private static Long mapExpiresAt(TargetRow row, long mapLifetimeMs) {
         if (row.stateObservedAt() == null || mapLifetimeMs <= 0) return null;
-        boolean untrusted = state != null && state.fieldIssues().stream()
-                .anyMatch(issue -> "observed_at".equals(issue.field()) && TIME_UNTRUSTED.equals(issue.reasonCode()));
-        OffsetDateTime base = untrusted && row.stateReceivedAt() != null ? row.stateReceivedAt() : row.stateObservedAt();
-        return base.toInstant().toEpochMilli() + mapLifetimeMs;
+        OffsetDateTime received = row.stateReceivedAt();
+        OffsetDateTime base = received != null && received.isAfter(row.stateObservedAt()) ? received : row.stateObservedAt();
+        long expiresAt = base.toInstant().toEpochMilli() + mapLifetimeMs;
+        if ("TERMINATED".equals(row.trackStatus()) && row.trackStatusSince() != null)
+            expiresAt = Math.min(expiresAt, row.trackStatusSince().toInstant().toEpochMilli());
+        return expiresAt;
     }
 
     private TargetStateDto state(TargetRow row, TargetSummariesRow summaries) {
@@ -521,6 +538,17 @@ public class TargetReadService {
                 return Integer.parseInt(value);
             } catch (NumberFormatException ex) {
                 throw invalidPage();
+            }
+        }
+
+        /** 可选的毫秒时间戳；给了就必须是一个整数。 */
+        private Long epochMillis(String name) {
+            if (!values.containsKey(name)) return null;
+            String value = optional(name, 20);
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException ex) {
+                throw validation(name);
             }
         }
 

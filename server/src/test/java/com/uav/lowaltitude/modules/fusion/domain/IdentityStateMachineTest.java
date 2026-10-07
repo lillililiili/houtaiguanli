@@ -51,6 +51,22 @@ class IdentityStateMachineTest {
     }
 
     @Test
+    void missJudgesTheGapTheCallerMeasured() {
+        // ZT-20：跨设备比较时由管线按平台收到数据的时刻量间隙。最近一次命中的报文时刻比本帧早 120 s（那台设备时钟慢），
+        // 但平台 1 s 前才收到它：照给定的 1 s 判断，不是失联；超过 15 s 才终止，状态变化记在本帧时刻上。
+        TrackState stable = new TrackState(TrackStatus.STABLE, T0, 3, 0, T0.minusSeconds(120));
+        Transition stillThere = machine.onMiss(stable, 1000, T0);
+        assertThat(stillThere.state().status()).isEqualTo(TrackStatus.STABLE);
+        assertThat(stillThere.changed()).isFalse();
+        assertThat(stillThere.state().missFrames()).isEqualTo(1);
+        Transition terminated = machine.onMiss(stable, 15_001, T0);
+        assertThat(terminated.state().status()).isEqualTo(TrackStatus.TERMINATED);
+        assertThat(terminated.state().since()).isEqualTo(T0);
+        // onFrame 仍按报文时刻相减：同一状态、同一时刻会被当成 120 s 没见。
+        assertThat(machine.onFrame(stable, T0).state().status()).isEqualTo(TrackStatus.TERMINATED);
+    }
+
+    @Test
     void reacquiredShortLostTargetReturnsToStableWithSameIdentity() {
         TrackState lost = new TrackState(TrackStatus.SHORT_LOST, T0.plusSeconds(4), 3, 4, T0);
         Transition back = machine.onHit(lost, T0.plusSeconds(5));

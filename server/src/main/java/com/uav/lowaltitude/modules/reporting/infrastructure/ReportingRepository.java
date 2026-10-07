@@ -45,13 +45,20 @@ public class ReportingRepository {
                 Map.of("user_id", scope.userId()), (rs,n) -> new OrganizationOption(rs.getString("org_id"),rs.getString("name")));
     }
 
+    /**
+     * 统计期内新增的目标。被合并的目标是某个存活目标的别名（决策 16-6），同一架不能数两遍：
+     * 目标列表、态势页都不列它，这里同样不计（ZT-17 复测 2：运行统计多出 21 个，正是被合并的目标）。
+     * 它自己名下的研判、风险也就不另计，存活目标按它自己的最新研判、风险计，与目标详情显示的一致。
+     */
     public List<TargetFact> targets(LocalDate from, LocalDate to, Scope scope) {
         return named.query("""
             SELECT t.target_id,t.first_seen_at,t.object_type_code,t.source_mode,
                    COALESCE(d.name,'区域未标注') AS region,ls.altitude_amsl_m
             FROM target t LEFT JOIN app_district d ON d.district_id=t.district_id
             LEFT JOIN target_latest_state ls ON ls.target_id=t.target_id
-            """ + where(scope, "t", "first_seen_at"), params(from,to,scope), (rs,n) ->
+            """ + where(scope, "t", "first_seen_at")
+            + " AND NOT EXISTS (SELECT 1 FROM target_track_status merged_status"
+            + " WHERE merged_status.target_id=t.target_id AND merged_status.status='MERGE')", params(from,to,scope), (rs,n) ->
             new TargetFact(rs.getString("target_id"),rs.getObject("first_seen_at",OffsetDateTime.class),
                 rs.getString("object_type_code"),rs.getString("source_mode"),rs.getString("region"),
                 rs.getBigDecimal("altitude_amsl_m")));

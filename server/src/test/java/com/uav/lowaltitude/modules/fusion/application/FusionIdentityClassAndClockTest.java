@@ -217,6 +217,132 @@ class FusionIdentityClassAndClockTest {
                 + " and cast(quality as varchar) like '%time_untrusted%'", Long.class)).isEqualTo(3L);
     }
 
+    @Test
+    void slowDeviceClockKeepsOneTargetWhileAnotherDeviceReportsOnTime() {
+        // 复测 ZT-20：同一辖区里还有时钟正常的设备在报。拿它的报文时刻去比，慢钟雷达的目标一出现就"已有 120 s 没见"被终止，
+        // 下一帧又新建一个（4 分钟 238 个只有一个点的目标）。失联要按平台收到数据的时刻判断：慢 120 s，以及慢 20 s
+        // （在 30 s 可信阈值以内、但超过 15 s 的终止时长）都应始终是同一个目标；慢钟雷达真的停报后照常短失、终止。
+        long[] slowCases = {120, 20};
+        for (int c = 0; c < slowCases.length; c++) {
+            long slow = slowCases[c];
+            String radarId = "ZT20S" + slow + "-R1", tdoaId = "ZT20S" + slow + "-T1";
+            Instant t0 = Instant.parse("2026-10-06T07:00:00Z").plusSeconds(600L * c);
+            double lon = 118.35 - 0.05 * c, lat = 37.35;
+            for (int k = 0; k < 12; k++) {
+                Instant now = t0.plusSeconds(k);
+                frame("tdoa", TDOA, now, now.plusMillis(300), new Obj(tdoaId, lon + 0.02, lat, UAV, "ZT20S-SN-T" + slow));
+                frame("radar", RADAR, now.minusSeconds(slow), now.plusMillis(200),
+                        new Obj(radarId, lon, lat + 5.0 * k / METERS_PER_DEG_LAT, UAV, "ZT20S-SN-R" + slow));
+            }
+            String target = targetOf(radarId);
+            assertThat(created(radarId)).as("慢 " + slow + " s：12 帧始终是同一个目标").isEqualTo(1L);
+            assertThat(trackStatus(target)).isEqualTo("STABLE");
+            assertThat(instant(jdbc.queryForMap("select last_received_at from target_track_status where target_id=?", target).get("last_received_at")))
+                    .as("记下最近一次命中时平台收到那一帧的时刻").isEqualTo(t0.plusSeconds(11).plusMillis(200));
+            assertThat(timeUntrustedIssue(target)).as("慢 " + slow + " s 是否标时刻不可信").isEqualTo(slow * 1000 > 30_000);
+
+            // 慢钟雷达停报，TDOA 照常报：按到达时刻过了 3 s 短失、过了 15 s 终止。
+            for (int k = 12; k < 30; k++) {
+                Instant now = t0.plusSeconds(k);
+                frame("tdoa", TDOA, now, now.plusMillis(300), new Obj(tdoaId, lon + 0.02, lat, UAV, "ZT20S-SN-T" + slow));
+                if (k == 13) assertThat(trackStatus(target)).as("停报 2.1 s").isEqualTo("STABLE");
+                if (k == 14) assertThat(trackStatus(target)).as("停报 3.1 s").isEqualTo("SHORT_LOST");
+            }
+            assertThat(trackStatus(target)).as("停报 18.1 s").isEqualTo("TERMINATED");
+            assertThat(trackStatus(targetOf(tdoaId))).as("时钟正常的那一路不受影响").isEqualTo("STABLE");
+        }
+    }
+
+    @Test
+    void missedTargetKeepsItsOwnObservationTimeWhileAnotherDeviceReports() {
+        // 复测 3：雷达停报、同一辖区的 TDOA 照常报。管线每处理一帧 TDOA，都给这一帧没看到的雷达目标写一笔无数据的最新状态，
+        // 原来观测时刻用的是 TDOA 这一帧的时刻：雷达目标的 observed_at 跟着 TDOA 一路往后推到判终止为止，告警按 observed_at
+        // 判"观测已过期"要晚一个终止时长才下沉（测试方：约 30 s）。雷达时钟慢 120 s 时还会把 observed_at 推到 TDOA 的时间线上，
+        // 雷达恢复上报后的帧全成了迟到帧，位置不更新。没看到它的帧不推进它的观测时刻。
+        long[] slowCases = {0, 120};
+        for (int c = 0; c < slowCases.length; c++) {
+            long slow = slowCases[c];
+            String radarId = "ZT20M" + slow + "-R1", tdoaId = "ZT20M" + slow + "-T1", tdoaSerial = "ZT20M-SN-T" + slow;
+            Instant t0 = Instant.parse("2026-10-06T09:00:00Z").plusSeconds(600L * c);
+            double lon = 118.15 - 0.05 * c, lat = 37.15;
+            for (int k = 0; k < 4; k++) {
+                Instant now = t0.plusSeconds(k);
+                frame("tdoa", TDOA, now, now.plusMillis(300), new Obj(tdoaId, lon + 0.02, lat, UAV, tdoaSerial));
+                frame("radar", RADAR, now.minusSeconds(slow), now.plusMillis(200),
+                        new Obj(radarId, lon, lat + 5.0 * k / METERS_PER_DEG_LAT, UAV, "ZT20M-SN-R" + slow));
+            }
+            String target = targetOf(radarId);
+            String lastPosition = latestLocation(target);
+
+            // 雷达停报 6 s，TDOA 照常报：短失，观测时刻仍是雷达最后一帧的报文时刻。
+            for (int k = 4; k < 10; k++) {
+                Instant now = t0.plusSeconds(k);
+                frame("tdoa", TDOA, now, now.plusMillis(300), new Obj(tdoaId, lon + 0.02, lat, UAV, tdoaSerial));
+            }
+            assertThat(trackStatus(target)).isEqualTo("SHORT_LOST");
+            assertThat(latestObservedAt(target)).as("慢 " + slow + " s：没看到它的帧不推进它的观测时刻")
+                    .isEqualTo(t0.plusSeconds(3).minusSeconds(slow));
+
+            // 终止前恢复上报：仍是同一个目标，位置与观测时刻跟着雷达更新，不是迟到帧。
+            Instant back = t0.plusSeconds(10);
+            frame("radar", RADAR, back.minusSeconds(slow), back.plusMillis(200),
+                    new Obj(radarId, lon, lat + 50.0 / METERS_PER_DEG_LAT, UAV, "ZT20M-SN-R" + slow));
+            assertThat(targetOf(radarId)).isEqualTo(target);
+            assertThat(trackStatus(target)).isEqualTo("STABLE");
+            assertThat(latestObservedAt(target)).as("慢 " + slow + " s：恢复后的帧照常更新最新状态").isEqualTo(back.minusSeconds(slow));
+            assertThat(latestLocation(target)).as("位置跟着更新").isNotEqualTo(lastPosition);
+
+            // 再停报到终止：观测时刻停在恢复后那一帧，融合轨迹关闭。
+            for (int k = 11; k < 30; k++) {
+                Instant now = t0.plusSeconds(k);
+                frame("tdoa", TDOA, now, now.plusMillis(300), new Obj(tdoaId, lon + 0.02, lat, UAV, tdoaSerial));
+            }
+            assertThat(trackStatus(target)).isEqualTo("TERMINATED");
+            assertThat(latestObservedAt(target)).isEqualTo(back.minusSeconds(slow));
+            assertThat(jdbc.queryForObject("select count(*) from track where target_id=? and layer='FUSED' and ended_at is null", Long.class, target))
+                    .as("融合轨迹已关闭").isZero();
+            assertThat(trackStatus(targetOf(tdoaId))).as("TDOA 那一路不受影响").isEqualTo("STABLE");
+        }
+    }
+
+    private Instant latestObservedAt(String targetId) {
+        return instant(jdbc.queryForMap("select observed_at from target_latest_state where target_id=?", targetId).get("observed_at"));
+    }
+
+    private String latestLocation(String targetId) {
+        return jdbc.queryForObject("select cast(location as varchar) from target_latest_state where target_id=?", String.class, targetId);
+    }
+
+    @Test
+    void lastReceivedTimeNeverMovesBackWhenFramesAreProcessedOutOfArrivalOrder() {
+        // 几个调度线程并行处理，积压时晚到的帧可能先提交。雷达与 TDOA 看见同一架：TDOA 9.3 s 到的一帧先处理，
+        // 雷达 3.2 s 到的一帧后处理、同样命中这个目标——"最近一次命中的到达时刻"仍是 9.3 s，不能退回 3.2 s。
+        Instant t0 = Instant.parse("2026-10-06T08:00:00Z");
+        double lon = 118.25, lat = 37.25;
+        for (int k = 0; k < 3; k++) {
+            Instant at = t0.plusSeconds(k);
+            frame("radar", RADAR, at, at.plusMillis(200), new Obj("ZT20O-R1", lon, lat, UAV, null));
+            frame("tdoa", TDOA, at.plusMillis(100), at.plusMillis(300), new Obj("ZT20O-T1", lon, lat, UAV, "ZT20O-SN"));
+        }
+        String target = targetOf("ZT20O-R1");
+        assertThat(targetOf("ZT20O-T1")).isEqualTo(target);
+        frame("tdoa", TDOA, t0.plusMillis(9100), t0.plusMillis(9300), new Obj("ZT20O-T1", lon, lat, UAV, "ZT20O-SN"));
+        frame("radar", RADAR, t0.plusSeconds(3), t0.plusMillis(3200), new Obj("ZT20O-R1", lon, lat, UAV, null));
+        assertThat(targetOf("ZT20O-R1")).as("雷达这一帧仍命中同一个目标").isEqualTo(target);
+        assertThat(instant(jdbc.queryForMap("select last_received_at from target_track_status where target_id=?", target).get("last_received_at")))
+                .isEqualTo(t0.plusMillis(9300));
+    }
+
+    /** 这个外部编号的观测一共建过几个目标：建目标时血缘 CREATE 的依据里记着外部编号。 */
+    private long created(String externalTargetId) {
+        return jdbc.queryForObject("select count(*) from target_lineage where op='CREATE' and cast(basis as varchar) like ?", Long.class,
+                "%\"" + externalTargetId + "%");
+    }
+
+    private String trackStatus(String targetId) {
+        return jdbc.queryForObject("select status from target_track_status where target_id=?", String.class, targetId);
+    }
+
     private static Instant instant(Object value) {
         if (value instanceof java.time.OffsetDateTime odt) return odt.toInstant();
         if (value instanceof java.sql.Timestamp ts) return ts.toInstant();

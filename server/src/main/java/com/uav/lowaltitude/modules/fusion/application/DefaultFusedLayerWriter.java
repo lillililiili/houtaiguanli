@@ -171,6 +171,9 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
         // 迟到帧：观测时刻早于已落库的最新状态时，只补融合层历史点，不回退 latest_state / 属性优选 / 降级——
         // 页面与告警看到的“当前状态”必须单调向前，否则乱序到达会让目标在地图上倒退。
         OffsetDateTime latestObserved = batch.latestObserved.get(frame.targetId());
+        // 无源帧（这一帧没看到它）没有新的观测，不算迟到帧：观测时刻不早于已落库的最新状态，判短失、判终止照常写进融合层
+        // （关融合轨迹、发事件），也不把最新状态的观测时刻往回拨。
+        if (estimates.isEmpty() && latestObserved != null && observedAt.isBefore(latestObserved)) observedAt = latestObserved;
         boolean late = latestObserved != null && observedAt.isBefore(latestObserved);
 
         FusedTrackRow track = openTrack(frame, observedAt, now, params, batch);

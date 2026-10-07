@@ -203,8 +203,8 @@ class TargetReadApiTest {
         assertThat(data.path("items").get(1).path("target_id").asText()).isEqualTo(targetUnknownTime);
         JsonNode latest = data.path("items").get(0).path("latest_state");
         assertThat(latest.path("observed_at").asLong()).isEqualTo(T0.plusSeconds(9).toInstant().toEpochMilli());
-        assertThat(data.path("items").get(0).path("map_expires_at").asLong())
-                .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
+        assertThat(data.path("items").get(0).path("map_expires_at").asLong()).as("观测与接收取较晚者 + 目标终止时长")
+                .isEqualTo(T0.plusSeconds(25).toInstant().toEpochMilli());
         assertThat(data.path("items").get(1).has("map_expires_at")).isFalse();
         assertThat(latest.path("location").path("coordinate_system").asText()).isEqualTo("WGS84");
         assertThat(latest.path("location").path("longitude").decimalValue()).isEqualByComparingTo("120.125");
@@ -253,10 +253,73 @@ class TargetReadApiTest {
             assertThat(issue.path("reason_code").asText()).isEqualTo("TIME_UNTRUSTED");
         });
 
-        // 时刻可信时仍按观测时刻算到期，不因接收晚一点就延长。
-        jdbc.update("update target_latest_state set unknown_fields=? FORMAT JSON where target_id=?", "[]", targetLatest);
+        // 慢 20 s 还不到"时间不准"阈值、不挂提示，但同样按接收时刻算到期：按观测时刻算，它一到就已过期（10-07 复测邻近场景）。
+        jdbc.update("update target_latest_state set received_at=?, unknown_fields=? FORMAT JSON where target_id=?",
+                T0.plusSeconds(29), "[]", targetLatest);
+        JsonNode slightlyLate = getJson("/api/v1/targets").path("data").path("items").get(0);
+        assertThat(slightlyLate.path("latest_state").path("field_issues").findValuesAsText("reason_code")).doesNotContain("TIME_UNTRUSTED");
+        assertThat(slightlyLate.path("map_expires_at").asLong()).as("接收时刻 + 目标终止时长")
+                .isEqualTo(T0.plusSeconds(44).toInstant().toEpochMilli());
+
+        // 接收时刻早于观测时刻（设备时钟略快，在允许偏差内）时仍按观测时刻算，不提前到期。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusSeconds(7), targetLatest);
         assertThat(getJson("/api/v1/targets").path("data").path("items").get(0).path("map_expires_at").asLong())
                 .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
+    }
+
+    /**
+     * ZT-20 复测 2：态势页只要此刻还在地图上的目标（map_visible_at），不再每轮分页拉完当天几百个目标再在页面上筛——
+     * 当天目标多时一轮要拉四十秒，新目标拿到手时已经过期。到期口径与 map_expires_at 相同：观测与接收取较晚者 + 终止时长。
+     */
+    @Test
+    void mapVisibleAtKeepsOnlyTargetsStillOnTheMap() throws Exception {
+        String visibleAt = "/api/v1/targets?map_visible_at=";
+        JsonNode live = getJson(visibleAt + (T0.plusSeconds(25).toInstant().toEpochMilli() - 1)).path("data");
+        assertThat(live.path("total").asLong()).as("没有最新状态的目标不在图上").isEqualTo(1);
+        assertThat(live.path("items").get(0).path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(getJson(visibleAt + T0.plusSeconds(25).toInstant().toEpochMilli()).path("data").path("total").asLong())
+                .as("到期即不在图上").isZero();
+
+        // 设备时钟慢两分钟：观测时刻早，但平台 T0+129 s 还收到它的数据，按接收时刻仍在图上。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusSeconds(129), targetLatest);
+        assertThat(getJson(visibleAt + T0.plusSeconds(143).toInstant().toEpochMilli()).path("data").path("items").findValuesAsText("target_id"))
+                .containsExactly(targetLatest);
+        assertThat(getJson(visibleAt + T0.plusSeconds(144).toInstant().toEpochMilli()).path("data").path("total").asLong()).isZero();
+        // 与当天范围一起用：范围照旧按最近一次观测筛。
+        assertThat(getJson(visibleAt + T0.plusSeconds(143).toInstant().toEpochMilli() + "&seen_from=" + T0.toInstant().toEpochMilli()
+                + "&seen_to=" + T0.plusSeconds(8).toInstant().toEpochMilli()).path("data").path("total").asLong()).isZero();
+
+        assertError(visibleAt + "x", 400, "VALIDATION_ERROR");
+        assertError(visibleAt, 400, "VALIDATION_ERROR");
+    }
+
+    /**
+     * ZT-20 复测 3：融合判短失、判终止时写的那一笔最新状态也刷新接收时刻，按"观测与接收取较晚者 + 终止时长"算，
+     * 结束的目标要在图上再留一个终止时长（复测：最后一帧后约 31 s 才从接口消失、约 36 s 才从页面消失）。
+     * 已终止的目标到终止时刻为止；短失还没终止的照旧按到期时刻。
+     */
+    @Test
+    void terminatedTargetLeavesTheMapWhenFusionTerminatesIt() throws Exception {
+        String visibleAt = "/api/v1/targets?map_visible_at=";
+        // 最后一帧 T0+9 s、T0+10 s 收到；T0+13.5 s 判短失，那一笔把接收时刻刷到 T0+13.5 s。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusNanos(13_500_000_000L), targetLatest);
+        jdbc.update("insert into target_track_status (target_id,status,since,updated_at,version) values (?,'SHORT_LOST',?,?,0)",
+                targetLatest, T0.plusNanos(13_500_000_000L), T0.plusNanos(13_500_000_000L));
+        assertThat(getJson("/api/v1/targets").path("data").path("items").get(0).path("map_expires_at").asLong())
+                .as("短失还没终止：照旧按接收时刻 + 终止时长").isEqualTo(T0.plusNanos(28_500_000_000L).toInstant().toEpochMilli());
+
+        // T0+25.5 s 判终止，那一笔又把接收时刻刷到 T0+25.5 s：不截断就要到 T0+40.5 s 才从图上消失。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusNanos(25_500_000_000L), targetLatest);
+        jdbc.update("update target_track_status set status='TERMINATED', since=? where target_id=?", T0.plusNanos(25_500_000_000L), targetLatest);
+        long terminatedAt = T0.plusNanos(25_500_000_000L).toInstant().toEpochMilli();
+        JsonNode item = getJson("/api/v1/targets").path("data").path("items").get(0);
+        assertThat(item.path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(item.path("map_expires_at").asLong()).as("到终止时刻为止").isEqualTo(terminatedAt);
+        assertThat(getJson(visibleAt + (terminatedAt - 1)).path("data").path("items").findValuesAsText("target_id"))
+                .containsExactly(targetLatest);
+        assertThat(getJson(visibleAt + terminatedAt).path("data").path("total").asLong()).as("终止时刻起不在图上").isZero();
+        // 不带 map_visible_at 的列表（当天目标、统计）照旧列出已终止的目标。
+        assertThat(getJson("/api/v1/targets").path("data").path("total").asLong()).isEqualTo(2);
     }
 
     @Test

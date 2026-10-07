@@ -10,6 +10,8 @@
 
 统计口径（ZT-17；2026-10-07 用户决定设备模拟器的数据也计入，取代 10-06 的“只计 live”）：大屏上所有计数——`kpis.*`、`closure.pending_verification`/`closure.confirmed_blocked`、`target_risk`、`flights.*`、`devices.*`——与运行统计同一口径，**计 `source_mode` 为 `live`（真实设备）或 `replay`（设备模拟器）的数据**，不计建库时系统自带的演示样例（`mock`）。只有允许模拟的环境（local+qa、test）把 `replay` 算进来，正式环境只计 `live`，库里留有历史模拟记录也不进统计。口径定义在 `platform/query/StatisticsScope`，改口径只改那里。其中来自设备模拟器的条数放在 `simulated_included` 里，页面必须写明，免得被当成现场真实数据。`alarms.items`/`alarms.total` 和 `map.*` 不是计数，仍按**全部来源**给。导出的业务报表仍只计 live。
 
+2026-10-07 复测 2（ZT-17）：`kpis.sensed_today`、`simulated_included.sensed_today`、`target_risk` 与趋势的今天一格直接用运行统计选今天时的那一份取数（`ReportingService.dayTargets`）。原先大屏按“今天出现过、不含被合并”数目标、按研判等级抽样分档，运行统计按首次发现、含被合并的目标数、按风险记录分档，同一天两处对不上（393 对 414，高风险 3 对 0）。现在两处同一批目标——按首次发现时间归属今日、被合并的目标不另计、要求有单位与区域、按用户数据范围——同一套风险分档。
+
 ## 通用约定
 
 沿用既有信封 `{ok,data}` / `{ok:false,error:{code,message}}`、snake_case、字符串 ID、epoch 毫秒、`AppClock`。无 query；未知或重复参数 400 `VALIDATION_ERROR`。鉴权先于参数解析。
@@ -23,7 +25,8 @@
 | 打开快照 | 菜单型 `dashboard.read`（`app_permission.permission_code=dashboard`）且数据范围不是 `NONE` |
 | 目标 KPI/地图点 | `target:read` |
 | 告警 KPI/列表/地图点 | `alarm:read` |
-| 待研判 / 风险分档 | `assessment:read` |
+| 待研判 | `assessment:read` |
+| 风险分档 | `target:read` **且** `risk:read`（与运行统计的风险分布同一门槛） |
 | 交接待办 | `handoff:read` |
 | 设备健康/地图设备 | `device:read` **且** `monitoring.read` |
 | 飞行计划计数 | `flight:read` |
@@ -36,18 +39,18 @@
 
 `data` 固定字段：`as_of`、`availability`、`kpis`、`simulated_included`、`statistics_source_modes`、`trend`、`target_risk`、`closure`、`devices`、`flights`、`alarms`、`map`。
 
-`availability` 键：`targets,alarms,assessments,handoffs,devices,flights,airspaces,stats`，值 `AVAILABLE|FORBIDDEN|UNCONFIGURED`。
+`availability` 键：`targets,alarms,assessments,handoffs,devices,flights,airspaces,risks,stats`，值 `AVAILABLE|FORBIDDEN|UNCONFIGURED`。
 
 | 块 | 有权限时 | 无权限时 |
 | --- | --- | --- |
-| `kpis.sensed_today` | 今日 `last_seen` 窗口内、统计口径（live + replay）的目标总数 | `null` |
+| `kpis.sensed_today` | 运行统计选今天时的“新增目标数”：`first_seen_at` 在今日、统计口径（live + replay）、不含被合并的目标（`track_status=MERGE`）、有单位与区域、在用户数据范围内 | `null` |
 | `kpis.alarms_today` | 今日 `occurred` 窗口内、统计口径的告警总数 | `null` |
 | `kpis.pending_assessment` | `latest_only=true` 且 `review_state=PENDING_REVIEW`、统计口径的研判总数 | `null` |
 | `kpis.pending_handoffs` | `delivery_status=PENDING_DELIVERY`、统计口径的交接总数 | `null` |
-| `trend` | 近 7 日（含今日）`days[{date,md,total,illegal}]`，以及 `simulated`/`source_mode` | 整块 `null` |
+| `trend` | 近 7 日（含今日）`days[{date,md,total,illegal}]`，以及 `simulated`/`source_mode`；运行统计不给的数（缺 `target:read` 或 `assessment:read`）为 `null` | 整块 `null` |
 | `statistics_source_modes` | 计数计入的来源：允许模拟的环境为 `["live","replay"]`，正式环境为 `["live"]`；页面据此写口径说明 | 同左（与权限无关） |
 | `simulated_included` | 统计卡里来自设备模拟器的条数：`sensed_today`、`alarms_today`、`flights_today`（`replay` 计划）、`devices`（统计口径台数减正式接入台数） | 对应字段 `null` |
-| `target_risk` | 最新研判 `grade`：`high/medium/low/ungraded`，按统计口径逐个来源各取 latest_only 研判（每个来源抽样上限 100 条，任一来源到上限时 `truncated=true`） | 整块 `null` |
+| `target_risk` | 今日感知目标按各自最新风险记录的等级分档：`critical/high/medium/low/ungraded` 依次对应运行统计今日 `by_risk` 的超高风险/高风险/中风险/低风险/未识别，五档之和等于 `kpis.sensed_today`；只认统计口径的风险记录，最新一条不在统计口径内的归未识别；全量统计，`truncated` 恒为 `false` | 整块 `null` |
 | `closure.pending_verification` | 告警状态 `PENDING_VERIFICATION` 计数（统计口径，不限今日） | `null` |
 | `closure.confirmed_blocked` | 告警状态 `CONFIRMED` 计数（统计口径，反制未接入，只计数） | `null` |
 | `closure.pending_handoffs` | 同 KPI | `null` |

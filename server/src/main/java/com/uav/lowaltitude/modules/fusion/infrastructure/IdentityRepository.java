@@ -42,7 +42,13 @@ public class IdentityRepository {
             String ownerOrgId, String districtId, boolean unified) {
         public FusionDomainKey domain() { return new FusionDomainKey(sourceMode, ownerOrgId, districtId); }
     }
-    public record StatusRow(String targetId, TrackState state, String primarySourceId, long version) { }
+    /**
+     * lastReceivedAt：最近一次命中时平台收到那一帧的时刻（ZT-20）。失联判断按它比，不拿别的设备的报文时刻去比；
+     * 升级前建的状态没有这个值（null），仍按报文时刻判断。
+     */
+    public record StatusRow(String targetId, TrackState state, String primarySourceId, long version, Instant lastReceivedAt) {
+        public StatusRow(String targetId, TrackState state, String primarySourceId, long version) { this(targetId, state, primarySourceId, version, null); }
+    }
     public record ActiveTarget(TargetRow target, StatusRow status) { }
 
     /**
@@ -147,25 +153,39 @@ public class IdentityRepository {
     }
 
     public StatusRow findStatus(String targetId) {
-        List<StatusRow> rows = jdbc.query("SELECT target_id,status,since,confirm_hits,miss_frames,last_observed_at,primary_source_id,version FROM target_track_status WHERE target_id=:id",
+        List<StatusRow> rows = jdbc.query("SELECT target_id,status,since,confirm_hits,miss_frames,last_observed_at,last_received_at,primary_source_id,version FROM target_track_status WHERE target_id=:id",
                 Map.of("id", targetId), IdentityRepository::status);
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 由一条观测建出的目标：建它的那一帧就是它最近一次命中，now 是平台收到这一帧的时刻。 */
     public void insertStatus(String targetId, TrackState state, Instant now) {
-        Map<String, Object> p = statusParams(targetId, state, null, now);
-        jdbc.update("INSERT INTO target_track_status (target_id,status,since,confirm_hits,miss_frames,last_observed_at,primary_source_id,updated_at,version)"
-                + " VALUES (:id,:status,:since,:hits,:misses,:last,:primary,:now,0)", p);
+        Map<String, Object> p = statusParams(targetId, state, null, now, now);
+        jdbc.update("INSERT INTO target_track_status (target_id,status,since,confirm_hits,miss_frames,last_observed_at,last_received_at,primary_source_id,updated_at,version)"
+                + " VALUES (:id,:status,:since,:hits,:misses,:last,:received,:primary,:now,0)", p);
     }
+
+    /**
+     * 最近一次命中的到达时刻只往后推（ZT-20）：几个调度线程并行处理，积压时各批次交错提交，晚到的帧可能先写；
+     * 早到的帧随后命中时不能把时刻改回去，否则目标会被别的来源的帧误判为短失、终止。:received 为空（未命中）时不动。
+     */
+    private static final String LAST_RECEIVED_SET = "last_received_at=CASE WHEN last_received_at IS NULL"
+            + " OR last_received_at<CAST(:received AS TIMESTAMP WITH TIME ZONE)"
+            + " THEN COALESCE(CAST(:received AS TIMESTAMP WITH TIME ZONE),last_received_at) ELSE last_received_at END";
 
     public void updateStatus(String targetId, TrackState state, String primarySourceId, Instant now) {
-        Map<String, Object> p = statusParams(targetId, state, primarySourceId, now);
-        jdbc.update("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,primary_source_id=:primary,"
-                + "updated_at=:now,version=version+1 WHERE target_id=:id", p);
+        Map<String, Object> p = statusParams(targetId, state, primarySourceId, now, null);
+        jdbc.update("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,"
+                + LAST_RECEIVED_SET + ",primary_source_id=:primary,updated_at=:now,version=version+1 WHERE target_id=:id", p);
     }
 
-    /** 一条待写的轨迹状态（字段与 {@link #updateStatus} 相同）。 */
-    public record StatusUpdate(String targetId, TrackState state, String primarySourceId) { }
+    /**
+     * 一条待写的轨迹状态（字段与 {@link #updateStatus} 相同）。receivedAt 只在本帧命中该目标时给（平台收到这一帧的时刻），
+     * 未命中的状态推进传 null，保留原来的最近命中时刻。
+     */
+    public record StatusUpdate(String targetId, TrackState state, String primarySourceId, Instant receivedAt) {
+        public StatusUpdate(String targetId, TrackState state, String primarySourceId) { this(targetId, state, primarySourceId, null); }
+    }
 
     /** 一帧的目标状态推进一次批量写（ZT-06），语义与逐条 {@link #updateStatus} 相同。 */
     @SuppressWarnings("unchecked")
@@ -174,10 +194,10 @@ public class IdentityRepository {
         Map<String, Object>[] batch = new Map[updates.size()];
         for (int i = 0; i < updates.size(); i++) {
             StatusUpdate update = updates.get(i);
-            batch[i] = statusParams(update.targetId(), update.state(), update.primarySourceId(), now);
+            batch[i] = statusParams(update.targetId(), update.state(), update.primarySourceId(), now, update.receivedAt());
         }
-        jdbc.batchUpdate("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,primary_source_id=:primary,"
-                + "updated_at=:now,version=version+1 WHERE target_id=:id", batch);
+        jdbc.batchUpdate("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,"
+                + LAST_RECEIVED_SET + ",primary_source_id=:primary,updated_at=:now,version=version+1 WHERE target_id=:id", batch);
     }
 
     /** 同一分区内仍活跃（TENTATIVE/STABLE/SHORT_LOST）的统一目标。 */
@@ -187,9 +207,44 @@ public class IdentityRepository {
         String scope = " AND t.source_mode=:mode AND " + (domain.ownerOrgId() == null ? "t.owner_org_id IS NULL" : "t.owner_org_id=:org")
                 + " AND " + (domain.districtId() == null ? "t.district_id IS NULL" : "t.district_id=:district");
         return jdbc.query("SELECT t.target_id,t.target_no,t.object_type_code,t.first_seen_at,t.last_seen_at,t.source_mode,t.owner_org_id,t.district_id,t.unified,"
-                + "s.status,s.since,s.confirm_hits,s.miss_frames,s.last_observed_at,s.primary_source_id,s.version FROM target t JOIN target_track_status s ON s.target_id=t.target_id"
+                + "s.status,s.since,s.confirm_hits,s.miss_frames,s.last_observed_at,s.last_received_at,s.primary_source_id,s.version FROM target t JOIN target_track_status s ON s.target_id=t.target_id"
                 + " WHERE t.unified=TRUE AND s.status IN ('TENTATIVE','STABLE','SHORT_LOST')" + scope + " ORDER BY t.first_seen_at ASC, t.target_id ASC", p,
                 (rs, i) -> new ActiveTarget(target(rs, i), status(rs, i)));
+    }
+
+    /** 平台多久没收到数据的候选目标（ZT-20 复测 2）：只是候选，推进前要用 {@link #lockStatusSkipLocked} 锁住重查。 */
+    public record SilentTarget(String targetId, FusionDomainKey domain, TrackStatus status, Instant lastReceivedAt) { }
+
+    /**
+     * 最近一次命中的到达时刻早于阈值的活跃统一目标：TENTATIVE/STABLE 早于 shortLostBefore，SHORT_LOST 早于 terminateBefore。
+     * 只看 notBefore 以后收到过数据的：没有到达时刻（升级前的状态行）或在回放时钟上的历史目标不在此列。最久没数据的排在前面。
+     */
+    public List<SilentTarget> silentTargets(Instant shortLostBefore, Instant terminateBefore, Instant notBefore, int limit) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("short_lost_before", Timestamp.from(shortLostBefore)); p.put("terminate_before", Timestamp.from(terminateBefore));
+        p.put("not_before", Timestamp.from(notBefore)); p.put("limit", limit);
+        return jdbc.query("SELECT t.target_id,t.source_mode,t.owner_org_id,t.district_id,s.status,s.last_received_at"
+                + " FROM target t JOIN target_track_status s ON s.target_id=t.target_id"
+                + " WHERE t.unified=TRUE AND s.last_received_at>=:not_before"
+                + " AND ((s.status IN ('TENTATIVE','STABLE') AND s.last_received_at<:short_lost_before)"
+                + " OR (s.status='SHORT_LOST' AND s.last_received_at<:terminate_before))"
+                + " ORDER BY s.last_received_at ASC, t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
+                (rs, i) -> new SilentTarget(rs.getString("target_id"),
+                        new FusionDomainKey(rs.getString("source_mode"), rs.getString("owner_org_id"), rs.getString("district_id")),
+                        TrackStatus.valueOf(rs.getString("status")), instant(rs, "last_received_at")));
+    }
+
+    /** 锁住一个目标的状态行并读出此刻已提交的值；正被别的事务锁着（融合正在写它）时不等，返回 null。 */
+    public StatusRow lockStatusSkipLocked(String targetId) {
+        List<StatusRow> rows = jdbc.query("SELECT target_id,status,since,confirm_hits,miss_frames,last_observed_at,last_received_at,primary_source_id,version"
+                + " FROM target_track_status WHERE target_id=:id FOR UPDATE SKIP LOCKED", Map.of("id", targetId), IdentityRepository::status);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 本事务里任何一条语句等锁最多等 millis 毫秒，超时报错回滚（PostgreSQL 的 SET LOCAL，随事务结束失效）；H2 没有这个设置，跳过。 */
+    public void limitLockWait(long millis) {
+        if (!postgresql) return;
+        jdbc.getJdbcTemplate().execute("SET LOCAL lock_timeout = '" + Math.max(1, millis) + "ms'");
     }
 
     public String insertLineage(String op, Instant occurredAt, String survivorId, String originId, String memberIdsJson, String sourceIdsJson, String basisJson,
@@ -227,11 +282,11 @@ public class IdentityRepository {
         return jdbc.queryForList("SELECT historical_target_id FROM target_current_alias WHERE current_target_id=:id ORDER BY historical_target_id", Map.of("id", currentId), String.class);
     }
 
-    private static Map<String, Object> statusParams(String targetId, TrackState state, String primarySourceId, Instant now) {
+    private static Map<String, Object> statusParams(String targetId, TrackState state, String primarySourceId, Instant now, Instant receivedAt) {
         Map<String, Object> p = new HashMap<>();
         p.put("id", targetId); p.put("status", state.status().name()); p.put("since", Timestamp.from(state.since())); p.put("hits", state.confirmHits());
         p.put("misses", state.missFrames()); p.put("last", state.lastObservedAt() == null ? null : Timestamp.from(state.lastObservedAt())); p.put("primary", primarySourceId);
-        p.put("now", Timestamp.from(now));
+        p.put("now", Timestamp.from(now)); p.put("received", receivedAt == null ? null : Timestamp.from(receivedAt));
         return p;
     }
 
@@ -242,7 +297,7 @@ public class IdentityRepository {
 
     private static StatusRow status(ResultSet rs, int i) throws SQLException {
         return new StatusRow(rs.getString("target_id"), new TrackState(TrackStatus.valueOf(rs.getString("status")), instant(rs, "since"), rs.getInt("confirm_hits"),
-                rs.getInt("miss_frames"), instant(rs, "last_observed_at")), rs.getString("primary_source_id"), rs.getLong("version"));
+                rs.getInt("miss_frames"), instant(rs, "last_observed_at")), rs.getString("primary_source_id"), rs.getLong("version"), instant(rs, "last_received_at"));
     }
 
     private static Instant instant(ResultSet rs, String column) throws SQLException {

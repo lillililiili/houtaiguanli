@@ -34,7 +34,8 @@ class FusionIngestWorkerDrainTest {
     private final FusionPipeline pipeline = mock(FusionPipeline.class);
     private final FusionProperties properties = new FusionProperties();
     private final AppClock clock = new AppClock(Clock.fixed(Instant.parse("2026-10-06T00:00:00Z"), ZoneOffset.UTC));
-    private final FusionIngestWorker worker = new FusionIngestWorker(inbox, pipeline, properties, clock, mock(PlatformTransactionManager.class));
+    private final FusionLossSweeper sweeper = mock(FusionLossSweeper.class);
+    private final FusionIngestWorker worker = new FusionIngestWorker(inbox, pipeline, sweeper, properties, clock, mock(PlatformTransactionManager.class));
 
     private static List<InboxRow> rows(String prefix, int count) {
         List<InboxRow> out = new ArrayList<>();
@@ -81,5 +82,16 @@ class FusionIngestWorkerDrainTest {
         assertThat(seen[0].inboxId()).isEqualTo("a1");
         // 第一批是满的，所以接着领了一次，领空就停。
         verify(inbox, times(2)).claim(anyLong(), eq(2), anyLong(), anyInt());
+    }
+
+    @Test
+    void silentTargetSweepRunsOnThePlatformClockAndCanBeSwitchedOff() {
+        // ZT-20 复测 2：失联推进按平台时钟走；一轮失败只记日志，调度照常继续；关掉开关就不再检查。
+        when(sweeper.sweep(clock.now())).thenThrow(new IllegalStateException("db down"));
+        worker.sweepSilentTargets();
+        verify(sweeper).sweep(clock.now());
+        properties.getLossSweep().setEnabled(false);
+        worker.sweepSilentTargets();
+        verify(sweeper, times(1)).sweep(org.mockito.ArgumentMatchers.any());
     }
 }
