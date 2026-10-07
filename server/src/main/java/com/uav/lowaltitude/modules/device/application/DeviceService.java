@@ -130,7 +130,7 @@ public class DeviceService {
     /**
      * 正式接入设备统计：查询本身已限定 source_mode='live' 且 simulated=FALSE，
      * 所以来源恒为 live、simulated 恒为假——不能再按"模拟数=总数"推断，否则一台正式设备都没有时
-     * （总数 0）会被标成"模拟数据"（ZT-17）。被排除的模拟/回放台数由调用方与 overview() 相减得出。
+     * （总数 0）会被标成"模拟数据"（ZT-17）。大屏统计里的模拟设备台数 = statisticsOverview() 台数减去这里的台数。
      */
     public DeviceOverview formalOverview(Boolean enabled) {
         access.requireOverviewRead();
@@ -139,6 +139,27 @@ public class DeviceService {
                 number(row, "unknown_count"), number(row, "alarm"), number(row, "vendor_count"), number(row, "model_count"),
                 groups(repository.overviewGroups("channel", true, enabled)), groups(repository.overviewGroups("type", true, enabled)),
                 "live", false);
+    }
+
+    public DeviceOverview statisticsOverview() {
+        return statisticsOverview(null);
+    }
+
+    /**
+     * 统计口径的设备台数（大屏、运行统计，见 StatisticsScope）：正式接入设备加设备模拟器的设备，
+     * 不含系统自带的演示样例设备和后台自带的本机模拟设备；正式环境与 formalOverview() 相同。
+     * 一台都没有时来源记 live，免得空库被标成“模拟数据”；其中设备模拟器的台数由调用方与 formalOverview() 相减得出。
+     */
+    public DeviceOverview statisticsOverview(Boolean enabled) {
+        access.requireOverviewRead();
+        Map<String, Object> row = repository.overview(null, DeviceRepository.CountScope.STATISTICS, enabled);
+        int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
+        String mode = total == 0 || live == total ? "live" : live == 0 ? "replay" : "mixed";
+        return new DeviceOverview(total, number(row, "online"), number(row, "offline"), number(row, "abnormal"),
+                number(row, "unknown_count"), number(row, "alarm"), number(row, "vendor_count"), number(row, "model_count"),
+                groups(repository.overviewGroups("channel", DeviceRepository.CountScope.STATISTICS, enabled)),
+                groups(repository.overviewGroups("type", DeviceRepository.CountScope.STATISTICS, enabled)),
+                mode, total > 0 && simulated == total);
     }
 
     /** 大屏地图点：只返回有经纬度的启用设备；非 WGS-84 仍带回坐标系，由调用方决定是否绘制。 */

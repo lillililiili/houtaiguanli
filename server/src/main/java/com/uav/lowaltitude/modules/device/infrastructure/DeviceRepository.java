@@ -10,6 +10,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.uav.lowaltitude.platform.query.StatisticsScope;
+
 @Repository
 public class DeviceRepository {
 
@@ -64,11 +66,13 @@ public class DeviceRepository {
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate named;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
+    private final StatisticsScope statistics;
 
-    public DeviceRepository(JdbcTemplate jdbc, com.uav.lowaltitude.platform.time.AppClock clock) {
+    public DeviceRepository(JdbcTemplate jdbc, com.uav.lowaltitude.platform.time.AppClock clock, StatisticsScope statistics) {
         this.jdbc = jdbc;
         this.named = new NamedParameterJdbcTemplate(jdbc);
         this.clock = clock;
+        this.statistics = statistics;
     }
 
     private Map<String,Object> readParameters() {
@@ -217,11 +221,30 @@ public class DeviceRepository {
 
     public Map<String, Object> overview(String ownerOrgId) { return overview(ownerOrgId, false); }
 
+    /** 设备计数的范围：全部；正式接入（live 且不是模拟设备）；统计口径（见 {@link StatisticsScope}）。 */
+    public enum CountScope {
+        ALL, FORMAL, STATISTICS;
+
+        public static CountScope of(boolean formalOnly) { return formalOnly ? FORMAL : ALL; }
+    }
+
+    private String filter(CountScope scope) {
+        return switch (scope) {
+            case ALL -> "";
+            case FORMAL -> " AND d.source_mode='live' AND d.simulated=FALSE";
+            case STATISTICS -> " AND " + statistics.deviceSql("d");
+        };
+    }
+
     public Map<String, Object> overview(String ownerOrgId, boolean formalOnly) {
-        return overview(ownerOrgId, formalOnly, null);
+        return overview(ownerOrgId, CountScope.of(formalOnly), null);
     }
 
     public Map<String, Object> overview(String ownerOrgId, boolean formalOnly, Boolean enabled) {
+        return overview(ownerOrgId, CountScope.of(formalOnly), enabled);
+    }
+
+    public Map<String, Object> overview(String ownerOrgId, CountScope scope, Boolean enabled) {
         Map<String,Object> params=readParameters();
         String ownerFilter = "";
         if (ownerOrgId != null) {
@@ -239,7 +262,7 @@ public class DeviceRepository {
                        ,SUM(CASE WHEN d.simulated=TRUE THEN 1 ELSE 0 END) AS simulated_count
                 FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id
                 """.formatted(CONNECTIVITY_COUNTS) + " WHERE d.deleted_at IS NULL" + deviceScope(params) + ownerFilter
-                + (formalOnly ? " AND d.source_mode='live' AND d.simulated=FALSE" : "") + enabledFilter,params);
+                + filter(scope) + enabledFilter,params);
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn) {
@@ -256,11 +279,15 @@ public class DeviceRepository {
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn, boolean formalOnly, Boolean enabled) {
+        return overviewGroups(groupColumn, CountScope.of(formalOnly), enabled);
+    }
+
+    public List<Map<String, Object>> overviewGroups(String groupColumn, CountScope scope, Boolean enabled) {
         Map<String,Object> params=readParameters();
         String safe = "channel".equals(groupColumn) ? "d.channel" : "d.device_type_name";
         if (enabled != null) params.put("overview_group_enabled", enabled);
         StringBuilder where = new StringBuilder(" WHERE d.deleted_at IS NULL");
-        if (formalOnly) where.append(" AND d.source_mode='live' AND d.simulated=FALSE");
+        where.append(filter(scope));
         if (enabled != null) where.append(" AND d.enabled=:overview_group_enabled");
         return named.queryForList("SELECT " + safe + " AS group_name, COUNT(*) AS total, " + CONNECTIVITY_COUNTS
                 + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id" + where + deviceScope(params)

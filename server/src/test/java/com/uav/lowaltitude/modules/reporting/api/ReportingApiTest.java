@@ -202,6 +202,39 @@ class ReportingApiTest {
         assertThat(sum(operations(token,"2003-01-01").path("by_penalty"),"value")).isZero();
     }
 
+    /**
+     * 2026-10-07 用户决定：设备模拟器（replay）的数据计入运行统计，系统自带的演示样例（mock）不计。
+     * 模拟器跑出的研判用的是演示参数，也要计入，否则模拟器的违规在统计里永远是 0；真实设备仍要求参数已确认。
+     */
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void simulatorDataCountsButBuiltInDemoSamplesDoNot() throws Exception {
+        String token=login("admin1","changeme");
+        String org=UUID.randomUUID().toString(), district="seed-stage3-district";
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",org,org,"统计口径-模拟器");
+        var at=java.time.OffsetDateTime.parse("2006-01-01T00:00:00+08:00");
+        String demoVersion=jdbc.queryForObject("select rule_set_version_id from rule_set_version where param_status='DEMO' order by rule_set_version_id fetch first 1 row only",String.class);
+        jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) select 'stats-scope-run',v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',3,3,0,0,'replay',? from rule_set_version v where v.rule_set_version_id=?",at,at,at,demoVersion);
+        int n=0;
+        for(String mode:java.util.List.of("live","replay","mock")) {
+            String id="stats-scope-"+mode;
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV',?,?,?,?,?)",id,id,at,at,mode,org,district,at,at);
+            jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons) select ?,r.run_id,r.rule_set_version_id,'ACTIVE','TARGET',?,r.as_of,r.started_at,'FRESH','FULL','ILLEGAL',60,'HIGH',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,?,'legality-assurance-v1','SUFFICIENT',CAST('[]' AS JSON) from rule_run r where r.run_id='stats-scope-run'","stats-scope-eval-"+mode,id,org,district,mode,at.plusMinutes(n));
+            jdbc.update("insert into flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,target_id,risk_type,severity,state_code,reason_code,reason_text,received_at,source_mode,owner_org_id,district_id,created_at,updated_at,version) values(?,'seed-stage3-source',?,'seed-stage3-plan-legal','seed-stage3-rv-legal',?,'AIRSPACE','HIGH','PENDING_VERIFICATION','PROHIBITED_AIRSPACE_OVERLAP','隔离统计测试',?,?,?,?,?,?,0)","stats-scope-risk-"+mode,"stats-scope-risk-"+mode,id,at.plusMinutes(n),mode,org,district,at,at);
+            n++;
+        }
+        JsonNode result=data(mvc.perform(get("/api/v1/stats/operations").param("from","2006-01-01").param("to","2006-01-01")
+                .param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(result.path("summary").path("total").asInt()).isEqualTo(2);
+        assertThat(result.path("summary").path("uav").asInt()).isEqualTo(2);
+        // 真实设备那条用的是未确认的演示参数，不算；模拟器那条算。
+        assertThat(result.path("summary").path("illegal").asInt()).isEqualTo(1);
+        assertThat(result.path("summary").path("high_risk").asInt()).isEqualTo(2);
+        assertThat(result.path("source_mode").asText()).isEqualTo("mixed");
+        assertThat(result.path("simulated").asBoolean()).isTrue();
+    }
+
     private JsonNode operations(String token,String day) throws Exception {
         return data(mvc.perform(get("/api/v1/stats/operations").param("from",day).param("to",day).header("Authorization",bearer(token)))
             .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
@@ -286,7 +319,8 @@ class ReportingApiTest {
         assertThat(data.path("regions").size()).isGreaterThanOrEqualTo(6);
         assertThat(data.path("partners").size()).isBetween(0, 5);
 
-        int dbDevices = jdbc.queryForObject("select count(*) from ops_device where deleted_at is null and source_mode='live' and simulated=FALSE", Integer.class);
+        // 统计口径：正式接入设备加设备模拟器的设备（StatisticsScope），不含系统自带的演示样例设备。
+        int dbDevices = jdbc.queryForObject("select count(*) from ops_device where deleted_at is null and ((source_mode='live' and simulated=FALSE) or source_mode='replay')", Integer.class);
         assertThat(data.path("devices").path("total").asInt()).isEqualTo(dbDevices);
         assertThat(data.path("devices").path("online").asInt()).isBetween(0, dbDevices);
     }

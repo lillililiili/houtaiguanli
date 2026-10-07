@@ -8,25 +8,35 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import com.uav.lowaltitude.modules.punishment.infrastructure.EffectiveDecisionSql;
+import com.uav.lowaltitude.platform.query.StatisticsScope;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
-/** Operations reports read business facts; the historical report_* sample tables are retained untouched. */
+/**
+ * Operations reports read business facts; the historical report_* sample tables are retained untouched.
+ * 计入哪些来源见 {@link StatisticsScope}：真实设备与设备模拟器的数据都算，系统自带的演示样例不算（2026-10-07）。
+ */
 @Repository
 public class ReportingRepository {
     private final NamedParameterJdbcTemplate named;
-    public ReportingRepository(NamedParameterJdbcTemplate named) { this.named = named; }
+    private final StatisticsScope statistics;
+    public ReportingRepository(NamedParameterJdbcTemplate named, StatisticsScope statistics) { this.named = named; this.statistics = statistics; }
 
+    /**
+     * 计入统计的研判：结论依据充分。真实设备的研判还要求规则参数已确认；设备模拟器本来就是演示，
+     * 用演示参数得出的结论也计入，否则模拟器跑出的违规在统计里永远是 0。
+     */
     public java.util.Set<String> formalEvaluationIds(List<String> targetIds) {
         if(targetIds.isEmpty()) return java.util.Set.of();
         return new java.util.HashSet<>(named.queryForList("SELECT e.evaluation_id FROM rule_evaluation e"
             + " JOIN rule_set_version v ON v.rule_set_version_id=e.rule_set_version_id"
-            + " WHERE e.target_id IN (:ids) AND e.source_mode='live' AND v.param_status='CONFIRMED'"
+            + " WHERE e.target_id IN (:ids) AND e.source_mode IN " + statistics.sqlIn()
+            + " AND (e.source_mode<>'live' OR v.param_status='CONFIRMED')"
             + " AND e.decision_assurance_code='SUFFICIENT'",Map.of("ids",targetIds),String.class));
     }
     public java.util.Set<String> formalRiskIds(List<String> targetIds) {
         if(targetIds.isEmpty()) return java.util.Set.of();
-        return new java.util.HashSet<>(named.queryForList("SELECT risk_id FROM flight_risk WHERE target_id IN (:ids) AND source_mode='live'",Map.of("ids",targetIds),String.class));
+        return new java.util.HashSet<>(named.queryForList("SELECT risk_id FROM flight_risk WHERE target_id IN (:ids) AND source_mode IN " + statistics.sqlIn(),Map.of("ids",targetIds),String.class));
     }
     public record OrganizationOption(String orgId, String name) { }
     public List<OrganizationOption> organizations(Scope scope) {
@@ -58,8 +68,8 @@ public class ReportingRepository {
                 rs.getString("penalty_type"),rs.getBigDecimal("fine_amount")));
     }
 
-    private static String where(Scope scope,String alias,String time) {
-        String sql=" WHERE "+alias+".source_mode='live' AND "+alias+"."+time+">=:from_at AND "+alias+"."+time+"<:until_at"
+    private String where(Scope scope,String alias,String time) {
+        String sql=" WHERE "+alias+".source_mode IN "+statistics.sqlIn()+" AND "+alias+"."+time+">=:from_at AND "+alias+"."+time+"<:until_at"
             +" AND "+alias+".owner_org_id IS NOT NULL AND "+alias+".district_id IS NOT NULL";
         if(!scope.allScope()) sql+="""
              AND EXISTS (SELECT 1 FROM app_user_data_scope s

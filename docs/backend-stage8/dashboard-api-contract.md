@@ -8,7 +8,7 @@
 
 趋势图与运行统计页同源，读取 `GET /stats/operations` 的样本事实表 `days`，带 `simulated`/`source_mode`；不得把它解释成目标/告警领域表的官方运行指标。
 
-统计口径（ZT-17，2026-10-06）：统计类计数（`kpis.sensed_today`、`kpis.alarms_today`、`flights.*`、`devices.*`）与运行统计同一口径，**只计 `source_mode='live'`**；模拟与回放被排除的条数放在 `simulated_excluded` 里，页面必须写明“另有模拟/回放 N，不计入统计”。办理队列（`closure.*`、`kpis.pending_assessment`、`kpis.pending_handoffs`）、`target_risk`、`alarms.items`/`alarms.total` 和 `map.*` 表达“现在要处理什么”，仍按**全部来源**给——按 live 过滤会把演示与模拟器批次整块藏起来，页面上看着像功能坏了。
+统计口径（ZT-17；2026-10-07 用户决定设备模拟器的数据也计入，取代 10-06 的“只计 live”）：大屏上所有计数——`kpis.*`、`closure.pending_verification`/`closure.confirmed_blocked`、`target_risk`、`flights.*`、`devices.*`——与运行统计同一口径，**计 `source_mode` 为 `live`（真实设备）或 `replay`（设备模拟器）的数据**，不计建库时系统自带的演示样例（`mock`）。只有允许模拟的环境（local+qa、test）把 `replay` 算进来，正式环境只计 `live`，库里留有历史模拟记录也不进统计。口径定义在 `platform/query/StatisticsScope`，改口径只改那里。其中来自设备模拟器的条数放在 `simulated_included` 里，页面必须写明，免得被当成现场真实数据。`alarms.items`/`alarms.total` 和 `map.*` 不是计数，仍按**全部来源**给。导出的业务报表仍只计 live。
 
 ## 通用约定
 
@@ -34,25 +34,25 @@
 
 ## 响应
 
-`data` 固定字段：`as_of`、`availability`、`kpis`、`simulated_excluded`、`trend`、`target_risk`、`closure`、`devices`、`flights`、`alarms`、`map`。
+`data` 固定字段：`as_of`、`availability`、`kpis`、`simulated_included`、`trend`、`target_risk`、`closure`、`devices`、`flights`、`alarms`、`map`。
 
 `availability` 键：`targets,alarms,assessments,handoffs,devices,flights,airspaces,stats`，值 `AVAILABLE|FORBIDDEN|UNCONFIGURED`。
 
 | 块 | 有权限时 | 无权限时 |
 | --- | --- | --- |
-| `kpis.sensed_today` | 今日 `last_seen` 窗口内、`source_mode=live` 的目标总数 | `null` |
-| `kpis.alarms_today` | 今日 `occurred` 窗口内、`source_mode=live` 的告警总数 | `null` |
-| `kpis.pending_assessment` | `latest_only=true` 且 `review_state=PENDING_REVIEW` 的研判总数 | `null` |
-| `kpis.pending_handoffs` | `delivery_status=PENDING_DELIVERY` 的交接总数 | `null` |
+| `kpis.sensed_today` | 今日 `last_seen` 窗口内、统计口径（live + replay）的目标总数 | `null` |
+| `kpis.alarms_today` | 今日 `occurred` 窗口内、统计口径的告警总数 | `null` |
+| `kpis.pending_assessment` | `latest_only=true` 且 `review_state=PENDING_REVIEW`、统计口径的研判总数 | `null` |
+| `kpis.pending_handoffs` | `delivery_status=PENDING_DELIVERY`、统计口径的交接总数 | `null` |
 | `trend` | 近 7 日（含今日）`days[{date,md,total,illegal}]`，以及 `simulated`/`source_mode` | 整块 `null` |
-| `simulated_excluded` | 统计卡按 live 过滤后被排除的模拟/回放条数：`sensed_today`、`alarms_today`、`flights_today`、`devices` | 对应字段 `null` |
-| `target_risk` | 最新研判 `grade`：`high/medium/low/ungraded`（抽样上限 100 条 latest_only） | 整块 `null` |
-| `closure.pending_verification` | 告警状态 `PENDING_VERIFICATION` 计数（全部来源，不限今日） | `null` |
-| `closure.confirmed_blocked` | 告警状态 `CONFIRMED` 计数（全部来源，反制未接入，只计数） | `null` |
+| `simulated_included` | 统计卡里来自设备模拟器的条数：`sensed_today`、`alarms_today`、`flights_today`（`replay` 计划）、`devices`（统计口径台数减正式接入台数） | 对应字段 `null` |
+| `target_risk` | 最新研判 `grade`：`high/medium/low/ungraded`（抽样上限 100 条 latest_only，只数统计口径的目标） | 整块 `null` |
+| `closure.pending_verification` | 告警状态 `PENDING_VERIFICATION` 计数（统计口径，不限今日） | `null` |
+| `closure.confirmed_blocked` | 告警状态 `CONFIRMED` 计数（统计口径，反制未接入，只计数） | `null` |
 | `closure.pending_handoffs` | 同 KPI | `null` |
 | `closure.evidence` | 恒为 `{status:"NOT_BUILT"}`，本切片不建设证据库 | 同左 |
-| `devices` | `GET /device-monitor/overview?formal_only=true` 的 total/online/offline/abnormal/alarm/online_rate；只统计 `source_mode=live` 且 `simulated=false` 的设备，因此 `source_mode` 恒为 `live`、`simulated` 恒为假 | 整块 `null` |
-| `flights.today` / `flights.executing` | 今日窗口内 `source_mode=live` 的计划总数、其中 `status_code=EXECUTING` 数 | 整块 `null` |
+| `devices` | `GET /device-monitor/overview?statistics_scope=true` 的 total/online/offline/abnormal/alarm/online_rate；统计口径内的设备：正式接入设备（`live` 且非模拟设备），允许模拟的环境再加设备模拟器的设备（`replay`）；`live` 但标了 `simulated` 的本机模拟设备与设备列表一样当作演示样例，不计。`source_mode` 为 `live`（没有模拟设备或一台都没有）、`replay` 或 `mixed`，`simulated` 只在全部是模拟设备时为真 | 整块 `null` |
+| `flights.today` / `flights.executing` | 今日窗口内统计口径的计划总数、其中 `status_code=EXECUTING` 数 | 整块 `null` |
 | `alarms.items` / `alarms.total` | 今日告警最多 8 条（全部来源，按 `received_at DESC`）与同口径总数 | `[]` / `null` |
 | `map.targets` | 有 WGS-84 位置的目标（最多 100，按 `last_seen` 倒序，不按今日窗口过滤） | `[]` |
 | `map.devices` | 有经纬度的启用设备（最多 46）；非 WGS-84 不画 | `[]` |

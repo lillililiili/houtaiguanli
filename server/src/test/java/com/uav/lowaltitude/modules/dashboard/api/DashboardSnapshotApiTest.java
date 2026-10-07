@@ -108,10 +108,10 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.kpis.alarms_today").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.pending_assessment").value(nullValue()))
                 .andExpect(jsonPath("$.data.kpis.pending_handoffs").value(nullValue()))
-                .andExpect(jsonPath("$.data.simulated_excluded.sensed_today").value(nullValue()))
-                .andExpect(jsonPath("$.data.simulated_excluded.alarms_today").value(nullValue()))
-                .andExpect(jsonPath("$.data.simulated_excluded.flights_today").value(nullValue()))
-                .andExpect(jsonPath("$.data.simulated_excluded.devices").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_included.sensed_today").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_included.alarms_today").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_included.flights_today").value(nullValue()))
+                .andExpect(jsonPath("$.data.simulated_included.devices").value(nullValue()))
                 .andExpect(jsonPath("$.data.trend").value(nullValue()))
                 .andExpect(jsonPath("$.data.devices").value(nullValue()))
                 .andExpect(jsonPath("$.data.flights").value(nullValue()))
@@ -140,47 +140,62 @@ class DashboardSnapshotApiTest {
         String orphanAlarm = "dash-orphan-" + suffix;
         jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,?,'UAV_INTRUSION','LOW',?,?,'mock',?,?,?)",
                 orphanAlarm, noLocation, SOURCE, "SRC-" + orphanAlarm, ts(now()), ts(now()), org, district, ts(now()));
-        // ZT-17：同一批里放一条正式接入的目标与告警，统计卡只能数到它，模拟的那几条进"另有"。
+        // 统计口径：同一批里再放真实设备（live）和设备模拟器（replay）的目标与告警各一条。
+        // 统计卡数这两条，系统自带的演示样例（mock）不计；其中来自模拟器的条数单独给出。
         String liveTarget = "dash-live-target-" + suffix;
         jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV','live',?,?,?,?,?,?,0)",
                 liveTarget, "T-L-" + suffix, org, district, ts(now()), ts(now()), ts(now()), ts(now()));
         String liveAlarm = "dash-live-alarm-" + suffix;
         jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,?,'UAV_INTRUSION','HIGH',?,?,'live',?,?,?)",
                 liveAlarm, liveTarget, SOURCE, "SRC-" + liveAlarm, ts(now()), ts(now()), org, district, ts(now()));
+        String replayTarget = "dash-replay-target-" + suffix;
+        jdbc.update("insert into target (target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values (?,?,'UAV','replay',?,?,?,?,?,?,0)",
+                replayTarget, "T-R-" + suffix, org, district, ts(now()), ts(now()), ts(now()), ts(now()));
+        String replayAlarm = "dash-replay-alarm-" + suffix;
+        jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,?,'UAV_INTRUSION','HIGH',?,?,'replay',?,?,?)",
+                replayAlarm, replayTarget, SOURCE, "SRC-" + replayAlarm, ts(now()), ts(now()), org, district, ts(now()));
+        jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values (?,?,?,?,?,?,?,0)",
+                "dash-replay-event-" + suffix, replayAlarm, "PENDING_VERIFICATION", org, district, ts(now()), ts(now()));
 
         JsonNode data = json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.availability.targets").value("AVAILABLE"))
                 .andExpect(jsonPath("$.data.availability.alarms").value("AVAILABLE"))
-                // 与运行统计同口径：只数 source_mode=live。
-                .andExpect(jsonPath("$.data.kpis.sensed_today").value(1))
-                .andExpect(jsonPath("$.data.kpis.alarms_today").value(1))
-                // 被排除的模拟/回放条数单独给出，页面才能说明差额从哪来。
-                .andExpect(jsonPath("$.data.simulated_excluded.sensed_today").value(2))
-                .andExpect(jsonPath("$.data.simulated_excluded.alarms_today").value(2))
-                // 最新告警列表是"现在要处理什么"，仍按全部来源，总数与列表同口径。
-                .andExpect(jsonPath("$.data.alarms.total").value(3))
+                // 与运行统计同口径：真实设备和设备模拟器的数据都算，演示样例不算。
+                .andExpect(jsonPath("$.data.kpis.sensed_today").value(2))
+                .andExpect(jsonPath("$.data.kpis.alarms_today").value(2))
+                // 其中来自设备模拟器的条数单独给出，页面写明，免得被当成现场真实数据。
+                .andExpect(jsonPath("$.data.simulated_included.sensed_today").value(1))
+                .andExpect(jsonPath("$.data.simulated_included.alarms_today").value(1))
+                // 待核实也是计数：模拟器那条算，演示样例那条不算。
+                .andExpect(jsonPath("$.data.closure.pending_verification").value(1))
+                // 最新告警列表不是计数，仍按全部来源，总数与列表同口径。
+                .andExpect(jsonPath("$.data.alarms.total").value(4))
                 .andReturn().getResponse().getContentAsString()).get("data");
 
         assertThat(ids(data.get("map").get("targets"))).contains(target).doesNotContain(hiddenTarget, noLocation);
         assertThat(ids(data.get("map").get("alarms"))).contains(alarmId).doesNotContain(orphanAlarm);
-        assertThat(ids(data.get("alarms").get("items"))).contains(alarmId, orphanAlarm, liveAlarm);
+        assertThat(ids(data.get("alarms").get("items"))).contains(alarmId, orphanAlarm, liveAlarm, replayAlarm);
 
         mvc.perform(get("/api/v1/dashboard/snapshot?extra=1").header("Authorization", bearer(token)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
     }
 
-    /** ZT-17：设备总数与今日计划也跟运行统计一个口径；模拟/回放只进"另有"，不进统计卡。 */
+    /**
+     * 设备总数与今日计划也跟运行统计一个口径：真实设备和设备模拟器的算，系统自带的演示样例
+     * （mock，以及设备列表里同样显示为演示的 live+simulated 本机模拟设备）不算。
+     */
     @Test
-    void deviceAndFlightStatisticsCountLiveOnlyAndReportWhatTheyLeftOut() throws Exception {
+    void deviceAndFlightStatisticsCountLiveAndSimulatorButNotDemoSamples() throws Exception {
         String token = reader("ASSIGNED", org, district);
         grantModule(token, "dashboard");
         grantModule(token, "monitoring");
         grantAction(token, "device:read", "flight:read");
-        device("live", false);
-        device("mock", true);
-        device("replay", true);
+        device("live", "live", false);
+        device("local-sim", "live", true);
+        device("mock", "mock", true);
+        device("replay", "replay", true);
         plan("live-plan", "live");
         plan("mock-plan", "mock");
         plan("replay-plan", "replay");
@@ -189,19 +204,31 @@ class DashboardSnapshotApiTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.availability.devices").value("AVAILABLE"))
                 .andExpect(jsonPath("$.data.availability.flights").value("AVAILABLE"))
-                .andExpect(jsonPath("$.data.devices.total").value(1))
-                .andExpect(jsonPath("$.data.devices.source_mode").value("live"))
+                .andExpect(jsonPath("$.data.devices.total").value(2))
+                .andExpect(jsonPath("$.data.devices.source_mode").value("mixed"))
                 .andExpect(jsonPath("$.data.devices.simulated").value(false))
-                .andExpect(jsonPath("$.data.simulated_excluded.devices").value(2))
-                .andExpect(jsonPath("$.data.flights.today").value(1))
-                .andExpect(jsonPath("$.data.flights.executing").value(1))
-                .andExpect(jsonPath("$.data.simulated_excluded.flights_today").value(2));
+                .andExpect(jsonPath("$.data.simulated_included.devices").value(1))
+                .andExpect(jsonPath("$.data.flights.today").value(2))
+                .andExpect(jsonPath("$.data.flights.executing").value(2))
+                .andExpect(jsonPath("$.data.simulated_included.flights_today").value(1));
+
+        // 大屏页面直接调的设备概况接口，同一口径。
+        mvc.perform(get("/api/v1/device-monitor/overview?statistics_scope=true").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.source_mode").value("mixed"));
+        mvc.perform(get("/api/v1/device-monitor/overview?formal_only=true").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1));
+        mvc.perform(get("/api/v1/device-monitor/overview?statistics_scope=true&formal_only=true").header("Authorization", bearer(token)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
     }
 
-    private void device(String sourceMode, boolean simulated) {
-        String id = "dash-device-" + sourceMode + "-" + suffix;
+    private void device(String name, String sourceMode, boolean simulated) {
+        String id = "dash-device-" + name + "-" + suffix;
         jdbc.update("insert into ops_device (device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at)"
-                + " values (?,?,?,'雷达','融合感知箱',true,?,?,0,0,0)", id, "D-" + sourceMode + "-" + suffix, "统计口径设备", sourceMode, simulated);
+                + " values (?,?,?,'雷达','融合感知箱',true,?,?,0,0,0)", id, "D-" + name + "-" + suffix, "统计口径设备", sourceMode, simulated);
         jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at)"
                 + " values (?,?,?,current_timestamp,current_timestamp)", id, org, district);
     }
@@ -240,8 +267,9 @@ class DashboardSnapshotApiTest {
         JsonNode data = json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).get("data");
+        // 今日统计里只有夹具那条演示样例（不计），三天前的那条在窗口外。
         assertThat(data.path("kpis").path("sensed_today").asInt()).isZero();
-        assertThat(data.path("simulated_excluded").path("sensed_today").asInt()).isEqualTo(1);
+        assertThat(data.path("simulated_included").path("sensed_today").asInt()).isZero();
         assertThat(ids(data.get("map").get("targets"))).contains(target, stale);
     }
 

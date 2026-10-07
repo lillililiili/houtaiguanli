@@ -1,5 +1,6 @@
 package com.uav.lowaltitude.modules.device.api;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -9,6 +10,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.uav.lowaltitude.modules.device.application.DeviceService;
 import com.uav.lowaltitude.modules.device.application.CommissionDeviceInformationService;
 import com.uav.lowaltitude.modules.device.application.DeviceService.DeviceFilter;
+import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
@@ -39,8 +41,13 @@ public class DeviceMonitorController {
 
     @GetMapping("/device-monitor/overview")
     public ApiResponse<DeviceService.DeviceOverview> overview(@RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
+            @RequestParam(name = "statistics_scope", defaultValue = "false") boolean statisticsScope,
             @RequestParam(required = false) Boolean enabled) {
-        return ApiResponse.ok(formalOnly ? service.formalOverview(enabled) : service.overview(enabled));
+        if (formalOnly && statisticsScope)
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "formal_only 与 statistics_scope 只能选一个");
+        // statistics_scope：大屏按统计口径数设备（StatisticsScope：真实设备和设备模拟器，不含系统自带的演示样例）。
+        return ApiResponse.ok(statisticsScope ? service.statisticsOverview(enabled)
+                : formalOnly ? service.formalOverview(enabled) : service.overview(enabled));
     }
 
     @GetMapping("/device-monitor/tree")

@@ -148,9 +148,9 @@ public class ReportingService {
         availability.put("alt_bands",metric(targetsAllowed,targets.size()-altTotal,"仅统计最新状态中有效海拔高度，缺失海拔不以离地高度替代"));
         availability.put("by_penalty",metric(casesAllowed,undecided,"仅统计有效决定书对应的已确认处罚结果；未形成有效结果的案件不计入"));
         availability.put("partners",metric(casesAllowed,undecided,"金额单位为元；主体存在未形成有效处罚结果的案件时金额暂不可统计"));
-        availability.put("devices",metric(devicesAllowed,0,"当前权限范围设备台账与状态快照，排除已删除设备"));
+        availability.put("devices",metric(devicesAllowed,0,"当前权限范围设备台账与状态快照，排除已删除设备和系统自带的演示样例设备"));
         DeviceCounts devices=null;
-        if(devicesAllowed) { var row=deviceRepository.overview(ownerOrgId,true);int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
+        if(devicesAllowed) { var row=deviceRepository.overview(ownerOrgId,com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository.CountScope.STATISTICS,null);int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
         List<DayPoint> dayPoints=days.entrySet().stream().map(e->new DayPoint(e.getKey(),e.getKey().substring(5),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         List<RegionPoint> regionPoints=regions.entrySet().stream().sorted((a,b)->Integer.compare(b.getValue()[0],a.getValue()[0])).map(e->new RegionPoint(e.getKey(),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),

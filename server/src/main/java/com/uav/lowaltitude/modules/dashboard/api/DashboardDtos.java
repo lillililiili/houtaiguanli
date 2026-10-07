@@ -15,7 +15,7 @@ public final class DashboardDtos {
             long asOf,
             Map<String, String> availability,
             KpisDto kpis,
-            SimulatedExcludedDto simulatedExcluded,
+            SimulatedIncludedDto simulatedIncluded,
             @JsonInclude(JsonInclude.Include.ALWAYS) TrendDto trend,
             @JsonInclude(JsonInclude.Include.ALWAYS) TargetRiskDto targetRisk,
             ClosureDto closure,
@@ -31,11 +31,10 @@ public final class DashboardDtos {
             @JsonInclude(JsonInclude.Include.ALWAYS) Long pendingHandoffs) { }
 
     /**
-     * ZT-17：统计类 KPI 只计正式接入（live）后，被排除在外的模拟/回放条数。
-     * 页面用它说明"另有模拟/回放 N 条，不计入统计"，免得演示库里看着像功能坏了。
-     * 无对应源权限时为 null；办理队列、地图和最新告警列表不受这一口径影响，所以这里没有它们。
+     * 统计卡里来自设备模拟器的条数（2026-10-07 起模拟器的数据也计入统计，见 StatisticsScope）。
+     * 页面用它写明"其中来自设备模拟器 N 条"，免得把模拟数据当成现场真实数据。无对应源权限时为 null。
      */
-    public record SimulatedExcludedDto(
+    public record SimulatedIncludedDto(
             @JsonInclude(JsonInclude.Include.ALWAYS) Long sensedToday,
             @JsonInclude(JsonInclude.Include.ALWAYS) Long alarmsToday,
             @JsonInclude(JsonInclude.Include.ALWAYS) Long flightsToday,

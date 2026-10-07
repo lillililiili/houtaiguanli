@@ -186,7 +186,7 @@ class FusionInputAcceptancePostgresTest {
     }
     List<String> alarmIds(String target){return jdbc.queryForList("select alarm_id from alarm where target_id=? order by alarm_id",String.class,target);}
 
-    @Test void uavAndControllerCountSeparatelyWithoutEnteringLiveOperationsStatistics() throws Exception {
+    @Test void uavAndControllerCountSeparatelyAndSimulatorTargetsEnterOperationsStatistics() throws Exception {
         sensing=repository.binding(configuration.register(new Registration(LingyunEnvelope.PROTOCOL,brokerId,"qa-fusion","qa-input","tdoa","replay",org,district,"QA-"+id(),"QA TDOA",null,null,null),id()),false);
         supervisor.reconcile();assertThat(repository.status(sensing.opsDeviceId()).get("subscribed")).isEqualTo(true);
         String day=LocalDate.now(ZoneId.of("Asia/Shanghai")).toString();
@@ -217,11 +217,11 @@ class FusionInputAcceptancePostgresTest {
         filters.set("object_type_code","REMOTE_CONTROLLER");var controllers=targetReads.targets(filters);
         assertThat(controllers.total()).isEqualTo(1);assertThat(controllers.items().get(0).targetId()).isEqualTo(controllerTarget);
         var after=reporting.operations(day,day,org).summary();
-        // Formal operations reports intentionally select source_mode=live. Replayed observations must not enter them.
-        assertThat(after.uav()-before.uav()).isZero();assertThat(after.total()-before.total()).isZero();
+        // 2026-10-07：允许模拟的环境里，设备模拟器（replay）的目标计入运行统计（StatisticsScope）；正式环境仍只计 live。
+        assertThat(after.uav()-before.uav()).isEqualTo(1);assertThat(after.total()-before.total()).isEqualTo(2);
         writeEvidence("r24-mqtt-fusion",Map.of("targets",linked,"before",before,"after",after,
                 "target_list_counts",Map.of("all",all.total(),"uav",uavs.total(),"controller",controllers.total()),
-                "source_mode","replay","formal_operations_scope","live-only: replay does not increment total or UAV counts",
+                "source_mode","replay","operations_scope","simulation-allowed profiles count replay: total +2 (UAV + controller), UAV +1",
                 "association","同批原始报文中无人机pilot坐标与遥控器对象坐标一致；未虚构独立目标关系外键"));
     }
     String frame(int sequence,long observed,int objectType,double longitude) throws Exception {
