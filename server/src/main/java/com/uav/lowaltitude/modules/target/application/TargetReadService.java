@@ -255,19 +255,20 @@ public class TargetReadService {
                 row.objectTypeCode(), row.subtype(), row.uavSn(), row.sourceMode(), row.ownerOrgId(),
                 row.districtId(), state, row.ownerOrgName(), row.districtName(),
                 riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries),
-                mapExpiresAt(row, state, mapLifetimeMs));
+                mapExpiresAt(row, mapLifetimeMs));
     }
 
     /**
-     * 地图显示到期时刻：最新状态的观测时刻 + 目标终止时长。报文时刻不可信的状态（ZT-20）按平台收到它的时刻算——
-     * 设备时钟慢两分钟时，按观测时刻算会让一直在上报的目标一出现就"过期"、悄悄从地图上消失；
-     * 按接收时刻算，目标留在图上并由 observed_at 的 TIME_UNTRUSTED 提示写明"数据过期/设备时间不准"。
+     * 地图显示到期时刻：最新状态的观测时刻与平台收到它的时刻取较晚者 + 目标终止时长（ZT-20）。
+     * 融合按平台收到数据的时刻判断失联，地图用同一把尺：设备时钟慢多少，一直在上报的目标都留在图上，
+     * 平台 terminate_after_ms 内收不到它的数据才与融合终止一起从图上消失；慢得超过 time-untrusted 阈值的，
+     * 由 observed_at 的 TIME_UNTRUSTED 提示写明"数据过期/设备时间不准"。只按观测时刻算时，
+     * 慢 15–30 s（还不到"时间不准"阈值）的设备报上来的目标一到就已过期，悄悄从地图上消失。
      */
-    private static Long mapExpiresAt(TargetRow row, TargetStateDto state, long mapLifetimeMs) {
+    private static Long mapExpiresAt(TargetRow row, long mapLifetimeMs) {
         if (row.stateObservedAt() == null || mapLifetimeMs <= 0) return null;
-        boolean untrusted = state != null && state.fieldIssues().stream()
-                .anyMatch(issue -> "observed_at".equals(issue.field()) && TIME_UNTRUSTED.equals(issue.reasonCode()));
-        OffsetDateTime base = untrusted && row.stateReceivedAt() != null ? row.stateReceivedAt() : row.stateObservedAt();
+        OffsetDateTime received = row.stateReceivedAt();
+        OffsetDateTime base = received != null && received.isAfter(row.stateObservedAt()) ? received : row.stateObservedAt();
         return base.toInstant().toEpochMilli() + mapLifetimeMs;
     }
 

@@ -203,8 +203,8 @@ class TargetReadApiTest {
         assertThat(data.path("items").get(1).path("target_id").asText()).isEqualTo(targetUnknownTime);
         JsonNode latest = data.path("items").get(0).path("latest_state");
         assertThat(latest.path("observed_at").asLong()).isEqualTo(T0.plusSeconds(9).toInstant().toEpochMilli());
-        assertThat(data.path("items").get(0).path("map_expires_at").asLong())
-                .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
+        assertThat(data.path("items").get(0).path("map_expires_at").asLong()).as("观测与接收取较晚者 + 目标终止时长")
+                .isEqualTo(T0.plusSeconds(25).toInstant().toEpochMilli());
         assertThat(data.path("items").get(1).has("map_expires_at")).isFalse();
         assertThat(latest.path("location").path("coordinate_system").asText()).isEqualTo("WGS84");
         assertThat(latest.path("location").path("longitude").decimalValue()).isEqualByComparingTo("120.125");
@@ -253,8 +253,16 @@ class TargetReadApiTest {
             assertThat(issue.path("reason_code").asText()).isEqualTo("TIME_UNTRUSTED");
         });
 
-        // 时刻可信时仍按观测时刻算到期，不因接收晚一点就延长。
-        jdbc.update("update target_latest_state set unknown_fields=? FORMAT JSON where target_id=?", "[]", targetLatest);
+        // 慢 20 s 还不到"时间不准"阈值、不挂提示，但同样按接收时刻算到期：按观测时刻算，它一到就已过期（10-07 复测邻近场景）。
+        jdbc.update("update target_latest_state set received_at=?, unknown_fields=? FORMAT JSON where target_id=?",
+                T0.plusSeconds(29), "[]", targetLatest);
+        JsonNode slightlyLate = getJson("/api/v1/targets").path("data").path("items").get(0);
+        assertThat(slightlyLate.path("latest_state").path("field_issues").findValuesAsText("reason_code")).doesNotContain("TIME_UNTRUSTED");
+        assertThat(slightlyLate.path("map_expires_at").asLong()).as("接收时刻 + 目标终止时长")
+                .isEqualTo(T0.plusSeconds(44).toInstant().toEpochMilli());
+
+        // 接收时刻早于观测时刻（设备时钟略快，在允许偏差内）时仍按观测时刻算，不提前到期。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusSeconds(7), targetLatest);
         assertThat(getJson("/api/v1/targets").path("data").path("items").get(0).path("map_expires_at").asLong())
                 .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
     }
