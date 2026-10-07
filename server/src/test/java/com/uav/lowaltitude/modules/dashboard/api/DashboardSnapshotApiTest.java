@@ -188,7 +188,7 @@ class DashboardSnapshotApiTest {
 
     /**
      * 设备总数与今日计划也跟运行统计一个口径：真实设备和设备模拟器的算，系统自带的演示样例
-     * （mock，以及设备列表里同样显示为演示的 live+simulated 本机模拟设备）不算。
+     * （mock，设备列表里同样显示为演示的 live+simulated 本机模拟设备，以及后台预置、从不上报的回放设备）不算。
      */
     @Test
     void deviceAndFlightStatisticsCountLiveAndSimulatorButNotDemoSamples() throws Exception {
@@ -200,6 +200,8 @@ class DashboardSnapshotApiTest {
         device("local-sim", "live", true);
         device("mock", "mock", true);
         device("replay", "replay", true);
+        reported("replay");
+        device("replay-silent", "replay", true);
         plan("live-plan", "live", "EXECUTING");
         plan("mock-plan", "mock", "EXECUTING");
         plan("replay-plan", "replay", "EXECUTING");
@@ -211,6 +213,7 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.availability.devices").value("AVAILABLE"))
                 .andExpect(jsonPath("$.data.availability.flights").value("AVAILABLE"))
                 .andExpect(jsonPath("$.data.devices.total").value(2))
+                .andExpect(jsonPath("$.data.devices.online").value(1))
                 .andExpect(jsonPath("$.data.devices.source_mode").value("mixed"))
                 .andExpect(jsonPath("$.data.devices.simulated").value(false))
                 .andExpect(jsonPath("$.data.simulated_included.devices").value(1))
@@ -273,6 +276,12 @@ class DashboardSnapshotApiTest {
                 + " values (?,?,?,'雷达','融合感知箱',true,?,?,0,0,0)", id, "D-" + name + "-" + suffix, "统计口径设备", sourceMode, simulated);
         jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at)"
                 + " values (?,?,?,current_timestamp,current_timestamp)", id, org, district);
+    }
+
+    /** 设备上报过心跳：设备模拟器的设备要上报过才计入统计。 */
+    private void reported(String name) {
+        jdbc.update("insert into ops_device_state (device_id,connectivity,has_alarm,health_code,observed_at,received_at,last_heartbeat_at,simulated,version)"
+                + " values (?,'ONLINE',false,'GOOD',?,?,?,true,0)", "dash-device-" + name + "-" + suffix, now(), now(), now());
     }
 
     /** 覆盖今日窗口的计划；航线必须与计划同一范围元组，否则读模型本就查不到。 */

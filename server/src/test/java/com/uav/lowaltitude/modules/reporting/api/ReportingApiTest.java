@@ -319,8 +319,10 @@ class ReportingApiTest {
         assertThat(data.path("regions").size()).isGreaterThanOrEqualTo(6);
         assertThat(data.path("partners").size()).isBetween(0, 5);
 
-        // 统计口径：正式接入设备加设备模拟器的设备（StatisticsScope），不含系统自带的演示样例设备。
-        int dbDevices = jdbc.queryForObject("select count(*) from ops_device where deleted_at is null and ((source_mode='live' and simulated=FALSE) or source_mode='replay')", Integer.class);
+        // 统计口径：正式接入设备加上报过的设备模拟器设备（StatisticsScope），不含系统自带的演示样例设备。
+        int dbDevices = jdbc.queryForObject("select count(*) from ops_device d where d.deleted_at is null and ((d.source_mode='live' and d.simulated=FALSE)"
+                + " or (d.source_mode='replay' and exists (select 1 from ops_device_state s where s.device_id=d.device_id"
+                + " and (s.last_heartbeat_at is not null or s.observed_at is not null))))", Integer.class);
         assertThat(data.path("devices").path("total").asInt()).isEqualTo(dbDevices);
         assertThat(data.path("devices").path("online").asInt()).isBetween(0, dbDevices);
     }
