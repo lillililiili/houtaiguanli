@@ -108,7 +108,7 @@ public class EoTrackingStatusService {
             message=switch(status) {
                 case "TRACKING" -> "已收到跟踪回执；视频可用性独立显示";
                 case "ENDING" -> "停止指令处理中，设备继续保留占用";
-                case "END_UNCONFIRMED" -> "尚未确认设备停止，保留占用，请核查设备回执";
+                case "END_UNCONFIRMED" -> commands.unconfirmedStopMessage(task);
                 case "LOST" -> "目标位置或执行结果未知，不代表飞离，不自动重试";
                 default -> "跟踪指令已提交，等待设备回执";
             };

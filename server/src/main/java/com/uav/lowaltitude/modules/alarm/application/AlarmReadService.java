@@ -87,7 +87,7 @@ public class AlarmReadService {
 
     /** 列头用中文，与页面列一致——导出给的是给人看的表，不是接口字段名。 */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "告警编号", "告警类别", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源");
+            "告警编号", "告警类别", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
 
     private static List<String> exportRow(AlarmRow row) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。
@@ -96,7 +96,15 @@ public class AlarmReadService {
                 com.uav.lowaltitude.platform.export.CsvLabels.severity(row.severity()),
                 com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()),
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
-                row.districtName(), row.sourceName());
+                row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()));
+    }
+
+    private static String observationLabel(String status) {
+        return switch (status) { case "CURRENT" -> "观测有效"; case "EXPIRED" -> "观测已过期"; default -> "观测待确认"; };
+    }
+
+    private static String attentionLabel(String group) {
+        return switch (group) { case "CURRENT" -> "当前事项"; case "HISTORY" -> "历史记录"; default -> "状态待确认"; };
     }
 
     private static String time(OffsetDateTime at) {
@@ -207,7 +215,8 @@ public class AlarmReadService {
         return new AlarmDto(row.alarmId(), row.eventId(), row.state(), row.alarmType(), row.severity(), millis(row.occurredAt()),
                 requiredMillis(row.receivedAt()), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), targetId,
                 row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
-                row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()));
+                row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()),
+                row.observationStatus(), row.attentionGroup());
     }
 
     /**

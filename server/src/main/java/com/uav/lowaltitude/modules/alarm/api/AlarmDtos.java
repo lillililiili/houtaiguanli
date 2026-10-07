@@ -34,16 +34,19 @@ public final class AlarmDtos {
         private final List<String> violationReasons;
         private final int escalationCount;
         private final Long escalatedAt;
+        private final String observationStatus, attentionGroup;
         public AlarmDto(String alarmId, String eventId, String state, String alarmType, String severity, Long occurredAt,
                 long receivedAt, String sourceCode, String sourceMode, String ownerOrgId, String districtId, String targetId,
                 String alarmNo, String sourceName, String ownerOrgName, String districtName, String targetNo,
-                String originalSeverity, List<String> violationReasons, int escalationCount, Long escalatedAt) {
+                String originalSeverity, List<String> violationReasons, int escalationCount, Long escalatedAt,
+                String observationStatus, String attentionGroup) {
             this.alarmId = alarmId; this.eventId = new EventId(eventId); this.state = state; this.alarmType = alarmType; this.severity = severity;
             this.occurredAt = occurredAt; this.receivedAt = receivedAt; this.sourceCode = sourceCode; this.sourceMode = sourceMode;
             this.ownerOrgId = ownerOrgId; this.districtId = districtId; this.targetId = targetId;
             this.alarmNo = alarmNo; this.sourceName = sourceName; this.ownerOrgName = ownerOrgName; this.districtName = districtName; this.targetNo = targetNo;
             this.originalSeverity = originalSeverity; this.violationReasons = violationReasons == null ? List.of() : List.copyOf(violationReasons);
             this.escalationCount = escalationCount; this.escalatedAt = escalatedAt;
+            this.observationStatus = observationStatus; this.attentionGroup = attentionGroup;
         }
         public String getAlarmId() { return alarmId; }
         /** 无事件是稳定业务事实；包装值非空而序列化结果为 null，避免改全局 NON_NULL。 */
@@ -67,6 +70,8 @@ public final class AlarmDtos {
         public List<String> getViolationReasons() { return violationReasons; }
         public int getEscalationCount() { return escalationCount; }
         public Long getEscalatedAt() { return escalatedAt; }
+        public String getObservationStatus() { return observationStatus; }
+        public String getAttentionGroup() { return attentionGroup; }
     }
     public record EventId(String value) { }
     public static final class EventIdSerializer extends JsonSerializer<EventId> {

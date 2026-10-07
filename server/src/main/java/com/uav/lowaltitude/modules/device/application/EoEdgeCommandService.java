@@ -24,6 +24,9 @@ public class EoEdgeCommandService {
     private final AppClock clock;
     private final ObjectMapper json;
     private final long commandTimeoutMillis;
+    private final boolean stopRetryEnabled;
+    private final int stopRetryMaximum;
+    private final long stopRetryDelayMillis;
     private final EoTrackingPolicy policy;
     private final com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository tracking;
     private final com.uav.lowaltitude.modules.identity.infrastructure.UserMapper users;
@@ -38,6 +41,11 @@ public class EoEdgeCommandService {
                                 org.springframework.transaction.PlatformTransactionManager transactionManager) {
         this.edges = edges; this.sessions = sessions; this.clock = clock; this.json = json;
         this.commandTimeoutMillis = Long.parseLong(environment.getProperty("app.eo-edge.command-timeout-millis", "10000"));
+        this.stopRetryEnabled = environment.getProperty("app.eo-edge.stop-retry.enabled", Boolean.class, true);
+        this.stopRetryMaximum = environment.getProperty("app.eo-edge.stop-retry.max-attempts", Integer.class, 3);
+        this.stopRetryDelayMillis = environment.getProperty("app.eo-edge.stop-retry.delay-millis", Long.class, 30000L);
+        if (stopRetryMaximum < 0 || stopRetryMaximum > 10 || stopRetryDelayMillis < 1000)
+            throw new IllegalArgumentException("Invalid EO stop recovery limits");
         this.policy=policy;this.tracking=tracking;
         this.users=users;this.access=access;
         this.transactions=new org.springframework.transaction.support.TransactionTemplate(transactionManager);
@@ -80,13 +88,72 @@ public class EoEdgeCommandService {
             if(existing!=null && "ENDING".equals(text(existing,"status"))) {
                 String previousId=text(existing,"end_command_id");
                 var previous=edges.command(previousId);
-                // An authorized operator may resend the idempotent stop for the
-                // same still-occupied task. Automatic loops never retry blindly.
+                // Unchecked repeated requests keep the original command. Automatic
+                // recovery has its own bounded, task/source/connection-checked entry.
                 boolean retry=requestedBy!=null && !requestedBy.isBlank() && previous!=null
                         && java.util.Set.of("TIMED_OUT","FAILED","CANCELLED","UNKNOWN").contains(text(previous,"status"));
                 if(!retry) return previousId;
             }
         }
+        return enqueueCommand(binding, type, topic, reason, requestedBy, now);
+    }
+
+    /** Continues an already authorized stop; never treats timeout/idle heartbeat as a stop receipt. */
+    @Transactional
+    public boolean retryStop(String taskId) {
+        if (!stopRetryEnabled || stopRetryMaximum == 0) return false;
+        if (edges.lockCursor() == null) return false;
+        var task = edges.task(taskId);
+        if (task == null || !"ENDING".equals(text(task, "status"))) return false;
+        Binding binding = edges.binding(text(task, "ops_device_id"), true);
+        // Only the replay adapter currently guarantees idempotent EndTracking(taskId).
+        if (binding == null || !binding.enabled() || !"replay".equals(binding.sourceMode())) return false;
+        var current = edges.openTask(binding.opsDeviceId());
+        if (current == null || !taskId.equals(text(current, "task_id")) || !"ENDING".equals(text(current, "status"))) return false;
+        var previous = edges.command(text(current, "end_command_id"));
+        if (!matchingSimulatedCommand(previous, binding, END) || !stopRecoveryContext(current, binding)
+                || !List.of("TIMED_OUT", "FAILED").contains(text(previous, "status"))) return false;
+        long now = clock.nowMillis();
+        if (!(previous.get("completed_at") instanceof Number completed) || completed.longValue() > now - stopRetryDelayMillis
+                || binding.lastHeartbeatAt() < completed.longValue()) return false;
+        String previousId = text(previous, "command_id");
+        if (!edges.claimStopRetry(taskId, previousId, stopRetryMaximum, now)) return false;
+        String next = enqueueCommand(binding, END, TOPIC_END, "AUTO_STOP_RECOVERY", null, now);
+        edges.addEvent(binding.opsDeviceId(), "EO_STOP_AUTO_RETRY", "WARN",
+                "自动重试停止同一跟踪任务 " + taskId + "；原指令 " + previousId + "；新指令 " + next, now, true);
+        return true;
+    }
+
+    private static boolean matchingSimulatedCommand(Map<String, Object> command, Binding binding, String type) {
+        return command != null && type.equals(text(command, "command_type"))
+                && binding.opsDeviceId().equals(text(command, "device_id"))
+                && binding.sourceMode().equals(text(command, "source_mode")) && Boolean.TRUE.equals(command.get("simulated"));
+    }
+
+    private boolean stopRecoveryContext(Map<String, Object> task, Binding binding) {
+        if (!stopRetryEnabled || binding == null || !binding.enabled() || !"replay".equals(binding.sourceMode())
+                || binding.lastHeartbeatAt() == null || binding.lastHeartbeatAt() < policy.heartbeatCutoff()
+                || binding.lastHeartbeatAt() > clock.nowMillis() || !edges.stopRecoveryConnected(binding)
+                || !matchingSimulatedCommand(edges.command(text(task, "begin_command_id")), binding, BEGIN)) return false;
+        var target = tracking.snapshot(text(task, "target_id"));
+        return target != null && binding.sourceMode().equals(EoTrackingPolicy.mode(target))
+                && java.util.Objects.equals(binding.ownerOrgId(), text(target, "owner_org_id"))
+                && java.util.Objects.equals(binding.districtId(), text(target, "district_id"));
+    }
+
+    public String unconfirmedStopMessage(Map<String, Object> task) {
+        String message = "尚未确认设备停止，保留占用";
+        var binding = edges.binding(text(task, "ops_device_id"), false);
+        var command = edges.command(text(task, "end_command_id"));
+        if (!stopRetryEnabled || stopRetryMaximum == 0 || binding == null || !"replay".equals(binding.sourceMode())
+                || command == null || !List.of("TIMED_OUT", "FAILED").contains(text(command, "status")))
+            return message + "，请核查设备回执";
+        int attempts = task.get("stop_retry_count") instanceof Number count ? count.intValue() : 0;
+        return attempts >= stopRetryMaximum ? message + "；自动重试已达上限（" + attempts + "次），请人工核查"
+                : message + "；连接及任务核查通过后自动重试（已重试" + attempts + "/" + stopRetryMaximum + "次）";
+    }
+
+    private String enqueueCommand(Binding binding, String type, String topic, String reason, String requestedBy, long now) {
         String commandId = UUID.randomUUID().toString();
         edges.insertCommand(commandId, "EO-" + now + "-" + commandId.substring(0, 6).toUpperCase(), binding.opsDeviceId(),
                 requestedBy, type, reason, binding.sourceMode(), "replay".equals(binding.sourceMode()),
@@ -94,7 +161,8 @@ public class EoEdgeCommandService {
         if (END.equals(type)) {
             var task = edges.openTask(binding.opsDeviceId());
             if (task == null) throw new IllegalStateException("TRACK_NOT_OPEN");
-            edges.updateTask(String.valueOf(task.get("task_id")), String.valueOf(task.get("status")), "ENDING", commandId, now);
+            if (edges.updateTask(String.valueOf(task.get("task_id")), String.valueOf(task.get("status")), "ENDING", commandId, now) != 1)
+                throw new IllegalStateException("TRACK_CHANGED_BEFORE_STOP");
         }
         edges.addOutbox(UUID.randomUUID().toString(), topic, commandId, now);
         return commandId;
@@ -116,6 +184,23 @@ public class EoEdgeCommandService {
                     return;
                 }
             }
+            if (TOPIC_END.equals(topic)) {
+                var binding = edges.binding(text(current, "device_id"), true);
+                var task = edges.openTask(text(current, "device_id"));
+                if (task == null || !"ENDING".equals(text(task, "status")) || !commandId.equals(text(task, "end_command_id"))) {
+                    edges.updateCommand(commandId,"SENT","CANCELLED",clock.nowMillis(),"TRACK_NOT_CURRENT","原停止任务已非当前任务");
+                    return;
+                }
+                if (binding == null || !binding.enabled() || !binding.brokerId().equals(prepared.binding().brokerId())
+                        || !binding.edgeId().equals(prepared.binding().edgeId())
+                        || !binding.externalDeviceId().equals(prepared.binding().externalDeviceId())
+                        || !binding.sourceMode().equals(prepared.binding().sourceMode())
+                        || ("AUTO_STOP_RECOVERY".equals(text(current, "reason"))
+                            && (!matchingSimulatedCommand(current, binding, END) || !stopRecoveryContext(task, binding)))) {
+                    edges.updateCommand(commandId,"SENT","CANCELLED",clock.nowMillis(),"TRACK_ELIGIBILITY_CHANGED","停止指令发送前设备或来源已变化");
+                    return;
+                }
+            }
             try {prepared.supervisor().publish(prepared.binding().brokerId(),prepared.binding().dispatcherTopic(),prepared.payload());}
             catch(RuntimeException ex) {
                 edges.updateCommand(commandId,"SENT","TIMED_OUT",clock.nowMillis(),"PUBLISH_RESULT_UNKNOWN","发送结果未知，需要设备回执核查");
@@ -133,8 +218,14 @@ public class EoEdgeCommandService {
         long now = clock.nowMillis();
         if(TOPIC_END.equals(topic)) {
             var current=edges.openTask(binding.opsDeviceId());
-            if(current==null || !commandId.equals(text(current,"end_command_id"))) {
+            if(current==null || !"ENDING".equals(text(current,"status")) || !commandId.equals(text(current,"end_command_id"))) {
                 edges.updateCommand(commandId,"QUEUED","CANCELLED",now,"TRACK_NOT_CURRENT","原停止任务已非当前任务");
+                return null;
+            }
+            if ("AUTO_STOP_RECOVERY".equals(text(command, "reason"))
+                    && (!matchingSimulatedCommand(command, binding, END) || !stopRecoveryContext(current, binding)
+                        || ((Number) command.get("deadline_at")).longValue() < now)) {
+                edges.updateCommand(commandId,"QUEUED","CANCELLED",now,"TRACK_ELIGIBILITY_CHANGED","自动停止重试下发前条件已变化");
                 return null;
             }
         }

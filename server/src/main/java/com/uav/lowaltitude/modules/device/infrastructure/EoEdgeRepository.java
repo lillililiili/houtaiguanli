@@ -296,6 +296,18 @@ public class EoEdgeRepository {
     public void refreshBootstrap(String taskId,String bootstrap) {
         jdbc.update("UPDATE eo_tracking_task SET bootstrap_json=? WHERE task_id=? AND status='OPEN'",bootstrap,taskId);
     }
+    public boolean stopRecoveryConnected(Binding binding) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM ops_device_state s JOIN mqtt_broker b ON b.broker_id=?
+                    WHERE s.device_id=? AND s.connectivity='ONLINE' AND b.enabled=TRUE AND b.source_mode=?)
+                """, Boolean.class, binding.brokerId(), binding.opsDeviceId(), binding.sourceMode()));
+    }
+    public boolean claimStopRetry(String task, String previousCommand, int maximum, long now) {
+        return jdbc.update("""
+                UPDATE eo_tracking_task SET stop_retry_count=stop_retry_count+1,stop_retry_at=?
+                WHERE task_id=? AND status='ENDING' AND end_command_id=? AND stop_retry_count<?
+                """, now, task, previousCommand, maximum) == 1;
+    }
     public void trackingReport(String taskId,long observed,long received) {
         jdbc.update("UPDATE eo_tracking_task SET last_report_at=?,last_report_observed_at=? WHERE task_id=? "
                 + "AND (last_report_observed_at IS NULL OR last_report_observed_at<?)",received,observed,taskId,observed);
