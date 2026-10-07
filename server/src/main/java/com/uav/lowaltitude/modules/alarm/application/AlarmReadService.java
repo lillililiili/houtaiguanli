@@ -28,6 +28,7 @@ import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.AlarmQuery;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.AlarmRow;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.EscalationRow;
+import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
@@ -36,10 +37,15 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @Service
 public class AlarmReadService {
     // 参数白名单：写错的参数必须报错而不是被忽略，否则调用方以为筛过了、拿到的却是全量。
-    // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group。
+    // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group、violation_reason。
     private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "occurred_from", "occurred_to",
-            "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group");
+            "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group",
+            "violation_reason");
     private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
+    /** 规则引擎会写进告警违规原因的代码：各项检查的 FAIL 原因，加无计划时的无授权（C03）。 */
+    private static final Set<String> VIOLATION_REASONS = Set.of(RuleCodes.INSIDE_RESTRICTED_AIRSPACE, RuleCodes.AIRSPACE_ALTITUDE_EXCEEDED,
+            RuleCodes.TEMPORARY_RESTRICTION_ACTIVE, RuleCodes.ROUTE_DEVIATION, RuleCodes.TIME_WINDOW_OVERRUN, RuleCodes.NIGHT_FLIGHT,
+            RuleCodes.PLAN_ALTITUDE_EXCEEDED, RuleCodes.BVLOS_EXCEEDED, RuleCodes.NO_AUTHORIZATION);
     private final AccessControlService access;
     private final AlarmReadRepository repository;
     private final AuditService audit;
@@ -115,6 +121,7 @@ public class AlarmReadService {
     private static String describe(AlarmQuery query, String sort, String order) {
         return "state=" + query.state() + ",severity=" + query.severity() + ",alarm_type=" + query.alarmType()
                 + ",attention_group=" + (query.attentionGroups() == null ? null : String.join("|", query.attentionGroups()))
+                + ",violation_reason=" + query.violationReason()
                 + ",district_id=" + query.districtId() + ",target_id=" + query.targetId()
                 + ",sort=" + sort + ",order=" + order;
     }
@@ -257,7 +264,12 @@ public class AlarmReadService {
         private AlarmQuery query() {
             return new AlarmQuery(optional("state", 32), optional("severity", 16), optional("target_id", 36), timeFrom(), timeTo(),
                     optional("owner_org_id", 36), optional("district_id", 36), optional("source_mode", 8), optional("alarm_type", 32),
-                    attentionGroups());
+                    attentionGroups(), violationReason());
+        }
+        private String violationReason() {
+            String value = optional("violation_reason", 64);
+            if (value != null && !VIOLATION_REASONS.contains(value)) throw invalid("violation_reason 参数无效");
+            return value;
         }
         /** attention_group 是逗号分隔集合（如 CURRENT,AWAITING_CONFIRMATION）；未知、重复或空项一律 400，不悄悄忽略。 */
         private List<String> attentionGroups() {
