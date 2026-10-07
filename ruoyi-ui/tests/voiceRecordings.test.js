@@ -47,7 +47,7 @@ beforeEach(() => {
   globalThis.URL.createObjectURL = vi.fn(() => 'blob:recording');
   globalThis.URL.revokeObjectURL = vi.fn();
   ElMessageBox.confirm.mockResolvedValue('confirm');
-  externalInterfacesApi.get.mockImplementation(async kind => ({ kind, name: '计划接口', source_mode: 'live', version: 0, status: 'NOT_CONFIGURED', enabled: false }));
+  externalInterfacesApi.get.mockImplementation(async kind => ({ kind, name: '任务接口', source_mode: 'live', version: 0, status: 'NOT_CONFIGURED', enabled: false }));
   voiceRecordingApi.catalog.mockResolvedValue(catalog());
 });
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = ''; });

@@ -33,7 +33,7 @@ const menuLabels = {
   maps: '地图管理', interfaces: '接口管理', users: '用户管理', roles: '角色管理',
   organizations: '单位资料（用户管理）', archive: '审计日志', audit: '审计日志', evidence: '证据管理'
 }
-const moduleLabels = { organizations: '单位资料（用户管理）', devices: '设备管理', monitoring: '实时监测', commissioning: '接入调测', maps: '地图管理', users: '用户管理', roles: '角色管理', audit: '审计日志', alarms: '告警处置', flights: '飞行计划', fusion: '融合感知', airspace: '空域管理', countermeasure: '反制处置', evidence: '证据管理', punishment: '处罚案件' }
+const moduleLabels = { organizations: '单位资料（用户管理）', devices: '设备管理', monitoring: '实时监测', commissioning: '接入调测', maps: '地图管理', users: '用户管理', roles: '角色管理', audit: '审计日志', alarms: '告警处置', flights: '飞行任务', fusion: '融合感知', airspace: '空域管理', countermeasure: '反制处置', evidence: '证据管理', punishment: '处罚案件' }
 const actionLabels = { create: '新增', read: '查看', update: '修改', delete: '删除', enable: '启用', disable: '停用', export: '导出', operate: '操作', authorize: '授权', reset_password: '重置密码', preview: '预览' }
 moduleLabels.responsePlans = '规则管理'
 const canOperate = computed(() => auth.hasPermission('roles.auth'))

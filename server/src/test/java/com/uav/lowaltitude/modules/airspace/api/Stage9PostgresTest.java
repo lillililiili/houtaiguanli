@@ -387,7 +387,7 @@ class Stage9PostgresTest {
         // 这里故意把观测放到计划结束之后，钉住“当前鸟群 + 待执行计划”仍会参与 C04。
         OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
         assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?", String.class, LocalStage9SpaceRiskSeeder.PLAN))
-                .as("回归场景必须是待执行计划").isEqualTo("PENDING");
+                .as("回归场景必须是待执行任务").isEqualTo("PENDING");
         OffsetDateTime observedAt = planTo.plusHours(12);
         OffsetDateTime observationWindowFrom = observedAt.minusMinutes(1);
         OffsetDateTime observationWindowTo = observedAt.plusMinutes(1);
@@ -435,7 +435,7 @@ class Stage9PostgresTest {
         List<Map<String, Object>> insideOnRoute = factsOnRoute(inside, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         assertThat(insideOnRoute).hasSize(1);
         assertThat(insideOnRoute.get(0)).containsEntry("corridor_relation", "INSIDE").containsEntry("altitude_band", "CLIMB");
-        assertThat(insideOnRoute.get(0).get("severity")).as("走廊内 + 同基准高度在带内 + 有待执行/执行中计划 → HIGH").isEqualTo("HIGH");
+        assertThat(insideOnRoute.get(0).get("severity")).as("走廊内 + 同基准高度在带内 + 有待执行/执行中任务 → HIGH").isEqualTo("HIGH");
         assertThat(((Number) insideOnRoute.get(0).get("distance_to_route_m")).doubleValue()).isLessThanOrEqualTo(halfWidth);
         // 计划航线没声明高度基准时，高度带只能是 UNKNOWN——不猜，也不拿别的航线的基准顶替。
         assertThat(factsOf(inside)).filteredOn(f -> !LocalStage9SpaceRiskSeeder.ROUTE_VERSION.equals(f.get("route_version_id")))
@@ -519,9 +519,9 @@ class Stage9PostgresTest {
         // 独立元组：这个 org/district 下没有任何飞行计划，因此窗口内不可能有活动计划。
         String lonelyOrg = id(), lonelyDistrict = id();
         jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)",
-                lonelyOrg, "ORG-S9-NP-" + suffix, "阶段九无计划机构");
+                lonelyOrg, "ORG-S9-NP-" + suffix, "阶段九无任务机构");
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)",
-                lonelyDistrict, "DIST-S9-NP-" + suffix, "阶段九无计划区域");
+                lonelyDistrict, "DIST-S9-NP-" + suffix, "阶段九无任务区域");
         // 专属窗口：只有这一个目标在窗口内有观测，targets_seen 才能被精确断言。
         OffsetDateTime windowFrom = T0.plusYears(1), windowTo = windowFrom.plusHours(1);
         OffsetDateTime observedAt = windowFrom.plusMinutes(10);
@@ -533,14 +533,14 @@ class Stage9PostgresTest {
                 + " values (?,ST_GeomFromEWKT('SRID=4326;POINT (118.025 37.025)'),null,?,?,?,cast('[]' as jsonb),?,?,0)",
                 targetId, new BigDecimal("100.00"), observedAt, observedAt, observedAt, observedAt);
         assertThat(jdbc.queryForObject("select count(*) from flight_plan where owner_org_id=? and district_id=?", Long.class, lonelyOrg, lonelyDistrict))
-                .as("该元组下不得有任何计划").isZero();
+                .as("该元组下不得有任何任务").isZero();
 
         long risksBefore = jdbc.queryForObject("select count(*) from flight_risk where risk_type='SPACE_OBJECT'", Long.class);
         SpaceRiskRepository.RunRow run = evaluationService.evaluate("C04", windowFrom, windowTo, "MANUAL", null);
 
-        assertThat(run.status()).as("没有计划不是失败，也不是不可评估：运行本身是成功的（" + run.message() + "）").isEqualTo("SUCCESS");
-        assertThat(run.targetsSeen()).as("窗口内唯一有观测的异物目标必须被计入 targets_seen（契约：无计划只计数）").isEqualTo(1);
-        assertThat(run.risksCreated()).as("没有活动计划就没有可关联的飞行活动，不得生成风险").isZero();
+        assertThat(run.status()).as("没有任务不是失败，也不是不可评估：运行本身是成功的（" + run.message() + "）").isEqualTo("SUCCESS");
+        assertThat(run.targetsSeen()).as("窗口内唯一有观测的异物目标必须被计入 targets_seen（契约：无任务只计数）").isEqualTo(1);
+        assertThat(run.risksCreated()).as("没有活动任务就没有可关联的飞行活动，不得生成风险").isZero();
         assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=?", Long.class, targetId)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from flight_risk where risk_type='SPACE_OBJECT'", Long.class)).isEqualTo(risksBefore);
         // 运行记录如实留痕：看到了目标、没有产出风险。
@@ -689,7 +689,7 @@ class Stage9PostgresTest {
         assertThat(flockA).as("走廊内鸟群至少有一条经评估器产出的风险").isNotEmpty();
         List<Map<String, Object>> highOnRoute = flockA.stream()
                 .filter(r -> "HIGH".equals(r.get("severity"))).toList();
-        assertThat(highOnRoute).as("恰好一条 HIGH：只有声明了 AMSL 基准的那条计划航线判得出高度带").hasSize(1);
+        assertThat(highOnRoute).as("恰好一条 HIGH：只有声明了 AMSL 基准的那条任务航线判得出高度带").hasSize(1);
         assertThat(highOnRoute.get(0)).containsEntry("corridor_relation", "INSIDE").containsEntry("altitude_band", "CLIMB")
                 .containsEntry("route_version_id", LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         // PG 分支不插演示风险：原因文案里不得再出现"未经评估器"的演示后缀。
@@ -702,7 +702,7 @@ class Stage9PostgresTest {
                 + " min(f.window_from) as first_window, max(f.window_from) as last_window from flight_risk r"
                 + " join space_risk_fact f on f.risk_id=r.risk_id where r.risk_type='SPACE_OBJECT' and r.target_id is not null"
                 + " group by r.plan_id,r.target_id having count(*)>1");
-        assertThat(duplicated).as("同一计划下同一目标只能有一条空间风险，实际重复组：" + duplicated).isEmpty();
+        assertThat(duplicated).as("同一任务下同一目标只能有一条空间风险，实际重复组：" + duplicated).isEmpty();
 
         // 另一只鸟群只有 AGL 高度，航线基准是 AMSL：高度带判不出来，等级降为 MEDIUM。
         List<Map<String, Object>> flockB = jdbc.queryForList("select r.severity,f.corridor_relation,f.altitude_band from flight_risk r"

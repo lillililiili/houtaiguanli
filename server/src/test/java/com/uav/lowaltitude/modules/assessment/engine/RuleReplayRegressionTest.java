@@ -186,7 +186,7 @@ class RuleReplayRegressionTest {
             assertThat(jdbc.queryForObject("select conclusion_code from assessment_result where assessment_id=? and evaluation_id=?", String.class, row.get("assessment_id"), evaluationId))
                     .isEqualTo(expected.legalStatus());
         } else {
-            assertThat(row.get("assessment_id")).as(scenario + " 无计划不投影").isNull();
+            assertThat(row.get("assessment_id")).as(scenario + " 无任务不投影").isNull();
         }
         // ACTIVE 研判都有待复核行，且归属元组复制自研判行。
         assertThat(jdbc.queryForObject("select review_state||'/'||version||'/'||owner_org_id||'/'||district_id from legality_review where evaluation_id=?", String.class, evaluationId))

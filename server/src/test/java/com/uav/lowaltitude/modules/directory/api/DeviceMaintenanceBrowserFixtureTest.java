@@ -40,7 +40,7 @@ class DeviceMaintenanceBrowserFixtureTest extends DeviceMaintenanceWorkflowApiTe
 
     void prepareBrowserChecks() { }
 
-    void prepareDuePlan() { throw new IllegalArgumentException("到时计划场景需要隔离PostgreSQL夹具"); }
+    void prepareDuePlan() { throw new IllegalArgumentException("到时任务场景需要隔离PostgreSQL夹具"); }
 
     @Override void healthy() {
         jdbc.update("UPDATE ops_device SET enabled=TRUE,source_mode='mock',simulated=TRUE WHERE device_id=?",device);

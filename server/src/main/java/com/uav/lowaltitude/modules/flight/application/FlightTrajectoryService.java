@@ -38,14 +38,14 @@ public class FlightTrajectoryService {
     @Transactional(readOnly=true)
     public Trajectory read(String planId) {
         var plan=plans.findPlan(FlightActualsService.identifier(planId),access.require(PermissionCode.FLIGHT_READ));
-        if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行计划不存在或不可见");
-        if(!Set.of("EXECUTING","COMPLETED").contains(plan.statusCode()))return empty("NOT_APPLICABLE","未执行或已取消计划不绘制实际对照");
+        if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行任务不存在或不可见");
+        if(!Set.of("EXECUTING","COMPLETED").contains(plan.statusCode()))return empty("NOT_APPLICABLE","未执行或已取消任务不绘制实际对照");
         var decision=access.require(PermissionCode.ASSESSMENT_READ);
         access.require(PermissionCode.TARGET_READ);
         var routeAccess=access.require(PermissionCode.ROUTE_READ);
         if(plan.routeVersionId()==null || plans.findRouteVersion(plan.routeVersionId(),routeAccess)==null)
-            return empty("UNAVAILABLE","缺少可见的计划航线版本");
-        if(plan.startAt()==null || plan.endAt()==null)return empty("UNAVAILABLE","计划时段不完整，不能截取实际轨迹");
+            return empty("UNAVAILABLE","缺少可见的任务航线版本");
+        if(plan.startAt()==null || plan.endAt()==null)return empty("UNAVAILABLE","任务时段不完整，不能截取实际轨迹");
         var evaluation=evaluations.findLatestActiveEvaluation(plan.planId(),decision);
         if(evaluation==null || evaluation.targetId()==null)return empty("NO_EVALUATION","尚未关联感知目标；没有轨迹不代表未起飞");
         Long gap=evaluations.trackGapMillis(evaluation.evaluationId());
@@ -125,10 +125,10 @@ public class FlightTrajectoryService {
                 previous=point;
             }
         }
-        String note=routeVersionId==null?"未关联可比对的计划航线，轨迹关系未知；缺失轨迹断开，不补点。":"颜色只表示实测位置与计划走廊的横向关系，不代表合法性；缺失轨迹断开，不补点。";
-        if(result.isEmpty())note=routeVersionId==null?"本次研判暂无有效实测轨迹。":"已有计划匹配记录，但查询时段内没有可用实测点，计划线保留灰色虚线。";
+        String note=routeVersionId==null?"未关联可比对的任务航线，轨迹关系未知；缺失轨迹断开，不补点。":"颜色只表示实测位置与任务走廊的横向关系，不代表合法性；缺失轨迹断开，不补点。";
+        if(result.isEmpty())note=routeVersionId==null?"本次研判暂无有效实测轨迹。":"已有任务匹配记录，但查询时段内没有可用实测点，任务线保留灰色虚线。";
         else if(result.stream().map(p->List.of(p.longitude().stripTrailingZeros(),p.latitude().stripTrailingZeros())).distinct().limit(2).count()==1)
-            note="实测点都在同一位置，只显示位置点；完全匹配不代表已有整条飞行轨迹，计划线仍为灰色虚线。";
+            note="实测点都在同一位置，只显示位置点；完全匹配不代表已有整条飞行轨迹，任务线仍为灰色虚线。";
         if(gap==null)note+="缺少轨迹间隔参数，仅显示实测点。";
         if(!spatialAvailable)note+="空间计算不可用，范围关系未知。";
         return new Trajectory("AVAILABLE",targetId,gap,paramStatus,List.copyOf(result),note);

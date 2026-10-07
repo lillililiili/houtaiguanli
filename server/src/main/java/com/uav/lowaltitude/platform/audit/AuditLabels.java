@@ -25,7 +25,7 @@ final class AuditLabels {
             // 阶段 7：研判与规则引擎分开归档；飞行监管只读接口也有自己的模块名。
             Map.entry("assessment", "合法性研判"),
             Map.entry("rules", "规则引擎"),
-            Map.entry("flights", "飞行计划"),
+            Map.entry("flights", "飞行任务"),
             Map.entry("airspace", "空域规则"),
             Map.entry("statistics", "运行统计"),
             Map.entry("fusion", "融合感知"),
@@ -40,7 +40,7 @@ final class AuditLabels {
             Map.entry("organizations", "单位档案"),
             Map.entry("notificationSettings", "通知对象配置"),
             Map.entry("responsePlans", "处置预案"),
-            Map.entry("flight", "飞行计划"));
+            Map.entry("flight", "飞行任务"));
 
     private static final Map<String, String> ACTIONS = Map.ofEntries(
             Map.entry("airspace_upstream_received", "接收上级空域下发"),
@@ -213,13 +213,13 @@ final class AuditLabels {
             Map.entry("organization_profile_updated", "更新单位档案"),
             Map.entry("business_contact_created", "新增业务联系人"),
             Map.entry("business_contact_updated", "更新业务联系人"),
-            Map.entry("plan_source_binding_created", "登记计划来源关联"),
-            Map.entry("plan_source_binding_updated", "更新计划来源关联"),
-            Map.entry("plan_subjects_associated", "关联计划主体"),
+            Map.entry("plan_source_binding_created", "登记任务来源关联"),
+            Map.entry("plan_source_binding_updated", "更新任务来源关联"),
+            Map.entry("plan_subjects_associated", "关联任务主体"),
             Map.entry("notification_setting_created", "新增通知配置"),
             Map.entry("notification_setting_updated", "更新通知配置"),
-            Map.entry("plan_device_checked", "核实计划执行设备"),
-            Map.entry("plan_feedback_submitted", "提交计划执行反馈"),
+            Map.entry("plan_device_checked", "核实任务执行设备"),
+            Map.entry("plan_feedback_submitted", "提交任务执行反馈"),
             Map.entry("auto_sms_retry_requested", "申请补发自动短信"),
             Map.entry("auto_voice_retry_requested", "申请补发自动电话"),
             Map.entry("device_delete", "删除设备"),
@@ -254,7 +254,7 @@ final class AuditLabels {
             Map.entry("/rule-set-versions", "规则集版本"),
             Map.entry("/rule-sets", "规则集"),
             Map.entry("/rule-runs", "规则运行"),
-            Map.entry("/flight-plans", "飞行计划"),
+            Map.entry("/flight-plans", "飞行任务"),
             Map.entry("/airspace", "空域"),
             Map.entry("/stats", "运行统计"),
             Map.entry("/fusion", "融合引擎"),

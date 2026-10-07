@@ -35,7 +35,7 @@ public class AirspaceConflictService {
         String id = pathId(planId);
         PlanRow plan = flightRepository.findPlan(id, flightAccess);
         if (plan == null) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在");
+            throw new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在");
         }
         if (airspaceRepository.hasAmbiguousEffectiveVersion(plan, airspaceAccess)) {
             throw new ApiException(HttpStatus.CONFLICT, "VERSION_AMBIGUOUS", "空域有效版本重叠");

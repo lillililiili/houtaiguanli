@@ -20,7 +20,7 @@ const moduleLabels = {
   responsePlans: '规则管理',
   organizations: '单位档案', notificationSettings: '通知对象配置', authentication: '认证登录', users: '用户管理', roles: '角色管理', audit: '审计日志', devices: '设备管理',
   mqtt: '设备接入', alarms: '告警事件', monitoring: '设备监测', commissioning: '设备调测', statistics: '运行统计',
-  risk: '飞行风险', flights: '飞行计划', airspace: '空域规则', fusion: '融合感知', disposal: '处置授权',
+  risk: '飞行风险', flights: '飞行任务', airspace: '空域规则', fusion: '融合感知', disposal: '处置授权',
   punishment: '处罚案件', evidence: '证据管理', airport: '机场基础数据', maps: '地图管理', interfaces: '接口配置', system: '系统'
 }
 const actionLabels = {
@@ -32,7 +32,7 @@ const actionLabels = {
   device_maintenance_workflow_rejected: '拒绝设备运维流程操作',
   response_plan_draft_created: '新建预案草稿', response_plan_draft_updated: '修改预案草稿', response_plan_published: '发布预案', response_plan_withdrawn: '停用预案', response_plan_bound: '关联空域预案', response_plan_unbound: '解除空域预案关联',
   organization_profile_created: '创建单位档案', organization_profile_updated: '更新单位档案', business_contact_created: '创建联系人', business_contact_updated: '更新联系人',
-  plan_source_binding_created: '创建来源映射', plan_source_binding_updated: '更新来源映射', plan_subjects_associated: '关联计划主体', notification_setting_created: '创建通知配置', notification_setting_updated: '更新通知配置',
+  plan_source_binding_created: '创建来源映射', plan_source_binding_updated: '更新来源映射', plan_subjects_associated: '关联任务主体', notification_setting_created: '创建通知配置', notification_setting_updated: '更新通知配置',
   login_success: '登录成功', login_fail: '登录失败', logout: '退出登录', password_changed: '修改密码',
   user_created: '创建用户', user_deleted: '删除用户', user_profile_updated: '更新用户资料', user_status_changed: '变更用户状态',
   user_password_reset: '重置用户密码', user_access_updated: '调整用户角色', organization_created: '创建单位', organization_updated: '更新单位',

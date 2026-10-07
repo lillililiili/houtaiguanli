@@ -224,7 +224,7 @@ class HandoffPunishmentMaterialsApiTest {
         JsonNode party = detail(handoffId, submitter).path("material").path("party");
         assertThat(party.path("status").asText()).isEqualTo("UNIDENTIFIED");
         assertThat(party.path("label").asText()).isEqualTo("当事人不明，按待补线索移送");
-        assertThat(party.path("reasons").toString()).contains("没有匹配到本次飞行的报备计划").contains("没有设备测算的遥控器位置")
+        assertThat(party.path("reasons").toString()).contains("没有匹配到本次飞行的报备任务").contains("没有设备测算的遥控器位置")
                 .doesNotContain("没有获取到无人机序列号");
         assertThat(party.path("uav_sn").asText()).isEqualTo("SN-PM-UNKNOWN");
         assertThat(party.has("pilot_name")).isFalse();

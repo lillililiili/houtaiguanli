@@ -61,7 +61,7 @@ public class LocalInterfaceSimulatorService {
  private String routeVersion(PlanInput p){
   String version=p.routeVersionId()==null?null:p.routeVersionId().trim();
   if(p.route()!=null){
-   if(version!=null&&!version.isBlank())throw bad("计划报文不能同时携带 route_version_id 和 route");
+   if(version!=null&&!version.isBlank())throw bad("任务报文不能同时携带 route_version_id 和 route");
    var route=p.route();var body=new LinkedHashMap<String,Object>();
    body.put("message_id",UUID.nameUUIDFromBytes(("PLAN_ROUTE:"+p.messageId()).getBytes(StandardCharsets.UTF_8)).toString());
    body.put("name",route.name());body.put("valid_from",p.startAt());body.put("valid_to",p.endAt());body.put("geometry",route.geometry());
@@ -69,10 +69,10 @@ public class LocalInterfaceSimulatorService {
    body.put("owner_org_id",route.ownerOrgId());body.put("district_id",route.districtId());
    Message created=routeInput.create(encode(body),"local-plan-route-"+body.get("message_id"));
    String createdVersion=created.result()==null?null:created.result().path("route_version_id").asText(null);
-   if(createdVersion==null||createdVersion.isBlank())throw bad("计划航线接收结果缺少航线版本");
+   if(createdVersion==null||createdVersion.isBlank())throw bad("任务航线接收结果缺少航线版本");
    return createdVersion;
   }
-  if(version==null||version.isBlank())throw bad("计划报文必须携带 route 或 route_version_id");
+  if(version==null||version.isBlank())throw bad("任务报文必须携带 route 或 route_version_id");
   return version;
  }
  public com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Options planOptions(){interfaces.requireInterfacesRead();return filing.options();}
@@ -141,7 +141,7 @@ public class LocalInterfaceSimulatorService {
   }catch(ApiException error){permissionSection(error,"航线",unavailable);}
   List<PlanOption> plans=List.of();
   try { plans=flights.flightPlans(params).items().stream().filter(p->Set.of("mock","replay").contains(p.sourceMode())).map(p->new PlanOption(p.planId(),p.planNo(),p.startAt(),p.endAt(),p.districtId(),p.districtName())).toList(); }
-  catch(ApiException error){permissionSection(error,"飞行计划",unavailable);}
+  catch(ApiException error){permissionSection(error,"飞行任务",unavailable);}
   List<SourceOption> sources=new ArrayList<>();
   try { sources.addAll(repository.sources(true,access.require(PermissionCode.RISK_READ))); }
   catch(ApiException error){permissionSection(error,"风险通知",unavailable);}

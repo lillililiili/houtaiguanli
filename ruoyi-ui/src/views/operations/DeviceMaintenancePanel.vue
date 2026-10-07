@@ -94,7 +94,7 @@ defineExpose({ reload });
       <template v-if="selected">
         <el-descriptions :column="1" border>
           <el-descriptions-item label="设备">{{ selected.device_name }} · {{ selected.device_no }}</el-descriptions-item>
-          <el-descriptions-item label="关联计划">{{ selected.plan_no || selected.plan_id || '无关联计划查看权限' }}</el-descriptions-item>
+          <el-descriptions-item label="关联任务">{{ selected.plan_no || selected.plan_id || '无关联任务查看权限' }}</el-descriptions-item>
           <el-descriptions-item label="首次上报时连接状态">{{ statusText(selected.connectivity) }}</el-descriptions-item>
           <el-descriptions-item label="首次上报时健康状态">{{ ({GOOD:'良好',BAD:'异常',DEGRADED:'异常',UNKNOWN:'未知'})[selected.health_code] || '未知' }}</el-descriptions-item>
           <el-descriptions-item label="状态上报时间">{{ formatTime(selected.observed_at) }}</el-descriptions-item>

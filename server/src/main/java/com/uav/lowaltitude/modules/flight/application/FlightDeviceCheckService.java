@@ -54,7 +54,7 @@ public class FlightDeviceCheckService {
     @Transactional(readOnly=true)
     public Check read(String planId) {
         var plan=plans.findPlan(FlightActualsService.identifier(planId),access.require(PermissionCode.FLIGHT_READ));
-        if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行计划不存在或不可见");
+        if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行任务不存在或不可见");
         boolean simulatorPlan=localSimulatorDeviceBridge
             && LOCAL_SIMULATOR_PLAN_SOURCE_ID.equals(plan.sourceId()) && "mock".equals(plan.sourceMode());
         boolean mqttSimulation=(localMqttDemo && "mock".equals(plan.sourceMode())) || simulatorPlan;
@@ -63,13 +63,13 @@ public class FlightDeviceCheckService {
         if(plan.routeVersionId()==null || plans.findRouteVersion(plan.routeVersionId(),routeAccess)==null)
             return unknown(planId,now,"缺少可用航线，无法查找附近设备。",mqttSimulation);
         if(plan.sourceMode()==null || plan.startAt()==null || plan.endAt()==null)
-            return unknown(planId,now,"计划时段或数据来源不完整，暂不能检查。",mqttSimulation);
-        if(!plan.endAt().isAfter(plan.startAt()))return unknown(planId,now,"计划时段不正确，暂不能检查。",mqttSimulation);
+            return unknown(planId,now,"任务时段或数据来源不完整，暂不能检查。",mqttSimulation);
+        if(!plan.endAt().isAfter(plan.startAt()))return unknown(planId,now,"任务时段不正确，暂不能检查。",mqttSimulation);
         boolean preflight=plan.startAt().toInstant().toEpochMilli()>now;
         long from=plan.startAt().toInstant().toEpochMilli(),to=Math.min(now,plan.endAt().toInstant().toEpochMilli());
         // 起飞前检查当前设备和仍未关闭的告警，不拿未来时段判断是否起飞。
         if(preflight)from=to=now;
-        if(to<from)return unknown(planId,now,"计划时段不正确，暂不能检查。",mqttSimulation);
+        if(to<from)return unknown(planId,now,"任务时段不正确，暂不能检查。",mqttSimulation);
         // 不用区县文本作地理范围。普通演示与真实模式仍严格隔离；本地外部接口模拟器
         // 的 mock 计划有明确来源 ID，才允许检查同一模拟器产生的 replay 设备。
         boolean replaySimulation="replay".equals(plan.sourceMode());
@@ -100,7 +100,7 @@ public class FlightDeviceCheckService {
         complete=complete && unchecked==0 && !rows.isEmpty() && rows.stream().allMatch(DeviceRow::complete);
         boolean abnormal=rows.stream().anyMatch(r->r.abnormal() || !r.incidents().isEmpty());
         String conclusion=abnormal?"AUTO_DEVICE_ABNORMAL":complete?"SUSPECTED_NOT_TAKEN_OFF":"CHECK_INCOMPLETE";
-        String message=abnormal?"附近设备有异常，是否起飞待报送单位确认。":complete?"附近无异常设备，疑似未按计划起飞，待报送单位确认。"
+        String message=abnormal?"附近设备有异常，是否起飞待报送单位确认。":complete?"附近无异常设备，疑似未按任务起飞，待报送单位确认。"
             :rows.isEmpty()?"附近没有查到可检查的设备，暂不能判断是否起飞。":"设备信息不完整，暂不能排除设备异常，是否起飞待确认。";
         if(preflight) {
             conclusion=abnormal?"PREFLIGHT_DEVICE_ABNORMAL":complete?"PREFLIGHT_DEVICE_NORMAL":"CHECK_INCOMPLETE";

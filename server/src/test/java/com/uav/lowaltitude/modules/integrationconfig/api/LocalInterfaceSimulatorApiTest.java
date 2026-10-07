@@ -114,7 +114,7 @@ class LocalInterfaceSimulatorApiTest {
  @Test void planInputAcceptsEmbeddedRouteGeometryWithoutPriorRouteRegistration() throws Exception {
   var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
   long start=System.currentTimeMillis()+300000,end=start+3600000;
-  var route=new LinkedHashMap<String,Object>();route.put("name","上级计划直接携带航线");
+  var route=new LinkedHashMap<String,Object>();route.put("name","上级任务直接携带航线");
   route.put("geometry",Map.of("type","LineString","coordinates",List.of(List.of(118.60,37.46),List.of(118.61,37.46))));
   route.put("corridor_width_m",100);route.put("min_altitude_m",20);route.put("max_altitude_m",120);route.put("altitude_datum","AMSL");
   route.put("owner_org_id",scope.get("owner_org_id"));route.put("district_id",scope.get("district_id"));
