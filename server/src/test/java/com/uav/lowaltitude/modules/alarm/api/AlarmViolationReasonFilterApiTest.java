@@ -98,6 +98,31 @@ class AlarmViolationReasonFilterApiTest {
                 + " AND detail LIKE '%violation_reason=ROUTE_DEVIATION%' AND detail LIKE '%rows=1%'", Integer.class, actor)).isEqualTo(1);
     }
 
+    /** UX-61：导出带"违规原因"一列，与列表同源（升级过取累计原因），说法与告警页"违规原因"一列一致。 */
+    @Test void exportCarriesTheCurrentViolationReasonsInChinese() throws Exception {
+        String a = target("A"), b = target("B"), c = target("C");
+        MergeOutcome escalated = alarm(a, "MEDIUM", T0, List.of("NO_AUTHORIZATION"));
+        alarm(a, "HIGH", T0.plusMinutes(2), List.of("NO_AUTHORIZATION", "ROUTE_DEVIATION"));
+        MergeOutcome planAltitude = alarm(b, "MEDIUM", T0, List.of("PLAN_ALTITUDE_EXCEEDED"));
+        MergeOutcome bvlos = alarm(c, "LOW", T0, List.of("BVLOS_EXCEEDED"));
+        Map<String, String> noById = new java.util.HashMap<>();
+        for (JsonNode row : page("").path("items")) noById.put(row.path("alarm_id").asText(), row.path("alarm_no").asText());
+
+        String csv = mvc.perform(get("/api/v1/alarms/export.csv").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        List<String> lines = csv.lines().toList();
+        assertThat(lines.get(0).replace("\uFEFF", "")).startsWith("告警编号,告警类别,违规原因,等级,状态");
+        Map<String, String> reasonByNo = new java.util.HashMap<>();
+        for (String line : lines.subList(1, lines.size())) {
+            String[] cells = line.split(",", 4);
+            reasonByNo.put(cells[0], cells[2]);
+        }
+        assertThat(reasonByNo).hasSize(3)
+                .containsEntry(noById.get(escalated.alarmId()), "无飞行授权、偏航（偏离报备航线）")
+                .containsEntry(noById.get(planAltitude.alarmId()), "超出计划高度带")
+                .containsEntry(noById.get(bvlos.alarmId()), "超出目视视距");
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"violation_reason=NO_PLAN", "violation_reason=route_deviation", "violation_reason=ROUTE%25",
             "violation_reason=", "violation_reason=NIGHT_FLIGHT&violation_reason=ROUTE_DEVIATION"})

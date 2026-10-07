@@ -80,7 +80,7 @@ public class AlarmReadService {
                     "导出行数超过 " + CsvExport.MAX_ROWS + " 条，请先缩小筛选范围");
         }
         List<AlarmRow> rows = repository.listForExport(query, decision, CsvExport.MAX_ROWS, sort, order);
-        List<List<String>> cells = rows.stream().map(AlarmReadService::exportRow).toList();
+        List<List<String>> cells = rows.stream().map(this::exportRow).toList();
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarms", "alarms_exported", "alarm", null,
                 "filters=" + describe(query, sort, order) + "; rows=" + cells.size(), "SUCCESS", "", "");
@@ -90,12 +90,14 @@ public class AlarmReadService {
 
     /** 列头用中文，与页面列一致——导出给的是给人看的表，不是接口字段名。 */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "告警编号", "告警类别", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
+            "告警编号", "告警类别", "违规原因", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
 
-    private static List<String> exportRow(AlarmRow row) {
+    private List<String> exportRow(AlarmRow row) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。
+        // 违规原因与列表同源（UX-61）：升级过取最近一次升级的累计原因，否则取告警明细的 violation_reasons。
         return java.util.Arrays.asList(row.displayNo(),
                 com.uav.lowaltitude.platform.export.CsvLabels.alarmType(row.alarmType()),
+                com.uav.lowaltitude.platform.export.CsvLabels.violationReasons(violations(row)),
                 com.uav.lowaltitude.platform.export.CsvLabels.severity(row.severity()),
                 com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()),
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
@@ -212,13 +214,17 @@ public class AlarmReadService {
     private AlarmDto dto(AlarmRow row) {
         // target_id 是独立敏感引用：没有 target:read 时宁可省略，也不能以 0 坐标或可猜 ID 替代。
         String targetId = targetReferenceVisible(row.targetId(), row.ownerOrgId(), row.districtId()) ? row.targetId() : null;
-        // 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。
-        List<String> violations = row.escalationCount() > 0 ? reasons(row.escalatedReasonsJson()) : reasons(row.detailJson());
+        List<String> violations = violations(row);
         return new AlarmDto(row.alarmId(), row.eventId(), row.state(), row.alarmType(), row.severity(), millis(row.occurredAt()),
                 requiredMillis(row.receivedAt()), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), targetId,
                 row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
                 row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()),
                 row.observationStatus(), row.attentionGroup());
+    }
+
+    /** 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。 */
+    private List<String> violations(AlarmRow row) {
+        return row.escalationCount() > 0 ? reasons(row.escalatedReasonsJson()) : reasons(row.detailJson());
     }
 
     /**
