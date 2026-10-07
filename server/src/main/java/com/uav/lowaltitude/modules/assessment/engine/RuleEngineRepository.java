@@ -30,6 +30,8 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SubjectKind;
  */
 @Repository
 public class RuleEngineRepository {
+    /** 融合降级等级 NONE：本帧没有任何来源，即失联帧（见 DegradationEvaluator）。 */
+    static final String LOSS_FRAME_LEVEL = "NONE";
     /** 计划来源系统给出的取消状态；取消后的计划不再授权飞行。 */
     static final String PLAN_STATUS_CANCELLED = "CANCELLED";
     private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
@@ -247,10 +249,15 @@ public class RuleEngineRepository {
 
     public record Recognition(String classCode, long revision) { }
 
+    /**
+     * 最新状态连同"这一帧是不是失联帧"一起读：融合层在同一个事务里写最新状态和降级行，同一条语句读两张表，
+     * 不会读到"状态已是失联帧、降级行还是上一帧"的半截数据。
+     */
     public StateRow latestState(String targetId) {
         List<StateRow> rows = jdbc.query("SELECT " + locationColumns("s.location", "") + "," + locationColumns("s.pilot_location", "pilot_")
                 + ",s.altitude_amsl_m,s.height_agl_m,s.speed_mps,s.heading_deg,"
-                + "s.classification_confidence,s.fusion_confidence,s.observed_at,s.received_at,s.updated_at,s.pilot_observed_at FROM target_latest_state s WHERE s.target_id=:id",
+                + "s.classification_confidence,s.fusion_confidence,s.observed_at,s.received_at,s.updated_at,s.pilot_observed_at,g.level AS degradation_level"
+                + " FROM target_latest_state s LEFT JOIN target_degradation g ON g.target_id=s.target_id WHERE s.target_id=:id",
                 Map.of("id", targetId), (rs, i) -> {
                     BigDecimal[] point = location(rs, "");
                     BigDecimal[] pilot = location(rs, "pilot_");
@@ -258,7 +265,8 @@ public class RuleEngineRepository {
                             rs.getBigDecimal("height_agl_m"), rs.getBigDecimal("speed_mps"), rs.getBigDecimal("heading_deg"),
                             rs.getBigDecimal("classification_confidence"), rs.getBigDecimal("fusion_confidence"),
                             time(rs, "observed_at"), time(rs, "received_at"), time(rs, "updated_at"),
-                            pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], time(rs, "pilot_observed_at"));
+                            pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], time(rs, "pilot_observed_at"),
+                            LOSS_FRAME_LEVEL.equals(rs.getString("degradation_level")));
                 });
         return rows.isEmpty() ? null : rows.get(0);
     }
@@ -336,6 +344,7 @@ public class RuleEngineRepository {
 
     /**
      * Worker 待评估主体：最新状态在该目标最近一次同模式、同版本研判的 observed_at 之后更新，且仍新鲜；目录停用的目标不评估。
+     * 最新一帧是失联帧的目标也不评估，见下一个重载。
      */
     public List<Subject> pendingSubjects(RunMode mode, String versionId, OffsetDateTime freshSince, int limit) {
         return pendingSubjects(mode, versionId, freshSince, null, null, limit);
@@ -350,6 +359,11 @@ public class RuleEngineRepository {
      *       其余目标同模式同版本在 recentSince 之后已有研判的，等下一轮。</li>
      *   <li>顺序：同模式同版本从没评过的目标排最前——新出现的违规机不排在一长串老目标后面——再按最新状态的更新时间。</li>
      * </ul>
+     * 两种口径都跳过最新一帧是失联帧（本帧没有任何来源，target_degradation.level=NONE）的目标（第四次复测：设备停报约 5 秒后
+     * 目标的研判从"违规"变成"不可判定（置信度不足）"，告警仍是"违规"）。失联帧只是融合层记下"这一刻没看到"：位置留在最后一个点，
+     * 高度、速度清空，融合置信度逐帧调低，观测时刻仍是最后一次真实看到的时刻。拿它去研判，等于用"没看到"去推翻"最后看到的样子"，
+     * 每次都会判成不可判定。所以失联期间不再研判，目标的结论保持最后一次真实观测的研判；恢复上报（来源回来）后照常评估。
+     * 目标是否丢失、观测是否过期由目标的轨迹状态与告警的观测状态如实显示，不靠改写合法性结论来表达。
      * 判定规则本身（新鲜度、质量门、合法性结论）不在这里，仍由 LegalityEvaluationService 决定。
      */
     public List<Subject> pendingSubjects(RunMode mode, String versionId, OffsetDateTime freshSince, OffsetDateTime youngSince, OffsetDateTime recentSince, int limit) {
@@ -367,6 +381,7 @@ public class RuleEngineRepository {
                 + (simulation.allowed() ? "" : " WHERE t.source_mode='live'")
                 + (simulation.allowed() ? " WHERE" : " AND") + " " + TargetRecognitionSql.type("t", "c") + "='UAV'"
                 + (scheduled ? " AND (s.observed_at>=:fresh_since OR s.received_at>=:fresh_since)" : " AND s.observed_at>=:fresh_since")
+                + " AND NOT EXISTS (SELECT 1 FROM target_degradation g WHERE g.target_id=t.target_id AND g.level='" + LOSS_FRAME_LEVEL + "')"
                 + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
                 + " AND e.rule_set_version_id=:version AND e.observed_at IS NOT NULL AND e.observed_at>=s.observed_at"
                 + " AND e.recognition_class_code=" + TargetRecognitionSql.type("t", "c")
@@ -542,7 +557,16 @@ public class RuleEngineRepository {
             OffsetDateTime receivedAt, OffsetDateTime updatedAt,
             /* 阶段 8.5：融合层写入的飞手位置与它的观测时刻，C02-6 的输入；无则为空。
              * pilotObservedAt 暂时只到本行为止：冻结接口 TargetState 的第 15 个字段由领导添加，加完再接进 C02-6 的 facts（决策 8.5-28）。 */
-            BigDecimal pilotLongitude, BigDecimal pilotLatitude, OffsetDateTime pilotObservedAt) { }
+            BigDecimal pilotLongitude, BigDecimal pilotLatitude, OffsetDateTime pilotObservedAt,
+            /* 最新一帧是失联帧（本帧没有任何来源）；没有降级行的目标（非融合写入）为 false。 */
+            boolean lossFrame) {
+        public StateRow(BigDecimal longitude, BigDecimal latitude, BigDecimal altitudeAmslM, BigDecimal heightAglM, BigDecimal speedMps,
+                BigDecimal headingDeg, BigDecimal classificationConfidence, BigDecimal fusionConfidence, OffsetDateTime observedAt,
+                OffsetDateTime receivedAt, OffsetDateTime updatedAt, BigDecimal pilotLongitude, BigDecimal pilotLatitude, OffsetDateTime pilotObservedAt) {
+            this(longitude, latitude, altitudeAmslM, heightAglM, speedMps, headingDeg, classificationConfidence, fusionConfidence, observedAt,
+                    receivedAt, updatedAt, pilotLongitude, pilotLatitude, pilotObservedAt, false);
+        }
+    }
     public record EvaluationLink(String evaluationId, String targetId, String planId, String assessmentId, String mode) { }
     public record EvaluationInsert(String evaluationId, String runId, String ruleSetVersionId, RunMode mode, SubjectKind subjectKind, String targetId,
             String trackId, String planId, String routeVersionId, OffsetDateTime observedAt, OffsetDateTime asOf, OffsetDateTime evaluatedAt,

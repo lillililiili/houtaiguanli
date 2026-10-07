@@ -98,6 +98,7 @@ public class LegalityEvaluationService {
     /**
      * 供 {@link RuleRunService} 在自己的每主体事务里调用：不再套一层事务代理，失败时只回滚到本主体的保存点，
      * 不会把整个批次连接标成 rollback-only。调用方必须已开启事务。
+     * 定时运行读到的最新一帧是失联帧时不研判、不写任何行，返回 null（见 {@link RuleEngineRepository#pendingSubjects}）。
      */
     public EvaluationResult evaluateInCurrentTransaction(Subject subject, RunMode mode, OffsetDateTime asOf, String runId, String supersedesEvaluationId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("研判必须在事务内执行");
@@ -118,6 +119,8 @@ public class LegalityEvaluationService {
         long executionRevision=executionEnabled&&resolved.targetId()!=null?executionFacts.revision(resolved.targetId()):0;
         simulation.requireSourceMode(resolved.sourceMode());
         StateRow stateRow = resolved.targetId() == null ? null : repository.latestState(resolved.targetId());
+        // 定时取数时还是真实观测、轮到它时融合层刚写下失联帧：同样不评，保留最后一次真实观测的研判。
+        if (TRIGGER_SCHEDULED.equals(run.triggerKind()) && stateRow != null && stateRow.lossFrame()) return null;
         OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime effectiveAsOf = asOf == null ? now : asOf;
         Freshness freshness = freshness(run.triggerKind(), stateRow, effectiveAsOf, ruleParams);
