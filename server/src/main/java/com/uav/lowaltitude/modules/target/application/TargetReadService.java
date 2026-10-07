@@ -128,7 +128,8 @@ public class TargetReadService {
                 request.optional("district_id", 36),
                 request.flag("include_merged"),
                 request.optional("source_mode", 8),
-                mapVisibleAt == null ? null : Instant.ofEpochMilli(mapVisibleAt - visibleLifetimeMs).atOffset(ZoneOffset.UTC));
+                mapVisibleAt == null ? null : Instant.ofEpochMilli(mapVisibleAt - visibleLifetimeMs).atOffset(ZoneOffset.UTC),
+                mapVisibleAt == null ? null : Instant.ofEpochMilli(mapVisibleAt).atOffset(ZoneOffset.UTC));
         long total = repository.countTargets(query, access);
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
@@ -273,12 +274,18 @@ public class TargetReadService {
      * 平台 terminate_after_ms 内收不到它的数据才与融合终止一起从图上消失；慢得超过 time-untrusted 阈值的，
      * 由 observed_at 的 TIME_UNTRUSTED 提示写明"数据过期/设备时间不准"。只按观测时刻算时，
      * 慢 15–30 s（还不到"时间不准"阈值）的设备报上来的目标一到就已过期，悄悄从地图上消失。
+     *
+     * 已被融合判为终止的目标到终止时刻为止（ZT-20 复测 3）：判短失、判终止时融合写的那一笔最新状态也刷新接收时刻，
+     * 不截断的话，结束的目标还要在图上再留一个终止时长（复测：最后一帧后约 31 s 才从接口消失）。
      */
     private static Long mapExpiresAt(TargetRow row, long mapLifetimeMs) {
         if (row.stateObservedAt() == null || mapLifetimeMs <= 0) return null;
         OffsetDateTime received = row.stateReceivedAt();
         OffsetDateTime base = received != null && received.isAfter(row.stateObservedAt()) ? received : row.stateObservedAt();
-        return base.toInstant().toEpochMilli() + mapLifetimeMs;
+        long expiresAt = base.toInstant().toEpochMilli() + mapLifetimeMs;
+        if ("TERMINATED".equals(row.trackStatus()) && row.trackStatusSince() != null)
+            expiresAt = Math.min(expiresAt, row.trackStatusSince().toInstant().toEpochMilli());
+        return expiresAt;
     }
 
     private TargetStateDto state(TargetRow row, TargetSummariesRow summaries) {

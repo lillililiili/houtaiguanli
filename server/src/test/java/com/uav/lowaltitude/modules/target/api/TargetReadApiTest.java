@@ -293,6 +293,35 @@ class TargetReadApiTest {
         assertError(visibleAt, 400, "VALIDATION_ERROR");
     }
 
+    /**
+     * ZT-20 复测 3：融合判短失、判终止时写的那一笔最新状态也刷新接收时刻，按"观测与接收取较晚者 + 终止时长"算，
+     * 结束的目标要在图上再留一个终止时长（复测：最后一帧后约 31 s 才从接口消失、约 36 s 才从页面消失）。
+     * 已终止的目标到终止时刻为止；短失还没终止的照旧按到期时刻。
+     */
+    @Test
+    void terminatedTargetLeavesTheMapWhenFusionTerminatesIt() throws Exception {
+        String visibleAt = "/api/v1/targets?map_visible_at=";
+        // 最后一帧 T0+9 s、T0+10 s 收到；T0+13.5 s 判短失，那一笔把接收时刻刷到 T0+13.5 s。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusNanos(13_500_000_000L), targetLatest);
+        jdbc.update("insert into target_track_status (target_id,status,since,updated_at,version) values (?,'SHORT_LOST',?,?,0)",
+                targetLatest, T0.plusNanos(13_500_000_000L), T0.plusNanos(13_500_000_000L));
+        assertThat(getJson("/api/v1/targets").path("data").path("items").get(0).path("map_expires_at").asLong())
+                .as("短失还没终止：照旧按接收时刻 + 终止时长").isEqualTo(T0.plusNanos(28_500_000_000L).toInstant().toEpochMilli());
+
+        // T0+25.5 s 判终止，那一笔又把接收时刻刷到 T0+25.5 s：不截断就要到 T0+40.5 s 才从图上消失。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusNanos(25_500_000_000L), targetLatest);
+        jdbc.update("update target_track_status set status='TERMINATED', since=? where target_id=?", T0.plusNanos(25_500_000_000L), targetLatest);
+        long terminatedAt = T0.plusNanos(25_500_000_000L).toInstant().toEpochMilli();
+        JsonNode item = getJson("/api/v1/targets").path("data").path("items").get(0);
+        assertThat(item.path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(item.path("map_expires_at").asLong()).as("到终止时刻为止").isEqualTo(terminatedAt);
+        assertThat(getJson(visibleAt + (terminatedAt - 1)).path("data").path("items").findValuesAsText("target_id"))
+                .containsExactly(targetLatest);
+        assertThat(getJson(visibleAt + terminatedAt).path("data").path("total").asLong()).as("终止时刻起不在图上").isZero();
+        // 不带 map_visible_at 的列表（当天目标、统计）照旧列出已终止的目标。
+        assertThat(getJson("/api/v1/targets").path("data").path("total").asLong()).isEqualTo(2);
+    }
+
     @Test
     void paginatesAndFiltersTargetsWithoutSourceLinkDuplication() throws Exception {
         String sourceCode = "SRC-MOCK-" + suffix;

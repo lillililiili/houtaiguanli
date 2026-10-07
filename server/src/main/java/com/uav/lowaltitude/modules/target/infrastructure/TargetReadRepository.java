@@ -45,6 +45,7 @@ public class TargetReadRepository {
     private static final String TARGET_FROM = """
             FROM target t
             LEFT JOIN target_latest_state ls ON ls.target_id=t.target_id
+            LEFT JOIN target_track_status track_state ON track_state.target_id=t.target_id
             LEFT JOIN app_org org_ref ON org_ref.org_id=t.owner_org_id
             LEFT JOIN app_district dist_ref ON dist_ref.district_id=t.district_id
             """;
@@ -274,6 +275,9 @@ public class TargetReadRepository {
             // 与 map_expires_at 同一把尺：观测时刻与接收时刻取较晚者。设备时钟慢的目标观测时刻早，但平台一直在收它的数据。
             where.sql.append(" AND ls.observed_at IS NOT NULL AND (ls.observed_at>:map_visible_since OR ls.received_at>:map_visible_since)");
             where.parameters.put("map_visible_since", query.mapVisibleSince);
+            // 已被融合判为终止的目标，从终止时刻起不在图上（ZT-20 复测 3）。
+            where.sql.append(" AND (track_state.status IS NULL OR track_state.status<>'TERMINATED' OR track_state.since>:map_visible_at)");
+            where.parameters.put("map_visible_at", query.mapVisibleAt);
         }
         if (query.sourceCode != null || query.deviceId != null) {
             where.sql.append("""
@@ -397,7 +401,7 @@ public class TargetReadRepository {
                        t.created_at,t.updated_at,ls.observed_at AS state_observed_at,
                        ls.received_at AS state_received_at,ls.altitude_amsl_m,ls.height_agl_m,
                        ls.speed_mps,ls.heading_deg,ls.classification_confidence,ls.fusion_confidence,
-                       ls.unknown_fields,
+                       ls.unknown_fields,track_state.status AS track_status,track_state.since AS track_status_since,
                 """ + locationColumns("ls.location", "") + "," + locationColumns("ls.pilot_location", "pilot_");
     }
 
@@ -436,7 +440,8 @@ public class TargetReadRepository {
                 rs.getBigDecimal("speed_mps"), rs.getBigDecimal("heading_deg"),
                 rs.getBigDecimal("classification_confidence"), rs.getBigDecimal("fusion_confidence"),
                 normalizedJson(rs.getString("unknown_fields")), rs.getString("owner_org_name"), rs.getString("district_name"),
-                rs.getObject("target_version") == null ? null : rs.getLong("target_version"), location(rs, "pilot_"));
+                rs.getObject("target_version") == null ? null : rs.getLong("target_version"), location(rs, "pilot_"),
+                rs.getString("track_status"), time(rs, "track_status_since"));
     }
 
     private PointRow pointRow(ResultSet rs, int rowNum) throws SQLException {
@@ -527,10 +532,12 @@ public class TargetReadRepository {
              * 只要地图显示还没到期的目标（ZT-20 复测 2）：最新状态的观测时刻或平台收到它的时刻晚于此刻，
              * 即 map_expires_at = max(observed_at, received_at) + terminate_after_ms 晚于"此刻 + terminate_after_ms"。为空不过滤。
              */
-            OffsetDateTime mapVisibleSince) {
+            OffsetDateTime mapVisibleSince,
+            /** 上面的"此刻"本身（map_visible_at）：已终止的目标要终止时刻晚于它才算还在图上（ZT-20 复测 3）。与 mapVisibleSince 同为空或同不为空。 */
+            OffsetDateTime mapVisibleAt) {
         public TargetQuery(String sourceCode, String deviceId, String objectTypeCode, OffsetDateTime seenFrom, OffsetDateTime seenTo,
                 String ownerOrgId, String districtId, boolean includeMerged, String sourceMode) {
-            this(sourceCode, deviceId, objectTypeCode, seenFrom, seenTo, ownerOrgId, districtId, includeMerged, sourceMode, null);
+            this(sourceCode, deviceId, objectTypeCode, seenFrom, seenTo, ownerOrgId, districtId, includeMerged, sourceMode, null, null);
         }
     }
 
@@ -632,7 +639,9 @@ public class TargetReadRepository {
             BigDecimal classificationConfidence, BigDecimal fusionConfidence, String unknownFields,
             String ownerOrgName, String districtName, Long version,
             /* 阶段 8.5：融合层写入的飞手位置，可空。 */
-            Coordinate pilotLocation) {
+            Coordinate pilotLocation,
+            /* 融合轨迹状态与其起始时刻（target_track_status），没有状态行时为空；地图到期用它截在终止时刻。 */
+            String trackStatus, OffsetDateTime trackStatusSince) {
     }
 
     public record SourceLinkRow(String linkId, String sourceId, String sourceCode, String sourceMode,

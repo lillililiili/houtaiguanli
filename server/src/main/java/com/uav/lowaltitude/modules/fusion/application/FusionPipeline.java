@@ -324,7 +324,10 @@ public class FusionPipeline {
             statuses.put(targetId, transition.state().status());
             missFrames.put(targetId, transition.state().missFrames());
             estimatesByTarget.putIfAbsent(targetId, List.of());
-            observedByTarget.putIfAbsent(targetId, frame.observedAt());
+            // 这一帧没看到它：交给融合层的观测时刻用它自己最近一次被观测的时刻，不用别的设备这一帧的报文时刻（与 FusionLossSweeper 同一口径）。
+            // 用别的设备的时刻，停报后最新状态的 observed_at 会一路跟着往后推到判终止为止：告警"观测已过期"晚一个终止时长才下沉，
+            // 识别结论、光电跟踪候选等按 observed_at 判"当前有观测"的地方把停报的目标当成还在报；时钟慢的设备短暂中断再恢复，恢复后的帧成了迟到帧。
+            observedByTarget.putIfAbsent(targetId, ownLatestObservation(candidate.status().state()));
         }
         // 状态推进必须在自动合并之前落库：合并把被并目标的状态改成 MERGE，晚写的命中状态会把它覆盖回活跃。
         identities.updateStatuses(statusWrites, receivedAt);
@@ -551,6 +554,11 @@ public class FusionPipeline {
     }
 
     private static Instant later(Instant a, Instant b) { return a.isAfter(b) ? a : b; }
+
+    /** 目标自己最近一次被观测的时刻（它自己设备的报文时刻）；升级前没有记下时取状态起始时刻。 */
+    static Instant ownLatestObservation(TrackState state) {
+        return state.lastObservedAt() != null ? state.lastObservedAt() : state.since();
+    }
 
     /**
      * 自动合并（决策 16-1）：同域两个 STABLE 目标连续 `merge_min_frames` 帧落在 `merge_max_dist_sigma·σ` 内就并掉。
