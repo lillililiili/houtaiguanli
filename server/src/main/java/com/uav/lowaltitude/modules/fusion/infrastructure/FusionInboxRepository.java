@@ -142,6 +142,21 @@ public class FusionInboxRepository {
                         rs.getLong("received_at"), rs.getString("payload_text")));
     }
 
+    /**
+     * 融合还没处理完的帧里最早的接收时刻（ZT-20 复测 2）：待领取的，以及正在处理的（租约过期待重领的也算）；没有返回 null。
+     * 口径与 {@link #claim} 的可领取范围一致：领不到的前缀、缺来源或报文的行永远不会被处理，不算在内。
+     * 按平台时钟推进失联目标时以它为界——比它早收到的帧都已处理完、结果已提交，比它晚的还可能正要命中某个目标。
+     */
+    public Long oldestPendingReceivedAt(int maxAttempts) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("max", maxAttempts);
+        List<String> prefixes = claimablePrefixes();
+        putPrefixes(p, prefixes);
+        return jdbc.queryForObject("SELECT MIN(received_at) FROM inbox_message"
+                + " WHERE (status='PROCESSING' OR (status='RECEIVED' AND fusion_attempts<:max))"
+                + " AND " + prefixSql(prefixes) + " AND source_id IS NOT NULL AND payload IS NOT NULL", p, Long.class);
+    }
+
     /** 租约已过期且领取次数已耗尽的行统一置 FAILED（processed_at 必须同时写，见 ck_stage2_inbox_processed_at）。返回处理行数。 */
     public int failExhausted(long nowMillis, int maxAttempts) {
         Map<String, Object> p = new HashMap<>();

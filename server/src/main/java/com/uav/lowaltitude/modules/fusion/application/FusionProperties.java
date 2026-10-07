@@ -30,6 +30,7 @@ public class FusionProperties {
      * "数据过期/设备时间不准"，而不是当实时数据显示。0 表示不检查。
      */
     private long timeUntrustedLagMillis = 30_000;
+    private final LossSweep lossSweep = new LossSweep();
     private final LivePromotion livePromotion = new LivePromotion();
     private final Replay replay = new Replay();
 
@@ -60,8 +61,55 @@ public class FusionProperties {
     }
     public boolean isPrioritizeFreshSources() { return prioritizeFreshSources; }
     public void setPrioritizeFreshSources(boolean value) { prioritizeFreshSources = value; }
+    public LossSweep getLossSweep() { return lossSweep; }
     public LivePromotion getLivePromotion() { return livePromotion; }
     public Replay getReplay() { return replay; }
+
+    /**
+     * 按平台时钟推进长时间没有数据的目标（app.fusion.loss-sweep.*，ZT-20 复测 2，见 {@link FusionLossSweeper}）。
+     * 管线只在处理一帧时顺带推进同一分区里没被命中的目标；分区里唯一的设备停报后再没有帧来推进，要靠这里定时补上。
+     */
+    public static class LossSweep {
+        private boolean enabled = true;
+        /** 两轮检查的间隔（毫秒）；调度用 ${app.fusion.loss-sweep.interval-millis}，这里只做校验与说明。 */
+        private long intervalMillis = 500;
+        /** 判定短失/终止时在阈值之外多等的余量：盖住"平台已收到、还没写进 inbox"的那一小段。 */
+        private long graceMillis = 500;
+        /** 只推进这段时间以内还收到过数据的目标：回放数据集的接收时刻在回放时钟上（几周前的固定时刻），不去动它们。 */
+        private long horizonMillis = 86_400_000;
+        /** 一轮最多推进多少个目标，余下的下一轮接着推进。 */
+        private int batchSize = 200;
+        /** PostgreSQL 上每个目标的小事务等锁最多等多久；要小于 deadlock_timeout（默认 1 秒），与融合互等时总是这里先放弃。 */
+        private long lockTimeoutMillis = 200;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean value) { enabled = value; }
+        public long getIntervalMillis() { return intervalMillis; }
+        public void setIntervalMillis(long value) {
+            if (value <= 0) throw new IllegalArgumentException("loss-sweep.interval-millis must be positive");
+            intervalMillis = value;
+        }
+        public long getGraceMillis() { return graceMillis; }
+        public void setGraceMillis(long value) {
+            if (value < 0 || value > 60_000) throw new IllegalArgumentException("loss-sweep.grace-millis must be between 0 and 60000");
+            graceMillis = value;
+        }
+        public long getHorizonMillis() { return horizonMillis; }
+        public void setHorizonMillis(long value) {
+            if (value <= 0) throw new IllegalArgumentException("loss-sweep.horizon-millis must be positive");
+            horizonMillis = value;
+        }
+        public int getBatchSize() { return batchSize; }
+        public void setBatchSize(int value) {
+            if (value <= 0) throw new IllegalArgumentException("loss-sweep.batch-size must be positive");
+            batchSize = value;
+        }
+        public long getLockTimeoutMillis() { return lockTimeoutMillis; }
+        public void setLockTimeoutMillis(long value) {
+            if (value <= 0 || value >= 1_000) throw new IllegalArgumentException("loss-sweep.lock-timeout-millis must be between 1 and 999");
+            lockTimeoutMillis = value;
+        }
+    }
 
     public static class LivePromotion {
         private boolean enabled;

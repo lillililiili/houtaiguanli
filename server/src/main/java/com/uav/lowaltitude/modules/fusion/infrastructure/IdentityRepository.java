@@ -212,6 +212,41 @@ public class IdentityRepository {
                 (rs, i) -> new ActiveTarget(target(rs, i), status(rs, i)));
     }
 
+    /** 平台多久没收到数据的候选目标（ZT-20 复测 2）：只是候选，推进前要用 {@link #lockStatusSkipLocked} 锁住重查。 */
+    public record SilentTarget(String targetId, FusionDomainKey domain, TrackStatus status, Instant lastReceivedAt) { }
+
+    /**
+     * 最近一次命中的到达时刻早于阈值的活跃统一目标：TENTATIVE/STABLE 早于 shortLostBefore，SHORT_LOST 早于 terminateBefore。
+     * 只看 notBefore 以后收到过数据的：没有到达时刻（升级前的状态行）或在回放时钟上的历史目标不在此列。最久没数据的排在前面。
+     */
+    public List<SilentTarget> silentTargets(Instant shortLostBefore, Instant terminateBefore, Instant notBefore, int limit) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("short_lost_before", Timestamp.from(shortLostBefore)); p.put("terminate_before", Timestamp.from(terminateBefore));
+        p.put("not_before", Timestamp.from(notBefore)); p.put("limit", limit);
+        return jdbc.query("SELECT t.target_id,t.source_mode,t.owner_org_id,t.district_id,s.status,s.last_received_at"
+                + " FROM target t JOIN target_track_status s ON s.target_id=t.target_id"
+                + " WHERE t.unified=TRUE AND s.last_received_at>=:not_before"
+                + " AND ((s.status IN ('TENTATIVE','STABLE') AND s.last_received_at<:short_lost_before)"
+                + " OR (s.status='SHORT_LOST' AND s.last_received_at<:terminate_before))"
+                + " ORDER BY s.last_received_at ASC, t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
+                (rs, i) -> new SilentTarget(rs.getString("target_id"),
+                        new FusionDomainKey(rs.getString("source_mode"), rs.getString("owner_org_id"), rs.getString("district_id")),
+                        TrackStatus.valueOf(rs.getString("status")), instant(rs, "last_received_at")));
+    }
+
+    /** 锁住一个目标的状态行并读出此刻已提交的值；正被别的事务锁着（融合正在写它）时不等，返回 null。 */
+    public StatusRow lockStatusSkipLocked(String targetId) {
+        List<StatusRow> rows = jdbc.query("SELECT target_id,status,since,confirm_hits,miss_frames,last_observed_at,last_received_at,primary_source_id,version"
+                + " FROM target_track_status WHERE target_id=:id FOR UPDATE SKIP LOCKED", Map.of("id", targetId), IdentityRepository::status);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 本事务里任何一条语句等锁最多等 millis 毫秒，超时报错回滚（PostgreSQL 的 SET LOCAL，随事务结束失效）；H2 没有这个设置，跳过。 */
+    public void limitLockWait(long millis) {
+        if (!postgresql) return;
+        jdbc.getJdbcTemplate().execute("SET LOCAL lock_timeout = '" + Math.max(1, millis) + "ms'");
+    }
+
     public String insertLineage(String op, Instant occurredAt, String survivorId, String originId, String memberIdsJson, String sourceIdsJson, String basisJson,
             String algoVersion, String configVersion, String snapshotsJson) {
         String id = UUID.randomUUID().toString();
