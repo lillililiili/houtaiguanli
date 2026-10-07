@@ -20,6 +20,15 @@ class EoTrackingPolicyTest {
         when(repository.alarms(anyString(),anyLong(),anyLong())).thenReturn(List.of(Map.of("state_code","CONFIRMED")));
         assertThat(policy.demand("target")).extracting(EoTrackingPolicy.DemandReason::code).containsExactly("ALARM_OBSERVE");
     }
+    @Test void simulatedAutoTrackingNeverEnablesRealDevices() {
+        var scoped=new EoTrackingPolicy(repository,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),
+                departure,edges,true,true,15000,30000,300000);
+        org.springframework.test.util.ReflectionTestUtils.setField(scoped,"autoSourceModes","replay");
+        assertThat(scoped.enabledFor(Map.of("source_mode","replay"))).isTrue();
+        assertThat(scoped.enabledFor(Map.of("source_mode","mock"))).isTrue();
+        assertThat(scoped.enabledFor(Map.of("source_mode","live"))).isFalse();
+        assertThat(scoped.enabledFor(Map.of("source_mode","unknown"))).isFalse();
+    }
     @Test void latestLegalAndUndeterminedDoNotTriggerButCurrentIllegalDoes() {
         for(String status:List.of("LEGAL","UNDETERMINED","NOT_APPLICABLE","ILLEGAL","ABNORMAL")) {
             when(repository.evaluation("target")).thenReturn(Map.of("legal_status",status,"observed_at",new Timestamp(now),"evaluated_at",new Timestamp(now)));

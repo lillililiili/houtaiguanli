@@ -16,7 +16,7 @@
 
 推荐使用统一编排脚本。脚本会先复用已健康的数据库/API/前台/模拟器进程，只有缺失服务才启动新进程；数据库宿主机端口会从现有 Compose 容器读取，避免把 25432 的开发库误当成 5432 重建。验收启动显式保持 `APP_DEV_SEED_ENABLED=false`。
 
-Windows 一键启动直接双击仓库根目录的 `start-one-click.cmd`。它会自动启动 Docker Desktop；若检测到已确认损坏的 Docker 推理套接字链接，只隔离并保留原 `Docker\run` 目录后让 Docker 重建；随后等待 PostgreSQL 真正进入 `healthy`，再启动项目全部本地服务并打开三个页面。命令行等价入口为：
+Windows 直接双击仓库根目录的 `一键启动.cmd`（等同 `start-one-click.cmd`）。它会启动 Docker Desktop，复用现有数据库和 MQTT 容器，再启动后端、管理端、业务前台、设备模拟器，并打开三个页面。启动保持演示种子和预设气象风险写入关闭，不自动启动模拟场景；模拟器重启后需在页面重新连接。只有在 Docker 完全退出且临时目录仅包含已知套接字链接时，才保留并重命名 `Docker\run` 与 `docker-secrets-engine` 下的遗留套接字目录，让 Docker 重建；出现其他文件则停止自动处理。命令行等价入口为：
 
 ```powershell
 cd E:\houtaiguanlii
@@ -32,7 +32,9 @@ cd E:\houtaiguanlii
 
 冒烟脚本默认不猜测 `admin1` 密码；未传 `-SeedPassword` 时跳过登录请求，避免旧密码反复尝试触发账号锁定。需要验证 Bearer 会话时，显式传入当前密码：`.\scripts\smoke-system.ps1 -SeedPassword '<当前密码>' -RequireBusinessFrontend -RequireSimulator`。
 
-日志和进程清单写入系统临时目录 `houtaiguanlii-local-runtime`；停止本次脚本启动的应用进程使用 `.\scripts\stop-local.ps1`，不会停止数据库/MQTT 容器。端口、依赖、设备状态字段和故障定位见[系统启动拓扑与故障定位](docs/系统启动拓扑与故障定位.md)。
+双击 `一键关闭.cmd`（等同 `stop-one-click.cmd`）关闭模拟器、两个前端、后端及本项目的数据库/MQTT 容器；数据库文件、容器、模拟历史和日志保留。它会先请求模拟器停止收发，再按记录的 PID、创建时间和启动文件核对应用进程，关闭完整进程树。非脚本管理的服务不强行关闭，也不停止 Docker Desktop 或其他项目容器。仅关闭应用、保留数据库/MQTT 时运行 `.\scripts\stop-local.ps1`。
+
+日志和进程清单位于本仓库忽略目录 `artifacts/local-runtime/`。重复点击启动会保留已有进程的管理记录；启动中途失败也可用关闭脚本收尾。不要同时运行启动和关闭；脚本使用文件锁防止并发操作。端口、依赖、设备状态字段和故障定位见[系统启动拓扑与故障定位](docs/系统启动拓扑与故障定位.md)。
 
 ```powershell
 cd deploy

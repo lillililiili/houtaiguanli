@@ -5,10 +5,10 @@ spring:
       on-profile: "local & qa & !production"
 
 app:
-  # 本地完整模拟链路提交气象预警时开放 QA 输入接口；不影响生产 profile。
+  # 直接写入气象风险仅供显式隔离测试；设备模拟器提交观测和预报，由平台规则判断风险。
   weather-risk:
     qa:
-      enabled: true
+      enabled: ${APP_WEATHER_RISK_QA_ENABLED:false}
   session:
     # 活跃的本地 QA 模拟器会话在接近到期时自动续期；停止使用后仍按 TTL 过期。
     rolling-enabled: true
@@ -53,7 +53,9 @@ app:
     mock-adapter:
       enabled: false
   eo-edge:
-    auto-track-enabled: false
+    auto-track-enabled: ${APP_EO_AUTO_TRACK_ENABLED:true}
+    # 验收自动联动仅限模拟通道，真实光电须由正式部署单独授权。
+    auto-track-source-modes: replay
   flight:
     status-advance:
       # 计划按自身时段推进，避免模拟输入的执行状态跨日冻结；固定状态夹具可显式关闭。

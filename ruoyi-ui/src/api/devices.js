@@ -20,6 +20,7 @@ export const deviceApi = {
   events: params => request({ url: `/v1/device-events${queryString(params)}` }),
   command: id => request({ url: `/v1/device-commands/${encodeURIComponent(id)}` }),
   protocolStatus: id => request({ url: `/v1/devices/${encodeURIComponent(id)}/protocol-status` }),
+  endEoTrack: (taskId, key = newIdempotencyKey('eo-track-end')) => mutation('post', `/v1/eo-tracking-tasks/${encodeURIComponent(taskId)}/end`, {}, { idempotencyKey: key }),
   targets: params => request({ url: `/v1/sensing/targets${queryString(params)}` })
 };
 

@@ -34,7 +34,9 @@ public class RiskPresenceService {
             WeatherRiskRepository weather, RuleParamLoader parameters, ObjectMapper json, AppClock clock) {
         this.evidence=evidence;this.risks=risks;this.spatial=spatial;this.weather=weather;this.parameters=parameters;this.json=json;this.clock=clock;
     }
-    public record Presence(String status,String reason,Long observedAt) { }
+    public record Presence(String status,String reason,Long observedAt,boolean eligibleForCurrentList) {
+        public Presence(String status,String reason,Long observedAt) { this(status,reason,observedAt,true); }
+    }
     private record Decision(Presence presence,Observation point,BigDecimal boundary,int freshSeconds,String ruleVersion,String freshVersion) { }
     public Presence read(RiskRow row,long now) {
         if ("EXCLUDED".equals(row.state())) return new Presence("EXCLUDED","风险已人工排除，原核验历史保留",null);
@@ -71,7 +73,11 @@ public class RiskPresenceService {
         if("EXCLUDED".equals(row.state()))return blocked("原风险已排除，不追加物理解除结论");
         if(!"SPACE_OBJECT".equals(row.riskType())||!evidence.available()||!evidence.c04Fact(row.riskId()))
             return blocked("缺少当前持续或解除依据，风险状态待确认");
-        if("replay".equals(row.sourceMode()))return blocked("回放风险缺少独立的有效评估时钟，不能用当前时间确认解除");
+        if(evidence.predictionOnlyOrigin(row.riskId()))
+            return new Decision(new Presence("UNKNOWN","原评估仅基于预测或插值位置，不计入当前风险；历史记录保留",null,false),null,null,0,null,null);
+        if("replay".equals(row.sourceMode()))return blocked(risks.simulatedObservation(row)
+                ?"模拟风险尚无有效的持续或解除依据，当前影响待确认"
+                :"回放风险缺少独立的有效评估时钟，不能用当前时间确认解除");
         if(!Set.of("live","mock").contains(row.sourceMode())||!risks.targetReferenceVisible(row)||!risks.planReferenceVisible(row)||!risks.routeReferenceVisible(row))
             return blocked("原目标、计划或航线关联范围不可确认");
         var fact=spatial.findFact(row.riskId());

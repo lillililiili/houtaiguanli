@@ -6,6 +6,7 @@ import OperationMetrics from './OperationMetrics.vue';
 import './operations-reference.css';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import DeviceTrendPanel from '@/components/DeviceTrendPanel.vue';
+import EoTaskPanel from './EoTaskPanel.vue';
 import { deviceApi } from '@/api/devices.js';
 import { display, formatTime, statusText, statusType } from '@/utils/format.js';
 
@@ -227,6 +228,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
               <p v-else class="tree-note">设备协议尚未上报此类指标。</p>
             </template>
             <div v-if="protocolStatus?.protocol_code" class="detail-section"><h3>协议状态</h3><el-tag :type="statusType(protocolStatus.connection_state)" effect="plain">{{ statusText(protocolStatus.connection_state) }}</el-tag><p v-if="protocolStatus.blocking_reason" class="danger-text">{{ protocolStatus.blocking_reason }}</p></div>
+            <EoTaskPanel v-if="protocolStatus?.protocol_code==='EO_EDGE_MQTT_20250826'" :key="`${selectedId}:${protocolStatus?.details?.open_task?.task_id || ''}`" :task="protocolStatus?.details?.open_task || null" @refresh="loadSelected(true, true)" />
           </template>
         </el-card>
 

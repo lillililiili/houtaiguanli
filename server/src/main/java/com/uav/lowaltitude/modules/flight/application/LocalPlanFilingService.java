@@ -25,13 +25,17 @@ public class LocalPlanFilingService {
   if((data.takeoffLongitude()==null)!=(data.takeoffLatitude()==null)||(data.landingLongitude()==null)!=(data.landingLatitude()==null))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","起降点经纬度必须成对填写");
   String source=blank(data.sourceId());
   if(plan.source()!=null&&!Objects.equals(plan.source().sourceId(),source))throw conflict("PLAN_SOURCE_IMMUTABLE","已有计划来源不可替换或清空");
-  if(source!=null&&!repository.sourceAvailable(source))throw conflict("SIMULATION_SOURCE_REQUIRED","请选择已启用的模拟或回放计划来源");
+  validateSource(data);
   var before=directory.subjects(id);
   if(repository.updateFiling(id,version,data,clock.nowMillis())!=1)throw conflict("VERSION_CONFLICT","计划已更新，请重新读取后补录");
   // Reuse the existing directory authorization and association rules, within this transaction.
   if(blank(data.sourceBindingId())!=null||blank(data.operatorOrgId())!=null||blank(data.pilotContactId())!=null||before.sourceBindingId()!=null||before.operatorOrgId()!=null||before.pilotContactId()!=null)
    directory.updateSubjects(id,new SubjectInput(blank(data.sourceBindingId()),blank(data.operatorOrgId()),blank(data.pilotContactId()),version+1,"模拟器提交计划资料"),UUID.randomUUID().toString());
   return Map.of("plan_id",id,"plan_no",plan.planNo(),"source_mode",plan.sourceMode(),"version",flights.flightPlan(id).version());
+ }
+ public void validateSource(Filing data){
+  String source=blank(data.sourceId());
+  if(source!=null&&!repository.sourceAvailable(source))throw conflict("SIMULATION_SOURCE_REQUIRED","请选择已启用的模拟或回放计划来源");
  }
  @Transactional(readOnly=true) public Options options(){
   var warnings=new ArrayList<String>();List<Option> orgs=List.of();List<Pilot> pilots=List.of();List<SourceBinding> bindings=List.of();

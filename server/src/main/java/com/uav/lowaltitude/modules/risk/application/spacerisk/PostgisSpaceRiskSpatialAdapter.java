@@ -21,6 +21,16 @@ import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository;
  */
 @Component
 public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
+    // A retained/predicted fused coordinate may have a fresh frame timestamp after source loss.
+    // Once a target has a fused layer, only its matching MEAS point can supply a new assessment.
+    // Targets ingested before fusion retain the existing normalized latest-state input contract.
+    private static final String MEASURED_FUSION_POSITION = """
+                  AND (NOT EXISTS (SELECT 1 FROM track ft WHERE ft.target_id=survivor.target_id AND ft.layer='FUSED')
+                    OR EXISTS (SELECT 1 FROM track ft JOIN track_point fp ON fp.track_id=ft.track_id
+                      WHERE ft.target_id=survivor.target_id AND ft.layer='FUSED' AND fp.point_kind='MEAS'
+                        AND fp.observed_at=ls.observed_at AND fp.received_at=ls.received_at
+                        AND ST_Equals(fp.location,ls.location)))
+                """;
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;
 
@@ -77,10 +87,11 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
             LEFT JOIN flight_plan p
               ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
              AND p.status_code IN ('PENDING','EXECUTING')
+             AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
             LEFT JOIN route_version rv ON rv.route_version_id = p.route_version_id AND rv.centerline IS NOT NULL
             WHERE ls.location IS NOT NULL
               AND survivor.owner_org_id IS NOT NULL AND survivor.district_id IS NOT NULL
-            """;
+            """ + MEASURED_FUSION_POSITION;
     private static final String OBSERVATION_ORDER = " ORDER BY survivor.target_id, distance_m ASC";
 
     private static SpaceObservation observation(java.sql.ResultSet rs, int ignored) throws java.sql.SQLException {
@@ -118,7 +129,9 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                 LEFT JOIN flight_plan p
                   ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
                  AND p.start_at <= :window_to_padded AND p.end_at >= :window_from_padded
+                 AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
                 WHERE ls.observed_at >= :window_from AND ls.observed_at < :window_to AND ls.location IS NOT NULL
+                """ + MEASURED_FUSION_POSITION + """
                 GROUP BY survivor.target_id, sub.subtype_code, a.airport_id, a.name, p.plan_id, p.route_version_id,
                          ls.height_agl_m, ls.altitude_amsl_m, ls.observed_at
                 ORDER BY survivor.target_id, a.airport_id

@@ -11,6 +11,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -218,10 +220,15 @@ class RiskReadApiTest {
         filterRisk("filter-replay-engine", "risk-filter-replay", "pending-plan-notice-demo-replay", "replay", "SPACE_OBJECT", 12_004);
         filterRisk("filter-live-weather", "risk-filter-live", "WX-LIVE-filter", "live", "WEATHER", 12_005);
         filterRisk("filter-mock-weather", "seed-stage3-source", "WX-MOCK-INTEGRATION-filter", "mock", "WEATHER", 12_006);
+        String qaSource = UUID.randomUUID().toString();
+        jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values (?,'QA_WEATHER_RISK_INPUT','气象直接测试输入',true,'mock',?,?,0)", qaSource, ts(12_000), ts(12_000));
+        String qaRisk = UUID.randomUUID().toString(), neighborQaRisk = UUID.randomUUID().toString();
+        filterRisk(qaRisk, qaSource, UUID.randomUUID().toString(), "mock", "WEATHER", 12_007);
+        filterRisk(neighborQaRisk, qaSource, UUID.randomUUID().toString(), "mock", "WEATHER", 12_008);
         String query = "?occurred_from=12000&occurred_to=12001&sort=received_at&order=asc";
         for (String suffix : new String[]{"", "&exclude_demo_samples=false"}) {
             mvc.perform(get("/api/v1/risks" + query + suffix).header("Authorization", bearer(session)))
-                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(6));
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(8));
         }
         mvc.perform(get("/api/v1/risks" + query + "&exclude_demo_samples=true&page=1&size=2").header("Authorization", bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(4))
@@ -242,6 +249,12 @@ class RiskReadApiTest {
         // 展示过滤保留既有记录及详情，不抹去核验、通知与审计历史。
         mvc.perform(get("/api/v1/risks/filter-map-sample").header("Authorization", bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.source_risk_id").value("pending-plan-notice-demo-filter"));
+        mvc.perform(get("/api/v1/risks/" + qaRisk).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.risk_id").value(qaRisk));
+        String current = mvc.perform(get("/api/v1/risks/current?plan_id=seed-stage3-plan-legal&exclude_demo_samples=true")
+                        .header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(current).doesNotContain(qaRisk, neighborQaRisk);
     }
 
     @Test
@@ -269,10 +282,11 @@ class RiskReadApiTest {
         insertRisk("current-weather","current-weather-src","HIGH","ACKNOWLEDGED",plan,
                 "seed-stage3-rv-legal","seed-stage3-org","seed-stage3-district",1_000,5_000,null,null);
         jdbc.update("update flight_risk set risk_type='WEATHER' where risk_id='current-weather'");
-        jdbc.update("insert into weather_risk_fact(risk_id,polygon_json,published_at,valid_from,valid_to) values ('current-weather','[[118,37],[119,37],[119,38],[118,37]]' format json,?,?,?)",ts(now-60_000),ts(now-30_000),ts(now+60_000));
+        jdbc.update("insert into weather_risk_fact(risk_id,polygon_json,published_at,valid_from,valid_to) values ('current-weather',"
+                + weatherPolygonJsonLiteral() + ",?,?,?)",ts(now-60_000),ts(now-30_000),ts(now+60_000));
         String url="/api/v1/risks/current?plan_id="+plan+"&size=50";
         mvc.perform(get(url).header("Authorization",bearer(session)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(1))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(53))
                 .andExpect(jsonPath("$.data.uncertain_total").value(52)).andExpect(jsonPath("$.data.total").value(53))
                 .andExpect(jsonPath("$.data.items.length()").value(50))
                 .andExpect(jsonPath("$.data.items[0].risk.risk_id").value("current-weather"))
@@ -285,7 +299,7 @@ class RiskReadApiTest {
         // 所以它既不计入 current_total 也不计入 uncertain_total，历史记录仍在普通列表里。
         jdbc.update("update weather_risk_fact set valid_to=? where risk_id='current-weather'",ts(now-1));
         mvc.perform(get(url).header("Authorization",bearer(session)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(0))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_total").value(52))
                 .andExpect(jsonPath("$.data.uncertain_total").value(52))
                 .andExpect(jsonPath("$.data.total").value(52));
         jdbc.update("update weather_risk_fact set valid_from=?,valid_to=? where risk_id='current-weather'",ts(now+60_000),ts(now+120_000));
@@ -308,6 +322,119 @@ class RiskReadApiTest {
         for(String query:new String[]{"", "?plan_id=seed-stage3-plan-legal&occurred_from=1", "?plan_id=seed-stage3-plan-legal&plan_id=x"}) {
             mvc.perform(get("/api/v1/risks/current"+query).header("Authorization",bearer(session))).andExpect(status().isBadRequest());
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"mock", "replay", "live"})
+    void currentSpaceRisksCollapseRepeatedEvaluationsBeforeCountingAndPaging(String mode) throws Exception {
+        var fixture = new SpaceRiskFixture(jdbc);
+        String suffix = UUID.randomUUID().toString().substring(0, 12);
+        String plan = fixture.planWithRoute("seed-stage3-org", "seed-stage3-district", suffix);
+        String route = fixture.routeVersionOf(plan), source = aggregationSource(mode);
+        String target = fixture.target("seed-stage3-org", "seed-stage3-district", "BIRD_FLOCK", suffix);
+        String neighbor = fixture.target("seed-stage3-org", "seed-stage3-district", "BIRD_FLOCK", suffix + "-b");
+        jdbc.update("update target set source_mode=? where target_id in (?,?)", mode, target, neighbor);
+        long at = System.currentTimeMillis() - 9 * 86_400_000L;
+        String oldest = null, newest = null;
+        for (int i = 0; i < 55; i++) {
+            newest = aggregationRisk(plan, route, source, target, mode, at + i * 60_000L, "space-risk-c04-v1");
+            if (i == 0) oldest = newest;
+        }
+        String other = aggregationRisk(plan, route, source, neighbor, mode, at - 1, "space-risk-c04-v1");
+        jdbc.update("update flight_risk set state_code='NOTIFIED' where risk_id=?", oldest);
+        String url = "/api/v1/risks/current?plan_id=" + plan + "&size=1";
+        mvc.perform(get(url).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.current_total").value(2))
+                .andExpect(jsonPath("$.data.uncertain_total").value(2))
+                .andExpect(jsonPath("$.data.items[0].risk.risk_id").value(newest));
+        mvc.perform(get(url + "&page=2").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].risk.risk_id").value(other));
+        mvc.perform(get("/api/v1/risks?plan_id=" + plan).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(56));
+        mvc.perform(get("/api/v1/risks/" + oldest).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("NOTIFIED"));
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=?", Integer.class, plan)).isEqualTo(56);
+
+        // Closing the old records and a later re-entry do not revive or rewrite those records.
+        jdbc.update("update flight_risk set state_code='EXCLUDED' where plan_id=? and target_id=?", plan, target);
+        mvc.perform(get(url).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        String reentry = aggregationRisk(plan, route, source, target, mode, at + 60 * 60_000L, "space-risk-c04-v1");
+        mvc.perform(get(url).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items[0].risk.risk_id").value(reentry));
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and state_code='EXCLUDED'", Integer.class, plan)).isEqualTo(55);
+    }
+
+    @Test
+    void currentSpaceRiskGroupingKeepsDifferentSourcesRulesAndUnattributedRecordsSeparate() throws Exception {
+        var fixture = new SpaceRiskFixture(jdbc);
+        String suffix = UUID.randomUUID().toString().substring(0, 12);
+        String plan = fixture.planWithRoute("seed-stage3-org", "seed-stage3-district", suffix);
+        String secondPlan = fixture.planWithRoute("seed-stage3-org", "seed-stage3-district", suffix + "b");
+        String route = fixture.routeVersionOf(plan), source = aggregationSource("mock");
+        String target = fixture.target("seed-stage3-org", "seed-stage3-district", "BIRD_FLOCK", suffix);
+        long at = System.currentTimeMillis() - 120_000;
+        aggregationRisk(plan, route, source, target, "mock", at, "space-risk-c04-v1");
+        aggregationRisk(plan, route, source, target, "mock", at + 1, "space-risk-c04-v1");
+        aggregationRisk(plan, route, aggregationSource("mock"), target, "mock", at + 2, "space-risk-c04-v1");
+        aggregationRisk(plan, route, aggregationSource("replay"), target, "replay", at + 3, "space-risk-c04-v1");
+        aggregationRisk(plan, route, source, target, "mock", at + 4, "space-risk-c05-v1");
+        aggregationRisk(plan, route, source, null, "mock", at + 5, "space-risk-c04-v1");
+        aggregationRisk(plan, route, source, null, "mock", at + 6, "space-risk-c04-v1");
+        aggregationRisk(plan, route, source, target, "mock", at + 7, null);
+        String changedType = aggregationRisk(plan, route, source, target, "mock", at + 8, "space-risk-c04-v1");
+        jdbc.update("update flight_risk set risk_type='ROUTE_DEVIATION' where risk_id=?", changedType);
+        String anotherPlanRisk = aggregationRisk(secondPlan, fixture.routeVersionOf(secondPlan), source, target, "mock", at + 9, "space-risk-c04-v1");
+        mvc.perform(get("/api/v1/risks/current?plan_id=" + plan).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(8));
+        mvc.perform(get("/api/v1/risks/current?plan_id=" + secondPlan).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].risk.risk_id").value(anotherPlanRisk));
+    }
+
+    private String aggregationSource(String mode) {
+        String id = UUID.randomUUID().toString();
+        new SpaceRiskFixture(jdbc).source(id, id, mode);
+        return id;
+    }
+
+    private String aggregationRisk(String plan, String route, String source, String target, String mode, long at, String rule) {
+        String id = UUID.randomUUID().toString();
+        jdbc.update("insert into flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,target_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version) values(?,?,?,?,?,?,'SPACE_OBJECT','HIGH','PENDING_VERIFICATION','SPACE_OBJECT_IN_CORRIDOR','连续观测测试',?,?,'UNKNOWN',?,'seed-stage3-org','seed-stage3-district',?,?,0)",
+                id, source, UUID.randomUUID().toString(), plan, route, target, ts(at), ts(at), mode, ts(at), ts(at));
+        if (rule != null) jdbc.update("insert into space_risk_fact(risk_id,subtype_code,rule_version_id,rule_set_version_id,distance_to_route_m,corridor_relation,altitude_band,trend,unknown_reasons,window_from,window_to,created_at) values(?,'BIRD_FLOCK',?,'space-risk-demo-v1',14,'INSIDE','UNKNOWN','UNKNOWN',CAST('[]' AS JSON),?,?,?)",
+                id, rule, ts(at - 1000), ts(at), ts(at));
+        return id;
+    }
+
+    String weatherPolygonJsonLiteral() {
+        return "'[[118,37],[119,37],[119,38],[118,37]]' format json";
+    }
+
+    @Test
+    void simulatorTransportIsDisplayedAsSimulationWhileFileReplayStaysReplay() throws Exception {
+        String source=UUID.randomUUID().toString(), target=UUID.randomUUID().toString(), risk=UUID.randomUUID().toString();
+        long now=System.currentTimeMillis();
+        jdbc.update("insert into integration_source(source_id,source_code,name,protocol_code,protocol_version,enabled,source_mode,created_at,updated_at,version) values (?,?,?,'SIM_NORMALIZED','1.0',true,'replay',?,?,0)",source,source,"测试观测源",ts(now),ts(now));
+        jdbc.update("insert into target(target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'BIRD','replay','seed-stage3-org','seed-stage3-district',?,?,0)",target,target,ts(now),ts(now));
+        jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,?,?,?,?)",UUID.randomUUID().toString(),target,source,UUID.randomUUID().toString(),UUID.randomUUID().toString(),ts(now));
+        insertRisk(risk,risk,"HIGH","PENDING_VERIFICATION","seed-stage3-plan-legal","seed-stage3-rv-legal","seed-stage3-org","seed-stage3-district",now,now,null,null);
+        jdbc.update("update flight_risk set source_id=?,source_mode='replay',target_id=? where risk_id=?",source,target,risk);
+        for(String protocol:new String[]{"SIM_NORMALIZED","LINGYUN_MQTT_V8_6","EO_EDGE_MQTT_20250826","JSONL_REPLAY"}) {
+            jdbc.update("update integration_source set protocol_code=? where source_id=?",protocol,source);
+            mvc.perform(get("/api/v1/risks/"+risk).header("Authorization",bearer(session)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.source_mode").value("replay"))
+                    .andExpect(jsonPath("$.data.source_display_mode").value(protocol.equals("JSONL_REPLAY")?"replay":"mock"));
+        }
+        String unknownSource=UUID.randomUUID().toString();
+        jdbc.update("update integration_source set protocol_code='SIM_NORMALIZED' where source_id=?",source);
+        jdbc.update("insert into integration_source(source_id,source_code,name,protocol_code,protocol_version,enabled,source_mode,created_at,updated_at,version) values (?,?,?,null,'1.0',true,'replay',?,?,0)",unknownSource,unknownSource,"未声明协议来源",ts(now),ts(now));
+        jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,?,?,?,?)",UUID.randomUUID().toString(),target,unknownSource,UUID.randomUUID().toString(),UUID.randomUUID().toString(),ts(now));
+        mvc.perform(get("/api/v1/risks/"+risk).header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.source_display_mode").value("replay"));
     }
 
     private void filterRisk(String id, String source, String sourceRiskId, String mode, String type, long received) {

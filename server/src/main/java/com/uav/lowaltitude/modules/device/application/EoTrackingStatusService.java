@@ -116,7 +116,7 @@ public class EoTrackingStatusService {
         else if(paused) {status="PAUSED";message="此目标已暂停自动追踪";}
         else if(block!=null) {status="EO_RESULT_UNKNOWN".equals(block)?"LOST":"BLOCKED";message=blockMessage(block);}
         else if(task!=null && "FAILED".equals(text(task,"status"))) {status="FAILED";message="上次跟踪明确失败，需要人工决定是否重试";}
-        else if(!policy.enabled()) {status="DISABLED";message="自动追踪能力未启用";}
+        else if(!policy.enabledFor(snapshot)) {status="DISABLED";message="当前来源模式的自动追踪未启用";}
         else if(!demand.isEmpty()) {status="WAITING_DEVICE";message="存在观察需求，等待后台调度可用设备";}
         else {status=task==null?"IDLE":"ENDED";message="当前没有自动观察需求";}
         if(operate) {
@@ -130,7 +130,7 @@ public class EoTrackingStatusService {
                 else message=message+"；当前范围没有可用空闲光电设备";
             }
         }
-        return new TrackingStatus(target,status,message,policy.enabled(),paused,demand,dto,List.copyOf(actions));
+        return new TrackingStatus(target,status,message,policy.enabledFor(snapshot),paused,demand,dto,List.copyOf(actions));
     }
     public static String blockMessage(String block) {
         return switch(block) {

@@ -37,6 +37,24 @@ public class RiskPresenceRepository {
     public boolean c04Fact(String riskId) {
         return jdbc.queryForObject("select count(*) from space_risk_fact f join rule_version v on v.rule_version_id=f.rule_version_id where f.risk_id=? and v.rule_code='C04'", Integer.class, riskId) == 1;
     }
+    /** Prove a bad original input from historical evidence, never from the target's current status. */
+    public boolean predictionOnlyOrigin(String riskId) {
+        if (!postgis) return false;
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                select exists(select 1 from flight_risk r
+                  join space_risk_fact f on f.risk_id=r.risk_id
+                  join rule_version v on v.rule_version_id=f.rule_version_id and v.rule_code='C04'
+                  where r.risk_id=? and r.risk_type='SPACE_OBJECT'
+                    and exists(select 1 from track tr join track_point p on p.track_id=tr.track_id
+                      where tr.target_id=r.target_id and tr.layer='FUSED'
+                        and p.observed_at=r.occurred_at and p.received_at<=r.received_at
+                        and p.point_kind in ('PRED','BRIDGE') and ST_Equals(p.location,f.target_location))
+                    and not exists(select 1 from track tr join track_point p on p.track_id=tr.track_id
+                      where tr.target_id=r.target_id and tr.layer='FUSED'
+                        and p.observed_at=r.occurred_at and p.received_at<=r.received_at
+                        and p.point_kind='MEAS'))
+                """, Boolean.class, riskId));
+    }
     public record Observation(String pointId, String kind, OffsetDateTime observedAt, OffsetDateTime receivedAt,
             OffsetDateTime latestAt, BigDecimal distance, BigDecimal accuracy, BigDecimal halfWidth,
             boolean sameLocation, String unknownFields, String targetMode, String sourceMode,

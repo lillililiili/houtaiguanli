@@ -31,6 +31,7 @@ public class FlightReadRepository {
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = new Where(); appendScope(w, access, "p");
+        excludeDuplicates(w);
         String time = reader.epoch("p.start_at");
         String sql = "SELECT p.plan_id AS id,p.plan_no AS label," + time + " AS at_ms,"
             + "p.status_code AS state,CAST(NULL AS VARCHAR) AS kind,CAST(NULL AS VARCHAR) AS severity,"
@@ -51,11 +52,13 @@ public class FlightReadRepository {
 
     public long countPlans(PlanQuery query, AccessDecision access) {
         Where where = planWhere(query, access);
+        excludeDuplicates(where);
         return count("SELECT COUNT(*) " + planFrom() + where.sql, where.parameters);
     }
 
     public List<PlanRow> listPlans(PlanQuery query, AccessDecision access, int offset, int size) {
         Where where = planWhere(query, access);
+        excludeDuplicates(where);
         where.parameters.put("offset", offset);
         where.parameters.put("size", size);
         return jdbc.query(planSelect() + planFrom() + where.sql
@@ -138,6 +141,10 @@ public class FlightReadRepository {
                 + " FROM route_version rv JOIN route r ON r.route_id=rv.route_id" + where.sql,
                 where.parameters, this::routeVersionRow);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    private static void excludeDuplicates(Where where) {
+        where.sql.append(" AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate duplicate WHERE duplicate.duplicate_plan_id=p.plan_id)");
     }
 
     private Where planWhere(PlanQuery query, AccessDecision access) {

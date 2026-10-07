@@ -64,7 +64,8 @@ class HandoffApiTest {
         jdbc.update("delete from handoff_material_snapshot where handoff_id in (select handoff_id from handoff where source_id like 'risk-handoff-%')");
         jdbc.update("delete from handoff where source_id like 'risk-handoff-%'");
         jdbc.update("delete from flight_risk_verification where risk_id like 'risk-handoff-%'");
-        jdbc.update("delete from flight_risk where risk_id like 'risk-handoff-%'");
+        cleanupSpaceFacts();
+        jdbc.update("delete from flight_risk where risk_id like 'risk-handoff-%' and not exists (select 1 from space_risk_fact f where f.risk_id=flight_risk.risk_id)");
         jdbc.update("delete from handoff_recipient where recipient_id like 'recipient-test-%'");
         jdbc.update("delete from audit_log where account like 'handoff-w-%'");
         jdbc.update("delete from idempotency_request where user_id in (select user_id from app_user where account like 'handoff-w-%')");
@@ -558,6 +559,53 @@ class HandoffApiTest {
                 .andExpect(jsonPath("$.data.by_recipient").isEmpty());
         String noHandoffRead = user(true, false, true, false, false);
         mvc.perform(get("/api/v1/handoffs/stats?wat=1").header("Authorization", bearer(noHandoffRead))).andExpect(status().isForbidden());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"118.624321,37.478123,mock", "-73.985321,40.748123,replay", "0,0,mock"})
+    void riskCoordinatesAreDispatchedFrozenAndAccessControlled(double longitude, double latitude, String mode) throws Exception {
+        long observedAt = Instant.now().minusSeconds(40).toEpochMilli();
+        String sourceId = jdbc.queryForObject("select source_id from integration_source where source_id=? and source_mode=?", String.class, "rule-engine-space-risk-" + mode, mode);
+        jdbc.update("update flight_risk set risk_type='SPACE_OBJECT',source_id=?,source_mode=?,occurred_at=? where risk_id=?", sourceId, mode, Timestamp.from(Instant.ofEpochMilli(observedAt)), riskId);
+        jdbc.update("insert into space_risk_fact (risk_id,subtype_code,rule_version_id,rule_set_version_id,distance_to_route_m,corridor_relation,altitude_band,altitude_datum,object_count,trend,unknown_reasons,target_location,target_altitude_raw,window_from,window_to,created_at) values (?,'BIRD_FLOCK','space-risk-c04-v1','space-risk-demo-v1',14,'INSIDE','CLIMB','AGL',12,'FLAT',CAST('[]' AS JSON),CAST(? AS GEOMETRY),85,?,?,?)",
+                riskId, "SRID=4326;POINT (" + longitude + " " + latitude + ")", Timestamp.from(Instant.ofEpochMilli(observedAt - 30000)), Timestamp.from(Instant.ofEpochMilli(observedAt + 30000)), Timestamp.from(Instant.now()));
+        enableSimulatedRiskChannel();
+        org.mockito.Mockito.doReturn(com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOutcome.notConnected()).when(channel).deliver(org.mockito.ArgumentMatchers.any());
+        String id = created(session, body("RISK", riskId, "RISK_NOTICE", recipientId, 1), "location-" + UUID.randomUUID());
+        var dispatch = org.mockito.ArgumentCaptor.forClass(com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.HandoffDispatch.class);
+        org.mockito.Mockito.verify(channel).deliver(dispatch.capture());
+        JsonNode sentLocation = objectMapper.readTree(dispatch.getValue().snapshot()).path("risk").path("location");
+        assertThat(sentLocation.path("longitude").asDouble()).isEqualTo(longitude);
+        assertThat(sentLocation.path("latitude").asDouble()).isEqualTo(latitude);
+        assertThat(sentLocation.path("coordinate_system").asText()).isEqualTo("WGS84");
+        assertThat(sentLocation.path("observed_at").asLong()).isEqualTo(observedAt);
+        assertThat(sentLocation.path("altitude_m").asDouble()).isEqualTo(85);
+        assertThat(sentLocation.path("altitude_datum").asText()).isEqualTo("AGL");
+        // The spatial fact itself is append-only; subsequent risk updates must not change the sent material.
+        jdbc.update("update flight_risk set occurred_at=? where risk_id=?", Timestamp.from(Instant.now()), riskId);
+        mvc.perform(get("/api/v1/handoffs/{id}", id).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.material.risk.location.longitude").value(longitude))
+                .andExpect(jsonPath("$.data.material.risk.location.latitude").value(latitude))
+                .andExpect(jsonPath("$.data.material.risk.location.observed_at").value(observedAt));
+        String denied = user(false, true, false, false, false);
+        mvc.perform(get("/api/v1/handoffs/{id}", id).header("Authorization", bearer(denied)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.material.risk").doesNotExist());
+    }
+
+    @Test
+    void missingLocationRemainsAbsentAndLegacySnapshotStillReads() throws Exception {
+        String id = created(session, body("RISK", riskId, "RISK_NOTICE", recipientId, 1), "no-location-" + UUID.randomUUID());
+        mvc.perform(get("/api/v1/handoffs/{id}", id).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.material.risk.location").doesNotExist());
+        String stored = jdbc.queryForObject("select cast(snapshot as varchar) from handoff_material_snapshot where handoff_id=?", String.class, id);
+        JsonNode snapshot = objectMapper.readTree(stored);
+        if (snapshot.isTextual()) snapshot = objectMapper.readTree(snapshot.textValue());
+        assertThat(snapshot.path("risk").has("location")).isFalse();
+    }
+
+    void cleanupSpaceFacts() {
+        jdbc.update("delete from space_risk_fact where risk_id like 'risk-handoff-%'");
     }
 
     private ResultActions create(String token, String json, String key) throws Exception {

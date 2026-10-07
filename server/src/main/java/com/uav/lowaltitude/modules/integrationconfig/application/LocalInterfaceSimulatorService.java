@@ -37,7 +37,23 @@ public class LocalInterfaceSimulatorService {
   var actor=interfaces.requireInterfacesOperate();repository.actorLock(actor.userId());
   // Existing-message reads still recheck the original business object's visibility.
   Row previous=repository.existing(actor.userId(),"FLIGHT_PLAN",p.messageId());
-  if(previous!=null)return replay(previous,p);
+  if(previous!=null){
+   if(!visible(previous))throw missing();
+   if(!com.uav.lowaltitude.modules.integrationconfig.domain.LocalPlanIdentity.same(tree(previous.payload()),tree(encode(p))))
+    throw conflict("同一消息编号的内容已变化，请使用新编号");
+   Row canonical=repository.canonicalPlanReceipt(previous);
+   if(!visible(canonical))throw missing();
+   return dto(canonical);
+  }
+  String mode=p.sourceMode()==null?"mock":p.sourceMode();
+  if(Set.of("mock","replay").contains(mode))for(Row candidate:repository.planCandidates(actor.userId(),p.uavSn(),p.startAt(),p.endAt(),mode)){
+   if(com.uav.lowaltitude.modules.integrationconfig.domain.LocalPlanIdentity.same(tree(candidate.payload()),tree(encode(p)))){
+    if(!visible(candidate))throw missing();
+    if(p.filing()!=null)filing.validateSource(p.filing());
+    // Keep this transport receipt immutable too; a new key does not mean a new flight.
+    return save(p.messageId(),"FLIGHT_PLAN",candidate.subjectId(),actor.userId(),p,tree(candidate.result()));
+   }
+  }
   var result=input.create(routeVersion(p),p.uavSn(),p.startAt(),p.endAt(),p.sourceMode(),p.statusCode());
   if(p.filing()!=null){preparePlanSource(p.filing());filing.save(result.get("plan_id"),0,p.filing());}
   return save(p.messageId(),"FLIGHT_PLAN",result.get("plan_id"),actor.userId(),p,result);

@@ -111,7 +111,8 @@ POST 头：`Idempotency-Key`（8–128）。body 只允许 `source_kind,source_i
 - `recipient_id` 可缺省（决策 18-14）：不传时依次找：该 `handoff_type` 下 `is_default=true` 且 `enabled=true` 的接收方 → 该类型**恰好只有一个**启用接收方时用它（决策 18-16：只有一个的时候没有可选的余地，再要求值班员显式指定就是让他把唯一的答案抄一遍）→ 零个或多个且都没标默认，才 400 `RECIPIENT_REQUIRED`。缺省只是"由服务端定收件人"，其余校验与显式传值完全一致，落库与响应里的 `recipient_id` 都是实际生效的那个。幂等键按"客户端这次发的请求"计算：不传接收方与显式传了默认接收方是两个不同的键。
 - 逻辑唯一 `(source_kind,source_id,handoff_type,recipient_id)` 由数据库唯一约束保证；命中 409 `HANDOFF_ALREADY_EXISTS`，错误体只有 code/message。
 - 事务：鉴权 → 锁源对象 → claim 幂等键 → 版本/状态/接收方检查 → 插入 `handoff` + `handoff_material_snapshot` + 首条 `handoff_delivery(attempt_no=1, delivery_status=PENDING_DELIVERY, receipt_status=NOT_EXPECTED, blocked_reason=CHANNEL_NOT_CONNECTED)` + 成功审计 → 提交。任何失败整体回滚，失败审计走事务外统一路径。
-- 快照白名单：风险 `risk_id,source_risk_id,risk_type,severity,state,reason_code,reason_text,occurred_at,received_at,version`、核实历史（`conclusion,note,resulting_state,version,created_at,actor_id`）、当时可见的关联引用及版本（`plan_id,route_version_id,assessment_id,target_id,track_id`）。没有文件就没有文件名/哈希/下载链接。`schema_version=1`。
+- 快照白名单：风险 `risk_id,source_risk_id,risk_type,severity,state,reason_code,reason_text,occurred_at,received_at,version,location`、核实历史（`conclusion,note,resulting_state,version,created_at,actor_id`）、当时可见的关联引用及版本（`plan_id,route_version_id,assessment_id,target_id,track_id`）。没有文件就没有文件名/哈希/下载链接。`schema_version=1`。
+- `risk.location` 为可选的风险观测位置，来自该风险已保存的空间事实，随提交材料冻结并使用同一快照投递。字段为 `longitude/latitude`（十进制度，WGS-84）、`coordinate_system=WGS84`、`observed_at`（观测时刻，epoch 毫秒，未知省略）、可选成对的 `altitude_m/altitude_datum`（米，AGL 相对地面或 AMSL 海拔）。没有有效坐标时省略整个 `location`，不得补零、借用航线位置或目标最新位置。旧快照不回填，后续目标移动不改历史通知；原材料读取权限同样覆盖位置。
 - 读取快照时重新检查交接归属与当前源对象/关联对象权限，不可见的关联引用从响应删除，不提示“有 N 个无权对象”。
 
 POST 成功 201：`{handoff_id,source_kind,source_id,handoff_type,recipient_id,source_version,delivery_status:"PENDING_DELIVERY",receipt_status:"NOT_EXPECTED",blocked_reason:"CHANNEL_NOT_CONNECTED",created_at}`。

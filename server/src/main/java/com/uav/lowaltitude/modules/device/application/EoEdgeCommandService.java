@@ -77,7 +77,15 @@ public class EoEdgeCommandService {
         long now = clock.nowMillis();
         if (END.equals(type)) {
             var existing=edges.openTask(binding.opsDeviceId());
-            if(existing!=null && "ENDING".equals(text(existing,"status"))) return text(existing,"end_command_id");
+            if(existing!=null && "ENDING".equals(text(existing,"status"))) {
+                String previousId=text(existing,"end_command_id");
+                var previous=edges.command(previousId);
+                // An authorized operator may resend the idempotent stop for the
+                // same still-occupied task. Automatic loops never retry blindly.
+                boolean retry=requestedBy!=null && !requestedBy.isBlank() && previous!=null
+                        && java.util.Set.of("TIMED_OUT","FAILED","CANCELLED","UNKNOWN").contains(text(previous,"status"));
+                if(!retry) return previousId;
+            }
         }
         String commandId = UUID.randomUUID().toString();
         edges.insertCommand(commandId, "EO-" + now + "-" + commandId.substring(0, 6).toUpperCase(), binding.opsDeviceId(),
@@ -139,7 +147,7 @@ public class EoEdgeCommandService {
                     || !policy.deviceReady(binding) || !binding.sourceMode().equals(EoTrackingPolicy.mode(snapshot))
                     || !binding.ownerOrgId().equals(text(snapshot,"owner_org_id")) || !binding.districtId().equals(text(snapshot,"district_id"))
                     || (!auto && !operatorAllowed(command,binding))
-                    || (auto && (!policy.enabled() || tracking.paused(target) || policy.demand(target).isEmpty()));
+                    || (auto && (!policy.enabledFor(snapshot) || tracking.paused(target) || policy.demand(target).isEmpty()));
             if(invalid || ((Number)command.get("deadline_at")).longValue()<now) {
                 edges.updateCommand(commandId,"QUEUED","CANCELLED",now,"TRACK_ELIGIBILITY_CHANGED","下发前资格已失效");
                 if(task!=null && "OPEN".equals(text(task,"status"))) edges.updateTask(text(task,"task_id"),"OPEN","FAILED",null,now);

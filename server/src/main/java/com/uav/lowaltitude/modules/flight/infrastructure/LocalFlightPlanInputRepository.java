@@ -7,6 +7,15 @@ import org.springframework.stereotype.Repository;
 public class LocalFlightPlanInputRepository {
  private final JdbcTemplate jdbc;
  public LocalFlightPlanInputRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
+ public String nextPlanNo(){
+  // Database sequences remain unique across concurrent requests, rollbacks and restarts.
+  // Skip any number already supplied by another input source; never rewrite its identity.
+  while(true){
+   long value=jdbc.queryForObject("SELECT nextval('local_flight_plan_no_seq')",Long.class);
+   String no=String.format(java.util.Locale.ROOT,"SIM-%06d",value);
+   if(jdbc.queryForObject("SELECT COUNT(*) FROM flight_plan WHERE plan_no=?",Long.class,no)==0)return no;
+  }
+ }
  public void insert(String id,String no,String serial,String routeVersion,String org,String district,long start,long end,long now,String sourceMode,String status){jdbc.update("INSERT INTO flight_plan(plan_id,plan_no,status_code,source_mode,uav_sn,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0)",id,no,status,sourceMode,serial,at(start),at(end),routeVersion,org,district,at(now),at(now));}
  public java.util.List<com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Source> sources(){return jdbc.query("SELECT source_id,name,source_mode FROM integration_source WHERE enabled=TRUE AND source_mode IN ('mock','replay') ORDER BY name,source_id",(r,n)->new com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Source(r.getString(1),r.getString(2),r.getString(3)));}
  public boolean sourceAvailable(String id){return jdbc.queryForObject("SELECT COUNT(*) FROM integration_source WHERE source_id=? AND enabled=TRUE AND source_mode IN ('mock','replay')",Long.class,id)>0;}

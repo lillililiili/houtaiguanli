@@ -28,7 +28,8 @@ public class RiskRepository {
     /** 查询展示样例的统一排除条件；仅依赖风险别名 r，可同时用于列表与空间汇总。 */
     static final String EXCLUDE_DEMO_SAMPLES_SQL = " AND NOT (r.source_mode='mock' AND ("
             + "EXISTS (SELECT 1 FROM integration_source demo_source WHERE demo_source.source_id=r.source_id"
-            + " AND demo_source.source_code='WEATHER-DEMO') OR r.source_risk_id LIKE 'pending-plan-notice-demo-%'))";
+            + " AND demo_source.source_code IN ('WEATHER-DEMO','QA_WEATHER_RISK_INPUT'))"
+            + " OR r.source_risk_id LIKE 'pending-plan-notice-demo-%'))";
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = scope(access);
@@ -43,6 +44,21 @@ public class RiskRepository {
 
     public RiskRepository(JdbcTemplate jdbcTemplate) {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
+    }
+
+    /** Transport replay mode also carries live-generated simulator frames.
+     * Classify by linked protocol contracts, never by target names or current IDs. */
+    public boolean simulatedObservation(RiskRow row) {
+        if("mock".equals(row.sourceMode())) return true;
+        if(!"replay".equals(row.sourceMode()) || row.targetId()==null) return false;
+        String links=" FROM target_source_link l JOIN integration_source origin ON origin.source_id=l.source_id"
+                + " JOIN target t ON t.target_id=l.target_id WHERE l.target_id=:target"
+                + " AND t.source_mode='replay' AND t.owner_org_id=:org AND t.district_id=:district"
+                + " AND l.created_at<=:received";
+        String supported="origin.source_mode='replay' AND COALESCE(origin.protocol_code,'') IN ('SIM_NORMALIZED','LINGYUN_MQTT_V8_6','EO_EDGE_MQTT_20250826')";
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT CASE WHEN EXISTS (SELECT 1"+links+" AND "+supported+")"
+                + " AND NOT EXISTS (SELECT 1"+links+" AND NOT ("+supported+")) THEN TRUE ELSE FALSE END",
+                Map.of("target",row.targetId(),"org",row.ownerOrgId(),"district",row.districtId(),"received",row.receivedAt()),Boolean.class));
     }
 
     public long count(RiskQuery query, AccessDecision access) {

@@ -299,6 +299,19 @@ class EoManualTrackApiTest {
         mvc.perform(get("/api/v1/targets/{id}/eo-tracking-tasks", targetId).header("Authorization", bearer()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("ENDING"));
+        String firstEnd=String.valueOf(edges.task(taskId).get("end_command_id"));
+        jdbc.update("UPDATE device_command SET status='TIMED_OUT' WHERE command_id=?",firstEnd);
+        JsonNode retried=mapper.readTree(mvc.perform(post("/api/v1/eo-tracking-tasks/{id}/end",taskId)
+                        .header("Authorization",bearer()).header("Idempotency-Key",key()))
+                .andExpect(status().isAccepted()).andExpect(jsonPath("$.data.status").value("ENDING"))
+                .andReturn().getResponse().getContentAsString()).path("data");
+        String retryCommand=retried.path("command_id").asText();
+        assertThat(retryCommand).isNotEqualTo(firstEnd);
+        assertThat(edges.task(taskId).get("end_command_id")).isEqualTo(retryCommand);
+        assertThat(edges.command(firstEnd).get("status")).isEqualTo("TIMED_OUT");
+        mvc.perform(post("/api/v1/eo-tracking-tasks/{id}/end",taskId)
+                        .header("Authorization",bearer()).header("Idempotency-Key",key()))
+                .andExpect(status().isAccepted()).andExpect(jsonPath("$.data.command_id").value(retryCommand));
         mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", targetId)
                         .header("Authorization", bearer()).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))

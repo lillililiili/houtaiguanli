@@ -32,6 +32,85 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select count(*) from flight_plan where plan_id=?",Long.class,id)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?",String.class,id)).isEqualTo("PENDING");
  }
+ @Test void sameFlightWithNewMessageAndLifecycleStatusReusesOriginalWithoutRewritingHistory() throws Exception {
+  for(String mode:List.of("mock","replay")){
+   var body=plan("dedup-"+UUID.randomUUID());body.put("source_mode",mode);body.put("status_code","PENDING");
+   var original=send("/plans",body,200);String id=original.path("subject_id").asText();
+   var oldRows=jdbc.queryForList("select * from flight_plan where plan_id=?",id);
+   for(String state:List.of("EXECUTING","COMPLETED")){
+    body.put("message_id","retry-"+UUID.randomUUID());body.put("status_code",state);
+    assertThat(send("/plans",body,200).path("subject_id").asText()).isEqualTo(id);
+   }
+   assertThat(jdbc.queryForList("select * from flight_plan where plan_id=?",id)).isEqualTo(oldRows);
+   assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=? and source_mode=?",Long.class,body.get("uav_sn"),mode)).isEqualTo(1);
+   body.put("status_code","PENDING");body.put("message_id","other-"+UUID.randomUUID());body.put("uav_sn","OTHER-"+UUID.randomUUID());
+   assertThat(send("/plans",body,200).path("subject_id").asText()).isNotEqualTo(id);
+  }
+ }
+ @org.junit.jupiter.params.ParameterizedTest
+ @org.junit.jupiter.params.provider.CsvSource({"mock,false", "replay,false", "live,true"})
+ void equivalentPlanWithNewMessageRechecksSourceAvailability(String mode,boolean enabled) throws Exception {
+  String source=UUID.randomUUID().toString();
+  jdbc.update("insert into integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values(?,?,?,true,'mock',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",source,source,"Plan source fixture");
+  var body=plan("source-guard-"+UUID.randomUUID());body.put("filing",Map.of("source_id",source));
+  String id=send("/plans",body,200).path("subject_id").asText();
+  var original=jdbc.queryForList("select * from flight_plan where plan_id=?",id);
+  jdbc.update("update integration_source set enabled=?,source_mode=? where source_id=?",enabled,mode,source);
+  body.put("message_id","source-retry-"+UUID.randomUUID());
+  send("/plans",body,409);
+  assertThat(jdbc.queryForObject("select count(*) from local_interface_message where external_id=?",Long.class,body.get("message_id"))).isZero();
+  assertThat(jdbc.queryForList("select * from flight_plan where plan_id=?",id)).isEqualTo(original);
+  assertThat(jdbc.queryForObject("select enabled from integration_source where source_id=?",Boolean.class,source)).isEqualTo(enabled);
+  jdbc.update("update integration_source set enabled=true,source_mode='mock' where source_id=?",source);
+  assertThat(send("/plans",body,200).path("subject_id").asText()).isEqualTo(id);
+  assertThat(jdbc.queryForList("select * from flight_plan where plan_id=?",id)).isEqualTo(original);
+ }
+ @Test void duplicateRegistryExcludesOnlyDuplicateFromListButPreservesItsDetail() throws Exception {
+  var body=plan("canonical-"+UUID.randomUUID());body.put("uav_sn","UAV-"+UUID.randomUUID());
+  String first=send("/plans",body,200).path("subject_id").asText();
+  body.put("message_id","different-"+UUID.randomUUID());body.put("end_at",((Number)body.get("end_at")).longValue()+1000);
+  String duplicate=send("/plans",body,200).path("subject_id").asText();
+  jdbc.update("insert into flight_plan_duplicate(duplicate_plan_id,canonical_plan_id,reason) values(?,?,?)",duplicate,first,"TEST_FIXTURE");
+  mvc.perform(get("/api/v1/flight-plans").param("uav_sn",body.get("uav_sn").toString()).header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+   .andExpect(jsonPath("$.data.items[0].plan_id").value(first));
+  mvc.perform(get("/api/v1/flight-plans/"+duplicate).header("Authorization",token)).andExpect(status().isOk());
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=?",Long.class,body.get("uav_sn"))).isEqualTo(2);
+ }
+ @Test void repairLinksOnlyEquivalentSimulatorPlansAndKeepsOriginalRowsAndReceipts() throws Exception {
+  String source="local-flight-plan-simulator";
+  jdbc.update("insert into integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) select ?,?,'Test simulator',true,'mock',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0 where not exists(select 1 from integration_source where source_id=?)",source,source,source);
+  for(String mode:List.of("mock","replay")){
+   var body=plan("sim-map-plan-"+UUID.randomUUID());body.put("source_mode",mode);body.put("uav_sn","UAV-"+UUID.randomUUID());body.put("status_code","PENDING");
+   String original=send("/plans",body,200).path("subject_id").asText();
+   jdbc.update("update flight_plan set source_id=? where plan_id=?",source,original);
+   var row=jdbc.queryForMap("select * from flight_plan where plan_id=?",original);
+   var receipt=jdbc.queryForMap("select * from local_interface_message where subject_id=?",original);
+   String duplicate=UUID.randomUUID().toString();
+   row.put("plan_id",duplicate);row.put("plan_no","LEGACY-"+duplicate);
+   row.put("created_at",java.sql.Timestamp.from(java.time.Instant.now().plusSeconds(1)));
+   insertFixture("flight_plan",row);
+   body.put("message_id","sim-map-plan-"+UUID.randomUUID());body.put("status_code","COMPLETED");
+   receipt.put("message_id",UUID.randomUUID().toString());receipt.put("external_id",body.get("message_id"));receipt.put("subject_id",duplicate);
+   receipt.put("payload",json.writeValueAsString(body));insertFixture("local_interface_message",receipt);
+   String unrelated=UUID.randomUUID().toString();row.put("plan_id",unrelated);row.put("plan_no","OTHER-"+unrelated);row.put("uav_sn","OTHER-"+unrelated);insertFixture("flight_plan",row);
+   var beforePlans=jdbc.queryForList("select * from flight_plan order by plan_id");
+   var beforeReceipts=jdbc.queryForList("select * from local_interface_message order by message_id");
+   for(int attempt=0;attempt<2;attempt++)jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>)connection->{
+    var context=org.mockito.Mockito.mock(org.flywaydb.core.api.migration.Context.class);
+    org.mockito.Mockito.when(context.getConnection()).thenReturn(connection);
+    try{new db.migration.V202610060005__repair_duplicate_simulator_plans().migrate(context);}catch(Exception e){throw new IllegalStateException(e);}
+    return null;
+   });
+   assertThat(jdbc.queryForList("select canonical_plan_id from flight_plan_duplicate where duplicate_plan_id=?",String.class,duplicate)).containsExactly(original);
+   assertThat(jdbc.queryForObject("select count(*) from flight_plan_duplicate where duplicate_plan_id=?",Long.class,unrelated)).isZero();
+   assertThat(jdbc.queryForList("select * from flight_plan order by plan_id")).isEqualTo(beforePlans);
+   assertThat(jdbc.queryForList("select * from local_interface_message order by message_id")).isEqualTo(beforeReceipts);
+  }
+ }
+ private void insertFixture(String table,Map<String,Object> row){
+  jdbc.update("insert into "+table+"("+String.join(",",row.keySet())+") values("+String.join(",",Collections.nCopies(row.size(),"?"))+")",row.values().toArray());
+ }
  @Test void planInputAcceptsEmbeddedRouteGeometryWithoutPriorRouteRegistration() throws Exception {
   var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
   long start=System.currentTimeMillis()+300000,end=start+3600000;
