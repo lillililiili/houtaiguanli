@@ -68,6 +68,9 @@ NDJSON 回放行 ─FusionReplayRunner─▶ inbox_message(source_id, payload JS
 GET  /api/v1/targets           默认**排除** track_status=MERGE 的目标（决策 16-6）：被并者是某个存活目标的别名，
                                列出来用户看到的就是"同一架出现两次"。`include_merged=true` 恢复（只认 true）。
                                详情 /targets/{id} 不过滤——告警、事件、风险里存的是旧 id，历史数据必须还能打开。
+                               可选 map_visible_at=<毫秒>：只要此刻地图显示还没到期的目标，即最新状态的 observed_at 或
+                               received_at 晚于 map_visible_at − terminate_after_ms（与 map_expires_at 同一口径，2026-10-07 ZT-20 复测 2）；
+                               没有最新状态的目标不在其中；可与 seen_from/seen_to 同用。非整数为 VALIDATION_ERROR。
 GET  /api/v1/targets/{id}      追加可空字段：track_status{status,since}, degradation{level,available_sources[],confidence_deficit,determined},
                                attribute_selection{position_source_code,class_source_code,identity_source_code,motion_source_code,manual_class_override},
                                lineage_summary{current_target_id,op_count,last_op,last_at}, source_links[].source_type/schema_status

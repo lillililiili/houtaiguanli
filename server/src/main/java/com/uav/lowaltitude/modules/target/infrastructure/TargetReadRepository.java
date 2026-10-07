@@ -270,6 +270,11 @@ public class TargetReadRepository {
             where.parameters.put("seen_from", query.seenFrom);
             where.parameters.put("seen_to", query.seenTo);
         }
+        if (query.mapVisibleSince != null) {
+            // 与 map_expires_at 同一把尺：观测时刻与接收时刻取较晚者。设备时钟慢的目标观测时刻早，但平台一直在收它的数据。
+            where.sql.append(" AND ls.observed_at IS NOT NULL AND (ls.observed_at>:map_visible_since OR ls.received_at>:map_visible_since)");
+            where.parameters.put("map_visible_since", query.mapVisibleSince);
+        }
         if (query.sourceCode != null || query.deviceId != null) {
             where.sql.append("""
                      AND EXISTS (
@@ -517,7 +522,16 @@ public class TargetReadRepository {
             OffsetDateTime seenFrom, OffsetDateTime seenTo, String ownerOrgId, String districtId,
             boolean includeMerged,
             /** 来源模式（mock/replay/live）：正式统计只认 live，与风险、告警列表同一个参数名（ZT-17）。 */
-            String sourceMode) {
+            String sourceMode,
+            /**
+             * 只要地图显示还没到期的目标（ZT-20 复测 2）：最新状态的观测时刻或平台收到它的时刻晚于此刻，
+             * 即 map_expires_at = max(observed_at, received_at) + terminate_after_ms 晚于"此刻 + terminate_after_ms"。为空不过滤。
+             */
+            OffsetDateTime mapVisibleSince) {
+        public TargetQuery(String sourceCode, String deviceId, String objectTypeCode, OffsetDateTime seenFrom, OffsetDateTime seenTo,
+                String ownerOrgId, String districtId, boolean includeMerged, String sourceMode) {
+            this(sourceCode, deviceId, objectTypeCode, seenFrom, seenTo, ownerOrgId, districtId, includeMerged, sourceMode, null);
+        }
     }
 
     public record TrackQuery(OffsetDateTime startedFrom, OffsetDateTime startedTo,

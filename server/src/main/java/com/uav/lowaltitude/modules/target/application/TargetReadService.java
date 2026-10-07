@@ -116,6 +116,9 @@ public class TargetReadService {
         RequestValues request = new RequestValues(parameters);
         Pagination page = request.pagination();
         TimeRange seen = request.timeRange("seen_from", "seen_to");
+        Long mapVisibleAt = request.epochMillis("map_visible_at");
+        // map_visible_at：只要此刻地图显示还没到期的目标（ZT-20 复测 2）。态势页只画这些，不必每轮把当天几百个目标分页拉完再在页面上筛。
+        long visibleLifetimeMs = mapVisibleAt == null ? 0 : configuredMapLifetimeMs();
         TargetQuery query = new TargetQuery(
                 request.optional("source_code", 64),
                 request.optional("device_id", 36),
@@ -124,16 +127,22 @@ public class TargetReadService {
                 request.optional("owner_org_id", 36),
                 request.optional("district_id", 36),
                 request.flag("include_merged"),
-                request.optional("source_mode", 8));
+                request.optional("source_mode", 8),
+                mapVisibleAt == null ? null : Instant.ofEpochMilli(mapVisibleAt - visibleLifetimeMs).atOffset(ZoneOffset.UTC));
         long total = repository.countTargets(query, access);
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
         Map<String, TargetSummariesRow> summaries = repository.summaries(rows.stream().map(TargetRow::targetId).toList());
-        long mapLifetimeMs = rows.isEmpty() ? 0 : fusionConfig.params(null).integer("identity", "terminate_after_ms");
+        long mapLifetimeMs = rows.isEmpty() ? 0 : mapVisibleAt != null ? visibleLifetimeMs : configuredMapLifetimeMs();
         List<TargetSummaryDto> items = rows.stream()
                 .map(row -> summary(row, summaries.get(row.targetId()), mapLifetimeMs))
                 .toList();
         return new PageDto<>(items, page.page, page.size, total);
+    }
+
+    /** 地图显示时长：目标最新状态之后多久从地图上退出，与融合终止时长相同。 */
+    private long configuredMapLifetimeMs() {
+        return fusionConfig.params(null).integer("identity", "terminate_after_ms");
     }
 
     /** The caller's transaction retains this lock while claiming a target operation. */
@@ -522,6 +531,17 @@ public class TargetReadService {
                 return Integer.parseInt(value);
             } catch (NumberFormatException ex) {
                 throw invalidPage();
+            }
+        }
+
+        /** 可选的毫秒时间戳；给了就必须是一个整数。 */
+        private Long epochMillis(String name) {
+            if (!values.containsKey(name)) return null;
+            String value = optional(name, 20);
+            try {
+                return Long.parseLong(value);
+            } catch (NumberFormatException ex) {
+                throw validation(name);
             }
         }
 

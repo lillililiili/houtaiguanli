@@ -267,6 +267,32 @@ class TargetReadApiTest {
                 .isEqualTo(T0.plusSeconds(24).toInstant().toEpochMilli());
     }
 
+    /**
+     * ZT-20 复测 2：态势页只要此刻还在地图上的目标（map_visible_at），不再每轮分页拉完当天几百个目标再在页面上筛——
+     * 当天目标多时一轮要拉四十秒，新目标拿到手时已经过期。到期口径与 map_expires_at 相同：观测与接收取较晚者 + 终止时长。
+     */
+    @Test
+    void mapVisibleAtKeepsOnlyTargetsStillOnTheMap() throws Exception {
+        String visibleAt = "/api/v1/targets?map_visible_at=";
+        JsonNode live = getJson(visibleAt + (T0.plusSeconds(25).toInstant().toEpochMilli() - 1)).path("data");
+        assertThat(live.path("total").asLong()).as("没有最新状态的目标不在图上").isEqualTo(1);
+        assertThat(live.path("items").get(0).path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(getJson(visibleAt + T0.plusSeconds(25).toInstant().toEpochMilli()).path("data").path("total").asLong())
+                .as("到期即不在图上").isZero();
+
+        // 设备时钟慢两分钟：观测时刻早，但平台 T0+129 s 还收到它的数据，按接收时刻仍在图上。
+        jdbc.update("update target_latest_state set received_at=? where target_id=?", T0.plusSeconds(129), targetLatest);
+        assertThat(getJson(visibleAt + T0.plusSeconds(143).toInstant().toEpochMilli()).path("data").path("items").findValuesAsText("target_id"))
+                .containsExactly(targetLatest);
+        assertThat(getJson(visibleAt + T0.plusSeconds(144).toInstant().toEpochMilli()).path("data").path("total").asLong()).isZero();
+        // 与当天范围一起用：范围照旧按最近一次观测筛。
+        assertThat(getJson(visibleAt + T0.plusSeconds(143).toInstant().toEpochMilli() + "&seen_from=" + T0.toInstant().toEpochMilli()
+                + "&seen_to=" + T0.plusSeconds(8).toInstant().toEpochMilli()).path("data").path("total").asLong()).isZero();
+
+        assertError(visibleAt + "x", 400, "VALIDATION_ERROR");
+        assertError(visibleAt, 400, "VALIDATION_ERROR");
+    }
+
     @Test
     void paginatesAndFiltersTargetsWithoutSourceLinkDuplication() throws Exception {
         String sourceCode = "SRC-MOCK-" + suffix;
