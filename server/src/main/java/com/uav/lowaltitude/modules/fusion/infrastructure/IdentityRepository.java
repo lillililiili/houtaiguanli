@@ -165,10 +165,18 @@ public class IdentityRepository {
                 + " VALUES (:id,:status,:since,:hits,:misses,:last,:received,:primary,:now,0)", p);
     }
 
+    /**
+     * 最近一次命中的到达时刻只往后推（ZT-20）：几个调度线程并行处理，积压时各批次交错提交，晚到的帧可能先写；
+     * 早到的帧随后命中时不能把时刻改回去，否则目标会被别的来源的帧误判为短失、终止。:received 为空（未命中）时不动。
+     */
+    private static final String LAST_RECEIVED_SET = "last_received_at=CASE WHEN last_received_at IS NULL"
+            + " OR last_received_at<CAST(:received AS TIMESTAMP WITH TIME ZONE)"
+            + " THEN COALESCE(CAST(:received AS TIMESTAMP WITH TIME ZONE),last_received_at) ELSE last_received_at END";
+
     public void updateStatus(String targetId, TrackState state, String primarySourceId, Instant now) {
         Map<String, Object> p = statusParams(targetId, state, primarySourceId, now, null);
         jdbc.update("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,"
-                + "last_received_at=COALESCE(CAST(:received AS TIMESTAMP WITH TIME ZONE),last_received_at),primary_source_id=:primary,updated_at=:now,version=version+1 WHERE target_id=:id", p);
+                + LAST_RECEIVED_SET + ",primary_source_id=:primary,updated_at=:now,version=version+1 WHERE target_id=:id", p);
     }
 
     /**
@@ -189,7 +197,7 @@ public class IdentityRepository {
             batch[i] = statusParams(update.targetId(), update.state(), update.primarySourceId(), now, update.receivedAt());
         }
         jdbc.batchUpdate("UPDATE target_track_status SET status=:status,since=:since,confirm_hits=:hits,miss_frames=:misses,last_observed_at=:last,"
-                + "last_received_at=COALESCE(CAST(:received AS TIMESTAMP WITH TIME ZONE),last_received_at),primary_source_id=:primary,updated_at=:now,version=version+1 WHERE target_id=:id", batch);
+                + LAST_RECEIVED_SET + ",primary_source_id=:primary,updated_at=:now,version=version+1 WHERE target_id=:id", batch);
     }
 
     /** 同一分区内仍活跃（TENTATIVE/STABLE/SHORT_LOST）的统一目标。 */

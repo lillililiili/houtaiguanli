@@ -253,6 +253,26 @@ class FusionIdentityClassAndClockTest {
         }
     }
 
+    @Test
+    void lastReceivedTimeNeverMovesBackWhenFramesAreProcessedOutOfArrivalOrder() {
+        // 几个调度线程并行处理，积压时晚到的帧可能先提交。雷达与 TDOA 看见同一架：TDOA 9.3 s 到的一帧先处理，
+        // 雷达 3.2 s 到的一帧后处理、同样命中这个目标——"最近一次命中的到达时刻"仍是 9.3 s，不能退回 3.2 s。
+        Instant t0 = Instant.parse("2026-10-06T08:00:00Z");
+        double lon = 118.25, lat = 37.25;
+        for (int k = 0; k < 3; k++) {
+            Instant at = t0.plusSeconds(k);
+            frame("radar", RADAR, at, at.plusMillis(200), new Obj("ZT20O-R1", lon, lat, UAV, null));
+            frame("tdoa", TDOA, at.plusMillis(100), at.plusMillis(300), new Obj("ZT20O-T1", lon, lat, UAV, "ZT20O-SN"));
+        }
+        String target = targetOf("ZT20O-R1");
+        assertThat(targetOf("ZT20O-T1")).isEqualTo(target);
+        frame("tdoa", TDOA, t0.plusMillis(9100), t0.plusMillis(9300), new Obj("ZT20O-T1", lon, lat, UAV, "ZT20O-SN"));
+        frame("radar", RADAR, t0.plusSeconds(3), t0.plusMillis(3200), new Obj("ZT20O-R1", lon, lat, UAV, null));
+        assertThat(targetOf("ZT20O-R1")).as("雷达这一帧仍命中同一个目标").isEqualTo(target);
+        assertThat(instant(jdbc.queryForMap("select last_received_at from target_track_status where target_id=?", target).get("last_received_at")))
+                .isEqualTo(t0.plusMillis(9300));
+    }
+
     /** 这个外部编号的观测一共建过几个目标：建目标时血缘 CREATE 的依据里记着外部编号。 */
     private long created(String externalTargetId) {
         return jdbc.queryForObject("select count(*) from target_lineage where op='CREATE' and cast(basis as varchar) like ?", Long.class,
