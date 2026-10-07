@@ -15,6 +15,11 @@ app:
     enabled: false
   rule-engine:
     enabled: false
+  # 自动规则执行引擎 2026-10-03 起产品默认打开。用例里它每 2 秒在后台开事务轮询，
+  # 撞上用例收尾删 schema 会互相等锁、整轮测试挂死（CI 上卡满 6 小时被取消）。
+  # 用例默认关掉；要测它的用例自己显式打开或 SpyBean 掉开关。
+  automation-rules:
+    enabled: false
   evidence-dir: ./target/evidence-test
   map-package:
     data-dir: ./target/map-data-test

@@ -24,3 +24,6 @@ docs/MQTT*.md
 docs/测试证据/
 .idea/
 .vscode/
+
+# 浏览器测试截图等临时产物
+output/

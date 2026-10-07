@@ -16,7 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"app.flight.status-advance.enabled=false"})
+// 测试画像默认关掉自动规则引擎；这里要看它的运行状态，显式打开。
+@SpringBootTest(properties={"app.flight.status-advance.enabled=false","app.automation-rules.enabled=true"})
 @AutoConfigureMockMvc @ActiveProfiles("test") @Transactional
 class AutomationRuleApiTest {
     @Autowired MockMvc mvc;

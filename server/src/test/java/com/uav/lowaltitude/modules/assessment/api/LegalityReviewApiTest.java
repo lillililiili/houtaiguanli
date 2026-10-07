@@ -598,16 +598,19 @@ class LegalityReviewApiTest {
 
     @Test
     void manualEvaluationCreatesRunAndEvaluationForVisibleTargetOnly() throws Exception {
+        // 手动研判以真实当前时刻为评估时点；种子夜航窗口为北京时间 20:00–06:00，夜间会叠加夜航与计划授权未核实而落为不可判定。
+        int beijingHour = OffsetDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).getHour();
+        boolean night = beijingHour >= 20 || beijingHour < 6;
         mvc.perform(post("/api/v1/legality-evaluations").header("Authorization", bearer(session))
                         .header("Idempotency-Key", "manual-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"subject_kind\":\"TARGET\",\"subject_id\":\"" + target + "\",\"mode\":\"ACTIVE\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.run_id").isString())
                 .andExpect(jsonPath("$.data.evaluation.trigger_kind").value("MANUAL"))
-                .andExpect(jsonPath("$.data.evaluation.legal_status").value("ILLEGAL"))
+                .andExpect(jsonPath("$.data.evaluation.legal_status").value(night ? "UNDETERMINED" : "ILLEGAL"))
                 .andExpect(jsonPath("$.data.evaluation.review.state").value("PENDING_REVIEW"));
-        // 没有计划的目标按 C03.no_plan_status 判非法并经 C06 生成一条告警。
-        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=? and source_id='rule-engine-legality-mock'", Long.class, target)).isEqualTo(1L);
+        // 白天没有计划的目标按 C03.no_plan_status 判非法并经 C06 生成一条告警；夜间不可判定不生成告警。
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=? and source_id='rule-engine-legality-mock'", Long.class, target)).isEqualTo(night ? 0L : 1L);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where action='legality_evaluation_triggered' and result='SUCCESS' and user_id=(select user_id from app_session where session_id=?)", Long.class, session)).isEqualTo(1L);
         mvc.perform(post("/api/v1/legality-evaluations").header("Authorization", bearer(session))
                         .header("Idempotency-Key", "manual-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)

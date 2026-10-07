@@ -22,3 +22,6 @@ app:
   # 一处覆盖全部 11 个 PG 用例类。H2 的 application-test.yml 不动——Outbox 相关用例仍靠它跑。
   outbox:
     enabled: false
+  # 同 application-test.yml：自动规则引擎的后台轮询会和收尾删 schema 互相等锁。
+  automation-rules:
+    enabled: false

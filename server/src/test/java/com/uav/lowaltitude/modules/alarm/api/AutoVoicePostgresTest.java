@@ -31,6 +31,8 @@ class AutoVoicePostgresTest extends AutoVoiceApiTest {
         p.add("app.fusion.enabled",()->false);
         p.add("app.fusion.replay.run-on-start",()->false);
         p.add("app.disposal.expiry.enabled",()->false);
+        // 自动规则引擎 2026-10-03 起默认打开；它的轮询事务会挡住收尾删 schema，这里不测它。
+        p.add("app.automation-rules.enabled",()->false);
     }
     static synchronized void initialize() {
         if(created)return;
