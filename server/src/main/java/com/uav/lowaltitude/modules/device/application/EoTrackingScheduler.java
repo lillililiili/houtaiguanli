@@ -23,9 +23,14 @@ public class EoTrackingScheduler {
     }
     @Transactional
     public int poll() {
-        if(!policy.enabled()) return 0;
         if(edges.lockCursor()==null) return 0;
         int count=0;
+        // Finishing an existing stop does not enable new automatic tracking, or undo a target pause.
+        for (String task : repository.endingTasks()) {
+            if (count >= batch) break;
+            if (commands.retryStop(task)) count++;
+        }
+        if(!policy.enabled()) return count;
         for(var task:repository.openAutomaticTasks(batch)) {
             String target=text(task,"target_id");
             if(!repository.tryLock(target)) continue;

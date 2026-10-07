@@ -58,9 +58,10 @@ public class LiveRadarFrameMapper implements FrameMapper {
                 quality.put("altitude_raw", z);
                 quality.put("altitude_datum", "REFERENCE_UNKNOWN");
             }
+            Double velocityX = number(item, "velocity_x_mps"), velocityY = number(item, "velocity_y_mps");
             Map<String, Object> velocity = new LinkedHashMap<>();
-            putIfPresent(velocity, "x", number(item, "velocity_x_mps"));
-            putIfPresent(velocity, "y", number(item, "velocity_y_mps"));
+            putIfPresent(velocity, "x", velocityX);
+            putIfPresent(velocity, "y", velocityY);
             putIfPresent(velocity, "z", number(item, "velocity_z_mps"));
             if (!velocity.isEmpty()) quality.put("speed_xyz", velocity);
             putIfPresent(quality, "snr_db", number(item, "snr_db"));
@@ -74,12 +75,19 @@ public class LiveRadarFrameMapper implements FrameMapper {
             };
 
             parsed.add(new Item(externalTrackId, externalTrackId, number(item, "longitude"), number(item, "latitude"),
-                    null, null, null, null, null, classCode, null, null, null, null, null, CLASS_SOURCE, quality));
+                    null, null, null, horizontalSpeed(velocityX, velocityY), null, classCode, null, null, null, null, null, CLASS_SOURCE, quality));
         }
         // 一帧一个会话键：雷达重启后 boot_micros 归零，把它并进会话键才不会把重启前后的轨迹号当成同一条。
         String sessionKey = (deviceId == null ? inbox.source() : deviceId) + ":" + bootMicros;
         return new Frame(sessionKey, Long.parseLong(frameId.replaceAll("\\D", "").isEmpty() ? "0" : frameId.replaceAll("\\D", "")),
                 inbox.source(), Instant.ofEpochMilli(inbox.receivedAtMillis()), List.copyOf(parsed));
+    }
+
+    /** 水平速度大小不依赖站址航向；两轴必须完整，缺失不能补零，Z 不混入水平速度。 */
+    private static Double horizontalSpeed(Double velocityX, Double velocityY) {
+        if (velocityX == null || velocityY == null || !Double.isFinite(velocityX) || !Double.isFinite(velocityY)) return null;
+        double speed = Math.hypot(velocityX, velocityY);
+        return Double.isFinite(speed) ? speed : null;
     }
 
     private static void putIfPresent(Map<String, Object> target, String key, Object value) {

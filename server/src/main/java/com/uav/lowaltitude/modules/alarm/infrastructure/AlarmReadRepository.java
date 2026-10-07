@@ -45,15 +45,22 @@ public class AlarmReadRepository {
     }
     private final NamedParameterJdbcTemplate jdbc;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
+    private final com.uav.lowaltitude.modules.fusion.application.FusionConfigService fusionConfig;
 
-    public AlarmReadRepository(JdbcTemplate jdbcTemplate, com.uav.lowaltitude.platform.time.AppClock clock) {
+    public AlarmReadRepository(JdbcTemplate jdbcTemplate, com.uav.lowaltitude.platform.time.AppClock clock,
+            com.uav.lowaltitude.modules.fusion.application.FusionConfigService fusionConfig) {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
         this.clock = clock;
+        this.fusionConfig = fusionConfig;
     }
 
-    /** 默认次序里“刚到”的界线：此刻往前 FRESH_WINDOW 内到达的未处理告警置顶。 */
-    private void putFreshSince(Map<String, Object> parameters) {
-        parameters.put("fresh_since", java.time.OffsetDateTime.ofInstant(clock.now().minus(FRESH_WINDOW), java.time.ZoneOffset.UTC));
+    /** 使用当前融合终止时长；一次查询固定同一个时间点，恰好到期即下沉。 */
+    private void putAttentionTime(Map<String, Object> parameters) {
+        var now = clock.now();
+        long lifetime = fusionConfig.params(null).integer("identity", "terminate_after_ms");
+        if (lifetime <= 0) throw new IllegalStateException("Invalid target observation lifetime");
+        parameters.put("attention_now", now.atOffset(ZoneOffset.UTC));
+        parameters.put("observation_since", now.minusMillis(lifetime).atOffset(ZoneOffset.UTC));
     }
 
     public long count(AlarmQuery query, AccessDecision access) {
@@ -65,7 +72,7 @@ public class AlarmReadRepository {
     public List<AlarmRow> list(AlarmQuery query, AccessDecision access, int offset, int size, String sort, String order) {
         Where where = where(query, access);
         where.parameters.put("offset", offset);
-        putFreshSince(where.parameters);
+        putAttentionTime(where.parameters);
         where.parameters.put("size", size);
         return jdbc.query(select() + from() + where.sql + orderBy(sort, order)
                 + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.parameters, AlarmReadRepository::alarm);
@@ -75,7 +82,7 @@ public class AlarmReadRepository {
     public List<AlarmRow> listForExport(AlarmQuery query, AccessDecision access, int limit, String sort, String order) {
         Where where = where(query, access);
         where.parameters.put("size", limit);
-        putFreshSince(where.parameters);
+        putAttentionTime(where.parameters);
         return jdbc.query(select() + from() + where.sql + orderBy(sort, order)
                 + " FETCH NEXT :size ROWS ONLY", where.parameters, AlarmReadRepository::alarm);
     }
@@ -102,6 +109,7 @@ public class AlarmReadRepository {
 
     public AlarmRow find(String alarmId, AccessDecision access) {
         Where where = where(AlarmQuery.empty(), access);
+        putAttentionTime(where.parameters);
         where.sql.append(" AND a.alarm_id=:alarm_id");
         where.parameters.put("alarm_id", alarmId);
         List<AlarmRow> rows = jdbc.query(select() + from() + where.sql, where.parameters, AlarmReadRepository::alarm);
@@ -134,7 +142,8 @@ public class AlarmReadRepository {
     private static String from() {
         return " FROM alarm a JOIN integration_source s ON s.source_id=a.source_id LEFT JOIN uav_event e ON e.alarm_id=a.alarm_id"
                 + " LEFT JOIN app_org org_ref ON org_ref.org_id=a.owner_org_id LEFT JOIN app_district dist_ref ON dist_ref.district_id=a.district_id"
-                + " LEFT JOIN target tg ON tg.target_id=a.target_id" + LATEST_ESCALATION;
+                + " LEFT JOIN target tg ON tg.target_id=a.target_id"
+                + " LEFT JOIN target_latest_state obs ON obs.target_id=tg.target_id" + LATEST_ESCALATION;
     }
 
     /** detail 只在服务层取 violation_reasons 摘要，不原样外露；升级过的告警以最近一次升级的累计原因为准。 */
@@ -142,7 +151,9 @@ public class AlarmReadRepository {
         return "SELECT a.alarm_id,a.target_id,a.alarm_type," + CURRENT_SEVERITY + " AS severity,a.severity AS original_severity,"
                 + "a.occurred_at,a.received_at,a.source_mode,a.owner_org_id,a.district_id,s.source_code,e.event_id,e.state_code,"
                 + "a.source_alarm_id,s.name AS source_name,org_ref.name AS owner_org_name,dist_ref.name AS district_name,tg.target_no,a.alarm_no,"
-                + "a.detail,esc.reasons_after,esc.seq AS escalation_count,esc.created_at AS escalated_at";
+                + "a.detail,esc.reasons_after,esc.seq AS escalation_count,esc.created_at AS escalated_at,"
+                + AlarmAttentionSql.OBSERVATION_STATUS + " AS observation_status,"
+                + AlarmAttentionSql.GROUP + " AS attention_group";
     }
 
     /** 升级记录按次序从早到晚；调用方先用 find 确认告警可见（同核实历史）。 */
@@ -181,20 +192,10 @@ public class AlarmReadRepository {
     public static final java.util.Set<String> SORT_KEYS =
             java.util.Set.of("priority", "received_at", "occurred_at", "severity", "state");
 
-    /**
-     * 默认次序（2026-10-04、2026-10-05 用户确认）：人工核实时告警没人处理也不升级、不提醒，靠列表次序把它顶上来——
-     * 1. 刚到的未处理告警（接收不满 5 分钟）置顶，免得被已有的待处理告警压到后面、值班员看不到；其中等级高在前，同等级新到的在前；
-     * 2. 其余未处理（未核实，或还没有核实事件）：等级高在前，同等级等得越久越靠前；
-     * 3. 已处理（已确认、已排除）在后，按接收时间新到旧。
-     * 固定次序，不受 order 参数影响；导出同用此次序。:fresh_since 由 putFreshSince 按应用时钟给出。
-     */
-    static final java.time.Duration FRESH_WINDOW = java.time.Duration.ofMinutes(5);
-    private static final String PENDING = "(e.state_code IS NULL OR e.state_code='PENDING_VERIFICATION')";
-    private static final String FRESH = "(" + PENDING + " AND a.received_at>=:fresh_since)";
-    private static final String PRIORITY_ORDER = " ORDER BY CASE WHEN " + FRESH + " THEN 0 WHEN " + PENDING + " THEN 1 ELSE 2 END ASC,"
-            + " CASE WHEN " + PENDING + " THEN " + com.uav.lowaltitude.platform.query.SeverityOrder.rank(CURRENT_SEVERITY) + " ELSE 0 END DESC,"
-            + " CASE WHEN " + FRESH + " THEN a.received_at END DESC,"
-            + " CASE WHEN " + PENDING + " THEN a.received_at END ASC,"
+    /** 当前事项 → 观测过期/未知待确认 → 历史；前两组等级高、新到优先，历史新到优先。 */
+    private static final String PRIORITY_ORDER = " ORDER BY " + AlarmAttentionSql.GROUP_RANK + " ASC,"
+            + " CASE WHEN (" + AlarmAttentionSql.GROUP_RANK + ")<2 THEN "
+            + com.uav.lowaltitude.platform.query.SeverityOrder.rank(CURRENT_SEVERITY) + " ELSE 0 END DESC,"
             + " a.received_at DESC,a.alarm_id ASC";
 
     private static Where where(AlarmQuery query, AccessDecision access) {
@@ -240,7 +241,8 @@ public class AlarmReadRepository {
                 rs.getString("source_mode"), rs.getString("owner_org_id"), rs.getString("district_id"),
                 rs.getString("source_alarm_id"), rs.getString("source_name"), rs.getString("owner_org_name"), rs.getString("district_name"),
                 rs.getString("target_no"), rs.getString("alarm_no"), rs.getString("original_severity"), rs.getString("detail"),
-                rs.getString("reasons_after"), rs.getInt("escalation_count"), time(rs, "escalated_at"));
+                rs.getString("reasons_after"), rs.getInt("escalation_count"), time(rs, "escalated_at"),
+                rs.getString("observation_status"), rs.getString("attention_group"));
     }
 
     private static OffsetDateTime time(ResultSet rs, String column) throws SQLException {
@@ -270,7 +272,8 @@ public class AlarmReadRepository {
             String severity, OffsetDateTime occurredAt, OffsetDateTime receivedAt, String sourceCode,
             String sourceMode, String ownerOrgId, String districtId,
             String sourceAlarmId, String sourceName, String ownerOrgName, String districtName, String targetNo, String alarmNo,
-            String originalSeverity, String detailJson, String escalatedReasonsJson, int escalationCount, OffsetDateTime escalatedAt) {
+            String originalSeverity, String detailJson, String escalatedReasonsJson, int escalationCount, OffsetDateTime escalatedAt,
+            String observationStatus, String attentionGroup) {
         /** 页面上的告警编号：平台编号优先，没有就用来源编号。 */
         public String displayNo() { return alarmNo != null ? alarmNo : sourceAlarmId; }
     }

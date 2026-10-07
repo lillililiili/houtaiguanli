@@ -152,11 +152,10 @@ class AlarmListSortExportApiTest {
     }
 
     /**
-     * 默认次序（2026-10-04 用户确认）：人工核实时告警没人处理也不升级、不提醒，靠次序顶上来——
-     * 未处理在前，其中等级高在前、同等级等得越久越靠前；已处理在后，新到旧。导出与列表一致。
+     * 无目标观测的告警进入待确认组；已确认本身不是处置完成。等级高、新到优先，误报归历史。
      */
     @Test
-    void defaultOrderPutsUnhandledFirstBySeverityThenLongestWaiting() throws Exception {
+    void defaultOrderKeepsUnknownObservationsBySeverityThenNewestFirst() throws Exception {
         jdbc.update("delete from alarm where alarm_id like 'srt-alarm-%'");
         alarm("HIGH", "UAV_INTRUSION", Instant.parse("2026-09-08T05:00:00Z"), "P-HIGH-NEW");
         alarm("LOW", "UAV_INTRUSION", Instant.parse("2026-09-08T00:30:00Z"), "P-LOW-OLD");
@@ -169,8 +168,8 @@ class AlarmListSortExportApiTest {
         event("P-HIGH-OLD", "PENDING_VERIFICATION");
         event("H-CRIT-CONFIRMED", "CONFIRMED");
         event("H-LOW-EXCLUDED", "FALSE_POSITIVE");
-        List<String> expected = List.of("P-CRIT-NOEVENT", "P-HIGH-OLD", "P-HIGH-NEW", "P-LOW-OLD",
-                "H-LOW-EXCLUDED", "H-CRIT-CONFIRMED");
+        List<String> expected = List.of("P-CRIT-NOEVENT", "H-CRIT-CONFIRMED", "P-HIGH-NEW", "P-HIGH-OLD",
+                "P-LOW-OLD", "H-LOW-EXCLUDED");
 
         assertThat(rawValues("alarm_no", "")).containsExactlyElementsOf(expected);
         assertThat(rawValues("alarm_no", "sort=priority")).containsExactlyElementsOf(expected);
@@ -184,9 +183,9 @@ class AlarmListSortExportApiTest {
         assertThat(exported).containsExactlyElementsOf(expected);
     }
 
-    /** 2026-10-05 用户确认：刚到的未处理告警（不满 5 分钟）置顶，否则会被已有待处理告警压到后面、值班员看不到。 */
+    /** 接收不满 5 分钟不再覆盖观测分组或等级优先；同等级始终新到优先。 */
     @Test
-    void freshUnhandledAlarmsComeFirstForFiveMinutes() throws Exception {
+    void receptionFiveMinuteBoundaryDoesNotOverrideObservationOrSeverity() throws Exception {
         jdbc.update("delete from alarm where alarm_id like 'srt-alarm-%'");
         Instant now = Instant.now();
         alarm("CRITICAL", "UAV_INTRUSION", now.minusSeconds(3_600), "F-CRIT-HOUR");
@@ -197,8 +196,7 @@ class AlarmListSortExportApiTest {
         alarm("HIGH", "UAV_INTRUSION", now.minusSeconds(20), "F-HIGH-DONE");
         event("F-LOW-1MIN", "PENDING_VERIFICATION");
         event("F-HIGH-DONE", "CONFIRMED");
-        // 刚到的：等级高在前，同等级新到的在前；然后是其余未处理（等级高、等得久在前）；已处理最后。
-        List<String> expected = List.of("F-HIGH-2MIN", "F-LOW-NOW", "F-LOW-1MIN", "F-CRIT-HOUR", "F-CRIT-6MIN", "F-HIGH-DONE");
+        List<String> expected = List.of("F-CRIT-6MIN", "F-CRIT-HOUR", "F-HIGH-DONE", "F-HIGH-2MIN", "F-LOW-NOW", "F-LOW-1MIN");
         assertThat(rawValues("alarm_no", "")).containsExactlyElementsOf(expected);
 
         String text = mvc.perform(get("/api/v1/alarms/export.csv").header("Authorization", bearer(reader)))

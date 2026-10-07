@@ -97,6 +97,9 @@ public class EoTrackingRepository {
     public List<Map<String,Object>> openAutomaticTasks(int batch) {
         return jdbc.queryForList("SELECT * FROM eo_tracking_task WHERE origin='AUTO' AND status='OPEN' ORDER BY created_at");
     }
+    public List<String> endingTasks() {
+        return jdbc.queryForList("SELECT task_id FROM eo_tracking_task WHERE status='ENDING' ORDER BY created_at,task_id", String.class);
+    }
     public void automatic(String task) { jdbc.update("UPDATE eo_tracking_task SET origin='AUTO' WHERE task_id=?",task); }
     public String deviceName(String device) { return jdbc.queryForObject("SELECT name FROM ops_device WHERE device_id=?",String.class,device); }
 }

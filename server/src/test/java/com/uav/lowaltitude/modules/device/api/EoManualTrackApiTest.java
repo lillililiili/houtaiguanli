@@ -3,6 +3,7 @@ package com.uav.lowaltitude.modules.device.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doReturn;
 import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -49,7 +50,9 @@ class EoManualTrackApiTest {
     @Autowired MqttConfigurationService configuration;
     @Autowired EoEdgeRepository edges;
     @Autowired MqttRepository mqtt;
-    @Autowired AppClock clock;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean AppClock clock;
+    @Autowired com.uav.lowaltitude.modules.device.application.EoEdgeCommandService edgeCommands;
+    @Autowired com.uav.lowaltitude.modules.device.application.EoEdgeIngressService edgeIngress;
     @Autowired com.uav.lowaltitude.modules.device.application.EoTrackingScheduler scheduler;
     @Autowired com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository trackingRepository;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean com.uav.lowaltitude.modules.device.application.EoTrackingPolicy trackingPolicy;
@@ -317,6 +320,172 @@ class EoManualTrackApiTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("TRACK_ALREADY_OPEN"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"UAV","BIRD"})
+    void timedOutStopAutomaticallyRetriesButOnlyReceiptReleasesDevice(String objectType) throws Exception {
+        String task = stoppedTask(objectType);
+        String original = String.valueOf(edges.task(task).get("end_command_id"));
+        timeoutStopAndAdvance(task);
+        scheduler.poll();
+        String retry = String.valueOf(edges.task(task).get("end_command_id"));
+        assertThat(retry).isNotEqualTo(original);
+        assertThat(edges.command(original).get("status")).isEqualTo("TIMED_OUT");
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
+        scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isEqualTo(retry);
+        String nextTarget = insertTarget(true);
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", nextTarget)
+                .header("Authorization", bearer()).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnprocessableEntity()).andExpect(jsonPath("$.error.code").value("EO_DEVICE_UNAVAILABLE"));
+        edges.updateCommand(retry, "QUEUED", "SENT", clock.nowMillis(), null, null);
+        receiveStop(task, 200);
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDED");
+        assertThat(edges.command(retry).get("status")).isEqualTo("SUCCEEDED");
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", nextTarget)
+                .header("Authorization", bearer()).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.device_id").value(binding.opsDeviceId()));
+        // An old task's duplicate receipt must not release the new task.
+        String nextTask = String.valueOf(edges.openTask(binding.opsDeviceId()).get("task_id"));
+        receiveStop(task, 200);
+        assertThat(edges.task(nextTask).get("status")).isEqualTo("OPEN");
+    }
+
+    @Test void automaticStopRetriesAreBoundedAcrossPollsAndKeepOccupancy() throws Exception {
+        String task = stoppedTask("UAV");
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            String previous = String.valueOf(edges.task(task).get("end_command_id"));
+            timeoutStopAndAdvance(task);
+            scheduler.poll();
+            assertThat(edges.task(task).get("end_command_id")).isNotEqualTo(previous);
+            assertThat(((Number) edges.task(task).get("stop_retry_count")).intValue()).isEqualTo(attempt);
+        }
+        timeoutStopAndAdvance(task);
+        String last = String.valueOf(edges.task(task).get("end_command_id"));
+        for (int i = 0; i < 3; i++) scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isEqualTo(last);
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
+        String target = String.valueOf(edges.task(task).get("target_id"));
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status", target).header("Authorization", bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("END_UNCONFIRMED"))
+                .andExpect(jsonPath("$.data.message").value(containsString("重试已达上限")));
+        receiveStop(task, 200);
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDED");
+        assertThat(edges.command(last).get("status")).isEqualTo("SUCCEEDED");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"mixed_target","unmarked_stop","disabled","offline","broker_disabled","future_heartbeat","cancelled"})
+    void automaticStopRecoveryRejectsUnsafeContext(String scenario) throws Exception {
+        String task = stoppedTask("UAV");
+        timeoutStopAndAdvance(task);
+        String stop = String.valueOf(edges.task(task).get("end_command_id"));
+        switch (scenario) {
+            case "mixed_target" -> jdbc.update("UPDATE target SET source_mode='live' WHERE target_id=?", edges.task(task).get("target_id"));
+            case "unmarked_stop" -> jdbc.update("UPDATE device_command SET simulated=FALSE WHERE command_id=?", stop);
+            case "disabled" -> jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?", binding.opsDeviceId());
+            case "offline" -> jdbc.update("UPDATE ops_device_state SET connectivity='OFFLINE' WHERE device_id=?", binding.opsDeviceId());
+            case "broker_disabled" -> jdbc.update("UPDATE mqtt_broker SET enabled=FALSE WHERE broker_id=?", brokerId);
+            case "future_heartbeat" -> jdbc.update("UPDATE eo_device_binding SET last_heartbeat_at=? WHERE ops_device_id=?", clock.nowMillis()+1000, binding.opsDeviceId());
+            case "cancelled" -> edges.updateCommand(stop, "TIMED_OUT", "CANCELLED", clock.nowMillis()-31000, null, null);
+        }
+        scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isEqualTo(stop);
+        assertThat(((Number) edges.task(task).get("stop_retry_count")).intValue()).isZero();
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
+    }
+
+    @Test void automaticStopRetryWaitsForFreshHeartbeatAndRetryDelay() throws Exception {
+        String task = stoppedTask("BIRD");
+        String original = String.valueOf(edges.task(task).get("end_command_id"));
+        edges.updateCommand(original, "QUEUED", "SENT", clock.nowMillis(), null, null);
+        edgeCommands.timeout(original, "missing stop receipt");
+        scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isEqualTo(original);
+        doReturn(clock.nowMillis() + 31_000).when(clock).nowMillis();
+        scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isEqualTo(original);
+        refreshStopDevice();
+        scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isNotEqualTo(original);
+    }
+
+    @Test void concurrentAutomaticStopRecoveryCreatesOneRetry() throws Exception {
+        String task = stoppedTask("UAV");
+        timeoutStopAndAdvance(task);
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> scheduler.poll());
+            var second = executor.submit(() -> scheduler.poll());
+            first.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            second.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } finally { executor.shutdownNow(); }
+        assertThat(((Number) edges.task(task).get("stop_retry_count")).intValue()).isOne();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=? AND reason='AUTO_STOP_RECOVERY'",
+                Long.class, binding.opsDeviceId())).isOne();
+    }
+
+    @Test void automaticRecoveryHandsDeviceToWaitingTargetWithoutResumingPausedTarget() throws Exception {
+        String task = stoppedTask("BIRD");
+        timeoutStopAndAdvance(task);
+        String nextTarget = insertTarget(true), alarm = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) "
+                + "VALUES (?,?,?,?,'UAV_INTRUSION','HIGH',CURRENT_TIMESTAMP,'replay',?,?,CURRENT_TIMESTAMP)",alarm,nextTarget,binding.sourceId(),alarm,org,district);
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) "
+                + "VALUES (?,?,'PENDING_VERIFICATION',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",UUID.randomUUID().toString(),alarm,org,district);
+        doReturn(true).when(trackingPolicy).enabled();
+        scheduler.poll();
+        assertThat(edges.openTaskByTarget(nextTarget)).isNull();
+        String retry = String.valueOf(edges.task(task).get("end_command_id"));
+        edges.updateCommand(retry, "QUEUED", "SENT", clock.nowMillis(), null, null);
+        receiveStop(task, 200);
+        scheduler.poll();
+        var next = edges.openTaskByTarget(nextTarget);
+        assertThat(next).isNotNull();
+        assertThat(next.get("ops_device_id")).isEqualTo(binding.opsDeviceId());
+        assertThat(next.get("origin")).isEqualTo("AUTO");
+        assertThat(trackingRepository.paused(String.valueOf(edges.task(task).get("target_id")))).isTrue();
+    }
+
+    private String stoppedTask(String objectType) throws Exception {
+        String target = insertTarget(true);
+        jdbc.update("UPDATE target SET object_type_code=? WHERE target_id=?", objectType, target);
+        JsonNode created = mapper.readTree(mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks", target)
+                .header("Authorization", bearer()).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString()).path("data");
+        String task = created.path("task_id").asText();
+        mvc.perform(post("/api/v1/eo-tracking-tasks/{id}/end", task)
+                .header("Authorization", bearer()).header("Idempotency-Key", key()))
+                .andExpect(status().isAccepted());
+        return task;
+    }
+
+    private void timeoutStopAndAdvance(String task) {
+        String command = String.valueOf(edges.task(task).get("end_command_id"));
+        edges.updateCommand(command, "QUEUED", "SENT", clock.nowMillis(), null, null);
+        edgeCommands.timeout(command, "missing stop receipt");
+        doReturn(clock.nowMillis() + 31_000).when(clock).nowMillis();
+        refreshStopDevice();
+    }
+
+    private void refreshStopDevice() {
+        jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',last_heartbeat_at=? WHERE device_id=?",
+                clock.nowMillis(), binding.opsDeviceId());
+        jdbc.update("UPDATE eo_device_binding SET last_heartbeat_at=? WHERE ops_device_id=?",
+                clock.nowMillis(), binding.opsDeviceId());
+        assertThat(mqtt.claim(brokerId, owner, clock.nowMillis())).isTrue();
+    }
+
+    private void receiveStop(String task, int resultCode) {
+        long now = clock.nowMillis();
+        byte[] receipt = EoEdgeEnvelope.encode("EndTracking", binding.edgeId(), now,
+                java.util.Map.of("deviceId", binding.externalDeviceId(), "taskId", task, "codeStatus", resultCode, "workState", 0));
+        edgeIngress.receive(brokerId, owner, binding.reportingTopic(), receipt, 1, 1, false, false, now);
     }
 
     @Test void videoReadIsScopedAndDoesNotCreateWork() throws Exception {

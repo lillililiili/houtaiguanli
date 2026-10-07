@@ -71,12 +71,24 @@ class EoTrackingCommandSafetyTest {
         assertThat(service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"pause")).isEqualTo("end");
         verify(edges,never()).addOutbox(anyString(),anyString(),anyString(),anyLong());
     }
+    @Test void stopCompletedBetweenPreparationAndPublicationNeverStopsNewTask() {
+        when(edges.command("c")).thenReturn(command("QUEUED","EO_END_TRACK"),command("SENT","EO_END_TRACK"));
+        when(edges.updateCommand("c","QUEUED","SENT",now,null,null)).thenReturn(1);
+        when(edges.binding("device",true)).thenReturn(binding);
+        var ending=Map.<String,Object>of("task_id","old","status","ENDING","end_command_id","c");
+        when(edges.openTask("device")).thenReturn(ending,ending,Map.of("task_id","new","status","OPEN"));
+        when(provider.getIfAvailable()).thenReturn(mqtt);
+        service.dispatch(EoEdgeCommandService.TOPIC_END,"c");
+        verify(mqtt,never()).publish(anyString(),anyString(),any());
+        verify(edges).updateCommand("c","SENT","CANCELLED",now,"TRACK_NOT_CURRENT","原停止任务已非当前任务");
+    }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings={"TIMED_OUT","FAILED","CANCELLED","UNKNOWN"})
     void explicitStopCanRetryUnconfirmedEndWithoutFreeingDevice(String status) {
         String task=UUID.randomUUID().toString(), previous=UUID.randomUUID().toString();
         when(edges.openTask("device")).thenReturn(Map.of("task_id",task,"status","ENDING","end_command_id",previous));
         when(edges.command(previous)).thenReturn(command(status,"EO_END_TRACK"));
+        when(edges.updateTask(eq(task),eq("ENDING"),eq("ENDING"),anyString(),eq(now))).thenReturn(1);
         String next=service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"operator retry","operator");
         assertThat(next).isNotEqualTo(previous);
         verify(edges).updateTask(task,"ENDING","ENDING",next,now);
@@ -95,6 +107,15 @@ class EoTrackingCommandSafetyTest {
         when(edges.command("end")).thenReturn(command("TIMED_OUT","EO_END_TRACK"));
         assertThat(service.enqueue(binding,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,"auto stop")).isEqualTo("end");
         verify(edges,never()).addOutbox(anyString(),anyString(),anyString(),anyLong());
+    }
+    @Test void automaticRecoveryNeverResendsLiveDeviceWithoutIdempotencyGuarantee() {
+        String task=UUID.randomUUID().toString();
+        when(edges.lockCursor()).thenReturn(Map.of("cursor_name","default"));
+        when(edges.task(task)).thenReturn(Map.of("task_id",task,"ops_device_id","device","status","ENDING"));
+        when(edges.binding("device",true)).thenReturn(new Binding("device","d","os","s","edge","broker","external","live",true,now,0,"org","district"));
+        assertThat(service.retryStop(task)).isFalse();
+        verify(edges,never()).claimStopRetry(anyString(),anyString(),anyInt(),anyLong());
+        verifyNoInteractions(provider,mqtt);
     }
     private Map<String,Object> command(String status,String type) {return Map.of("command_id","c","status",status,"device_id","device","command_type",type,"deadline_at",now+10000,"source_mode","replay","simulated",true);}
 }

@@ -54,6 +54,8 @@ Topic 与正文必须一致：`bridge/{providerCode}/device|device_data/{deviceT
 
 受 `app.fusion.live-promotion.enabled`（`APP_FUSION_LIVE_PROMOTION_ENABLED`）控制，默认关：关则零行 `live-radar:`，ops 的 `live-device:*` 与航迹表与关闭前一致。只提升 `COMMAND_UPLOAD_TRACK_V3` 航迹批；点迹、RTK、反制不写该前缀。`items` 空数组合法。`rcs_m2` 取高分辨率 RCS，缺则用协议遗留 RCS。`classification` 为解码器已有 `categoryCode`（`PENDING_IDENTIFICATION` / `PERSON` / `VEHICLE` / `UAV` / `BIRD` / `UNIDENTIFIED`）。`longitude`/`latitude` 仅在 ops 已有非空派生经纬度时填入，否则 JSON `null` 或省略，**不写 0,0**。打开开关不等于客户现场雷达联调完成。
 
+雷达速度映射：`velocity_x_mps`、`velocity_y_mps` 均为有限数值时，以 `hypot(X,Y)` 填入统一观测的 `speed_mps`（水平速度，m/s），首帧即可使用；两轴均为 0 时保留 0。缺任一轴、类型错误或非有限值时不补零，保持速度未知，后续仍由既有同源轨迹滤波按有效位置推算。Z 分量仅保留在 `quality.speed_xyz`，不混入水平速度；未知站址航向时不从体坐标分量编造地理航向。此映射不改变 live 提升开关、来源校验或现场联调状态。
+
 B 的 `FusionInboxRepository.claim` 已按映射器前缀领取 `replay:` / `lingyun:` / `eo-edge:`；`live-radar:` 仅在开关打开时领取。P5 控制走 `device_command` + MQTT `device_control` / `device_control_resp`，回执 inbox 前缀为 `control-resp:`（不在领取白名单）。
 
 ## 3. 映射（B 实现，A 不做）
