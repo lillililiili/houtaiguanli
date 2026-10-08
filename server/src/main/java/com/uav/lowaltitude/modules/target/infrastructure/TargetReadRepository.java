@@ -202,7 +202,7 @@ public class TargetReadRepository {
 
     /** 当前态势批量轨迹：每个可见目标只取最新一条 FUSED 轨迹。 */
     public List<RecentTrackRow> recentFusedTracks(OffsetDateTime observedFrom, OffsetDateTime observedTo,
-                                                   AccessDecision access) {
+                                                   List<String> targetIds, AccessDecision access) {
         Map<String, Object> parameters = new HashMap<>();
         parameters.put("observed_from", observedFrom);
         parameters.put("observed_to", observedTo);
@@ -211,9 +211,16 @@ public class TargetReadRepository {
                 FROM track tr JOIN target t ON t.target_id=tr.target_id
                 """);
         appendScope(sql, parameters, access);
-        sql.append(" AND tr.layer='FUSED'")
-                .append(" AND t.last_seen_at>=:observed_from AND t.last_seen_at<=:observed_to")
-                .append(" AND NOT EXISTS (SELECT 1 FROM target_track_status merged_status"
+        sql.append(" AND tr.layer='FUSED' AND t.last_seen_at>=:observed_from");
+        if (targetIds != null) {
+            // 页面先读目标、再按目标要尾迹：这期间目标又有新观测，last_seen_at 会超过 observed_to。
+            // 指定了目标就不按 last_seen_at 上限排除它，点仍只取窗口内的。
+            parameters.put("target_ids", targetIds);
+            sql.append(" AND t.target_id IN (:target_ids)");
+        } else {
+            sql.append(" AND t.last_seen_at<=:observed_to");
+        }
+        sql.append(" AND NOT EXISTS (SELECT 1 FROM target_track_status merged_status"
                         + " WHERE merged_status.target_id=t.target_id AND merged_status.status='MERGE')")
                 .append(" AND NOT EXISTS (SELECT 1 FROM track newer WHERE newer.target_id=tr.target_id"
                         + " AND newer.layer='FUSED' AND (COALESCE(newer.started_at,newer.created_at),newer.track_id)"
