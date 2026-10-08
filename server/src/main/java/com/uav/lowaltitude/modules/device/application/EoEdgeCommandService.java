@@ -265,9 +265,13 @@ public class EoEdgeCommandService {
         if (edges.updateCommand(commandId, text(command, "status"), "TIMED_OUT", now, "ADAPTER_TIMEOUT", detail) == 1) {
             edges.addEvent(text(command, "device_id"), "EO_COMMAND_TIMED_OUT", "ERROR", detail, now,
                     Boolean.TRUE.equals(command.get("simulated")) || "replay".equals(text(command, "source_mode")));
-            var task = edges.openTask(text(command, "device_id"));
-            if (task != null && BEGIN.equals(text(command, "command_type")) && "QUEUED".equals(text(command,"status")))
-                edges.updateTask(String.valueOf(task.get("task_id")), String.valueOf(task.get("status")), "FAILED", null, now);
+            if (BEGIN.equals(text(command, "command_type")) && "QUEUED".equals(text(command, "status"))) {
+                // An unsent begin can fail only its own still-open task. A pending stop
+                // retains occupancy until its receipt; an old begin cannot fail a later task.
+                var task = edges.taskByBegin(commandId);
+                if (task != null && "OPEN".equals(text(task, "status")))
+                    edges.updateTask(text(task, "task_id"), "OPEN", "FAILED", null, now);
+            }
         }
     }
 
