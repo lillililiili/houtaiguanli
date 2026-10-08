@@ -90,7 +90,7 @@ public class AlarmReadService {
 
     /** 列头用中文，与页面列一致——导出给的是给人看的表，不是接口字段名。 */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "告警编号", "告警类别", "违规原因", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
+            "编号", "告警类别", "违规原因", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
 
     private List<String> exportRow(AlarmRow row) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。

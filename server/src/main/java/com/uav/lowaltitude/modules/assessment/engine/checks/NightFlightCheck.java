@@ -57,12 +57,12 @@ public class NightFlightCheck implements RuleCheck {
         if (!night) return CheckSupport.pass(ruleCode(), facts, refs, List.of(), "本地时间 " + time + " 不在夜航时段");
         PlanFact plan = matchedPlan(context.planMatch());
         if (plan == null) {
-            String why = context.planMatch() != null && context.planMatch().plan() != null ? "已超出本机飞行计划的计划时段或航线" : "没有匹配上的飞行计划";
+            String why = context.planMatch() != null && context.planMatch().plan() != null ? "已超出本机飞行任务的时段或航线" : "没有匹配上的飞行任务";
             return CheckSupport.fail(ruleCode(), RuleCodes.NIGHT_FLIGHT, facts, refs, List.of(), "本地时间 " + time + " 处于夜航时段，" + why);
         }
         facts.put("plan_id", plan.planId());
         return CheckSupport.pass(ruleCode(), facts, refs, CheckSupport.evidence(CheckSupport.EVIDENCE_FLIGHT_PLAN, plan.planId()),
-                "本地时间 " + time + " 处于夜航时段，已匹配上飞行计划，在计划时段内飞行");
+                "本地时间 " + time + " 处于夜航时段，已匹配上飞行任务，在任务时段内飞行");
     }
 
     /** 只认 C01 已匹配上的计划；NONE 时挂着的本机计划、计划不明（UNDETERMINED）都不能为夜间飞行作保。 */

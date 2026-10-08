@@ -3,7 +3,7 @@ export const organizationTypes = [
   { value: 'SERVICE', label: '服务单位' }, { value: 'OTHER', label: '其他单位' }
 ]
 export const contactRoles = [
-  { value: 'PILOT', label: '飞手' }, { value: 'PLAN_LIAISON', label: '计划联络人' },
+  { value: 'PILOT', label: '飞手' }, { value: 'PLAN_LIAISON', label: '任务联络人' },
   { value: 'UNIT_LIAISON', label: '单位联络人' }, { value: 'MAINTENANCE', label: '运维联系人' }
 ]
 export function labelOf(items, value) { return items.find(item => item.value === value)?.label || value || '未填写' }

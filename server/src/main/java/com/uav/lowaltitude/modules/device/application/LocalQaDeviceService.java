@@ -47,7 +47,7 @@ public class LocalQaDeviceService {
             scope=new Scope(ownerOrgId.trim(),names[0],districtId.trim(),names[1]);
         } else if(!blank(planId)) {
             var flight=flights.flightPlan(planId);LocalInterfaceSimulatorService.requireSimulated(flight.sourceMode());
-            if(flight.ownerOrgId()==null||flight.districtId()==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","测试计划必须具有单位与区域");
+            if(flight.ownerOrgId()==null||flight.districtId()==null)throw new ApiException(HttpStatus.CONFLICT,"QA_SCOPE_REQUIRED","测试任务必须具有单位与区域");
             scope=new Scope(flight.ownerOrgId(),flight.ownerOrgName(),flight.districtId(),flight.districtName());
         } else throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请选择反制设备所属单位和区县");
         String scopeKey=scope.ownerOrgId()+":"+scope.districtId();

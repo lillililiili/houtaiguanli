@@ -111,7 +111,7 @@ class AlarmViolationReasonFilterApiTest {
         String csv = mvc.perform(get("/api/v1/alarms/export.csv").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         List<String> lines = csv.lines().toList();
-        assertThat(lines.get(0).replace("\uFEFF", "")).startsWith("告警编号,告警类别,违规原因,等级,状态");
+        assertThat(lines.get(0).replace("\uFEFF", "")).startsWith("编号,告警类别,违规原因,等级,状态");
         Map<String, String> reasonByNo = new java.util.HashMap<>();
         for (String line : lines.subList(1, lines.size())) {
             String[] cells = line.split(",", 4);
@@ -119,7 +119,7 @@ class AlarmViolationReasonFilterApiTest {
         }
         assertThat(reasonByNo).hasSize(3)
                 .containsEntry(noById.get(escalated.alarmId()), "无飞行授权、偏航（偏离报备航线）")
-                .containsEntry(noById.get(planAltitude.alarmId()), "超出计划高度带")
+                .containsEntry(noById.get(planAltitude.alarmId()), "超出任务高度带")
                 .containsEntry(noById.get(bvlos.alarmId()), "超出目视视距");
     }
 

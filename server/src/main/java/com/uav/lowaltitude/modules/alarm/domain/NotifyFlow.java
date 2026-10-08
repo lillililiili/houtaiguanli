@@ -36,7 +36,7 @@ public final class NotifyFlow {
     static boolean cannotNotify(String status, String reason) {
         if ("UNAVAILABLE".equals(status) || "DISABLED".equals(status)) return true;
         if (!"BLOCKED".equals(status)) return false;
-        return reason != null && (reason.contains("飞手") || reason.contains("计划") || reason.contains("联系") || reason.contains("名册") || reason.contains("通知配置"));
+        return reason != null && (reason.contains("飞手") || reason.contains("任务") || reason.contains("计划") || reason.contains("联系") || reason.contains("名册") || reason.contains("通知配置"));
     }
     private static boolean unconfirmed(String reason) {
         return reason != null && (reason.contains("没有新的位置") || reason.contains("无法判断") || reason.contains("无法确认"));

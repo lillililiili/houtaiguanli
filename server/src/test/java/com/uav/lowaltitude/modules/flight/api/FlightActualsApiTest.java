@@ -210,10 +210,10 @@ class FlightActualsApiTest {
         return "[{\"rule_code\":\"C01\",\"result_code\":\"PASS\",\"reason_code\":null,"
                 + "\"facts\":{\"plan_match_code\":\"FULL\",\"candidate_count\":1},"
                 + "\"params\":[{\"key\":\"time_window_min\",\"value\":\"10\",\"status\":\"DEMO\"}],\"evidence\":[],"
-                + "\"message\":\"时间窗、走廊与身份均匹配计划\"},"
+                + "\"message\":\"时间窗、走廊与身份均匹配任务\"},"
                 + "{\"rule_code\":\"C02-7\",\"result_code\":\"PASS\",\"reason_code\":null,"
                 + "\"facts\":{\"altitude_datum\":\"AMSL\",\"min_altitude_m\":50,\"max_altitude_m\":150,\"target_altitude_m\":" + targetAltitude + "},"
-                + "\"params\":[],\"evidence\":[],\"message\":\"目标高度在计划高度带内\"}]";
+                + "\"params\":[],\"evidence\":[],\"message\":\"目标高度在任务高度带内\"}]";
     }
 
     private String evaluation(String planMatch, String legalStatus, String hitDetails) {

@@ -31,8 +31,8 @@ public final class HandoffParty {
         if (planId != null && (text(pilotName) != null || text(operatorName) != null))
             return new Assessment(IDENTIFIED, null, List.of(), serial);
         List<String> reasons = new ArrayList<>();
-        reasons.add(planId == null ? "没有匹配到本次飞行的报备计划，找不到飞手和运营单位"
-                : "匹配到的报备计划没有写明飞手或运营单位");
+        reasons.add(planId == null ? "没有匹配到本次飞行的报备任务，找不到飞手和运营单位"
+                : "匹配到的报备任务没有写明飞手或运营单位");
         if (serial == null) reasons.add("没有获取到无人机序列号");
         if (Boolean.FALSE.equals(pilotLocation)) reasons.add("没有设备测算的遥控器位置");
         return new Assessment(UNIDENTIFIED, UNIDENTIFIED_LABEL, List.copyOf(reasons), serial);

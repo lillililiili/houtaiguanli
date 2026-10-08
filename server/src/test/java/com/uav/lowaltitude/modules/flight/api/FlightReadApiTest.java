@@ -232,7 +232,7 @@ class FlightReadApiTest {
         jdbc.update("update flight_plan set source_mode='live', updated_at=? where plan_id=?", T0.plusHours(3), planA);
         jdbc.update("update flight_plan set source_mode='live', updated_at=? where plan_id=?", T0.plusHours(9), planOtherScope);
         long configuredAt = T0.plusDays(1).toInstant().toEpochMilli();
-        jdbc.update("update external_interface_config set name='管服平台计划', updated_at=? where kind='FLIGHT_PLAN'", configuredAt);
+        jdbc.update("update external_interface_config set name='管服平台任务', updated_at=? where kind='FLIGHT_PLAN'", configuredAt);
         JsonNode configured = getJson("/api/v1/flight-plans/upstream-status").path("data");
         assertThat(configured.path("status").asText()).isEqualTo("AWAITING_ADAPTER");
         assertThat(configured.path("available").asBoolean(true)).isFalse();

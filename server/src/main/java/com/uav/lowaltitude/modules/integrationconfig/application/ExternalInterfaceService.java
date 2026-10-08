@@ -44,9 +44,9 @@ public class ExternalInterfaceService {
             throw bad("来源标识仅支持字母、数字、下划线和短横线");
         if (p.direction()!=null && !java.util.Set.of("PUSH","PULL").contains(p.direction())) throw bad("接入方式无效");
         if ("WEATHER_FORECAST".equals(kind) && (p.direction()!=null || p.sourceCode()!=null || p.allowedCidrs()!=null))
-            throw bad("天气预报配置不接受计划输入字段");
+            throw bad("天气预报配置不接受任务输入字段");
         if ("FLIGHT_PLAN".equals(kind) && (p.areaName()!=null || p.intervalMinutes()!=null || p.validityMinutes()!=null))
-            throw bad("计划输入配置不接受天气预报字段");
+            throw bad("任务输入配置不接受天气预报字段");
         if (p.credentialRef()!=null && !p.credentialRef().matches("env:[A-Za-z_][A-Za-z0-9_]*"))
             throw bad("凭据请填写 env:环境变量名，不填写密钥本身");
         if (p.endpoint()!=null) {
@@ -89,7 +89,7 @@ public class ExternalInterfaceService {
         Row row=required("FLIGHT_PLAN");
         boolean configured=row.updatedAt()!=null;
         return new PlanUpstreamStatus(configured ? "AWAITING_ADAPTER" : "NOT_CONFIGURED", false,
-            (configured ? "管服平台计划接口已保存配置，尚未接通" : "管服平台计划接口尚未配置")+"，上级计划数据暂时取不到",
+            (configured ? "管服平台任务接口已保存配置，尚未接通" : "管服平台任务接口尚未配置")+"，上级任务数据暂时取不到",
             row.updatedAt(), lastReceived);
     }
     private Row required(String kind) {

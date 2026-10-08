@@ -16,8 +16,8 @@ public class FlightReportQueryService extends BusinessReportSource {
         super(reader); this.repository = repository; this.access = access;
     }
     @Override public String key() { return "plans"; }
-    @Override public String title() { return "飞行计划"; }
-    @Override public String basis() { return "计划开始时间；最新核验结果截至生成时"; }
+    @Override public String title() { return "飞行任务"; }
+    @Override public String basis() { return "任务开始时间；最新核验结果截至生成时"; }
     @Override public List<Dimension> dimensions() {
         return List.of(new Dimension("state", "当前状态"), new Dimension("result", "最新核验结果"));
     }

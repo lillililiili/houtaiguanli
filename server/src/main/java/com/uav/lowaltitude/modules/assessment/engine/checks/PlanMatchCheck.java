@@ -207,41 +207,41 @@ public class PlanMatchCheck implements RuleCheck {
 
     private static String message(PlanMatch match, String reason, boolean demo) {
         String base = switch (match.code()) {
-            case FULL -> "时间窗、走廊与身份均匹配计划 " + match.plan().planId();
-            case PARTIAL -> "时间窗与走廊匹配计划 " + match.plan().planId() + "，身份线索缺失";
+            case FULL -> "时间窗、走廊与身份均匹配任务 " + match.plan().planId();
+            case PARTIAL -> "时间窗与走廊匹配任务 " + match.plan().planId() + "，身份线索缺失";
             case NONE -> noMatchMessage(match, reason);
             case UNDETERMINED -> undeterminedMessage(reason);
-            case NOT_APPLICABLE -> "计划匹配不适用";
+            case NOT_APPLICABLE -> "任务匹配不适用";
         };
         return demo ? base + "；参数为 DEMO 演示值，尚未确认" : base;
     }
 
     /** 对不上计划时用业务话说清是哪一点没对上；不出现原因码，也不点名与本机无关的计划。 */
     private static String noMatchMessage(PlanMatch match, String reason) {
-        if (REASON_NO_PLAN_CANDIDATE.equals(reason)) return "没有可匹配的飞行计划";
+        if (REASON_NO_PLAN_CANDIDATE.equals(reason)) return "没有可匹配的飞行任务";
         boolean outOfTime = MISMATCH.equals(match.dimensions().get(DIM_TIME));
         boolean offCorridor = MISMATCH.equals(match.dimensions().get(DIM_CORRIDOR));
         if (match.plan() != null) {
-            if (outOfTime && offCorridor) return "不在计划时段，也不在计划航线走廊内：本机编号的飞行计划对不上当前时刻和位置";
-            if (outOfTime) return "不在计划时段：本机编号的飞行计划时段不包含当前时刻";
-            if (offCorridor) return "不在计划航线走廊内：已偏离本机编号飞行计划的航线";
-            return "本机编号的飞行计划对不上当前飞行";
+            if (outOfTime && offCorridor) return "不在任务时段，也不在任务航线走廊内：本机编号的飞行任务对不上当前时刻和位置";
+            if (outOfTime) return "不在任务时段：本机编号的飞行任务时段不包含当前时刻";
+            if (offCorridor) return "不在任务航线走廊内：已偏离本机编号飞行任务的航线";
+            return "本机编号的飞行任务对不上当前飞行";
         }
-        if (REASON_IDENTITY_MISMATCH.equals(reason)) return "编号不匹配：当前时段的飞行计划登记的无人机编号都与该机不符";
-        if (offCorridor) return "不在任何候选飞行计划的航线走廊内";
-        return "没有对得上的飞行计划";
+        if (REASON_IDENTITY_MISMATCH.equals(reason)) return "编号不匹配：当前时段的飞行任务登记的无人机编号都与该机不符";
+        if (offCorridor) return "不在任何候选飞行任务的航线走廊内";
+        return "没有对得上的飞行任务";
     }
 
     /** 计划说不清是否对得上时，同样用业务话说明卡在哪一点，不直接显示原因码。 */
     private static String undeterminedMessage(String reason) {
         String why = reason == null ? null : switch (reason) {
-            case REASON_PLAN_AMBIGUOUS -> "附近有多个飞行计划都可能对应这架无人机，分不清属于哪一个";
-            case "PLAN_TIME_UNKNOWN" -> "候选飞行计划缺少起止时间，无法核对计划时段";
-            case "POSITION_UNKNOWN" -> "目标位置未知，无法核对计划航线";
-            case "CORRIDOR_WIDTH_UNKNOWN", "ROUTE_GEOMETRY_UNKNOWN" -> "候选飞行计划的航线走廊无法确认";
+            case REASON_PLAN_AMBIGUOUS -> "附近有多个飞行任务都可能对应这架无人机，分不清属于哪一个";
+            case "PLAN_TIME_UNKNOWN" -> "候选飞行任务缺少起止时间，无法核对任务时段";
+            case "POSITION_UNKNOWN" -> "目标位置未知，无法核对任务航线";
+            case "CORRIDOR_WIDTH_UNKNOWN", "ROUTE_GEOMETRY_UNKNOWN" -> "候选飞行任务的航线走廊无法确认";
             default -> null;
         };
-        return why == null ? "计划匹配暂时无法判定" : "计划匹配不可判定：" + why;
+        return why == null ? "任务匹配暂时无法判定" : "任务匹配不可判定：" + why;
     }
 
     private static String blankToNull(String value) { return value == null || value.isBlank() ? null : value.trim(); }

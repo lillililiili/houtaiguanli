@@ -55,7 +55,7 @@ class FlightDevicePreflightTest {
         var result=service.read("future-plan");
         assertThat(result.rows()).hasSize(1);assertThat(result.complete()).isTrue();
         assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_NORMAL");
-        assertThat(result.message()).doesNotContain("未按计划起飞");
+        assertThat(result.message()).doesNotContain("未按任务起飞");
     }
     @Test void futurePlanShowsCurrentFaultAndIgnoresClosedPastIncident() {
         state("ONLINE","BAD");

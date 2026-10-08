@@ -65,7 +65,7 @@ public class DeviceMaintenanceService {
         Row replay=tasks.submission(actor.userId(),key);
         if(replay!=null) {
             if(!planKey.equals(replay.planId())||!deviceId.equals(replay.deviceId()))
-                throw conflict("IDEMPOTENCY_KEY_REUSED","同一提交编号不能用于其他计划或设备");
+                throw conflict("IDEMPOTENCY_KEY_REUSED","同一提交编号不能用于其他任务或设备");
             return dto(replay,actor,true);
         }
         Row existing=tasks.pending(planKey,deviceId);
@@ -75,7 +75,7 @@ public class DeviceMaintenanceService {
         }
         var checked=checks.read(planKey);
         var row=checked.rows().stream().filter(item->deviceId.equals(item.deviceId())).findFirst()
-                .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本计划可检查的附近范围内，请重新检查"));
+                .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本任务可检查的附近范围内，请重新检查"));
         if(!row.abnormal()&&row.incidents().stream().noneMatch(item->item.closedAt()==null))
             throw conflict("DEVICE_NOT_ABNORMAL","重新检查未发现当前异常或未关闭告警，无需生成运维待办");
         String reasons=row.incidents().stream().filter(item->item.closedAt()==null).map(item->item.reason())
@@ -90,7 +90,7 @@ public class DeviceMaintenanceService {
         sendNotice(task,actor,null,null,1,"首次通知");
         remember(actor,key,task.taskId());
         audit.record(actor.userId(),actor.account(),"device_maintenance_reported","device_maintenance_task",
-                task.taskId(),"通知设备异常；设备="+deviceId+"；计划="+planKey,null);
+                task.taskId(),"通知设备异常；设备="+deviceId+"；任务="+planKey,null);
         return dto(task,actor,false);
     }
 
@@ -177,7 +177,7 @@ public class DeviceMaintenanceService {
         var checked=checks.read(task.planId());
         String deviceKey=task.deviceId();
         var current=checked.rows().stream().filter(row->deviceKey.equals(row.deviceId())).findFirst()
-                .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本计划可检查的附近范围内，请重新检查"));
+                .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本任务可检查的附近范围内，请重新检查"));
         long now=clock.nowMillis();
         // 离线/停用是服务端当前状态，不要求故障设备重新上报才能提醒；其他异常仍须有有效观测。
         boolean persistentFailure=current.abnormal()&&Set.of("OFFLINE","DISABLED").contains(current.connectivity());
@@ -212,7 +212,7 @@ public class DeviceMaintenanceService {
         if(!Set.of("NOT_SENT","COMPLETED").contains(latest.outcomeState()))return "原通知正在发送或结果未知，请先核对原通知结果";
         if(checkPermissions){
             try{access.require(PermissionCode.HANDOFF_CREATE);deviceAccess.requireMonitoringRead();deviceAccess.requireDevicesRead();
-                if(plans.findPlan(task.planId(),access.require(PermissionCode.FLIGHT_READ))==null)return "关联计划不可见";
+                if(plans.findPlan(task.planId(),access.require(PermissionCode.FLIGHT_READ))==null)return "关联任务不可见";
                 devices.detail(task.deviceId());
             }catch(ApiException error){if(error.getStatus()!=HttpStatus.FORBIDDEN&&error.getStatus()!=HttpStatus.NOT_FOUND)throw error;return "没有再次通知权限或关联对象不可见";}
         }
@@ -223,6 +223,6 @@ public class DeviceMaintenanceService {
     private static String id(String v) { if(v==null||v.isBlank()||v.trim().length()>36)throw bad("对象编号无效");return v.trim(); }
     private static String key(String v) { if(v==null||v.trim().length()<8||v.trim().length()>128)throw bad("提交编号长度必须为 8–128 字符");return v.trim(); }
     private static ApiException bad(String message) { return new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR",message); }
-    private static ApiException missing() { return new ApiException(HttpStatus.NOT_FOUND,"MAINTENANCE_OBJECT_NOT_FOUND","待办或关联计划不存在或不可见"); }
+    private static ApiException missing() { return new ApiException(HttpStatus.NOT_FOUND,"MAINTENANCE_OBJECT_NOT_FOUND","待办或关联任务不存在或不可见"); }
     private static ApiException conflict(String code,String message) { return new ApiException(HttpStatus.CONFLICT,code,message); }
 }

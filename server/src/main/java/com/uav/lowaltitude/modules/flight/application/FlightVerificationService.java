@@ -52,7 +52,7 @@ public class FlightVerificationService {
         boolean write=allowed(PermissionCode.FLIGHT_VERIFY);
         var recipient=directory.forPlan(plan.planId());
         return new Workflow(plan.planId(),history.isEmpty()?0:history.get(0).revisionNo(),plan.sourceId(),recipient.recipientName(),
-            write && blocker==null,!write?"没有计划核实权限":blocker,allowed(PermissionCode.HANDOFF_CREATE)&&recipient.configured(),history,records.feedback(plan.planId()),recipient,recipient.blockedReason());
+            write && blocker==null,!write?"没有任务核实权限":blocker,allowed(PermissionCode.HANDOFF_CREATE)&&recipient.configured(),history,records.feedback(plan.planId()),recipient,recipient.blockedReason());
     }
     @Transactional
     public Verification verify(String planId,VerifyRequest request,String key) {
@@ -74,7 +74,7 @@ public class FlightVerificationService {
         PlanRow plan=plan(planId);records.lockPlan(plan.planId());plan=plan(planId);
         String blocked=blocker(plan);
         if(blocked!=null)throw conflict("VERIFICATION_NOT_AVAILABLE",blocked);
-        if(request==null || request.expectedRevision()==null)throw invalid("请刷新计划后再提交");
+        if(request==null || request.expectedRevision()==null)throw invalid("请刷新任务后再提交");
         idempotency.claim(key,"plan-auto-check:"+plan.planId()+":"+writeJson(request));
         var history=records.verifications(plan.planId());long previous=history.isEmpty()?0:history.get(0).revisionNo();
         if(request.expectedRevision()!=previous)throw conflict("VERSION_CONFLICT","检查记录已更新，请刷新后重试");
@@ -106,7 +106,7 @@ public class FlightVerificationService {
         if(request==null || history.isEmpty() || !history.get(0).verificationId().equals(request.verificationId()))
             throw conflict("VERIFICATION_REQUIRED","请先完成并选择最新核实记录");
         if(plan.sourceId()==null || !plan.sourceId().equals(request.recipientId()) || plan.sourceName()==null || !records.sourceEnabled(plan.sourceId()))
-            throw conflict("PLAN_RECIPIENT_UNAVAILABLE","接收方必须是该计划已登记且启用的来源，不能使用风险通知默认接收方");
+            throw conflict("PLAN_RECIPIENT_UNAVAILABLE","接收方必须是该任务已登记且启用的来源，不能使用风险通知默认接收方");
         idempotency.claim(key,"plan-feedback:"+plan.planId()+":"+writeJson(request));
         if(records.feedback(plan.planId()).stream().anyMatch(f->f.verificationId().equals(request.verificationId())))
             throw conflict("FEEDBACK_ALREADY_EXISTS","这条核实结论已提交通知，请查看回告记录");
@@ -128,12 +128,12 @@ public class FlightVerificationService {
     private PlanRow plan(String id) {
         var decision=access.require(PermissionCode.FLIGHT_READ);
         PlanRow plan=plans.findPlan(FlightActualsService.identifier(id),decision);
-        if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行计划不存在或不可见");
+        if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行任务不存在或不可见");
         return plan;
     }
     private String blocker(PlanRow plan) {
-        if("CANCELLED".equals(plan.statusCode()))return "已取消计划不进入未起飞核实";
-        if(plan.startAt()==null || plan.startAt().toInstant().isAfter(clock.now()))return "尚未到计划开始时间，不能核实未按计划起飞";
+        if("CANCELLED".equals(plan.statusCode()))return "已取消任务不进入未起飞核实";
+        if(plan.startAt()==null || plan.startAt().toInstant().isAfter(clock.now()))return "尚未到任务开始时间，不能核实未按任务起飞";
         var match=actuals.actuals(plan.planId()).match();
         if("FORBIDDEN".equals(match.availability()))return "没有实际对照查看权限，不能确认是否需要核实";
         if(!Set.of("AVAILABLE","NO_EVALUATION").contains(match.availability()))return "实际对照暂不可用";

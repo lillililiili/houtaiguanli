@@ -247,7 +247,7 @@ class AlarmListSortExportApiTest {
         assertThat(body[1] & 0xFF).isEqualTo(0xBB);
         assertThat(body[2] & 0xFF).isEqualTo(0xBF);
         String text = new String(body, 3, body.length - 3, StandardCharsets.UTF_8);
-        assertThat(text.lines().findFirst().orElseThrow()).startsWith("告警编号,告警类别,违规原因,等级,状态");
+        assertThat(text.lines().findFirst().orElseThrow()).startsWith("编号,告警类别,违规原因,等级,状态");
         assertThat(result.getResponse().getHeader("Content-Disposition"))
                 .contains("attachment").contains("alarms-").contains(".csv");
         // 导出的次序必须与列表一致：两处不同的话，人对着页面核对导出表会核不上。

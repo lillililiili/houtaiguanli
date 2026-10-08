@@ -60,7 +60,7 @@ class RiskVerificationApiTest {
     void confirmedMovesOnlyToPendingNotificationAndWritesHistoryAndSuccessAudit() throws Exception {
         mvc.perform(get("/api/v1/risks/{id}",riskId).header("Authorization",bearer(session)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowed_actions[0]").value("VERIFY"));
-        verify(riskId, "CONFIRMED", "人工复核轨迹与计划版本后确认风险", 0, "confirm-" + UUID.randomUUID())
+        verify(riskId, "CONFIRMED", "人工复核轨迹与任务版本后确认风险", 0, "confirm-" + UUID.randomUUID())
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("PENDING_NOTIFICATION"))
                 .andExpect(jsonPath("$.data.version").value(1));
         assertThat(state(riskId)).isEqualTo("PENDING_NOTIFICATION");
@@ -71,7 +71,7 @@ class RiskVerificationApiTest {
 
     @Test
     void excludedMovesToExcludedAndTerminalStatesCannotBeReverified() throws Exception {
-        verify(riskId, "EXCLUDED", "核对来源后确认该记录不属于当前飞行计划", 0, "exclude-" + UUID.randomUUID())
+        verify(riskId, "EXCLUDED", "核对来源后确认该记录不属于当前飞行任务", 0, "exclude-" + UUID.randomUUID())
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.state").value("EXCLUDED"));
         verify(riskId, "CONFIRMED", "终态不得再次变更为待通知", 1, "terminal-" + UUID.randomUUID())
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));

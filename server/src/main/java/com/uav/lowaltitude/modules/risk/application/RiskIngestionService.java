@@ -28,13 +28,13 @@ public class RiskIngestionService {
     public String ingest(TrustedRiskFact fact){
         validate(fact);
         IngestionPlanRow plan=repository.ingestionPlan(fact.planId());
-        if(plan==null)throw invalid("计划不存在");
-        if(!plan.routeVersionId().equals(fact.routeVersionId()))throw invalid("计划与航线版本不一致");
+        if(plan==null)throw invalid("任务不存在");
+        if(!plan.routeVersionId().equals(fact.routeVersionId()))throw invalid("任务与航线版本不一致");
         // 以来源根行串行化同一 source 的入库，避免并发唯一冲突把 PostgreSQL 事务置为 aborted 后再查询。
         if(!repository.lockSource(fact.sourceId(),fact.sourceMode()))throw invalid("来源无效或未启用");
-        if(fact.assessmentId()!=null&&!repository.assessmentMatches(fact.assessmentId(),fact.planId(),fact.routeVersionId()))throw invalid("研判不属于同一计划与航线版本");
-        if(fact.targetId()!=null&&!repository.targetMatchesScope(fact.targetId(),plan.ownerOrgId(),plan.districtId()))throw invalid("目标不属于计划完整范围");
-        if(fact.trackId()!=null&&!repository.trackMatches(fact.trackId(),fact.targetId(),plan.ownerOrgId(),plan.districtId()))throw invalid("轨迹不属于目标或计划完整范围");
+        if(fact.assessmentId()!=null&&!repository.assessmentMatches(fact.assessmentId(),fact.planId(),fact.routeVersionId()))throw invalid("研判不属于同一任务与航线版本");
+        if(fact.targetId()!=null&&!repository.targetMatchesScope(fact.targetId(),plan.ownerOrgId(),plan.districtId()))throw invalid("目标不属于任务完整范围");
+        if(fact.trackId()!=null&&!repository.trackMatches(fact.trackId(),fact.targetId(),plan.ownerOrgId(),plan.districtId()))throw invalid("轨迹不属于目标或任务完整范围");
         String id=UUID.randomUUID().toString();
         RiskRow existing=repository.findBySource(fact.sourceId().trim(),fact.sourceRiskId().trim());
         if(existing!=null)return existing.riskId();
@@ -51,7 +51,7 @@ public class RiskIngestionService {
 
     private static void validate(TrustedRiskFact f){
         if(f==null)throw invalid("风险事实不能为空");
-        required(f.sourceId(),36,"来源");required(f.sourceRiskId(),128,"来源风险 ID");required(f.planId(),36,"计划");
+        required(f.sourceId(),36,"来源");required(f.sourceRiskId(),128,"来源风险 ID");required(f.planId(),36,"任务");
         required(f.routeVersionId(),36,"航线版本");required(f.riskType(),64,"风险类型");required(f.reasonCode(),64,"风险原因");
         required(f.reasonText(),1000,"风险依据");
         if(f.receivedAt()==null)throw invalid("接收时间不能为空");

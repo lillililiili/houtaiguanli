@@ -32,7 +32,7 @@ public final class ReportLabels {
         entry("PENDING_DELIVERY","待发送"), entry("SUBMITTED","已提交"), entry("DELIVERED","已送达"),
         entry("ACKNOWLEDGED","已回执"), entry("TIMEOUT","回执超时"), entry("NOT_EXPECTED","无需回执"),
         entry("NOT_TAKEN_OFF","未起飞"), entry("DEVICE_ABNORMAL","设备异常"), entry("NORMAL","正常"),
-        entry("PLANNED","计划中"), entry("PENDING_EXECUTION","待执行"), entry("IN_PROGRESS","执行中"),
+        entry("PLANNED","已安排"), entry("PENDING_EXECUTION","待执行"), entry("IN_PROGRESS","执行中"),
         entry("ACTIVE","进行中"), entry("FINISHED","已结束"), entry("mock","模拟数据"),
         entry("replay","回放数据"), entry("live","真实数据"), entry("mixed","混合数据"),
         entry("simulated","模拟验收"), entry("unknown","暂无数据"));
@@ -61,7 +61,7 @@ public final class ReportLabels {
                     new Column("kind","设备类型"),new Column("result","健康状态"),new Column("region","区域"),new Column("source_mode","来源"));
             case "maintenance" -> List.of(new Column("label","异常设备"),new Column("related","设备编号"),new Column("occurred_at","通知时间"),
                     new Column("state","处理状态"),new Column("note","异常原因"),new Column("result","处理结果"),new Column("region","区域"),new Column("source_mode","来源"));
-            case "plans" -> List.of(new Column("label","计划编号"),new Column("occurred_at","计划开始时间"),new Column("state","计划状态"),
+            case "plans" -> List.of(new Column("label","任务编号"),new Column("occurred_at","任务开始时间"),new Column("state","任务状态"),
                     new Column("result","最新核验"),new Column("note","核验说明"),new Column("region","区域"),new Column("source_mode","来源"));
             case "authorizations","handoffs" -> List.of(new Column("label",key.equals("handoffs")?"接收方":"授权编号"),
                     new Column("related","关联事件 ID"),new Column("occurred_at","关联事件创建时间"),new Column("kind","类型"),

@@ -125,7 +125,7 @@ class DecisionAssuranceAlgorithmTest {
         var context = context("live", Freshness.FRESH, full(), "0.95", goodTrack());
         var hits = replace(checks(), hit("C02-1", ResultCode.FAIL, "INSIDE_RESTRICTED_AIRSPACE"));
         hits = replace(hits, new HitDetail("C01", "rv-C01", ResultCode.PASS, null, null, Map.of(),
-                List.of(new ParamRef("corridor_tolerance_m", "100", "DEMO")), List.of(), "计划匹配使用演示参数"));
+                List.of(new ParamRef("corridor_tolerance_m", "100", "DEMO")), List.of(), "任务匹配使用演示参数"));
         RuleParams confirmed = confirmedExcept("");
         var result = algorithm.assess(context, hits, new C03Decision().decide(context, hits, confirmed), confirmed);
         assertThat(result.status()).isEqualTo("SUFFICIENT");

@@ -38,13 +38,13 @@ class BusinessReportExportTest {
                 new ReportScopePolicy(new org.springframework.mock.env.MockEnvironment(), false));
     }
     private Summary summary(long total) {
-        return new Summary("plans","飞行计划","计划开始时间",false,true,total,
+        return new Summary("plans","飞行任务","任务开始时间",false,true,total,
             List.of(new Day("2026-09-01",total)),List.of(new Distribution("state","当前状态",List.of(new Count("PENDING",total)))),
             List.of(new Count("mock",total)));
     }
     @Test void emptyFormalPreviewAndExportsKeepLiveScope() throws Exception {
         BusinessReportSource source=mock(BusinessReportSource.class);when(source.key()).thenReturn("plans");
-        when(source.summarize(any())).thenReturn(new Summary("plans","飞行计划","计划开始时间",false,true,0L,
+        when(source.summarize(any())).thenReturn(new Summary("plans","飞行任务","任务开始时间",false,true,0L,
                 List.of(),List.of(),List.of()));
         when(source.details(any(),eq(1),anyInt())).thenAnswer(inv -> new Page(List.of(),1,inv.getArgument(2),0));
         var service=service(source);
@@ -61,10 +61,10 @@ class BusinessReportExportTest {
     @Test void nonemptyUnknownAndReplaySourcesAreNotRelabeledLive() {
         BusinessReportSource source=mock(BusinessReportSource.class);when(source.key()).thenReturn("plans");
         var service=service(source);
-        when(source.summarize(any())).thenReturn(new Summary("plans","飞行计划","计划开始时间",false,true,1L,
+        when(source.summarize(any())).thenReturn(new Summary("plans","飞行任务","任务开始时间",false,true,1L,
                 List.of(),List.of(),List.of()));
         assertThat(service.preview("FLIGHT_VERIFICATION","MONTHLY","2026-09-16").sourceMode()).isEqualTo("unknown");
-        when(source.summarize(any())).thenReturn(new Summary("plans","飞行计划","计划开始时间",false,true,2L,
+        when(source.summarize(any())).thenReturn(new Summary("plans","飞行任务","任务开始时间",false,true,2L,
                 List.of(),List.of(),List.of(new Count("live",1),new Count("replay",1))));
         var preview=service.preview("FLIGHT_VERIFICATION","MONTHLY","2026-09-16");
         assertThat(preview.sourceMode()).isEqualTo("mixed");
@@ -95,7 +95,7 @@ class BusinessReportExportTest {
             assertThat(doc.getNumberOfPages()).isGreaterThan(2);
         }
         try(var book=new XSSFWorkbook(new ByteArrayInputStream(new BusinessWorkbookWriter().write(data)))) {
-            var cell=book.getSheet("飞行计划明细").getRow(1).getCell(0);
+            var cell=book.getSheet("飞行任务明细").getRow(1).getCell(0);
             assertThat(cell.getCellType()).isEqualTo(CellType.STRING);
             assertThat(cell.getStringCellValue()).startsWith("=HYPERLINK");
             assertThat(book.getSheet("每日趋势").getRow(1).getCell(2).getCellType()).isEqualTo(CellType.NUMERIC);

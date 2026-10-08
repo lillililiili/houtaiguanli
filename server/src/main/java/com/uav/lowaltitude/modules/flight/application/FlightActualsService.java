@@ -81,7 +81,7 @@ public class FlightActualsService {
 
     private PlanRow requirePlan(String planId, AccessDecision flight) {
         PlanRow plan = plans.findPlan(identifier(planId), flight);
-        if (plan == null) throw new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在");
+        if (plan == null) throw new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在");
         return plan;
     }
 

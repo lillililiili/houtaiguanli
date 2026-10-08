@@ -106,7 +106,7 @@ async function save() {
           <el-form-item label="来源系统中的单位编码" required><el-input v-model="form.external_org_code" type="textarea" autosize /></el-form-item>
           <el-form-item label="对应单位" required><DirectorySelect v-model="form.org_id" kind="organizations" :current-label="row?.org_name || organization?.name || ''" /></el-form-item>
           <el-form-item label="映射可用状态"><el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
-          <p class="form-note wide">同一来源系统可以报送多个单位，按来源与单位编码精确关联。停用映射后，新关联和待发通知按后端条件校验；旧计划和通知材料不会改写。</p>
+          <p class="form-note wide">同一来源系统可以报送多个单位，按来源与单位编码精确关联。停用映射后，新关联和待发通知按后端条件校验；旧任务和通知材料不会改写。</p>
         </template>
       </div>
     </el-form>
