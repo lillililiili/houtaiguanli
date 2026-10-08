@@ -2,7 +2,6 @@ package com.uav.lowaltitude.modules.device.application;
 
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -78,9 +77,8 @@ public class DeviceMaintenanceService {
                 .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本任务可检查的附近范围内，请重新检查"));
         if(!row.abnormal()&&row.incidents().stream().noneMatch(item->item.closedAt()==null))
             throw conflict("DEVICE_NOT_ABNORMAL","重新检查未发现当前异常或未关闭告警，无需生成运维待办");
-        String reasons=row.incidents().stream().filter(item->item.closedAt()==null).map(item->item.reason())
-                .filter(item->item!=null&&!item.isBlank()).distinct().collect(Collectors.joining("；"));
-        if(reasons.isBlank())reasons="设备自动检查发现异常，尚无未关闭告警说明，请运维核查。";
+        // CDX-P09：先写设备现在真正的问题，再写还没关的旧异常记录；已恢复上报的心跳超时只注一句待核验。
+        String reasons=MaintenanceReason.text(row,devices.state(deviceId).hasAlarm(),clock.nowMillis());
         String actorName=actor.name()==null?actor.account():actor.name();
         Row task=new Row(UUID.randomUUID().toString(),planKey,deviceId,plan.ownerOrgId(),plan.districtId(),
                 plan.planNo(),device.deviceNo(),row.name(),reasons,row.connectivity(),row.healthCode(),row.observedAt(),
@@ -108,11 +106,11 @@ public class DeviceMaintenanceService {
             .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本计划可检查范围内"));
         if(!row.abnormal()&&row.incidents().stream().noneMatch(i->i.closedAt()==null))
             throw conflict("DEVICE_NOT_ABNORMAL","锁定后重新检查未发现当前异常");
-        var device=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),true).stream()
-            .filter(d->d.device().deviceId().equals(deviceId)).findFirst().orElseThrow(DeviceMaintenanceService::missing).device();
-        String reason=row.incidents().stream().filter(i->i.closedAt()==null).map(i->i.reason())
-            .filter(java.util.Objects::nonNull).distinct().collect(Collectors.joining("；"));
-        if(reason.isBlank())reason="系统到点检查发现当前设备异常，请运维核查";
+        var inspected=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),true).stream()
+            .filter(d->d.device().deviceId().equals(deviceId)).findFirst().orElseThrow(DeviceMaintenanceService::missing);
+        var device=inspected.device();
+        // CDX-P09：系统到点检查生成的待办同样先写设备现在真正的问题，再写还没关的旧异常记录。
+        String reason=MaintenanceReason.text(row,inspected.state().hasAlarm(),clock.nowMillis());
         Row task=new Row(UUID.randomUUID().toString(),plan.planId(),row.deviceId(),plan.ownerOrgId(),plan.districtId(),
             plan.planNo(),device.deviceNo(),row.name(),reason,row.connectivity(),row.healthCode(),row.observedAt(),
             row.lastHeartbeatAt(),row.simulated(),"PENDING",null,"系统自动检查",clock.nowMillis(),null,null,null,1);
