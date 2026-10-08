@@ -60,6 +60,7 @@ final class AuditLabels {
             Map.entry("weather_simulator_observation", "接收模拟气象观测"),
             Map.entry("local_qa_notification_prepare", "准备限时模拟通知通道"),
             Map.entry("local_qa_device_prepare", "准备本机模拟反制设备"),
+            Map.entry("local_qa_device_status", "接收模拟设备状态"),
             Map.entry("weather_sensor_create", "登记天气传感器"),
             Map.entry("weather_sensor_update", "更新天气传感器"),
             Map.entry("integration_source_create", "新增接入来源"),
