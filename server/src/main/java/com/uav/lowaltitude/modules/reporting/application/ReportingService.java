@@ -136,10 +136,10 @@ public class ReportingService {
         Map<String,MetricAvailability> availability=new LinkedHashMap<>();
         availability.put("total",metric(targetsAllowed,0,"按首次发现时间去重统计新增目标；被合并进其他目标的不另计"));
         availability.put("illegal",metric(legalityAllowed,unknownLegality,"与合法性研判页同一取法：每架无人机只取最新一次研判，判非法的计入"));
-        availability.put("high_risk",metric(risksAllowed,unknownRisk,"按生成时最新风险等级统计高风险及超高风险目标；无等级目标不计入"));
+        availability.put("high_risk",metric(risksAllowed,unknownRisk,"数的是目标附近空中异物这类风险，不是告警等级：按生成时最新风险等级统计高风险及超高风险目标；没有风险记录的目标不计入"));
         availability.put("punish",metric(casesAllowed,0,"按立案时间统计案件，移送及通知不计作立案"));
         availability.put("by_type",metric(targetsAllowed,0,"生成时目标类型"));
-        availability.put("by_risk",metric(risksAllowed,unknownRisk,"无风险等级的目标归入未识别"));
+        availability.put("by_risk",metric(risksAllowed,unknownRisk,"按目标附近空中异物这类风险的等级分档，不是告警等级；没有风险记录的目标归入未识别"));
         availability.put("by_duration",new MetricAvailability("UNAVAILABLE","尚无可靠的飞行时长汇总，不能用观测时间跨度代替",null));
         availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无完整实际飞行里程依据；已观测里程单独列示",null));
         availability.put("alt_bands",metric(targetsAllowed,targets.size()-altTotal,"仅统计最新状态中有效海拔高度，缺失海拔不以离地高度替代"));
@@ -160,7 +160,7 @@ public class ReportingService {
 
     /**
      * 某一天新增的目标，与运行统计选这一天时同一份取数（ZT-17 复测 2）。数据大屏的"今日感知目标"和"重点目标风险态势"用它，
-     * 与运行统计的"新增目标数""各风险等级分布"才对得上：同一批目标（按首次发现时间归属，被合并的目标不另计，
+     * 与运行统计的"新增目标数""各异物风险等级分布"才对得上：同一批目标（按首次发现时间归属，被合并的目标不另计，
      * 同一套来源与数据范围），同一套风险分档。只要求能读目标，风险分档另要能读风险，不要求能打开运行统计菜单。
      * 不能读目标时返回 null；能读目标、不能读风险时 risks 为 null。
      */
@@ -173,7 +173,7 @@ public class ReportingService {
         TargetStates states = states(targets, false);
         int critical=0,high=0,medium=0,low=0,unknown=0;
         for (var target : targets) {
-            // 分档同"各风险等级分布"（riskLabel）：超高、高、中、低，其余（含没有风险记录）为未识别。
+            // 分档同"各异物风险等级分布"（riskLabel）：超高、高、中、低，其余（含没有风险记录）为未识别。
             String risk = states.risk(target.id());
             if ("CRITICAL".equals(risk)) critical++;
             else if ("HIGH".equals(risk)) high++;
@@ -313,7 +313,7 @@ public class ReportingService {
         line(out, "总览", "合计", "新增目标数", summary.total());
         line(out, "总览", "合计", "非法目标数", summary.illegal());
         line(out, "总览", "合计", "处罚案件数", summary.punish());
-        line(out, "总览", "合计", "高风险目标数", summary.highRisk());
+        line(out, "总览", "合计", "异物高风险目标数", summary.highRisk());
         line(out, "总览", "合计", "新增无人机目标数", summary.uav());
         line(out, "总览", "合计", "异常目标数", summary.abnormal());
         DeviceCounts devices = report.devices();
@@ -326,15 +326,15 @@ public class ReportingService {
             line(out, "分日", day.date(), "新增目标数", day.total());
             line(out, "分日", day.date(), "非法飞行", day.illegal());
             line(out, "分日", day.date(), "处罚案件", day.punish());
-            line(out, "分日", day.date(), "高风险", day.highRisk());
+            line(out, "分日", day.date(), "异物高风险", day.highRisk());
         }
         for (RegionPoint region : report.regions()) {
             line(out, "区域", region.name(), "新增目标数", region.total());
             line(out, "区域", region.name(), "非法飞行", region.illegal());
             line(out, "区域", region.name(), "处罚案件", region.punish());
-            line(out, "区域", region.name(), "高风险", region.highRisk());
+            line(out, "区域", region.name(), "异物高风险", region.highRisk());
         }
-        for (NamedCount item : report.byRisk()) line(out, "风险等级", item.name(), "数量", item.value());
+        for (NamedCount item : report.byRisk()) line(out, "异物风险等级", item.name(), "数量", item.value());
         for (NamedCount item : report.byType()) line(out, "目标类型", item.name(), "数量", item.value());
         for (NamedCount item : report.byDuration()) line(out, "飞行时长(分钟)", item.name(), "次数", item.value());
         for (NamedCount item : report.byTrack()) line(out, "轨迹长度(公里)", item.name(), "次数", item.value());
@@ -426,6 +426,6 @@ public class ReportingService {
     /** 某一天新增的目标数、其中来自设备模拟器的个数、各风险等级的个数（不能读风险时为 null）。 */
     public record DayTargets(int total, int simulated, RiskTiers risks) { }
 
-    /** 与"各风险等级分布"同一套分档：超高风险、高风险、中风险、低风险、未识别。 */
+    /** 与"各异物风险等级分布"同一套分档：超高风险、高风险、中风险、低风险、未识别。 */
     public record RiskTiers(int critical, int high, int medium, int low, int unknown) { }
 }

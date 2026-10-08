@@ -478,6 +478,12 @@ class ReportingApiTest {
         assertThat(csv).contains("\"总览\",\"合计\",\"新增目标数\",\"" + total + "\"");
         assertThat(csv).contains("\"总览\",\"合计\",\"处罚案件数\",\"" + punish + "\"");
         assertThat(csv).contains("\"元数据\",\"统计区间\",\"开始日期\",\"" + from + "\"");
+        // 新-2 第 4 点：目标的风险等级是空中异物这类风险，不是告警等级；页面、口径说明和导出都写明“异物”。
+        int highRisk = data.path("summary").path("high_risk").asInt();
+        assertThat(csv).contains("\"总览\",\"合计\",\"异物高风险目标数\",\"" + highRisk + "\"").doesNotContain("\"高风险目标数\"");
+        assertThat(csv).contains("\"异物风险等级\",\"未识别\"");
+        assertThat(data.path("availability").path("high_risk").path("reason").asText()).contains("空中异物", "不是告警等级");
+        assertThat(data.path("availability").path("by_risk").path("reason").asText()).contains("空中异物", "不是告警等级");
         assertThat(jdbc.queryForObject(
                 "select count(*) from audit_log where action='stats_export_requested' and module_code='statistics' and detail like ?",
                 Integer.class, "%from=" + from + "; to=" + to + "%")).isGreaterThan(0);

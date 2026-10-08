@@ -201,7 +201,7 @@ public class DashboardSnapshotService {
     }
 
     /**
-     * 风险分档：今日感知目标按各自最新的风险等级分档，与运行统计选今天时的"各风险等级分布"一致（ZT-17 复测 2）。
+     * 风险分档：今日感知目标按各自最新的风险等级分档，与运行统计选今天时的"各异物风险等级分布"一致（ZT-17 复测 2）。
      * 今日目标全量统计，不再抽样，truncated 恒为 false；不能读目标或风险时整块为 null。地图上的研判标签不变。
      */
     private static TargetRiskDto targetRisk(DayTargets today) {
