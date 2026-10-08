@@ -233,7 +233,7 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script>
     const events = [
-      { id: '告警-0905-004', target: '目标-0905-101', level: '低', levelClass: 'low', risk: false, reason: '无飞行授权', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
+      { id: '告警-0905-004', target: '目标-0905-101', level: '低', levelClass: 'low', risk: false, reason: '无飞行授权', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '已核实' },
       { id: '告警-0905-003', target: '目标-0905-101', level: '高', levelClass: 'high', risk: true, reason: '闯入限制空域', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '已核实' },
       { id: '告警-0905-001', target: '目标-0905-101', level: '高', levelClass: 'high', risk: true, reason: '航线偏离', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
       { id: '告警-0905-005', target: '—', level: '低', levelClass: 'low', risk: false, reason: '超视距', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
@@ -246,8 +246,7 @@
       selectedId: '告警-0905-003',
       disposal: null,
       notification: null,
-      history: [],
-      autoTimer: null
+      history: []
     }
 
     const app = document.querySelector('#app')
@@ -302,13 +301,15 @@
     }
 
     function stats() {
+      const pending = events.filter(item => item.status === '待核实').length
+      const confirmed = events.filter(item => item.status === '已核实').length
       return `
         <section class="stats" aria-label="告警统计">
-          <div class="stat total"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">今日告警总数</div><div class="stat-value">6</div></div></div>
-          <div class="stat pending"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">待核实</div><div class="stat-value">5</div></div></div>
+          <div class="stat total"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">今日告警总数</div><div class="stat-value">${events.length}</div></div></div>
+          <div class="stat pending"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">待核实</div><div class="stat-value">${pending}</div></div></div>
           <div class="stat counter"><div class="stat-icon">◔</div><div class="stat-info"><div class="stat-label">反制中</div><div class="stat-value">0</div></div></div>
           <div class="stat jam"><div class="stat-icon">◴</div><div class="stat-info"><div class="stat-label">干扰中</div><div class="stat-value">0</div></div></div>
-          <div class="stat confirmed"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">告警已确认</div><div class="stat-value">1</div></div></div>
+          <div class="stat confirmed"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">告警已确认</div><div class="stat-value">${confirmed}</div></div></div>
           <div class="stat false"><div class="stat-icon">✓</div><div class="stat-info"><div class="stat-label">误报</div><div class="stat-value">0</div></div></div>
         </section>`
     }
@@ -361,7 +362,7 @@
           <div class="detail-top"><div><div class="detail-kicker">告警事件 · ${item.risk ? '有风险' : '无风险'}</div><h2 class="detail-name">无人机入侵</h2><div class="detail-id">${item.id}</div></div><span class="level ${item.levelClass}">${item.level}</span></div>
           <div class="detail-badges"><span class="tag ${isConfirmed ? 'confirm' : 'pending'}">${isConfirmed ? '已核实' : '待核实'}</span><span class="tag ${item.risk ? 'pending' : 'neutral'}">${item.risk ? '有风险依据' : '无风险依据'}</span></div>
           <div class="detail-grid"><div><div class="detail-label">关联目标</div><div class="detail-value">${item.target}</div></div><div><div class="detail-label">发生时间</div><div class="detail-value">${item.time}</div></div><div><div class="detail-label">所属区域</div><div class="detail-value">${item.area}</div></div><div><div class="detail-label">违规原因</div><div class="detail-value">${item.reason}</div></div></div>
-          ${isConfirmed ? `<div class="handoff-banner"><div class="handoff-copy"><strong>已由合法性判定页核实</strong><span>告警已自动进入处置页，告警页不再重复核实。</span></div><button class="primary-btn" data-enter-disposal>查看处置</button></div>` : `<div class="handoff-banner"><div class="handoff-copy"><strong>等待合法性判定页核实</strong><span>关联告警核实后，将自动进入处置页。</span></div><button class="ghost-btn" data-demo-confirm>模拟核实</button></div>`}
+          ${isConfirmed ? `<div class="handoff-banner"><div class="handoff-copy"><strong>已由合法性判定页核实</strong><span>告警已自动进入处置页，告警页不再重复核实。</span></div><button class="primary-btn" data-enter-disposal>查看处置</button></div>` : `<div class="handoff-banner"><div class="handoff-copy"><strong>等待合法性判定页核实</strong><span>关联告警核实后，将自动进入处置页。</span></div></div>`}
           <div class="detail-section"><h3>处置进度</h3><p>${isConfirmed ? '处置页已生成待办理事项，等待操作人员查看风险依据。' : '尚未进入处置页。'}</p></div>
         </section>`
     }
@@ -429,11 +430,6 @@
       }))
       document.querySelectorAll('[data-enter-disposal]').forEach(button => button.addEventListener('click', () => {
         enterDisposal()
-      }))
-      document.querySelectorAll('[data-demo-confirm]').forEach(button => button.addEventListener('click', () => {
-        currentEvent().status = '已核实'
-        showToast('已模拟合法性页核实，正在进入处置页')
-        window.setTimeout(enterDisposal, 620)
       }))
       document.querySelectorAll('[data-back-alarm], [data-nav="alarm"]').forEach(button => button.addEventListener('click', () => {
         window.location.hash = '#alarm'
