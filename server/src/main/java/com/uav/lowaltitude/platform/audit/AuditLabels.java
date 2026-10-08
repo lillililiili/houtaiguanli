@@ -222,6 +222,7 @@ final class AuditLabels {
             Map.entry("notification_setting_updated", "更新通知配置"),
             Map.entry("plan_device_checked", "核实任务执行设备"),
             Map.entry("plan_feedback_submitted", "提交任务执行反馈"),
+            Map.entry("flight_execution_fact_received", "接收飞行执行事实"),
             Map.entry("auto_sms_retry_requested", "申请补发自动短信"),
             Map.entry("auto_voice_retry_requested", "申请补发自动电话"),
             Map.entry("device_delete", "删除设备"),
