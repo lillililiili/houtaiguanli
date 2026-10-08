@@ -97,13 +97,31 @@ class AutomationRuntimeFactsRepositoryTest {
         jdbc.update("UPDATE target SET owner_org_id='other'");
         assertThat(repository.read("event",NOW)).isNull();
     }
-    @Test void currentRiskMustMatchLatestObservationAndNeverUsesOldAlarmGrade() {
-        risk("old",NOW-1_000,NOW-1_000,"HIGH","ILLEGAL");
-        assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
+    @Test void currentRiskUsesLatestFreshJudgementAndNeverUsesOldAlarmGrade() {
+        // 最新一帧还没研判时用最近一次研判（规则引擎对老目标 5 秒才重评一次），时间记研判的那一帧。
+        risk("previous",NOW-4_000,NOW-3_900,"HIGH","ILLEGAL");
+        var lagging=repository.read("event",NOW).facts();
+        assertThat(lagging.get("riskLevel").value()).isEqualTo("HIGH");
+        assertThat(lagging.get("riskLevel").observedAt()).isEqualTo(NOW-4_000);
+        assertThat(lagging.get("disposeFreshness").value()).isEqualTo("4.000");
         risk("current",NOW,NOW,"MEDIUM","ABNORMAL");
         assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isEqualTo("MEDIUM");
         jdbc.update("UPDATE rule_evaluation SET grade=NULL,legal_status='LEGAL' WHERE evaluation_id='current'");
         assertThat(repository.read("event",NOW).facts().get("riskActive").value()).isEqualTo("false");
+        assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
+    }
+    @Test void judgementOfExpiredFutureOrUnjudgedNewerObservationIsNotCurrentRisk() {
+        risk("expired",NOW-31_000,NOW-1_000,"HIGH","ILLEGAL");
+        assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
+        jdbc.update("DELETE FROM rule_evaluation");
+        risk("ahead-of-state",NOW-500,NOW-400,"HIGH","ILLEGAL");
+        when(states.latestState("target")).thenReturn(state(NOW-1_000));
+        assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
+        when(states.latestState("target")).thenReturn(state(NOW));
+        jdbc.update("DELETE FROM rule_evaluation");
+        risk("evaluated-later",NOW-1_000,NOW+1,"HIGH","ILLEGAL");
+        assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
+        jdbc.update("UPDATE rule_evaluation SET evaluated_at=?,freshness_code='STALE'",at(NOW-900));
         assertThat(repository.read("event",NOW).facts().get("riskLevel").value()).isNull();
     }
     @Test void h2WithoutSpatialSupportIsUnknown() {
