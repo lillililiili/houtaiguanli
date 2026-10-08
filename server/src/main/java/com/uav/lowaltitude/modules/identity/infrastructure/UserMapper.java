@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
+import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 import com.uav.lowaltitude.modules.identity.domain.AppUser;
 
 @Mapper
@@ -61,6 +62,7 @@ public interface UserMapper {
     int recoverSuperAdmin(@Param("userId") String userId, @Param("passwordHash") String passwordHash,
             @Param("at") long at);
 
-    @Select("SELECT COUNT(*) FROM app_user")
-    int count();
+    /** 空库判断用：迁移随安装建好的自动规则发起人（停用、不能登录）不算已有账号。 */
+    @Select("SELECT COUNT(*) FROM app_user WHERE user_id <> '" + AutomationPrincipal.USER_ID + "'")
+    int countExceptAutomationPrincipal();
 }

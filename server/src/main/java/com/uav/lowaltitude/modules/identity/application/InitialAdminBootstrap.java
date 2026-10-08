@@ -42,7 +42,8 @@ public class InitialAdminBootstrap implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        if (userMapper.count() > 0) return;
+        // 迁移随安装建好的自动规则发起人不算已有账号，否则空库建不出管理员、谁都登不进去。
+        if (userMapper.countExceptAutomationPrincipal() > 0) return;
         AppProperties.BootstrapAdmin config = properties.getBootstrapAdmin();
         String account = required(config.getAccount(), "APP_SUPER_ADMIN_ACCOUNT");
         validateAccount(account);
