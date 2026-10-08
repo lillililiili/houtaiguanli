@@ -62,6 +62,11 @@ public class NoCounterRepository {
         Basis basis=current==null?null:current.basis();
         return new Snapshot(basis,reason,decision,active,review,new FrozenBasis(basis,reviewFrom,observed.stream().map(e->e.basis().evaluationId()).toList()));
     }
+    /** 只看结论、不算当前依据（告警导出“处置进度”用）：没有不反制决定返回 null，决定仍有效返回 false，风险变了要重新决策返回 true。 */
+    public Boolean reviewRequired(EventRow event) {
+        Decision decision=decision(event.eventId());
+        return decision==null?null:reviewRequired(event,decision);
+    }
     public boolean active(String eventId) {
         Decision decision=decision(eventId);
         if(decision==null)return false;

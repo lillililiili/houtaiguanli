@@ -111,7 +111,7 @@ class AlarmViolationReasonFilterApiTest {
         String csv = mvc.perform(get("/api/v1/alarms/export.csv").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
         List<String> lines = csv.lines().toList();
-        assertThat(lines.get(0).replace("\uFEFF", "")).startsWith("编号,告警类别,违规原因,等级,状态");
+        assertThat(lines.get(0).replace("\uFEFF", "")).startsWith("编号,告警类别,违规原因,等级,核实状态,处置进度");
         Map<String, String> reasonByNo = new java.util.HashMap<>();
         for (String line : lines.subList(1, lines.size())) {
             String[] cells = line.split(",", 4);

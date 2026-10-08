@@ -3,7 +3,9 @@ package com.uav.lowaltitude.modules.alarm.application;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.springframework.http.HttpStatus;
@@ -51,10 +53,12 @@ public class AlarmReadService {
     private final AuditService audit;
     private final AppClock clock;
     private final ObjectMapper json;
+    private final UavAdvisoryService advisory;
 
     public AlarmReadService(AccessControlService access, AlarmReadRepository repository, AuditService audit,
-            AppClock clock, ObjectMapper json) {
+            AppClock clock, ObjectMapper json, UavAdvisoryService advisory) {
         this.access = access; this.repository = repository; this.audit = audit; this.clock = clock; this.json = json;
+        this.advisory = advisory;
     }
 
     /**
@@ -80,7 +84,14 @@ public class AlarmReadService {
                     "导出行数超过 " + CsvExport.MAX_ROWS + " 条，请先缩小筛选范围");
         }
         List<AlarmRow> rows = repository.listForExport(query, decision, CsvExport.MAX_ROWS, sort, order);
-        List<List<String>> cells = rows.stream().map(this::exportRow).toList();
+        // 处置进度按事件算一次（同一事件的几条告警共用）；反制进度只给有处置查看权限的人写，和页面一样。
+        AccessDecision disposalDecision = optional(PermissionCode.DISPOSAL_READ);
+        Map<String, String> progress = new HashMap<>();
+        for (AlarmRow row : rows) {
+            if (row.eventId() != null && !progress.containsKey(row.eventId()))
+                progress.put(row.eventId(), advisory.progressLabel(row.eventId(), decision, disposalDecision));
+        }
+        List<List<String>> cells = rows.stream().map(row -> exportRow(row, progress.get(row.eventId()))).toList();
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarms", "alarms_exported", "alarm", null,
                 "filters=" + describe(query, sort, order) + "; rows=" + cells.size(), "SUCCESS", "", "");
@@ -88,18 +99,26 @@ public class AlarmReadService {
                 EXPORT_HEADERS, cells);
     }
 
-    /** 列头用中文，与页面列一致——导出给的是给人看的表，不是接口字段名。 */
+    /**
+     * 列头用中文，与页面列一致——导出给的是给人看的表，不是接口字段名。
+     * 页面“状态”一列把核实结论和处置进度合在一起显示；导出分成“核实状态”“处置进度”两列（2026-10-08 新-2 第 5 点），
+     * 否则待定是否反制、已移送处罚在表里都只剩“告警已确认”。
+     */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "编号", "告警类别", "违规原因", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
+            "编号", "告警类别", "违规原因", "等级", "核实状态", "处置进度", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
 
-    private List<String> exportRow(AlarmRow row) {
+    private AccessDecision optional(PermissionCode permission) {
+        try { return access.require(permission); } catch (ApiException denied) { return null; }
+    }
+
+    private List<String> exportRow(AlarmRow row, String progress) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。
         // 违规原因与列表同源（UX-61）：升级过取最近一次升级的累计原因，否则取告警明细的 violation_reasons。
         return java.util.Arrays.asList(row.displayNo(),
                 com.uav.lowaltitude.platform.export.CsvLabels.alarmType(row.alarmType()),
                 com.uav.lowaltitude.platform.export.CsvLabels.violationReasons(violations(row)),
                 com.uav.lowaltitude.platform.export.CsvLabels.severity(row.severity()),
-                com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()),
+                com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()), progress,
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
                 row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()));
     }

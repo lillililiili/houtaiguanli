@@ -39,6 +39,8 @@ public class NoCounterService {
         if(event==null)throw missing();
         return status(event);
     }
+    /** 告警导出的“处置进度”只要结论（调用方已按告警读取权限和范围取到事件）：null 没有不反制决定，false 决定仍有效，true 风险变了待重新决策。 */
+    public Boolean reviewRequired(EventRow event) { return repository.reviewRequired(event); }
     /** Caller has already authorized ALARM_READ and the supplied event scope. */
     public Status status(EventRow event) {
         var snapshot=repository.snapshot(event);
