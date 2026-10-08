@@ -201,6 +201,7 @@ class C02ChecksTest {
         // 决策 8.5-28：飞手位置可能保留自若干帧之前，判定依据里必须带上它的观测时刻，读的人才知道有多旧。
         assertThat(far.facts()).containsEntry("pilot_observed_at", AS_OF.minusMinutes(3));
         assertThat(far.message()).contains("演示");
+        assertThat(far.message()).isEqualTo("超视距飞行（飞手离无人机约 1112 米，超过 500 米）；参数为 DEMO 演示值，尚未确认");
 
         HitDetail near = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.021"), full(), List.of(), null), params);
         assertThat(near.resultCode()).isEqualTo(ResultCode.PASS);
@@ -213,6 +214,29 @@ class C02ChecksTest {
         HitDetail missing = new VisualLineOfSightCheck().evaluate(context(noTarget, full(), List.of(), null), params);
         assertThat(missing.resultCode()).isEqualTo(ResultCode.UNDETERMINED);
         assertThat(missing.reasonCode()).isEqualTo("POSITION_UNKNOWN");
+    }
+
+    /**
+     * 超视距告警的可读原因：距离四舍五入到米，阈值取本版本 C02-6.vlos_m（去掉无意义的小数位）。
+     * 飞手正北偏移：纬度差 Δ 度的大圆距离 = 6371008.8 m × Δ × π/180，501/800/3000 m 超阈值，499 m 不超。
+     */
+    @Test
+    void visualLineOfSightReasonQuotesTheRoundedDistanceAndTheThreshold() {
+        String[][] beyond = {{"37.0245056", "501"}, {"37.0271946", "800"}, {"37.0469796", "3000"}};
+        for (String[] row : beyond) {
+            HitDetail fail = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", row[0]), full(), List.of(), null), params);
+            assertThat(fail.resultCode()).isEqualTo(ResultCode.FAIL);
+            assertThat(fail.reasonCode()).isEqualTo("BVLOS_EXCEEDED");
+            assertThat(fail.message()).isEqualTo("超视距飞行（飞手离无人机约 " + row[1] + " 米，超过 500 米）；参数为 DEMO 演示值，尚未确认");
+            assertThat(((BigDecimal) fail.facts().get("distance_m")).setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()).isEqualTo(row[1]);
+        }
+        HitDetail within = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.0244876"), full(), List.of(), null), params);
+        assertThat(within.resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(((BigDecimal) within.facts().get("distance_m")).doubleValue()).isBetween(498.5, 500.0);
+        // 阈值写成 500.0 的版本，原因里也是"500 米"。
+        HitDetail decimal = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.0271946"), full(), List.of(), null),
+                TestRuleParams.demoCatalog().put("C02-6", "vlos_m", "500.0"));
+        assertThat(decimal.message()).startsWith("超视距飞行（飞手离无人机约 800 米，超过 500 米）");
     }
 
     @Test

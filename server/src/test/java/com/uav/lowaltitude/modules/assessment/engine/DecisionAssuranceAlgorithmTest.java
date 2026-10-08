@@ -103,6 +103,29 @@ class DecisionAssuranceAlgorithmTest {
         assertThat(assess(context("mock", Freshness.FRESH, full(), "0.10", goodTrack()), hits).status()).isEqualTo("INSUFFICIENT");
     }
 
+    /** 2026-10-07 起单独超视距判 ILLEGAL：飞手与目标的两点距离本身就是明确依据，数据与计划都齐全时可直接采纳，不再要求"关键依据缺失"复核。 */
+    @Test void explicitBvlosViolationWithCompleteEvidenceIsReliable() {
+        var context = context("mock", Freshness.FRESH, full(), "0.95", goodTrack());
+        var hits = replace(checks(), hit("C02-6", ResultCode.FAIL, "BVLOS_EXCEEDED"));
+        var verdict = new C03Decision().decide(context, hits, params);
+        assertThat(verdict.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(verdict.grade()).isEqualTo("LOW");
+        var result = algorithm.assess(context, hits, verdict, params);
+        assertThat(result.status()).isEqualTo("SUFFICIENT");
+        assertThat(result.reasons()).isEmpty();
+    }
+
+    /** 超视距不放宽其余复核要求：身份未核实、实测数据配演示参数、置信度不足时仍不充分，且原因写清楚，不笼统写"关键依据缺失"。 */
+    @Test void bvlosViolationKeepsTheUsualReviewRequirements() {
+        var hits = replace(checks(), hit("C02-6", ResultCode.FAIL, "BVLOS_EXCEEDED"));
+        var partial = new PlanMatch(PlanMatchCode.PARTIAL, full().plan(), Map.of(), List.of("IDENTITY_CLUE_MISSING"));
+        var unverified = assess(context("mock", Freshness.FRESH, partial, "0.95", goodTrack()), hits);
+        assertThat(unverified.status()).isEqualTo("INSUFFICIENT");
+        assertThat(unverified.reasons()).contains("IDENTITY_CLUE_MISSING").doesNotContain("DECISIVE_EVIDENCE_MISSING");
+        assertThat(assess(context("live", Freshness.FRESH, full(), "0.95", goodTrack()), hits).reasons()).contains("DEMO_RULE_PARAMETERS");
+        assertThat(assess(context("mock", Freshness.FRESH, full(), "0.10", goodTrack()), hits).status()).isEqualTo("INSUFFICIENT");
+    }
+
     @Test void staleAndMissingObservationsRemainNotApplicable() {
         var stale = assess(context("mock", Freshness.STALE, full(), "0.95", goodTrack()), checks());
         assertThat(stale.status()).isEqualTo("NOT_APPLICABLE");

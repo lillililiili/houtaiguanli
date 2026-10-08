@@ -21,6 +21,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TargetState;
  * 走廊那类涉及几何图形的判定才必须交给数据库。
  * 飞手位置缺失仍是 PILOT_POSITION_UNAVAILABLE（阶段 8.5 之前恒定如此，C03 默认经 ignore_undetermined_rules 忽略）；
  * 只有飞手位置而目标位置缺失时是 POSITION_UNKNOWN——单边坐标算不出距离，也不能当成"没接入"。
+ * FAIL（BVLOS_EXCEEDED）单独出现时 C03 判 ILLEGAL、告警等级固定为低风险（2026-10-07 业务决定，见 C03Decision 第 6 步）。
  */
 @Component
 public class VisualLineOfSightCheck implements RuleCheck {
@@ -55,8 +56,11 @@ public class VisualLineOfSightCheck implements RuleCheck {
         BigDecimal distance = greatCircleMetres(state.longitude(), state.latitude(), state.pilotLongitude(), state.pilotLatitude());
         facts.put("distance_m", distance);
         if (distance.compareTo(threshold) > 0) {
+            // 这句就是超视距告警的可读原因（研判明细 hit_details[].message）：距离取整到米、阈值取本版本参数，
+            // 精确距离仍在 facts.distance_m。
             return CheckSupport.fail(ruleCode(), RuleCodes.BVLOS_EXCEEDED, facts, refs, evidence,
-                    "目标距飞手 " + distance.toPlainString() + " m，超过视距阈值 " + threshold.toPlainString() + " m");
+                    "超视距飞行（飞手离无人机约 " + distance.setScale(0, RoundingMode.HALF_UP).toPlainString()
+                            + " 米，超过 " + threshold.stripTrailingZeros().toPlainString() + " 米）");
         }
         return CheckSupport.pass(ruleCode(), facts, refs, evidence,
                 "目标距飞手 " + distance.toPlainString() + " m，在视距阈值内");

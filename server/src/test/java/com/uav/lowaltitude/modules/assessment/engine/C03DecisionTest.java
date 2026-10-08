@@ -101,7 +101,8 @@ class C03DecisionTest {
 
     @Test
     void missingSeverityParameterOnlyLowersTheScoreAndNeverAbortsTheDecision() {
-        // 规则集没有 C03.severity.BVLOS_EXCEEDED（待业务确认，不猜填）：无计划且超视距仍要给出结论，缺项的原因码按 0 参与评分。
+        // 已发布的旧版本没有 C03.severity.BVLOS_EXCEEDED（从未猜填）：无计划且超视距仍要给出结论。
+        // 2026-10-07 起超视距根本不经严重度评分（见下面的超视距用例），缺项与否都不影响无授权单独时的结论。
         PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
         EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), none);
         List<HitDetail> hits = List.of(pass("C02-1"), fail("C02-6", "BVLOS_EXCEEDED"));
@@ -109,15 +110,143 @@ class C03DecisionTest {
         assertThat(legacy.status()).isEqualTo(LegalStatus.ILLEGAL);
         assertThat(legacy.violationReasons()).containsExactly("NO_AUTHORIZATION", "BVLOS_EXCEEDED");
         assertThat(legacy.reasonCode()).isEqualTo("NO_AUTHORIZATION");
-        // 100*(0.4*0.8+0.25*1+0.1*0.1)=58 → MEDIUM；将来确认的严重度只要低于无授权 0.8，结论与评分不变。
+        // 100*(0.4*0.8+0.25*1+0.1*0.1)=58 → MEDIUM；即使某个版本给超视距配了严重度，结论与评分也不变。
         assertThat(legacy.score()).isEqualByComparingTo("58.00");
         assertThat(legacy.grade()).isEqualTo("MEDIUM");
         Decision confirmed = decision.decide(ctx, hits, TestRuleParams.demoCatalog().put("C03", "severity.BVLOS_EXCEEDED", "0.3"));
         assertThat(confirmed.status()).isEqualTo(LegalStatus.ILLEGAL);
         assertThat(confirmed.score()).isEqualByComparingTo("58.00");
+        // 其他原因码缺严重度时按 0 计分、照常给出结论：夜航缺项 → 100*(0.1*0.1)=1 → LOW，仍是 ILLEGAL。
+        Decision night = decision.decide(context(Freshness.FRESH, state("0.90"), goodTrack(), full()), List.of(fail("C02-5", "NIGHT_FLIGHT")),
+                TestRuleParams.demoCatalog().without("C03", "severity.NIGHT_FLIGHT"));
+        assertThat(night.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(night.reasonCode()).isEqualTo("NIGHT_FLIGHT");
+        assertThat(night.score()).isEqualByComparingTo("1.00");
+        assertThat(night.grade()).isEqualTo("LOW");
         // 只有严重度可以缺项；权重、等级阈值等其他参数缺失仍是部署错误。
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> decision.decide(ctx, hits, TestRuleParams.demoCatalog().without("C03", "w.violation")));
+    }
+
+    /**
+     * 2026-10-07 业务决定：只有超视距（C02-6 FAIL）一项违规 → ILLEGAL，原因 BVLOS_EXCEEDED，等级固定 LOW，不看加权分数。
+     * 逻辑写在 C03 里而不是参数里，所以已发布、没有 severity.BVLOS_EXCEEDED 的旧版本（本用例的 DEMO 目录）不重新发布也照此执行。
+     */
+    @Test
+    void bvlosAloneIsIllegalWithAFixedLowGrade() {
+        EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), full());
+        Decision bvlos = decision.decide(ctx, allPassExcept(fail("C02-6", "BVLOS_EXCEEDED")), params);
+        assertThat(bvlos.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(bvlos.reasonCode()).isEqualTo("BVLOS_EXCEEDED");
+        assertThat(bvlos.violationReasons()).containsExactly("BVLOS_EXCEEDED");
+        assertThat(bvlos.unknownReasons()).isEmpty();
+        // 超视距不计严重度：100*(0.1*0.1)=1。
+        assertThat(bvlos.score()).isEqualByComparingTo("1.00");
+        assertThat(bvlos.grade()).isEqualTo("LOW");
+
+        // 加权分数够得上 HIGH 也仍是 LOW：无计划按参数视为合法（C01 FAIL 不带违规原因码，不算第二项违规）、
+        // 计划权重调到 0.9、并给超视距配上最高严重度——100*(0.9*1+0.1*0.1)=91，等级照样固定 LOW。
+        PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        TestRuleParams heavy = TestRuleParams.demoCatalog().put("C03", "no_plan_status", "LEGAL").put("C03", "w.plan_match", "0.90")
+                .put("C03", "severity.BVLOS_EXCEEDED", "1.0");
+        List<HitDetail> noPlanHits = new java.util.ArrayList<>(allPassExcept(fail("C02-6", "BVLOS_EXCEEDED")));
+        noPlanHits.set(0, fail("C01", null));
+        Decision fixed = decision.decide(context(Freshness.FRESH, state("0.90"), goodTrack(), none), noPlanHits, heavy);
+        assertThat(fixed.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(fixed.violationReasons()).containsExactly("BVLOS_EXCEEDED");
+        assertThat(fixed.score()).isEqualByComparingTo("91.00");
+        assertThat(fixed.grade()).isEqualTo("LOW");
+
+        // 在阈值内（PASS）或没有飞手位置（未知，C03.ignore_undetermined_rules=C02-6 忽略）：LEGAL，不因 C02-6 变成不可判定。
+        assertThat(decision.decide(ctx, allPassExcept(pass("C02-6")), params).status()).isEqualTo(LegalStatus.LEGAL);
+        Decision noPilot = decision.decide(ctx, allPassExcept(undetermined("C02-6", "PILOT_POSITION_UNAVAILABLE")), params);
+        assertThat(noPilot.status()).isEqualTo(LegalStatus.LEGAL);
+        assertThat(noPilot.violationReasons()).isEmpty();
+        assertThat(noPilot.unknownReasons()).containsExactly("PILOT_POSITION_UNAVAILABLE");
+    }
+
+    /**
+     * 超视距与其他违规同时出现：状态、分数、等级、主原因与去掉超视距时逐项相同，只是 violation_reasons 多一个 BVLOS_EXCEEDED。
+     * 超视距不参与严重度取最大，所以旧版本缺 severity.BVLOS_EXCEEDED、或者某个版本把它配成最高的 1.0，都抬不高也压不低组合结论；
+     * 超视距排在列表最前、其他原因又缺严重度时，主原因也不会落到超视距上。
+     */
+    @Test
+    void bvlosNeverRaisesOrLowersTheResultOfOtherViolations() {
+        PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        PlanMatch ambiguous = new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS"));
+        // {计划匹配, 其他检查结果, 不带超视距时的等级}：禁飞+无计划 81、无计划 58、禁飞+计划不明 68.5、限高 52、偏航 25、夜航+计划高度 21。
+        List<Object[]> cases = List.of(
+                new Object[]{none, List.of(fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE")), "HIGH"},
+                new Object[]{none, List.of(pass("C02-1")), "MEDIUM"},
+                new Object[]{ambiguous, List.of(undetermined("C01", "PLAN_AMBIGUOUS"), fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE")), "HIGH"},
+                new Object[]{full(), List.of(fail("C02-2", "AIRSPACE_ALTITUDE_EXCEEDED")), "MEDIUM"},
+                new Object[]{full(), List.of(fail("C02-3", "ROUTE_DEVIATION")), "LOW"},
+                new Object[]{full(), List.of(fail("C02-5", "NIGHT_FLIGHT"), fail("C02-7", "PLAN_ALTITUDE_EXCEEDED")), "LOW"});
+        List<TestRuleParams> catalogs = List.of(TestRuleParams.demoCatalog(),
+                TestRuleParams.demoCatalog().put("C03", "severity.BVLOS_EXCEEDED", "1.0"),
+                TestRuleParams.demoCatalog().put("C03", "severity.BVLOS_EXCEEDED", "0"));
+        HitDetail bvlos = fail("C02-6", "BVLOS_EXCEEDED");
+        for (TestRuleParams catalog : catalogs) {
+            for (Object[] row : cases) {
+                PlanMatch match = (PlanMatch) row[0];
+                @SuppressWarnings("unchecked") List<HitDetail> others = (List<HitDetail>) row[1];
+                EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), match);
+                Decision without = decision.decide(ctx, others, catalog);
+                List<HitDetail> after = new java.util.ArrayList<>(others); after.add(bvlos);
+                List<HitDetail> before = new java.util.ArrayList<>(); before.add(bvlos); before.addAll(others);
+                assertThat(without.status()).isEqualTo(LegalStatus.ILLEGAL);
+                assertThat(without.grade()).as("基线 %s", others).isEqualTo(row[2]);
+                for (List<HitDetail> hits : List.of(after, before)) {
+                    Decision with = decision.decide(ctx, hits, catalog);
+                    assertThat(with.status()).isEqualTo(without.status());
+                    assertThat(with.score()).as("分数 %s", hits).isEqualByComparingTo(without.score());
+                    assertThat(with.grade()).as("等级 %s", hits).isEqualTo(without.grade());
+                    assertThat(with.reasonCode()).as("主原因 %s", hits).isEqualTo(without.reasonCode());
+                    assertThat(with.unknownReasons()).isEqualTo(without.unknownReasons());
+                    List<String> expected = new java.util.ArrayList<>(without.violationReasons()); expected.add("BVLOS_EXCEEDED");
+                    assertThat(with.violationReasons()).containsExactlyInAnyOrderElementsOf(expected);
+                }
+            }
+        }
+        // 另一项违规缺严重度（按 0 计）且超视距排在前面：主原因仍是那项违规，分数等级同样不变。
+        TestRuleParams legacy = TestRuleParams.demoCatalog().without("C03", "severity.PLAN_ALTITUDE_EXCEEDED");
+        EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), full());
+        Decision without = decision.decide(ctx, List.of(fail("C02-7", "PLAN_ALTITUDE_EXCEEDED")), legacy);
+        Decision with = decision.decide(ctx, List.of(bvlos, fail("C02-7", "PLAN_ALTITUDE_EXCEEDED")), legacy);
+        assertThat(with.reasonCode()).isEqualTo(without.reasonCode()).isEqualTo("PLAN_ALTITUDE_EXCEEDED");
+        assertThat(with.score()).isEqualByComparingTo(without.score());
+        assertThat(with.grade()).isEqualTo(without.grade());
+    }
+
+    /**
+     * 超视距排在行为类之后（第 6 步）：过期、质量门、计划不明、空域未知、无计划按参数不可判定时，照旧先给出这些结论；
+     * 只有不阻断第 5 步的其余未知（如计划时段未知）同样不阻断超视距，结论 ILLEGAL/LOW，未知原因留给复核。
+     */
+    @Test
+    void bvlosDoesNotOverrideEarlierShortCircuits() {
+        HitDetail bvlos = fail("C02-6", "BVLOS_EXCEEDED");
+        assertThat(decision.decide(context(Freshness.STALE, state("0.90"), goodTrack(), full()), List.of(bvlos), params).status())
+                .isEqualTo(LegalStatus.NOT_APPLICABLE);
+        Decision lowConfidence = decision.decide(context(Freshness.FRESH, state("0.50"), goodTrack(), full()), List.of(bvlos), params);
+        assertThat(lowConfidence.status()).isEqualTo(LegalStatus.UNDETERMINED);
+        assertThat(lowConfidence.violationReasons()).containsExactly("BVLOS_EXCEEDED");
+        PlanMatch ambiguous = new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS"));
+        Decision unclearPlan = decision.decide(context(Freshness.FRESH, state("0.90"), goodTrack(), ambiguous),
+                List.of(undetermined("C01", "PLAN_AMBIGUOUS"), bvlos), params);
+        assertThat(unclearPlan.status()).isEqualTo(LegalStatus.UNDETERMINED);
+        assertThat(unclearPlan.unknownReasons()).contains("PLAN_AMBIGUOUS");
+        EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), full());
+        Decision boundary = decision.decide(ctx, List.of(undetermined("C02-1", "BOUNDARY_POLICY_UNKNOWN"), bvlos), params);
+        assertThat(boundary.status()).isEqualTo(LegalStatus.UNDETERMINED);
+        assertThat(boundary.unknownReasons()).contains("BOUNDARY_POLICY_UNKNOWN");
+        PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        assertThat(decision.decide(context(Freshness.FRESH, state("0.90"), goodTrack(), none), List.of(fail("C01", null), bvlos),
+                TestRuleParams.demoCatalog().put("C03", "no_plan_status", "UNDETERMINED")).status()).isEqualTo(LegalStatus.UNDETERMINED);
+        Decision planTime = decision.decide(ctx, List.of(undetermined("C02-4", "PLAN_TIME_UNKNOWN"), bvlos), params);
+        assertThat(planTime.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(planTime.grade()).isEqualTo("LOW");
+        assertThat(planTime.reasonCode()).isEqualTo("BVLOS_EXCEEDED");
+        assertThat(planTime.unknownReasons()).containsExactly("PLAN_TIME_UNKNOWN");
     }
 
     @Test
@@ -196,4 +325,9 @@ class C03DecisionTest {
     private static HitDetail pass(String code) { return new HitDetail(code, "rv-" + code, ResultCode.PASS, null, null, Map.of(), List.of(), List.of(), "通过"); }
     private static HitDetail fail(String code, String reason) { return new HitDetail(code, "rv-" + code, ResultCode.FAIL, reason, null, Map.of(), List.of(), List.of(), "未通过"); }
     private static HitDetail undetermined(String code, String reason) { return new HitDetail(code, "rv-" + code, ResultCode.UNDETERMINED, reason, null, Map.of(), List.of(), List.of(), "未知"); }
+    /** C01、C02-1…C02-8 全部 PASS，只把 replacement 那一条换掉。 */
+    private static List<HitDetail> allPassExcept(HitDetail replacement) {
+        return List.of("C01", "C02-1", "C02-2", "C02-3", "C02-4", "C02-5", "C02-6", "C02-7", "C02-8").stream()
+                .map(code -> code.equals(replacement.ruleCode()) ? replacement : pass(code)).toList();
+    }
 }

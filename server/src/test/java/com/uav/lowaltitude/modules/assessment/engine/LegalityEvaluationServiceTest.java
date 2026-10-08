@@ -418,6 +418,48 @@ class LegalityEvaluationServiceTest {
         assertThat(near.path("facts").path("distance_m").asDouble()).isLessThan(500.0);
     }
 
+    /**
+     * 2026-10-07：只有超视距一项违规 → ILLEGAL、等级 LOW、可告警，计划与身份都对得上时证据充分。
+     * 目标在 POINT(118.025 37.025)，飞手正北 0.0071946° 约 800 m；没有飞手位置时仍是 LEGAL、不告警。
+     */
+    @Test
+    void bvlosAloneIsIllegalWithLowGradeAndEligibleForAlarm() throws Exception {
+        var legal = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(legal.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+        assertThat(legal.unknownReasons()).containsExactly("PILOT_POSITION_UNAVAILABLE");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+
+        setPilot("118.025 37.0321946");
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(result.grade()).isEqualTo("LOW");
+        assertThat(result.violationReasons()).containsExactly("BVLOS_EXCEEDED");
+        assertThat(result.unknownReasons()).isEmpty();
+        assertThat(hooks.outcomes.get(1).alarmEligible()).isTrue();
+        assertThat(hooks.outcomes.get(1).grade()).isEqualTo("LOW");
+        Map<String, Object> row = jdbc.queryForMap("select grade,decision_assurance_code,hit_details from rule_evaluation where evaluation_id=?", result.evaluationId());
+        assertThat(row.get("grade")).isEqualTo("LOW");
+        assertThat(row.get("decision_assurance_code")).isEqualTo("SUFFICIENT");
+        assertThat(check(row.get("hit_details"), "C02-6").path("message").asText())
+                .isEqualTo("超视距飞行（飞手离无人机约 800 米，超过 500 米）；参数为 DEMO 演示值，尚未确认");
+    }
+
+    /**
+     * 超视距与依据不足的行为偏差同时出现时，结论与没有超视距时一致：计划高度越界但目标身份未核实，照旧降为不可判定、不告警
+     * （同 planAltitudeViolationWithUnverifiedIdentityStaysUndeterminedAndDoesNotCreateAlarm），超视距不改变这个结论。
+     */
+    @Test
+    void bvlosBesideAnUnverifiedBehaviourViolationKeepsTheResultWithoutIt() {
+        jdbc.update("update target_latest_state set altitude_amsl_m=130 where target_id=?", targetId);
+        jdbc.update("update target set uav_sn=null where target_id=?", targetId);
+        setPilot("118.025 37.0321946");
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
+        assertThat(result.violationReasons()).containsExactlyInAnyOrder("PLAN_ALTITUDE_EXCEEDED", "BVLOS_EXCEEDED");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+    }
+
     private void setPilot(String point) {
         jdbc.update("update target_latest_state set pilot_location=CAST(? AS GEOMETRY) where target_id=?", "SRID=4326;POINT(" + point + ")", targetId);
     }
