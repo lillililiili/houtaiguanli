@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>告警与处置页面原型</title>
+  <style>
+    :root {
+      --bg: #06132d;
+      --panel: #0a1d42;
+      --panel-2: #0d2552;
+      --panel-3: #102d60;
+      --line: #1d4a86;
+      --line-soft: rgba(91, 153, 230, .2);
+      --text: #eaf3ff;
+      --muted: #7896c4;
+      --blue: #2e92ff;
+      --cyan: #27d4f2;
+      --green: #20c885;
+      --yellow: #ffb638;
+      --red: #ff4d6d;
+      --purple: #9b75ff;
+      --shadow: 0 20px 50px rgba(0, 7, 24, .34);
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { font-size: 14px; letter-spacing: .1px; }
+    button, select { font: inherit; }
+    button { border: 0; cursor: pointer; color: inherit; }
+    button:focus-visible, select:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+    .app { min-height: 100vh; background: radial-gradient(circle at 70% -10%, rgba(31, 103, 193, .18), transparent 37%), var(--bg); }
+    .topbar { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px 0 18px; border-bottom: 1px solid #153c72; background: #071735; }
+    .brand { display: flex; align-items: center; gap: 13px; font-size: 18px; font-weight: 700; letter-spacing: .4px; }
+    .brand-mark { position: relative; width: 27px; height: 18px; display: inline-block; }
+    .brand-mark::before, .brand-mark::after { content: ""; position: absolute; top: 3px; width: 12px; height: 8px; background: #188aff; transform: skewX(-28deg); }
+    .brand-mark::before { left: 0; }
+    .brand-mark::after { right: 0; transform: skewX(28deg); }
+    .brand-mark span { position: absolute; left: 10px; top: 5px; width: 7px; height: 11px; background: #65d4ff; transform: skewX(-8deg); }
+    .top-actions { display: flex; align-items: center; gap: 18px; color: #a9c5eb; }
+    .time { display: flex; gap: 8px; align-items: center; font-size: 12px; }
+    .time::before { content: "◷"; color: #a9c5eb; font-size: 17px; }
+    .top-btn { height: 34px; padding: 0 13px; border: 1px solid #2e5d9d; border-radius: 5px; background: #0b2149; color: #d7e7ff; }
+    .user { display: flex; align-items: center; gap: 8px; color: #e8f3ff; }
+    .avatar { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: #24a3ed; color: #fff; font-weight: 700; }
+
+    .shell { display: grid; grid-template-columns: 164px 1fr; min-height: calc(100vh - 64px); }
+    .sidebar { border-right: 1px solid #102f5d; background: #071633; padding: 18px 10px 22px; }
+    .nav-group { margin: 0 0 20px; }
+    .nav-title { margin: 0 11px 9px; color: #6d8fc1; font-size: 12px; }
+    .nav-item { min-height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-radius: 7px; color: #b7ccee; cursor: pointer; }
+    .nav-item + .nav-item { margin-top: 3px; }
+    .nav-item .icon { width: 17px; text-align: center; color: #86a7d9; font-size: 15px; }
+    .nav-item.active { color: #fff; background: linear-gradient(90deg, rgba(38, 117, 220, .36), rgba(15, 42, 85, .7)); box-shadow: inset 3px 0 var(--cyan), 0 0 0 1px #2867ad; }
+    .nav-item.active .icon { color: var(--cyan); }
+    .nav-sub { margin: -2px 0 7px 27px; color: #6d8fc1; font-size: 11px; }
+
+    .content { min-width: 0; padding: 19px 24px 34px; }
+    .breadcrumb { display: flex; gap: 8px; color: #7494c4; font-size: 12px; margin: 0 0 16px; }
+    .breadcrumb strong { color: #e7f2ff; font-weight: 600; }
+    .page-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 13px; }
+    .page-title { margin: 0; font-size: 23px; letter-spacing: .3px; }
+    .page-note { color: #7e9aca; font-size: 12px; }
+
+    .stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+    .stat { min-height: 93px; display: flex; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid #1d4a86; border-radius: 8px; background: linear-gradient(135deg, #0d2856 0%, #0b1d42 100%); box-shadow: var(--shadow); }
+    .stat-icon { width: 37px; height: 37px; display: grid; place-items: center; border: 1px solid currentColor; border-radius: 10px; background: rgba(15, 67, 140, .35); font-size: 18px; }
+    .stat-info { min-width: 0; }
+    .stat-label { color: #aec5e8; font-size: 12px; white-space: nowrap; }
+    .stat-value { margin-top: 5px; font-size: 24px; line-height: 1; font-weight: 700; }
+    .stat.total { color: #4597ff; }
+    .stat.pending { color: var(--yellow); }
+    .stat.counter { color: #ff8b33; }
+    .stat.jam { color: var(--red); }
+    .stat.confirmed { color: var(--cyan); }
+    .stat.false { color: #4f9cff; }
+
+    .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .tab { height: 35px; padding: 0 16px; border: 1px solid #1e508f; border-radius: 5px; background: #0a2048; color: #a6c4ed; }
+    .tab.active { border-color: #378ef4; background: #2479e0; color: #fff; box-shadow: 0 0 18px rgba(41, 136, 255, .28); }
+    .tab .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; margin-right: 6px; vertical-align: 1px; }
+
+    .alarm-layout { display: grid; grid-template-columns: minmax(530px, 1.65fr) minmax(360px, .95fr); gap: 12px; align-items: start; }
+    .panel { border: 1px solid #1c4b88; border-radius: 8px; background: #091b3e; overflow: hidden; box-shadow: var(--shadow); }
+    .panel-head { min-height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid #1a3f75; }
+    .panel-title { display: flex; align-items: center; gap: 9px; font-weight: 700; }
+    .panel-title::before { content: ""; width: 3px; height: 15px; border-radius: 3px; background: var(--cyan); }
+    .panel-tools { display: flex; gap: 8px; }
+    .ghost-btn { height: 31px; padding: 0 10px; border: 1px solid #2b5a95; border-radius: 5px; background: #0c234c; color: #b8d2f4; }
+    .primary-btn { height: 34px; padding: 0 15px; border-radius: 5px; background: linear-gradient(135deg, #2e9fff, #2469dd); color: #fff; box-shadow: 0 8px 20px rgba(22, 119, 239, .28); }
+    .danger-btn { height: 36px; padding: 0 15px; border: 1px solid rgba(255, 93, 119, .65); border-radius: 5px; background: rgba(161, 31, 65, .18); color: #ff9caf; }
+    .success-btn { height: 36px; padding: 0 15px; border: 1px solid rgba(32, 200, 133, .65); border-radius: 5px; background: rgba(17, 108, 76, .22); color: #82f2c2; }
+
+    .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; padding: 14px; border-bottom: 1px solid #183d72; }
+    .field label { display: block; margin-bottom: 6px; color: #9eb8df; font-size: 12px; }
+    select, .field-input { width: 100%; height: 36px; padding: 0 10px; border: 1px solid #1c477f; border-radius: 5px; background: #061632; color: #e2efff; }
+    .filter-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+    .table-wrap { overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th { height: 40px; padding: 0 10px; background: #102d60; color: #bad0ee; font-weight: 600; text-align: left; font-size: 12px; }
+    td { height: 67px; padding: 8px 10px; border-bottom: 1px solid rgba(28, 72, 130, .54); color: #d5e4fa; font-size: 12px; vertical-align: middle; }
+    tbody tr { cursor: pointer; transition: background .18s ease; }
+    tbody tr:hover, tbody tr.selected { background: linear-gradient(90deg, rgba(29, 107, 210, .23), rgba(17, 53, 106, .32)); }
+    tbody tr.selected { box-shadow: inset 3px 0 var(--cyan); }
+    .alarm-no { color: #eaf4ff; font-weight: 700; }
+    .subline { display: block; margin-top: 4px; color: #7292c2; font-size: 11px; }
+    .level, .tag { display: inline-flex; align-items: center; height: 22px; padding: 0 7px; border-radius: 4px; font-size: 11px; }
+    .level.high { color: #ff9eae; border: 1px solid rgba(255, 77, 109, .55); background: rgba(158, 22, 56, .26); }
+    .level.medium { color: #ffd98b; border: 1px solid rgba(255, 182, 56, .55); background: rgba(158, 93, 14, .24); }
+    .level.low { color: #96c1ff; border: 1px solid rgba(73, 145, 255, .55); background: rgba(21, 80, 161, .24); }
+    .tag.sim { color: #d3bfff; border: 1px solid rgba(155, 117, 255, .56); background: rgba(91, 59, 164, .22); }
+    .tag.confirm { color: #80f0c3; border: 1px solid rgba(32, 200, 133, .55); background: rgba(17, 108, 76, .2); }
+    .tag.pending { color: #ffd48a; border: 1px solid rgba(255, 182, 56, .55); background: rgba(143, 89, 13, .2); }
+    .tag.neutral { color: #a9bddf; border: 1px solid #315783; background: #0e2349; }
+    .table-foot { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; color: #7896c4; font-size: 12px; }
+    .pager { display: flex; gap: 6px; align-items: center; }
+    .page-btn { min-width: 28px; height: 28px; border: 1px solid #1e477f; border-radius: 5px; background: #0d234b; color: #b8d3f6; }
+    .page-btn.active { border-color: #3e94ff; color: #fff; background: #123b7c; }
+
+    .right-stack { display: grid; gap: 12px; }
+    .map { position: relative; height: 247px; overflow: hidden; background: linear-gradient(135deg, #123e7b 0%, #0f2d61 47%, #0a2450 100%); }
+    .map::before { content: ""; position: absolute; inset: 0; opacity: .7; background: repeating-linear-gradient(14deg, transparent 0 26px, rgba(112, 186, 255, .14) 27px 29px, transparent 30px 60px), repeating-linear-gradient(103deg, transparent 0 38px, rgba(76, 157, 245, .14) 39px 41px, transparent 42px 84px); }
+    .map::after { content: ""; position: absolute; inset: 25px 43px 32px 72px; border: 1px solid rgba(72, 181, 255, .42); border-radius: 44% 56% 50% 42%; transform: rotate(-11deg); box-shadow: 0 0 0 16px rgba(33, 153, 255, .07), 0 0 0 34px rgba(33, 153, 255, .04); }
+    .map-label { position: absolute; z-index: 2; color: rgba(231, 243, 255, .78); font-size: 11px; }
+    .map-label.one { top: 57px; left: 75px; }
+    .map-label.two { top: 130px; right: 66px; }
+    .map-label.three { bottom: 47px; left: 46px; }
+    .map-mark { position: absolute; z-index: 3; top: 102px; left: 53%; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: #ff496a; box-shadow: 0 0 0 7px rgba(255, 73, 106, .15), 0 0 24px rgba(255, 73, 106, .64); }
+    .map-mark span { transform: rotate(45deg); font-size: 15px; }
+    .map-scale { position: absolute; z-index: 4; bottom: 10px; left: 16px; color: #deedff; font-size: 11px; }
+    .map-legend { position: absolute; z-index: 4; right: 14px; bottom: 10px; display: flex; gap: 7px; color: #deedff; font-size: 11px; }
+    .map-legend i { width: 7px; height: 7px; display: inline-block; margin-right: 3px; border-radius: 50%; background: #ff496a; }
+
+    .detail-card { padding: 14px; }
+    .detail-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .detail-kicker { color: #7798c9; font-size: 11px; }
+    .detail-name { margin: 5px 0 0; font-size: 20px; }
+    .detail-id { margin-top: 5px; color: #80a4d6; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
+    .detail-badges { display: flex; gap: 6px; margin-top: 11px; flex-wrap: wrap; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; padding: 14px 0; margin-top: 13px; border-top: 1px solid #183f77; border-bottom: 1px solid #183f77; }
+    .detail-label { color: #7798c9; font-size: 11px; }
+    .detail-value { margin-top: 4px; color: #e1edff; font-size: 13px; }
+    .handoff-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; margin-top: 13px; border: 1px solid rgba(39, 212, 242, .38); border-radius: 6px; background: rgba(16, 102, 131, .19); }
+    .handoff-copy strong { display: block; color: #dfffff; font-size: 12px; }
+    .handoff-copy span { display: block; margin-top: 4px; color: #89c4d8; font-size: 11px; }
+    .detail-section { margin-top: 12px; padding: 13px; border: 1px solid #1b4277; border-radius: 7px; background: rgba(9, 27, 61, .8); }
+    .detail-section h3 { margin: 0 0 9px; font-size: 13px; }
+    .detail-section p { margin: 0; color: #8eadd5; font-size: 12px; line-height: 1.7; }
+
+    .disposal-head { display: flex; align-items: stretch; gap: 12px; margin-bottom: 13px; }
+    .context-card { flex: 1; display: flex; align-items: center; gap: 15px; padding: 15px 17px; border: 1px solid #1f568f; border-radius: 8px; background: linear-gradient(120deg, #0f2e5f, #0b1e43); box-shadow: var(--shadow); }
+    .event-icon { width: 45px; height: 45px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid #3e90f0; border-radius: 12px; background: rgba(32, 113, 224, .2); color: #73b5ff; font-size: 20px; }
+    .context-info { min-width: 0; }
+    .context-info .eyebrow { color: #7e9bca; font-size: 11px; }
+    .context-info h2 { margin: 4px 0 5px; font-size: 19px; }
+    .context-info p { margin: 0; color: #8cadd9; font-size: 12px; }
+    .context-meta { margin-left: auto; min-width: 190px; display: grid; grid-template-columns: 1fr 1fr; gap: 9px 17px; }
+    .risk-flag { min-width: 158px; padding: 14px; border: 1px solid rgba(255, 182, 56, .55); border-radius: 8px; background: rgba(139, 82, 11, .19); }
+    .risk-flag.no-risk { border-color: rgba(32, 200, 133, .55); background: rgba(17, 108, 76, .18); }
+    .risk-flag .flag-label { color: #a9c5e7; font-size: 11px; }
+    .risk-flag strong { display: block; margin-top: 7px; color: #ffd180; font-size: 20px; }
+    .risk-flag.no-risk strong { color: #82f2c2; }
+    .disposal-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(340px, .7fr); gap: 12px; align-items: start; }
+    .left-column, .disposal-right { display: grid; gap: 12px; }
+    .content-card { padding: 15px 16px; }
+    .content-card h3 { display: flex; justify-content: space-between; align-items: center; margin: 0 0 14px; font-size: 15px; }
+    .section-hint { color: #7090c0; font-size: 11px; font-weight: 400; }
+    .basis-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }
+    .basis-item { min-height: 70px; padding: 10px; border: 1px solid #1f477d; border-radius: 6px; background: #0a2047; }
+    .basis-item .label { color: #7898c9; font-size: 11px; }
+    .basis-item .value { display: block; margin-top: 8px; color: #dceaff; font-size: 13px; }
+    .basis-item .value.good { color: #7ff0c0; }
+    .basis-item .value.warn { color: #ffd18a; }
+    .reason-box { margin-top: 12px; padding: 11px 12px; border-left: 3px solid var(--yellow); background: rgba(127, 80, 12, .17); color: #d7c795; font-size: 12px; line-height: 1.7; }
+    .action-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-top: 14px; margin-top: 14px; border-top: 1px solid #183f77; }
+    .action-copy strong { display: block; font-size: 13px; }
+    .action-copy span { display: block; margin-top: 4px; color: #7695c4; font-size: 11px; }
+    .notify-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .notify-option { min-height: 79px; padding: 12px; border: 1px solid #255487; border-radius: 7px; text-align: left; background: #0a2047; }
+    .notify-option:hover { border-color: #48a0ff; }
+    .notify-option.selected { border-color: var(--cyan); background: linear-gradient(135deg, rgba(23, 104, 151, .55), rgba(11, 45, 82, .75)); box-shadow: 0 0 0 1px rgba(39, 212, 242, .24); }
+    .notify-option strong { display: block; font-size: 14px; }
+    .notify-option span { display: block; margin-top: 6px; color: #7696c4; font-size: 11px; }
+    .notify-option.selected span { color: #a6dbeb; }
+    .timeline { display: grid; gap: 0; }
+    .timeline-item { position: relative; display: grid; grid-template-columns: 17px 1fr; gap: 10px; padding: 0 0 16px; }
+    .timeline-item:last-child { padding-bottom: 0; }
+    .timeline-item::before { content: ""; position: absolute; left: 7px; top: 16px; bottom: 0; width: 1px; background: #234b80; }
+    .timeline-item:last-child::before { display: none; }
+    .timeline-dot { position: relative; z-index: 1; width: 15px; height: 15px; margin-top: 1px; border: 2px solid #6aa8ef; border-radius: 50%; background: #092048; }
+    .timeline-dot.green { border-color: var(--green); }
+    .timeline-dot.yellow { border-color: var(--yellow); }
+    .timeline-copy strong { display: block; color: #e0ecfc; font-size: 12px; }
+    .timeline-copy span { display: block; margin-top: 4px; color: #7797c5; font-size: 11px; }
+    .mini-map { height: 208px; }
+    .record-table { display: grid; gap: 1px; }
+    .record-line { display: grid; grid-template-columns: 100px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid rgba(30, 69, 123, .55); font-size: 12px; }
+    .record-line:last-child { border-bottom: 0; }
+    .record-line .label { color: #7898c9; }
+    .record-line .value { color: #d6e6fb; }
+    .empty-actions { padding: 24px; text-align: center; color: #7291be; }
+    .toast { position: fixed; right: 22px; bottom: 22px; z-index: 20; padding: 12px 15px; border: 1px solid #2f7bc5; border-radius: 7px; background: #0b2853; color: #d9edff; box-shadow: 0 14px 30px rgba(0,0,0,.35); transform: translateY(20px); opacity: 0; pointer-events: none; transition: .22s ease; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .proto-note { display: inline-flex; gap: 7px; align-items: center; padding: 5px 9px; border: 1px solid #245488; border-radius: 4px; background: #0c234b; color: #9fc5ef; font-size: 11px; }
+    .proto-note::before { content: "●"; color: var(--cyan); font-size: 9px; }
+
+    @media (max-width: 1180px) {
+      .stats { grid-template-columns: repeat(3, 1fr); }
+      .alarm-layout, .disposal-layout { grid-template-columns: 1fr; }
+      .context-meta { min-width: 170px; }
+    }
+    @media (max-width: 760px) {
+      .topbar { padding-right: 13px; }
+      .top-actions .time, .top-actions .top-btn:first-of-type { display: none; }
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .content { padding: 15px 12px 25px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .filters { grid-template-columns: 1fr; }
+      .filter-actions { grid-column: auto; }
+      .disposal-head { display: grid; }
+      .context-meta { margin-left: 0; }
+      .basis-grid { grid-template-columns: repeat(2, 1fr); }
+      .table-wrap { overflow-x: auto; }
+      table { min-width: 720px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="app"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script>
+    const events = [
+      { id: '告警-0905-004', target: '目标-0905-101', level: '低', levelClass: 'low', risk: false, reason: '无飞行授权', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
+      { id: '告警-0905-003', target: '目标-0905-101', level: '高', levelClass: 'high', risk: true, reason: '闯入限制空域', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '已核实' },
+      { id: '告警-0905-001', target: '目标-0905-101', level: '高', levelClass: 'high', risk: true, reason: '航线偏离', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
+      { id: '告警-0905-005', target: '—', level: '低', levelClass: 'low', risk: false, reason: '超视距', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
+      { id: '告警-0905-002', target: '—', level: '中', levelClass: 'medium', risk: true, reason: '超出计划高度', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
+      { id: '告警-0905-006', target: '—', level: '高', levelClass: 'high', risk: true, reason: '临时管制生效', time: '2026-10-02 13:35:50', area: '告警演示区域', status: '待核实' },
+      { id: '告警-0907-013', target: '目标-0907-203', level: '高', levelClass: 'high', risk: true, reason: '闯入禁飞区', time: '2026-09-07 10:00:00', area: '告警演示区域', status: '已核实' }
+    ]
+
+    const state = {
+      selectedId: '告警-0905-003',
+      disposal: null,
+      notification: null,
+      history: [],
+      autoTimer: null
+    }
+
+    const app = document.querySelector('#app')
+    const toast = document.querySelector('#toast')
+
+    function currentEvent() {
+      return events.find(item => item.id === state.selectedId) || events[0]
+    }
+
+    function currentView() {
+      return window.location.hash === '#disposal' ? 'disposal' : 'alarm'
+    }
+
+    function topbar() {
+      return `
+        <header class="topbar">
+          <div class="brand"><span class="brand-mark"><span></span></span><span>无人机融合感知与低空安全管理平台</span></div>
+          <div class="top-actions">
+            <div class="time">2026-10-02 13:41:32</div>
+            <button class="top-btn">▣&nbsp; 数据大屏</button>
+            <button class="top-btn">⛶&nbsp; 全屏</button>
+            <div class="user"><span class="avatar">超</span><span>超级管理员⌄</span></div>
+          </div>
+        </header>`
+    }
+
+    function sidebar(active) {
+      return `
+        <aside class="sidebar">
+          <div class="nav-group">
+            <div class="nav-title">感知监测</div>
+            <div class="nav-item"><span class="icon">◌</span>融合感知</div>
+          </div>
+          <div class="nav-group">
+            <div class="nav-title">飞行监管</div>
+            <div class="nav-item"><span class="icon">▣</span>飞行计划</div>
+            <div class="nav-item"><span class="icon">⌄</span>合法性研判</div>
+            <div class="nav-item"><span class="icon">◇</span>空域管理</div>
+          </div>
+          <div class="nav-group">
+            <div class="nav-title">事件处置</div>
+            <div class="nav-item ${active === 'alarm' ? 'active' : ''}" data-nav="alarm"><span class="icon">△</span>告警事件</div>
+            <div class="nav-item ${active === 'disposal' ? 'active' : ''}" data-nav="disposal"><span class="icon">◆</span>处置页面</div>
+            <div class="nav-item"><span class="icon">↗</span>移送与处罚</div>
+          </div>
+          <div class="nav-group">
+            <div class="nav-title">分析报告</div>
+            <div class="nav-item"><span class="icon">▥</span>运行统计</div>
+            <div class="nav-item"><span class="icon">▤</span>证据管理</div>
+          </div>
+        </aside>`
+    }
+
+    function stats() {
+      return `
+        <section class="stats" aria-label="告警统计">
+          <div class="stat total"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">今日告警总数</div><div class="stat-value">6</div></div></div>
+          <div class="stat pending"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">待核实</div><div class="stat-value">5</div></div></div>
+          <div class="stat counter"><div class="stat-icon">◔</div><div class="stat-info"><div class="stat-label">反制中</div><div class="stat-value">0</div></div></div>
+          <div class="stat jam"><div class="stat-icon">◴</div><div class="stat-info"><div class="stat-label">干扰中</div><div class="stat-value">0</div></div></div>
+          <div class="stat confirmed"><div class="stat-icon">△</div><div class="stat-info"><div class="stat-label">告警已确认</div><div class="stat-value">1</div></div></div>
+          <div class="stat false"><div class="stat-icon">✓</div><div class="stat-info"><div class="stat-label">误报</div><div class="stat-value">0</div></div></div>
+        </section>`
+    }
+
+    function mapCard(compact = false) {
+      return `
+        <section class="panel">
+          <div class="panel-head"><div class="panel-title">关联目标定位与轨迹</div><div class="panel-tools"><button class="ghost-btn">无轨迹</button><button class="ghost-btn">⌖ 定位</button></div></div>
+          <div class="map ${compact ? 'mini-map' : ''}">
+            <span class="map-label one">津南区</span><span class="map-label two">滨海新区</span><span class="map-label three">G2516</span>
+            <span class="map-mark"><span>△</span></span><span class="map-scale">20 km</span><span class="map-legend"><i></i>告警目标</span>
+          </div>
+        </section>`
+    }
+
+    function alarmTable() {
+      return `
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">告警列表</div><span class="proto-note">关联告警自动进入处置</span></div>
+          <div class="filters">
+            <div class="field"><label>等级</label><select><option>全部</option><option>高</option><option>中</option><option>低</option></select></div>
+            <div class="field"><label>类别</label><select><option>全部</option><option>无人机入侵</option><option>超视距</option><option>计划偏离</option></select></div>
+            <div class="field"><label>状态</label><select><option>全部</option><option>待核实</option><option>已核实</option><option>处置中</option></select></div>
+            <div class="field"><label>区域</label><select><option>全部</option><option>告警演示区域</option></select></div>
+            <div class="filter-actions"><button class="ghost-btn">刷新</button><button class="ghost-btn">导出 CSV</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th style="width: 17%">告警编号 / 时间</th><th style="width: 8%">等级</th><th style="width: 18%">类别 / 类型</th><th style="width: 21%">关联目标 / 区域</th><th style="width: 24%">告警内容</th><th style="width: 12%">状态</th></tr></thead>
+              <tbody>${events.map(item => `
+                <tr class="${item.id === state.selectedId ? 'selected' : ''}" data-select="${item.id}">
+                  <td><span class="alarm-no">${item.id}</span><span class="subline">${item.time.slice(11)}</span></td>
+                  <td><span class="level ${item.levelClass}">${item.level}</span></td>
+                  <td><span class="tag sim">模拟</span><span class="subline">无人机入侵</span></td>
+                  <td><span>${item.target}</span><span class="subline">${item.area}</span></td>
+                  <td><span>来源 告警模拟源（模拟）· 发生 ${item.time}</span><span class="subline">${item.reason}</span></td>
+                  <td><span class="tag ${item.status === '已核实' ? 'confirm' : 'pending'}">${item.status}</span></td>
+                </tr>`).join('')}</tbody>
+            </table>
+          </div>
+          <div class="table-foot"><span>共 7 条</span><div class="pager"><button class="page-btn">‹</button><button class="page-btn active">1</button><button class="page-btn">›</button><button class="page-btn">10 条/页</button><span>共 1 页</span></div></div>
+        </div>`
+    }
+
+    function alarmDetail() {
+      const item = currentEvent()
+      const isConfirmed = item.status === '已核实'
+      return `
+        <section class="panel detail-card">
+          <div class="detail-top"><div><div class="detail-kicker">告警事件 · ${item.risk ? '有风险' : '无风险'}</div><h2 class="detail-name">无人机入侵</h2><div class="detail-id">${item.id}</div></div><span class="level ${item.levelClass}">${item.level}</span></div>
+          <div class="detail-badges"><span class="tag ${isConfirmed ? 'confirm' : 'pending'}">${isConfirmed ? '已核实' : '待核实'}</span><span class="tag ${item.risk ? 'pending' : 'neutral'}">${item.risk ? '有风险依据' : '无风险依据'}</span></div>
+          <div class="detail-grid"><div><div class="detail-label">关联目标</div><div class="detail-value">${item.target}</div></div><div><div class="detail-label">发生时间</div><div class="detail-value">${item.time}</div></div><div><div class="detail-label">所属区域</div><div class="detail-value">${item.area}</div></div><div><div class="detail-label">违规原因</div><div class="detail-value">${item.reason}</div></div></div>
+          ${isConfirmed ? `<div class="handoff-banner"><div class="handoff-copy"><strong>已由合法性判定页核实</strong><span>告警已自动进入处置页，告警页不再重复核实。</span></div><button class="primary-btn" data-enter-disposal>查看处置</button></div>` : `<div class="handoff-banner"><div class="handoff-copy"><strong>等待合法性判定页核实</strong><span>关联告警核实后，将自动进入处置页。</span></div><button class="ghost-btn" data-demo-confirm>模拟核实</button></div>`}
+          <div class="detail-section"><h3>处置进度</h3><p>${isConfirmed ? '处置页已生成待办理事项，等待操作人员查看风险依据。' : '尚未进入处置页。'}</p></div>
+        </section>`
+    }
+
+    function alarmView() {
+      return `
+        ${topbar()}
+        <div class="shell">${sidebar('alarm')}
+          <main class="content">
+            <div class="breadcrumb"><span>首页</span><span>›</span><span>事件处置</span><span>›</span><strong>告警事件</strong></div>
+            <div class="page-head"><div><h1 class="page-title">告警事件</h1><div class="page-note">告警核实完成后自动进入处置页</div></div><span class="proto-note">页面原型 · 基于现有告警页</span></div>
+            ${stats()}
+            <div class="tabs"><button class="tab active"><span class="dot"></span>告警与处置</button><button class="tab">反制办理</button></div>
+            <div class="alarm-layout"><div>${alarmTable()}</div><div class="right-stack">${mapCard()}${alarmDetail()}</div></div>
+          </main>
+        </div>`
+    }
+
+    function disposalView() {
+      const item = currentEvent()
+      const noRisk = !item.risk
+      const disposalText = state.disposal === 'pause' ? '已暂不处置' : '待处置'
+      const notificationText = state.notification === 'notify' ? '已通知上级' : state.notification === 'none' ? '无需通知' : '待选择'
+      return `
+        ${topbar()}
+        <div class="shell">${sidebar('disposal')}
+          <main class="content">
+            <div class="breadcrumb"><span>首页</span><span>›</span><span>事件处置</span><span>›</span><strong>处置页面</strong></div>
+            <div class="page-head"><div><h1 class="page-title">告警处置</h1><div class="page-note">${item.id} · 从合法性判定页核实后自动进入</div></div><button class="ghost-btn" data-back-alarm>‹ 返回告警</button></div>
+            <div class="disposal-head">
+              <section class="context-card"><div class="event-icon">△</div><div class="context-info"><div class="eyebrow">已核实告警 · ${item.area}</div><h2>${item.id}</h2><p>${item.target} · ${item.reason} · ${item.time}</p></div><div class="context-meta"><div><div class="detail-label">当前处置</div><div class="detail-value">${disposalText}</div></div><div><div class="detail-label">上级通知</div><div class="detail-value">${notificationText}</div></div></div></section>
+              <div class="risk-flag ${noRisk ? 'no-risk' : ''}"><div class="flag-label">当时风险判断</div><strong>${noRisk ? '无风险' : '有风险'}</strong><div class="detail-label">${noRisk ? '依据充分 · 继续监测' : '高风险 · 依据有效'}</div></div>
+            </div>
+            <div class="disposal-layout">
+              <div class="left-column">
+                <section class="panel content-card"><h3>风险依据 <span class="section-hint">来自合法性研判记录</span></h3><div class="basis-grid"><div class="basis-item"><span class="label">风险状态</span><span class="value ${noRisk ? 'good' : 'warn'}">${noRisk ? '无风险' : '有风险'}</span></div><div class="basis-item"><span class="label">风险等级</span><span class="value">${item.level}风险</span></div><div class="basis-item"><span class="label">违规原因</span><span class="value">${item.reason}</span></div><div class="basis-item"><span class="label">依据时间</span><span class="value good">${item.time.slice(5, 16)}</span></div></div><div class="reason-box">${noRisk ? '当前有效观测与研判依据充分，暂未发现需要采取处置的现实风险。' : '研判显示目标存在明确违规，当前观测有效，处置依据仍在有效时限内。'}</div></section>
+                <section class="panel content-card"><h3>处置操作 <span class="section-hint">处置决定与上级通知分开记录</span></h3><div class="action-row"><div class="action-copy"><strong>暂不处置</strong><span>结束本次处置办理并继续监测，不修改告警核实结果。</span></div><button class="danger-btn ${state.disposal === 'pause' ? 'selected' : ''}" data-disposal="pause">${state.disposal === 'pause' ? '已暂不处置' : '暂不处置'}</button></div></section>
+                <section class="panel content-card"><h3>上级通知 <span class="section-hint">请选择本次是否通知</span></h3><div class="notify-options"><button class="notify-option ${state.notification === 'notify' ? 'selected' : ''}" data-notify="notify"><strong>通知上级</strong><span>向上级单位提交当前事件处置摘要</span></button><button class="notify-option ${state.notification === 'none' ? 'selected' : ''}" data-notify="none"><strong>无需通知</strong><span>记录本次无需通知的决定和依据</span></button></div></section>
+                <section class="panel content-card"><h3>操作记录 <span class="section-hint">按时间倒序</span></h3><div class="timeline"><div class="timeline-item"><span class="timeline-dot green"></span><div class="timeline-copy"><strong>告警已核实</strong><span>合法性判定页 · 2026-10-02 13:36 · 系统已自动进入处置</span></div></div>${state.disposal === 'pause' ? `<div class="timeline-item"><span class="timeline-dot yellow"></span><div class="timeline-copy"><strong>暂不处置</strong><span>超级管理员 · 刚刚 · 本次处置结束，继续监测</span></div></div>` : ''}${state.notification ? `<div class="timeline-item"><span class="timeline-dot ${state.notification === 'notify' ? 'green' : 'yellow'}"></span><div class="timeline-copy"><strong>${state.notification === 'notify' ? '通知上级' : '无需通知'}</strong><span>超级管理员 · 刚刚 · 已记录本次通知选择</span></div></div>` : ''}</div></section>
+              </div>
+              <div class="disposal-right">${mapCard(true)}<section class="panel content-card"><h3>事件信息</h3><div class="record-table"><div class="record-line"><span class="label">核实来源</span><span class="value">合法性判定页</span></div><div class="record-line"><span class="label">告警状态</span><span class="value">已核实 · 待处置</span></div><div class="record-line"><span class="label">目标位置</span><span class="value">设备测算的大概位置</span></div><div class="record-line"><span class="label">关联计划</span><span class="value">无匹配计划</span></div><div class="record-line"><span class="label">记录编号</span><span class="value">EVT-20261002-0135</span></div></div></section></div>
+            </div>
+          </main>
+        </div>`
+    }
+
+    function render() {
+      app.innerHTML = currentView() === 'disposal' ? disposalView() : alarmView()
+      bindEvents()
+    }
+
+    function showToast(message) {
+      toast.textContent = message
+      toast.classList.add('show')
+      window.clearTimeout(showToast.timer)
+      showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 2400)
+    }
+
+    function bindEvents() {
+      document.querySelectorAll('[data-select]').forEach(row => row.addEventListener('click', () => {
+        state.selectedId = row.dataset.select
+        state.disposal = null
+        state.notification = null
+        render()
+      }))
+      document.querySelectorAll('[data-enter-disposal]').forEach(button => button.addEventListener('click', () => {
+        enterDisposal()
+      }))
+      document.querySelectorAll('[data-demo-confirm]').forEach(button => button.addEventListener('click', () => {
+        currentEvent().status = '已核实'
+        showToast('已模拟合法性页核实，正在进入处置页')
+        window.setTimeout(enterDisposal, 620)
+      }))
+      document.querySelectorAll('[data-back-alarm], [data-nav="alarm"]').forEach(button => button.addEventListener('click', () => {
+        window.location.hash = '#alarm'
+      }))
+      document.querySelectorAll('[data-nav="disposal"]').forEach(button => button.addEventListener('click', () => {
+        enterDisposal()
+      }))
+      document.querySelectorAll('[data-disposal]').forEach(button => button.addEventListener('click', () => {
+        state.disposal = button.dataset.disposal
+        state.history.push('暂不处置')
+        showToast('已记录：暂不处置，继续监测')
+        render()
+      }))
+      document.querySelectorAll('[data-notify]').forEach(button => button.addEventListener('click', () => {
+        state.notification = button.dataset.notify
+        state.history.push(button.dataset.notify === 'notify' ? '通知上级' : '无需通知')
+        showToast(button.dataset.notify === 'notify' ? '已记录：通知上级' : '已记录：无需通知')
+        render()
+      }))
+    }
+
+    function enterDisposal() {
+      window.location.hash = '#disposal'
+    }
+
+    window.addEventListener('hashchange', render)
+    render()
+  </script>
+</body>
+</html>
