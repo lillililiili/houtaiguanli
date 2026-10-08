@@ -256,3 +256,8 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 - 证据充分性 `EVIDENCE_SUFFICIENCY_V2`：明确的 C02-6 FAIL 与明确的行为偏差一样算作结论依据，不再追加 `DECISIVE_EVIDENCE_MISSING`；计划/身份未核实、未忽略的未知、实测数据配演示参数等原因照旧给出 `INSUFFICIENT`。此前 C02-6 FAIL 不会单独成立 ILLEGAL，已有研判的结果不受影响，算法版本号不变。
 - 可读原因：后端只在研判明细 `hit_details[].message`（合法性详情页逐条展示）给出 `超视距飞行（飞手离无人机约 X 米，超过 500 米）`，DEMO 参数时末尾照例附 `；参数为 DEMO 演示值，尚未确认`。`alarm` 行与告警接口不带可读原因，只有 `detail.violation_reasons` 原因码，告警列表文字由前端按原因码映射；接口不新增字段。
 - 自动反制不受影响：自动规则的风险等级取最新研判 `grade`，可选条件只有"高风险""中风险或高风险"，`LOW` 不满足任何一项（预置的反制条件为"达到高风险"）。
+
+### 2026-10-08 没有飞手位置不挡反制（验收预跑 3-4 / 8-8，新-19）
+
+- 反制资格（申请、执行、排队下发及续链）和暂不反制的“当前可靠明确研判”，原来都要求研判的未知原因为空，现在改为“除 `PILOT_POSITION_UNAVAILABLE` 外没有未知原因”。没有飞手位置只让 C02-6 超视距判不了，它本来就被 `C03.ignore_undetermined_rules` 忽略，不影响结论和证据充分性；黑飞常常测不到遥控器位置，此前这类明确违规的告警连人工反制也申请不了。
+- 其他未知原因（计划不明、高度基准或量程未知等）照旧阻断；ILLEGAL / FRESH / SUFFICIENT、事件已核实、当前观测、权限与授权约束都不变。判断只在 `UavAdvisoryRules.noBlockingUnknowns` 一处，`can_request_counter`、自动规则反制、干扰续链、下发前检查和暂不反制同用。飞手自动短信、电话按事件核实状态发送，本来就不看研判的未知原因，不受影响。

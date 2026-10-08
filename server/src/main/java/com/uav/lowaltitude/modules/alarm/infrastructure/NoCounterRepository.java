@@ -45,7 +45,7 @@ public class NoCounterRepository {
         var basis=new Basis(r.getString("evaluation_id"),time(r,"observed_at"),time(r,"evaluated_at"),r.getString("legal_status"),r.getString("grade"),violations==null?List.of():violations);
         return new Evaluation(basis, "FRESH".equals(r.getString("freshness_code")) && "SUFFICIENT".equals(r.getString("decision_assurance_code"))
                 && r.getString("decision_algorithm_version")!=null && !r.getString("decision_algorithm_version").isBlank()
-                && unknown!=null && unknown.isEmpty() && violations!=null && NoCounterRules.explicit(basis.legalStatus()),r.getString("alarm_id"));
+                && com.uav.lowaltitude.modules.alarm.domain.UavAdvisoryRules.noBlockingUnknowns(unknown) && violations!=null && NoCounterRules.explicit(basis.legalStatus()),r.getString("alarm_id"));
     }
     public Snapshot snapshot(EventRow event) {
         Integer seconds=disposal.freshSeconds();
