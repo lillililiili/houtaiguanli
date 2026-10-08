@@ -155,6 +155,8 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
         JsonNode submitted = advisory().path("auto_handoff");
         assertThat(submitted.path("status").asText()).isEqualTo("SUBMITTED");
         assertThat(submitted.path("trigger_source").asText()).isEqualTo("MANUAL");
+        assertThat(handoffDetail(id).path("trigger_source").asText()).isEqualTo("MANUAL");
+        assertThat(handoffListed(id).path("trigger_source").asText()).isEqualTo("MANUAL");
         assertThat(submitted.path("handoff_id").asText()).isEqualTo(id);
         assertThat(submitted.has("party_status")).isFalse();
         handoffs.automaticAfterJamming(eventId);
@@ -215,6 +217,16 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
         return body(mvc.perform(get("/api/v1/uav-events/{id}/advisory", eventId).header("Authorization", "Bearer " + submitter))
                 .andExpect(status().isOk())).path("data");
     }
+    private JsonNode handoffDetail(String id) throws Exception {
+        return body(mvc.perform(get("/api/v1/handoffs/{id}", id).header("Authorization", "Bearer " + submitter))
+                .andExpect(status().isOk())).path("data");
+    }
+    private JsonNode handoffListed(String id) throws Exception {
+        JsonNode items = body(mvc.perform(get("/api/v1/handoffs").param("source_id", eventId).header("Authorization", "Bearer " + submitter))
+                .andExpect(status().isOk())).path("data").path("items");
+        for (JsonNode item : items) if (id.equals(item.path("handoff_id").asText())) return item;
+        throw new AssertionError("handoff " + id + " is not listed for event " + eventId);
+    }
     private String frozen(String id) { return jdbc.queryForObject("select CAST(snapshot AS VARCHAR) from handoff_material_snapshot where handoff_id=?", String.class, id); }
     private void manualNotify(String id, int attempt) throws Exception {
         mvc.perform(post("/api/v1/handoffs/{id}/notifications", id).header("Authorization", "Bearer " + submitter)
@@ -271,6 +283,9 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
         if (waiting) assertThat(progress.path("reason").asText()).contains("没有自动发出");
         assertThat(jdbc.queryForObject("select submitted_by from handoff where handoff_id=?", String.class, handoff))
                 .isEqualTo(jdbc.queryForObject("select requested_by from disposal_authorization where subject_id=?", String.class, eventId));
+        // 移送与处罚页的列表和详情也带上“后台自动移送”，页面据此把提交人写成系统自动，submitted_by 只作反制申请人（新-24）。
+        assertThat(handoffDetail(handoff).path("trigger_source").asText()).isEqualTo("JAMMING_COMPLETED");
+        assertThat(handoffListed(handoff).path("trigger_source").asText()).isEqualTo("JAMMING_COMPLETED");
         handoffs.automaticAfterJamming(eventId);
         assertThat(jdbc.queryForObject("select count(*) from handoff where event_id=?", Integer.class, eventId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from handoff_delivery where handoff_id=?", Integer.class, handoff)).isEqualTo(1);

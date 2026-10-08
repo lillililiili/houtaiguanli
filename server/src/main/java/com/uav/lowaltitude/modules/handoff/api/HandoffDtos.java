@@ -20,10 +20,14 @@ public final class HandoffDtos {
     public record CreatedDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
             long sourceVersion, String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
             long createdAt) { }
+    /**
+     * trigger_source：JAMMING_COMPLETED 反制（干扰）完成后后台自动移送，此时 submitted_by 是那次反制的申请人，不是动手移送的人；
+     * MANUAL 有人选定接收单位后提交；更早的记录可能为空（2026-10-08 确认书 3-6，新-24）。
+     */
     public record HandoffDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
             String recipientName, long sourceVersion, String ownerOrgId, String districtId, String sourceMode, String submittedBy,
             long createdAt, String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
-            String ownerOrgName, String districtName, String submittedByName, String sourceNo) { }
+            String ownerOrgName, String districtName, String submittedByName, String sourceNo, String triggerSource) { }
     public record DeliveryDto(String deliveryId, String handoffId, int attemptNo, String deliveryStatus, String receiptStatus,
             String blockedReason, long createdAt, Long submittedAt, Long deliveredAt, Long acknowledgedAt) { }
     public record HandoffDetailDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
@@ -34,7 +38,9 @@ public final class HandoffDtos {
             Object material,
             DeliveryDto latestDelivery, AvailabilityDto availability,
             String ownerOrgName, String districtName, String submittedByName, String sourceNo,
-            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot,
+            // trigger_source 同 HandoffDto（新-24）。
+            String triggerSource) { }
     /**
      * material：AVAILABLE / FORBIDDEN（读者缺来源读权限）/ SOURCE_NOT_VISIBLE（源对象已不在读者可见范围）。
      * evidence（仅 v2）：AVAILABLE / FORBIDDEN（读者缺 evidence:read）/ OMITTED_AT_SUBMISSION（提交人当时就没有该权限）。

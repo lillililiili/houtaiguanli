@@ -328,7 +328,7 @@ public class HandoffRepository {
                 + "h.district_id,h.source_mode,h.submitted_by,h.created_at,h.receipt_result,d.delivery_status,d.receipt_status,d.blocked_reason,"
                 + "org_ref.name AS owner_org_name,dist_ref.name AS district_name,su.name AS submitted_by_name,"
                 // 来源业务编号：风险取来源风险编号；无人机事件优先用告警编号，没有再用来源键。
-                + "COALESCE(fr.source_risk_id,NULLIF(al.alarm_no,''),al.source_alarm_id) AS source_no";
+                + "COALESCE(fr.source_risk_id,NULLIF(al.alarm_no,''),al.source_alarm_id) AS source_no,h.trigger_source";
     }
     private static String from() {
         // delivery_status 指最新一次尝试；列表、详情与 count 共用同一联接，避免口径漂移。
@@ -351,7 +351,8 @@ public class HandoffRepository {
                 rs.getString("recipient_id"), rs.getString("display_name"), rs.getLong("source_version"), rs.getString("owner_org_id"),
                 rs.getString("district_id"), rs.getString("source_mode"), rs.getString("submitted_by"), time(rs, "created_at"),
                 rs.getString("delivery_status"), rs.getString("receipt_status"), rs.getString("receipt_result"), rs.getString("blocked_reason"),
-                rs.getString("owner_org_name"), rs.getString("district_name"), rs.getString("submitted_by_name"), rs.getString("source_no"));
+                rs.getString("owner_org_name"), rs.getString("district_name"), rs.getString("submitted_by_name"), rs.getString("source_no"),
+                rs.getString("trigger_source"));
     }
     private static DeliveryRow delivery(ResultSet rs, int ignored) throws SQLException {
         return new DeliveryRow(rs.getString("delivery_id"), rs.getString("handoff_id"), rs.getInt("attempt_no"), rs.getString("delivery_status"),
@@ -379,7 +380,7 @@ public class HandoffRepository {
     public record HandoffRow(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId, String recipientName,
             long sourceVersion, String ownerOrgId, String districtId, String sourceMode, String submittedBy, OffsetDateTime createdAt,
             String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
-            String ownerOrgName, String districtName, String submittedByName, String sourceNo) { }
+            String ownerOrgName, String districtName, String submittedByName, String sourceNo, String triggerSource) { }
     public record DeliveryRow(String deliveryId, String handoffId, int attemptNo, String deliveryStatus, String receiptStatus, String blockedReason,
             OffsetDateTime createdAt, OffsetDateTime submittedAt, OffsetDateTime deliveredAt, OffsetDateTime acknowledgedAt) { }
     public record SnapshotRow(int schemaVersion, String json) { }
