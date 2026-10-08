@@ -34,7 +34,8 @@ public final class ReportLabels {
         entry("NOT_TAKEN_OFF","未起飞"), entry("DEVICE_ABNORMAL","设备异常"), entry("NORMAL","正常"),
         entry("PLANNED","已安排"), entry("PENDING_EXECUTION","待执行"), entry("IN_PROGRESS","执行中"),
         entry("ACTIVE","进行中"), entry("FINISHED","已结束"), entry("mock","模拟数据"),
-        entry("replay","回放数据"), entry("live","真实数据"), entry("mixed","混合数据"), entry("unknown","暂无数据"));
+        entry("replay","回放数据"), entry("live","真实数据"), entry("mixed","混合数据"),
+        entry("simulated","模拟验收"), entry("unknown","暂无数据"));
     public static String text(String value) { return value == null || value.isBlank() ? "未知" : LABELS.getOrDefault(value,value); }
     public static String text(String section, String field, String value) {
         if (value==null || value.isBlank()) return "未知";

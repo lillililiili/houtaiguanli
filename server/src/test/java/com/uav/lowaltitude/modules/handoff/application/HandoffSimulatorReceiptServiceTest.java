@@ -43,4 +43,17 @@ class HandoffSimulatorReceiptServiceTest {
         verify(handoffs).completeLocalSimulatorReceipt("delivery","marker",receipt);
         verifyNoInteractions(risks,notifications);
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"DISPERSED","NOT_DISPERSED"})
+    void matchingRiskReceiptPreservesExplicitProcessingResult(String result){
+        var handoff=mock(HandoffRow.class);
+        String id=java.util.UUID.randomUUID().toString();
+        when(handoff.handoffType()).thenReturn("RISK_NOTICE");
+        when(handoff.sourceId()).thenReturn(id);
+        when(handoffs.lockNotification(eq("handoff"),any())).thenReturn(handoff);
+        when(handoffs.latestDelivery("handoff")).thenReturn(new DeliveryRow("delivery","handoff",1,"DELIVERED","PENDING","marker",at,at,at,null));
+        var outcome=new DeliveryOutcome("DELIVERED","ACKNOWLEDGED",result,null,at,at,at);
+        assertTrue(service.complete("handoff","RISK_NOTICE",id,at,"marker",outcome));
+        verify(handoffs).updateReceiptResult("handoff",result);
+    }
 }

@@ -29,6 +29,7 @@ class EoGuardBrowserFixtureTest extends EoManualTrackApiTest {
         String missing = insertTarget(false), busy = insertTarget(true), weather = UUID.randomUUID().toString();
         jdbc.update("UPDATE target SET target_no='QA-无位置' WHERE target_id=?", missing);
         jdbc.update("UPDATE target SET target_no='QA-设备忙' WHERE target_id=?", busy);
+        String missingAlarm = alarm(missing), busyAlarm = alarm(busy);
         jdbc.update("UPDATE eo_device_binding SET work_state=1 WHERE ops_device_id=?", binding.opsDeviceId());
         jdbc.update("""
                 INSERT INTO flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,
@@ -46,7 +47,8 @@ class EoGuardBrowserFixtureTest extends EoManualTrackApiTest {
         Path directory = Path.of("target", "eo-guard-browser").toAbsolutePath(); Files.createDirectories(directory);
         Path stop = directory.resolve("stop"); Files.deleteIfExists(stop);
         Files.writeString(directory.resolve("manifest.json"), mapper.writeValueAsString(Map.of("port", port,
-                "missing_target", missing, "busy_target", busy, "weather_risk", weather, "simulated", true)));
+                "missing_target", missing, "busy_target", busy, "weather_risk", weather, "simulated", true,
+                "missing_alarm", missingAlarm, "busy_alarm", busyAlarm)));
         long deadline = System.nanoTime() + java.time.Duration.ofMinutes(20).toNanos();
         while (!Files.exists(stop) && System.nanoTime() < deadline) {
             Timestamp now = new Timestamp(clock.nowMillis());
@@ -59,5 +61,20 @@ class EoGuardBrowserFixtureTest extends EoManualTrackApiTest {
         Files.deleteIfExists(stop);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class)).isEqualTo(tasks);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class)).isEqualTo(commands);
+    }
+
+    private String alarm(String target) {
+        String alarm = UUID.randomUUID().toString();
+        jdbc.update("""
+                INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,
+                    occurred_at,received_at,source_mode,owner_org_id,district_id,created_at)
+                VALUES (?,?,?,?,'UAV_INTRUSION','HIGH',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,
+                    'replay',?,?,CURRENT_TIMESTAMP)
+                """, alarm, target, binding.sourceId(), alarm, org, district);
+        jdbc.update("""
+                INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)
+                VALUES (?,?,'PENDING_VERIFICATION',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)
+                """, UUID.randomUUID().toString(), alarm, org, district);
+        return alarm;
     }
 }

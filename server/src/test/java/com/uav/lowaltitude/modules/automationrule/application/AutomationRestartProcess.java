@@ -14,6 +14,8 @@ import com.uav.lowaltitude.platform.worker.OutboxWorker;
 /** Separate-JVM fixture. Uses production worker/outbox/MQTT beans; no mocked transport or rule decisions. */
 public final class AutomationRestartProcess {
     public static void main(String[] args) throws Exception {
+        if ("CRASH_RECEIPT".equals(args[0]) && args.length != 4)
+            throw new IllegalArgumentException("Receipt barrier requires the exact current command ID");
         String url = System.getenv("AUTOMATION_RESTART_DB_URL");
         if (url == null || !url.matches("jdbc:postgresql://[^/]+/stage456_verify_[a-z0-9_]+\\?currentSchema=monitor_events_[a-f0-9]{32},public"))
             throw new IllegalArgumentException("Only disposable automation schemas are permitted");
@@ -46,12 +48,15 @@ public final class AutomationRestartProcess {
                         @Override public Object postProcessAfterInitialization(Object bean,String name) {
                             boolean publish = bean instanceof MqttSessionSupervisor && List.of("CRASH_PUBLISH","CRASH_BEFORE_PUBLISH").contains(args[0]);
                             boolean complete = bean instanceof com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository && "CRASH_COMPLETE".equals(args[0]);
-                            if (!publish && !complete) return bean;
+                            boolean receipt = bean instanceof com.uav.lowaltitude.modules.disposal.application.DisposalReceiptSync && "CRASH_RECEIPT".equals(args[0]);
+                            if (!publish && !complete && !receipt) return bean;
                             var proxy = new org.springframework.aop.framework.ProxyFactory(bean);
                             proxy.setProxyTargetClass(true);
                             proxy.addAdvice((org.aopalliance.intercept.MethodInterceptor) invocation -> {
                                 boolean hit = publish && "publish".equals(invocation.getMethod().getName())
-                                        || complete && "completeOutbox".equals(invocation.getMethod().getName());
+                                        || complete && "completeOutbox".equals(invocation.getMethod().getName())
+                                        || receipt && "syncByCommand".equals(invocation.getMethod().getName())
+                                                && args[3].equals(invocation.getArguments()[0]);
                                 if (!hit) return invocation.proceed();
                                 Object result = publish && !"CRASH_BEFORE_PUBLISH".equals(args[0]) ? invocation.proceed() : null;
                                 Files.writeString(Path.of(args[1]),Long.toString(ProcessHandle.current().pid()));
@@ -67,6 +72,19 @@ public final class AutomationRestartProcess {
             var mqtt=context.getBean(MqttSessionSupervisor.class);
             var outbox=context.getBean(OutboxWorker.class);
             var jdbc=context.getBean(JdbcTemplate.class);
+            if ("CRASH_RECEIPT".equals(args[0])) {
+                // Only the existing ordinary command is dispatched. Its AFTER_COMMIT callback
+                // reaches the barrier above after the real MQTT receipt is durable.
+                long dispatchDeadline = System.nanoTime() + java.time.Duration.ofSeconds(20).toNanos();
+                do {
+                    mqtt.reconcile(); outbox.poll();
+                    if (jdbc.queryForObject("select issued_at from device_command where command_id=?", Long.class, args[3]) != null) break;
+                    Thread.sleep(100);
+                } while (System.nanoTime() < dispatchDeadline);
+                Files.writeString(Path.of(args[1] + ".subscribed"), Long.toString(ProcessHandle.current().pid()));
+                Thread.sleep(120000);
+                throw new IllegalStateException("Parent did not terminate at receipt barrier");
+            }
             mqtt.reconcile(); worker.poll();
             if (!"FAIL".equals(args[0])) {
                 long deadline=System.nanoTime()+java.time.Duration.ofSeconds(20).toNanos();

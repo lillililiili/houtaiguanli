@@ -28,6 +28,7 @@ import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.AlarmQuery;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.AlarmRow;
 import com.uav.lowaltitude.modules.alarm.infrastructure.AlarmReadRepository.EscalationRow;
+import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
@@ -36,9 +37,15 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @Service
 public class AlarmReadService {
     // 参数白名单：写错的参数必须报错而不是被忽略，否则调用方以为筛过了、拿到的却是全量。
-    // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）。
+    // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group、violation_reason。
     private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "occurred_from", "occurred_to",
-            "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type");
+            "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group",
+            "violation_reason");
+    private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
+    /** 规则引擎会写进告警违规原因的代码：各项检查的 FAIL 原因，加无计划时的无授权（C03）。 */
+    private static final Set<String> VIOLATION_REASONS = Set.of(RuleCodes.INSIDE_RESTRICTED_AIRSPACE, RuleCodes.AIRSPACE_ALTITUDE_EXCEEDED,
+            RuleCodes.TEMPORARY_RESTRICTION_ACTIVE, RuleCodes.ROUTE_DEVIATION, RuleCodes.TIME_WINDOW_OVERRUN, RuleCodes.NIGHT_FLIGHT,
+            RuleCodes.PLAN_ALTITUDE_EXCEEDED, RuleCodes.BVLOS_EXCEEDED, RuleCodes.NO_AUTHORIZATION);
     private final AccessControlService access;
     private final AlarmReadRepository repository;
     private final AuditService audit;
@@ -62,11 +69,7 @@ public class AlarmReadService {
     public ResponseEntity<byte[]> export(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.ALARM_READ);
         AccessDecision targetDecision = values.containsKey("target_id") ? access.require(PermissionCode.TARGET_READ) : null;
-        Request request = new Request(values);
-        AlarmQuery query = new AlarmQuery(request.optional("state", 32), request.optional("severity", 16),
-                request.optional("target_id", 36), request.timeFrom(), request.timeTo(),
-                request.optional("owner_org_id", 36), request.optional("district_id", 36),
-                request.optional("source_mode", 8), request.optional("alarm_type", 32));
+        AlarmQuery query = new Request(values).query();
         if (query.targetId() != null && !repository.targetReadable(query.targetId(), targetDecision)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权筛选该关联目标");
         }
@@ -77,7 +80,7 @@ public class AlarmReadService {
                     "导出行数超过 " + CsvExport.MAX_ROWS + " 条，请先缩小筛选范围");
         }
         List<AlarmRow> rows = repository.listForExport(query, decision, CsvExport.MAX_ROWS, sort, order);
-        List<List<String>> cells = rows.stream().map(AlarmReadService::exportRow).toList();
+        List<List<String>> cells = rows.stream().map(this::exportRow).toList();
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarms", "alarms_exported", "alarm", null,
                 "filters=" + describe(query, sort, order) + "; rows=" + cells.size(), "SUCCESS", "", "");
@@ -87,12 +90,14 @@ public class AlarmReadService {
 
     /** 列头用中文，与页面列一致——导出给的是给人看的表，不是接口字段名。 */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "编号", "告警类别", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
+            "编号", "告警类别", "违规原因", "等级", "状态", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
 
-    private static List<String> exportRow(AlarmRow row) {
+    private List<String> exportRow(AlarmRow row) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。
+        // 违规原因与列表同源（UX-61）：升级过取最近一次升级的累计原因，否则取告警明细的 violation_reasons。
         return java.util.Arrays.asList(row.displayNo(),
                 com.uav.lowaltitude.platform.export.CsvLabels.alarmType(row.alarmType()),
+                com.uav.lowaltitude.platform.export.CsvLabels.violationReasons(violations(row)),
                 com.uav.lowaltitude.platform.export.CsvLabels.severity(row.severity()),
                 com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()),
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
@@ -117,6 +122,8 @@ public class AlarmReadService {
     /** 审计里记下筛选条件与行数：事后要能回答"这份表是谁、按什么条件导出去的"。 */
     private static String describe(AlarmQuery query, String sort, String order) {
         return "state=" + query.state() + ",severity=" + query.severity() + ",alarm_type=" + query.alarmType()
+                + ",attention_group=" + (query.attentionGroups() == null ? null : String.join("|", query.attentionGroups()))
+                + ",violation_reason=" + query.violationReason()
                 + ",district_id=" + query.districtId() + ",target_id=" + query.targetId()
                 + ",sort=" + sort + ",order=" + order;
     }
@@ -128,10 +135,7 @@ public class AlarmReadService {
         AccessDecision targetDecision = values.containsKey("target_id") ? access.require(PermissionCode.TARGET_READ) : null;
         Request request = new Request(values);
         Page page = request.page();
-        AlarmQuery query = new AlarmQuery(request.optional("state", 32), request.optional("severity", 16),
-                request.optional("target_id", 36), request.timeFrom(), request.timeTo(),
-                request.optional("owner_org_id", 36), request.optional("district_id", 36),
-                request.optional("source_mode", 8), request.optional("alarm_type", 32));
+        AlarmQuery query = request.query();
         String sort = sortKey(values), order = orderDirection(values);
         if (query.targetId() != null) {
             // target_id 是关联对象筛选，不允许仅以告警读权限用 total 是否变化猜测目标存在或归属。
@@ -210,13 +214,17 @@ public class AlarmReadService {
     private AlarmDto dto(AlarmRow row) {
         // target_id 是独立敏感引用：没有 target:read 时宁可省略，也不能以 0 坐标或可猜 ID 替代。
         String targetId = targetReferenceVisible(row.targetId(), row.ownerOrgId(), row.districtId()) ? row.targetId() : null;
-        // 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。
-        List<String> violations = row.escalationCount() > 0 ? reasons(row.escalatedReasonsJson()) : reasons(row.detailJson());
+        List<String> violations = violations(row);
         return new AlarmDto(row.alarmId(), row.eventId(), row.state(), row.alarmType(), row.severity(), millis(row.occurredAt()),
                 requiredMillis(row.receivedAt()), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), targetId,
                 row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
                 row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()),
                 row.observationStatus(), row.attentionGroup());
+    }
+
+    /** 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。 */
+    private List<String> violations(AlarmRow row) {
+        return row.escalationCount() > 0 ? reasons(row.escalatedReasonsJson()) : reasons(row.detailJson());
     }
 
     /**
@@ -258,6 +266,29 @@ public class AlarmReadService {
             values.keySet().stream().filter(key -> !ALLOWED.contains(key)).findFirst().ifPresent(key -> { throw invalid("参数无效"); });
         }
         private Page page() { int page = integer("page", 1), size = integer("size", 20); if (page < 1 || size < 1 || size > 100) throw invalid("分页参数无效"); return new Page(page, size); }
+        /** 列表与导出共用同一套筛选解析，两边条件不能各写一份。 */
+        private AlarmQuery query() {
+            return new AlarmQuery(optional("state", 32), optional("severity", 16), optional("target_id", 36), timeFrom(), timeTo(),
+                    optional("owner_org_id", 36), optional("district_id", 36), optional("source_mode", 8), optional("alarm_type", 32),
+                    attentionGroups(), violationReason());
+        }
+        private String violationReason() {
+            String value = optional("violation_reason", 64);
+            if (value != null && !VIOLATION_REASONS.contains(value)) throw invalid("violation_reason 参数无效");
+            return value;
+        }
+        /** attention_group 是逗号分隔集合（如 CURRENT,AWAITING_CONFIRMATION）；未知、重复或空项一律 400，不悄悄忽略。 */
+        private List<String> attentionGroups() {
+            String raw = optional("attention_group", 64);
+            if (raw == null) return null;
+            List<String> groups = new java.util.ArrayList<>();
+            for (String part : raw.split(",", -1)) {
+                String group = part.trim();
+                if (!ATTENTION_GROUPS.contains(group) || groups.contains(group)) throw invalid("attention_group 参数无效");
+                groups.add(group);
+            }
+            return List.copyOf(groups);
+        }
         private int integer(String name, int fallback) { if (!values.containsKey(name)) return fallback; String value = single(name); try { return Integer.parseInt(value); } catch (RuntimeException ex) { throw invalid("分页参数无效"); } }
         private String optional(String name, int max) { if (!values.containsKey(name)) return null; String value = single(name); if (value.length() > max) throw invalid(name + " 参数无效"); return value; }
         private OffsetDateTime timeFrom() { return time("occurred_from", true); }

@@ -32,7 +32,10 @@ public final class LocalInterfaceDtos {
   @NotBlank @Size(max=36) String sourceId,@NotNull Boolean enabled){}
  public record Binding(String sourceKind,String sourceId,boolean enabled,long expiresAt){}
  public record ReceiptInput(@NotNull @Min(0) Long expectedVersion,
-  @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT|ANSWERED|PLAYED") @NotNull String outcome){}
+  @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT|ANSWERED|PLAYED") @NotNull String outcome,
+  @Pattern(regexp="DISPERSED|NOT_DISPERSED") String receiptResult){
+  public ReceiptInput(Long expectedVersion,String outcome){this(expectedVersion,outcome,null);}
+ }
  public record Message(String messageId,String kind,String direction,String subjectId,String state,long version,
   long createdAt,JsonNode payload,JsonNode result){}
  public record RouteOption(String routeVersionId,String routeId,String name,String routeNo,long validFrom,Long validTo,GeoJsonLineStringDto centerline,String ownerOrgId,String districtId){}

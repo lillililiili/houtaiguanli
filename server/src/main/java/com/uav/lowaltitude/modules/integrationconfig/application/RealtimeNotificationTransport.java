@@ -73,12 +73,19 @@ public class RealtimeNotificationTransport {
  @Transactional public Message receipt(String id,ReceiptInput input){
   authorize();var actor=AuthContext.require();Row old=require(id,true);
   if(!actor.userId().equals(old.actor()))throw new ApiException(HttpStatus.NOT_FOUND,"SIMULATOR_MESSAGE_NOT_FOUND","通知请求不存在");
-  if(old.state().equals(input.outcome()))return view(old,true);
+  if(input.receiptResult()!=null&&(!"RISK_NOTICE".equals(old.kind())||!"ACKNOWLEDGED".equals(input.outcome())
+    ||!Set.of("DISPERSED","NOT_DISPERSED").contains(input.receiptResult())))throw conflict("处理结果只适用于风险通知的签收回执");
+  if(old.state().equals(input.outcome())){
+   if("ACKNOWLEDGED".equals(old.state())&&"APPLIED".equals(old.projection())
+     &&!Objects.equals(input.receiptResult(),projector.getObject().processingResult(old.kind(),old.subjectId())))
+    throw conflict("重复回执不能更改已保存的处理结果");
+   return view(old,true);
+  }
   if(old.version()!=input.expectedVersion())throw conflict("请求版本已变化，请重新读取");
   if(!allowed(old.kind(),old.state(),input.outcome()))throw conflict("通知回执顺序无效");
   long now=clock.nowMillis();Long delivered=old.delivered(),answered=old.answered(),completed=old.completed(),ack=old.ack();
   switch(input.outcome()){case "DELIVERED"->delivered=now;case "ANSWERED"->answered=now;case "PLAYED"->completed=now;case "ACKNOWLEDGED"->ack=now;default->{}}
-  boolean applied=projector.getObject().apply(id,old.kind(),old.subjectId(),old.payload(),input.outcome(),delivered,answered,completed,ack);
+  boolean applied=projector.getObject().apply(id,old.kind(),old.subjectId(),old.payload(),input.outcome(),delivered,answered,completed,ack,input.receiptResult());
   if(jdbc.update("UPDATE simulator_notification_message SET state=?,delivered_at=?,answered_at=?,completed_at=?,acknowledged_at=?,projection_status=?,version=version+1 WHERE message_id=? AND version=?",input.outcome(),delivered,answered,completed,ack,applied?"APPLIED":"IGNORED_STALE_ATTEMPT",id,old.version())!=1)throw conflict("请求已被处理");
   audit.record(actor.userId(),actor.account(),"simulator_notification_receipt","local_interface",id,"独立模拟器回执："+input.outcome()+"; kind="+old.kind(),null);
   return view(require(id,false),true);
@@ -96,6 +103,10 @@ public class RealtimeNotificationTransport {
   JsonNode payload=r.payload().deepCopy();if(external&&payload instanceof ObjectNode object)object.remove("claim_token");
   var result=json.createObjectNode();if(r.delivered()!=null)result.put("delivered_at",r.delivered());if(r.answered()!=null)result.put("answered_at",r.answered());if(r.completed()!=null)result.put("playback_completed_at",r.completed());if(r.ack()!=null)result.put("acknowledged_at",r.ack());result.put("transport","DATA_SIMULATOR");
   result.put("projection_status",r.projection());
+  if("ACKNOWLEDGED".equals(r.state())&&"APPLIED".equals(r.projection())){
+   String processing=projector.getObject().processingResult(r.kind(),r.subjectId());
+   if(processing!=null)result.put("receipt_result",processing);
+  }
   return new Message(r.id(),r.kind(),"OUT",r.subjectId(),r.state(),r.version(),r.createdAt(),payload,result);
  }
  private record Row(String id,String actor,String kind,String subjectId,JsonNode payload,String state,long createdAt,long version,Long delivered,Long answered,Long completed,Long ack,String projection){}

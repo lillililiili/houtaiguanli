@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "name": "完整模拟资料·R01 鸟类邻近航线·标准化模拟观测",
+  "duration": 0,
+  "sites": [
+    {
+      "id": "item2-site",
+      "name": "第二条模拟设备组",
+      "x": 450,
+      "y": 300,
+      "devices": [
+        {
+          "id": "item2-radar",
+          "name": "第二条模拟 radar",
+          "kind": "radar",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1
+        }
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "id": "item2-risk-bird",
+      "name": "第三业务链模拟鸟类",
+      "kind": "bird",
+      "deviceId": "item2-radar",
+      "path": [
+        [
+          530,
+          300
+        ],
+        [
+          534,
+          300
+        ]
+      ],
+      "height": 100,
+      "altitudeDatum": "AMSL",
+      "speed": 1,
+      "probability": 0.99,
+      "motionMode": "pingpong",
+      "transport": "normalized",
+      "planId": "item2-risk-bird-route",
+      "notificationBehavior": "none"
+    }
+  ],
+  "plans": [
+    {
+      "id": "item2-risk-bird-route",
+      "name": "第三业务链模拟鸟类风险航线",
+      "points": [
+        [
+          530,
+          300
+        ],
+        [
+          534,
+          300
+        ]
+      ],
+      "min": 0,
+      "max": 150,
+      "width": 100,
+      "start": "00:00",
+      "end": "23:59",
+      "timeMode": "current",
+      "altitudeDatum": "AMSL"
+    }
+  ],
+  "zones": [],
+  "risks": [],
+  "fullchain": {
+    "enabled": true,
+    "categories": [
+      "bird"
+    ],
+    "filing": {},
+    "observationSourceCount": 3,
+    "airspaceLifecycle": false
+  }
+}

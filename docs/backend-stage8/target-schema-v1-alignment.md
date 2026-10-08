@@ -49,7 +49,7 @@
 | `extension.rcs / length / width / height` | `quality.rcs_m2 / size_cm` | 参与异常源降权，不参与位置 |
 | `extension.objectType` | `class_code` | `0 UNKNOWN / 3 PERSON / 7 VEHICLE / 30 UAV / 40 BIRD / 50 SHIP / 100 REMOTE_CONTROLLER / 255 IDENTIFYING`；`object_type_code` 字典需扩 PERSON/VEHICLE/SHIP/REMOTE_CONTROLLER；255 记 `class_code NULL + quality.identifying=true` |
 | `extension.probability` | `class_confidence` | 可选 |
-| TDOA/AOA/DCD/RID `extension.uavSN / uavModel / channel / bandWidth` | `identity_clue`（`uavSN` 优先，其次 `uavModel`）、`quality.rf` | `uavSN` 在 DCD/RID 必填、TDOA 可选 |
+| TDOA/AOA/DCD/RID `extension.uavSN / uavModel / channel / bandWidth` | 有效 `uavSN` → `identity_clue`；型号单独记 `quality.uav_model`；射频字段记 `quality.rf` | `uavSN` 在 DCD/RID 必填、TDOA 可选；缺号不再以型号替代身份，融合选源范围保持原规则 |
 | `extension.pilotLon / pilotLat` | 新列 `source_observation.pilot_location`（POINT 4326，可空） | **飞手/遥控器位置**：阶段 7 C02-6 超视距与 C01 身份维度的真实输入 |
 | `extension.taskId`（5G-A） | `source_session_key` | 任务 id 作会话键 |
 | 光电 `extension.focalLen / detectionRange` | `quality.eo` | 光电在协议 A 里不给位置和类别，类别与预估位置来自协议 C |

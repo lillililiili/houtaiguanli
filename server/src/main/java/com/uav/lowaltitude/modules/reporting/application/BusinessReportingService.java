@@ -20,10 +20,11 @@ public class BusinessReportingService {
     private final AccessService access;
     private final ReportPeriodResolver periods;
     private final AppClock clock;
+    private final ReportScopePolicy scopes;
     public BusinessReportingService(List<BusinessReportSource> sources, AccessService access,
-            ReportPeriodResolver periods, AppClock clock) {
+            ReportPeriodResolver periods, AppClock clock, ReportScopePolicy scopes) {
         sources.forEach(s -> this.sources.put(s.key(), s));
-        this.access = access; this.periods = periods; this.clock = clock;
+        this.access = access; this.periods = periods; this.clock = clock; this.scopes = scopes;
     }
     public enum Category {
         OVERVIEW("综合运行", List.of("targets","alarms","risks","plans","events")),
@@ -42,14 +43,20 @@ public class BusinessReportingService {
     public record Preview(String reportCategory, String title, String periodType, String anchorDate,
             String periodLabel, String from, String to, long generatedAt, String sourceMode,
             boolean simulated, String statusNote, List<Summary> sections,
-            Map<String,List<ReportLabels.Column>> columns, Map<String,String> labels) { }
+            Map<String,List<ReportLabels.Column>> columns, Map<String,String> labels,
+            String reportScope, List<String> availableSourceModes) { }
     public record ExportData(Preview preview, Map<String,Page> details) { }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Preview preview(String categoryText, String type, String anchor) {
+        return preview(categoryText, type, anchor, null);
+    }
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Preview preview(String categoryText, String type, String anchor, String sourceMode) {
         access.requireBusinessData("statistics.read");
+        SourceScope scope = scopes.resolve(sourceMode);
         Category category = Category.parse(categoryText);
         var period = periods.resolve(type, anchor);
-        Range range = new Range(period.from(), period.to());
+        Range range = new Range(period.from(), period.to(), scope);
         List<Summary> sections = new ArrayList<>();
         for (String key : category.keys) {
             BusinessReportSource source = sources.get(key);
@@ -62,36 +69,46 @@ public class BusinessReportingService {
         }
         var modes = sections.stream().flatMap(s -> s.sources().stream()).filter(s -> s.value() > 0)
                 .map(Count::name).distinct().toList();
-        // The dataset reader always filters to live. An empty formal report still has that scope;
-        // only actual non-empty rows with missing provenance must remain unknown.
+        // Empty reports still disclose the selected scope; actual provenance is never invented.
         boolean empty = sections.stream().filter(Summary::accessible)
                 .allMatch(s -> s.total() != null && s.total() == 0);
-        String mode = modes.isEmpty() ? (empty ? "live" : "unknown") : modes.size() == 1 ? modes.get(0) : "mixed";
-        boolean simulated = modes.stream().anyMatch(m -> m.equals("mock") || m.equals("replay"));
+        String mode = modes.isEmpty() ? (empty ? scope.value() : "unknown") : modes.size() == 1 ? modes.get(0) : "mixed";
+        boolean simulated = scope == SourceScope.SIMULATED || modes.stream().anyMatch(m -> m.equals("mock") || m.equals("replay"));
         return new Preview(category.name(), category.title, period.type().name(), period.anchor().toString(),
                 period.label(), period.from().toString(), period.to().toString(), clock.now().toEpochMilli(),
                 mode, simulated, "状态截至生成时；设备状态为当前快照。不同业务对象分别计数，不相加为事件总量。", List.copyOf(sections),
-                category.keys.stream().collect(java.util.stream.Collectors.toMap(k -> k, ReportLabels::columns)), ReportLabels.dictionary());
+                category.keys.stream().collect(java.util.stream.Collectors.toMap(k -> k, ReportLabels::columns)), ReportLabels.dictionary(),
+                scope.value(), scopes.available());
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Page details(String categoryText, String type, String anchor, String section, int page, int size) {
+        return details(categoryText, type, anchor, section, page, size, null);
+    }
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public Page details(String categoryText, String type, String anchor, String section, int page, int size, String sourceMode) {
         access.requireBusinessData("statistics.read");
+        SourceScope scope = scopes.resolve(sourceMode);
         Category category = Category.parse(categoryText);
         if (category == Category.OVERVIEW || !category.keys.contains(section)) throw bad("此报表不包含该明细分区");
         if (page < 1 || size < 1 || size > 100) throw bad("页码从 1 开始，每页 1–100 条");
         var period = periods.resolve(type, anchor);
         // A category requires every constituent permission, even when requesting only one detail section.
-        for (String key : category.keys) sources.get(key).requireAccess(new Range(period.from(), period.to()));
-        return sources.get(section).details(new Range(period.from(), period.to()), page, size);
+        Range range = new Range(period.from(), period.to(), scope);
+        for (String key : category.keys) sources.get(key).requireAccess(range);
+        return sources.get(section).details(range, page, size);
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ExportData exportData(String category, String type, String anchor, boolean pdf) {
-        Preview preview = preview(category, type, anchor);
+        return exportData(category, type, anchor, pdf, null);
+    }
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ExportData exportData(String category, String type, String anchor, boolean pdf, String sourceMode) {
+        Preview preview = preview(category, type, anchor, sourceMode);
         Map<String,Page> details = new LinkedHashMap<>();
         if (!category.equals("OVERVIEW")) {
             long total = preview.sections().stream().mapToLong(s -> s.total()).sum();
             if (!pdf && total > 50000) throw bad("明细超过 50000 条，请改用周报或日报缩短统计周期");
-            Range range = new Range(java.time.LocalDate.parse(preview.from()), java.time.LocalDate.parse(preview.to()));
+            Range range = new Range(java.time.LocalDate.parse(preview.from()), java.time.LocalDate.parse(preview.to()), scopes.resolve(sourceMode));
             for (Summary section : preview.sections())
                 details.put(section.key(), sources.get(section.key()).details(range, 1, pdf ? 50 : 50000));
         }

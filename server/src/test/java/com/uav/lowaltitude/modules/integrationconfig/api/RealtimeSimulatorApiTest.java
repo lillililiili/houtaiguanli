@@ -25,6 +25,45 @@ class RealtimeSimulatorApiTest {
  private void connect(String token) throws Exception {
   mvc.perform(post("/api/v1/local-interface-simulator/bindings").header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content("{\"source_kind\":\"NOTIFICATION_CHANNEL\",\"source_id\":\"receiver\",\"enabled\":true}")).andExpect(status().isOk());
  }
+ @org.junit.jupiter.params.ParameterizedTest
+ @org.junit.jupiter.params.provider.ValueSource(strings={"DISPERSED","NOT_DISPERSED"})
+ void explicitRiskProcessingResultSurvivesReadbackWithoutChangingFrozenMaterial(String processing) throws Exception {
+  String token=login();connect(token);
+  String risk=java.util.UUID.randomUUID().toString();
+  var now=java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC);
+  jdbc.update("INSERT INTO flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version) VALUES(?,'seed-stage3-source',?,'seed-stage3-plan-legal','seed-stage3-rv-legal','ROUTE_DEVIATION','HIGH','PENDING_NOTIFICATION','ROUTE_DEVIATION','isolated simulated risk',?,?,'UNKNOWN','mock','seed-stage3-org','seed-stage3-district',?,?,1)",risk,risk,now,now,now,now);
+  jdbc.update("UPDATE notification_setting SET enabled=TRUE,channel_type='API',endpoint_ref='local-data-simulator' WHERE setting_id='risk-superior'");
+  var created=json.readTree(mvc.perform(post("/api/v1/handoffs").header("Authorization",token).header("Idempotency-Key",risk)
+   .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(java.util.Map.of("source_kind","RISK","source_id",risk,"handoff_type","RISK_NOTICE","expected_version",1))))
+   .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data");
+  String handoff=created.path("handoff_id").asText();
+  String frozen=jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,handoff);
+  String message=jdbc.queryForObject("SELECT message_id FROM simulator_notification_message WHERE subject_id=?",String.class,handoff);
+  String url="/api/v1/local-interface-simulator/messages/"+message+"/receipt";
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+   .content("{\"expected_version\":0,\"outcome\":\"DELIVERED\",\"receipt_result\":\"DISPERSED\"}")).andExpect(status().isConflict());
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+   .content("{\"expected_version\":0,\"outcome\":\"DELIVERED\"}")).andExpect(status().isOk());
+  String ack=json.writeValueAsString(java.util.Map.of("expected_version",1,"outcome","ACKNOWLEDGED","receipt_result",processing));
+  for(int repeat=0;repeat<2;repeat++)mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content(ack))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(2)).andExpect(jsonPath("$.data.result.receipt_result").value(processing));
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+   .content(json.writeValueAsString(java.util.Map.of("expected_version",2,"outcome","ACKNOWLEDGED","receipt_result",processing.equals("DISPERSED")?"NOT_DISPERSED":"DISPERSED"))))
+   .andExpect(status().isConflict());
+  mvc.perform(get("/api/v1/handoffs/"+handoff).header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.receipt_status").value("ACKNOWLEDGED")).andExpect(jsonPath("$.data.receipt_result").value(processing));
+  assertThat(jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,handoff)).isEqualTo(frozen);
+  assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM handoff_delivery WHERE handoff_id=?",Long.class,handoff)).isEqualTo(1);
+ }
+ @Test void processingResultCannotBeInventedForPunishmentOrUnknownCode() throws Exception {
+  String token=login();connect(token);
+  var request=transport.submit("UAV_PUNISHMENT","missing-event",java.util.UUID.randomUUID().toString(),json.createObjectNode());
+  String url="/api/v1/local-interface-simulator/messages/"+request.messageId()+"/receipt";
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+   .content("{\"expected_version\":0,\"outcome\":\"ACKNOWLEDGED\",\"receipt_result\":\"DISPERSED\"}")).andExpect(status().isConflict());
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+   .content("{\"expected_version\":0,\"outcome\":\"ACKNOWLEDGED\",\"receipt_result\":\"COMPLETED\"}")).andExpect(status().isBadRequest());
+ }
  @Test void submissionNeverBecomesSuccessWithoutOrderedAuthenticatedReceipt() throws Exception {
   String token=login();connect(token);
   var payload=json.createObjectNode().put("handoff_id","missing-test-handoff");

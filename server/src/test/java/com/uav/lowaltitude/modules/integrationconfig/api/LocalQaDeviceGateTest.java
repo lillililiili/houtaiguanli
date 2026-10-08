@@ -18,9 +18,13 @@ class LocalQaDeviceGateTest {
         try(var context=new AnnotationConfigApplicationContext()) {
             context.getEnvironment().setActiveProfiles(profiles);
             context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("qa-gate",Map.of("app.qa.device-setup.enabled",enabled)));
-            context.register(LocalQaDeviceController.class,LocalQaDeviceService.class);context.refresh();
+            context.register(LocalQaDeviceController.class,LocalQaDeviceService.class,
+                com.uav.lowaltitude.modules.device.api.LocalQaDeviceStatusController.class,
+                com.uav.lowaltitude.modules.device.application.LocalQaDeviceStatusService.class);context.refresh();
             assertThat(context.getBeansOfType(LocalQaDeviceController.class)).isEmpty();
             assertThat(context.getBeansOfType(LocalQaDeviceService.class)).isEmpty();
+            assertThat(context.getBeansOfType(com.uav.lowaltitude.modules.device.api.LocalQaDeviceStatusController.class)).isEmpty();
+            assertThat(context.getBeansOfType(com.uav.lowaltitude.modules.device.application.LocalQaDeviceStatusService.class)).isEmpty();
         }
     }
 }

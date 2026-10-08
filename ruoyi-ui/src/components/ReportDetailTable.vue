@@ -1,6 +1,6 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
-import { businessReportApi, createLatestRequestGuard } from '@/api/reports.js';
+import { computed, ref, watch, onBeforeUnmount } from 'vue';
+import { businessReportApi, createLatestRequestGuard, reportRowMatchesScope } from '@/api/reports.js';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 const props = defineProps({
   params: { type: Object, required: true }, section: { type: Object, required: true },
@@ -19,16 +19,20 @@ function cell(row, field) {
 }
 async function load() {
   const current = guard.begin();
-  loading.value = true; error.value = ''; rows.value = [];
+  const filter = { ...props.params, section: props.section.key, page: page.value, size: 20 };
+  loading.value = true; error.value = ''; rows.value = []; total.value = 0;
   try {
-    const data = await businessReportApi.details({ ...props.params, section: props.section.key, page: page.value, size: 20 });
+    const data = await businessReportApi.details(filter);
     if (!guard.isCurrent(current)) return;
+    if (!Array.isArray(data.items) || !data.items.every(row => reportRowMatchesScope(row.source_mode, filter.source_mode)))
+      throw new Error('明细数据不符合当前来源口径，已停止展示。');
     rows.value = data.items; total.value = data.total;
   } catch (e) {
     if (guard.isCurrent(current)) { error.value = e.message || '明细加载失败'; total.value = 0; }
   } finally { if (guard.isCurrent(current)) loading.value = false; }
 }
 watch(queryKey, () => { page.value = 1; load(); }, { immediate: true });
+onBeforeUnmount(() => guard.begin());
 function changePage(value) { page.value = value; load(); }
 </script>
 <template>

@@ -14,6 +14,30 @@ import com.fasterxml.jackson.databind.JsonNode;
 class LocalQaNotificationApiTest extends LocalPlanFilingApiTest {
     static final String NOTICE = BASE + "/notification-settings";
 
+    @Test void riskNoticeDoesNotRequireOrCreatePilotVerification() throws Exception {
+        var body = plan("qa-risk-notice-" + UUID.randomUUID());
+        body.remove("filing");
+        String id = send("/plans", body, 200).path("subject_id").asText();
+        var before = read("/api/v1/flight-plans/" + id + "/subjects");
+        long contacts = jdbc.queryForObject("select count(*) from business_contact", Long.class);
+        assertThat(before.path("association_status").asText()).isNotEqualTo("LINKED");
+
+        var result = prepare(id, "RISK_NOTICE", null, 0, 200);
+        assertThat(result.path("recipient_id").asText()).isEqualTo("fixed-superior-recipient");
+        assertThat(result.path("channel_type").asText()).isEqualTo("MOCK");
+        assertThat(result.path("enabled").asBoolean()).isTrue();
+        assertThat(result.path("valid_until").asLong())
+                .isBetween(System.currentTimeMillis(), System.currentTimeMillis() + 1_201_000);
+        var after = read("/api/v1/flight-plans/" + id + "/subjects");
+        // Read-time recipient snapshots have a new capture time; persisted subjects must not change.
+        ((com.fasterxml.jackson.databind.node.ObjectNode) before.path("feedback_recipient")).remove("captured_at");
+        ((com.fasterxml.jackson.databind.node.ObjectNode) after.path("feedback_recipient")).remove("captured_at");
+        assertThat(after).isEqualTo(before);
+        assertThat(jdbc.queryForObject("select count(*) from business_contact", Long.class)).isEqualTo(contacts);
+        prepare(id, "ADVISORY_SMS", null, 0, 409);
+        prepare(id, "ADVISORY_VOICE", null, 0, 409);
+    }
+
     @Test void preparesOnlyExpiringMockSettingsAndPreservesPlanFacts() throws Exception {
         String id = linkedPlan();
         var before = read("/api/v1/flight-plans/" + id);

@@ -45,6 +45,9 @@ app:
     auto-voice:
       enabled: true
   qa:
+    reporting:
+      # Explicit opt-in; the service also rejects production/prod and non-QA profiles.
+      enabled: ${APP_QA_REPORTING_ENABLED:false}
     device-setup:
       enabled: true
   handoff:

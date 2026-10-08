@@ -1,0 +1,14 @@
+{
+  "mode": "abnormal",
+  "continuous": true,
+  "notifications_enabled": true,
+  "countermeasure_enabled": false,
+  "countermeasure_plan_id": "",
+  "command_mode": "success",
+  "play_seconds": 17,
+  "outcomes": {
+    "ADVISORY_SMS": "success",
+    "ADVISORY_VOICE": "answered_only",
+    "UAV_PUNISHMENT": "success"
+  }
+}

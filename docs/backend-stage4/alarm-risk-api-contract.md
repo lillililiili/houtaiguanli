@@ -1,5 +1,13 @@
 # 阶段 4 告警与飞行风险接口契约
 
+## 2026-10-07 按关注分组筛选与待处置统计
+
+`GET /api/v1/alarms` 与 `GET /api/v1/alarms/export.csv` 新增可选筛选 `attention_group`：逗号分隔的 `CURRENT`、`AWAITING_CONFIRMATION`、`HISTORY`，与每行返回的 `attention_group` 用同一个即时分类表达式，`total`、分页、导出与审计筛选条件一致；未知、重复、空项或重复传参返回 400 `VALIDATION_ERROR`。告警页“待处置”统计 = `state=CONFIRMED&attention_group=CURRENT,AWAITING_CONFIRMATION`：已核实属实、处置尚未结束（含执行中的反制/干扰和未完成的急停核查），不限日期；结束依据与下文分组规则相同，分组规则调整时统计随之变化，不另立口径。
+
+同日新增可选筛选 `violation_reason`（单个代码）：按告警当前违规原因匹配完整代码，升级过取最近一次升级的累计原因，否则取告警明细的 `violation_reasons`，与列表、详情返回的 `violation_reasons` 同源。可选值为规则引擎会写入告警的原因：`INSIDE_RESTRICTED_AIRSPACE`、`AIRSPACE_ALTITUDE_EXCEEDED`、`TEMPORARY_RESTRICTION_ACTIVE`、`ROUTE_DEVIATION`、`TIME_WINDOW_OVERRUN`、`NIGHT_FLIGHT`、`PLAN_ALTITUDE_EXCEEDED`、`BVLOS_EXCEEDED`、`NO_AUTHORIZATION`；其他值或重复传参 400 `VALIDATION_ERROR`。告警页“类别”下拉改按违规原因筛；`alarm_type` 筛选保留兼容。
+
+导出表在"告警类别"之后加"违规原因"一列（UX-61）：取值与上面的 `violation_reasons` 同源，按告警页的说法译成中文，几条原因用顿号连接；没有记录原因的告警该格为空。
+
 ## 2026-10-07 告警关注次序与观测时效
 
 `GET /api/v1/alarms` 和详情新增 `observation_status`（`CURRENT` 观测有效、`EXPIRED` 观测已过期、`UNKNOWN` 观测待确认）与 `attention_group`（`CURRENT` 当前事项、`AWAITING_CONFIRMATION` 状态待确认、`HISTORY` 历史）。它们是查询时计算的告警摘要，不是核实状态；`state`、历史和动作资格不变，alarm:read 可读这两项摘要，不额外暴露目标标识、坐标或观测时间。

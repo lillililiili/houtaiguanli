@@ -1,0 +1,12 @@
+{
+  "mode": "abnormal",
+  "continuous": true,
+  "notifications_enabled": true,
+  "countermeasure_enabled": false,
+  "countermeasure_plan_id": "",
+  "command_mode": "success",
+  "play_seconds": 17,
+  "outcomes": {
+    "RISK_NOTICE": "failed"
+  }
+}

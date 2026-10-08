@@ -1,0 +1,419 @@
+{
+  "generated_at": 1791255648878,
+  "note": "先正常消息，异常逐条独立发送。非MQTTX连接配置；不含凭据。请在运行前重新导出。",
+  "messages": [
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "providerCode": "map-sim",
+        "deviceId": "map-sim-radar-item1-radar",
+        "deviceName": "验收模拟 radar",
+        "deviceType": 1,
+        "workState": 1,
+        "ptTime": 1791255648878,
+        "deviceLongitude": 118.614,
+        "deviceLatitude": 37.464,
+        "deviceAltitude": 0
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device_data/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "deviceId": "map-sim-radar-item1-radar",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "1000",
+            "time": 1791255648878,
+            "longitude": 118.6164,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device/5ga/map-sim-5ga-item1-5ga",
+      "payload": {
+        "providerCode": "map-sim",
+        "deviceId": "map-sim-5ga-item1-5ga",
+        "deviceName": "验收模拟 5ga",
+        "deviceType": 0,
+        "workState": 1,
+        "ptTime": 1791255648878,
+        "deviceLongitude": 118.614,
+        "deviceLatitude": 37.464,
+        "deviceAltitude": 0
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device_data/5ga/map-sim-5ga-item1-5ga",
+      "payload": {
+        "deviceId": "map-sim-5ga-item1-5ga",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "2000",
+            "time": 1791255648878,
+            "longitude": 118.6524,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0,
+              "taskId": "sim-1005225637-041a-item1-5ga"
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device/tdoa/map-sim-tdoa-item1-tdoa",
+      "payload": {
+        "providerCode": "map-sim",
+        "deviceId": "map-sim-tdoa-item1-tdoa",
+        "deviceName": "验收模拟 tdoa",
+        "deviceType": 10,
+        "workState": 1,
+        "ptTime": 1791255648878,
+        "deviceLongitude": 118.614,
+        "deviceLatitude": 37.464,
+        "deviceAltitude": 0
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device_data/tdoa/map-sim-tdoa-item1-tdoa",
+      "payload": {
+        "deviceId": "map-sim-tdoa-item1-tdoa",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "3000",
+            "time": 1791255648878,
+            "longitude": 118.6884,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "uavModel": "SIM-SAME-MODEL",
+              "channel": "5.73",
+              "bandWidth": "10.00",
+              "uavSN": "SIM-ITEM1-TDOA"
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device/aoa/map-sim-aoa-item1-aoa",
+      "payload": {
+        "providerCode": "map-sim",
+        "deviceId": "map-sim-aoa-item1-aoa",
+        "deviceName": "验收模拟 aoa",
+        "deviceType": 9,
+        "workState": 1,
+        "ptTime": 1791255648878,
+        "deviceLongitude": 118.614,
+        "deviceLatitude": 37.464,
+        "deviceAltitude": 0
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device_data/aoa/map-sim-aoa-item1-aoa",
+      "payload": {
+        "deviceId": "map-sim-aoa-item1-aoa",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "4000",
+            "time": 1791255648878,
+            "longitude": 118.7244,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "uavModel": "SIM-SAME-MODEL",
+              "channel": "5.73",
+              "bandWidth": "10.00",
+              "direction": 90.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device/dcd/map-sim-dcd-item1-dcd",
+      "payload": {
+        "providerCode": "map-sim",
+        "deviceId": "map-sim-dcd-item1-dcd",
+        "deviceName": "验收模拟 dcd",
+        "deviceType": 11,
+        "workState": 1,
+        "ptTime": 1791255648878,
+        "deviceLongitude": 118.614,
+        "deviceLatitude": 37.464,
+        "deviceAltitude": 0
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device_data/dcd/map-sim-dcd-item1-dcd",
+      "payload": {
+        "deviceId": "map-sim-dcd-item1-dcd",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "5000",
+            "time": 1791255648878,
+            "longitude": 118.7604,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "uavModel": "SIM-SAME-MODEL",
+              "channel": "5.73",
+              "bandWidth": "10.00",
+              "uavSN": "SIM-ITEM1-DCD"
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device/rid/map-sim-rid-item1-rid",
+      "payload": {
+        "providerCode": "map-sim",
+        "deviceId": "map-sim-rid-item1-rid",
+        "deviceName": "验收模拟 rid",
+        "deviceType": 102,
+        "workState": 1,
+        "ptTime": 1791255648878,
+        "deviceLongitude": 118.614,
+        "deviceLatitude": 37.464,
+        "deviceAltitude": 0
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "normal",
+      "topic": "bridge/map-sim/device_data/rid/map-sim-rid-item1-rid",
+      "payload": {
+        "deviceId": "map-sim-rid-item1-rid",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "6000",
+            "time": 1791255648878,
+            "longitude": 118.7964,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "uavModel": "SIM-SAME-MODEL",
+              "uavSN": "SIM-ITEM1-RID"
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "duplicate",
+      "topic": "bridge/map-sim/device_data/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "deviceId": "map-sim-radar-item1-radar",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "1000",
+            "time": 1791255648878,
+            "longitude": 118.6164,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "wrong-device",
+      "topic": "bridge/map-sim/device_data/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "deviceId": "not-this-device",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "1000",
+            "time": 1791255648878,
+            "longitude": 118.6164,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "invalid-counter",
+      "topic": "bridge/map-sim/device_data/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "deviceId": "map-sim-radar-item1-radar",
+        "ptTime": 1791255648878,
+        "msgCnt": -1,
+        "objects": [
+          {
+            "objectId": "1000",
+            "time": 1791255648878,
+            "longitude": 118.6164,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": false
+    },
+    {
+      "case": "retained",
+      "topic": "bridge/map-sim/device_data/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "deviceId": "map-sim-radar-item1-radar",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "1000",
+            "time": 1791255648878,
+            "longitude": 118.6164,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 1,
+      "retain": true
+    },
+    {
+      "case": "qos-zero",
+      "topic": "bridge/map-sim/device_data/radar/map-sim-radar-item1-radar",
+      "payload": {
+        "deviceId": "map-sim-radar-item1-radar",
+        "ptTime": 1791255648878,
+        "msgCnt": 254286446,
+        "objects": [
+          {
+            "objectId": "1000",
+            "time": 1791255648878,
+            "longitude": 118.6164,
+            "latitude": 37.464,
+            "altitude": 100.0,
+            "speed": 2.0,
+            "extension": {
+              "objectType": 30,
+              "speedX": 2.0,
+              "speedY": 0.0,
+              "speedZ": 0.0
+            },
+            "height": 60.0
+          }
+        ]
+      },
+      "qos": 0,
+      "retain": false
+    }
+  ]
+}

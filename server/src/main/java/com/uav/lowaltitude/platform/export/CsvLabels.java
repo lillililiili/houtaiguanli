@@ -43,7 +43,23 @@ public final class CsvLabels {
             "PENDING_VERIFICATION", "待核验", "PENDING_NOTIFICATION", "待通知",
             "NOTIFIED", "通知已提交", "ACKNOWLEDGED", "已回执", "EXCLUDED", "已排除");
 
+    /**
+     * 告警的违规原因（UX-61），逐字取自 dongying-vue `src/ui/legalityReviewModal.js` 的 RULE_REASON_TEXT，
+     * 与告警页"违规原因"一列、"违规原因"筛选同一套说法；几条原因用顿号连起来，与页面一致。
+     */
+    private static final Map<String, String> VIOLATION_REASON = Map.of(
+            "NO_AUTHORIZATION", "无飞行授权", "INSIDE_RESTRICTED_AIRSPACE", "进入禁飞/限制空域",
+            "AIRSPACE_ALTITUDE_EXCEEDED", "超过空域限高", "TEMPORARY_RESTRICTION_ACTIVE", "临时管制生效中",
+            "ROUTE_DEVIATION", "偏航（偏离报备航线）", "TIME_WINDOW_OVERRUN", "超出任务时间窗",
+            "PLAN_ALTITUDE_EXCEEDED", "超出任务高度带", "NIGHT_FLIGHT", "夜间飞行", "BVLOS_EXCEEDED", "超出目视视距");
+
     public static String severity(String code) { return label(SEVERITY, code); }
+
+    /** 没有原因时给 null（空单元格），不写"无"——"没有记录原因"和"原因是无"是两回事。 */
+    public static String violationReasons(java.util.List<String> codes) {
+        if (codes == null || codes.isEmpty()) return null;
+        return String.join("、", codes.stream().map(code -> label(VIOLATION_REASON, code)).toList());
+    }
 
     public static String alarmType(String code) { return label(ALARM_TYPE, code); }
 

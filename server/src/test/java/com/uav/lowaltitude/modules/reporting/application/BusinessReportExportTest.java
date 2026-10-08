@@ -34,7 +34,8 @@ class BusinessReportExportTest {
     }
     private BusinessReportingService service(BusinessReportSource source) {
         AppClock clock=mock(AppClock.class);when(clock.now()).thenReturn(Instant.parse("2026-09-16T00:00:00Z"));
-        return new BusinessReportingService(List.of(source),mock(AccessService.class),new ReportPeriodResolver(clock),clock);
+        return new BusinessReportingService(List.of(source),mock(AccessService.class),new ReportPeriodResolver(clock),clock,
+                new ReportScopePolicy(new org.springframework.mock.env.MockEnvironment(), false));
     }
     private Summary summary(long total) {
         return new Summary("plans","飞行任务","任务开始时间",false,true,total,

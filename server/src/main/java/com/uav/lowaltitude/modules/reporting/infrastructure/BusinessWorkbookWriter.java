@@ -15,7 +15,9 @@ public class BusinessWorkbookWriter {
         try (XSSFWorkbook book = new XSSFWorkbook(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             var p = data.preview();
             Sheet summary = sheet(book, "报表摘要", "项目", "内容");
-            row(summary, "报表", p.title()); row(summary, "统计周期", p.periodLabel());
+            String title = (p.simulated() ? "模拟验收 · " : "") + p.title();
+            row(summary, "报表", title); row(summary, "统计周期", p.periodLabel());
+            row(summary, "来源口径", p.reportScope().equals("simulated") ? "模拟验收（模拟与回放）" : "正式统计（真实来源）");
             row(summary, "实际区间", p.from() + " 至 " + p.to());
             row(summary, "生成时间（上海）", ReportLabels.time(p.generatedAt()));
             row(summary, "数据来源", ReportLabels.text(p.sourceMode()));
@@ -37,6 +39,8 @@ public class BusinessWorkbookWriter {
                 }
             }
             for (Sheet s : book) {
+                s.getHeader().setCenter(title);
+                if (p.simulated()) s.getFooter().setLeft("模拟验收 · 不可作为现场正式报表");
                 s.createFreezePane(0, 1);
                 int columns = s.getRow(0).getLastCellNum();
                 s.setAutoFilter(new CellRangeAddress(0, Math.max(0,s.getLastRowNum()),0,columns-1));

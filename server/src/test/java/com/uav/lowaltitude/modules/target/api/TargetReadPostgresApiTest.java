@@ -42,6 +42,11 @@ import org.springframework.transaction.annotation.Transactional;
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_PASSWORD", matches = ".*")
 class TargetReadPostgresApiTest {
 
+    @Test
+    void currentIdentityIsSharedByListAndDetailWithoutLegacyFallback() throws Exception {
+        TargetIdentityAssertions.verify(jdbc, targetNewest, this::getJson);
+    }
+
     private static final String SCHEMA_PREFIX = "stage2_target_api_";
     private static final String SCHEMA = SCHEMA_PREFIX + UUID.randomUUID().toString().replace("-", "");
     private static final OffsetDateTime T0 = OffsetDateTime.of(2026, 9, 4, 12, 0, 0, 0, ZoneOffset.UTC);

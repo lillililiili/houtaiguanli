@@ -58,6 +58,33 @@ afterEach(() => {
 })
 
 describe('角色直接反制权限', () => {
+  it('保存设备操作等级时不提交锁定动作，也不丢失既有反制权限', async () => {
+    const role = { ...customRole, permissions: [{ permission_code: 'devices', route_key: 'devices', level: 'READ', menu_enabled: true }],
+      actions: [{ permission_code: 'disposal:execute', level: 'OP' }] }
+    systemApi.role.mockResolvedValue(role)
+    systemApi.updateRolePermissions.mockResolvedValue(role)
+    systemApi.permissionActions.mockResolvedValue([
+      { module_code: 'map', actions: [{ permission_code: 'map:activate', name: '激活地图' }] },
+      { module_code: 'users', actions: [{ permission_code: 'users:delete', name: '删除用户' }] },
+      { module_code: 'disposal', actions: [{ permission_code: 'disposal:execute', name: '执行反制' }, { permission_code: 'disposal:direct', name: '直接反制（免逐次审批）' }] }
+    ])
+    await mount()
+    const menuTab = [...host.querySelectorAll('[role="tab"]')].find(item => item.textContent.includes('菜单权限'))
+    menuTab.click()
+    await settle()
+    const deviceRow = [...host.querySelectorAll('[role="row"]')].find(item => item.textContent.includes('设备管理'))
+    deviceRow.querySelector('.el-select').click()
+    await settle()
+    const dropdown = [...document.body.querySelectorAll('.el-select-dropdown')].find(item => item.textContent.includes('无权限'))
+    ;[...dropdown.querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === '操作').click()
+    await settle()
+    ;[...host.querySelectorAll('button')].find(item => item.textContent.includes('保存并立即生效')).click()
+    await settle()
+    const submitted = systemApi.updateRolePermissions.mock.calls[0][1]
+    expect(submitted.permissions).toEqual([{ permission_code: 'devices', level: 'OP', menu_enabled: true }])
+    expect(submitted.actions).toEqual([{ permission_code: 'disposal:execute', level: 'OP' }, { permission_code: 'disposal:direct', level: 'NONE' }])
+  })
+
   it('默认无权限并显示风险边界说明', async () => {
     await mount()
     const row = directRow()

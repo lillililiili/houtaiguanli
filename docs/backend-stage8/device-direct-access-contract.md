@@ -69,7 +69,7 @@ B 的 `FusionInboxRepository.claim` 已按映射器前缀领取 `replay:` / `lin
 | `speed` / `extension.speedX/Y/Z` | `speed_mps` / `heading_deg`（X 正东、Y 正北）/ `quality.speed_xyz` | |
 | `extension.objectType` | `class_code`：0 UNKNOWN / 3 PERSON / 7 VEHICLE / 30 UAV / 40 BIRD / 50 SHIP / 100 REMOTE_CONTROLLER / 255 → NULL + `quality.identifying=true` | `OBJECT_TYPE_LABEL` 字典同步扩展 |
 | `extension.probability` | `class_confidence` | |
-| `uavSN` / `uavModel` / `channel` / `bandWidth` | `identity_clue`（SN 优先）/ `quality.rf` | |
+| `uavSN` / `uavModel` / `channel` / `bandWidth` | 有效 `uavSN` → `identity_clue`；`uavModel` → `quality.uav_model`；射频字段 → `quality.rf` | 缺 SN 时不以型号替代身份 |
 | `pilotLon/pilotLat` | 新列 `source_observation.pilot_location`（POINT 4326） | 阶段 7 C02-6 超视距、C01 身份维度输入 |
 | `extension.taskId` | `source_session_key` | 5G-A |
 | 协议 C `aiStatus.className/detectConfidence/trackConfidence` | `class_code`（drone→UAV, bird→BIRD，未知值 NULL + 原串进 `quality.class_name_raw`）/ `class_confidence` / `quality.track_confidence` | 光电唯一的类别来源 |

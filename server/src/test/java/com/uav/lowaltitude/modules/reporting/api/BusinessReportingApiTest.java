@@ -53,6 +53,16 @@ class BusinessReportingApiTest {
     }
     private String today() {return LocalDate.now(ReportingService.ZONE).toString();}
 
+    @Test void simulationIsDisabledByDefaultForAllBusinessReportReads() throws Exception {
+        String auth="Bearer "+token();
+        for(String endpoint:java.util.List.of("preview","details","export.xlsx","export.pdf")) {
+            mvc.perform(get("/api/v1/stats/reports/"+endpoint).header("Authorization",auth)
+                    .param("report_category","FLIGHT_VERIFICATION").param("period_type","DAILY")
+                    .param("anchor_date",today()).param("section","plans").param("source_mode","simulated"))
+                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("SIMULATED_REPORT_DISABLED"));
+        }
+    }
+
     @Test
     @org.springframework.transaction.annotation.Transactional
     void simulatedMqttDeviceAndMaintenanceStayExcludedEvenWithAllSharedTuples() throws Exception {

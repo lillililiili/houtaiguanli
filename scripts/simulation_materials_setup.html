@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>本机模拟验收资料准备</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#eef3f8;color:#172c42;font:16px/1.6 "Microsoft YaHei",sans-serif}main{max-width:920px;margin:32px auto;background:white;border-radius:16px;padding:32px;box-shadow:0 8px 40px #233f5712}h1{font-size:26px;margin:4px 0 12px}h2{font-size:19px;margin:24px 0 8px}.tag{color:#08767d;font-size:13px;font-weight:bold}p{margin:8px 0 16px}table{border-collapse:collapse;width:100%;font-size:14px}td,th{padding:10px 12px;border:1px solid #dce4eb;text-align:left;vertical-align:top}th{background:#f4f7fa}code{font-size:13px;word-break:break-all}.note{padding:12px 16px;background:#fff5df;border-left:4px solid #c58b25;border-radius:4px;font-size:14px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;font-size:14px}input{width:100%;padding:12px;border:1px solid #b9cbd9;border-radius:7px;font:inherit;margin-top:5px}input:focus{outline:2px solid #00a4b4;outline-offset:1px}.consent{display:flex;gap:10px;align-items:flex-start;margin:20px 0}.consent input{width:18px;margin:5px 0;flex-shrink:0}button{padding:12px 25px;color:white;background:#007f8b;border:0;border-radius:7px;font:inherit;cursor:pointer}button:disabled{opacity:.55;cursor:wait}pre{padding:16px;background:#f2f6f9;white-space:pre-wrap;word-break:break-word;border-radius:8px;font:14px/1.8 "Microsoft YaHei",sans-serif}.error{color:#a92a25}a{color:#006b9b}@media(max-width:650px){main{margin:10px;padding:18px}.grid{grid-template-columns:1fr}}
+</style>
+<main>
+  <div class="tag">仅本机 · 显式模拟资料 · 使用现有授权接口</div>
+  <h1>准备三条业务链的模拟资料</h1>
+  <p>此工具将登录本机 <code>127.0.0.1:8081</code> 平台，创建下表资料，并逐项回读。它不执行审批、反制、通知签收或工单完成。</p>
+  <table aria-label="将要准备的资料">
+    <tr><th>资料</th><th>本次内容</th></tr>
+    <tr><td>单位与计划</td><td>复用“验收模拟单位 / 验收模拟区域”；录入模拟上级报送关联、当日配套航线与计划。</td></tr>
+    <tr><td>联系人</td><td>验收模拟飞手01、报送联系人、处罚接收联系人、运维联系人。仅使用全零系列测试号码，核验依据明确写为“模拟上级核验”。</td></tr>
+    <tr><td>通知通道</td><td>准备飞手短信、电话、风险上报、计划反馈、处罚移送的本机独立接收通道。既有非本轮 API 配置冲突时停止，不覆盖。</td></tr>
+    <tr><td>空间风险规则</td><td>启用 SPACE-RISK-DEMO 中唯一有效的已发布模拟版本；保留 DEMO 属性和现有参数。存在有效启用版本时保留。</td></tr>
+    <tr><td>申请执行账号</td><td><code>sim_acc23_operator</code>：查看业务资料，核实告警/风险，普通反制申请、执行和停止，提交交接；含现有设备操作权限，可操作当前可见设备。演练只使用 replay 模拟设备。</td></tr>
+    <tr><td>独立审批账号</td><td><code>sim_acc23_approver</code>：查看业务资料及普通反制审批。未授予申请或执行权限。</td></tr>
+  </table>
+  <p class="note">两个新账号沿用系统当前默认的 <strong>ALL 数据范围</strong>，并非仅可查看模拟资料。均无直接反制、用户/角色管理权限，不自动审批业务。首次登录必须在系统原页面修改临时密码。运维操作继续使用已有授权管理账号。</p>
+  <h2>管理员登录并执行</h2>
+  <p>现有模拟器会话不允许配置目录和账号，因此需要在这里完成一次平台鉴权。密码仅在本机内存中用于本次请求，不写入日志或资料包。账号已存在且配置一致时复用，不重置其密码。</p>
+  <form id="prepare">
+    <div class="grid">
+      <label>现有管理员账号<input name="account" autocomplete="username" required maxlength="64"></label>
+      <label>现有管理员密码<input name="password" type="password" autocomplete="current-password" required></label>
+      <label>申请执行员临时密码<input name="applicant_password" type="password" autocomplete="new-password" required minlength="6" maxlength="32"></label>
+      <label>审批员临时密码<input name="approver_password" type="password" autocomplete="new-password" required minlength="6" maxlength="32"></label>
+    </div>
+    <p style="font-size:13px;margin-top:10px">临时密码须有大小写字母、数字和特殊字符，长度 6—32 位，不包含账号。请自行保管，不用发到聊天。</p>
+    <label class="consent"><input name="confirmed" type="checkbox" required><span>我已核对上述资料、两个账号的权限及 ALL 数据范围，同意通过现有接口录入并启用列出的模拟配置。</span></label>
+    <button type="submit" id="submit">登录并准备模拟资料</button>
+  </form>
+  <h2>实际执行结果</h2>
+  <pre id="status" role="status" aria-live="polite">尚未执行。资料文件已准备，系统中的联系人、账号和通知关联需要执行后回读确认。</pre>
+  <p>完成后，在 <a href="http://127.0.0.1:5173/" target="_blank" rel="noopener">业务前台</a> 分别登录两个新账号并改密；随后使用 <a href="http://127.0.0.1:8766/" target="_blank" rel="noopener">原模拟器</a> 导入生成的 ready-scenes。业务链是否完成仍以实际请求、回执和页面回读为准。</p>
+</main>
+<script>
+  const form=document.getElementById('prepare'),status=document.getElementById('status'),button=document.getElementById('submit');
+  const titles={READY:'尚未执行',RUNNING:'正在准备并回读',PARTIAL:'已停止：存在未满足条件，已受理的资料保留',COMPLETE:'资料录入及回读完成；新账号首次改密仍需本人操作'};
+  async function refresh(){try{const response=await fetch('/status',{cache:'no-store'});if(!response.ok)throw Error('状态读取失败');const data=await response.json();status.textContent=[titles[data.phase]||data.phase,...data.messages,data.error||''].join('\n');status.classList.toggle('error',data.phase==='PARTIAL');button.disabled=data.phase==='RUNNING'||data.phase==='COMPLETE';}catch(error){status.textContent=error.message;}}
+  form.addEventListener('submit',async event=>{event.preventDefault();if(!form.reportValidity())return;const fields=new FormData(form),body={confirmed:fields.get('confirmed')==='on'};for(const key of ['account','password','applicant_password','approver_password'])body[key]=fields.get(key);button.disabled=true;status.textContent='正在登录本机平台…';try{const response=await fetch('/prepare',{method:'POST',headers:{'Content-Type':'application/json','X-Setup-CSRF':'__CSRF__'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw Error(result.error||'提交失败');await refresh();}catch(error){status.textContent=error.message;status.classList.add('error');button.disabled=false;}finally{for(const key of ['password','applicant_password','approver_password']){body[key]='';form.elements[key].value='';}}});
+  refresh();setInterval(refresh,2500);
+</script>
+</html>

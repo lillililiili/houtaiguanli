@@ -12,9 +12,15 @@ public class LocalForecastReadService {
  private final LocalInterfaceRepository repository;private final ObjectMapper json;
  public LocalForecastReadService(LocalInterfaceRepository repository,ObjectMapper json){this.repository=repository;this.json=json;}
  public ForecastAvailability read(FlightPlanDto plan){
+  if(plan.startAt()==null||plan.endAt()==null||plan.startAt()>=plan.endAt()) return null;
   for(var row:repository.weatherMessages())try{
    var p=json.readValue(row.payload(),WeatherInput.class);
-   if((p.planId()!=null&&p.planId().equals(plan.planId()))||areaMatches(p.areaName(),plan.districtName())){
+   boolean matchesPlan=(p.planId()!=null&&p.planId().equals(plan.planId()))||areaMatches(p.areaName(),plan.districtName());
+   // Select a forecast by its valid periods, not its publication/receipt time.
+   // Keep the original periods intact for history and partial-coverage display.
+   boolean overlaps=p.periods()!=null&&p.periods().stream().anyMatch(x->x!=null&&x.from()!=null&&x.to()!=null
+     &&x.from()<x.to()&&x.from()<plan.endAt()&&x.to()>plan.startAt());
+   if(matchesPlan&&overlaps){
     var periods=p.periods().stream().map(x->new ForecastPeriod(x.from(),x.to(),x.summary(),x.temperatureC(),x.windSpeedMs(),x.gustMs(),x.windDirectionDeg(),x.precipitationProbabilityPct(),x.humidityPct())).toList();
     return new ForecastAvailability(plan.planId(),"READY",null,new Forecast(p.areaName(),"外部接口模拟器",p.publishedAt(),plan.sourceMode(),periods));
    }

@@ -43,6 +43,41 @@ function subscribe(topics, calls) {
 }
 
 describe('实时推送连接恢复', () => {
+  it('隐藏标签页不占连接，恢复可见后使用当前会话补读', async () => {
+    let hidden = true;
+    const visibility = vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+    try {
+      const calls = [];
+      subscribe(['device'], calls); await flush();
+      expect(streams).toHaveLength(0);
+      window.dispatchEvent(new Event('online')); await flush();
+      expect(streams).toHaveLength(0);
+      session.token = 'session-visible'; hidden = false;
+      document.dispatchEvent(new Event('visibilitychange')); await flush();
+      expect(streams).toHaveLength(1);
+      expect(last().headers.Authorization).toBe('Bearer session-visible');
+      ready(last()); await flush();
+      expect(calls.at(-1)).toEqual({ topics: ['*'], recovery: true });
+    } finally { visibility.mockRestore(); }
+  });
+
+  it('切到后台立即释放流连接，短暂返回也补读服务端状态', async () => {
+    let hidden = false;
+    const visibility = vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+    try {
+      const calls = [];
+      subscribe(['device'], calls); await flush(); ready(last()); await flush();
+      hidden = true; document.dispatchEvent(new Event('visibilitychange')); await flush();
+      expect(streams[0].signal.aborted).toBe(true);
+      expect(service.isRealtimeConnected()).toBe(false);
+      await vi.advanceTimersByTimeAsync(120000); await flush();
+      expect(streams).toHaveLength(1);
+      hidden = false; document.dispatchEvent(new Event('visibilitychange')); await flush();
+      expect(streams).toHaveLength(2); ready(last()); await flush();
+      expect(calls.at(-1)).toEqual({ topics: ['*'], recovery: true });
+    } finally { visibility.mockRestore(); }
+  });
+
   it('连接卡住时看门狗断开重连，连上后通知全部重读', async () => {
     const calls = [];
     subscribe(['device_state'], calls);

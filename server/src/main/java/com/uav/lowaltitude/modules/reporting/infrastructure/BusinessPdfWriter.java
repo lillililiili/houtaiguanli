@@ -21,15 +21,17 @@ public class BusinessPdfWriter {
         try (PDDocument document = new PDDocument(); var fontStream =
                 new ClassPathResource("fonts/NotoSansSC-Regular.ttf").getInputStream();
                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            document.getDocumentInformation().setTitle(data.preview().title() + " - " + data.preview().periodLabel());
+            String title = (data.preview().simulated() ? "模拟验收 · " : "") + data.preview().title();
+            document.getDocumentInformation().setTitle(title + " - " + data.preview().periodLabel());
             document.getDocumentInformation().setAuthor("低空安全管理平台");
             PDType0Font font = PDType0Font.load(document, fontStream, true);
-            try (Layout layout = new Layout(document,font,data.preview().title())) {
+            try (Layout layout = new Layout(document,font,title)) {
                 var p=data.preview();
-                layout.paragraph(p.title() + "报表", 23, Color.decode("#123455"));
+                layout.paragraph(title + "报表", 23, Color.decode("#123455"));
                 layout.paragraph(p.periodLabel(),14,Color.decode("#1677ff"));
                 layout.paragraph(p.from()+" 至 "+p.to()+"  |  生成时间："+ReportLabels.time(p.generatedAt()),10,Color.DARK_GRAY);
                 layout.paragraph("数据来源："+ReportLabels.text(p.sourceMode()),10,Color.DARK_GRAY);
+                layout.paragraph("来源口径："+(p.reportScope().equals("simulated")?"模拟验收（模拟与回放）":"正式统计（真实来源）"),10,Color.DARK_GRAY);
                 if(p.simulated()) layout.paragraph("注意：包含模拟或回放数据，不可作为现场正式报表。",11,Color.decode("#b45309"));
                 layout.paragraph(p.statusNote(),10,Color.GRAY);
                 layout.heading("指标摘要");

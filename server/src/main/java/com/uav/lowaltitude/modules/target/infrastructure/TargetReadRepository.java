@@ -46,6 +46,7 @@ public class TargetReadRepository {
             FROM target t
             LEFT JOIN target_latest_state ls ON ls.target_id=t.target_id
             LEFT JOIN target_track_status track_state ON track_state.target_id=t.target_id
+            LEFT JOIN target_attribute_selection identity_selection ON identity_selection.target_id=t.target_id
             LEFT JOIN app_org org_ref ON org_ref.org_id=t.owner_org_id
             LEFT JOIN app_district dist_ref ON dist_ref.district_id=t.district_id
             """;
@@ -395,7 +396,8 @@ public class TargetReadRepository {
 
     private String targetSelect() {
         return """
-                SELECT t.target_id,t.target_no,t.object_type_code,t.subtype,t.uav_sn,
+                SELECT t.target_id,t.target_no,t.object_type_code,t.subtype,
+                       CASE WHEN t.unified THEN identity_selection.identity_clue ELSE t.uav_sn END AS uav_sn,
                        t.first_seen_at,t.last_seen_at,t.source_mode,t.owner_org_id,t.district_id,
                        org_ref.name AS owner_org_name,dist_ref.name AS district_name,t.version AS target_version,
                        t.created_at,t.updated_at,ls.observed_at AS state_observed_at,

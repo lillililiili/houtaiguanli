@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "name": "03-after-sms·通知后位置观察",
+  "duration": 15,
+  "sites": [
+    {
+      "id": "item2-site",
+      "name": "第二条模拟设备组",
+      "x": 450,
+      "y": 300,
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "name": "第二条模拟 tdoa",
+          "kind": "tdoa",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1
+        },
+        {
+          "id": "item2-ifr",
+          "name": "第二条模拟 ifr",
+          "kind": "ifr",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1,
+          "protocolB": {
+            "enabled": true,
+            "response": "success"
+          }
+        },
+        {
+          "id": "item2-eo",
+          "name": "第二条模拟 eo",
+          "kind": "eo",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1,
+          "coverage": {
+            "kind": "circle",
+            "radiusM": 5000,
+            "sourceLabel": "第二条模拟覆盖配置"
+          }
+        },
+        {
+          "id": "item2-radar",
+          "name": "第二条模拟 radar",
+          "kind": "radar",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1
+        }
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "id": "item2-uav",
+      "name": "第二条模拟无人机",
+      "kind": "uav",
+      "deviceId": "item2-tdoa",
+      "path": [
+        [
+          679.8,
+          300
+        ],
+        [
+          679.9,
+          300
+        ]
+      ],
+      "height": 100,
+      "heightAgl": 60,
+      "altitudeDatum": "AMSL",
+      "speed": 1,
+      "probability": 0.99,
+      "motionMode": "pingpong",
+      "transport": "normalized",
+      "pilotPoint": [
+        678,
+        299
+      ],
+      "planId": "notification-exit-route",
+      "notificationBehavior": "after_sms",
+      "departurePath": [
+        [
+          700,
+          300
+        ],
+        [
+          710,
+          300
+        ]
+      ],
+      "departureSpeed": 15
+    }
+  ],
+  "plans": [
+    {
+      "id": "notification-exit-route",
+      "name": "模拟通知撤离航线",
+      "points": [
+        [
+          679.8,
+          300
+        ],
+        [
+          679.9,
+          300
+        ]
+      ],
+      "min": 0,
+      "max": 150,
+      "width": 100,
+      "start": "00:00",
+      "end": "23:59",
+      "timeMode": "current",
+      "altitudeDatum": "AMSL"
+    }
+  ],
+  "zones": [
+    {
+      "id": "notification-exit-prohibited",
+      "name": "模拟通知撤离专用禁飞空域",
+      "kindCode": "PROHIBITED",
+      "points": [
+        [
+          665,
+          295
+        ],
+        [
+          680,
+          295
+        ],
+        [
+          680,
+          307
+        ],
+        [
+          665,
+          307
+        ]
+      ],
+      "min": 0,
+      "max": 150,
+      "altitudeDatum": "AMSL",
+      "start": "00:00",
+      "end": "23:59"
+    }
+  ],
+  "risks": [],
+  "fullchain": {
+    "enabled": true,
+    "categories": [],
+    "filing": {},
+    "observationSourceCount": 3,
+    "airspaceLifecycle": false
+  }
+}

@@ -200,7 +200,7 @@ abstract class AutomationMqttFixture {
         String database;
         try (var connection = jdbc.getDataSource().getConnection()) { database = connection.getMetaData().getDatabaseProductName(); }
         Path output = Path.of("target", "disposal-mqtt-evidence", database.toLowerCase()); Files.createDirectories(output);
-        Files.writeString(output.resolve(label + ".json"), json.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of(
+        Files.writeString(output.resolve(label + "-" + authorization + ".json"), json.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of(
                 "database", database, "simulated", true, "wire_frames", frames,
                 "authorization", jdbc.queryForMap("select authorization_id,authorization_mode,requested_by,approved_by,valid_from,valid_until,status,execution_command_id from disposal_authorization where authorization_id=?", authorization),
                 "children", children(authorization),
