@@ -71,9 +71,11 @@ public class ReportingController {
             @RequestParam(name = "report_category", required = false) String category,
             @RequestParam(name = "period_type", required = false) String periodType,
             @RequestParam(name = "report_type", required = false) String reportType,
+            @RequestParam(name = "source_mode", required = false) String sourceMode,
             @RequestParam(name = "anchor_date") String anchorDate) {
         if (category != null || periodType != null)
-            return ApiResponse.ok(business.preview(category == null ? "OVERVIEW" : category, period(periodType, reportType), anchorDate));
+            return ApiResponse.ok(business.preview(category == null ? "OVERVIEW" : category, period(periodType, reportType), anchorDate, sourceMode));
+        requireLegacySource(sourceMode);
         return ApiResponse.ok(service.preview(reportType, anchorDate));
     }
 
@@ -82,11 +84,13 @@ public class ReportingController {
             @RequestParam(name = "report_category", required = false) String category,
             @RequestParam(name = "period_type", required = false) String periodType,
             @RequestParam(name = "report_type", required = false) String reportType,
+            @RequestParam(name = "source_mode", required = false) String sourceMode,
             @RequestParam(name = "anchor_date") String anchorDate,
             HttpServletRequest request) {
         if (category != null || periodType != null)
             return file(exports.export(category == null ? "OVERVIEW" : category, period(periodType,reportType),
-                    anchorDate,false,request.getRemoteAddr(),request.getHeader("User-Agent")));
+                    anchorDate,false,request.getRemoteAddr(),request.getHeader("User-Agent"),sourceMode));
+        requireLegacySource(sourceMode);
         ExcelExport file = service.exportExcel(reportType, anchorDate,
                 request.getRemoteAddr(), request.getHeader("User-Agent"));
         String encoded = URLEncoder.encode(file.filename(), StandardCharsets.UTF_8).replace("+", "%20");
@@ -104,17 +108,23 @@ public class ReportingController {
     public ApiResponse<?> details(@RequestParam(name="report_category") String category,
             @RequestParam(name="period_type",required=false) String periodType,
             @RequestParam(name="report_type",required=false) String legacyType,
+            @RequestParam(name="source_mode",required=false) String sourceMode,
             @RequestParam(name="anchor_date") String anchor, @RequestParam String section,
             @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int size) {
-        return ApiResponse.ok(business.details(category,period(periodType,legacyType),anchor,section,page,size));
+        return ApiResponse.ok(business.details(category,period(periodType,legacyType),anchor,section,page,size,sourceMode));
     }
 
     @GetMapping("/reports/export.pdf")
     public ResponseEntity<byte[]> exportPdf(@RequestParam(name="report_category",defaultValue="OVERVIEW") String category,
             @RequestParam(name="period_type",required=false) String periodType,
             @RequestParam(name="report_type",required=false) String legacyType,
+            @RequestParam(name="source_mode",required=false) String sourceMode,
             @RequestParam(name="anchor_date") String anchor, HttpServletRequest request) {
-        return file(exports.export(category,period(periodType,legacyType),anchor,true,request.getRemoteAddr(),request.getHeader("User-Agent")));
+        return file(exports.export(category,period(periodType,legacyType),anchor,true,request.getRemoteAddr(),request.getHeader("User-Agent"),sourceMode));
+    }
+    private static void requireLegacySource(String sourceMode) {
+        if (sourceMode != null && !sourceMode.equals("live"))
+            throw BusinessReportingService.bad("模拟验收口径请使用现有五类业务报表");
     }
     private static String period(String current,String legacy) {
         if(current!=null && legacy!=null && !current.equals(legacy)) throw BusinessReportingService.bad("周期参数不一致");

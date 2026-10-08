@@ -1,0 +1,647 @@
+{
+  "marker": "SIM-ACC23-V1",
+  "status": "DEFINITION_NOT_PROOF_OF_APPLIED_DATA",
+  "org_name": "验收模拟单位",
+  "district_name": "验收模拟区域",
+  "plan_source_id": "local-flight-plan-simulator",
+  "plan_source_mode": "mock",
+  "contacts": {
+    "pilot": {
+      "name": "验收模拟飞手01",
+      "roles": [
+        "PILOT"
+      ],
+      "simulated_phone": "00000000000",
+      "verification_basis": "仅模拟上级资料核验字段，不代表真实核验"
+    },
+    "liaison": {
+      "name": "验收模拟报送联系人",
+      "roles": [
+        "PLAN_LIAISON"
+      ],
+      "simulated_phone": "00000000001",
+      "verification_basis": "仅模拟上级资料核验字段，不代表真实核验"
+    },
+    "penalty": {
+      "name": "验收模拟处罚接收联系人",
+      "roles": [
+        "UNIT_LIAISON"
+      ],
+      "simulated_phone": "00000000002",
+      "verification_basis": "仅模拟上级资料核验字段，不代表真实核验"
+    },
+    "maintenance": {
+      "name": "验收模拟运维联系人",
+      "roles": [
+        "MAINTENANCE"
+      ],
+      "simulated_phone": "00000000003",
+      "verification_basis": "仅模拟上级资料核验字段，不代表真实核验"
+    }
+  },
+  "accounts": {
+    "applicant": {
+      "name": "验收模拟申请执行角色",
+      "account": "sim_acc23_operator",
+      "user_name": "验收模拟申请执行员",
+      "operation_modules": [
+        "devices"
+      ],
+      "actions": [
+        "device:read",
+        "target:read",
+        "alarm:read",
+        "flight:read",
+        "route:read",
+        "airspace:read",
+        "assessment:read",
+        "risk:read",
+        "handoff:read",
+        "disposal:read",
+        "alarm:verify",
+        "risk:verify",
+        "handoff:create",
+        "disposal:request",
+        "disposal:execute",
+        "disposal:stop"
+      ]
+    },
+    "approver": {
+      "name": "验收模拟审批角色",
+      "account": "sim_acc23_approver",
+      "user_name": "验收模拟审批员",
+      "operation_modules": [],
+      "actions": [
+        "device:read",
+        "target:read",
+        "alarm:read",
+        "flight:read",
+        "route:read",
+        "airspace:read",
+        "assessment:read",
+        "risk:read",
+        "handoff:read",
+        "disposal:read",
+        "disposal:approve"
+      ]
+    }
+  },
+  "new_account_scope_mode": "ALL",
+  "first_login_password_change": true,
+  "default_read_modules": [
+    "airspace",
+    "alarms",
+    "dashboard",
+    "devices",
+    "flights",
+    "legality",
+    "monitoring",
+    "punishment",
+    "risk",
+    "sensing"
+  ],
+  "direct_disposal_granted": false,
+  "notification_purposes": [
+    "RISK_NOTICE",
+    "ADVISORY_SMS",
+    "ADVISORY_VOICE",
+    "PLAN_FEEDBACK",
+    "UAV_PUNISHMENT"
+  ],
+  "sms_observation_seconds": 3,
+  "post_voice_playback_observation_seconds": 10,
+  "voice": {
+    "file": "pilot-warning-simulation.wav",
+    "sha256": "ffaece2b166e27b58be4fe5a3afabaf7f7117346f4e4f7bb075a5ffabd0e3029",
+    "duration_seconds": 16.029,
+    "sample_rate": 22050,
+    "channels": 1,
+    "transcript": "这是低空平台验收模拟通知。测试无人机仍位于模拟告警空域，请按演示安排驶离测试区域。本消息仅用于本机模拟，不是真实飞行指令。",
+    "recording_id": "SIM-ACC23-VOICE-V1",
+    "name": "验收模拟飞手通知（中文）"
+  },
+  "scenarios": [
+    {
+      "file": "01-normalized-legal.json",
+      "name": "完整模拟资料·B01 标准化输入·合法基线",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-legal-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "02-normalized-disposal.json",
+      "name": "完整模拟资料·B02 标准化输入·处置移送主链",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "03-after-sms.json",
+      "name": "03-after-sms·通知后位置观察",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "notification-exit-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "04-after-voice.json",
+      "name": "04-after-voice·通知后位置观察",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "notification-exit-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "05-stop-reports.json",
+      "name": "完整模拟资料·05-stop-reports·通知后位置观察",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "06-mqtt-height-unknown.json",
+      "name": "完整模拟资料·B06 协议 A MQTT·未知高度基准必须保留",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "mqtt"
+      ]
+    },
+    {
+      "file": "07-mqtt-no-sn.json",
+      "name": "完整模拟资料·B06 协议 A MQTT·缺少序列号",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "mqtt"
+      ]
+    },
+    {
+      "file": "08-device-fault.json",
+      "name": "完整模拟资料·08-device-fault·独立设备恢复核验",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-legal-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        },
+        {
+          "id": "item2-maintenance-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "09-device-offline.json",
+      "name": "完整模拟资料·09-device-offline·独立设备恢复核验",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-legal-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        },
+        {
+          "id": "item2-maintenance-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "10-eo-video.json",
+      "name": "完整模拟资料·E01/V01 光电跟踪与动态测试视频",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "15-risk-bird-normalized.json",
+      "name": "完整模拟资料·R01 鸟类邻近航线·标准化模拟观测",
+      "devices": [
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-risk-bird-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "16-risk-bird-protocol-a.json",
+      "name": "完整模拟资料·R01 协议 A 雷达鸟类·不补已知高度基准",
+      "devices": [
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-risk-bird-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "mqtt"
+      ]
+    },
+    {
+      "file": "17-risk-weather.json",
+      "name": "完整模拟资料·R02 气象预警独立输入·非预报文字推定风险",
+      "devices": [
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-risk-weather-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": []
+    },
+    {
+      "file": "b-duplicate.json",
+      "name": "完整模拟资料·B08 处置回执·duplicate",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "b-failure.json",
+      "name": "完整模拟资料·B08 处置回执·failure",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "b-late.json",
+      "name": "完整模拟资料·B08 处置回执·late",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    },
+    {
+      "file": "b-no_receipt.json",
+      "name": "完整模拟资料·B08 处置回执·no_receipt",
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "kind": "tdoa"
+        },
+        {
+          "id": "item2-ifr",
+          "kind": "ifr"
+        },
+        {
+          "id": "item2-eo",
+          "kind": "eo"
+        },
+        {
+          "id": "item2-radar",
+          "kind": "radar"
+        }
+      ],
+      "plans": [
+        {
+          "id": "item2-route",
+          "time_mode": "current",
+          "altitude_datum": "AMSL"
+        }
+      ],
+      "observation_transports": [
+        "normalized"
+      ]
+    }
+  ],
+  "remaining_runtime_gates": [
+    "首次改密及异人审批",
+    "自动通知规则和处置策略资格",
+    "独立通知接收器在线",
+    "运维需独立QA健康输入及原恢复核验；工参在线不是 GOOD"
+  ]
+}

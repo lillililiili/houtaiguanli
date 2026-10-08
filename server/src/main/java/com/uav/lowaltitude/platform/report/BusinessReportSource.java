@@ -20,9 +20,17 @@ public abstract class BusinessReportSource {
         return reader.summarize(dataset(range), range, key(), title(), basis(), snapshot(), dimensions());
     }
     public Page details(Range range, int page, int size) {
-        return reader.details(dataset(range), page, size);
+        return reader.details(dataset(range), page, size, range.sourceScope());
     }
-    public record Range(LocalDate from, LocalDate to) {
+    public enum SourceScope {
+        LIVE("live"), SIMULATED("simulated");
+        private final String value;
+        SourceScope(String value) { this.value = value; }
+        public String value() { return value; }
+    }
+    public record Range(LocalDate from, LocalDate to, SourceScope sourceScope) {
+        public Range(LocalDate from, LocalDate to) { this(from, to, SourceScope.LIVE); }
+        public Range { java.util.Objects.requireNonNull(sourceScope); }
         public long start() { return from.atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(); }
         public long end() { return to.plusDays(1).atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(); }
     }

@@ -48,6 +48,10 @@ public class LocalCountermeasure4ChSimulator implements SmartLifecycle {
 
     public int port() { return port; }
 
+    /** The Python realtime receiver owns the QA device port and its fault modes. */
+    @Override
+    public boolean isAutoStartup() { return false; }
+
     @Override
     public void start() {
         if (!running.compareAndSet(false, true)) return;

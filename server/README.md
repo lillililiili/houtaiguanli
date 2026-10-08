@@ -2,6 +2,8 @@
 
 2026-10-06：本地模拟计划新增编号改为 `SIM-000001` 形式，由数据库序列分配，六位不足时补零、超过六位自然增长；并发、事务回滚与重启不复用已分配序号，允许断号。原 `plan_id` UUID 和 `/api/v1` 契约保持不变，设备模拟器与业务前台继续直接消费 `plan_no`。迁移 `V202610060001` 新增序列；用户确认后追加 `V202610060004`，将有本地接口接收记录的 mock/replay 旧 `EXT-SIM-{plan_id}` 编号一并转换，旧新编号及转换时间保存在 `local_flight_plan_number_change`。仅修改计划当前编号，原 ID、关联、业务时间、版本、接收消息和冻结历史保持原样；live、其他来源及已有短编号不转换。
 
+2026-10-05：四通道 QA 端口 `127.0.0.1:10006` 统一由外部 Python 实时模拟器监听，以支持正常、不回执、状态不变三种场景及真实接收计数。`LocalCountermeasure4ChSimulator` 不再随 Spring 自动启动，隔离测试仍可显式启动自己的实例。升级需同时重启后台与模拟器，重新登录后显式启动收发；端口冲突明确报错，不复用其他监听进程。后台设备注册与权限校验保持原样，`app.dev-seed.enabled=false`。
+
 2026-09-30：`local,qa` 默认开启飞行计划时段推进，每 60 秒扫描一次，启动后自动补处理已过期的待执行/执行中计划；结束时间到达后记为“已完成”，已取消计划不变。这仅表示计划时段结束，不代表已确认实际起降或飞离。固定状态测试可显式设置 `APP_FLIGHT_STATUS_ADVANCE_ENABLED=false`；普通 local 与生产默认值不变。
 
 2026-09-30：`local,qa` 联合测试覆盖层启用自动短信、自动语音和本机四通道 QA 设备准备；普通 `local` 保持原默认值。自动通知仍按事件、观测、飞手及接收端配置逐项校验，`POST /api/v1/local-interface-simulator/bindings` 连接实时接收端时会把已有且启用的过期 QA MOCK 通道切换到数据模拟器通道，不修改联系人。旧 `app.qa.notification-setup.enabled` 入口不必为此开启。相同单位和区域的模拟计划可重复调用 `countermeasure-device` 并取得原 `QA-LOCAL-CM4`；固定设备若只是被禁用或逻辑删除且配置仍一致，会先恢复后复用；不同范围或本机连接配置冲突时返回 409。
@@ -341,6 +343,8 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 融合管线现保存单源最近观测快照，在既有新鲜度内组合异步来源；无关设备帧不再清空新鲜观测，迟到帧不回退快照。规则引擎为融合目标读取 target_attribute_selection.identity_clue，使计划匹配与融合身份一致；组织和区域范围保持不变。没有新增接口字段或数据库迁移，旧快照没有 source_estimate 时不补造。
 
+2026-10-05 身份读取修正：目标列表与详情沿用接口字段 `uav_sn`，融合目标读取当前选定的 `identity_clue`（为空时保持未知，不回退旧 SN）；非融合目标继续读取原 SN。协议 A 只将有效 `uavSN` 映射为身份线索，型号保留在 `quality.uav_model`。不回填历史、不扩大 DCD/RID 身份选源范围。相关 PostgreSQL、MQTT 和模拟器证据见 [第一条验收报告](../docs/acceptance/item1-2026-10-05/report.md)。
+
 本机最终批次 sim-0923035711-e377 已经实际 MQTT、规则、告警、模拟双通道通知、申请审批、本机 CM4 协议回执、关联干扰和自动处罚交接，送达及签收均为 MOCK。运行期间显式启用 app.advisory.auto-voice.enabled、app.rule-engine.c04.enabled 和 app.disposal.receipt-sync.enabled，并配置既有模拟录音；不是生产默认启用。临时通知设置已恢复，停止后的观测失效会阻止新反制，历史送达结果保留。未验收真实射频、短信、电话或处罚决定。
 
 18 项受影响测试、package 和隔离 PostgreSQL 临时表查询验证通过。完整样本分支、重启/重新登录证据、前一批次运维结果和缺少 BVLOS 严重度配置的边界见 [业务前台仓库续验报告](../../dongyiwurenji/docs/交付/信号模拟器五组样本-20260923/全流程模拟验收.md)。
@@ -454,6 +458,10 @@ PostgreSQL 夹具额外支持 `PLAN_DUE`：仅将隔离种子计划设置到当�
 正常与迟到回执均校验完整设备来源；同一 broker 下其他厂商或设备类型即使外部编号与 msgNo 相同，也不能推进原命令或写入原命令回执。
 
 
+### 本地验收独立健康输入（2026-10-06）
+
+本地模拟验收的独立设备健康输入：`POST /api/v1/local-interface-simulator/device-status`，仅 `local,qa` / 测试且 `app.qa.device-setup.enabled=true`；生产禁用，种子仍关闭。需要现有 `interfaces.op`、`devices.auth`、`monitoring.op` 及 ALL 范围。仅向来源匹配、已启用的 replay 模拟 MQTT 绑定设备输入状态事实，不代替异常恢复或工单核验。请求、幂等、时效与操作顺序见 [受控健康输入](../docs/acceptance/simulation-materials/device-status.md)。
+
 ### 自动核实与自动反制的当前判定校验（2026-09-29）
 
 自动核实落笔和自动反制新建授权前，须确认传入的 automation_run_id 仍为本事件、本类别当前的 PASS 判定，并重算当前引擎、规则版本、时段、范围和观测条件。运行记录在核对期间变化则跳过本轮，不把旧 PASS 或其他事件的判定写入新核实历史。自动反制获取设备锁后再次核对；人工核实和人工直接授权入口维持各自原有规则。
@@ -475,3 +483,7 @@ GET/POST `/api/v1/uav-events/{eventId}/no-counter-decision` 使用数据库 Bear
 受影响回归命令：`./mvnw.cmd "-Dtest=NoCounterRulesTest,NoCounterApiTest,NoCounterPostgresTest,UavHandoffProgressTest,UavDepartureObservationTest,SimulatorAdvisoryReceiptTest" test`。已在 H2 与显式 `stage456_verify_*` PostgreSQL/PostGIS 随机 schema 验证 53 例，失败/错误/跳过均为 0；包括迁移、动作/范围权限、幂等、并发决定、不可变研判追加及晚提交的新风险。`package` 和认证扩展回归由本次整体交付单列结果。
 
 浏览器夹具 `NoCounterBrowserFixtureTest` 仅在 `-Dqa.no-counter.browser=true` 及安全测试库变量存在时运行，绑定 loopback 随机端口，不启用真实传输；在 `target/no-counter-browser/metadata.json` 提供临时会话、事件、风险触发与停止文件路径，最多等待 15 分钟，结束清理隔离 schema。该目录和日志不提交。
+
+### 第三条验收报表（2026-10-07）
+
+五类业务报表默认维持 `source_mode=live`。仅在 `local,qa`（或隔离测试）且 `APP_QA_REPORTING_ENABLED=true` 时，现有报表页面可选择“模拟验收口径”，统一查询已有 mock/replay 业务记录；预览、明细及 Excel/PDF 均带模拟标识。`prod/production` profile 始终禁止该口径。此开关不创建数据，不改变业务规则、对象权限或 `/stats/operations` 统计，不能开启开发种子。参数见[运行统计接口契约](../docs/运行统计接口契约.md)，操作与实际测试结果见[第三条实施报告](../docs/acceptance/item3-2026-10-07/README.md)。

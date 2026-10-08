@@ -42,6 +42,7 @@ function emit(topics, meta = {}) {
 }
 
 function pollFallback() {
+  if (document.hidden) return;
   const token = readSessionToken();
   // 没有会话或会话已被拒绝时重读也只会得到 401，等登录后再读。
   if (token && token !== rejectedToken) emit(['*']);
@@ -51,7 +52,7 @@ function pollFallback() {
 function setState(open, live = open) {
   connected = open;
   listening = open && live;
-  if (listening || !subscribers.size) {
+  if (document.hidden || listening || !subscribers.size) {
     clearInterval(fallbackTimer);
     fallbackTimer = null;
   } else if (!fallbackTimer) {
@@ -120,7 +121,7 @@ async function connect() {
   stopStream();
   const token = readSessionToken();
   connectedToken = token;
-  if (!subscribers.size) { setState(false); return; }
+  if (!subscribers.size || document.hidden) { setState(false); return; }
   if (!token || token === rejectedToken) {
     // 不发请求；重新登录后页面重新订阅会立即重连，这里只是定期检查会话是否已更换。
     setState(false);
@@ -137,6 +138,7 @@ async function connect() {
       cache: 'no-store',
       signal: current.signal
     });
+    if (controller !== current || current.signal.aborted) return;
     if (response.status === 401) rejectedToken = token;
     if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
     armWatchdog(current);
@@ -176,7 +178,13 @@ function ensureStarted() {
   // 网络恢复：旧连接可能已失效，断网期间的重读也可能失败过，重新连接后全部重读。
   window.addEventListener('online', () => { if (subscribers.size) reconnectNow(); });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      missed = true;
+      stopStream();
+      setState(false);
+      return;
+    }
     const away = hiddenAt ? Date.now() - hiddenAt : 0;
     hiddenAt = 0;
     if (!subscribers.size) return;

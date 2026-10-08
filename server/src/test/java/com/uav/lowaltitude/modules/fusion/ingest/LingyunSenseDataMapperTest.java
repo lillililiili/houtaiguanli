@@ -30,6 +30,19 @@ class LingyunSenseDataMapperTest {
     }
 
     @Test
+    void modelNeverSubstitutesForMissingOrMalformedSerial() {
+        for (String serial : List.of("", ",\"uavSN\":null", ",\"uavSN\":\"\"", ",\"uavSN\":\"  \"", ",\"uavSN\":123")) {
+            Item item = mapper.map(inbox("tdoa", senseData("{\"uavModel\":\"SAME-MODEL\"" + serial + "}"))).items().get(0);
+            assertThat(item.identityClue()).isNull();
+            assertThat(item.quality()).containsEntry("uav_model", "SAME-MODEL");
+        }
+        for (String serial : List.of("SN-A", "SN-B")) {
+            Item item = mapper.map(inbox("tdoa", senseData("{\"uavModel\":\"SAME-MODEL\",\"uavSN\":\" " + serial + " \"}"))).items().get(0);
+            assertThat(item.identityClue()).isEqualTo(serial);
+        }
+    }
+
+    @Test
     void everyDeviceTypeIsAcceptedAndOnlyOpticalAndAoaLoseTheirPosition() {
         // 七种设备类型缩写都要能解释；协议说光电与 AOA 的经纬度无效，那两类必须落 NULL。
         for (String abbr : List.of("5ga", "radar", "tdoa", "dcd", "rid", "isrs")) {

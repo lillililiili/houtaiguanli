@@ -19,16 +19,19 @@ public class BusinessReportExportService {
     public record File(String filename, byte[] body, String contentType) { }
     // The read-only snapshot ends before the independent audit write begins.
     public File export(String category, String period, String anchor, boolean asPdf, String ip, String agent) {
-        var data=reports.exportData(category,period,anchor,asPdf);
+        return export(category,period,anchor,asPdf,ip,agent,null);
+    }
+    public File export(String category, String period, String anchor, boolean asPdf, String ip, String agent, String sourceMode) {
+        var data=reports.exportData(category,period,anchor,asPdf,sourceMode);
         byte[] bytes=asPdf?pdf.write(data):excel.write(data);
         var p=data.preview();var user=AuthContext.require();
         String extension=asPdf?"pdf":"xlsx";
         String label=switch(p.periodType()){case "DAILY" -> "日报";case "WEEKLY" -> "周报";default -> "月报";};
-        String filename=p.title()+label+"-"+p.from()+"-"+p.to()+"."+extension;
+        String filename=(p.simulated()?"模拟验收-":"")+p.title()+label+"-"+p.from()+"-"+p.to()+"."+extension;
         audit.recordStandalone(user.userId(),user.account(),user.roleCode(),"statistics","stats_export_requested",
                 "report",category,"format="+extension.toUpperCase()+";category="+category+";period="+period
                 +";from="+p.from()+";to="+p.to()+";scope="+user.scopeMode()+";source="+p.sourceMode()
-                +";simulated="+p.simulated(),"SUCCESS",ip,agent);
+                +";simulated="+p.simulated()+";report_scope="+p.reportScope(),"SUCCESS",ip,agent);
         return new File(filename,bytes,asPdf?"application/pdf":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     }
 }

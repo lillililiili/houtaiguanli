@@ -74,5 +74,17 @@ export const businessReportApi = {
 
 export function businessReportFilename(preview, format) {
   const period = { DAILY: '日报', WEEKLY: '周报', MONTHLY: '月报' }[preview.period_type] || '';
-  return `${preview.title}${period}-${preview.from}-${preview.to}.${format}`;
+  return `${preview.simulated ? '模拟验收-' : ''}${preview.title}${period}-${preview.from}-${preview.to}.${format}`;
+}
+
+export function reportRowMatchesScope(mode, scope) {
+  return scope === 'simulated' ? ['mock', 'replay'].includes(mode) : scope === 'live' && mode === 'live';
+}
+
+export function reportPreviewMatchesScope(data, scope) {
+  if (data.report_scope !== scope) return false;
+  if (scope === 'live' && (data.simulated !== false || data.source_mode !== 'live')) return false;
+  if (scope === 'simulated' && (data.simulated !== true || !data.available_source_modes?.includes('simulated') ||
+    !['mock', 'replay', 'mixed', 'simulated'].includes(data.source_mode))) return false;
+  return (data.sections || []).every(section => (section.sources || []).every(source => reportRowMatchesScope(source.name, scope)));
 }

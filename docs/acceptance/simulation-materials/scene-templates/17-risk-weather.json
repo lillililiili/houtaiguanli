@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "完整模拟资料·R02 气象预警独立输入·非预报文字推定风险",
+  "duration": 0,
+  "sites": [
+    {
+      "id": "item2-site",
+      "name": "第二条模拟设备组",
+      "x": 450,
+      "y": 300,
+      "devices": [
+        {
+          "id": "item2-radar",
+          "name": "第二条模拟 radar",
+          "kind": "radar",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1
+        }
+      ]
+    }
+  ],
+  "targets": [],
+  "plans": [
+    {
+      "id": "item2-risk-weather-route",
+      "name": "第三业务链模拟气象风险航线",
+      "points": [
+        [
+          530,
+          300
+        ],
+        [
+          534,
+          300
+        ]
+      ],
+      "min": 0,
+      "max": 150,
+      "width": 100,
+      "start": "00:00",
+      "end": "23:59",
+      "timeMode": "current",
+      "altitudeDatum": "AMSL"
+    }
+  ],
+  "zones": [],
+  "risks": [],
+  "fullchain": {
+    "enabled": true,
+    "categories": [
+      "weather"
+    ],
+    "filing": {},
+    "observationSourceCount": 3,
+    "airspaceLifecycle": false,
+    "weather": {
+      "summary": "模拟多云",
+      "wind_speed_ms": 6,
+      "gust_ms": 11
+    }
+  }
+}

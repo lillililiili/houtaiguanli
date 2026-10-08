@@ -35,6 +35,9 @@ public class RealtimeSimulatorReceiptProjector {
         this.sms=sms;this.voice=voice;this.handoffs=handoffs;this.feedback=feedback;this.maintenance=maintenance;this.json=json;this.audit=audit;
     }
     public boolean apply(String id,String kind,String subjectId,JsonNode payload,String outcome,Long deliveredAt,Long answeredAt,Long completedAt,Long acknowledgedAt){
+        return apply(id,kind,subjectId,payload,outcome,deliveredAt,answeredAt,completedAt,acknowledgedAt,null);
+    }
+    public boolean apply(String id,String kind,String subjectId,JsonNode payload,String outcome,Long deliveredAt,Long answeredAt,Long completedAt,Long acknowledgedAt,String receiptResult){
         String marker="SIMULATOR_WAITING:"+id;
         boolean applied;
         if("ADVISORY_SMS".equals(kind)){
@@ -44,7 +47,7 @@ public class RealtimeSimulatorReceiptProjector {
             applied=voice.getObject().completeSimulatorReceipt(subjectId,text(payload,"provider_key"),text(payload,"claim_token"),
                     value(payload,"recipient",RecipientSnapshot.class),value(payload,"recording",Recording.class),id,outcome,answeredAt,completedAt,payload.path("requested_at").asLong(-1));
         }else{
-            DeliveryOutcome receipt=delivery(marker,outcome,deliveredAt,acknowledgedAt);
+            DeliveryOutcome receipt=delivery(marker,outcome,deliveredAt,acknowledgedAt,receiptResult);
             if(!subjectId.equals(text(payload,"handoff_id")))applied=false;
             else applied=switch(kind){
                 case "RISK_NOTICE","UAV_PUNISHMENT" -> handoffs.complete(subjectId,kind,text(payload,"source_id"),value(payload,"at",OffsetDateTime.class),marker,receipt);
@@ -56,14 +59,17 @@ public class RealtimeSimulatorReceiptProjector {
         }
         var actor=AuthContext.require();
         audit.record(actor.userId(),actor.account(),actor.roleCode(),"integration","simulator_receipt_projection","simulator_message",id,
-                "kind="+kind+"; outcome="+outcome+"; projection="+(applied?"APPLIED":"IGNORED_STALE_ATTEMPT"),"SUCCESS","","");
+                "kind="+kind+"; outcome="+outcome+"; receipt_result="+receiptResult+"; projection="+(applied?"APPLIED":"IGNORED_STALE_ATTEMPT"),"SUCCESS","","");
         return applied;
     }
-    private static DeliveryOutcome delivery(String marker,String outcome,Long delivered,Long acknowledged){
+    public String processingResult(String kind,String subjectId){
+        return "RISK_NOTICE".equals(kind)?handoffs.processingResult(subjectId):null;
+    }
+    private static DeliveryOutcome delivery(String marker,String outcome,Long delivered,Long acknowledged,String receiptResult){
         if(!Set.of("DELIVERED","ACKNOWLEDGED","FAILED","TIMEOUT").contains(outcome))throw new IllegalArgumentException("Unsupported notification receipt");
         return new DeliveryOutcome("FAILED".equals(outcome)?"FAILED":delivered!=null?"DELIVERED":"SUBMITTED",
                 "ACKNOWLEDGED".equals(outcome)?"ACKNOWLEDGED":"FAILED".equals(outcome)?"NOT_EXPECTED":"TIMEOUT".equals(outcome)?"TIMEOUT":"PENDING",
-                null,"ACKNOWLEDGED".equals(outcome)?null:"FAILED".equals(outcome)?"SIMULATOR_REJECTED":marker,null,time(delivered),time(acknowledged));
+                receiptResult,"ACKNOWLEDGED".equals(outcome)?null:"FAILED".equals(outcome)?"SIMULATOR_REJECTED":marker,null,time(delivered),time(acknowledged));
     }
     private <T>T value(JsonNode payload,String field,Class<T> type){var value=payload.get(field);return value==null||value.isNull()?null:json.convertValue(value,type);}
     private static String text(JsonNode payload,String field){var value=payload.get(field);return value==null||!value.isTextual()?null:value.asText();}

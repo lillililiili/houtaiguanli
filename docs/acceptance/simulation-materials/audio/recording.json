@@ -1,0 +1,10 @@
+{
+  "file": "pilot-warning-simulation.wav",
+  "sha256": "ffaece2b166e27b58be4fe5a3afabaf7f7117346f4e4f7bb075a5ffabd0e3029",
+  "duration_seconds": 16.029,
+  "sample_rate": 22050,
+  "channels": 1,
+  "transcript": "这是低空平台验收模拟通知。测试无人机仍位于模拟告警空域，请按演示安排驶离测试区域。本消息仅用于本机模拟，不是真实飞行指令。",
+  "recording_id": "SIM-ACC23-VOICE-V1",
+  "name": "验收模拟飞手通知（中文）"
+}

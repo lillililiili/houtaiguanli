@@ -118,7 +118,9 @@ async function savePermissions() {
     const body = {
       expected_version: detail.value.version,
       permissions: permissions.value.map(item => ({ permission_code: item.permission_code, level: item.level, menu_enabled: item.menu_enabled })),
-      actions: Object.entries(actionDraft).filter(([code, level]) => level !== 'AUTH' && !isProtectedAction(code)).map(([permission_code, level]) => ({ permission_code, level }))
+      actions: Object.entries(actionDraft)
+        .filter(([permission_code, level]) => level !== 'AUTH' && !isActionLocked({ permission_code }))
+        .map(([permission_code, level]) => ({ permission_code, level }))
     }
     const saved = await systemApi.updateRolePermissions(detail.value.role_code, body)
     resetDraft(saved)

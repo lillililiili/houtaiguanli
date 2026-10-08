@@ -29,11 +29,21 @@ public class HandoffSimulatorReceiptService {
                 &&Math.abs(attempt.createdAt().toInstant().toEpochMilli()-requestedAt.toInstant().toEpochMilli())<=1)
             throw new ApiException(HttpStatus.CONFLICT,"SIMULATOR_RECEIPT_NOT_READY","通知发送登记尚未完成，请重新读取后重试回执");
         if(attempt==null||!marker.equals(attempt.blockedReason()))return false;
+        if(outcome.receiptResult()!=null&&(!"RISK_NOTICE".equals(kind)||!"ACKNOWLEDGED".equals(outcome.receiptStatus())
+                ||!java.util.Set.of("DISPERSED","NOT_DISPERSED").contains(outcome.receiptResult())))
+            throw new ApiException(HttpStatus.CONFLICT,"SIMULATOR_RECEIPT_RESULT_INVALID","处理结果只适用于风险通知的签收回执");
         handoffs.completeLocalSimulatorReceipt(attempt.deliveryId(),marker,outcome);
+        if(outcome.receiptResult()!=null)handoffs.updateReceiptResult(handoffId,outcome.receiptResult());
         if("RISK_NOTICE".equals(kind)&&"ACKNOWLEDGED".equals(outcome.receiptStatus())){
             var risk=risks.lock(handoff.sourceId(),INTERNAL);
             if(risk!=null&&"NOTIFIED".equals(risk.state()))notifications.acknowledged(risk.riskId(),risk.version(),handoffId,outcome.acknowledgedAt());
         }
         return true;
+    }
+
+    /** Called only after transport receiver ownership has been checked. Never mutates history. */
+    public String processingResult(String handoffId){
+        var row=handoffs.find(handoffId,INTERNAL);
+        return row!=null&&"RISK_NOTICE".equals(row.handoffType())?row.receiptResult():null;
     }
 }

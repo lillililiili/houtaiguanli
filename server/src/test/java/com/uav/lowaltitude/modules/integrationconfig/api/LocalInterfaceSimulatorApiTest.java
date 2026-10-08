@@ -171,7 +171,7 @@ class LocalInterfaceSimulatorApiTest {
    var body=plan("input-plan-mode-"+mode);body.put("source_mode",mode);send("/plans",body,400);
   }
  }
- @Test void pastWeatherPeriodsRemainReadableWithoutRewritingPublicationTime() throws Exception {
+ @Test void pastWeatherRemainsInInputHistoryButDoesNotMatchCurrentPlan() throws Exception {
   var plan=send("/plans",plan("weather-plan"),200);String id=plan.path("subject_id").asText();
   long published=System.currentTimeMillis()-2*86400000L;var period=Map.of("from",published,"to",published+3600000,"summary","模拟小雨","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",80,"humidity_pct",75);
   var input=Map.of("message_id","weather-one","plan_id",id,"area_name","模拟区域","published_at",published,"periods",List.of(period));
@@ -179,20 +179,20 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(received.path("result").path("status").asText()).isEqualTo("READY");
   assertThat(send("/weather",input,200).path("message_id")).isEqualTo(received.path("message_id"));
   var first=mvc.perform(get("/api/v1/flight-plans/"+id+"/weather-forecast").header("Authorization",token))
-   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
-   .andExpect(jsonPath("$.data.message").doesNotExist()).andExpect(jsonPath("$.data.forecast.source_mode").value("mock"))
-   .andExpect(jsonPath("$.data.forecast.published_at").value(published))
-   .andExpect(jsonPath("$.data.forecast.periods[0].from").value(published))
-   .andExpect(jsonPath("$.data.forecast.periods[0].to").value(published+3600000))
-   .andExpect(jsonPath("$.data.forecast.periods[0].summary").value("模拟小雨")).andReturn().getResponse().getContentAsString();
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("NOT_CONFIGURED"))
+   .andExpect(jsonPath("$.data.forecast").doesNotExist()).andReturn().getResponse().getContentAsString();
   var second=mvc.perform(get("/api/v1/flight-plans/"+id+"/weather-forecast").header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
   assertThat(json.readTree(second).path("data")).isEqualTo(json.readTree(first).path("data"));
+  var history=json.readTree(jdbc.queryForObject("select payload from local_interface_message where message_id=?",String.class,received.path("message_id").asText()));
+  assertThat(history.path("published_at").asLong()).isEqualTo(published);
+  assertThat(history.path("periods").get(0).path("from").asLong()).isEqualTo(published);
+  assertThat(history.path("periods").get(0).path("to").asLong()).isEqualTo(published+3600000);
  }
  @Test void areaWeatherCanBeSubmittedWithoutPlanAndIsMatchedWhenReadingThatArea() throws Exception {
   var plan=send("/plans",plan("weather-area-plan"),200);String planId=plan.path("subject_id").asText();
   String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
   long published=System.currentTimeMillis()-3600000L;
-  var period=Map.of("from",published,"to",published+3600000,"summary","区域多云","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",20,"humidity_pct",75);
+  var period=Map.of("from",published,"to",published+86400000,"summary","区域多云","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",20,"humidity_pct",75);
   var input=new HashMap<String,Object>();input.put("message_id","weather-area-one");input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));
   var received=send("/weather",input,200);
   assertThat(received.path("result").path("status").asText()).isEqualTo("READY");
@@ -201,6 +201,20 @@ class LocalInterfaceSimulatorApiTest {
    .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
    .andExpect(jsonPath("$.data.forecast.area_name").value(area))
    .andExpect(jsonPath("$.data.forecast.periods[0].summary").value("区域多云"));
+ }
+ @Test void latestOutOfWindowAreaForecastDoesNotHideEarlierCoveringForecast() throws Exception {
+  var body=plan("weather-window-plan");
+  String id=send("/plans",body,200).path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,id);
+  long start=(long)body.get("start_at"),end=(long)body.get("end_at"),published=start-600000;
+  var valid=Map.of("from",start,"to",end,"summary","覆盖计划的预报","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",20,"humidity_pct",75);
+  send("/weather",Map.of("message_id","weather-window-valid","area_name",area,"published_at",published,"periods",List.of(valid)),200);
+  var unrelated=new HashMap<String,Object>(valid);unrelated.put("from",end);unrelated.put("to",end+3600000);unrelated.put("summary","计划结束后的预报");
+  send("/weather",Map.of("message_id","weather-window-later","area_name",area,"published_at",published+1000,"periods",List.of(unrelated)),200);
+  mvc.perform(get("/api/v1/flight-plans/"+id+"/weather-forecast").header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
+   .andExpect(jsonPath("$.data.forecast.published_at").value(published))
+   .andExpect(jsonPath("$.data.forecast.periods[0].summary").value("覆盖计划的预报"));
  }
  @Test void forecastRuleCreatesPendingRisksOnceAndWaitsForManualVerification() throws Exception {
   var plan=send("/plans",plan("weather-rule-plan"),200);String planId=plan.path("subject_id").asText();

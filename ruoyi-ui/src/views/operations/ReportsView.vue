@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, onBeforeUnmount } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Download, RefreshRight, Calendar } from '@element-plus/icons-vue';
 import PageHeader from '@/components/PageHeader.vue';
@@ -7,7 +7,7 @@ import MetricCards from '@/components/MetricCards.vue';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import ReportChart from '@/components/ReportChart.vue';
 import ReportDetailTable from '@/components/ReportDetailTable.vue';
-import { businessReportApi, businessReportFilename, createLatestRequestGuard } from '@/api/reports.js';
+import { businessReportApi, businessReportFilename, createLatestRequestGuard, reportPreviewMatchesScope } from '@/api/reports.js';
 import { isFuturePickerDate, normalizeAnchor, pickerValue, shanghaiToday } from '@/utils/reportPeriods.js';
 
 const categories = [
@@ -19,15 +19,17 @@ const categories = [
 ];
 const periods = [{ value: 'DAILY', label: '日报' }, { value: 'WEEKLY', label: '周报' }, { value: 'MONTHLY', label: '月报' }];
 const category = ref('OVERVIEW'), period = ref('MONTHLY'), selectedDate = ref(pickerValue('MONTHLY'));
+const sourceMode = ref('live'), availableSources = ref(['live']);
 const preview = ref(null), loading = ref(false), exporting = ref(''), error = ref(''), refresh = ref(0);
 const guard = createLatestRequestGuard();
 const datePickerType = computed(() => period.value === 'MONTHLY' ? 'month' : 'date');
 const dateFormat = computed(() => period.value === 'MONTHLY' ? 'YYYY-MM' : 'YYYY-MM-DD');
 const anchor = computed(() => { try { return normalizeAnchor(period.value, selectedDate.value); } catch { return ''; } });
-const params = computed(() => ({ report_category: category.value, period_type: period.value, anchor_date: anchor.value, source_mode: 'live' }));
+const params = computed(() => ({ report_category: category.value, period_type: period.value, anchor_date: anchor.value, source_mode: sourceMode.value }));
 const queryKey = computed(() => JSON.stringify(params.value));
 const ready = computed(() => !loading.value && !error.value && preview.value &&
-  preview.value.report_category === category.value && preview.value.period_type === period.value && preview.value.anchor_date === anchor.value);
+  preview.value.report_category === category.value && preview.value.period_type === period.value && preview.value.anchor_date === anchor.value &&
+  preview.value.report_scope === sourceMode.value);
 const description = computed(() => categories.find(item => item.value === category.value).description);
 const sections = computed(() => preview.value?.sections || []);
 const allowed = computed(() => sections.value.filter(s => s.accessible));
@@ -87,13 +89,16 @@ const dayRows = computed(() => (allowed.value.find(s => s.days.length)?.days || 
 }));
 async function loadPreview() {
   const current = guard.begin();
+  const filter = { ...params.value };
   preview.value = null; error.value = '';
   if (!anchor.value) { loading.value = false; return; }
   loading.value = true;
   try {
-    const data = await businessReportApi.preview({ ...params.value });
-    if (data.simulated || data.source_mode !== 'live') throw new Error('返回数据不符合正式统计口径，已停止展示和导出。');
-    if (guard.isCurrent(current)) { preview.value = data; refresh.value++; }
+    const data = await businessReportApi.preview(filter);
+    if (!guard.isCurrent(current)) return;
+    if (!reportPreviewMatchesScope(data, filter.source_mode)) throw new Error(`返回数据不符合${filter.source_mode === 'live' ? '正式统计' : '模拟验收'}口径，已停止展示和导出。`);
+    availableSources.value = data.available_source_modes || ['live'];
+    preview.value = data; refresh.value++;
   } catch (e) { if (guard.isCurrent(current)) error.value = e.message || '报表加载失败，请重试。'; }
   finally { if (guard.isCurrent(current)) loading.value = false; }
 }
@@ -107,6 +112,7 @@ async function exportReport(format) {
 }
 watch(period, value => { selectedDate.value = pickerValue(value, shanghaiToday()); });
 watch(queryKey, loadPreview, { immediate: true, flush: 'post' });
+onBeforeUnmount(() => guard.begin());
 </script>
 
 <template>
@@ -122,6 +128,13 @@ watch(queryKey, loadPreview, { immediate: true, flush: 'post' });
         <el-radio-button v-for="item in categories" :key="item.value" :label="item.value">{{ item.label }}</el-radio-button>
       </el-radio-group>
       <div class="period-row">
+        <template v-if="availableSources.includes('simulated')">
+          <strong>来源口径</strong>
+          <el-radio-group v-model="sourceMode" aria-label="选择来源口径">
+            <el-radio-button label="live">正式统计</el-radio-button>
+            <el-radio-button label="simulated">模拟验收口径</el-radio-button>
+          </el-radio-group>
+        </template>
         <strong>报表周期</strong>
         <el-radio-group v-model="period" aria-label="选择报表周期"><el-radio-button v-for="item in periods" :key="item.value" :label="item.value">{{ item.label }}</el-radio-button></el-radio-group>
         <el-date-picker v-model="selectedDate" :type="datePickerType" :value-format="dateFormat" :clearable="false"
@@ -129,12 +142,12 @@ watch(queryKey, loadPreview, { immediate: true, flush: 'post' });
         <div class="period-range"><el-icon><Calendar /></el-icon><div><strong>{{ preview?.period_label || '正在计算统计区间…' }}</strong><small>{{ preview ? preview.from + ' 至 ' + preview.to : '当前周期统计至今日' }}</small></div></div>
       </div>
     </section>
-    <el-alert title="正式统计仅纳入真实来源记录；模拟、回放及来源未知记录不计入。预览、明细和导出使用同一口径。" type="info" :closable="false" />
+    <el-alert v-if="sourceMode === 'live'" title="正式统计仅纳入真实来源记录；模拟、回放及来源未知记录不计入。预览、明细和导出使用同一口径。" type="info" :closable="false" />
+    <el-alert v-else title="模拟验收：仅纳入系统已有的模拟与回放记录，不包含真实来源；预览、明细和导出均为模拟验收口径，不可作为现场正式报表。" type="warning" :closable="false" show-icon />
     <ErrorAlert :message="error" @retry="loadPreview" />
     <div v-loading="loading" class="report-content" :aria-busy="loading" element-loading-text="正在汇总业务数据…">
       <template v-if="ready">
         <div class="report-meta"><span>数据来源 <el-tag :type="preview.source_mode === 'live' ? 'success' : 'warning'" effect="plain">{{ label(preview.source_mode) }}</el-tag></span><span>生成时间 {{ generated(preview.generated_at) }}（上海）</span></div>
-        <el-alert v-if="preview.simulated" type="warning" :closable="false" show-icon title="包含模拟或回放记录，不可作为现场正式报表。" />
         <el-alert v-if="empty" type="info" :closable="false" show-icon title="当前统计范围暂无业务记录，仍可导出完整结构的报表。" />
         <p class="report-note">{{ preview.status_note }}</p>
         <MetricCards :items="metrics" />

@@ -8,7 +8,7 @@
 
 趋势图与运行统计页同源，读取 `GET /stats/operations` 的样本事实表 `days`，带 `simulated`/`source_mode`；不得把它解释成目标/告警领域表的官方运行指标。
 
-统计口径（ZT-17；2026-10-07 用户决定设备模拟器的数据也计入，取代 10-06 的“只计 live”）：大屏上所有计数——`kpis.*`、`closure.pending_verification`/`closure.confirmed_blocked`、`target_risk`、`flights.*`、`devices.*`——与运行统计同一口径，**计 `source_mode` 为 `live`（真实设备）或 `replay`（设备模拟器）的数据**，不计建库时系统自带的演示样例（`mock`）。只有允许模拟的环境（local+qa、test）把 `replay` 算进来，正式环境只计 `live`，库里留有历史模拟记录也不进统计。口径定义在 `platform/query/StatisticsScope`，改口径只改那里。其中来自设备模拟器的条数放在 `simulated_included` 里，页面必须写明，免得被当成现场真实数据。`alarms.items`/`alarms.total` 和 `map.*` 不是计数，仍按**全部来源**给。导出的业务报表仍只计 live。
+统计口径（ZT-17；2026-10-07 用户决定设备模拟器的数据也计入，取代 10-06 的“只计 live”）：大屏上所有计数——`kpis.*`、`closure.pending_verification`/`closure.confirmed_blocked`、`target_risk`、`flights.*`、`devices.*`——与运行统计同一口径，**计 `source_mode` 为 `live`（真实设备）或 `replay`（设备模拟器）的数据**，不计建库时系统自带的演示样例（`mock`）。只有允许模拟的环境（local+qa、test）把 `replay` 算进来，正式环境只计 `live`，库里留有历史模拟记录也不进统计。口径定义在 `platform/query/StatisticsScope`，改口径只改那里。其中来自设备模拟器的条数放在 `simulated_included` 里，页面必须写明，免得被当成现场真实数据。`alarms.items`/`alarms.total` 和 `map.*` 不是计数，仍按**全部来源**给。业务报表默认正式口径仍只计 live；验收环境显式开启的模拟报表口径仅计 mock/replay，见[运行统计接口契约](../运行统计接口契约.md)，不与本节计数口径混用。
 
 2026-10-07 复测 2（ZT-17）：`kpis.sensed_today`、`simulated_included.sensed_today`、`target_risk` 与趋势的今天一格直接用运行统计选今天时的那一份取数（`ReportingService.dayTargets`）。原先大屏按“今天出现过、不含被合并”数目标、按研判等级抽样分档，运行统计按首次发现、含被合并的目标数、按风险记录分档，同一天两处对不上（393 对 414，高风险 3 对 0）。现在两处同一批目标——按首次发现时间归属今日、被合并的目标不另计、要求有单位与区域、按用户数据范围——同一套风险分档。
 

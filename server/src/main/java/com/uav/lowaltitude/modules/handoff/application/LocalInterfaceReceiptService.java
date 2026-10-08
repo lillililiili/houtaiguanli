@@ -28,6 +28,7 @@ public class LocalInterfaceReceiptService {
  public LocalInterfaceReceiptService(LocalInterfaceRepository messages,HandoffRepository handoffs,DeviceAccessPolicy interfaces,AccessControlService access,LocalInterfaceSimulatorService simulator,ObjectMapper json,AppClock clock,AuditService audit,RiskRepository risks,RiskNotificationService notifications){this.messages=messages;this.handoffs=handoffs;this.interfaces=interfaces;this.access=access;this.simulator=simulator;this.json=json;this.clock=clock;this.audit=audit;this.risks=risks;this.notifications=notifications;}
  @Transactional public Message accept(String id,ReceiptInput input){
   var actor=interfaces.requireInterfacesOperate();var row=messages.lock(id);
+  if(input.receiptResult()!=null)throw conflict("处理结果须由独立通知接收器关联回传");
   if(row==null||!row.actor().equals(actor.userId()))throw missing();
   if(!"OUT".equals(row.direction()))throw conflict("输入消息不能提交通知回执");
   var decision=access.require(PermissionCode.HANDOFF_READ);

@@ -27,6 +27,11 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class TargetReadApiTest {
 
+    @Test
+    void currentIdentityIsSharedByListAndDetailWithoutLegacyFallback() throws Exception {
+        TargetIdentityAssertions.verify(jdbc, targetLatest, this::getJson);
+    }
+
     private static final OffsetDateTime T0 = OffsetDateTime.of(2026, 9, 4, 12, 0, 0, 0, ZoneOffset.UTC);
 
     @Autowired MockMvc mvc;

@@ -166,8 +166,8 @@ public class LingyunSenseDataMapper implements FrameMapper {
 
         return new Item(externalTargetId, null, longitude, latitude, null, null, heightAglM,
                 number(object, "speed"), heading, classCode, number(extension, "probability"),
-                // 身份线索按协议优先取序列号：型号只说"是哪一款"，序列号才指向具体这一台。
-                uavSn != null ? uavSn : uavModel, null,
+                // 型号不是唯一身份；缺少序列号时保持未知。
+                uavSn, null,
                 number(extension, "pilotLon"), number(extension, "pilotLat"), CLASS_SOURCE, quality);
     }
 

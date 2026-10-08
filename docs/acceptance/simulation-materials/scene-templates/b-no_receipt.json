@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "name": "完整模拟资料·B08 处置回执·no_receipt",
+  "duration": 15,
+  "sites": [
+    {
+      "id": "item2-site",
+      "name": "第二条模拟设备组",
+      "x": 450,
+      "y": 300,
+      "devices": [
+        {
+          "id": "item2-tdoa",
+          "name": "第二条模拟 tdoa",
+          "kind": "tdoa",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1
+        },
+        {
+          "id": "item2-ifr",
+          "name": "第二条模拟 ifr",
+          "kind": "ifr",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1,
+          "protocolB": {
+            "enabled": true,
+            "response": "no_receipt"
+          }
+        },
+        {
+          "id": "item2-eo",
+          "name": "第二条模拟 eo",
+          "kind": "eo",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1,
+          "coverage": {
+            "kind": "circle",
+            "radiusM": 5000,
+            "sourceLabel": "第二条模拟覆盖配置"
+          }
+        },
+        {
+          "id": "item2-radar",
+          "name": "第二条模拟 radar",
+          "kind": "radar",
+          "health": "正常",
+          "heartbeat": "持续上报",
+          "interval": 1
+        }
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "id": "item2-uav",
+      "name": "第二条模拟无人机",
+      "kind": "uav",
+      "deviceId": "item2-tdoa",
+      "path": [
+        [
+          470,
+          300
+        ],
+        [
+          474,
+          300
+        ]
+      ],
+      "height": 100,
+      "heightAgl": 60,
+      "altitudeDatum": "AMSL",
+      "speed": 1,
+      "probability": 0.99,
+      "motionMode": "pingpong",
+      "transport": "normalized",
+      "pilotPoint": [
+        468,
+        299
+      ],
+      "planId": "item2-route",
+      "notificationBehavior": "none"
+    }
+  ],
+  "plans": [
+    {
+      "id": "item2-route",
+      "name": "第二条模拟航线",
+      "points": [
+        [
+          470,
+          300
+        ],
+        [
+          474,
+          300
+        ]
+      ],
+      "min": 0,
+      "max": 150,
+      "width": 100,
+      "start": "00:00",
+      "end": "23:59",
+      "timeMode": "current",
+      "altitudeDatum": "AMSL"
+    }
+  ],
+  "zones": [
+    {
+      "id": "item2-permitted",
+      "name": "第二条模拟允许空域",
+      "kindCode": "PERMITTED",
+      "points": [
+        [
+          420,
+          250
+        ],
+        [
+          580,
+          250
+        ],
+        [
+          580,
+          360
+        ],
+        [
+          420,
+          360
+        ]
+      ],
+      "min": 0,
+      "max": 300,
+      "altitudeDatum": "AMSL",
+      "start": "00:00",
+      "end": "23:59"
+    },
+    {
+      "id": "item2-prohibited",
+      "name": "第二条模拟禁飞空域",
+      "kindCode": "PROHIBITED",
+      "points": [
+        [
+          465,
+          295
+        ],
+        [
+          480,
+          295
+        ],
+        [
+          480,
+          307
+        ],
+        [
+          465,
+          307
+        ]
+      ],
+      "min": 0,
+      "max": 150,
+      "altitudeDatum": "AMSL",
+      "start": "00:00",
+      "end": "23:59"
+    }
+  ],
+  "risks": [],
+  "fullchain": {
+    "enabled": true,
+    "categories": [],
+    "filing": {},
+    "observationSourceCount": 3,
+    "airspaceLifecycle": false
+  }
+}

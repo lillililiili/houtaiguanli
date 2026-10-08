@@ -244,7 +244,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         automaticFixture();
         jdbc.update("update mqtt_broker set enabled=false where broker_id=?",brokerId); supervisor.reconcile();
         jdbc.update("update mqtt_broker set enabled=true where broker_id=?",brokerId);
-        Path output=Path.of("target","automation-restart-evidence").toAbsolutePath(); Files.createDirectories(output);
+        Path output=Path.of("target","automation-restart-evidence","restart-"+java.util.UUID.randomUUID()).toAbsolutePath(); Files.createDirectories(output);
         jdbc.execute("alter table target_latest_state rename to qa_unavailable_latest_state");
         try {
             runChild("FAIL",output);
@@ -276,7 +276,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         String id=queueAutomatic(),command=commandOf(id);
         jdbc.update("update mqtt_broker set enabled=false where broker_id=?",brokerId); supervisor.reconcile();
         jdbc.update("update mqtt_broker set enabled=true where broker_id=?",brokerId);
-        Path output=Path.of("target","automation-restart-evidence").toAbsolutePath(); Files.createDirectories(output);
+        Path output=Path.of("target","automation-restart-evidence",failpoint+"-"+java.util.UUID.randomUUID()).toAbsolutePath(); Files.createDirectories(output);
         runChild(failpoint,output);
         int expectedFrames="CRASH_BEFORE_PUBLISH".equals(failpoint)?0:1;
         Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(()->assertThat(frames).hasSize(expectedFrames));
