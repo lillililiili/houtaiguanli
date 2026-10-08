@@ -30,6 +30,7 @@ import com.uav.lowaltitude.modules.risk.application.spacerisk.C04DecisionTable.T
 import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort.AirportProximity;
 import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort.SpaceObservation;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository;
+import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.EvaluationSegmentRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.RuleVersionRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.SpaceFactRow;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -149,6 +150,7 @@ public class SpaceRiskEvaluationService {
         Set<String> targetsSeen = new LinkedHashSet<>();
         int created = 0, deduplicated = 0, attempted = 0;
         List<String> failures = new ArrayList<>();
+        OffsetDateTime evaluatedAt = clock.now().atOffset(ZoneOffset.UTC);
         for (SpaceObservation observation : observations) {
             targetsSeen.add(observation.targetId());
             CorridorRelation relation = decisionTable.relation(observation.distanceToRouteM(), observation.corridorHalfWidthM(), params);
@@ -156,11 +158,18 @@ public class SpaceRiskEvaluationService {
             Trend trend = trend(observation.trend());
             Decision decision = decisionTable.decide(new Observation(relation, band, observation.planId() != null,
                     observation.objectCount(), trend), params);
-            if (!decision.generate()) continue;
+            C04EvaluationHistory.Evaluation evaluated = new C04EvaluationHistory.Evaluation(observation.distanceToRouteM(), relation.name(),
+                    band.name(), decision.generate(), decision.severity(), version.ruleSetVersionId(), evaluatedAt, observation.observedAt());
+            if (!decision.generate()) {
+                // P03：这一（计划, 目标）已有没解除的风险时，这次不构成风险也记进它的评估历史，页面才看得出它什么时候不再构成风险。
+                if (observation.planId() != null) recordEvaluation(null, observation, evaluated, false, failures);
+                continue;
+            }
             attempted++;
             try {
-                Boolean fresh = perItem.execute(status -> generateC04(observation, relation, band, trend, decision, version, from, to));
-                if (Boolean.TRUE.equals(fresh)) created++; else deduplicated++;
+                Generated generated = perItem.execute(status -> generateC04(observation, relation, band, trend, decision, version, from, to));
+                if (generated.fresh()) created++; else deduplicated++;
+                if (generated.riskId() != null) recordEvaluation(generated.riskId(), observation, evaluated, generated.fresh(), failures);
             } catch (RuntimeException ex) {
                 // 只回滚这一个（计划, 目标）的保存点：其他目标照常生成，运行记录也照常收尾。
                 failures.add(observation.planId() + "/" + observation.targetId() + ": " + message(ex));
@@ -180,24 +189,64 @@ public class SpaceRiskEvaluationService {
     }
 
     /**
-     * 一个（计划, 目标）的 C04 入库，返回是否新建。
+     * 一个（计划, 目标）的 C04 入库，返回这次评估归到哪条风险、是不是新建的。
      * 同一计划、同一目标已有未解除的 C04 风险时不再新建：source_risk_id 含窗口起点，只防同一窗口重算；
      * 异物一直停在航线上时每轮窗口都不同，不按"这一次"去重就会每分钟多出一条同样的风险。
      */
-    private boolean generateC04(SpaceObservation observation, CorridorRelation relation, AltitudeBand band, Trend trend, Decision decision,
+    private Generated generateC04(SpaceObservation observation, CorridorRelation relation, AltitudeBand band, Trend trend, Decision decision,
             RuleVersionRow version, OffsetDateTime from, OffsetDateTime to) {
-        if (repository.openC04Risk(observation.planId(), observation.targetId()) != null) return false;
+        String open = repository.openC04Risk(observation.planId(), observation.targetId());
+        if (open != null) return new Generated(open, false);
         String sourceRiskId = "C04:" + version.ruleSetVersionId() + ":" + observation.planId() + ":" + observation.targetId() + ":" + from.toInstant().toEpochMilli();
         String riskId = ingest(observation, decision, sourceRiskId, from);
         // space_risk_fact 只增：同一 source_risk_id 重复评估返回既有风险，事实行不重写，
-        // 否则同一条风险的"判定依据"会被后一次评估的参数悄悄改掉。
-        if (repository.factExists(riskId)) return false;
+        // 否则同一条风险的"判定依据"会被后一次评估的参数悄悄改掉。那条风险已有解除依据，这次评估也不再记进它的评估历史。
+        if (repository.factExists(riskId)) return new Generated(null, false);
         repository.insertFact(new SpaceFactRow(riskId, observation.subtypeCode(), null, ruleVersionId(version, C04DecisionTable.RULE_CODE),
                 version.ruleSetVersionId(), version.versionNo(), observation.distanceToRouteM(), relation.name(), band.name(),
                 observation.altitudeDatum(), observation.objectCount(), trend.name(), unknownReasons(decision),
                 observation.longitude(), observation.latitude(), observation.altitudeM(),
                 from, to, clock.now().atOffset(ZoneOffset.UTC)));
-        return true;
+        return new Generated(riskId, true);
+    }
+
+    /** riskId 为 null 表示这次评估没有归到任何还没解除的风险。 */
+    private record Generated(String riskId, boolean fresh) { }
+
+    /**
+     * P03：把一次 C04 评估记进风险的评估历史（{@link C04EvaluationHistory} 定怎么分段）。riskId 为 null 时先找这一（计划, 目标）
+     * 还没解除的风险，没有就不记。自己占一个保存点：记失败不回滚已生成的风险，只在运行记录里留一句，下一轮照常再记。
+     */
+    private void recordEvaluation(String riskId, SpaceObservation observation, C04EvaluationHistory.Evaluation evaluated, boolean detection,
+            List<String> failures) {
+        try {
+            perItem.executeWithoutResult(status -> {
+                String target = riskId != null ? riskId : repository.openC04Risk(observation.planId(), observation.targetId());
+                if (target != null) appendEvaluation(target, evaluated, detection);
+            });
+        } catch (RuntimeException ex) {
+            failures.add("history " + observation.planId() + "/" + observation.targetId() + ": " + message(ex));
+            log.warn("space risk C04 history failed: plan={}, target={}, error={}", observation.planId(), observation.targetId(), ex.toString());
+        }
+    }
+
+    private void appendEvaluation(String riskId, C04EvaluationHistory.Evaluation evaluated, boolean detection) {
+        OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
+        EvaluationSegmentRow last = repository.latestSegment(riskId);
+        switch (C04EvaluationHistory.next(last, evaluated)) {
+            case SKIP -> { }
+            case EXTEND -> {
+                // 同一段刚被并发的另一轮评估改过：这一次已经算在那一轮里，不另开一段。
+                if (repository.extendSegment(last, evaluated.evaluatedAt(), evaluated.observedAt(), evaluated.distanceM(), now) != 1) {
+                    log.info("space risk C04 history segment changed concurrently: risk={}, segment={}", riskId, last.segmentId());
+                }
+            }
+            case START -> repository.insertSegment(new EvaluationSegmentRow(UUID.randomUUID().toString(), riskId,
+                    last == null ? 1 : last.segmentNo() + 1, evaluated.evaluatedAt(), evaluated.evaluatedAt(), 1,
+                    evaluated.observedAt(), evaluated.observedAt(), evaluated.distanceBandM(), evaluated.distanceM(), evaluated.distanceM(),
+                    evaluated.corridorRelation(), evaluated.altitudeBand(), evaluated.riskPresent(), evaluated.severity(),
+                    evaluated.ruleSetVersionId(), detection && last == null), now);
+        }
     }
 
     private static String partialFailure(List<String> failures) {

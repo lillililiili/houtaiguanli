@@ -246,6 +246,25 @@ class LocalInterfaceSimulatorApiTest {
   send("/weather",input,200);
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
  }
+ // P03: a forecast sent by the simulator showed 回放 on a replay flight task, while birds from the same simulator showed 模拟.
+ // Only file replay reads as 回放 now; the risk keeps its replay source mode underneath.
+ @Test void simulatorForecastReadsAsSimulatedOnAReplayFlightTask() throws Exception {
+  var body=plan("weather-sim-label-plan");body.put("source_mode","replay");
+  String planId=send("/plans",body,200).path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long start=(long)body.get("start_at"),end=(long)body.get("end_at");
+  var input=forecast("weather-sim-label",area,System.currentTimeMillis()-60000,period(start,end,"雷雨",12));input.put("plan_id",planId);
+  send("/weather",input,200);
+  var risk=jdbc.queryForMap("select risk_id,source_id from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",planId);
+  assertThat(risk.get("source_id")).isEqualTo("weather-forecast-rule-replay");
+  mvc.perform(get("/api/v1/risks/"+risk.get("risk_id")).header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.source_mode").value("replay"))
+   .andExpect(jsonPath("$.data.source_display_mode").value("mock"))
+   .andExpect(jsonPath("$.data.source_name").value("天气预报规则（模拟）"));
+  mvc.perform(get("/api/v1/flight-plans/"+planId+"/weather-forecast").header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
+   .andExpect(jsonPath("$.data.forecast.source_mode").value("mock"));
+ }
  // CDX-P06: a forecast risk said 缺少气象有效时段 although the forecast carries its window, and a plan touched by several area
  // forecasts showed only one of them on its weather tab. New forecast risks also read in Chinese and get a 风险-MMDD-NNN number.
  @Test void everyOverlappingAreaForecastShowsAndItsRiskFollowsTheForecastWindow() throws Exception {

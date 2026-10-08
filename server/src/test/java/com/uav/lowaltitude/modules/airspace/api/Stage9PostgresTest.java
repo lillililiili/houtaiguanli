@@ -602,6 +602,56 @@ class Stage9PostgresTest {
         assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=?", Long.class, far)).isZero();
     }
 
+    /**
+     * P03：鸟群风险每轮评估都记进它的“评估历史”。发现那一轮是第一段（走廊内、构成高风险）；鸟群飞到约 660 米外后，
+     * 那一轮另起一段（走廊外、不构成风险）；风险本身的等级不跟着改。读接口在 PG 上按时间顺序给出这两段。
+     */
+    @Test
+    @Order(26)
+    void flockRiskKeepsEachEvaluationAsHistoryWithoutChangingItsLevel() throws Exception {
+        seedStage9SpaceRisk();
+        OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
+        // 观测放在其他用例都不用的时刻，手动评估的窗口只圈到这一个目标。
+        OffsetDateTime observedAt = planTo.plusHours(20);
+        String flock = spaceTarget("history", "BIRD_FLOCK", 118.025, 37.025, null, new BigDecimal("100.00"), observedAt);
+        SpaceRiskRepository.RunRow run = evaluationService.evaluate("C04", observedAt.minusMinutes(1), observedAt.plusMinutes(1), "MANUAL", null);
+        assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
+        String riskId = jdbc.queryForObject("select risk_id from flight_risk where target_id=? and route_version_id=? and risk_type='SPACE_OBJECT'",
+                String.class, flock, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId)).isEqualTo("HIGH");
+
+        OffsetDateTime later = observedAt.plusMinutes(1);
+        jdbc.update("update target_latest_state set location=ST_GeomFromEWKT('SRID=4326;POINT (118.025 37.031)'),observed_at=?,received_at=?,updated_at=?"
+                + " where target_id=?", later, later, later, flock);
+        double away = distanceToRoute(flock);
+        SpaceRiskRepository.RunRow again = evaluationService.evaluate("C04", later.minusMinutes(1), later.plusMinutes(1), "MANUAL", null);
+        assertThat(again.status()).as(again.message()).isEqualTo("SUCCESS");
+
+        List<Map<String, Object>> segments = jdbc.queryForList("select segment_no,evaluation_count,distance_band_m,corridor_relation,altitude_band,"
+                + "risk_present,severity,from_detection from space_risk_evaluation_segment where risk_id=? order by segment_no", riskId);
+        assertThat(segments).hasSize(2);
+        assertThat(segments.get(0)).containsEntry("segment_no", 1).containsEntry("evaluation_count", 1).containsEntry("corridor_relation", "INSIDE")
+                .containsEntry("altitude_band", "CLIMB").containsEntry("risk_present", true).containsEntry("severity", "HIGH")
+                .containsEntry("from_detection", true);
+        assertThat(segments.get(1)).containsEntry("segment_no", 2).containsEntry("corridor_relation", "OUTSIDE").containsEntry("risk_present", false)
+                .containsEntry("from_detection", false).containsEntry("distance_band_m", (int) (away / 50) * 50);
+        assertThat(segments.get(1).get("severity")).isNull();
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId))
+                .as("评估只记事实，不改风险等级").isEqualTo("HIGH");
+
+        String reader = session(readerRole());
+        mvc.perform(get("/api/v1/risks/{id}/evaluation-history", riskId).header("Authorization", "Bearer " + reader))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.applicable").value(true))
+                .andExpect(jsonPath("$.data.evaluation_count").value(2))
+                .andExpect(jsonPath("$.data.from_detection").value(true))
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items[0].corridor_relation").value("INSIDE"))
+                .andExpect(jsonPath("$.data.items[0].severity").value("HIGH"))
+                .andExpect(jsonPath("$.data.items[1].corridor_relation").value("OUTSIDE"))
+                .andExpect(jsonPath("$.data.items[1].risk_present").value(false));
+    }
+
     private double distanceToApproach(String targetId) {
         return jdbc.queryForObject("select ST_Distance(pr.centerline::geography, s.location::geography) from airport_procedure_route pr, target_latest_state s"
                 + " where pr.route_id='seed-stage9-approach-18' and s.target_id=?", Double.class, targetId);

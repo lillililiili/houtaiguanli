@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.EvaluationHistoryDto;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.PageDto;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.RunDto;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.SpaceFactDto;
@@ -35,6 +36,13 @@ public class SpaceRiskController {
 
     @GetMapping("/risks/{riskId}/space-fact")
     public ApiResponse<SpaceFactDto> spaceFact(@PathVariable String riskId) { return ApiResponse.ok(service.spaceFact(riskId)); }
+
+    /** P03：空中异物风险的评估历史（被判了几次、每段离航线多远、当时是否构成风险）；其他风险 applicable=false。 */
+    @GetMapping("/risks/{riskId}/evaluation-history")
+    public ApiResponse<EvaluationHistoryDto> evaluationHistory(@PathVariable String riskId,
+            @RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(service.evaluationHistory(riskId, parameters));
+    }
 
     @GetMapping("/space-risks/summary")
     public ApiResponse<SummaryDto> summary(@RequestParam MultiValueMap<String, String> parameters) {

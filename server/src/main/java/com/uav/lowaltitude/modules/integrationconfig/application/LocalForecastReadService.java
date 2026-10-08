@@ -35,7 +35,8 @@ public class LocalForecastReadService {
   }catch(Exception e){throw new IllegalStateException("外部模拟预报无法读取",e);}
   if(newest==null) return null;
   var periods=slots.values().stream().sorted(java.util.Comparator.comparingLong(ForecastPeriod::from).thenComparingLong(ForecastPeriod::to)).toList();
-  return new ForecastAvailability(plan.planId(),"READY",null,new Forecast(newest.areaName(),"外部接口模拟器",newest.publishedAt(),plan.sourceMode(),periods));
+  // P03：预报都是外部接口模拟器送来的，按“模拟器送来的标模拟、文件回放才标回放”显示为模拟，不跟计划的来源模式走。
+  return new ForecastAvailability(plan.planId(),"READY",null,new Forecast(newest.areaName(),"外部接口模拟器",newest.publishedAt(),"mock",periods));
  }
  private static boolean valid(com.uav.lowaltitude.modules.integrationconfig.api.LocalInterfaceDtos.Period x){return x!=null&&x.from()!=null&&x.to()!=null&&x.from()<x.to();}
  private static boolean areaMatches(String area,String district){

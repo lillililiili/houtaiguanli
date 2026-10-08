@@ -36,7 +36,8 @@ class LocalForecastReadServiceTest {
         assertThat(result.forecast().publishedAt()).isEqualTo(start);
         assertThat(result.forecast().periods().get(0).from()).isEqualTo(valid.from());
         assertThat(result.forecast().periods().get(0).to()).isEqualTo(valid.to());
-        assertThat(result.forecast().sourceMode()).isEqualTo(mode);
+        // P03：预报都是外部接口模拟器送来的，回放任务上也显示为模拟，不跟任务的来源模式走。
+        assertThat(result.forecast().sourceMode()).isEqualTo("mock");
     }
 
     @ParameterizedTest
