@@ -27,7 +27,7 @@ public class PlanAltitudeCheck implements RuleCheck {
     public HitDetail evaluate(EvaluationContext context, RuleParams params) {
         List<ParamRef> refs = List.of();
         PlanFact plan = context.planMatch() == null ? null : context.planMatch().plan();
-        if (plan == null) return CheckSupport.notApplicable(ruleCode(), RuleCodes.NO_PLAN, refs, "没有匹配到飞行计划，计划高度不适用");
+        if (plan == null) return CheckSupport.notApplicable(ruleCode(), RuleCodes.NO_PLAN, refs, "没有匹配到飞行任务，任务高度不适用");
         Map<String, Object> facts = CheckSupport.facts();
         facts.put("plan_id", plan.planId());
         facts.put("route_version_id", plan.routeVersionId());
@@ -36,7 +36,7 @@ public class PlanAltitudeCheck implements RuleCheck {
         facts.put("max_altitude_m", plan.maxAltitudeM());
         var evidence = CheckSupport.evidence(CheckSupport.EVIDENCE_ROUTE_VERSION, plan.routeVersionId());
         if (plan.altitudeDatum() == null || plan.minAltitudeM() == null || plan.maxAltitudeM() == null) {
-            return CheckSupport.undetermined(ruleCode(), RuleCodes.ALTITUDE_DATUM_OR_RANGE_UNKNOWN, facts, refs, evidence, "计划航线没有高度带或高度基准，无法比较");
+            return CheckSupport.undetermined(ruleCode(), RuleCodes.ALTITUDE_DATUM_OR_RANGE_UNKNOWN, facts, refs, evidence, "任务航线没有高度带或高度基准，无法比较");
         }
         BigDecimal altitude = CheckSupport.altitudeOn(context.state(), plan.altitudeDatum());
         if (altitude == null) {
@@ -46,9 +46,9 @@ public class PlanAltitudeCheck implements RuleCheck {
         facts.put("target_altitude_m", altitude);
         if (altitude.compareTo(plan.maxAltitudeM()) > 0 || altitude.compareTo(plan.minAltitudeM()) < 0) {
             return CheckSupport.fail(ruleCode(), RuleCodes.PLAN_ALTITUDE_EXCEEDED, facts, refs, evidence,
-                    "目标高度 " + altitude.stripTrailingZeros().toPlainString() + " m（" + plan.altitudeDatum() + "）超出计划高度带 "
+                    "目标高度 " + altitude.stripTrailingZeros().toPlainString() + " m（" + plan.altitudeDatum() + "）超出任务高度带 "
                             + plan.minAltitudeM().stripTrailingZeros().toPlainString() + "–" + plan.maxAltitudeM().stripTrailingZeros().toPlainString() + " m");
         }
-        return CheckSupport.pass(ruleCode(), facts, refs, evidence, "目标高度在计划高度带内");
+        return CheckSupport.pass(ruleCode(), facts, refs, evidence, "目标高度在任务高度带内");
     }
 }

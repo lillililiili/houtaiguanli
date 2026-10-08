@@ -30,7 +30,7 @@ public class BusinessReportingService {
         OVERVIEW("综合运行", List.of("targets","alarms","risks","plans","events")),
         DEVICE_OPERATIONS("设备运维", List.of("devices","maintenance")),
         ALARM_RISK("告警与风险", List.of("alarms","risks")),
-        FLIGHT_VERIFICATION("飞行计划与核验", List.of("plans")),
+        FLIGHT_VERIFICATION("飞行任务与核验", List.of("plans")),
         EVENT_DISPOSAL("事件处置", List.of("events","authorizations","handoffs"));
         public final String title;
         public final List<String> keys;

@@ -61,7 +61,7 @@ onBeforeUnmount(() => { sequence++; });
   <section class="page-stack interfaces-page">
     <PageHeader title="接口配置" />
     <div class="interface-choices" role="tablist" aria-label="接口类别">
-      <button type="button" role="tab" :aria-selected="isPlan" :class="{ active: isPlan }" :disabled="saving" @click="select('FLIGHT_PLAN')"><b>飞行计划输入</b><span>外部计划系统</span></button>
+      <button type="button" role="tab" :aria-selected="isPlan" :class="{ active: isPlan }" :disabled="saving" @click="select('FLIGHT_PLAN')"><b>飞行任务输入</b><span>外部任务系统</span></button>
       <button type="button" role="tab" :aria-selected="isWeather" :class="{ active: isWeather }" :disabled="saving" @click="select('WEATHER_FORECAST')"><b>天气预报</b><span>天气预报服务</span></button>
       <button type="button" role="tab" :aria-selected="isMqtt" :class="{ active: isMqtt }" :disabled="saving" @click="select('MQTT')"><b>设备数据连接</b><span>设备上报通道（MQTT）</span></button>
       <button type="button" role="tab" :aria-selected="isVoice" :class="{ active: isVoice }" :disabled="saving" @click="select('VOICE_RECORDING')"><b>电话通知录音</b><span>自动拨打飞手电话时播放</span></button>
@@ -71,7 +71,7 @@ onBeforeUnmount(() => { sequence++; });
     <ErrorAlert v-if="!isOwnPanel" :message="error" @retry="load" />
     <div v-if="!isOwnPanel" v-loading="loading" class="interface-workspace">
       <el-card v-if="config" class="config-card">
-        <template #header><b>{{ isPlan ? '飞行计划输入接口' : '天气预报接口' }}</b></template>
+        <template #header><b>{{ isPlan ? '飞行任务输入接口' : '天气预报接口' }}</b></template>
         <el-form ref="formRef" :model="form" :disabled="!canEdit || saving" label-position="top" class="interface-form">
           <el-form-item label="接口名称" prop="name" :rules="[{required:true, whitespace:true, message:'请输入接口名称'}]"><el-input v-model="form.name" maxlength="128" /></el-form-item>
           <el-form-item v-if="isPlan" label="来源标识"><el-input v-model="form.source_code" maxlength="64" /></el-form-item>
@@ -95,7 +95,7 @@ onBeforeUnmount(() => { sequence++; });
         <template #header><b>接入状态</b></template>
         <el-tag type="warning" effect="plain">{{ ({NOT_CONFIGURED:'未配置', CONNECTED:'已接入', SIMULATED:'历史模拟配置', STALE:'数据待更新'})[config.status] || '待接入' }}</el-tag>
         <dl><dt>服务状态</dt><dd>{{ config.source_mode !== 'live' ? '历史测试配置，不代表正式接入' : config.enabled ? '已启用，连接状态待核验' : '未启用' }}</dd><template v-if="config.updated_at"><dt>配置更新</dt><dd>{{ formatTime(config.updated_at) }}</dd></template></dl>
-        <el-alert :title="config.source_mode === 'mock' ? '历史模拟预报保留来源；保存正式配置不会生成预报。' : (isPlan ? '计划系统及输入协议待确认' : '天气服务商及接口协议待确认')" type="info" :closable="false" />
+        <el-alert :title="config.source_mode === 'mock' ? '历史模拟预报保留来源；保存正式配置不会生成预报。' : (isPlan ? '任务系统及输入协议待确认' : '天气服务商及接口协议待确认')" type="info" :closable="false" />
       </el-card>
     </div>
   </section>

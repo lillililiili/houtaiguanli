@@ -98,13 +98,13 @@ class PlanMatchCheckTest {
         HitDetail detail = check.evaluate(context(match), params);
         assertThat(detail.resultCode()).isEqualTo(ResultCode.FAIL);
         assertThat(detail.facts()).containsEntry("plan_id", "plan-own").containsEntry("match_reason", "TIME_WINDOW_MISMATCH");
-        assertThat(detail.message()).startsWith("不在计划时段").doesNotContain("plan-0other").doesNotContain("TIME_WINDOW_MISMATCH");
+        assertThat(detail.message()).startsWith("不在任务时段").doesNotContain("plan-0other").doesNotContain("TIME_WINDOW_MISMATCH");
         // 时段对上、但离开了本机计划航线：同样挂本机计划，说明不在航线走廊内。
         PlanFact current = plan("plan-own", "rv-own", "SN-1", AS_OF.minusMinutes(30), AS_OF.plusMinutes(30));
         PlanMatch away = check.match(state("SN-1"), List.of(other, current), distances(Map.of("rv-own", 300.0, "rv-other", 10.0)), AS_OF, params);
         assertThat(away.plan().planId()).isEqualTo("plan-own");
         assertThat(away.reasonCodes().get(0)).isEqualTo("CORRIDOR_MISMATCH");
-        assertThat(check.evaluate(context(away), params).message()).startsWith("不在计划航线走廊内");
+        assertThat(check.evaluate(context(away), params).message()).startsWith("不在任务航线走廊内");
     }
 
     @Test
@@ -152,7 +152,7 @@ class PlanMatchCheckTest {
         assertThat(match.code()).isEqualTo(PlanMatchCode.NONE);
         assertThat(match.plan()).isNull();
         assertThat(match.reasonCodes().get(0)).isEqualTo("CORRIDOR_MISMATCH");
-        assertThat(check.evaluate(context(match), params).message()).startsWith("不在任何候选飞行计划的航线走廊内");
+        assertThat(check.evaluate(context(match), params).message()).startsWith("不在任何候选飞行任务的航线走廊内");
     }
 
     @Test
@@ -165,7 +165,7 @@ class PlanMatchCheckTest {
         assertThat(match.reasonCodes()).contains("PLAN_AMBIGUOUS");
         // 页面上的说明用业务话，不出现原因码。
         assertThat(check.evaluate(context(match), params).message())
-                .startsWith("计划匹配不可判定：附近有多个飞行计划都可能对应这架无人机").doesNotContain("PLAN_AMBIGUOUS");
+                .startsWith("任务匹配不可判定：附近有多个飞行任务都可能对应这架无人机").doesNotContain("PLAN_AMBIGUOUS");
     }
 
     @Test
@@ -184,9 +184,9 @@ class PlanMatchCheckTest {
         PlanMatch time = check.match(state("SN-1"), List.of(noTime), distance("rv-t", 10, 50), AS_OF, params);
         assertThat(time.code()).isEqualTo(PlanMatchCode.UNDETERMINED);
         assertThat(time.reasonCodes()).contains("PLAN_TIME_UNKNOWN");
-        assertThat(check.evaluate(context(width), params).message()).startsWith("计划匹配不可判定：候选飞行计划的航线走廊无法确认");
-        assertThat(check.evaluate(context(position), params).message()).startsWith("计划匹配不可判定：目标位置未知");
-        assertThat(check.evaluate(context(time), params).message()).startsWith("计划匹配不可判定：候选飞行计划缺少起止时间");
+        assertThat(check.evaluate(context(width), params).message()).startsWith("任务匹配不可判定：候选飞行任务的航线走廊无法确认");
+        assertThat(check.evaluate(context(position), params).message()).startsWith("任务匹配不可判定：目标位置未知");
+        assertThat(check.evaluate(context(time), params).message()).startsWith("任务匹配不可判定：候选飞行任务缺少起止时间");
     }
 
     @Test

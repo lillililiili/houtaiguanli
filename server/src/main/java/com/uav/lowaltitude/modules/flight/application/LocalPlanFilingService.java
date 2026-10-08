@@ -21,21 +21,21 @@ public class LocalPlanFilingService {
  @Transactional(readOnly=true) public Detail detail(String id){var plan=flights.flightPlan(id);simulated(plan.sourceMode());return new Detail(plan,directory.subjects(id));}
  @Transactional public Map<String,Object> save(String id,long version,Filing data){
   var plan=flights.flightPlan(id);simulated(plan.sourceMode());
-  if(plan.version()!=version)throw conflict("VERSION_CONFLICT","计划已更新，请重新读取后补录");
+  if(plan.version()!=version)throw conflict("VERSION_CONFLICT","任务已更新，请重新读取后补录");
   if((data.takeoffLongitude()==null)!=(data.takeoffLatitude()==null)||(data.landingLongitude()==null)!=(data.landingLatitude()==null))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","起降点经纬度必须成对填写");
   String source=blank(data.sourceId());
-  if(plan.source()!=null&&!Objects.equals(plan.source().sourceId(),source))throw conflict("PLAN_SOURCE_IMMUTABLE","已有计划来源不可替换或清空");
+  if(plan.source()!=null&&!Objects.equals(plan.source().sourceId(),source))throw conflict("PLAN_SOURCE_IMMUTABLE","已有任务来源不可替换或清空");
   validateSource(data);
   var before=directory.subjects(id);
-  if(repository.updateFiling(id,version,data,clock.nowMillis())!=1)throw conflict("VERSION_CONFLICT","计划已更新，请重新读取后补录");
+  if(repository.updateFiling(id,version,data,clock.nowMillis())!=1)throw conflict("VERSION_CONFLICT","任务已更新，请重新读取后补录");
   // Reuse the existing directory authorization and association rules, within this transaction.
   if(blank(data.sourceBindingId())!=null||blank(data.operatorOrgId())!=null||blank(data.pilotContactId())!=null||before.sourceBindingId()!=null||before.operatorOrgId()!=null||before.pilotContactId()!=null)
-   directory.updateSubjects(id,new SubjectInput(blank(data.sourceBindingId()),blank(data.operatorOrgId()),blank(data.pilotContactId()),version+1,"模拟器提交计划资料"),UUID.randomUUID().toString());
+   directory.updateSubjects(id,new SubjectInput(blank(data.sourceBindingId()),blank(data.operatorOrgId()),blank(data.pilotContactId()),version+1,"模拟器提交任务资料"),UUID.randomUUID().toString());
   return Map.of("plan_id",id,"plan_no",plan.planNo(),"source_mode",plan.sourceMode(),"version",flights.flightPlan(id).version());
  }
  public void validateSource(Filing data){
   String source=blank(data.sourceId());
-  if(source!=null&&!repository.sourceAvailable(source))throw conflict("SIMULATION_SOURCE_REQUIRED","请选择已启用的模拟或回放计划来源");
+  if(source!=null&&!repository.sourceAvailable(source))throw conflict("SIMULATION_SOURCE_REQUIRED","请选择已启用的模拟或回放任务来源");
  }
  @Transactional(readOnly=true) public Options options(){
   var warnings=new ArrayList<String>();List<Option> orgs=List.of();List<Pilot> pilots=List.of();List<SourceBinding> bindings=List.of();
@@ -50,7 +50,7 @@ public class LocalPlanFilingService {
   return new Options(sources,orgs,pilots,bindings.stream().filter(b->ids.contains(b.sourceId())).toList(),warnings);
  }
  private static <T> List<T> all(IntFunction<Page<T>> read){var result=new ArrayList<T>();int page=1;while(true){var batch=read.apply(page++);result.addAll(batch.items());if(batch.items().isEmpty()||result.size()>=batch.total())return result;}}
- private static void simulated(String mode){if(!Set.of("mock","replay").contains(mode))throw conflict("SIMULATION_SCOPE_REQUIRED","仅允许补录模拟或回放计划");}
+ private static void simulated(String mode){if(!Set.of("mock","replay").contains(mode))throw conflict("SIMULATION_SCOPE_REQUIRED","仅允许补录模拟或回放任务");}
  private static String blank(String s){return s==null||s.isBlank()?null:s.trim();}
  private static ApiException conflict(String code,String message){return new ApiException(HttpStatus.CONFLICT,code,message);}
 }

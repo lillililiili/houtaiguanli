@@ -69,9 +69,9 @@ public class FlightReadService {
     public FlightPlanDto flightPlan(String planId) {
         AccessDecision access = accessControl.require(PermissionCode.FLIGHT_READ);
         PlanRow row = repository.findPlan(pathId(planId), access);
-        if (row == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在");
+        if (row == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在");
         var filing = repository.findFiling(row.planId(), access);
-        if (filing == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在");
+        if (filing == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在");
         return plan(row, new PlanFilingDto(filing.pilotName(),filing.operatorName(),filing.takeoffSiteName(),filing.landingSiteName(),
             filing.takeoffLongitude(),filing.takeoffLatitude(),filing.landingLongitude(),filing.landingLatitude()));
     }

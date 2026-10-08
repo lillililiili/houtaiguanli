@@ -213,7 +213,7 @@ public class LegalityReviewService {
         RunMode mode = RunMode.valueOf(modeText);
         access.require(LegalityEvaluationReadService.subjectRead(kind));
         boolean visible = "PLAN".equals(kind) ? evaluations.planVisible(subjectId, null, null, readAccess) : evaluations.targetVisible(subjectId, null, null, readAccess);
-        if (!visible) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "PLAN".equals(kind) ? "飞行计划不存在" : "目标不存在");
+        if (!visible) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "PLAN".equals(kind) ? "飞行任务不存在" : "目标不存在");
         idempotency.claim(idempotencyKey, stable("legality-evaluate", subjectId, kind, modeText, "", 0));
         RuleSetRow set = engine.ruleSetsWithVersions().stream()
                 .filter(row -> mode == RunMode.ACTIVE ? row.activeVersionId() != null : row.shadowVersionId() != null).findFirst().orElse(null);

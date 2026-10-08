@@ -144,7 +144,7 @@ class C02ChecksTest {
         assertThat(night.reasonCode()).isEqualTo("NIGHT_FLIGHT");
         assertThat(night.ruleCode()).isEqualTo("C02-5");
         assertThat(night.facts()).containsEntry("local_hour", 21);
-        assertThat(night.message()).contains("处于夜航时段", "没有匹配上的飞行计划");
+        assertThat(night.message()).contains("处于夜航时段", "没有匹配上的飞行任务");
         assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
         assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
     }
@@ -160,7 +160,7 @@ class C02ChecksTest {
         assertThat(covered.reasonCode()).isNull();
         assertThat(covered.facts()).containsEntry("plan_id", "p-1").containsEntry("local_hour", 21);
         assertThat(covered.evidence()).anyMatch(ref -> "flight_plan".equals(ref.kind()) && "p-1".equals(ref.id()));
-        assertThat(covered.message()).contains("已匹配上飞行计划");
+        assertThat(covered.message()).contains("已匹配上飞行任务");
         // 身份线索缺失的 PARTIAL 同样是已匹配的计划。
         assertThat(check.evaluate(context(state(), new PlanMatch(PlanMatchCode.PARTIAL, evening, Map.of(), List.of("IDENTITY_CLUE_MISSING")), List.of(), night), params)
                 .resultCode()).isEqualTo(ResultCode.PASS);
@@ -172,7 +172,7 @@ class C02ChecksTest {
                 List.of("TIME_WINDOW_MISMATCH")), List.of(), night), params);
         assertThat(outside.resultCode()).isEqualTo(ResultCode.FAIL);
         assertThat(outside.reasonCode()).isEqualTo("NIGHT_FLIGHT");
-        assertThat(outside.message()).contains("已超出本机飞行计划的计划时段或航线");
+        assertThat(outside.message()).contains("已超出本机飞行任务的时段或航线");
         assertThat(outside.facts()).doesNotContainKey("plan_id");
         assertThat(check.evaluate(context(state(), new PlanMatch(PlanMatchCode.UNDETERMINED, null, Map.of(), List.of("PLAN_AMBIGUOUS")), List.of(), night), params)
                 .resultCode()).isEqualTo(ResultCode.FAIL);

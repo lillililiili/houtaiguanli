@@ -50,8 +50,8 @@ public final class CsvLabels {
     private static final Map<String, String> VIOLATION_REASON = Map.of(
             "NO_AUTHORIZATION", "无飞行授权", "INSIDE_RESTRICTED_AIRSPACE", "进入禁飞/限制空域",
             "AIRSPACE_ALTITUDE_EXCEEDED", "超过空域限高", "TEMPORARY_RESTRICTION_ACTIVE", "临时管制生效中",
-            "ROUTE_DEVIATION", "偏航（偏离报备航线）", "TIME_WINDOW_OVERRUN", "超出计划时间窗",
-            "PLAN_ALTITUDE_EXCEEDED", "超出计划高度带", "NIGHT_FLIGHT", "夜间飞行", "BVLOS_EXCEEDED", "超出目视视距");
+            "ROUTE_DEVIATION", "偏航（偏离报备航线）", "TIME_WINDOW_OVERRUN", "超出任务时间窗",
+            "PLAN_ALTITUDE_EXCEEDED", "超出任务高度带", "NIGHT_FLIGHT", "夜间飞行", "BVLOS_EXCEEDED", "超出目视视距");
 
     public static String severity(String code) { return label(SEVERITY, code); }
 

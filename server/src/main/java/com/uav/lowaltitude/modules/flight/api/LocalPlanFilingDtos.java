@@ -8,7 +8,7 @@ import com.uav.lowaltitude.modules.directory.api.DirectoryDtos.*;
 
 public final class LocalPlanFilingDtos {
  public static final String SIMULATOR_SOURCE_ID="local-flight-plan-simulator";
- public static final String SIMULATOR_SOURCE_NAME="数据模拟器（飞行计划）";
+ public static final String SIMULATOR_SOURCE_NAME="数据模拟器（飞行任务）";
  private LocalPlanFilingDtos() { }
  public record Filing(@Size(max=36) String sourceId,
   @Size(max=128) String operatorName,@Size(max=128) String pilotName,

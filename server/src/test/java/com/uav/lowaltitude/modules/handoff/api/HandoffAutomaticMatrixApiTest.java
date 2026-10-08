@@ -147,7 +147,7 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
         assertThat(waiting.path("auto_handoff").path("status").asText()).isEqualTo("MANUAL_REQUIRED");
         assertThat(waiting.path("auto_handoff").path("reason").asText()).contains("2 个处罚接收单位");
         assertThat(waiting.path("auto_handoff").path("party_status").asText()).isEqualTo("UNIDENTIFIED");
-        assertThat(waiting.path("auto_handoff").path("party_reasons").toString()).contains("报备计划");
+        assertThat(waiting.path("auto_handoff").path("party_reasons").toString()).contains("报备任务");
         assertThat(waiting.path("can_handoff").asBoolean()).isTrue();
         String id = body(submit(submitter, eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
         assertThat(jdbc.queryForObject("select recipient_id from handoff where handoff_id=?", String.class, id)).isEqualTo(chosen);

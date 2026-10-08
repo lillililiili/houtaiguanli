@@ -31,7 +31,7 @@ async function chooseRadio(text) {
 beforeEach(() => {
   vi.clearAllMocks();
   permissions.codes = new Set(['interfaces.read', 'interfaces.op']);
-  externalInterfacesApi.get.mockImplementation(async kind => ({ kind, name: '计划接口', source_mode: 'live', version: 0, status: 'NOT_CONFIGURED', enabled: false }));
+  externalInterfacesApi.get.mockImplementation(async kind => ({ kind, name: '任务接口', source_mode: 'live', version: 0, status: 'NOT_CONFIGURED', enabled: false }));
   mqttApi.list.mockResolvedValue([]);
   mqttApi.capabilities.mockResolvedValue(TEST_ENV);
   mqttApi.scopes.mockResolvedValue([{ org_id: 'org1', org_name: '平台单位', district_id: 'd1', district_name: '东营区' }]);

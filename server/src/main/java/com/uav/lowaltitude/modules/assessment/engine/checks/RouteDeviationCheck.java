@@ -35,7 +35,7 @@ public class RouteDeviationCheck implements RuleCheck {
         BigDecimal tolerance = params.number(ruleCode(), PARAM_TOLERANCE_M);
         List<ParamRef> refs = List.of(CheckSupport.number(params, ruleCode(), PARAM_TOLERANCE_M));
         PlanFact plan = context.planMatch() == null ? null : context.planMatch().plan();
-        if (plan == null) return CheckSupport.notApplicable(ruleCode(), RuleCodes.NO_PLAN, refs, "没有匹配到飞行计划，航线偏离不适用");
+        if (plan == null) return CheckSupport.notApplicable(ruleCode(), RuleCodes.NO_PLAN, refs, "没有匹配到飞行任务，航线偏离不适用");
         Map<String, Object> facts = CheckSupport.facts();
         facts.put("plan_id", plan.planId());
         facts.put("route_version_id", plan.routeVersionId());

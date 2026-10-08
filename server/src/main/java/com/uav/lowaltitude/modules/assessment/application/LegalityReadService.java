@@ -59,6 +59,6 @@ public class LegalityReadService {
         int page = integer(parameters, "page", 1); int size = integer(parameters, "size", 20); if (page < 1 || size < 1 || size > 100) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "分页参数无效"); return new Page(page, size);
     }
     private static int integer(MultiValueMap<String, String> parameters, String key, int fallback) { if (!parameters.containsKey(key)) return fallback; List<String> values = parameters.get(key); try { if (values == null || values.size() != 1 || values.get(0).isBlank()) throw new NumberFormatException(); return Integer.parseInt(values.get(0)); } catch (RuntimeException ex) { throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "分页参数无效"); } }
-    private static ApiException notFound() { return new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行计划不存在"); }
+    private static ApiException notFound() { return new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在"); }
     private record Page(int page, int size) { int offset() { try { return Math.multiplyExact(page - 1, size); } catch (ArithmeticException ex) { throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_PAGE", "分页参数无效"); } } }
 }

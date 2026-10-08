@@ -52,7 +52,7 @@ public class CurrentRiskReadService {
         var scope=access.require(PermissionCode.RISK_READ);
         access.require(PermissionCode.FLIGHT_READ);
         if(values.keySet().stream().anyMatch(key -> !PARAMETERS.contains(key)))
-            throw RiskReadService.Request.invalid("当前风险查询只支持计划、分页和样例筛选");
+            throw RiskReadService.Request.invalid("当前风险查询只支持任务、分页和样例筛选");
         var request=new RiskReadService.Request(values);
         String plan=RiskReadService.id(request.optional("plan_id",36));
         var page=request.page();

@@ -79,7 +79,7 @@ public class RiskPresenceService {
                 ?"模拟风险尚无有效的持续或解除依据，当前影响待确认"
                 :"回放风险缺少独立的有效评估时钟，不能用当前时间确认解除");
         if(!Set.of("live","mock").contains(row.sourceMode())||!risks.targetReferenceVisible(row)||!risks.planReferenceVisible(row)||!risks.routeReferenceVisible(row))
-            return blocked("原目标、计划或航线关联范围不可确认");
+            return blocked("原目标、任务或航线关联范围不可确认");
         var fact=spatial.findFact(row.riskId());
         var fresh=spatial.activeRuleSetVersion("LEGALITY-DEMO");
         if(fact==null||fresh==null)return blocked("缺少原风险规则或当前观测有效策略");
@@ -105,7 +105,7 @@ public class RiskPresenceService {
             if(!p.sourceScopeValid()||!row.sourceMode().equals(p.targetMode())||!row.sourceMode().equals(p.sourceMode())
                     ||(p.observationMode()!=null&&!row.sourceMode().equals(p.observationMode()))
                     ||!geometryMode(row.sourceMode(),p.planMode())||!geometryMode(row.sourceMode(),p.routeMode()))
-                return blocked("位置来源或计划航线模式不匹配，不能串用模拟与实际依据");
+                return blocked("位置来源或任务航线模式不匹配，不能串用模拟与实际依据");
             if(p.sourceObservedAt()==null||p.sourceReceivedAt()==null)return blocked("位置缺少可追溯的原始来源观测");
             long sourceObserved=p.sourceObservedAt().toInstant().toEpochMilli(),sourceReceived=p.sourceReceivedAt().toInstant().toEpochMilli();
             if(sourceObserved<=originalAt||sourceReceived<sourceObserved||now-sourceObserved>seconds*1000L

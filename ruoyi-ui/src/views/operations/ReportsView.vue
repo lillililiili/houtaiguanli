@@ -14,7 +14,7 @@ const categories = [
   { value: 'OVERVIEW', label: '综合运行', description: '目标、告警、风险与飞行活动的整体概览' },
   { value: 'DEVICE_OPERATIONS', label: '设备运维', description: '设备当前状态与周期内运维待办' },
   { value: 'ALARM_RISK', label: '告警与风险', description: '告警和风险独立统计，关注等级与处理进展' },
-  { value: 'FLIGHT_VERIFICATION', label: '飞行计划与核验', description: '计划执行状态与最新核验结果' },
+  { value: 'FLIGHT_VERIFICATION', label: '飞行任务与核验', description: '任务执行状态与最新核验结果' },
   { value: 'EVENT_DISPOSAL', label: '事件处置', description: '事件、处置授权、执行结果与交接记录' }
 ];
 const periods = [{ value: 'DAILY', label: '日报' }, { value: 'WEEKLY', label: '周报' }, { value: 'MONTHLY', label: '月报' }];

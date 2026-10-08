@@ -228,8 +228,8 @@ public class LegalityEvaluationService {
             return new Resolved(full, target.targetId(), target.uavSn(), null, null, null, target.ownerOrgId(), target.districtId(), target.sourceMode());
         }
         PlanFact plan = repository.planSubject(subject.subjectId().trim());
-        if (plan == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "飞行计划不存在: " + subject.subjectId());
-        if (plan.ownerOrgId() == null || plan.districtId() == null) throw new IllegalStateException("计划缺少组织/区域归属，不能研判: " + plan.planId());
+        if (plan == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "飞行任务不存在: " + subject.subjectId());
+        if (plan.ownerOrgId() == null || plan.districtId() == null) throw new IllegalStateException("任务缺少组织/区域归属，不能研判: " + plan.planId());
         TargetRow target = plan.uavSn() == null ? null : repository.latestTargetBySn(plan.uavSn(), plan.ownerOrgId(), plan.districtId());
         String sourceMode = target == null ? repository.planSourceMode(plan.planId()) : target.sourceMode();
         Subject full = new Subject(SubjectKind.PLAN, plan.planId(), plan.ownerOrgId(), plan.districtId(), sourceMode);

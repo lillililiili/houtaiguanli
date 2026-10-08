@@ -71,13 +71,13 @@ public class LocalQaNotificationService {
             else if(!"LINKED".equals(subjects.associationStatus()))throw conflict("请先关联有效飞手、运营单位和报送单位");
         } else {
             org="PLAN_FEEDBACK".equals(purpose)?subjects.reportingOrgId():subjects.operatorOrgId();
-            if(org==null||input.contactId()==null)throw bad("请先关联计划单位并指定对应业务联系人");
+            if(org==null||input.contactId()==null)throw bad("请先关联任务单位并指定对应业务联系人");
             directory.organization(org);var c=directory.contact(input.contactId());
             String requiredRole=switch(purpose){case "PLAN_FEEDBACK"->"PLAN_LIAISON";case "DEVICE_MAINTENANCE"->"MAINTENANCE";default->"UNIT_LIAISON";};
             if(!org.equals(c.orgId())||!c.roles().contains(requiredRole)||!c.enabled()||(c.validUntil()!=null&&c.validUntil()<=clock.nowMillis()))
                 throw conflict("联系人归属、业务角色或有效期不符合通知用途");
             contact=c.contactId();binding="PLAN_FEEDBACK".equals(purpose)?subjects.sourceBindingId():null;
-            if(binding!=null&&!repo.bindingSourceEnabled(binding))throw conflict("计划报送来源关联不可用");
+            if(binding!=null&&!repo.bindingSourceEnabled(binding))throw conflict("任务报送来源关联不可用");
             route=purpose+":"+(binding==null?org:binding);
             id=UUID.nameUUIDFromBytes((ENDPOINT+":"+route).getBytes(StandardCharsets.UTF_8)).toString();
             if("PLAN_FEEDBACK".equals(purpose)) {

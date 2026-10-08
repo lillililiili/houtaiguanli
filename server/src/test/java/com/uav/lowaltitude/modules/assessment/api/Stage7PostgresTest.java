@@ -815,7 +815,7 @@ class Stage7PostgresTest {
             assertThat(jdbc.queryForObject("select conclusion_code from assessment_result where assessment_id=? and evaluation_id=?", String.class, row.get("assessment_id"), evaluationId))
                     .isEqualTo(scenario.legalStatus());
         } else {
-            assertThat(row.get("assessment_id")).as(code + " 无计划不投影").isNull();
+            assertThat(row.get("assessment_id")).as(code + " 无任务不投影").isNull();
         }
         assertThat(jdbc.queryForObject("select review_state||'/'||version||'/'||owner_org_id||'/'||district_id from legality_review where evaluation_id=?", String.class, evaluationId))
                 .as(code + " 复核行").isEqualTo("PENDING_REVIEW/0/" + row.get("owner_org_id") + "/" + row.get("district_id"));

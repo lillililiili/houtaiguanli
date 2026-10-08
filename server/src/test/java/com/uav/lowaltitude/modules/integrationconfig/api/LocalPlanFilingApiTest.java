@@ -16,7 +16,7 @@ class LocalPlanFilingApiTest extends LocalInterfaceSimulatorApiTest {
   read(BASE+"/plan-options");assertThat(jdbc.queryForObject("select count(*) from integration_source",Long.class)).isEqualTo(count);
   var data=filing(false);data.put("source_id",source);var body=plan("dedicated-source");body.put("filing",data);
   String id=send("/plans",body,200).path("subject_id").asText();
-  assertThat(read("/api/v1/flight-plans/"+id).path("source").path("source_name").asText()).isEqualTo("数据模拟器（飞行计划）");
+  assertThat(read("/api/v1/flight-plans/"+id).path("source").path("source_name").asText()).isEqualTo("数据模拟器（飞行任务）");
   jdbc.update("update integration_source set enabled=false where source_id=?",source);
   body.put("message_id","disabled-dedicated-source");send("/plans",body,409);
   assertThat(jdbc.queryForObject("select enabled from integration_source where source_id=?",Boolean.class,source)).isFalse();
