@@ -21,7 +21,10 @@ public class VideoMediaClient {
     private static final int MAX_BYTES = 8 * 1024 * 1024;
     private final URI apiOrigin, hlsOrigin;
     private final ObjectMapper json;
-    private final String authorization;
+    private final String authorization, username;
+    private final java.nio.file.Path passwordFile;
+    private String fileAuthorization;
+    private long fileModified = Long.MIN_VALUE;
     private final AppClock clock;
     private final java.util.Map<String, PlaybackSession> playbackSessions = new java.util.LinkedHashMap<>();
     private record PlaybackSession(String path, String upstream, long expiresAt) { }
@@ -31,13 +34,30 @@ public class VideoMediaClient {
             @Value("${app.video.media-api-origin:http://127.0.0.1:9997}") String api,
             @Value("${app.video.media-hls-origin:http://127.0.0.1:8888}") String hls,
             @Value("${app.video.media-username:qa-platform}") String username,
-            @Value("${app.video.media-password:}") String password, AppClock clock) {
+            @Value("${app.video.media-password:}") String password,
+            @Value("${app.video.media-password-file:}") String passwordFile, AppClock clock) {
         this.json = json; apiOrigin = origin(api); hlsOrigin = origin(hls);
-        this.clock = clock;
-        authorization = password.isEmpty() ? null : "Basic " + java.util.Base64.getEncoder()
-                .encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
+        this.clock = clock; this.username = username;
+        authorization = password.isEmpty() ? null : basic(username, password);
+        this.passwordFile = password.isEmpty() && !passwordFile.isBlank() ? java.nio.file.Path.of(passwordFile) : null;
     }
-    public VideoMediaClient(ObjectMapper json,String api,String hls) {this(json,api,hls,"","",new AppClock());}
+    public VideoMediaClient(ObjectMapper json,String api,String hls) {this(json,api,hls,"","","",new AppClock());}
+    private static String basic(String username, String password) {
+        return "Basic " + java.util.Base64.getEncoder().encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
+    }
+    /** Local QA only: the device simulator's one-click video writes the read password into an owner-only file. */
+    private synchronized String authorization() {
+        if (authorization != null || passwordFile == null) return authorization;
+        try {
+            long modified = java.nio.file.Files.getLastModifiedTime(passwordFile).toMillis();
+            if (modified != fileModified) {
+                String read = json.readTree(passwordFile.toFile()).path("read").asText("");
+                fileAuthorization = read.matches("[A-Za-z0-9_-]{24,128}") ? basic(username, read) : null;
+                fileModified = modified;
+            }
+        } catch (IOException e) { fileAuthorization = null; fileModified = Long.MIN_VALUE; }
+        return fileAuthorization;
+    }
     private static URI origin(String value) {
         URI uri = URI.create(value);
         if (!java.util.Set.of("http", "https").contains(uri.getScheme()) || uri.getHost() == null
@@ -72,7 +92,8 @@ public class VideoMediaClient {
         HttpURLConnection connection = (HttpURLConnection) uri.toURL().openConnection();
         connection.setConnectTimeout(2000); connection.setReadTimeout(5000);
         connection.setInstanceFollowRedirects(false);
-        if (authorization != null) connection.setRequestProperty("Authorization", authorization);
+        String credentials = authorization();
+        if (credentials != null) connection.setRequestProperty("Authorization", credentials);
         try {
             int status = connection.getResponseCode();
             if (status != 200) throw unavailable();

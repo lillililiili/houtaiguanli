@@ -54,11 +54,31 @@ class VideoMediaClientTest {
             assertThat(media.ready(PATH)).isFalse();assertThatThrownBy(()->media.resource(PATH,"index.m3u8")).hasMessageContaining("暂不可用");
         }
     }
+    @Test void readPasswordComesFromSimulatorCredentialsFileAndFollowsItsChanges(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        var file=directory.resolve("qa-video-credentials.json");
+        String first="a".repeat(32), second="b".repeat(32);
+        try(var server=new MediaStub(false)) {
+            var media=new VideoMediaClient(new ObjectMapper(),server.origin(),server.origin(),"qa-platform","",file.toString(),new com.uav.lowaltitude.platform.time.AppClock());
+            media.ready(PATH);
+            assertThat(server.lastAuthorization).as("no file yet: anonymous, media denies").isNull();
+            java.nio.file.Files.writeString(file,"{\"publish\":\""+"p".repeat(32)+"\",\"read\":\""+first+"\"}");
+            media.ready(PATH);
+            assertThat(server.lastAuthorization).isEqualTo(basic("qa-platform:"+first));
+            java.nio.file.Files.writeString(file,"{\"publish\":\""+"p".repeat(32)+"\",\"read\":\""+second+"\"}");
+            java.nio.file.Files.setLastModifiedTime(file,java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()+5000));
+            media.ready(PATH);
+            assertThat(server.lastAuthorization).isEqualTo(basic("qa-platform:"+second));
+            var configured=new VideoMediaClient(new ObjectMapper(),server.origin(),server.origin(),"qa-platform","c".repeat(32),file.toString(),new com.uav.lowaltitude.platform.time.AppClock());
+            configured.ready(PATH);
+            assertThat(server.lastAuthorization).as("explicit password wins over the file").isEqualTo(basic("qa-platform:"+"c".repeat(32)));
+        }
+    }
+    private static String basic(String value){return "Basic "+java.util.Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));}
     // Blocking socket avoids the Windows JDK17 AF_UNIX selector pipe dependency in HttpServer.
     private static class MediaStub implements AutoCloseable {
         private final ServerSocket socket;
         private final Thread worker;
-        volatile String lastRequest;
+        volatile String lastRequest, lastAuthorization;
         MediaStub(boolean redirect) throws Exception { this(redirect,false); }
         MediaStub(boolean redirect,boolean bootstrap) throws Exception {
             socket=new ServerSocket(0,8,InetAddress.getByName("127.0.0.1"));
@@ -68,8 +88,9 @@ class VideoMediaClientTest {
                         connection.setSoTimeout(2000);
                         var reader=new BufferedReader(new InputStreamReader(connection.getInputStream(),StandardCharsets.US_ASCII));
                         String request=reader.readLine(),header;
-                        lastRequest=request;
-                        while((header=reader.readLine())!=null&&!header.isEmpty()) { }
+                        lastRequest=request;lastAuthorization=null;
+                        while((header=reader.readLine())!=null&&!header.isEmpty())
+                            if(header.regionMatches(true,0,"Authorization:",0,14)) lastAuthorization=header.substring(14).trim();
                         String content=request!=null&&request.contains("/safe.m3u8")
                                 ? "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\nseg1.mp4\n"
                                 : "#EXTM3U\nhttp://attacker.invalid/stolen.ts\n";
