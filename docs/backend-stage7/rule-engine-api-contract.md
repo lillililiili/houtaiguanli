@@ -75,7 +75,7 @@
 | --- | --- | --- | --- |
 | C02-1 禁飞空域 | kind ∈ `C02-1.kinds`；`ST_Touches` → 未知优先；`ST_Covers` 且（无高度带 或 目标同基准高度在带内） | `INSIDE_RESTRICTED_AIRSPACE` | `BOUNDARY_POLICY_UNKNOWN`、`POSITION_UNKNOWN`、`ALTITUDE_DATUM_OR_RANGE_UNKNOWN`、`VERSION_AMBIGUOUS` |
 | C02-2 空域限高 | kind ∈ `C02-2.kinds` 水平覆盖；目标高度按 `airspace_version.altitude_datum` 取 `altitude_amsl_m` 或 `height_agl_m` | `AIRSPACE_ALTITUDE_EXCEEDED` | 同上 |
-| C02-3 航线偏离 | 距中心线 − 半宽 > `C02-3.tolerance_m` | `ROUTE_DEVIATION` | `CORRIDOR_WIDTH_UNKNOWN`、`POSITION_UNKNOWN`；无计划 NOT_APPLICABLE |
+| C02-3 航线偏离 | 距中心线 − 半宽 > `C02-3.tolerance_m` | `ROUTE_DEVIATION` | `CORRIDOR_WIDTH_UNKNOWN`、`POSITION_UNKNOWN`；无计划 NOT_APPLICABLE；C01 为 NONE 时即使挂着本机计划也 NOT_APPLICABLE（2026-10-08 新-15） |
 | C02-4 时间窗 | `as_of ≥ end_at + C02-4.grace_min` 或 `< start_at − grace` | `TIME_WINDOW_OVERRUN` | `PLAN_TIME_UNKNOWN`；无计划 NOT_APPLICABLE |
 | C02-5 夜航 | `C02-5.timezone` 本地时 ∈ [`night_from`, 24) ∪ [0, `night_to`)，且 C01 没有匹配上计划（FULL/PARTIAL 即已在计划时段内，容差与白天同为 `C01.time_window_min`；超时另由 C02-4 判）；按规定无需申请的飞行（新-28）夜间 PASS | `NIGHT_FLIGHT` | — |
 | C02-6 飞手距离（原超视距） | 只作提示、不判违规（2026-10-08 新-29）：目标与飞手位置距离 > `C02-6.vlos_m` 时仍 PASS，`facts` 加 `beyond_vlos=true`、`vlos_m`、`pilot_distance_note`，`message` 为 `飞手离无人机约 X 米（超过 {vlos_m} 米），是否经批准请核实`（X 四舍五入到米，精确值在 `facts.distance_m`） | —（10-07 至新-29 之前的研判里是 `BVLOS_EXCEEDED`） | 目标位置缺失 `POSITION_UNKNOWN`（不挡结论）；无飞手位置为 NOT_APPLICABLE（`PILOT_POSITION_UNAVAILABLE`，不进未知原因） |
@@ -93,7 +93,7 @@
 
 C02-6（飞手距离）不参与结论：超过阈值只在明细里提示“是否经批准请核实”，它判不清也不挡 `LEGAL`，任何规则集版本都一样（2026-10-08 新-29，取代 2026-10-07 的“单独超视距判非法、固定低风险”第 6 步，见文末）。
 
-`violation_reasons` = 全部 FAIL 原因码；评分仅 ILLEGAL/ABNORMAL：`score = 100·Σ w_k·F_k`（因子：最大违规严重度 `C03.severity.<reason>`、计划匹配 NONE 1/PARTIAL、UNDETERMINED .5/FULL 0、限制空域命中 1/0、轨迹桥接 .6/0、`1 − confidence`），`grade` 按 `C03.grade.high/medium`。
+`violation_reasons` = 全部 FAIL 原因码；评分仅 ILLEGAL/ABNORMAL：`score = 100·Σ w_k·F_k`（因子：最大违规严重度 `C03.severity.<reason>`、计划匹配 NONE 1/PARTIAL、UNDETERMINED .5/FULL 0、限制空域命中 1/0、轨迹桥接 .6/0、`1 − confidence`），`grade` 按 `C03.grade.high/medium`；违规里有 `INSIDE_RESTRICTED_AIRSPACE`（进禁飞区、管制区）时固定 `HIGH`，不看加权分数，分数照常给出（2026-10-08 新-22，见文末）。
 
 ### 模式、回滚、重算、C06
 
@@ -284,3 +284,15 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 - 目标列表与详情的 `legality_summary` 新增可选字段 `pilot_distance_note`：取最近一次研判 C02-6 `facts.pilot_distance_note`，没有这句时整项省略。页面在合法性研判页、告警详情和目标详情（“遥控器位置”后面）显示它。
 - 以前因超视距出的告警和研判原样保留；`BVLOS_EXCEEDED` 原因码、告警筛选项和导出中文名留给这些旧数据。`UavAdvisoryRules.noBlockingUnknowns` 照旧放行未知原因里只有 `PILOT_POSITION_UNAVAILABLE` 的旧研判（新-19）。
 - 验证：`C02ChecksTest`、`C03DecisionTest`、`DecisionAssuranceAlgorithmTest`、`LegalityEvaluationServiceTest`、`TargetSummariesApiTest`，端到端 `PilotDistanceNoteFlowTest`（H2）与 `PilotDistanceNoteFlowPostgresTest`（PostgreSQL/PostGIS，由原 `BvlosLowAlarmFlow*` 改写）：有任务按航线飞、飞手 501/800/3000 米外判 `LEGAL`、不告警、明细带提示；499 米与没有飞手位置不带提示；与禁飞区、无授权、偏航同时出现时结论、分数、等级、告警等级与没有飞手位置的同类目标逐项一致。
+
+### 2026-10-08 进禁飞区、管制区不管有没有任务都定高风险（确认书 2-12，新-22）
+
+- 业务决定：对上报备任务的无人机进禁飞区时计划因子为 0，加权分只有约 55（中风险），比超时飞行还低，自动反制只对高风险，流程 1 跑不通。现在 C03 评分后，违规里有 `INSIDE_RESTRICTED_AIRSPACE`（C02-1：禁飞区、管制区）就定为 `HIGH`，不看加权分数；分数照常给出供页面参考。限高（`AIRSPACE_ALTITUDE_EXCEEDED`）、临管（`TEMPORARY_RESTRICTION_ACTIVE`）仍按分数定级。
+- 写在 `C03Decision` 里，已发布的规则集版本不重新发布、不加参数也按此执行；已有研判和告警不动。
+- 验证：`C03DecisionTest.restrictedAirspaceIsHighEvenWhenTheDroneMatchesItsTask`（对上任务 55 分 → HIGH；超时飞行 LOW；限高、临管 MEDIUM；无任务 80 分 HIGH 不变）。
+
+### 2026-10-08 对不上任务时不再比偏航（验收预跑 2-1，新-15）
+
+- C01 判“对不上任务”（NONE）时，若有同编号的本机计划会挂在匹配结果里，只作超时、任务高度的参考；C02-3 不再拿它比偏航，记 `NOT_APPLICABLE`，违规原因只写无飞行授权（`NO_AUTHORIZATION`）。分数、等级、主原因不变：NONE 时无飞行授权（严重度 0.8）本来就比偏航（0.6）大。
+- 演示规则集 C01 走廊容差 100 米、C02-3 偏航容差 20 米：走廊外 20～100 米仍对得上任务，照常判偏航（确认书 2-6）；100 米以外才对不上任务，只判无飞行授权（确认书 2-1）。
+- 验证：`C02ChecksTest`、`C03DecisionTest` 对应用例。
