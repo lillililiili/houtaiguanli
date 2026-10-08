@@ -63,6 +63,27 @@ public class LegalityEvaluationReadRepository {
                         rs.getLong("illegal"), rs.getLong("undetermined"), rs.getLong("not_applicable")));
     }
 
+    /** 合法性研判页“全部无人机”那份取数：正式模式、每架无人机只取最新一次、按当前类别只看无人机。 */
+    public static final EvaluationQuery PAGE_LATEST_UAV = new EvaluationQuery("ACTIVE", true, null, null, null, null, null, null,
+            null, null, null, null, null, "UAV", null);
+
+    /**
+     * 合法性研判页“全部无人机”给这些目标的结论（目标 → 研判编号和结论），与页面列表、汇总同一条件、同一范围
+     * （2026-10-08 新-2 第 3 点）。运行统计和大屏的非法目标数按它数，研判页选“全部”时的非法数就是统计里的非法目标数。
+     */
+    public Map<String, LatestLegality> latestOnPage(List<String> targetIds, AccessDecision access) {
+        Map<String, LatestLegality> result = new HashMap<>();
+        if (targetIds.isEmpty()) return result;
+        Where where = where(PAGE_LATEST_UAV, access);
+        where.sql.append(" AND e.target_id IN (:page_target_ids)");
+        where.parameters.put("page_target_ids", targetIds);
+        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status" + from() + where.sql, where.parameters,
+                rs -> { result.put(rs.getString("target_id"), new LatestLegality(rs.getString("evaluation_id"), rs.getString("legal_status"))); });
+        return result;
+    }
+
+    public record LatestLegality(String evaluationId, String legalStatus) { }
+
     public List<EvaluationRow> list(EvaluationQuery query, AccessDecision access, int offset, int size) {
         Where where = where(query, access);
         where.parameters.put("offset", offset); where.parameters.put("size", size);

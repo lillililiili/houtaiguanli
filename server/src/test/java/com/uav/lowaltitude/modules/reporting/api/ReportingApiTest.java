@@ -267,6 +267,44 @@ class ReportingApiTest {
     }
 
     /**
+     * 2026-10-08 新-2 第 3 点：每架无人机取哪一次研判，和合法性研判页一模一样——只看正式模式，按研判时间取最新。
+     * 原先取任何模式里最后写入的一条：影子模式后写的“合法”、写入晚但研判时间早的“合法”，都让统计少算非法。
+     */
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void latestConclusionPerDroneIsTheLegalityPagesOne() throws Exception {
+        String token=login("admin1","changeme");
+        String org=UUID.randomUUID().toString(), district="seed-stage3-district";
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",org,org,"统计口径-最新研判");
+        var at=java.time.OffsetDateTime.parse("2008-01-01T00:00:00+08:00");
+        for(String mode:java.util.List.of("ACTIVE","SHADOW"))
+            jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) select ?,v.rule_set_id,v.rule_set_version_id,?,'MANUAL',?,?,'DONE',2,2,0,0,'replay',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only","stats-latest-run-"+mode,mode,at,at,at);
+        for(String id:java.util.List.of("stats-latest-shadow","stats-latest-order"))
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','replay',?,?,?,?)",id,id,at,at,org,district,at,at);
+        // 目标 1：正式模式判非法，之后影子模式又判了一次合法。研判页只看正式模式。
+        evaluation("stats-latest-shadow-active","ACTIVE","stats-latest-shadow","ILLEGAL",at.plusMinutes(1),at.plusMinutes(1),org,district);
+        evaluation("stats-latest-shadow-shadow","SHADOW","stats-latest-shadow","LEGAL",at.plusMinutes(2),at.plusMinutes(2),org,district);
+        // 目标 2：研判时间较晚的是非法；研判时间较早的合法那条写入得更晚（比如重算补写）。研判页按研判时间取最新。
+        evaluation("stats-latest-order-illegal","ACTIVE","stats-latest-order","ILLEGAL",at.plusMinutes(5),at.plusMinutes(3),org,district);
+        evaluation("stats-latest-order-legal","ACTIVE","stats-latest-order","LEGAL",at.plusMinutes(4),at.plusMinutes(6),org,district);
+        JsonNode page=data(mvc.perform(get("/api/v1/legality-evaluations/summary").param("mode","ACTIVE").param("latest_only","true")
+                .param("object_type_code","UAV").param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        JsonNode stats=data(mvc.perform(get("/api/v1/stats/operations").param("from","2008-01-01").param("to","2008-01-01")
+                .param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(page.path("illegal").asInt()).isEqualTo(2);
+        assertThat(stats.path("summary").path("illegal").asInt()).isEqualTo(page.path("illegal").asInt());
+        assertThat(stats.path("days").get(0).path("illegal").asInt()).isEqualTo(2);
+        assertThat(stats.path("availability").path("illegal").path("reason").asText()).contains("合法性研判页");
+    }
+
+    private void evaluation(String id,String mode,String target,String legal,java.time.OffsetDateTime evaluatedAt,java.time.OffsetDateTime createdAt,String org,String district) {
+        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons) select ?,r.run_id,r.rule_set_version_id,?,'TARGET',?,r.as_of,?,'FRESH','FULL',?,?,?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,'replay',?,'legality-assurance-v1','SUFFICIENT',CAST('[]' AS JSON) from rule_run r where r.run_id=?",
+                id,mode,target,evaluatedAt,legal,"LEGAL".equals(legal)?null:60,"LEGAL".equals(legal)?null:"HIGH",org,district,createdAt,"stats-latest-run-"+mode);
+    }
+
+    /**
      * ZT-17 复测 2：被合并的目标是存活目标的别名（决策 16-6），新增目标数不另计——目标列表、态势页、大屏同样不列它；
      * 原先运行统计把它也算一个，比大屏多出 21 个。它名下的风险也不另计，存活目标按它自己的最新风险计。
      */

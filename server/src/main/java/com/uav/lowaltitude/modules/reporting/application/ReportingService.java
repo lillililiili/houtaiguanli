@@ -39,6 +39,7 @@ public class ReportingService {
     private final AppClock clock;
     private final com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess;
     private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository;
+    private final com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository legalityRepository;
     private final com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
     private final AuditService auditService;
     private final ReportPeriodResolver periodResolver;
@@ -48,6 +49,7 @@ public class ReportingService {
     public ReportingService(AccessService access, ReportingRepository repository, AppClock clock,
             com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess,
             com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository,
+            com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository legalityRepository,
             com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository, AuditService auditService, ReportPeriodResolver periodResolver,
             OperationsWorkbookWriter workbookWriter, ObservationMetricsService observationMetrics) {
         this.access = access;
@@ -55,6 +57,7 @@ public class ReportingService {
         this.clock = clock;
         this.domainAccess = domainAccess;
         this.targetRepository = targetRepository;
+        this.legalityRepository = legalityRepository;
         this.deviceRepository = deviceRepository;
         this.auditService = auditService;
         this.periodResolver = periodResolver;
@@ -90,7 +93,7 @@ public class ReportingService {
         boolean devicesAllowed = access.permissionCodes(user.roleCode()).contains("devices.read");
         var targets = targetsAllowed ? repository.targets(range.from(),range.to(),scope) : List.<ReportingRepository.TargetFact>of();
         var cases = casesAllowed ? repository.cases(range.from(),range.to(),scope) : List.<ReportingRepository.CaseFact>of();
-        TargetStates states = states(targets);
+        TargetStates states = states(targets, legalityAllowed);
         Map<String,int[]> days = new LinkedHashMap<>();
         for(LocalDate date=range.from();!date.isAfter(range.to());date=date.plusDays(1)) days.put(date.toString(),new int[4]);
         Map<String,int[]> regions = new LinkedHashMap<>();
@@ -132,7 +135,7 @@ public class ReportingService {
         }).sorted(java.util.Comparator.comparingInt(PartnerRank::caseCount).reversed().thenComparing(PartnerRank::name)).limit(5).toList();
         Map<String,MetricAvailability> availability=new LinkedHashMap<>();
         availability.put("total",metric(targetsAllowed,0,"按首次发现时间去重统计新增目标；被合并进其他目标的不另计"));
-        availability.put("illegal",metric(legalityAllowed,unknownLegality,"按生成时最新研判统计明确非法目标；无明确结论的目标不计入"));
+        availability.put("illegal",metric(legalityAllowed,unknownLegality,"与合法性研判页同一取法：每架无人机只取最新一次研判，判非法的计入"));
         availability.put("high_risk",metric(risksAllowed,unknownRisk,"按生成时最新风险等级统计高风险及超高风险目标；无等级目标不计入"));
         availability.put("punish",metric(casesAllowed,0,"按立案时间统计案件，移送及通知不计作立案"));
         availability.put("by_type",metric(targetsAllowed,0,"生成时目标类型"));
@@ -167,7 +170,7 @@ public class ReportingService {
         var targets = repository.targets(day, day, new Scope("ALL".equals(user.scopeMode()), user.userId()));
         int simulated = (int) targets.stream().filter(target -> StatisticsScope.SIMULATOR.equals(target.sourceMode())).count();
         if (!allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.RISK_READ)) return new DayTargets(targets.size(), simulated, null);
-        TargetStates states = states(targets);
+        TargetStates states = states(targets, false);
         int critical=0,high=0,medium=0,low=0,unknown=0;
         for (var target : targets) {
             // 分档同"各风险等级分布"（riskLabel）：超高、高、中、低，其余（含没有风险记录）为未识别。
@@ -181,24 +184,35 @@ public class ReportingService {
         return new DayTargets(targets.size(), simulated, new RiskTiers(critical, high, medium, low, unknown));
     }
 
-    /** 每个目标生成时的最新研判与风险，只认计入统计的记录；运行统计和大屏共用。 */
-    private TargetStates states(List<ReportingRepository.TargetFact> targets) {
+    /**
+     * 每个目标生成时的最新研判与风险，只认计入统计的记录；运行统计和大屏共用。
+     * 研判结论取合法性研判页“全部无人机”给这个目标的那一条（正式模式、每架无人机只取最新一次、按当前类别只看无人机，
+     * 同一套范围；2026-10-08 新-2 第 3 点），研判页选“全部”时的非法数就是这里的非法目标数。原先取这个目标任何模式里
+     * 最后写入的一条，影子模式后写的结论、按写入时间而不是研判时间排的先后，都会让两边差几个。
+     */
+    private TargetStates states(List<ReportingRepository.TargetFact> targets, boolean withLegality) {
         Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries = new java.util.HashMap<>();
+        Map<String,com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.LatestLegality> legality = new java.util.HashMap<>();
         var formalEvaluations=new java.util.HashSet<String>(); var formalRisks=new java.util.HashSet<String>();
+        var legalityScope = withLegality ? domainAccess.require(com.uav.lowaltitude.modules.identity.domain.PermissionCode.ASSESSMENT_READ) : null;
         for (int start=0; start<targets.size(); start+=500) {
             var batchIds=targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList();
-            formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
+            if (legalityScope != null) {
+                formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
+                legality.putAll(legalityRepository.latestOnPage(batchIds, legalityScope));
+            }
             formalRisks.addAll(repository.formalRiskIds(batchIds));
             summaries.putAll(targetRepository.summaries(batchIds));
         }
-        return new TargetStates(summaries, formalEvaluations, formalRisks);
+        return new TargetStates(summaries, legality, formalEvaluations, formalRisks);
     }
 
     private record TargetStates(Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries,
+            Map<String,com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.LatestLegality> legality,
             java.util.Set<String> formalEvaluations, java.util.Set<String> formalRisks) {
         String legal(String targetId) {
-            var state=summaries.get(targetId);
-            return state==null||state.legality()==null||!formalEvaluations.contains(state.legality().evaluationId())?null:state.legality().legalStatus();
+            var latest=legality.get(targetId);
+            return latest==null||!formalEvaluations.contains(latest.evaluationId())?null:latest.legalStatus();
         }
         String risk(String targetId) {
             var state=summaries.get(targetId);
