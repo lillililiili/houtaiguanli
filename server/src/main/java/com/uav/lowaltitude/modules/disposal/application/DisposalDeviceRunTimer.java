@@ -37,6 +37,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 记一条“设备可能还开着”，授权保持反制中：设备停没停只能由人按急停或到现场确认，系统不替人认定。
  *
  * 每条运行记录各用一个事务，锁序与急停相同：事件→授权→设备→指令。急停已停掉的授权不再自动关闭。
+ *
+ * 反制还开着却没接上信号干扰的（设备打开那一刻依据一时不满足，或干扰没发出去），每轮补接一次，
+ * 见 {@link DisposalJammingChain#retryWhileOn}（2026-10-08 第二批复验）。
  */
 @Component
 public class DisposalDeviceRunTimer {
@@ -52,16 +55,17 @@ public class DisposalDeviceRunTimer {
     private final AppClock clock;
     private final ObjectMapper json;
     private final TransactionTemplate tx;
+    private final DisposalJammingChain jammingChain;
     private final boolean enabled;
     private final int maxAttempts;
 
     public DisposalDeviceRunTimer(DisposalRepository repository, EmergencyStopRepository stops, DeviceRepository devices,
             DisposalExecutionGateway gateway, DisposalReceiptSync receipts, AppClock clock, ObjectMapper json,
-            PlatformTransactionManager transactions,
+            PlatformTransactionManager transactions, DisposalJammingChain jammingChain,
             @Value("${app.disposal.device-run.enabled:true}") boolean enabled,
             @Value("${app.disposal.device-run.max-off-attempts:3}") int maxAttempts) {
         this.repository = repository; this.stops = stops; this.devices = devices; this.gateway = gateway;
-        this.receipts = receipts; this.clock = clock; this.json = json;
+        this.receipts = receipts; this.clock = clock; this.json = json; this.jammingChain = jammingChain;
         this.tx = new TransactionTemplate(transactions);
         this.enabled = enabled;
         this.maxAttempts = Math.max(1, maxAttempts);
@@ -76,8 +80,15 @@ public class DisposalDeviceRunTimer {
         if (enabled) tick();
     }
 
-    /** 处理一轮到时的运行记录，返回处理了几条。一条出错不耽误别的。 */
+    /** 处理一轮到时的运行记录，返回处理了几条。一条出错不耽误别的。还开着却没接上干扰的，先补接一次。 */
     public int tick() {
+        for (String parent : repository.runsAwaitingJamming(now(), BATCH)) {
+            try {
+                tx.executeWithoutResult(status -> jammingChain.retryWhileOn(parent));
+            } catch (RuntimeException ex) {
+                log.warn("auto jamming of authorization {} was not retried this round: {}", parent, ex.toString());
+            }
+        }
         int handled = 0;
         for (RunRow run : repository.dueRuns(now(), BATCH)) {
             try {

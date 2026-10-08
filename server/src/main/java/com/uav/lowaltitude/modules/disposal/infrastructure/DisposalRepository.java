@@ -460,6 +460,28 @@ public class DisposalRepository {
                 Map.of("now", now, "limit", limit), DisposalRepository::runRow);
     }
 
+    /** 这条反制接出的信号干扰（一条反制至多接出一条）。系统链式用，不跟调用者范围。 */
+    public AuthorizationRow chainedChild(String parentAuthorizationId) {
+        List<AuthorizationRow> rows = jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a"
+                + " WHERE a.chained_from_authorization_id=:id", Map.of("id", parentAuthorizationId), DisposalRepository::row);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 四通道反制还开着（反制中、没到关闭时刻、没放弃自动关闭）却还没接上信号干扰的：没接出干扰，
+     * 或接出的干扰一次也没下发出去。最早到时的在前。
+     */
+    public List<String> runsAwaitingJamming(OffsetDateTime now, int limit) {
+        return jdbc.queryForList("SELECT r.authorization_id FROM disposal_device_run r JOIN disposal_authorization a"
+                + " ON a.authorization_id=r.authorization_id WHERE a.status='EXECUTING' AND a.action_type='COUNTERMEASURE'"
+                + " AND a.channel='COUNTERMEASURE_4CH' AND a.subject_kind='UAV_EVENT' AND r.gave_up_at IS NULL"
+                + " AND r.off_due_at>:now AND NOT EXISTS (SELECT 1 FROM disposal_authorization c"
+                + " WHERE c.chained_from_authorization_id=a.authorization_id"
+                + " AND NOT (c.status='APPROVED' AND c.execution_command_id IS NULL))"
+                + " ORDER BY r.off_due_at ASC, r.authorization_id ASC LIMIT :limit",
+                Map.of("now", now, "limit", limit), String.class);
+    }
+
     /** 这条反制接出的信号干扰是否仍在执行中：在的话，设备由干扰那条到时一起关闭。 */
     public boolean executingChild(String parentAuthorizationId) {
         Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE chained_from_authorization_id=:id"

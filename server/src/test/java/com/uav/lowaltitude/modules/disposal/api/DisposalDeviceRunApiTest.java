@@ -158,6 +158,69 @@ class DisposalDeviceRunApiTest {
     }
 
     @Test
+    void jammingNotSentBecauseTheDeviceWasBusyIsSentByALaterRoundWhileTheCounterIsStillOn() throws Exception {
+        String counter = directCounter();
+        // 设备回“已打开”时还有一条别的指令在途：干扰接上了，但没发出去。
+        String other = inFlightCommand();
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
+                String.class, counter);
+        assertThat(statusOf(jamming)).isEqualTo("APPROVED");
+        assertThat(commandOf(jamming)).isNull();
+        int busy = notes(jamming, "DEVICE_BUSY").size();
+
+        // 那条指令还在途：这一轮安静地等，不再记一条“设备忙”。
+        timer.tick();
+        assertThat(statusOf(jamming)).isEqualTo("APPROVED");
+        assertThat(notes(jamming, "DEVICE_BUSY")).hasSize(busy);
+
+        // 设备空出来了：下一轮补发，和来源反制一起到时关闭。
+        jdbc.update("update device_command set status='SUCCEEDED',completed_at=? where command_id=?", System.currentTimeMillis(), other);
+        timer.tick();
+        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
+        assertThat(mask(commandOf(jamming))).isEqualTo(13);
+        assertThat(notes(jamming, "EXECUTE")).containsExactly("反制设备打开后自动下发");
+        deviceReplies(commandOf(jamming), "SUCCEEDED");
+        assertThat(millis(run(jamming).get("off_due_at"))).isEqualTo(millis(run(counter).get("off_due_at")));
+    }
+
+    @Test
+    void jammingNotChainedWhenTheDeviceOpenedIsChainedByALaterRoundButNotAfterTheCounterIsOff() throws Exception {
+        String counter = directCounter();
+        // 设备打开那一刻依据一时不满足（这里用事件暂回待核实来模拟）：没接上干扰。
+        jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?", eventId);
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?",
+                Integer.class, counter)).isZero();
+        timer.tick();
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?",
+                Integer.class, counter)).as("依据仍不满足时不接").isZero();
+
+        jdbc.update("update uav_event set state_code='CONFIRMED' where event_id=?", eventId);
+        timer.tick();
+        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
+                String.class, counter);
+        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
+        assertThat(mask(commandOf(jamming))).isEqualTo(13);
+    }
+
+    @Test
+    void counterAlreadyOffIsNeverChainedLater() throws Exception {
+        String counter = directCounter();
+        jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?", eventId);
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        due(counter);
+        timer.tick();
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        assertThat(statusOf(counter)).isEqualTo("COMPLETED");
+
+        jdbc.update("update uav_event set state_code='CONFIRMED' where event_id=?", eventId);
+        timer.tick();
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?",
+                Integer.class, counter)).isZero();
+    }
+
+    @Test
     void deviceStillOnForAnotherEventIsBusyForANewCounter() throws Exception {
         String counter = directCounter();
         deviceReplies(commandOf(counter), "SUCCEEDED");
@@ -189,6 +252,16 @@ class DisposalDeviceRunApiTest {
     private void deviceReplies(String command, String status) {
         jdbc.update("update device_command set status=?,completed_at=? where command_id=?", status, System.currentTimeMillis(), command);
         receipts.syncByCommand(command);
+    }
+
+    /** 占着设备的另一条在途指令（不属于任何处置授权）。 */
+    private String inFlightCommand() {
+        String id = key();
+        long now = System.currentTimeMillis();
+        jdbc.update("insert into device_command (command_id,command_no,device_id,command_type,reason,status,source_mode,simulated,"
+                + "created_at,updated_at) values (?,?,?,'TEST_IN_FLIGHT','占着设备的另一条指令','QUEUED','live',true,?,?)",
+                id, "BUSY-" + id.substring(0, 8), device, now, now);
+        return id;
     }
 
     private void due(String authorization) {

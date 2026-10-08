@@ -17,6 +17,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
+import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository;
@@ -52,14 +53,16 @@ public class DisposalJammingChain {
     private final ObjectMapper json;
     private final TransactionTemplate tx;
     private final com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops;
+    private final DeviceRepository deviceRows;
 
     public DisposalJammingChain(DisposalRepository repository, DisposalPolicyRepository policies,
             DisposalExecutionGateway gateway, DeviceAccessPolicy devices, AppClock clock, AuditService audit,
             ObjectMapper json, PlatformTransactionManager transactions,
             com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops,
             com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory,
-            DirectDisposalAccess directAccess) {
+            DirectDisposalAccess directAccess, DeviceRepository deviceRows) {
         this.advisory = advisory;
+        this.deviceRows = deviceRows;
         this.directAccess = directAccess;
         this.repository = repository; this.policies = policies; this.gateway = gateway; this.devices = devices;
         this.clock = clock; this.audit = audit; this.json = json;
@@ -188,6 +191,33 @@ public class DisposalJammingChain {
 
         if (DisposalRules.MANUAL.equals(parent.channel())) return;
         tryDispatch(id, parent, policy, reason, approvedEventAt);
+    }
+
+    /**
+     * 四通道反制还开着时补接，由 {@link DisposalDeviceRunTimer} 每轮调用（2026-10-08 第二批复验）：
+     * 设备打开那一刻没接上干扰（当时依据一时不满足）就再接一次；接上了却没发出去（当时设备忙、复查没过）就再发一次。
+     * 接与发照旧重新检查当前依据和急停；设备还忙或用不了时安静地等下一轮，不每轮记一条受阻。
+     * 来源反制关了（不再是反制中）就不再接。调用方给事务；锁序与急停相同：事件→授权→设备→指令。
+     */
+    public void retryWhileOn(String parentAuthorizationId) {
+        AuthorizationRow child = repository.chainedChild(parentAuthorizationId);
+        if (child == null) {
+            chain(parentAuthorizationId);
+            return;
+        }
+        if (!DisposalRules.APPROVED.equals(child.status()) || child.executionCommandId() != null
+                || DisposalRules.MANUAL.equals(child.channel())) return;
+        AuthorizationRow parent = repository.findUnlocked(parentAuthorizationId);
+        if (parent == null || !tookEffect(parent) || !"UAV_EVENT".equals(parent.subjectKind())) return;
+        emergencyStops.lockEvent(parent.subjectId());
+        if (emergencyStops.covered(parentAuthorizationId) || emergencyStops.unresolved(parent.subjectId())) return;
+        if (!advisory.counterBlockReason(parent.subjectId()).isEmpty()) return;
+        AuthorizationRow row = repository.lockForSystem(child.authorizationId());
+        if (row == null || !DisposalRules.APPROVED.equals(row.status()) || row.executionCommandId() != null) return;
+        if (row.deviceId() != null && (deviceRows.hasActiveWork(row.deviceId())
+                || gateway.requestBlockReason(row.deviceId()) != null)) return;
+        tryDispatch(row.authorizationId(), parent, policies.active(), row.reason(),
+                clock.now().truncatedTo(ChronoUnit.MICROS).atOffset(ZoneOffset.UTC));
     }
 
     private void tryDispatch(String id, AuthorizationRow parent, DisposalPolicy policy, String reason,
