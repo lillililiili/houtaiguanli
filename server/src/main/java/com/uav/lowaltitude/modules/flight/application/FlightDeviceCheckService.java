@@ -55,10 +55,19 @@ public class FlightDeviceCheckService {
     public Check read(String planId) {
         var plan=plans.findPlan(FlightActualsService.identifier(planId),access.require(PermissionCode.FLIGHT_READ));
         if(plan==null)throw new ApiException(HttpStatus.NOT_FOUND,"FLIGHT_PLAN_NOT_FOUND","飞行任务不存在或不可见");
+        return inspectPlan(plan,false);
+    }
+
+    /** Only background application services call this entry point; no synthetic login context. */
+    public Check scheduled(FlightReadRepository.PlanRow plan) { return inspectPlan(plan,true); }
+
+    private Check inspectPlan(FlightReadRepository.PlanRow plan,boolean scheduled) {
+        String planId=plan.planId();
         boolean simulatorPlan=localSimulatorDeviceBridge
             && LOCAL_SIMULATOR_PLAN_SOURCE_ID.equals(plan.sourceId()) && "mock".equals(plan.sourceMode());
         boolean mqttSimulation=(localMqttDemo && "mock".equals(plan.sourceMode())) || simulatorPlan;
-        var routeAccess=access.require(PermissionCode.ROUTE_READ);
+        var routeAccess=scheduled ? new com.uav.lowaltitude.modules.identity.domain.AccessDecision(null,
+            com.uav.lowaltitude.modules.identity.domain.ScopeMode.ALL) : access.require(PermissionCode.ROUTE_READ);
         long now=clock.nowMillis();
         if(plan.routeVersionId()==null || plans.findRouteVersion(plan.routeVersionId(),routeAccess)==null)
             return unknown(planId,now,"缺少可用航线，无法查找附近设备。",mqttSimulation);
@@ -73,28 +82,49 @@ public class FlightDeviceCheckService {
         // 不用区县文本作地理范围。普通演示与真实模式仍严格隔离；本地外部接口模拟器
         // 的 mock 计划有明确来源 ID，才允许检查同一模拟器产生的 replay 设备。
         boolean replaySimulation="replay".equals(plan.sourceMode());
-        List<DeviceRow> rows=new ArrayList<>();boolean complete=false;int unchecked=0,seen=0;
-        for(int page=1;page<=20;page++) {
+        // Preserve the manual reader's original user scope and completeness limits.
+        var systemInputs=scheduled?devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),true):List.<PlanInspectionDevice>of();
+        List<DeviceSummary> candidates=new ArrayList<>();boolean complete=scheduled;int seen=0;
+        if(scheduled)candidates.addAll(systemInputs.stream().map(PlanInspectionDevice::device).toList());
+        else for(int page=1;page<=20;page++) {
             var listed=devices.list(new DeviceFilter(null,null,null,null,null,null,null),page,100,"device_no_asc");
-            for(var device:listed.items()) {
+            candidates.addAll(listed.items());seen+=listed.items().size();
+            if(seen>=listed.total()){complete=true;break;}
+            if(listed.items().isEmpty())break;
+        }
+        List<DeviceRow> rows=new ArrayList<>();int unchecked=0;
+        var byId=systemInputs.stream().collect(java.util.stream.Collectors.toMap(d->d.device().deviceId(),java.util.function.Function.identity()));
+        for(var device:candidates) {
                 boolean demoDevice="replay".equals(device.sourceMode())
                     && device.simulated() && device.deviceNo()!=null && device.deviceNo().startsWith("FP-CHECK-");
                 boolean simulatorDevice=simulatorPlan && "replay".equals(device.sourceMode()) && device.simulated();
                 boolean sourceCompatible=simulatorPlan?simulatorDevice:(mqttSimulation?demoDevice:plan.sourceMode().equals(device.sourceMode()));
+                if(scheduled && "live".equals(plan.sourceMode()) && device.simulated())continue;
                 // 回放计划和本地模拟器桥接都只检查当前启用的回放设备；历史批次停用设备不属于本次计划周边设备。
                 if(!sourceCompatible || device.deviceTypeCode()==null
                         || !SENSORS.contains(device.deviceTypeCode().toUpperCase(Locale.ROOT))
                         || ((replaySimulation || simulatorPlan) && !device.enabled()))continue;
-                var detail=devices.detail(device.deviceId());
+                var detail=byId.get(device.deviceId());
+                if(!scheduled){
+                    var original=devices.detail(device.deviceId());
+                    detail=new PlanInspectionDevice(device,original.longitude(),original.latitude(),original.coordinateSystem(),null,List.of());
+                }
                 if(!positionKnown(detail)){unchecked++;continue;}
                 var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());
                 if(distance.distanceM()==null){unchecked++;continue;}
                 if(distance.distanceM().compareTo(nearbyMeters)>0)continue;
-                rows.add(inspect(device,distance.distanceM(),from,to,preflight));
-            }
-            seen+=listed.items().size();
-            if(seen>=listed.total()){complete=true;break;}
-            if(listed.items().isEmpty())break;
+                boolean historyComplete=true;
+                if(!scheduled){
+                    var state=devices.state(device.deviceId());List<Incident> history=new ArrayList<>();int count=0;historyComplete=false;
+                    for(int page=1;page<=20;page++){
+                        var items=devices.incidents(device.deviceId(),null,null,page,100);
+                        history.addAll(items.items());count+=items.items().size();
+                        if(count>=items.total()){historyComplete=true;break;}
+                        if(items.items().isEmpty())break;
+                    }
+                    detail=new PlanInspectionDevice(device,detail.longitude(),detail.latitude(),detail.coordinateSystem(),state,history);
+                }
+                rows.add(inspect(detail,distance.distanceM(),from,to,preflight,historyComplete));
         }
         rows.sort((a,b)->Boolean.compare(b.abnormal() || !b.incidents().isEmpty(),a.abnormal() || !a.incidents().isEmpty()));
         complete=complete && unchecked==0 && !rows.isEmpty() && rows.stream().allMatch(DeviceRow::complete);
@@ -109,8 +139,8 @@ public class FlightDeviceCheckService {
         }
         return new Check(planId,conclusion,message,now,nearbyMeters,complete,unchecked,List.copyOf(rows),mqttSimulation);
     }
-    private DeviceRow inspect(DeviceSummary device,BigDecimal distance,long from,long to,boolean preflight) {
-        var state=devices.state(device.deviceId());
+    private DeviceRow inspect(PlanInspectionDevice input,BigDecimal distance,long from,long to,boolean preflight,boolean historyComplete) {
+        var device=input.device();var state=input.state();
         // 协议 A 的 2 明确表示异常；1 仅表示工作中，不能补足缺失的健康指标。
         // 协议 C 的 2 含义不同，不能共用。
         boolean lingyun="LINGYUN_MQTT_V8_6".equals(device.protocolCode());
@@ -118,21 +148,15 @@ public class FlightDeviceCheckService {
         if(lingyun && "UNKNOWN".equals(health) && "2".equals(state.workStateCode()))health="BAD";
         boolean abnormal=!device.enabled() || Set.of("OFFLINE","ABNORMAL","DEGRADED").contains(state.connectivity())
             || Set.of("BAD","DEGRADED").contains(health) || state.hasAlarm();
-        List<Incident> incidents=new ArrayList<>();boolean historyComplete=false;int seen=0;
-        for(int page=1;page<=20;page++) {
-            var history=devices.incidents(device.deviceId(),null,null,page,100);
-            for(var item:history.items())if(item.detectedAt()<=to && (item.closedAt()==null || item.closedAt()>=from))incidents.add(item);
-            seen+=history.items().size();
-            if(seen>=history.total()){historyComplete=true;break;}
-            if(history.items().isEmpty())break;
-        }
+        List<Incident> incidents=input.incidents().stream()
+            .filter(item->item.detectedAt()<=to && (item.closedAt()==null || item.closedAt()>=from)).toList();
         boolean known=historyComplete && state.observedAt()!=null && (preflight || state.observedAt()>=from)
             && state.observedAt()<=clock.nowMillis() && state.lastHeartbeatAt()!=null
             && (abnormal || ("ONLINE".equals(state.connectivity()) && "GOOD".equals(health)));
         return new DeviceRow(device.deviceId(),device.name(),device.simulated(),distance,
             device.enabled()?state.connectivity():"DISABLED",health,state.lastHeartbeatAt(),state.observedAt(),abnormal,known,List.copyOf(incidents));
     }
-    private boolean positionKnown(DeviceDetail d) {
+    private boolean positionKnown(PlanInspectionDevice d) {
         return "WGS-84".equals(d.coordinateSystem()) && d.longitude()!=null && d.latitude()!=null
             && d.longitude().abs().compareTo(BigDecimal.valueOf(180))<=0 && d.latitude().abs().compareTo(BigDecimal.valueOf(90))<=0;
     }

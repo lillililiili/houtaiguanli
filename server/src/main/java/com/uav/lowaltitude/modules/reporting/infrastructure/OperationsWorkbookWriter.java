@@ -43,6 +43,7 @@ public class OperationsWorkbookWriter {
             trendSheet(workbook, styles, period, report.days());
             distributionSheet(workbook, styles, period, report);
             regionSheet(workbook, styles, period, report);
+            ObservationWorkbookSheet.append(workbook, report.observationMetrics());
             workbook.setActiveSheet(0);
             workbook.write(output);
             return output.toByteArray();

@@ -73,9 +73,12 @@ public class LegalityEvaluationService {
     private final ObjectMapper json;
     private final C03Decision decision = new C03Decision();
     private final DecisionAssuranceAlgorithm assuranceAlgorithm = new DecisionAssuranceAlgorithm();
+    private final com.uav.lowaltitude.modules.flight.infrastructure.FlightExecutionFactRepository executionFacts;
 
     public LegalityEvaluationService(RuleEngineRepository repository, RuleParamLoader params, SpatialFactPort spatial, PlanMatcher planMatcher,
-            List<RuleCheck> checks, RuleEngineHooks hooks, AppClock clock, ObjectMapper json, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+            List<RuleCheck> checks, RuleEngineHooks hooks, AppClock clock, ObjectMapper json, com.uav.lowaltitude.platform.config.SimulationPolicy simulation,
+            com.uav.lowaltitude.modules.flight.infrastructure.FlightExecutionFactRepository executionFacts) {
+        this.executionFacts=executionFacts;
         this.simulation=simulation;
         this.repository = repository; this.params = params; this.spatial = spatial; this.planMatcher = planMatcher;
         this.checks = List.copyOf(checks); this.hooks = hooks; this.clock = clock; this.json = json;
@@ -111,6 +114,8 @@ public class LegalityEvaluationService {
         for (MemberRow member : repository.members(run.ruleSetVersionId())) if (member.enabled()) members.put(member.ruleCode(), member);
 
         Resolved resolved = resolve(subject);
+        boolean executionEnabled=RuleCodes.EXECUTION_CHECKS.stream().anyMatch(members::containsKey);
+        long executionRevision=executionEnabled&&resolved.targetId()!=null?executionFacts.revision(resolved.targetId()):0;
         simulation.requireSourceMode(resolved.sourceMode());
         StateRow stateRow = resolved.targetId() == null ? null : repository.latestState(resolved.targetId());
         OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
@@ -123,6 +128,7 @@ public class LegalityEvaluationService {
         TargetState state = stateRow == null ? null : state(resolved, trackId, stateRow);
 
         PlanMatch planMatch = PlanMatch.notApplicable();
+        com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution=null;
         List<AirspaceHit> airspaces = List.of();
         List<HitDetail> hits = new ArrayList<>();
         List<String> candidateIds = List.of();
@@ -136,15 +142,17 @@ public class LegalityEvaluationService {
             candidateIds = candidates.stream().map(PlanFact::planId).toList();
             EvaluationContext collecting = new EvaluationContext(resolved.subject(), state, track, null, List.of(), effectiveAsOf, freshness, mode, resolved.sourceMode());
             if (members.containsKey(RuleCodes.C01)) planMatch = planMatcher.match(collecting, candidates, ruleParams);
+            if(resolved.targetId()!=null && executionEnabled)execution=executionFacts.comparison(
+                planMatch.plan()==null?null:planMatch.plan().planId(),resolved.targetId(),trackId,resolved.sourceMode(),effectiveAsOf.toInstant().toEpochMilli(),clock.nowMillis());
             airspaces = airspaces(state, effectiveAsOf, resolved.sourceMode());
-            EvaluationContext context = new EvaluationContext(resolved.subject(), state, track, planMatch, airspaces, effectiveAsOf, freshness, mode, resolved.sourceMode());
+            EvaluationContext context = new EvaluationContext(resolved.subject(), state, track, planMatch, airspaces, effectiveAsOf, freshness, mode, resolved.sourceMode(),execution);
             for (RuleCheck check : ordered(members)) {
                 HitDetail hit = check.evaluate(context, ruleParams);
                 MemberRow member = members.get(check.ruleCode());
                 hits.add(new HitDetail(hit.ruleCode(), member.ruleVersionId(), hit.resultCode(), hit.reasonCode(), hit.severity(), hit.facts(), hit.params(), hit.evidence(), hit.message()));
             }
         }
-        EvaluationContext context = new EvaluationContext(resolved.subject(), state, track, planMatch, airspaces, effectiveAsOf, freshness, mode, resolved.sourceMode());
+        EvaluationContext context = new EvaluationContext(resolved.subject(), state, track, planMatch, airspaces, effectiveAsOf, freshness, mode, resolved.sourceMode(),execution);
         Decision verdict = decision.decide(context, hits, ruleParams);
         // 无人机飞行规则不能把鸟类/人员当作无计划飞行；识别中也不能先认定为无人机。
         if (usable && !uav) {
@@ -172,7 +180,8 @@ public class LegalityEvaluationService {
         var evaluatedVersion = repository.findVersion(run.ruleSetVersionId());
         if ("live".equals(context.sourceMode()) && verdict.status() != LegalStatus.NOT_APPLICABLE
                 && (evaluatedVersion == null || !"CONFIRMED".equals(evaluatedVersion.paramStatus())
-                    || hits.stream().flatMap(hit -> (hit.params() == null ? List.<RuleContracts.ParamRef>of() : hit.params()).stream())
+                      || hits.stream().filter(hit -> !airspaceViolation || !RuleCodes.EXECUTION_CHECKS.contains(hit.ruleCode()))
+                        .flatMap(hit -> (hit.params() == null ? List.<RuleContracts.ParamRef>of() : hit.params()).stream())
                         .anyMatch(ref -> !"CONFIRMED".equals(ref.status())))) {
             verdict = Decision.undetermined(java.util.Set.of("RULE_PARAMETERS_UNCONFIRMED"), verdict.violationReasons());
             assurance = new DecisionAssuranceAlgorithm.Assurance(DecisionAssuranceAlgorithm.VERSION,
@@ -191,8 +200,8 @@ public class LegalityEvaluationService {
         repository.insertEvaluation(new EvaluationInsert(evaluationId, runId, run.ruleSetVersionId(), mode, subject.kind(), resolved.targetId(), trackId,
                 planId, routeVersionId, stateRow == null ? null : stateRow.observedAt(), effectiveAsOf, now, freshness.name(), planMatch.code().name(),
                 verdict.status().name(), verdict.score(), verdict.grade(), write(verdict.violationReasons()), write(hits), write(verdict.unknownReasons()),
-                write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness)), supersedesEvaluationId, shadowOutcome,
-                resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons()), recognition));
+                write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness,execution)), supersedesEvaluationId, shadowOutcome,
+                resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons()), recognition),execution==null?executionRevision:execution.revision());
 
         String assessmentId = null;
         boolean projectable = mode == RunMode.ACTIVE && plan != null && (planMatch.code() == PlanMatchCode.FULL || planMatch.code() == PlanMatchCode.PARTIAL);
@@ -323,8 +332,10 @@ public class LegalityEvaluationService {
     }
 
     /** input_snapshot 不出 API，但仍只放判定用到的字段，不放原始载荷。 */
-    private static Map<String, Object> snapshot(StateRow state, TrackQuality track, List<String> candidateIds, List<AirspaceHit> airspaces, Freshness freshness) {
+    private static Map<String, Object> snapshot(StateRow state, TrackQuality track, List<String> candidateIds, List<AirspaceHit> airspaces, Freshness freshness,
+            com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
+        if(execution!=null)snapshot.put("execution",execution);
         snapshot.put("freshness", freshness.name());
         if (state != null) {
             Map<String, Object> s = new LinkedHashMap<>();

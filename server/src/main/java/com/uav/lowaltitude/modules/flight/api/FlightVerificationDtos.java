@@ -9,11 +9,19 @@ public final class FlightVerificationDtos {
     public record AutomaticRequest(Long expectedRevision) { }
     public record FeedbackRequest(String verificationId, String recipientId) { }
     public record Verification(String verificationId, String planId, long revisionNo, String conclusion,
-            String takeoffStatus, String evidence, String note, String handledBy, String handledByName, long handledAt) { }
+            String takeoffStatus, String evidence, String note, String handledBy, String handledByName, long handledAt,
+            String triggerType) {
+        public Verification(String id,String plan,long revision,String conclusion,String takeoff,String evidence,String note,String actor,String name,long at) {
+            this(id,plan,revision,conclusion,takeoff,evidence,note,actor,name,at,actor==null?"SYSTEM":"USER");
+        }
+    }
     public record Feedback(String feedbackId, String verificationId, String planId, String recipientId,
             String recipientName, String deliveryStatus, String receiptStatus, String processingResult,
             String blockedReason, long createdAt, Long submittedAt, Long deliveredAt, Long acknowledgedAt,RecipientSnapshot recipientSnapshot) { }
     public record Workflow(String planId, long revision, String recipientId, String recipientName,
             boolean canVerify, String verificationBlocker, boolean canFeedback,
-            List<Verification> verifications, List<Feedback> feedback,RecipientSnapshot recipientSnapshot,String recipientBlockedReason) { }
+            List<Verification> verifications, List<Feedback> feedback,RecipientSnapshot recipientSnapshot,String recipientBlockedReason,
+            ScheduledCheck scheduledCheck) { }
+    public record ScheduledCheck(Long lastCheckedAt,Long nextCheckAt,String state,String failureCode,String verificationId,List<String> maintenanceTaskIds,List<MaintenanceTaskState> maintenanceTasks) { }
+    public record MaintenanceTaskState(String taskId,String deviceName,String workflowState) { }
 }

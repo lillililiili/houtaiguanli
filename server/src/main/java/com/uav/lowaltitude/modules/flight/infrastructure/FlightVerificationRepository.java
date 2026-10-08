@@ -16,7 +16,7 @@ public class FlightVerificationRepository {
         return jdbc.query("SELECT * FROM flight_plan_verification WHERE plan_id=? ORDER BY revision_no DESC",(rs,i)->
             new Verification(rs.getString("verification_id"),rs.getString("plan_id"),rs.getLong("revision_no"),
                 rs.getString("conclusion"),rs.getString("takeoff_status"),rs.getString("evidence"),rs.getString("note"),
-                rs.getString("handled_by"),rs.getString("handled_by_name"),rs.getLong("handled_at")),planId);
+                rs.getString("handled_by"),rs.getString("handled_by_name"),rs.getLong("handled_at"),rs.getString("trigger_type")),planId);
     }
     public List<Feedback> feedback(String planId) {
         return jdbc.query("SELECT * FROM flight_plan_feedback WHERE plan_id=? ORDER BY created_at DESC,feedback_id DESC",(rs,i)->
@@ -29,8 +29,8 @@ public class FlightVerificationRepository {
         return id != null && jdbc.queryForObject("SELECT COUNT(*) FROM integration_source WHERE source_id=? AND enabled=TRUE",Long.class,id)>0;
     }
     public void insert(Verification v) {
-        jdbc.update("INSERT INTO flight_plan_verification(verification_id,plan_id,revision_no,conclusion,takeoff_status,evidence,note,handled_by,handled_by_name,handled_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            v.verificationId(),v.planId(),v.revisionNo(),v.conclusion(),v.takeoffStatus(),v.evidence(),v.note(),v.handledBy(),v.handledByName(),v.handledAt());
+        jdbc.update("INSERT INTO flight_plan_verification(verification_id,plan_id,revision_no,conclusion,takeoff_status,evidence,note,handled_by,handled_by_name,handled_at,trigger_type) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            v.verificationId(),v.planId(),v.revisionNo(),v.conclusion(),v.takeoffStatus(),v.evidence(),v.note(),v.handledBy(),v.handledByName(),v.handledAt(),v.triggerType());
     }
     public void insert(Feedback f,String snapshot,String actor) {
         jdbc.update("INSERT INTO flight_plan_feedback(feedback_id,verification_id,plan_id,recipient_id,recipient_name,material_snapshot,delivery_status,receipt_status,processing_result,blocked_reason,submitted_by,created_at,submitted_at,delivered_at,acknowledged_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

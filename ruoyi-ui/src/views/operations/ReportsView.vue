@@ -33,7 +33,14 @@ const ready = computed(() => !loading.value && !error.value && preview.value &&
 const description = computed(() => categories.find(item => item.value === category.value).description);
 const sections = computed(() => preview.value?.sections || []);
 const allowed = computed(() => sections.value.filter(s => s.accessible));
-const empty = computed(() => allowed.value.length > 0 && allowed.value.every(s => s.total === 0));
+const observed = computed(() => preview.value?.observation_metrics);
+const empty = computed(() => allowed.value.length > 0 && allowed.value.every(s => s.total === 0) && !observed.value?.observed_targets);
+const observedCards = computed(() => [
+  { label: '有效监测时长（秒）', value: measured(observed.value?.duration_seconds), tone: 'blue', note: '按目标累计连续有效片段' },
+  { label: '已观测里程（米）', value: measured(observed.value?.distance_meters), tone: 'green', note: '已观测水平折线距离' },
+  { label: '参与累计目标数', value: observed.value?.measured_targets ?? '—', tone: 'purple', note: '不是飞行架次' }
+]);
+function measured(value) { return value == null ? '暂不可统计' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 3 }); }
 const tones = ['blue', 'red', 'purple', 'green', 'amber'];
 const metrics = computed(() => {
   const result = sections.value.map((s, i) => ({ label: s.title, value: s.accessible ? s.total.toLocaleString('zh-CN') : '无权限',
@@ -168,6 +175,22 @@ onBeforeUnmount(() => guard.begin());
             <ReportDetailTable :params="params" :section="s" :columns="preview.columns[s.key]" :labels="preview.labels" :refresh="refresh" />
           </section>
         </template>
+        <el-card v-if="observed" class="observation-metrics">
+          <template #header><strong>监测时长与里程</strong></template>
+          <p class="report-note">{{ observed.reason }}。{{ observed.basis }}</p>
+          <MetricCards :items="observedCards" />
+          <p class="report-note">数据来源：{{ observed.source_modes.map(mode => label(mode)).join('、') || '暂无记录' }}；有效片段 {{ observed.valid_segments }} 个。</p>
+          <el-collapse v-if="observed.days.length || observed.exclusions.length">
+            <el-collapse-item title="查看每日累计与未计入原因" name="observation-details">
+              <el-table v-if="observed.days.length" :data="observed.days" max-height="320">
+                <el-table-column prop="date" label="日期（北京时间）" min-width="145" />
+                <el-table-column label="有效监测时长（秒）" min-width="165"><template #default="{ row }">{{ measured(row.duration_seconds) }}</template></el-table-column>
+                <el-table-column label="已观测里程（米）" min-width="160"><template #default="{ row }">{{ measured(row.distance_meters) }}</template></el-table-column>
+              </el-table>
+              <p v-for="item in observed.exclusions" :key="item.code" class="report-note">未计入：{{ item.reason }}，{{ item.count }} 个点或相邻片段。</p>
+            </el-collapse-item>
+          </el-collapse>
+        </el-card>
         <p class="report-note">Excel 包含完整明细（最多 5 万条）；PDF 包含图表、摘要及每个明细分区最近 50 条。导出时即时生成，数据变化时可能与本次预览不同。</p>
       </template>
     </div>

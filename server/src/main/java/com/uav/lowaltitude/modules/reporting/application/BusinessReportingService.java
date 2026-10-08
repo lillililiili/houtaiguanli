@@ -21,10 +21,12 @@ public class BusinessReportingService {
     private final ReportPeriodResolver periods;
     private final AppClock clock;
     private final ReportScopePolicy scopes;
+    private final ObservationMetricsService observationMetrics;
     public BusinessReportingService(List<BusinessReportSource> sources, AccessService access,
-            ReportPeriodResolver periods, AppClock clock, ReportScopePolicy scopes) {
+            ReportPeriodResolver periods, AppClock clock, ReportScopePolicy scopes, ObservationMetricsService observationMetrics) {
         sources.forEach(s -> this.sources.put(s.key(), s));
         this.access = access; this.periods = periods; this.clock = clock; this.scopes = scopes;
+        this.observationMetrics = observationMetrics;
     }
     public enum Category {
         OVERVIEW("综合运行", List.of("targets","alarms","risks","plans","events")),
@@ -44,7 +46,8 @@ public class BusinessReportingService {
             String periodLabel, String from, String to, long generatedAt, String sourceMode,
             boolean simulated, String statusNote, List<Summary> sections,
             Map<String,List<ReportLabels.Column>> columns, Map<String,String> labels,
-            String reportScope, List<String> availableSourceModes) { }
+            String reportScope, List<String> availableSourceModes,
+            com.uav.lowaltitude.modules.reporting.domain.ObservationMetrics.Result observationMetrics) { }
     public record ExportData(Preview preview, Map<String,Page> details) { }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Preview preview(String categoryText, String type, String anchor) {
@@ -67,18 +70,20 @@ public class BusinessReportingService {
                         null, List.of(), List.of(), List.of()));
             }
         }
-        var modes = sections.stream().flatMap(s -> s.sources().stream()).filter(s -> s.value() > 0)
-                .map(Count::name).distinct().toList();
+        var observations = category == Category.OVERVIEW ? observationMetrics.business(period.from(),period.to(),scope==SourceScope.SIMULATED) : null;
+        var modes = new java.util.TreeSet<>(sections.stream().flatMap(s -> s.sources().stream()).filter(s -> s.value() > 0)
+                .map(Count::name).toList());
+        if (observations != null) modes.addAll(observations.sourceModes());
         // Empty reports still disclose the selected scope; actual provenance is never invented.
         boolean empty = sections.stream().filter(Summary::accessible)
                 .allMatch(s -> s.total() != null && s.total() == 0);
-        String mode = modes.isEmpty() ? (empty ? scope.value() : "unknown") : modes.size() == 1 ? modes.get(0) : "mixed";
+        String mode = modes.isEmpty() ? (empty ? scope.value() : "unknown") : modes.size() == 1 ? modes.first() : "mixed";
         boolean simulated = scope == SourceScope.SIMULATED || modes.stream().anyMatch(m -> m.equals("mock") || m.equals("replay"));
         return new Preview(category.name(), category.title, period.type().name(), period.anchor().toString(),
                 period.label(), period.from().toString(), period.to().toString(), clock.now().toEpochMilli(),
                 mode, simulated, "状态截至生成时；设备状态为当前快照。不同业务对象分别计数，不相加为事件总量。", List.copyOf(sections),
                 category.keys.stream().collect(java.util.stream.Collectors.toMap(k -> k, ReportLabels::columns)), ReportLabels.dictionary(),
-                scope.value(), scopes.available());
+                scope.value(), scopes.available(), observations);
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Page details(String categoryText, String type, String anchor, String section, int page, int size) {

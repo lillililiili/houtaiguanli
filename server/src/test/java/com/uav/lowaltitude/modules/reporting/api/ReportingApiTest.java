@@ -176,6 +176,8 @@ class ReportingApiTest {
         result=operations(token,"2002-01-01");
         assertThat(result.path("summary").path("total").isMissingNode()||result.path("summary").path("total").isNull()).isTrue();
         assertThat(result.path("availability").path("total").path("status").asText()).isEqualTo("UNAVAILABLE");
+        assertThat(result.path("observation_metrics").path("status").asText()).isEqualTo("UNAVAILABLE");
+        assertThat(result.path("observation_metrics").hasNonNull("duration_seconds")).isFalse();
         assertThat(result.path("by_type").isEmpty()).isTrue();
     }
 
@@ -443,7 +445,7 @@ class ReportingApiTest {
     }
 
     @Test
-    void excelExportContainsFourStyledDataSheetsAndAudit() throws Exception {
+    void excelExportContainsExistingSheetsPlusObservationSheetAndAudit() throws Exception {
         String token = login("admin1", "changeme");
         LocalDate today = LocalDate.now(ReportingService.ZONE);
         byte[] bytes = mvc.perform(get("/api/v1/stats/reports/export.xlsx")
@@ -456,11 +458,12 @@ class ReportingApiTest {
                 .andReturn().getResponse().getContentAsByteArray();
         assertThat(bytes).startsWith((byte) 'P', (byte) 'K');
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(bytes))) {
-            assertThat(workbook.getNumberOfSheets()).isEqualTo(4);
+            assertThat(workbook.getNumberOfSheets()).isEqualTo(5);
             assertThat(workbook.getSheetName(0)).isEqualTo("报表摘要");
             assertThat(workbook.getSheetName(1)).isEqualTo("每日趋势");
             assertThat(workbook.getSheetName(2)).isEqualTo("分类分布");
             assertThat(workbook.getSheetName(3)).isEqualTo("区域与处置");
+            assertThat(workbook.getSheetName(4)).isEqualTo("监测时长与里程");
             assertThat(workbook.getSheet("每日趋势").getRow(2).getCell(0).getStringCellValue()).isEqualTo("日期");
             assertThat(workbook.getSheet("每日趋势").getRow(3).getCell(1).getCellType().name()).isEqualTo("NUMERIC");
             assertThat(workbook.getSheet("分类分布").getCTWorksheet().isSetAutoFilter()).isTrue();

@@ -43,12 +43,13 @@ public class ReportingService {
     private final AuditService auditService;
     private final ReportPeriodResolver periodResolver;
     private final OperationsWorkbookWriter workbookWriter;
+    private final ObservationMetricsService observationMetrics;
 
     public ReportingService(AccessService access, ReportingRepository repository, AppClock clock,
             com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess,
             com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository,
             com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository, AuditService auditService, ReportPeriodResolver periodResolver,
-            OperationsWorkbookWriter workbookWriter) {
+            OperationsWorkbookWriter workbookWriter, ObservationMetricsService observationMetrics) {
         this.access = access;
         this.repository = repository;
         this.clock = clock;
@@ -58,6 +59,7 @@ public class ReportingService {
         this.auditService = auditService;
         this.periodResolver = periodResolver;
         this.workbookWriter = workbookWriter;
+        this.observationMetrics = observationMetrics;
     }
 
     @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -136,7 +138,7 @@ public class ReportingService {
         availability.put("by_type",metric(targetsAllowed,0,"生成时目标类型"));
         availability.put("by_risk",metric(risksAllowed,unknownRisk,"无风险等级的目标归入未识别"));
         availability.put("by_duration",new MetricAvailability("UNAVAILABLE","尚无可靠的飞行时长汇总，不能用观测时间跨度代替",null));
-        availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无排除断点及重复轨迹的可靠里程汇总",null));
+        availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无完整实际飞行里程依据；已观测里程单独列示",null));
         availability.put("alt_bands",metric(targetsAllowed,targets.size()-altTotal,"仅统计最新状态中有效海拔高度，缺失海拔不以离地高度替代"));
         availability.put("by_penalty",metric(casesAllowed,undecided,"仅统计有效决定书对应的已确认处罚结果；未形成有效结果的案件不计入"));
         availability.put("partners",metric(casesAllowed,undecided,"金额单位为元；主体存在未形成有效处罚结果的案件时金额暂不可统计"));
@@ -145,9 +147,12 @@ public class ReportingService {
         if(devicesAllowed) { var row=deviceRepository.overview(ownerOrgId,com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository.CountScope.STATISTICS,null);int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
         List<DayPoint> dayPoints=days.entrySet().stream().map(e->new DayPoint(e.getKey(),e.getKey().substring(5),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         List<RegionPoint> regionPoints=regions.entrySet().stream().sorted((a,b)->Integer.compare(b.getValue()[0],a.getValue()[0])).map(e->new RegionPoint(e.getKey(),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
+        var observations=observationMetrics.operations(range.from(),range.to(),ownerOrgId);
+        modes.addAll(observations.sourceModes());
         return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),
             new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
-            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId);
+            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId,
+            observations);
     }
 
     /**
@@ -275,6 +280,21 @@ public class ReportingService {
         line(out, "元数据", "数据来源", "simulated", String.valueOf(report.simulated()));
         line(out, "元数据", "生成时间", "generated_at", report.generatedAt());
         report.availability().forEach((key,metric) -> line(out,"指标口径",key,metric.status(),metric.reason()));
+        var observed = report.observationMetrics();
+        if (observed != null) {
+            line(out,"监测统计","状态",observed.status(),observed.reason());
+            line(out,"监测统计","口径","说明",observed.basis());
+            line(out,"监测统计","数据来源","来源模式",String.join("、",observed.sourceModes()));
+            line(out,"监测统计","配置依据","版本",String.join("、",observed.configVersions()));
+            line(out,"监测统计","合计","有效监测时长(秒)",observed.durationSeconds());
+            line(out,"监测统计","合计","已观测里程(米)",observed.distanceMeters());
+            line(out,"监测统计","合计","参与累计目标数",observed.measuredTargets());
+            for (var day:observed.days()) {
+                line(out,"监测统计",day.date(),"有效监测时长(秒)",day.durationSeconds());
+                line(out,"监测统计",day.date(),"已观测里程(米)",day.distanceMeters());
+            }
+            for (var exclusion:observed.exclusions()) line(out,"监测统计","未计入",exclusion.reason(),exclusion.count());
+        }
         Summary summary = report.summary();
         line(out, "总览", "合计", "新增目标数", summary.total());
         line(out, "总览", "合计", "非法目标数", summary.illegal());
@@ -370,7 +390,8 @@ public class ReportingService {
             Summary summary, DeviceCounts devices, List<DayPoint> days, List<NamedCount> byRisk,
             List<NamedCount> byType, List<NamedCount> byDuration, List<NamedCount> byTrack,
             List<NamedCount> altBands, Integer altTotal, List<RegionPoint> regions, List<NamedCount> byPenalty,
-            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability, String ownerOrgId) { }
+            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability, String ownerOrgId,
+            com.uav.lowaltitude.modules.reporting.domain.ObservationMetrics.Result observationMetrics) { }
 
     public record MetricAvailability(String status, String reason, Integer missingCount) { }
 

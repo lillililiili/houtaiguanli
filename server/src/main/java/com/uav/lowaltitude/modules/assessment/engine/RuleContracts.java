@@ -140,7 +140,13 @@ public final class RuleContracts {
 
     /** 评估上下文：所有输入在进入规则前收集完毕，规则本身不再访问数据库。 */
     public record EvaluationContext(Subject subject, TargetState state, TrackQuality track, PlanMatch planMatch,
-            List<AirspaceHit> airspaces, OffsetDateTime asOf, Freshness freshness, RunMode mode, String sourceMode) { }
+            List<AirspaceHit> airspaces, OffsetDateTime asOf, Freshness freshness, RunMode mode, String sourceMode,
+            com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution) {
+        public EvaluationContext(Subject subject,TargetState state,TrackQuality track,PlanMatch match,List<AirspaceHit> airspaces,
+                OffsetDateTime asOf,Freshness freshness,RunMode mode,String sourceMode) {
+            this(subject,state,track,match,airspaces,asOf,freshness,mode,sourceMode,null);
+        }
+    }
 
     /** 单条规则检查；实现类无 Spring 依赖，便于纯 Java 决策表测试。 */
     public interface RuleCheck {

@@ -370,7 +370,10 @@ public class RuleEngineRepository {
                 + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation e WHERE e.target_id=t.target_id AND e.mode=:mode"
                 + " AND e.rule_set_version_id=:version AND e.observed_at IS NOT NULL AND e.observed_at>=s.observed_at"
                 + " AND e.recognition_class_code=" + TargetRecognitionSql.type("t", "c")
-                + " AND e.recognition_revision=" + TargetRecognitionSql.revision("t", "c") + ")"
+                + " AND e.recognition_revision=" + TargetRecognitionSql.revision("t", "c")
+                + " AND (NOT EXISTS (SELECT 1 FROM rule_set_member em JOIN rule_version er ON er.rule_version_id=em.rule_version_id"
+                + " WHERE em.rule_set_version_id=:version AND em.enabled=TRUE AND er.rule_code IN ('C02-9','C02-10','C02-11','C02-12'))"
+                + " OR e.execution_revision >= (SELECT COALESCE(MAX(f.ingestion_seq),0) FROM flight_execution_fact f WHERE f.target_id=t.target_id)))"
                 + (scheduled ? " AND (t.created_at>=:young_since OR NOT EXISTS (SELECT 1 FROM rule_evaluation r WHERE r.target_id=t.target_id"
                         + " AND r.mode=:mode AND r.rule_set_version_id=:version AND r.evaluated_at>:recent_since))" : "")
                 + " ORDER BY " + (scheduled ? "evaluated_before ASC," : "") + "s.updated_at ASC,t.target_id ASC FETCH FIRST :limit ROWS ONLY", p,
@@ -380,7 +383,11 @@ public class RuleEngineRepository {
     // ---- 研判与投影 ----
 
     public void insertEvaluation(EvaluationInsert e) {
+        insertEvaluation(e,0);
+    }
+    public void insertEvaluation(EvaluationInsert e,long executionRevision) {
         Map<String, Object> p = new HashMap<>();
+        p.put("execution_revision",executionRevision);
         p.put("id", e.evaluationId()); p.put("run", e.runId()); p.put("version", e.ruleSetVersionId()); p.put("mode", e.mode().name());
         p.put("kind", e.subjectKind().name()); p.put("target", e.targetId()); p.put("track", e.trackId()); p.put("plan", e.planId()); p.put("route", e.routeVersionId());
         p.put("observed", e.observedAt()); p.put("as_of", e.asOf()); p.put("evaluated", e.evaluatedAt()); p.put("freshness", e.freshness());
@@ -392,10 +399,10 @@ public class RuleEngineRepository {
         p.put("recognition_class", e.recognition().classCode()); p.put("recognition_revision", e.recognition().revision());
         jdbc.update("INSERT INTO rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,track_id,plan_id,route_version_id,observed_at,as_of,"
                 + "evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,"
-                + "supersedes_evaluation_id,alarm_outcome,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons,recognition_class_code,recognition_revision)"
+                + "supersedes_evaluation_id,alarm_outcome,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons,recognition_class_code,recognition_revision,execution_revision)"
                 + " VALUES (:id,:run,:version,:mode,:kind,:target,:track,:plan,:route,:observed,:as_of,:evaluated,:freshness,:plan_match,:legal,:score,:grade,"
                 + "CAST(:violations AS JSON),CAST(:hits AS JSON),CAST(:unknowns AS JSON),CAST(:evidence AS JSON),CAST(:snapshot AS JSON),:supersedes,"
-                + "CAST(:alarm_outcome AS JSON),:org,:district,:source_mode,:evaluated,:assurance_version,:assurance_code,CAST(:assurance_reasons AS JSON),:recognition_class,:recognition_revision)", p);
+                + "CAST(:alarm_outcome AS JSON),:org,:district,:source_mode,:evaluated,:assurance_version,:assurance_code,CAST(:assurance_reasons AS JSON),:recognition_class,:recognition_revision,:execution_revision)", p);
     }
 
     /**

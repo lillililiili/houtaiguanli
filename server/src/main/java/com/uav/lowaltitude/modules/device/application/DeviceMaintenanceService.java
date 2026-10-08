@@ -94,6 +94,34 @@ public class DeviceMaintenanceService {
         return dto(task,actor,false);
     }
 
+    /** Background-only creation. Records an internal work item; never invokes any notification channel. */
+    @Transactional
+    public String createScheduled(com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanRow plan,
+            FlightDeviceCheckService.DeviceRow row) {
+        if(!row.abnormal() && row.incidents().stream().noneMatch(i->i.closedAt()==null))
+            throw conflict("DEVICE_NOT_ABNORMAL","当前没有设备异常");
+        tasks.lockDevice(row.deviceId());
+        Row existing=tasks.pending(plan.planId(),row.deviceId());
+        if(existing!=null)return existing.taskId();
+        String deviceId=row.deviceId();
+        row=checks.scheduled(plan).rows().stream().filter(item->deviceId.equals(item.deviceId())).findFirst()
+            .orElseThrow(()->conflict("DEVICE_NOT_NEAR_PLAN","设备已不在本计划可检查范围内"));
+        if(!row.abnormal()&&row.incidents().stream().noneMatch(i->i.closedAt()==null))
+            throw conflict("DEVICE_NOT_ABNORMAL","锁定后重新检查未发现当前异常");
+        var device=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),true).stream()
+            .filter(d->d.device().deviceId().equals(deviceId)).findFirst().orElseThrow(DeviceMaintenanceService::missing).device();
+        String reason=row.incidents().stream().filter(i->i.closedAt()==null).map(i->i.reason())
+            .filter(java.util.Objects::nonNull).distinct().collect(Collectors.joining("；"));
+        if(reason.isBlank())reason="系统到点检查发现当前设备异常，请运维核查";
+        Row task=new Row(UUID.randomUUID().toString(),plan.planId(),row.deviceId(),plan.ownerOrgId(),plan.districtId(),
+            plan.planNo(),device.deviceNo(),row.name(),reason,row.connectivity(),row.healthCode(),row.observedAt(),
+            row.lastHeartbeatAt(),row.simulated(),"PENDING",null,"系统自动检查",clock.nowMillis(),null,null,null,1);
+        tasks.insert(task);
+        audit.record(null,"flight-device-check",null,"flight","device_maintenance_created","device_maintenance_task",
+            task.taskId(),"系统到点检查；计划="+plan.planId(),"SUCCESS","","");
+        return task.taskId();
+    }
+
     @Transactional(readOnly=true)
     public Page list(String status,int page,int size) {
         AuthUser actor=deviceAccess.requireMonitoringRead();

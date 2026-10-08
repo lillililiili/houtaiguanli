@@ -38,8 +38,11 @@ public class FlightVerificationService {
     private final HandoffChannelPort channel;
     private final ObjectMapper json;
     private final FlightDeviceCheckService deviceChecks;
+    private final com.uav.lowaltitude.modules.flight.infrastructure.FlightCheckScheduleRepository schedules;
     public FlightVerificationService(FlightReadRepository plans,FlightVerificationRepository records,FlightActualsService actuals,
-            AccessControlService access,IdempotencyGuard idempotency,AppClock clock,AuditService audit,HandoffChannelPort channel,ObjectMapper json,FlightDeviceCheckService deviceChecks,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory) {
+            AccessControlService access,IdempotencyGuard idempotency,AppClock clock,AuditService audit,HandoffChannelPort channel,ObjectMapper json,FlightDeviceCheckService deviceChecks,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
+            com.uav.lowaltitude.modules.flight.infrastructure.FlightCheckScheduleRepository schedules) {
+        this.schedules=schedules;
         this.directory=directory;
         this.plans=plans;this.records=records;this.actuals=actuals;this.access=access;this.idempotency=idempotency;
         this.clock=clock;this.audit=audit;this.channel=channel;this.json=json;this.deviceChecks=deviceChecks;
@@ -52,7 +55,7 @@ public class FlightVerificationService {
         boolean write=allowed(PermissionCode.FLIGHT_VERIFY);
         var recipient=directory.forPlan(plan.planId());
         return new Workflow(plan.planId(),history.isEmpty()?0:history.get(0).revisionNo(),plan.sourceId(),recipient.recipientName(),
-            write && blocker==null,!write?"没有任务核实权限":blocker,allowed(PermissionCode.HANDOFF_CREATE)&&recipient.configured(),history,records.feedback(plan.planId()),recipient,recipient.blockedReason());
+            write && blocker==null,!write?"没有任务核实权限":blocker,allowed(PermissionCode.HANDOFF_CREATE)&&recipient.configured(),history,records.feedback(plan.planId()),recipient,recipient.blockedReason(),schedules.view(plan.planId()));
     }
     @Transactional
     public Verification verify(String planId,VerifyRequest request,String key) {

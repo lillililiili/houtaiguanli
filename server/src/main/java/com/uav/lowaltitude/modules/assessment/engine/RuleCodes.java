@@ -21,7 +21,8 @@ public final class RuleCodes {
     /** 命中即违法的空域类检查（C03 第 4 步）。 */
     public static final List<String> AIRSPACE_CHECKS = List.of(C02_1, C02_2, C02_8);
     /** 命中即异常的行为类检查（C03 第 5 步）。 */
-    public static final List<String> BEHAVIOUR_CHECKS = List.of(C02_3, C02_4, C02_5, C02_7);
+    public static final List<String> EXECUTION_CHECKS = List.of("C02-9","C02-10","C02-11","C02-12");
+    public static final List<String> BEHAVIOUR_CHECKS = List.of(C02_3, C02_4, C02_5, C02_7,"C02-9","C02-10","C02-11","C02-12");
 
     /** 契约默认优先级；rule_set_member.priority 存在时以其为准。 */
     public static final int PRIORITY_C01 = 100;
