@@ -40,6 +40,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  * 不关闭人工按钮；证据、急停、策略上限和设备条件不满足时本轮跳过，下一轮再检查。
  * 设备正忙（指令在途，或正为别的反制开着）时这一轮什么都不建，等它空出来再发；
  * 以前设备忙时建好、没发出去的那条，设备空了就接着发（2026-10-08 第二批复验 S2）。
+ * 以前的自动反制启动指令都没发出去时再发，一起事件最多 3 次（见 {@link CounterHistory}）。
  */
 @Service
 public class AlarmRuleCounter {
@@ -116,14 +117,16 @@ public class AlarmRuleCounter {
         repository.insert(new AuthorizationInsert(id, no, DisposalRules.COUNTERMEASURE, "UAV_EVENT", event.eventId(),
                 event.targetId(), chosen.deviceId(), chosen.channel(), REASON, actor.userId(), at, DisposalRules.REQUESTED,
                 policy.policyCode(), event.ownerOrgId(), event.districtId(), event.sourceMode()));
-        if (repository.authorizeDirect(id, 0L, at, until, NOTE) != 1)
+        String note = history.attempt() > 1 ? NOTE + "前一次自动反制的启动指令没有发出去，这是第 " + history.attempt()
+                + " 次自动发起（最多 " + CounterHistory.MAX_ATTEMPTS + " 次）。" : NOTE;
+        if (repository.authorizeDirect(id, 0L, at, until, note) != 1)
             throw new IllegalStateException("automatic counter authorization was not applied");
-        event(id, "DIRECT_AUTHORIZE", actor.userId(), NOTE, Map.of("status", DisposalRules.APPROVED,
-                "authorization_mode", "DIRECT", "automation_run_id", runId,
+        event(id, "DIRECT_AUTHORIZE", actor.userId(), note, Map.of("status", DisposalRules.APPROVED,
+                "authorization_mode", "DIRECT", "automation_run_id", runId, "automatic_attempt", history.attempt(),
                 "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli()), at);
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "disposal", "disposal_direct_authorized",
-                "disposal_authorization", id, "authorization_no=" + no + "; authorization_mode=DIRECT; approved_by=; automation_run_id=" + runId,
-                "SUCCESS", "", "");
+                "disposal_authorization", id, "authorization_no=" + no + "; authorization_mode=DIRECT; approved_by=; automation_run_id=" + runId
+                        + "; automatic_attempt=" + history.attempt(), "SUCCESS", "", "");
 
         OffsetDateTime executeAt = at.plusNanos(1_000_000);
         String key = "rule-counter-" + id;

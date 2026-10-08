@@ -228,6 +228,25 @@ class AlarmRuleCounterTest {
         org.mockito.Mockito.verifyNoInteractions(gateway, audit);
     }
 
+    @Test void startCancelledBeforeSendingIsLaunchedAgainAsTheSecondAttempt() {
+        ready();
+        when(phases.phaseForAutomation("event-1")).thenReturn(NotifyFlow.Phase.AWAIT_COUNTER);
+        when(policies.active()).thenReturn(policy());
+        when(repository.counterAttempts("event-1")).thenReturn(List.of(
+                authorization("auth-1", DisposalRules.FAILED, AutomationPrincipal.USER_ID, "command-1", "AUTHORIZATION_STOPPED")));
+        simulatedController();
+        when(repository.nextSequence(anyString())).thenReturn(9);
+        when(repository.authorizeDirect(anyString(), eq(0L), any(), any(), anyString())).thenReturn(1);
+        when(gateway.dispatch4chAs(any(), eq("cm4"), anyString(), anyString(), eq(DisposalRules.COUNTERMEASURE), anyString()))
+                .thenReturn(new DisposalExecutionGateway.Accepted("command-2"));
+        when(repository.transition(anyString(), eq(1L), eq(DisposalRules.EXECUTING), any(), eq("command-2"), isNull(), isNull())).thenReturn(1);
+
+        counter.launchIfPassed("event-1", "run-1");
+
+        verify(repository).authorizeDirect(anyString(), eq(0L), any(OffsetDateTime.class), any(OffsetDateTime.class),
+                eq("反制规则已满足，系统按直接授权发起，未指定审批人。前一次自动反制的启动指令没有发出去，这是第 2 次自动发起（最多 3 次）。"));
+    }
+
     @Test void anyOtherCounterHistoryStopsAutomaticLaunches() {
         ready();
         when(repository.counterAttempts("event-1")).thenReturn(List.of(
