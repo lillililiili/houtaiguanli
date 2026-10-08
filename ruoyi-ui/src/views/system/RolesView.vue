@@ -27,7 +27,7 @@ const directActionLevels = [{ value: 'NONE', label: '无' }, { value: 'OP', labe
 const menuLabels = {
   responsePlans: '规则管理',
   dashboard: '数据大屏', sensing: '感知监测', statistics: '统计分析', stats: '报表管理',
-  flights: '飞行活动', legality: '合法性判定', airspace: '空域与航线', alarms: '异常告警',
+  flights: '飞行任务', legality: '合法性判定', airspace: '空域与航线', alarms: '异常告警',
   risk: '空间风险', punishment: '处置处罚', countermeasure: '反制授权', devices: '设备管理',
   monitor: '设备实时监测', monitoring: '设备实时监测', commission: '设备接入调测', commissioning: '设备接入调测',
   maps: '地图管理', interfaces: '接口管理', users: '用户管理', roles: '角色管理',
