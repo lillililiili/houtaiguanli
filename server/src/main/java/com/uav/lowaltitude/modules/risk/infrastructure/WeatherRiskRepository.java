@@ -32,6 +32,21 @@ public class WeatherRiskRepository {
             }, riskId).stream().findFirst().orElse(null);
     }
 
+    /** 天气风险的有效时段：画了范围的气象数据和天气预报规则生成的风险都有，后者没有范围。 */
+    public record Window(long publishedAt, long validFrom, long validTo) { }
+
+    /**
+     * 天气预报规则生成的风险，时段记在预报事实里（预报自己带的时段）。
+     * 以前只查 weather_risk_fact，这类风险就一直显示“缺少气象有效时段”（CDX-P06）。调用方先完成风险对象范围鉴权。
+     */
+    public Window findForecastWindow(String riskId) {
+        return jdbc.query("""
+            SELECT f.published_at,f.valid_from,f.valid_to FROM weather_forecast_risk_fact f JOIN flight_risk r ON r.risk_id=f.risk_id
+            WHERE f.risk_id=? AND r.risk_type='WEATHER'
+            """, (rs, index) -> new Window(rs.getTimestamp("published_at").getTime(), rs.getTimestamp("valid_from").getTime(),
+                rs.getTimestamp("valid_to").getTime()), riskId).stream().findFirst().orElse(null);
+    }
+
     /** 只追加专属模拟源的范围快照，重启不改已有风险或历史范围。 */
     public void insertDemo(String riskId, FactRow fact) {
         try {

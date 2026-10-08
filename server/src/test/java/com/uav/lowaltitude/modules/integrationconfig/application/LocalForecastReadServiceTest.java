@@ -75,6 +75,21 @@ class LocalForecastReadServiceTest {
         assertThat(result.forecast().periods().get(1).to()).isEqualTo(250);
     }
 
+    /** CDX-P06：一个计划受同一区域 6 份预报影响，天气页签只显示了 1 份。 */
+    @Test
+    void everyOverlappingAreaForecastIsListedByStartAndNewestPublicationWinsPerSlot() throws Exception {
+        when(repository.weatherMessages()).thenReturn(List.of(
+                row(null, "其他区域", 40, period(100, 200, "雷雨")),
+                row(null, area, 30, period(150, 200, "小雨")),
+                row(null, area, 25, period(200, 260, "晴")),
+                row(null, area, 20, period(100, 150, "阴")),
+                row(null, area, 10, period(150, 200, "多云"))));
+        var forecast = service.read(plan(100L, 200L, "mock")).forecast();
+        assertThat(forecast.publishedAt()).isEqualTo(30);
+        assertThat(forecast.periods()).extracting(p -> p.from() + "-" + p.to() + " " + p.summary() + " @" + p.publishedAt())
+                .containsExactly("100-150 阴 @20", "150-200 小雨 @30");
+    }
+
     private FlightPlanDto plan(Long start, Long end, String mode) {
         return new FlightPlanDto(planId, "PLAN-" + planId, "PENDING", null, mode, "SN",
                 start, end, null, null, null, List.of(), 0, 0, 0, null, area, null);
@@ -88,6 +103,10 @@ class LocalForecastReadServiceTest {
     }
 
     private Period period(long from, long to) {
-        return new Period(from, to, "多云", 22D, 4D, 6D, 180, 20, 75);
+        return period(from, to, "多云");
+    }
+
+    private Period period(long from, long to, String summary) {
+        return new Period(from, to, summary, 22D, 4D, 6D, 180, 20, 75);
     }
 }
