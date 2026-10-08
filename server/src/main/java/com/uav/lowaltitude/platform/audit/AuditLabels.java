@@ -54,6 +54,7 @@ final class AuditLabels {
             Map.entry("local_weather_risk_input", "接收模拟气象风险"),
             Map.entry("local_interface_receipt", "接收本地模拟回执"),
             Map.entry("notification_simulator_connected", "连接通知模拟器"),
+            Map.entry("notification_simulator_punishment_recipients", "设置模拟处罚接收单位"),
             Map.entry("simulator_notification_receipt", "接收模拟通知回执"),
             Map.entry("simulator_receipt_projection", "同步模拟回执业务结果"),
             Map.entry("weather_simulator_register", "登记模拟气象设备"),
