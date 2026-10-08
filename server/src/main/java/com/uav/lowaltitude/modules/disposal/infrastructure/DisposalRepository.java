@@ -277,6 +277,13 @@ public class DisposalRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 这起事件的全部反制授权，按申请先后。自动反制据此决定新发、补发还是不再自动发；系统读取，不跟调用者范围。 */
+    public List<AuthorizationRow> counterAttempts(String eventId) {
+        return jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
+                + " AND a.subject_id=:id AND a.action_type='COUNTERMEASURE' ORDER BY a.requested_at, a.authorization_id",
+                Map.of("id", eventId), DisposalRepository::row);
+    }
+
     /** 该主体是否已有任一信号干扰授权（含手选），有则不再自动接。 */
     public boolean actionExists(String subjectKind, String subjectId, String actionType) {
         Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE subject_kind=:kind"

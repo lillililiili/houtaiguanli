@@ -144,7 +144,7 @@ class AlarmRuleCounterTest {
         when(repository.actor(AutomationPrincipal.USER_ID)).thenReturn(new AuthUser(AutomationPrincipal.USER_ID,
                 AutomationPrincipal.ACCOUNT, "自动规则", AutomationPrincipal.ROLE, 0, false, "ALL"));
         when(events.lock(eq("event-1"), any(AccessDecision.class))).thenReturn(EVENT);
-        when(advisory.counterBlockReason("event-1")).thenReturn("");
+        org.mockito.Mockito.lenient().when(advisory.counterBlockReason("event-1")).thenReturn("");
     }
 
     @Test void revokedOrUnrelatedPassCannotCreateAnAuthorization() {
@@ -163,6 +163,97 @@ class AlarmRuleCounterTest {
         verify(emergencyStops).lockDevice("dev-1");
         verify(repository, never()).insert(any());
         org.mockito.Mockito.verifyNoInteractions(gateway, audit);
+    }
+
+    @Test void busyDeviceSkipsTheRoundWithoutCreatingAQueuedAuthorization() {
+        ready();
+        when(phases.phaseForAutomation("event-1")).thenReturn(NotifyFlow.Phase.AWAIT_COUNTER);
+        when(policies.active()).thenReturn(policy());
+        simulatedController();
+        when(repository.deviceRunningOther("cm4", null)).thenReturn(true);
+
+        counter.launchIfPassed("event-1", "run-1");
+
+        verify(repository, never()).insert(any());
+        verify(repository, never()).insertEvent(anyString(), anyString(), anyString(), any(), any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(gateway, audit);
+    }
+
+    @Test void commandInFlightOnTheDeviceAlsoWaits() {
+        ready();
+        when(phases.phaseForAutomation("event-1")).thenReturn(NotifyFlow.Phase.AWAIT_COUNTER);
+        when(policies.active()).thenReturn(policy());
+        simulatedController();
+        when(devices.hasActiveWork("cm4")).thenReturn(true);
+
+        counter.launchIfPassed("event-1", "run-1");
+
+        verify(repository, never()).insert(any());
+        org.mockito.Mockito.verifyNoInteractions(gateway, audit);
+    }
+
+    @Test void queuedAutomaticCounterIsDispatchedOnceTheDeviceIsFree() {
+        ready();
+        when(phases.phaseForAutomation("event-1")).thenReturn(NotifyFlow.Phase.AWAIT_COUNTER);
+        when(policies.active()).thenReturn(policy());
+        var queued = authorization("auth-q", DisposalRules.APPROVED, AutomationPrincipal.USER_ID, null, null);
+        when(repository.counterAttempts("event-1")).thenReturn(List.of(queued));
+        when(repository.lockForSystem("auth-q")).thenReturn(queued);
+        when(gateway.dispatch4chAs(any(), eq("cm4"), anyString(), eq("auth-q"), eq(DisposalRules.COUNTERMEASURE), anyString()))
+                .thenReturn(new DisposalExecutionGateway.Accepted("command-q"));
+        when(repository.transition(eq("auth-q"), eq(1L), eq(DisposalRules.EXECUTING), any(), eq("command-q"), isNull(), isNull()))
+                .thenReturn(1);
+
+        counter.launchIfPassed("event-1", "run-1");
+
+        verify(repository, never()).insert(any());
+        verify(emergencyStops).lockDevice("cm4");
+        verify(repository).insertEvent(anyString(), eq("auth-q"), eq("EXECUTE"), eq(AutomationPrincipal.USER_ID),
+                eq("反制设备空出来了，系统接着下发这条排队的自动反制。"), anyString(), any());
+    }
+
+    @Test void queuedAutomaticCounterWaitsQuietlyWhileTheDeviceIsStillOn() {
+        ready();
+        when(phases.phaseForAutomation("event-1")).thenReturn(NotifyFlow.Phase.AWAIT_COUNTER);
+        when(policies.active()).thenReturn(policy());
+        var queued = authorization("auth-q", DisposalRules.APPROVED, AutomationPrincipal.USER_ID, null, null);
+        when(repository.counterAttempts("event-1")).thenReturn(List.of(queued));
+        when(repository.lockForSystem("auth-q")).thenReturn(queued);
+        when(repository.deviceRunningOther("cm4", "auth-q")).thenReturn(true);
+
+        counter.launchIfPassed("event-1", "run-1");
+
+        verify(repository, never()).insertEvent(anyString(), anyString(), anyString(), any(), any(), any(), any());
+        verify(repository, never()).transition(anyString(), org.mockito.ArgumentMatchers.anyLong(), anyString(), any(), any(), any(), any());
+        org.mockito.Mockito.verifyNoInteractions(gateway, audit);
+    }
+
+    @Test void anyOtherCounterHistoryStopsAutomaticLaunches() {
+        ready();
+        when(repository.counterAttempts("event-1")).thenReturn(List.of(
+                authorization("auth-m", DisposalRules.APPROVED, "operator-1", null, null)));
+
+        counter.launchIfPassed("event-1", "run-1");
+
+        verify(repository, never()).insert(any());
+        org.mockito.Mockito.verifyNoInteractions(gateway, audit, phases, policies);
+    }
+
+    private void simulatedController() {
+        when(devices.operableCounterDevices(eq("ifr"), eq("mock"), eq("org"), eq("district"), isNull(), eq("ifr"), eq(false)))
+                .thenReturn(List.of());
+        when(devices.operableCounterDevices(eq("countermeasure"), eq("live"), eq("org"), eq("district"),
+                eq(com.uav.lowaltitude.integration.device.DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0), isNull(), eq(true)))
+                .thenReturn(List.of("cm4"));
+    }
+
+    static DisposalRepository.AuthorizationRow authorization(String id, String status, String requester, String commandId,
+            String resultCode) {
+        OffsetDateTime from = NOW.minusSeconds(30).atOffset(ZoneOffset.UTC);
+        return new DisposalRepository.AuthorizationRow(id, "AUTH-" + id, DisposalRules.COUNTERMEASURE, "UAV_EVENT", "event-1",
+                "target-1", "cm4", DisposalRules.COUNTERMEASURE_4CH, "反制规则已满足，系统自动发起。", requester, from, null, null,
+                null, from, from.plusMinutes(10), status, commandId, resultCode, null, "demo-v1", "org", "district", "mock",
+                1L, null, null, AutomationPrincipal.USER_ID.equals(requester) ? "DIRECT" : "REVIEW");
     }
 
     private static DisposalPolicy policy() {

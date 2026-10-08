@@ -27,6 +27,7 @@ import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.AuthorizationInsert;
+import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.AuthorizationRow;
 import com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
@@ -37,6 +38,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 反制规则通过后，在待反制阶段自动发起一次直接反制。
  * 不关闭人工按钮；证据、急停、策略上限和设备条件不满足时本轮跳过，下一轮再检查。
+ * 设备正忙（指令在途，或正为别的反制开着）时这一轮什么都不建，等它空出来再发；
+ * 以前设备忙时建好、没发出去的那条，设备空了就接着发（2026-10-08 第二批复验 S2）。
  */
 @Service
 public class AlarmRuleCounter {
@@ -44,6 +47,7 @@ public class AlarmRuleCounter {
     private static final AccessDecision SCOPE = new AccessDecision("system:auto-counter", ScopeMode.ALL);
     private static final String REASON = "反制规则已满足，系统自动发起。";
     private static final String NOTE = "反制规则已满足，系统按直接授权发起，未指定审批人。";
+    private static final String QUEUED_REASON = "反制设备空出来了，系统接着下发这条排队的自动反制。";
 
     private final UavEventRepository events;
     private final UavAdvisoryRepository advisory;
@@ -84,17 +88,24 @@ public class AlarmRuleCounter {
         if (actor == null) return;
         EventRow event = events.lock(eventId, SCOPE);
         if (event == null || event.sourceMode() == null || event.ownerOrgId() == null || event.districtId() == null) return;
-        if (repository.actionExists("UAV_EVENT", event.eventId(), DisposalRules.COUNTERMEASURE)) return;
+        CounterHistory history = CounterHistory.of(repository.counterAttempts(event.eventId()),
+                clock.now().atOffset(ZoneOffset.UTC));
+        if (history.next() == CounterHistory.Next.NOTHING) return;
         String block = advisory.counterBlockReason(event.eventId());
         if (block != null && !block.isEmpty()) return;
         if (emergencyStops.unresolved(event.eventId())) return;
         if (phases.phaseForAutomation(event.eventId()) != NotifyFlow.Phase.AWAIT_COUNTER) return;
         DisposalPolicy policy = policies.active();
+        if (history.next() == CounterHistory.Next.DISPATCH_QUEUED) {
+            dispatchQueued(history.queued(), actor, eventId, runId, policy);
+            return;
+        }
         if (repository.activeCount("UAV_EVENT", event.eventId(), DisposalRules.COUNTERMEASURE) >= policy.maxActivePerSubject()) return;
         Chosen chosen = choose(event, policy);
         if (chosen == null) return;
         emergencyStops.lockDevice(chosen.deviceId());
         if (emergencyStops.deviceUnresolved(chosen.deviceId())) return;
+        if (busy(chosen.deviceId(), null)) return;
         if (!eligibility.allowsRun("counter", eventId, runId)) return;
 
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
@@ -137,6 +148,43 @@ public class AlarmRuleCounter {
                 "disposal_authorization", id, "authorization_no=" + no + "; channel=" + chosen.channel() + "; command_id=" + commandId,
                 "SUCCESS", "", "");
         log.info("automatic counter {} dispatched on {}", no, chosen.channel());
+    }
+
+    /**
+     * 补发设备忙时建好、没发出去的那条自动反制。设备还忙或用不了就安静地等下一轮，不每 2 秒记一条“设备忙”；
+     * 锁序与急停相同：事件→授权→设备。
+     */
+    private void dispatchQueued(AuthorizationRow queued, AuthUser actor, String eventId, String runId, DisposalPolicy policy) {
+        AuthorizationRow row = repository.lockForSystem(queued.authorizationId());
+        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        if (row == null || !CounterHistory.waiting(row, at) || row.deviceId() == null) return;
+        emergencyStops.lockDevice(row.deviceId());
+        if (emergencyStops.deviceUnresolved(row.deviceId()) || busy(row.deviceId(), row.authorizationId())
+                || gateway.requestBlockReason(row.deviceId()) != null) return;
+        if (!eligibility.allowsRun("counter", eventId, runId)) return;
+        String key = "rule-counter-" + row.authorizationId() + "-" + at.toInstant().toEpochMilli();
+        DisposalExecutionGateway.Result dispatched = DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())
+                ? gateway.dispatch4chAs(actor, row.deviceId(), key, row.authorizationId(), DisposalRules.COUNTERMEASURE, REASON)
+                : gateway.dispatchAs(actor, row.deviceId(), key, row.authorizationId(), policy, DisposalRules.COUNTERMEASURE,
+                        Map.of(), REASON);
+        if (dispatched instanceof DisposalExecutionGateway.Rejected rejected) {
+            log.info("queued automatic counter {} still not dispatched because {}", row.authorizationNo(), rejected.eventKind());
+            return;
+        }
+        String commandId = ((DisposalExecutionGateway.Accepted) dispatched).commandId();
+        if (repository.transition(row.authorizationId(), row.version(), DisposalRules.EXECUTING, at, commandId, null, null) != 1)
+            throw new IllegalStateException("queued automatic counter did not enter execution");
+        event(row.authorizationId(), "EXECUTE", actor.userId(), QUEUED_REASON, Map.of("status", DisposalRules.EXECUTING,
+                "channel", row.channel(), "command_id", commandId), at);
+        audit.record(actor.userId(), actor.account(), actor.roleCode(), "disposal", "disposal_executed",
+                "disposal_authorization", row.authorizationId(), "authorization_no=" + row.authorizationNo() + "; channel="
+                        + row.channel() + "; command_id=" + commandId + "; queued=true", "SUCCESS", "", "");
+        log.info("queued automatic counter {} dispatched on {}", row.authorizationNo(), row.channel());
+    }
+
+    /** 设备有指令在途，或正为别的反制开着（新-20）：这时再下发会被拒，也会改掉对方的输出。 */
+    private boolean busy(String deviceId, String authorizationId) {
+        return devices.hasActiveWork(deviceId) || repository.deviceRunningOther(deviceId, authorizationId);
     }
 
     /** 同一范围里只有一台能执行时才选它。四通道和凌云同时可用，或同通道有多台时，留给人工按钮。 */
