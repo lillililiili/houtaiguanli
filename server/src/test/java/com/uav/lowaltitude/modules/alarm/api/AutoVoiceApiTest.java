@@ -223,6 +223,30 @@ class AutoVoiceApiTest {
         assertThat(jdbc.queryForObject("select status from uav_auto_voice_task where event_id=?",String.class,eventId)).isEqualTo("WAITING");
         verify(voice,never()).simulate(anyString(),any(),anyString());
     }
+    @Test void smsWithoutTaskShowsTheCallIsNotPlacedForTheSameReason()throws Exception {
+        // 新-30：告警没有关联任务、短信发不出去时，电话一栏写不拨打并沿用短信的原因，不再一直显示“等待短信送达”。
+        jdbc.update("UPDATE uav_auto_sms_task SET status='WAITING',delivery_record_id=NULL WHERE event_id=?",eventId);
+        evaluation("ILLEGAL","FRESH","[]",false,Instant.now());
+        automatic.process(eventId);
+        voiceService.process(eventId);
+        String noTask="当前事件尚无精确关联任务，不能把单位联系人当作执行飞手";
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_sms.reason").value(noTask))
+                .andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value(noTask))
+                .andExpect(jsonPath("$.data.auto_voice.can_retry").value(false))
+                .andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"));
+        verify(voice,never()).simulate(anyString(),any(),anyString());
+        assertThat(count("uav_event_voice_advisory")).isZero();
+    }
+    @Test void callStillWaitsWhileTheSmsIsOnlyWaitingForVerification()throws Exception {
+        // 只是等核实的短信不算“发不出去”，电话照旧写等待短信送达。
+        jdbc.update("UPDATE uav_auto_sms_task SET status='WAITING',delivery_record_id=NULL WHERE event_id=?",eventId);
+        jdbc.update("UPDATE uav_event SET state_code='PENDING_VERIFICATION' WHERE event_id=?",eventId);
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value(org.hamcrest.Matchers.containsString("飞手短信尚未送达")));
+    }
     @Test void callObservationKeepsTheAreaFromTheSmsAndReadsPositionsAfterPlayback()throws Exception {
         voiceService.process(eventId);
         long sms=jdbc.queryForObject("select updated_at from uav_auto_sms_task where event_id=?",Long.class,eventId);

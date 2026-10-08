@@ -215,7 +215,7 @@ public class UavAdvisoryService {
                 !decision.decisionActive() && "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的任务执行飞手"),
-                autoSms,voice.mode(event),autoVoice,!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event),decision,
+                autoSms,voice.mode(event),withoutSms(autoSms,autoVoice),!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event),decision,
                 automatic.pilotContactMissing(event));
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
@@ -233,6 +233,17 @@ public class UavAdvisoryService {
                 voice == null ? null : voice.status(), voice == null ? null : voice.reason(), playedAt, now, afterSms, afterCall);
     }
     private String phaseName(NotifyFlow.Phase phase) { return phase == null ? null : phase.name(); }
+    /**
+     * 短信因没有关联任务、没有可通知的飞手或通道原因发不出去时，通知阶段直接进入待定是否反制，电话也不会拨打
+     * （2026-10-09 新-30）。电话一栏写不拨打，原因沿用短信的，不再一直显示“等待短信送达”。只改显示，不建任务。
+     */
+    static AutoVoice withoutSms(AutoSms sms, AutoVoice voice) {
+        if (sms == null || voice == null || !"WAITING".equals(voice.status()) || voice.attemptCount() > 0
+                || !NotifyFlow.cannotNotify(sms.status(), sms.reason())) return voice;
+        return new AutoVoice(voice.enabled(), "BLOCKED", sms.reason(), voice.triggeredAt(), voice.updatedAt(), false, voice.attemptCount(),
+                voice.policyCode(), voice.triggerSource(), voice.evaluatedAt(), voice.dataUpdatedAt(), voice.recordingId(), voice.recordingName(),
+                voice.answeredAt(), voice.playbackCompletedAt(), voice.recipientSnapshot());
+    }
     private AutoHandoff autoHandoff(EventRow event) {
         String eventId = event.eventId();
         String handoffId = handoffs.existingPunishment(eventId);
