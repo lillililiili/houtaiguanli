@@ -245,6 +245,45 @@ class LocalInterfaceSimulatorApiTest {
   send("/weather",input,200);
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
  }
+ // CDX-P07: resending an area forecast answered 对象不存在或不在当前权限范围 and its receipt never showed in the simulator's
+ // receipt list, because the receipt was looked up as a flight task. Same message and content now returns the first receipt.
+ @Test void areaForecastSentAgainReturnsTheFirstReceiptAndShowsInTheReceiptList() throws Exception {
+  var plan=send("/plans",plan("weather-area-again-plan"),200);String planId=plan.path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long now=System.currentTimeMillis(),published=now-1000,from=now+300000,to=now+1200000;
+  var period=Map.of("from",from,"to",to,"summary","雷雨伴强风","temperature_c",22,"wind_speed_ms",12,"gust_ms",18,"wind_direction_deg",180,"precipitation_probability_pct",80,"humidity_pct",90);
+  var input=new HashMap<String,Object>();input.put("message_id","weather-area-again");input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));
+  var first=send("/weather",input,200);
+  String risks="select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'";
+  assertThat(jdbc.queryForObject(risks,Long.class,planId)).isEqualTo(1);
+
+  var again=send("/weather",input,200);
+  assertThat(again.path("message_id").asText()).isEqualTo(first.path("message_id").asText());
+  assertThat(again.path("state").asText()).isEqualTo("ACCEPTED");
+  assertThat(again.path("result")).isEqualTo(first.path("result"));
+  assertThat(jdbc.queryForObject(risks,Long.class,planId)).as("no second risk for the same forecast").isEqualTo(1);
+  assertThat(jdbc.queryForObject("select count(*) from local_interface_message where kind='WEATHER_FORECAST' and external_id='weather-area-again'",Long.class)).isEqualTo(1);
+
+  var context=json.readTree(mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+  var listed=new ArrayList<String>();context.path("messages").forEach(m->listed.add(m.path("message_id").asText()));
+  assertThat(listed).contains(first.path("message_id").asText());
+
+  input.put("published_at",published+1);
+  mvc.perform(post(BASE+"/weather").header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input)))
+   .andExpect(status().isConflict()).andExpect(jsonPath("$.error.message").value("同一消息编号的内容已变化，请使用新编号"));
+ }
+ // The receipt is still only its submitter's: another operator neither sees it nor can claim the message number.
+ @Test void areaForecastReceiptStaysWithItsSubmitter() throws Exception {
+  long published=System.currentTimeMillis()-3600000L;
+  var period=Map.of("from",published,"to",published+3600000,"summary","区域多云","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",20,"humidity_pct",75);
+  var input=new HashMap<String,Object>();input.put("message_id","weather-area-owner");input.put("area_name","模拟区域");input.put("published_at",published);input.put("periods",List.of(period));
+  var mine=send("/weather",input,200);
+  String other=jdbc.queryForObject("select user_id from app_user where account<>'admin1' fetch first 1 rows only",String.class);
+  jdbc.update("update local_interface_message set created_by=? where message_id=?",other,mine.path("message_id").asText());
+  var context=json.readTree(mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+  var listed=new ArrayList<String>();context.path("messages").forEach(m->listed.add(m.path("message_id").asText()));
+  assertThat(listed).doesNotContain(mine.path("message_id").asText());
+ }
  @Test void rejectsInvalidInputAndUnauthenticatedAccess() throws Exception {
   mvc.perform(get(BASE+"/context")).andExpect(status().isUnauthorized());
   var body=plan("invalid");body.put("end_at",body.get("start_at"));send("/plans",body,400);
