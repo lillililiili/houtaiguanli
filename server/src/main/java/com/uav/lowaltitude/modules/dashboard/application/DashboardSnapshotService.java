@@ -284,8 +284,13 @@ public class DashboardSnapshotService {
         return byTarget;
     }
 
+    /**
+     * 交接待办就是“移送与处罚”页的“待发送”：无人机事件的处罚移送里还没发出去的（2026-10-08 新-2 第 6 点）。
+     * 风险的“通知上级”没发出去的不算在这里，在风险详情里看，接收端恢复后会自动补发。
+     */
     private long countHandoffs(String sourceMode) {
-        return handoffs.list(q("page", "1", "size", "1", "delivery_status", "PENDING_DELIVERY", "source_mode", sourceMode)).total();
+        return handoffs.list(q("page", "1", "size", "1", "source_kind", "UAV_EVENT", "delivery_status", "PENDING_DELIVERY",
+                "source_mode", sourceMode)).total();
     }
 
     private List<MapTargetDto> mapTargets(List<TargetSummaryDto> rows, Map<String, EvaluationDto> latest) {
