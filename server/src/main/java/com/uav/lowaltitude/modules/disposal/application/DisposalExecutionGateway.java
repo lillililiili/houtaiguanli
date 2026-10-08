@@ -15,6 +15,7 @@ import com.uav.lowaltitude.modules.device.infrastructure.MqttRepository;
 import com.uav.lowaltitude.integration.mqtt.LingyunControlEnvelope;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
+import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.security.AuthUser;
 
@@ -45,10 +46,12 @@ public class DisposalExecutionGateway {
     private final Countermeasure4ChControlService countermeasure;
     private final MqttRepository mqtt;
     private final DeviceRepository devices;
+    private final DisposalRepository disposals;
 
     public DisposalExecutionGateway(LingyunControlService control, Countermeasure4ChControlService countermeasure,
-                                    MqttRepository mqtt, DeviceRepository devices) {
+                                    MqttRepository mqtt, DeviceRepository devices, DisposalRepository disposals) {
         this.control = control; this.countermeasure = countermeasure; this.mqtt = mqtt; this.devices = devices;
+        this.disposals = disposals;
     }
 
     /** 设备是否已登记凌云 MQTT 绑定；停止路径据此区分 NOT_BOUND 与 UNAVAILABLE（停止路径仍是二分，13-11）。 */
@@ -138,6 +141,7 @@ public class DisposalExecutionGateway {
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，暂不能下发处置指令");
         if (knownFault(device)) return fault();
         if (devices.hasActiveWork(deviceId)) return busy();
+        if (disposals.deviceRunningOther(deviceId, authorizationId)) return running();
         int mask = DisposalRules.JAMMING.equals(actionType)
                 ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
         String commandId = countermeasure.enqueue(deviceId, idempotencyKey, authorizationId,
@@ -159,6 +163,7 @@ public class DisposalExecutionGateway {
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，暂不能下发处置指令");
         if (knownFault(device)) return fault();
         if (devices.hasActiveWork(deviceId)) return busy();
+        if (disposals.deviceRunningOther(deviceId, authorizationId)) return running();
         int mask = DisposalRules.JAMMING.equals(actionType)
                 ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
         String commandId = countermeasure.enqueueUnchecked(user, deviceId, idempotencyKey, authorizationId,
@@ -219,6 +224,15 @@ public class DisposalExecutionGateway {
 
     private static Rejected busy() {
         return new Rejected("DEVICE_BUSY", "DEVICE_BUSY", "设备仍有未完成的指令或调测任务，本次未下发；请等待设备任务结束后重试");
+    }
+
+    /**
+     * 设备正为另一条授权开着（反制中，新-20）。同一台设备上再下发会改掉对方的输出，到时关闭也会把这次一起关掉，
+     * 所以和指令在途一样算忙；转干扰在自己来源反制开着的设备上切换输出，不算。
+     */
+    private static Rejected running() {
+        return new Rejected("DEVICE_BUSY", "DEVICE_BUSY",
+                "这台反制设备正在执行另一条反制，本次没有下发；等那条反制到时自动关闭或急停后再执行");
     }
 
     private static Rejected fault() {

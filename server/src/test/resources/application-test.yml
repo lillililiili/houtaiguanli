@@ -23,6 +23,10 @@ app:
   # 用例默认关掉；要测它的用例自己显式打开或 SpyBean 掉开关。
   automation-rules:
     enabled: false
+  # 反制设备到时自动全部关闭（新-20）产品默认打开；用例里由用例直接调 tick()，不让后台轮询中途改授权。
+  disposal:
+    device-run:
+      enabled: false
   evidence-dir: ./target/evidence-test
   map-package:
     data-dir: ./target/map-data-test

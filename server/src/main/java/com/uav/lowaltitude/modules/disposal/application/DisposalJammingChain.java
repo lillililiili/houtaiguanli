@@ -28,9 +28,11 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
- * 反制完成后自动接信号干扰。
+ * 反制生效后自动接信号干扰。
  *
- * 必须在来源授权的完成事务提交之后跑：干扰创建或下发失败不能把「反制已完成」一起回滚。
+ * 四通道反制设备在设备回“已打开”时就接上（来源反制仍是反制中，到时和干扰一起全部关闭，新-20）；
+ * 其他通道照旧在来源反制完成后接。
+ * 必须在来源授权的回执事务提交之后跑：干扰创建或下发失败不能把来源反制的回执一起回滚。
  * 普通审批链沿用原批准：批准人与批准时刻照抄原授权的真实记录，续链时刻没有人再批一次，
  * 所以批准事件不挂任何人的名字（系统沿用）。直接反制链保留 DIRECT 并重新检查发起人当前权限，不生成审批事实。
  * 两种续链的有效期都不超过原授权（ZT-41）。
@@ -65,13 +67,22 @@ public class DisposalJammingChain {
         this.emergencyStops = emergencyStops;
     }
 
-    /** 登记到当前事务 afterCommit；无事务时立即执行。 */
+    /** 来源反制完成后接干扰（四通道以外的通道）。登记到当前事务 afterCommit；无事务时立即执行。 */
     public void scheduleAfterComplete(String parentAuthorizationId) {
+        schedule(parentAuthorizationId);
+    }
+
+    /** 四通道反制设备回“已打开”后接干扰：来源反制仍在执行中（新-20）。 */
+    public void scheduleAfterDeviceOn(String parentAuthorizationId) {
+        schedule(parentAuthorizationId);
+    }
+
+    private void schedule(String parentAuthorizationId) {
         if (parentAuthorizationId == null || parentAuthorizationId.isBlank()) return;
         Runnable run = () -> {
             try { tx.executeWithoutResult(status -> chain(parentAuthorizationId)); }
             catch (RuntimeException ex) {
-                log.warn("countermeasure {} completed but auto jamming was not created: {}", parentAuthorizationId,
+                log.warn("countermeasure {} took effect but auto jamming was not created: {}", parentAuthorizationId,
                         ex.getMessage());
             }
         };
@@ -88,33 +99,33 @@ public class DisposalJammingChain {
         AuthorizationRow parent = repository.findUnlocked(parentAuthorizationId);
         if (parent == null) return;
         if (!DisposalRules.COUNTERMEASURE.equals(parent.actionType())) return;
-        if (!DisposalRules.COMPLETED.equals(parent.status())) return;
+        if (!tookEffect(parent)) return;
         if (!"UAV_EVENT".equals(parent.subjectKind())) return;
         emergencyStops.lockEvent(parent.subjectId());
         // 续链重新检查当前系统依据；历史人工记录不参与资格判定。
         String block = advisory.counterBlockReason(parent.subjectId());
         if (!block.isEmpty()) {
-            log.info("countermeasure {} completed but jamming was not chained: {}", parentAuthorizationId, block);
+            log.info("countermeasure {} took effect but jamming was not chained: {}", parentAuthorizationId, block);
             return;
         }
         if (emergencyStops.covered(parentAuthorizationId) || emergencyStops.unresolved(parent.subjectId())) return;
         // Reload after waiting for a concurrent stop; never use the pre-lock completion snapshot.
         parent = repository.findUnlocked(parentAuthorizationId);
-        if (parent == null || !DisposalRules.COMPLETED.equals(parent.status())) return;
+        if (parent == null || !tookEffect(parent)) return;
         if (repository.chainedFrom(parent.authorizationId())) return;
         if (repository.actionExists(parent.subjectKind(), parent.subjectId(), DisposalRules.JAMMING)) return;
 
         boolean direct = "DIRECT".equals(parent.authorizationMode());
         if (direct && directAccess.eligibleRequester(parent, !DisposalRules.MANUAL.equals(parent.channel())) == null) {
-            log.info("countermeasure {} completed but jamming was not chained: direct window or requester is no longer eligible", parentAuthorizationId);
+            log.info("countermeasure {} took effect but jamming was not chained: direct window or requester is no longer eligible", parentAuthorizationId);
             return;
         }
         if (!direct && (parent.approvedBy() == null || parent.approvedAt() == null)) {
-            log.info("countermeasure {} completed but jamming was not chained: no recorded approval to carry over", parentAuthorizationId);
+            log.info("countermeasure {} took effect but jamming was not chained: no recorded approval to carry over", parentAuthorizationId);
             return;
         }
         if (parent.validUntil() == null) {
-            log.info("countermeasure {} completed but jamming was not chained: no authorization window", parentAuthorizationId);
+            log.info("countermeasure {} took effect but jamming was not chained: no authorization window", parentAuthorizationId);
             return;
         }
         DisposalPolicy policy = policies.active();
@@ -124,14 +135,18 @@ public class DisposalJammingChain {
         // 续上的干扰沿用原授权，不能比原授权活得久——审批链与直接链一样截到原授权有效期（ZT-41）。
         if (parent.validUntil().isBefore(until)) until = parent.validUntil();
         if (!until.isAfter(at)) {
-            log.info("countermeasure {} completed but jamming was not chained: authorization window already ended", parentAuthorizationId);
+            log.info("countermeasure {} took effect but jamming was not chained: authorization window already ended", parentAuthorizationId);
             return;
         }
         String id = UUID.randomUUID().toString();
         String no = DisposalRules.authorizationNo(dayKey(at), repository.nextSequence(dayKey(at)));
-        String reason = "反制完成后自动发起信号干扰（来源 " + parent.authorizationNo() + "）";
-        String note = direct ? "直接反制完成后接续信号干扰，沿用原直接授权有效期"
-                : "沿用 " + parent.authorizationNo() + " 的批准（批准联动反制时已包含反制完成后的信号干扰），这次没有再审批；有效期不超过原授权";
+        // 四通道是设备打开后就转干扰（来源反制还在反制中），别的通道是反制完成后接。
+        boolean relay = DisposalRules.COUNTERMEASURE_4CH.equals(parent.channel());
+        String reason = (relay ? "反制设备打开后自动转为信号干扰（来源 " : "反制完成后自动发起信号干扰（来源 ")
+                + parent.authorizationNo() + "）";
+        String note = direct ? (relay ? "直接反制的设备打开后接续信号干扰" : "直接反制完成后接续信号干扰") + "，沿用原直接授权有效期"
+                : "沿用 " + parent.authorizationNo() + " 的批准（批准联动反制时已包含"
+                        + (relay ? "设备打开后转为信号干扰" : "反制完成后的信号干扰") + "），这次没有再审批；有效期不超过原授权";
         AuthorizationInsert insert = new AuthorizationInsert(id, no, DisposalRules.JAMMING, parent.subjectKind(),
                 parent.subjectId(), parent.targetId(), parent.deviceId(), parent.channel(), reason,
                 parent.requestedBy(), at, DisposalRules.APPROVED, parent.policyVersion(), parent.ownerOrgId(),
@@ -214,8 +229,19 @@ public class DisposalJammingChain {
         }
         String commandId = ((DisposalExecutionGateway.Accepted) dispatched).commandId();
         if (repository.transition(id, row.version(), DisposalRules.EXECUTING, at, commandId, null, null) != 1) return;
-        event(id, "EXECUTE", executor.userId(), "反制完成后自动下发", Map.of("status", DisposalRules.EXECUTING,
+        event(id, "EXECUTE", executor.userId(),
+                DisposalRules.COUNTERMEASURE_4CH.equals(row.channel()) ? "反制设备打开后自动下发" : "反制完成后自动下发",
+                Map.of("status", DisposalRules.EXECUTING,
                 "channel", row.channel(), "command_id", commandId), at);
+    }
+
+    /**
+     * 来源反制已经生效：四通道设备回了“已打开”且还在反制中（设备关了就不再接）；其他通道是已完成。
+     */
+    private boolean tookEffect(AuthorizationRow parent) {
+        if (DisposalRules.COUNTERMEASURE_4CH.equals(parent.channel()))
+            return DisposalRules.EXECUTING.equals(parent.status()) && repository.run(parent.authorizationId()) != null;
+        return DisposalRules.COMPLETED.equals(parent.status());
     }
 
     private void event(String authorizationId, String kind, String actorId, String note,

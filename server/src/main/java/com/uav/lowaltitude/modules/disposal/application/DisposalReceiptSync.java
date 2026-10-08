@@ -1,9 +1,12 @@
 package com.uav.lowaltitude.modules.disposal.application;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -15,12 +18,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
 import com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService;
+import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.AuthorizationRow;
+import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.RunRow;
+import com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
  * 把协作者 A 的 device_command 状态同步成处置授权的结局：SUCCEEDED→COMPLETED、FAILED/TIMED_OUT→FAILED。
+ *
+ * 四通道反制设备例外（2026-10-08 验收预跑 3-9 / 3-6，新-20）：启动指令（迫降 0x0F、驱离 0x0D）回“成功”只说明设备打开了，
+ * 授权保持执行中（反制中）并记一条运行记录，到时由 {@link DisposalDeviceRunTimer} 下发全部关闭；
+ * 全部关闭（0x00）回“成功”才把授权记为完成，转干扰的来源反制随干扰一起完成。
  *
  * 设备指令进入终态后立即结案。读时同步和定时扫描只兜住没发出完成事件的旧指令。
  * 采用"读时同步 + 定时兜底"（简报第 4 步二选一，选这个并记理由）：
@@ -44,14 +54,19 @@ public class DisposalReceiptSync {
     private final ObjectMapper json;
     private final DisposalJammingChain jammingChain;
     private final HandoffSubmissionService handoffs;
+    private final DisposalPolicyRepository policies;
+    private final EmergencyStopRepository stops;
     private final boolean scheduledEnabled;
 
     public DisposalReceiptSync(DisposalRepository repository, DeviceRepository devices, AppClock clock,
             ObjectMapper json, DisposalJammingChain jammingChain, HandoffSubmissionService handoffs,
+            DisposalPolicyRepository policies, EmergencyStopRepository stops,
             @Value("${app.disposal.receipt-sync.enabled:false}") boolean scheduledEnabled) {
         this.repository = repository; this.devices = devices; this.clock = clock; this.json = json;
         this.jammingChain = jammingChain;
         this.handoffs = handoffs;
+        this.policies = policies;
+        this.stops = stops;
         this.scheduledEnabled = scheduledEnabled;
     }
 
@@ -86,6 +101,14 @@ public class DisposalReceiptSync {
         if (SUCCESS.contains(commandStatus)) next = DisposalRules.COMPLETED;
         else if (FAILURE.contains(commandStatus)) next = DisposalRules.FAILED;
         else return;   // 仍在途：不猜结局。
+        Integer mask = DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())
+                ? repository.relayMask(row.executionCommandId()) : null;
+        boolean relayOn = mask != null && mask != 0;
+        boolean allOff = mask != null && mask == 0;
+        // 设备打开了还不算完成：一直算反制中，到时由系统全部关闭（新-20）。
+        if (relayOn && DisposalRules.COMPLETED.equals(next)) { deviceOn(row, command); return; }
+        // 自动全部关闭没有成功：授权仍是反制中，由 DisposalDeviceRunTimer 重试，试满再交给人急停。
+        if (allOff && DisposalRules.FAILED.equals(next)) return;
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         String resultCode = text(command.get("result_code"));
         String resultDetail = text(command.get("result_detail"));
@@ -94,17 +117,69 @@ public class DisposalReceiptSync {
         if (repository.transitionFromStatus(row.authorizationId(), DisposalRules.EXECUTING, next, at,
                 resultCode == null ? "DEVICE_" + commandStatus : resultCode, resultDetail) != 1) return;
         repository.insertEvent(UUID.randomUUID().toString(), row.authorizationId(), "RECEIPT", null,
-                "设备回执：" + commandStatus, write(Map.of("status", next, "command_status", commandStatus,
+                allOff ? "设备回执：已全部关闭" : "设备回执：" + commandStatus,
+                write(Map.of("status", next, "command_status", commandStatus,
                         "command_id", row.executionCommandId())), at);
         repository.insertEvent(UUID.randomUUID().toString(), row.authorizationId(),
                 DisposalRules.COMPLETED.equals(next) ? "COMPLETE" : "FAIL", null, null,
                 write(Map.of("status", next)), at);
-        if (DisposalRules.COMPLETED.equals(next) && DisposalRules.COUNTERMEASURE.equals(row.actionType())) {
+        // 转干扰的来源反制和干扰开的是同一台设备，设备关了它也一起完成。
+        if (allOff && DisposalRules.JAMMING.equals(row.actionType())) completeSourceCounter(row, command, at);
+        // 四通道的干扰在设备打开时就接上了（deviceOn），关了以后不再接。
+        if (!allOff && DisposalRules.COMPLETED.equals(next) && DisposalRules.COUNTERMEASURE.equals(row.actionType())) {
             jammingChain.scheduleAfterComplete(row.authorizationId());
         }
         if (DisposalRules.COMPLETED.equals(next) && DisposalRules.JAMMING.equals(row.actionType())) {
             handoffs.automaticAfterJamming(row.subjectId());
         }
+    }
+
+    /**
+     * 启动指令回“成功”：设备打开了。授权保持执行中，记下该在什么时候全部关闭。
+     * 转干扰的那条沿用来源反制的关闭时刻，两条一起关；反制打开后立即接上信号干扰（与以前接续的时机相同）。
+     */
+    private void deviceOn(AuthorizationRow seen, Map<String, Object> command) {
+        // 已经记过（读时同步、定时兜底大多走到这里就结束），不必加锁。
+        if (repository.run(seen.authorizationId()) != null) return;
+        // 回执监听和定时兜底可能同时到这里：锁住授权再确认一遍，运行记录只记一次。
+        AuthorizationRow row = repository.lockForSystem(seen.authorizationId());
+        if (row == null || !DisposalRules.EXECUTING.equals(row.status())
+                || !Objects.equals(row.executionCommandId(), seen.executionCommandId())) return;
+        if (repository.run(row.authorizationId()) != null) return;
+        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        OffsetDateTime onAt = command.get("completed_at") instanceof Number done
+                ? Instant.ofEpochMilli(done.longValue()).atOffset(ZoneOffset.UTC) : at;
+        RunRow source = DisposalRules.JAMMING.equals(row.actionType()) ? repository.run(stops.parent(row.authorizationId())) : null;
+        int seconds = source == null ? Math.max(0, policies.active().deviceRunSeconds()) : 0;
+        OffsetDateTime due = source == null ? onAt.plusSeconds(seconds) : source.offDueAt();
+        if (due.isBefore(onAt)) due = onAt; // 来源反制的关闭时刻已经过了：干扰一打开就关。
+        if (!repository.startRun(row.authorizationId(), row.deviceId(), row.executionCommandId(), onAt, due, at)) return;
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("status", DisposalRules.EXECUTING);
+        snapshot.put("command_status", String.valueOf(command.get("status")));
+        snapshot.put("command_id", row.executionCommandId());
+        snapshot.put("device_on", true);
+        snapshot.put("off_due_at", due.toInstant().toEpochMilli());
+        repository.insertEvent(UUID.randomUUID().toString(), row.authorizationId(), "RECEIPT", null,
+                source == null ? "设备回执：已打开，反制中；满 " + seconds + " 秒系统自动全部关闭，也可以随时急停"
+                        : "设备回执：已转为信号干扰，和来源反制一起到时自动全部关闭，也可以随时急停",
+                write(snapshot), at);
+        if (DisposalRules.COUNTERMEASURE.equals(row.actionType())) jammingChain.scheduleAfterDeviceOn(row.authorizationId());
+    }
+
+    /** 设备已全部关闭：接出这条干扰的来源反制仍在执行中时，一起记完成。 */
+    private void completeSourceCounter(AuthorizationRow jamming, Map<String, Object> command, OffsetDateTime at) {
+        String parentId = stops.parent(jamming.authorizationId());
+        if (parentId == null) return;
+        String resultCode = text(command.get("result_code"));
+        if (repository.transitionFromStatus(parentId, DisposalRules.EXECUTING, DisposalRules.COMPLETED, at,
+                resultCode == null ? "DEVICE_SUCCEEDED" : resultCode, text(command.get("result_detail"))) != 1) return;
+        repository.insertEvent(UUID.randomUUID().toString(), parentId, "RECEIPT", null,
+                "设备回执：已全部关闭（随信号干扰 " + jamming.authorizationNo() + " 一起关闭）",
+                write(Map.of("status", DisposalRules.COMPLETED, "command_status", String.valueOf(command.get("status")),
+                        "command_id", jamming.executionCommandId())), at);
+        repository.insertEvent(UUID.randomUUID().toString(), parentId, "COMPLETE", null, null,
+                write(Map.of("status", DisposalRules.COMPLETED)), at);
     }
 
     private static String text(Object value) { return value == null ? null : String.valueOf(value); }
