@@ -30,6 +30,13 @@ public interface SpaceRiskSpatialPort {
     List<AirportProximity> airportProximity(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes);
 
     /**
+     * 定时 C05（2026-10-08 确认书 4-3，新-27）：窗口口径与 {@link #refreshedObservations} 相同，按最新状态的写入时刻切。
+     * 只关联待执行/执行中、且时段（前后放宽 planWindowPadMinutes）盖住这次观测时刻的计划：任务时段外的异物只计数，不生成任务风险。
+     */
+    List<AirportProximity> refreshedAirportProximity(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo, OffsetDateTime observedSince,
+            int planWindowPadMinutes);
+
+    /**
      * 一个异物目标在窗口内的观测事实。
      * `corridorHalfWidthM` 为 null 表示航线走廊宽度未知——此时不能当作"在走廊外"，由决策表按未知处理。
      */

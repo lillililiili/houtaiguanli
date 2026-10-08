@@ -106,39 +106,71 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
     public List<AirportProximity> airportProximity(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes) {
         if (!postgis) return List.of();
         Map<String, Object> p = window(windowFrom, windowTo, planWindowPadMinutes);
-        return jdbc.query("""
-                SELECT survivor.target_id, sub.subtype_code, a.airport_id, a.name AS airport_name,
-                       p.plan_id, p.route_version_id,
-                       MIN(ST_Distance(pr.centerline::geography, ls.location::geography)) AS distance_procedure_m,
-                       MIN(ST_Distance(pt.location::geography, ls.location::geography)) AS distance_protected_m,
-                       COALESCE(ls.height_agl_m, ls.altitude_amsl_m) AS altitude_m,
-                       CASE WHEN ls.height_agl_m IS NOT NULL THEN 'AGL'
-                            WHEN ls.altitude_amsl_m IS NOT NULL THEN 'AMSL' END AS altitude_datum,
-                       ls.observed_at
-                FROM target t
-                LEFT JOIN target_current_alias alias ON alias.historical_target_id = t.target_id
-                JOIN target survivor ON survivor.target_id = COALESCE(alias.current_target_id, t.target_id)
-                JOIN space_object_subtype sub
-                  ON sub.enabled = TRUE
-                 AND CAST(sub.aliases AS TEXT) LIKE CONCAT('%"', COALESCE(NULLIF(survivor.subtype,''),survivor.object_type_code), '"%')
-                JOIN target_latest_state ls ON ls.target_id = survivor.target_id
-                JOIN airport a ON a.enabled = TRUE
-                 AND a.owner_org_id = survivor.owner_org_id AND a.district_id = survivor.district_id
-                LEFT JOIN airport_procedure_route pr ON pr.airport_id = a.airport_id
-                LEFT JOIN airport_protected_target pt ON pt.airport_id = a.airport_id
+        return jdbc.query(AIRPORT_SELECT + """
                 LEFT JOIN flight_plan p
                   ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
                  AND p.start_at <= :window_to_padded AND p.end_at >= :window_from_padded
                  AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
                 WHERE ls.observed_at >= :window_from AND ls.observed_at < :window_to AND ls.location IS NOT NULL
-                """ + MEASURED_FUSION_POSITION + """
-                GROUP BY survivor.target_id, sub.subtype_code, a.airport_id, a.name, p.plan_id, p.route_version_id,
-                         ls.height_agl_m, ls.altitude_amsl_m, ls.observed_at
-                ORDER BY survivor.target_id, a.airport_id
-                """, p, (rs, i) -> new AirportProximity(rs.getString("target_id"), rs.getString("subtype_code"), rs.getString("airport_id"),
+                """ + MEASURED_FUSION_POSITION + AIRPORT_GROUP, p, PostgisSpaceRiskSpatialAdapter::airport);
+    }
+
+    @Override
+    public List<AirportProximity> refreshedAirportProximity(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo,
+            OffsetDateTime observedSince, int planWindowPadMinutes) {
+        if (!postgis) return List.of();
+        Map<String, Object> p = new HashMap<>();
+        p.put("refreshed_from", refreshedFrom);
+        p.put("refreshed_to", refreshedTo);
+        p.put("observed_since", observedSince);
+        p.put("pad_minutes", planWindowPadMinutes);
+        // 任务时段按这次观测时刻判断（前后放宽 pad）：写入时刻只用来切定时窗口，不代表异物出现的时间。
+        // 只认待执行/执行中的计划：已完成、已取消的任务即使时段还没过也不再受保护。
+        return jdbc.query(AIRPORT_SELECT + """
+                LEFT JOIN flight_plan p
+                  ON p.owner_org_id = survivor.owner_org_id AND p.district_id = survivor.district_id
+                 AND p.status_code IN ('PENDING','EXECUTING')
+                 AND p.start_at <= ls.observed_at + make_interval(mins => CAST(:pad_minutes AS INTEGER))
+                 AND p.end_at >= ls.observed_at - make_interval(mins => CAST(:pad_minutes AS INTEGER))
+                 AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
+                WHERE ls.updated_at >= :refreshed_from AND ls.updated_at < :refreshed_to
+                  AND ls.observed_at >= :observed_since AND ls.location IS NOT NULL
+                """ + MEASURED_FUSION_POSITION + AIRPORT_GROUP, p, PostgisSpaceRiskSpatialAdapter::airport);
+    }
+
+    // C05 两种窗口共用的部分：异物目标（经 alias 解析到存活目标）× 同单位同区域的启用机场，取到进离场程序中心线与保护目标的最近距离。
+    private static final String AIRPORT_SELECT = """
+            SELECT survivor.target_id, sub.subtype_code, a.airport_id, a.name AS airport_name,
+                   p.plan_id, p.route_version_id,
+                   MIN(ST_Distance(pr.centerline::geography, ls.location::geography)) AS distance_procedure_m,
+                   MIN(ST_Distance(pt.location::geography, ls.location::geography)) AS distance_protected_m,
+                   COALESCE(ls.height_agl_m, ls.altitude_amsl_m) AS altitude_m,
+                   CASE WHEN ls.height_agl_m IS NOT NULL THEN 'AGL'
+                        WHEN ls.altitude_amsl_m IS NOT NULL THEN 'AMSL' END AS altitude_datum,
+                   ls.observed_at
+            FROM target t
+            LEFT JOIN target_current_alias alias ON alias.historical_target_id = t.target_id
+            JOIN target survivor ON survivor.target_id = COALESCE(alias.current_target_id, t.target_id)
+            JOIN space_object_subtype sub
+              ON sub.enabled = TRUE
+             AND CAST(sub.aliases AS TEXT) LIKE CONCAT('%"', COALESCE(NULLIF(survivor.subtype,''),survivor.object_type_code), '"%')
+            JOIN target_latest_state ls ON ls.target_id = survivor.target_id
+            JOIN airport a ON a.enabled = TRUE
+             AND a.owner_org_id = survivor.owner_org_id AND a.district_id = survivor.district_id
+            LEFT JOIN airport_procedure_route pr ON pr.airport_id = a.airport_id
+            LEFT JOIN airport_protected_target pt ON pt.airport_id = a.airport_id
+            """;
+    private static final String AIRPORT_GROUP = """
+            GROUP BY survivor.target_id, sub.subtype_code, a.airport_id, a.name, p.plan_id, p.route_version_id,
+                     ls.height_agl_m, ls.altitude_amsl_m, ls.observed_at
+            ORDER BY survivor.target_id, a.airport_id
+            """;
+
+    private static AirportProximity airport(java.sql.ResultSet rs, int ignored) throws java.sql.SQLException {
+        return new AirportProximity(rs.getString("target_id"), rs.getString("subtype_code"), rs.getString("airport_id"),
                 rs.getString("airport_name"), rs.getString("plan_id"), rs.getString("route_version_id"),
                 rs.getBigDecimal("distance_procedure_m"), rs.getBigDecimal("distance_protected_m"), rs.getBigDecimal("altitude_m"),
-                rs.getString("altitude_datum"), null, SpaceRiskRepository.time(rs, "observed_at")));
+                rs.getString("altitude_datum"), null, SpaceRiskRepository.time(rs, "observed_at"));
     }
 
     private static Map<String, Object> window(OffsetDateTime from, OffsetDateTime to, int padMinutes) {

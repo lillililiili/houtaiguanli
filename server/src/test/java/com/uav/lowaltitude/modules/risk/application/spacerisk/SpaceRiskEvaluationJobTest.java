@@ -63,6 +63,30 @@ class SpaceRiskEvaluationJobTest {
         assertThat(job.windowFrom(at(T0.plusSeconds(7200)))).isEqualTo(at(T0.plusSeconds(7200 - 1800)));
     }
 
+    /** 新-27：同一轮接着跑 C05（机场区域异物），各记各的窗口；没有启用的机场就不跑，C04 失败也不拖住 C05。 */
+    @Test
+    void airportZoneRunsOnTheSameTickWithItsOwnWindowOnlyWhenAnAirportIsEnabled() {
+        SpaceRiskEvaluationService service = mock(SpaceRiskEvaluationService.class);
+        SpaceRiskRepository repository = mock(SpaceRiskRepository.class);
+        when(repository.activeRuleSetVersion(SpaceRiskEvaluationService.RULE_SET_CODE))
+                .thenReturn(new RuleVersionRow("SPACE-RISK-DEMO", "space-risk-confirmed-v2", 2, "CONFIRMED"));
+        AppClock clock = mock(AppClock.class);
+        SpaceRiskEvaluationJob job = new SpaceRiskEvaluationJob(service, repository, new RuleEngineProperties(), clock, 30);
+
+        when(clock.now()).thenReturn(T0);
+        job.tick();
+        verify(service, never()).evaluateScheduledAirport(any(), any(), any());
+
+        when(repository.anyEnabledAirport()).thenReturn(true);
+        when(service.evaluateScheduled(any(), any(), any())).thenThrow(new IllegalStateException("database unavailable"));
+        when(clock.now()).thenReturn(T0.plusSeconds(60));
+        job.tick();
+        verify(service).evaluateScheduledAirport(at(T0.plusSeconds(60 - 1800)), at(T0.plusSeconds(60)), at(T0.plusSeconds(60 - 1800)));
+        // C04 这一轮失败、窗口不动；C05 照样推进自己的窗口。
+        assertThat(job.windowFrom(at(T0.plusSeconds(120)))).isEqualTo(at(T0.minusSeconds(30)));
+        assertThat(job.airportWindowFrom(at(T0.plusSeconds(120)))).isEqualTo(at(T0.plusSeconds(30)));
+    }
+
     @Test
     void skippedTicksDoNotEvaluate() {
         SpaceRiskEvaluationService service = mock(SpaceRiskEvaluationService.class);
@@ -72,6 +96,7 @@ class SpaceRiskEvaluationJobTest {
         when(clock.now()).thenReturn(T0);
         new SpaceRiskEvaluationJob(service, repository, new RuleEngineProperties(), clock, 30).tick();
         verify(service, never()).evaluateScheduled(any(), any(), any());
+        verify(service, never()).evaluateScheduledAirport(any(), any(), any());
     }
 
     @Test

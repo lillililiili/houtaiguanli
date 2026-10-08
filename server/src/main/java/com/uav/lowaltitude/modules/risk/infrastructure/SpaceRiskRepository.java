@@ -89,15 +89,28 @@ public class SpaceRiskRepository {
      * 有了解除依据（已离开）之后再进入，或换了新目标（新一批），才算新的一次。人工排除的风险同样算已处理，不再重复生成。
      */
     public String openC04Risk(String planId, String targetId) {
+        return openSpaceRisk("C04", planId, targetId);
+    }
+
+    /**
+     * 同 {@link #openC04Risk}，按规则代码取：C05（机场区域异物）也是"同一任务、同一目标只记一次"（2026-10-08 新-27）。
+     * C05 目前没有自动解除依据，所以一个异物在一次任务里最多一条机场区域风险。
+     */
+    public String openSpaceRisk(String ruleCode, String planId, String targetId) {
         List<String> rows = jdbc.queryForList("SELECT r.risk_id FROM flight_risk r"
                 + " JOIN space_risk_fact f ON f.risk_id=r.risk_id"
-                + " JOIN rule_version v ON v.rule_version_id=f.rule_version_id AND v.rule_code='C04'"
+                + " JOIN rule_version v ON v.rule_version_id=f.rule_version_id AND v.rule_code=:rule"
                 + " LEFT JOIN target_current_alias alias ON alias.historical_target_id=r.target_id"
                 + " WHERE r.risk_type='SPACE_OBJECT' AND r.plan_id=:plan AND COALESCE(alias.current_target_id,r.target_id)=:target"
                 + " AND NOT EXISTS (SELECT 1 FROM risk_clearance_evidence e WHERE e.risk_id=r.risk_id)"
                 + " ORDER BY r.received_at DESC, r.risk_id ASC FETCH FIRST 1 ROWS ONLY",
-                Map.of("plan", planId, "target", targetId), String.class);
+                Map.of("rule", ruleCode, "plan", planId, "target", targetId), String.class);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 有没有启用的机场：没有就不必每分钟跑一轮 C05、留一条空的运行记录。 */
+    public boolean anyEnabledAirport() {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM airport WHERE enabled = TRUE)", Map.of(), Boolean.class));
     }
 
     // ---- 评估运行 ----
