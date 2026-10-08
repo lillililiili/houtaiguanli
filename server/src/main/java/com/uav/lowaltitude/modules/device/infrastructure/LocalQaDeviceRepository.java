@@ -1,5 +1,6 @@
 package com.uav.lowaltitude.modules.device.infrastructure;
 
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +18,7 @@ public class LocalQaDeviceRepository {
                    s.enabled AS source_enabled,s.allowed_cidrs,d.device_id,d.device_no,
                    d.external_device_id,d.source_mode AS device_source_mode,d.simulated AS device_simulated,
                    d.enabled AS device_enabled,d.deleted_at,s.version AS source_version,d.version AS device_version,
+                   d.longitude,d.latitude,
                    p.transport,p.host,p.port,
                    b.owner_org_id,b.district_id
             FROM ops_integration_source s
@@ -31,6 +33,13 @@ public class LocalQaDeviceRepository {
                 UPDATE ops_device SET enabled=TRUE, deleted_at=NULL, version=version+1, updated_at=?
                 WHERE device_id=? AND version=? AND source_mode='live' AND simulated=TRUE
                 """, now, deviceId, expectedVersion) == 1;
+    }
+    /** Only a device without any position gets one; a position someone already set (设备管理) is never moved. */
+    public boolean fillPosition(String deviceId, BigDecimal longitude, BigDecimal latitude, long now) {
+        return jdbc.update("""
+                UPDATE ops_device SET longitude=?, latitude=?, coordinate_system='WGS-84', version=version+1, updated_at=?
+                WHERE device_id=? AND longitude IS NULL AND latitude IS NULL AND source_mode='live' AND simulated=TRUE
+                """, longitude, latitude, now, deviceId) == 1;
     }
     public void markNewSourceSimulated(String id) {
         if(jdbc.update("UPDATE ops_integration_source SET simulated=TRUE WHERE source_id=? AND enabled=FALSE AND version=0",id)!=1)
