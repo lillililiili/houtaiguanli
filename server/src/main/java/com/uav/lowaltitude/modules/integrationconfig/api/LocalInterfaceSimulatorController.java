@@ -27,5 +27,7 @@ public class LocalInterfaceSimulatorController {
  @PostMapping("/target-observations") public ApiResponse<AcceptedInput> targetObservations(@Valid @RequestBody TargetObservationsInput input){return ApiResponse.ok(observations.acceptTargetObservations(input));}
  @PostMapping("/weather-observations") public ApiResponse<AcceptedInput> weatherObservations(@Valid @RequestBody WeatherObservationInput input){return ApiResponse.ok(observations.acceptWeatherObservation(input));}
  @PostMapping("/bindings") public ApiResponse<Binding> binding(@Valid @RequestBody BindingInput input){return ApiResponse.ok("NOTIFICATION_CHANNEL".equals(input.sourceKind())?transport.connect(input):service.bind(input));}
+ @GetMapping("/punishment-recipients") public ApiResponse<com.uav.lowaltitude.modules.directory.application.SimulatorNotificationConfiguration.PunishmentRecipients> punishmentRecipients(){return ApiResponse.ok(transport.punishmentRecipients());}
+ @PostMapping("/punishment-recipients") public ApiResponse<com.uav.lowaltitude.modules.directory.application.SimulatorNotificationConfiguration.PunishmentRecipients> selectPunishmentRecipients(@Valid @RequestBody PunishmentRecipientsInput input){return ApiResponse.ok(transport.selectPunishmentRecipients(input.orgIds()));}
  @PostMapping("/messages/{id}/receipt") public ApiResponse<Message> receipt(@PathVariable String id,@Valid @RequestBody ReceiptInput input){return ApiResponse.ok(id.startsWith("simn-")?transport.receipt(id,input):receipts.accept(id,input));}
 }

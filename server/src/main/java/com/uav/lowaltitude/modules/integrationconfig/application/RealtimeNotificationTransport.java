@@ -49,6 +49,9 @@ public class RealtimeNotificationTransport {
   jdbc.update("UPDATE simulator_notification_receiver SET actor_id=?,enabled=?,expires_at=? WHERE receiver_id='receiver'",actor.userId(),input.enabled(),expiry);
   return new Binding("NOTIFICATION_CHANNEL","receiver",input.enabled(),expiry);
  }
+ /** 模拟器"实时收发设置"里的处罚接收单位：读当前选择，或按所选单位接到数据模拟器（D-1）。 */
+ public SimulatorNotificationConfiguration.PunishmentRecipients punishmentRecipients(){authorize();return settings.punishmentRecipients();}
+ @Transactional public SimulatorNotificationConfiguration.PunishmentRecipients selectPunishmentRecipients(List<String> orgIds){authorize();return settings.selectPunishmentRecipients(orgIds);}
  @Transactional public Message submit(String kind,String subject,String attempt,JsonNode payload){
   if(!KINDS.contains(kind)||attempt==null||attempt.isBlank()||attempt.length()>256)throw conflict("通知请求类型或标识无效");
   if(!online())throw conflict("数据模拟器接收端未连接或心跳已失效");
