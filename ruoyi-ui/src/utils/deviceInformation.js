@@ -1,4 +1,4 @@
-import { formatTime } from '@/utils/format.js';
+import { formatDeviceNo, formatTime } from '@/utils/format.js';
 
 export const informationStates = {
   RECEIVED: ['已获取', 'success'], CONFIGURED: ['已登记', 'info'], STALE: ['已过期', 'warning'],
@@ -8,6 +8,7 @@ export const informationStates = {
 export function informationValue(field) {
   if (field.value === null || field.value === undefined || field.value === '') return '—';
   if (field.unit === 'epoch_ms') return formatTime(field.value);
+  if (field.key === 'device_no') return formatDeviceNo(field.value);
   if (typeof field.value === 'boolean') return field.value ? '是 / 开启' : '否 / 关闭';
   if (typeof field.value === 'object') return JSON.stringify(field.value, null, 2);
   return String(field.value);

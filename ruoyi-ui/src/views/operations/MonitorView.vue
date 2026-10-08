@@ -8,7 +8,7 @@ import ErrorAlert from '@/components/ErrorAlert.vue';
 import DeviceTrendPanel from '@/components/DeviceTrendPanel.vue';
 import EoTaskPanel from './EoTaskPanel.vue';
 import { deviceApi } from '@/api/devices.js';
-import { display, formatTime, statusText, statusType } from '@/utils/format.js';
+import { display, formatDeviceNo, formatTime, statusText, statusType } from '@/utils/format.js';
 
 const filters = reactive({ keyword: '', channel: '', type_code: '' });
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0 });
@@ -208,7 +208,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
         <div class="device-tree-list">
           <details v-for="[name,items] in groups" :key="name" open class="device-tree-group"><summary>{{ name }}<span>{{ items.length }}</span></summary>
             <details v-for="[type,members] in typeGroups(items)" :key="type" open class="device-type-group"><summary>{{ type }}<span>{{ members.length }}</span></summary>
-              <button v-for="item in members" :key="item.device_id" type="button" class="device-tree-item" :class="{active:item.device_id===selectedId}" @click="selectDevice(item)"><span class="device-tree-copy"><b>{{ item.name }}</b><small class="mono">{{ item.device_no }}</small></span><el-tag class="device-tree-status" size="small" :type="statusType(item.connectivity)" effect="plain">{{ statusText(item.connectivity) }}</el-tag></button>
+              <button v-for="item in members" :key="item.device_id" type="button" class="device-tree-item" :class="{active:item.device_id===selectedId}" @click="selectDevice(item)"><span class="device-tree-copy"><b>{{ item.name }}</b><small class="mono" :title="item.device_no">{{ formatDeviceNo(item.device_no) }}</small></span><el-tag class="device-tree-status" size="small" :type="statusType(item.connectivity)" effect="plain">{{ statusText(item.connectivity) }}</el-tag></button>
             </details>
           </details><el-empty v-if="!loading&&!tree.length" description="没有匹配的设备" />
         </div>
@@ -217,7 +217,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
 
       <div class="monitor-column">
         <el-card v-loading="selectedLoading">
-          <template #header><div class="table-toolbar"><b>设备运行监控</b><span class="mono muted">{{ selected?.device_no || '未选择设备' }}</span></div></template>
+          <template #header><div class="table-toolbar"><b>设备运行监控</b><span class="mono muted" :title="selected?.device_no">{{ selected ? formatDeviceNo(selected.device_no) : '未选择设备' }}</span></div></template>
           <el-empty v-if="!state" description="请选择设备查看状态" />
           <template v-else>
             <div class="state-hero"><article><small>连接状态</small><strong>{{ statusText(state.connectivity) }}</strong></article><article><small>健康状态</small><strong>{{ healthText(state.health_code) }}</strong></article><article><small>最后心跳</small><strong class="mono">{{ formatTime(state.last_heartbeat_at) }}</strong></article></div>

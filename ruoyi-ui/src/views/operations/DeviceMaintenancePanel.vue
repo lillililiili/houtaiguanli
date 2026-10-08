@@ -5,7 +5,7 @@ import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useRouter } from 'vue-router';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
-import { formatTime, statusText } from '@/utils/format.js';
+import { formatDeviceNo, formatTime, statusText } from '@/utils/format.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { maintenanceLocation, maintenanceMeta, maintenanceState } from './maintenance/useMaintenanceWorkflow.js';
 
@@ -83,7 +83,7 @@ defineExpose({ reload });
     <ErrorAlert :message="error" @retry="reload(true)" />
     <p v-if="error && items.length" class="muted">刷新失败，下方保留上次读取的待办。</p>
     <el-table v-loading="loading" :data="items" empty-text="当前没有这类运维待办">
-      <el-table-column label="异常设备" min-width="190"><template #default="{row}"><b>{{ row.device_name }}</b><div class="muted">{{ row.device_no }}</div><el-tag v-if="row.simulated" size="small" type="info">模拟设备</el-tag></template></el-table-column>
+      <el-table-column label="异常设备" min-width="190"><template #default="{row}"><b>{{ row.device_name }}</b><div class="muted" :title="row.device_no">{{ formatDeviceNo(row.device_no) }}</div><el-tag v-if="row.simulated" size="small" type="info">模拟设备</el-tag></template></el-table-column>
       <el-table-column prop="reason" label="异常说明" min-width="240" />
       <el-table-column label="上报时间" min-width="175"><template #default="{row}">{{ formatTime(row.reported_at) }}</template></el-table-column>
       <el-table-column label="状态" width="125"><template #default="{row}"><el-tag :type="maintenanceMeta(maintenanceState(row)).tone">{{ maintenanceMeta(maintenanceState(row)).label }}</el-tag></template></el-table-column>
@@ -93,7 +93,7 @@ defineExpose({ reload });
     <el-dialog v-model="open" title="设备异常运维待办" width="min(680px, 94vw)" destroy-on-close>
       <template v-if="selected">
         <el-descriptions :column="1" border>
-          <el-descriptions-item label="设备">{{ selected.device_name }} · {{ selected.device_no }}</el-descriptions-item>
+          <el-descriptions-item label="设备"><span :title="selected.device_no">{{ selected.device_name }} · {{ formatDeviceNo(selected.device_no) }}</span></el-descriptions-item>
           <el-descriptions-item label="关联计划">{{ selected.plan_no || selected.plan_id || '无关联计划查看权限' }}</el-descriptions-item>
           <el-descriptions-item label="首次上报时连接状态">{{ statusText(selected.connectivity) }}</el-descriptions-item>
           <el-descriptions-item label="首次上报时健康状态">{{ ({GOOD:'良好',BAD:'异常',DEGRADED:'异常',UNKNOWN:'未知'})[selected.health_code] || '未知' }}</el-descriptions-item>

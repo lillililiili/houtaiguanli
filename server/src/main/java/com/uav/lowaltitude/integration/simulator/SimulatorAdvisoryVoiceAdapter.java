@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.integration.simulator;
-import java.util.Map;
 import java.util.Set;
+import java.util.Base64;
+import java.util.LinkedHashMap;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 import org.springframework.context.annotation.Profile;
@@ -15,8 +16,8 @@ import com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotific
 @ConditionalOnProperty(prefix="app.notifications",name="transport",havingValue="simulator")
 public class SimulatorAdvisoryVoiceAdapter implements AdvisoryVoicePort {
  private final RealtimeNotificationTransport transport;private final AutoVoiceRepository tasks;
- private final ObjectProvider<NotificationDirectoryService> directory;private final ObjectMapper json;
- public SimulatorAdvisoryVoiceAdapter(RealtimeNotificationTransport transport,AutoVoiceRepository tasks,ObjectProvider<NotificationDirectoryService> directory,ObjectMapper json){this.transport=transport;this.tasks=tasks;this.directory=directory;this.json=json;}
+ private final ObjectProvider<NotificationDirectoryService> directory;private final ObjectMapper json;private final AdvisoryVoiceRecording recordings;
+ public SimulatorAdvisoryVoiceAdapter(RealtimeNotificationTransport transport,AutoVoiceRepository tasks,ObjectProvider<NotificationDirectoryService> directory,ObjectMapper json,AdvisoryVoiceRecording recordings){this.transport=transport;this.tasks=tasks;this.directory=directory;this.json=json;this.recordings=recordings;}
  public boolean simulationAvailable(String mode){return Set.of("mock","replay").contains(mode==null?"":mode)&&transport.online();}
  public Delivery simulate(String mode,AdvisoryVoiceRecording.Recording recording,String key){
   if(!simulationAvailable(mode)||key==null||!key.startsWith("auto-advisory-voice:"))throw new IllegalStateException("数据模拟器电话接收端不可用");
@@ -24,7 +25,13 @@ public class SimulatorAdvisoryVoiceAdapter implements AdvisoryVoicePort {
   if(task==null||!"CALLING".equals(task.status())||!key.equals(task.providerKey())||task.token()==null||!task.recordingMatches(recording))throw new IllegalStateException("电话发送尝试或录音已变更");
   var recipient=directory.getObject().advisoryHistoryRecipient("ADVISORY_VOICE",event);
   if(recipient==null)throw new IllegalStateException("电话接收快照缺失");
-  transport.submit("ADVISORY_VOICE",event,key+":"+task.token(),json.valueToTree(Map.of("provider_key",key,"claim_token",task.token(),"recipient",recipient,"recording",recording,"requested_at",task.updatedAt())));
+  byte[] audio=recordings.content(recording);
+  if(audio==null)throw new IllegalStateException("电话录音内容不可用");
+  var payload=new LinkedHashMap<String,Object>();
+  payload.put("provider_key",key);payload.put("claim_token",task.token());payload.put("recipient",recipient);
+  payload.put("recording",recording);payload.put("recording_audio_base64",Base64.getEncoder().encodeToString(audio));
+  payload.put("requested_at",task.updatedAt());
+  transport.submit("ADVISORY_VOICE",event,key+":"+task.token(),json.valueToTree(payload));
   return new Delivery(true,"SUBMITTED",null,null,null);
  }
 }

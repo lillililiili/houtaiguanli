@@ -8,6 +8,37 @@ export function display(value, fallback = '—') {
   return value === null || value === undefined || value === '' ? fallback : value;
 }
 
+const simulatorDeviceKinds = {
+  '5ga': '5G-A',
+  tdoa: 'TDOA',
+  radar: 'RADAR',
+  eo: 'EO',
+  weather: 'WX',
+  countermeasure: 'CM',
+};
+
+function compactSimulatorId(value) {
+  let hash = 2166136261;
+  for (const character of value) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+  return (hash >>> 0).toString(36).slice(-5).toUpperCase();
+}
+
+export function formatDeviceNo(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  const text = String(value);
+  const legacy = /^sim-\d{10}-([0-9a-f]{4})-(\d+)$/i.exec(text);
+  if (legacy) return `SIM-${legacy[1]}-${legacy[2]}`;
+  const match = /^map-sim-([a-z0-9]+)-(.+)$/i.exec(text);
+  if (match) {
+    const kind = simulatorDeviceKinds[match[1].toLowerCase()] || match[1].toUpperCase();
+    const rawId = match[2];
+    const compactId = /^d-[^-]+-([a-z0-9]+)$/i.exec(rawId)?.[1]
+      || (rawId.length <= 8 ? rawId : compactSimulatorId(rawId));
+    return `${kind}-${compactId}`;
+  }
+  return text;
+}
+
 export function statusType(value) {
   return ({ ONLINE: 'success', GOOD: 'success', ACTIVE: 'success', PASSED: 'success', SUCCESS: 'success',
     ABNORMAL: 'danger', BAD: 'danger', FAILED: 'danger', FAILURE: 'danger', DISABLED: 'info', OFFLINE: 'info',

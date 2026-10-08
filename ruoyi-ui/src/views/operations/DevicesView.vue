@@ -13,7 +13,7 @@ import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
 import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useAuthStore } from '@/stores/auth.js';
-import { display, formatTime, statusText, statusType } from '@/utils/format.js';
+import { display, formatDeviceNo, formatTime, statusText, statusType } from '@/utils/format.js';
 
 const MQTT_PROTOCOL = 'LINGYUN_MQTT_V8_6';
 const EO_PROTOCOL = 'EO_EDGE_MQTT_20250826';
@@ -24,7 +24,7 @@ const deviceTypes = [
   { code: 'eo', name: '光电设备', protocols: [EO_PROTOCOL] },
   { code: 'counter', name: '四通道反制设备', protocols: [COUNTER_PROTOCOL] },
   { code: 'weather_sensor', name: '天气传感器', protocols: [] },
-  ...[['5ga', '5G-A'], ['tdoa', 'TDOA'], ['aoa', 'AOA'], ['dcd', '协议破解'], ['rid', 'RemoteID'], ['dec', '诱骗'], ['ifr', '干扰'], ['bsc', '驱鸟炮']]
+  ...[['5ga', '5G-A'], ['tdoa', 'TDOA']]
     .map(([code, name]) => ({ code, name, protocols: [MQTT_PROTOCOL] }))
 ];
 const selectedType = ref('');
@@ -349,7 +349,7 @@ async function saveDevice() {
 async function toggleDevice(row) {
   if (!canOperate.value) return;
   try {
-    const { value } = await ElMessageBox.prompt(`${row.enabled ? '停用后会断开协议连接，并拒绝新建调测任务。' : '启用后会按配置重新建立协议连接。'}请输入操作原因：`, `${row.enabled ? '停用' : '启用'}设备 · ${row.device_no}`, { inputType: 'textarea', inputValidator: value => value?.trim().length >= 2 || '原因至少填写 2 个字符', confirmButtonText: '确认', cancelButtonText: '取消' });
+    const { value } = await ElMessageBox.prompt(`${row.enabled ? '停用后会断开协议连接，并拒绝新建调测任务。' : '启用后会按配置重新建立协议连接。'}请输入操作原因：`, `${row.enabled ? '停用' : '启用'}设备 · ${formatDeviceNo(row.device_no)}`, { inputType: 'textarea', inputValidator: value => value?.trim().length >= 2 || '原因至少填写 2 个字符', confirmButtonText: '确认', cancelButtonText: '取消' });
     await deviceApi.setEnabled(row.device_id, { enabled: !row.enabled, version: row.version, reason: value.trim() });
     ElMessage.success(`设备已${row.enabled ? '停用' : '启用'}，审计记录已写入`); await loadList();
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || String(e)); }
@@ -360,7 +360,7 @@ async function deleteDevice(row) {
   if (row.enabled) { ElMessage.warning('请先停用设备，再执行删除'); return; }
   deletingId.value = row.device_id;
   try {
-    const { value } = await ElMessageBox.prompt(`确认删除设备“${row.name}”（${row.device_no}）？删除后将从台账和监控列表移除，保留历史记录及设备编号，不能重新启用。请输入删除原因：`, '删除设备', {
+    const { value } = await ElMessageBox.prompt(`确认删除设备“${row.name}”（${formatDeviceNo(row.device_no)}）？删除后将从台账和监控列表移除，保留历史记录及设备编号，不能重新启用。请输入删除原因：`, '删除设备', {
       type: 'warning', inputType: 'textarea', confirmButtonText: '确认删除', cancelButtonText: '取消',
       inputValidator: value => (value?.trim().length >= 2 && value.trim().length <= 500) || '删除原因需填写 2–500 个字符'
     });
@@ -448,7 +448,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
       </div>
         <div class="table-toolbar"><span class="table-toolbar__title">设备台账</span><span class="muted">默认优先显示异常、离线和未知设备</span></div>
         <div class="table-scroll"><el-table v-loading="loading" :data="table.items" max-height="560" row-key="device_id" :row-class-name="({row}) => row.device_id===selectedId?'selected-row':''" @row-click="selectRow">
-          <el-table-column prop="device_no" label="设备编号" min-width="135" fixed />
+          <el-table-column label="设备编号" min-width="135" fixed><template #default="{row}"><span class="device-number" :title="row.device_no">{{ formatDeviceNo(row.device_no) }}</span></template></el-table-column>
           <el-table-column prop="name" label="设备名称" min-width="160" show-overflow-tooltip />
           <el-table-column label="类型 / 通道" min-width="125"><template #default="{row}">{{ display(row.device_type_name) }}<span class="cell-secondary">{{ display(row.channel) }}</span></template></el-table-column>
           <el-table-column label="产权单位 / 位置" min-width="170"><template #default="{row}">{{ display(row.owner_name) }}<span class="cell-secondary">{{ row.address || row.region_name || '未登记位置' }}</span></template></el-table-column>
@@ -464,7 +464,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
       <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)" />
     </div>
 
-    <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing ? `编辑设备 · ${deviceForm.device_no}` : '接入设备'" width="min(990px, 94vw)" top="5vh" class="device-access-dialog" destroy-on-close :close-on-click-modal="!deviceDialog.saving" :close-on-press-escape="!deviceDialog.saving" :show-close="!deviceDialog.saving">
+    <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing ? `编辑设备 · ${formatDeviceNo(deviceForm.device_no)}` : '接入设备'" width="min(990px, 94vw)" top="5vh" class="device-access-dialog" destroy-on-close :close-on-click-modal="!deviceDialog.saving" :close-on-press-escape="!deviceDialog.saving" :show-close="!deviceDialog.saving">
       <el-form ref="deviceFormRef" :model="deviceForm" label-position="top" :disabled="deviceDialog.saving" class="access-form">
         <section class="access-section">
           <div class="access-section-title"><span>1</span><h3>选择设备类型</h3><small>{{ deviceDialog.editing ? '接入身份创建后不可修改' : '不同类型展示对应配置' }}</small></div>
@@ -564,6 +564,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
 .device-filters .el-input { width: 180px; }
 .devices-list-panel .table-scroll { height: auto; }
 .devices-list-panel .pagination-row { flex-wrap: wrap; }
+.device-number { display: inline-block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; vertical-align: bottom; }
 :global(.device-access-dialog) { display: flex; flex-direction: column; max-height: 90vh; }
 :global(.device-access-dialog .el-dialog__body) { overflow-y: auto; min-height: 0; }
 :global(.device-access-dialog .el-dialog__header), :global(.device-access-dialog .el-dialog__footer) { flex-shrink: 0; }

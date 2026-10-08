@@ -75,6 +75,15 @@ it('统一入口，选择类型前不显示 TCP 参数，切换后只显示相�
   expect([...dialog().querySelectorAll('input')].some(el => el.value === '保留名称')).toBe(true);
   await click('雷达'); expect([...dialog().querySelectorAll('input')].some(el => el.value === '192.0.2.20')).toBe(false);
 });
+it('接入设备只展示已开放的六类设备类型', async () => {
+  await mount(); await click('接入设备');
+  expect([...dialog().querySelectorAll('.access-type')].map(el => el.textContent.trim())).toEqual([
+    '雷达', '光电设备', '四通道反制设备', '天气传感器', '5G-A', 'TDOA'
+  ]);
+  for (const hiddenType of ['AOA', '协议破解', 'RemoteID', '诱骗', '干扰', '驱鸟炮']) {
+    expect(dialog().textContent).not.toContain(hiddenType);
+  }
+});
 it('天气传感器提交档案接口，不调用普通设备接入', async () => {
   await mount(); await click('接入设备'); await click('天气传感器');
   await fill('设备编号', 'WX-002'); await fill('设备名称', '气象站'); await choose('所属单位 / 区域', '单位 / 东区');
