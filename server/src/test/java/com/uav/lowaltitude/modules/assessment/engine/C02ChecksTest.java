@@ -114,6 +114,12 @@ class C02ChecksTest {
         assertThat(detail.reasonCode()).isEqualTo("CORRIDOR_WIDTH_UNKNOWN");
         HitDetail none = check.evaluate(context(state(), noPlan(), List.of(), null), params);
         assertThat(none.resultCode()).isEqualTo(ResultCode.NOT_APPLICABLE);
+        // 对不上任务（NONE）时挂着的本机计划只作时间窗、高度参考：离航线再远也不比偏航，原因只留无飞行授权（新-15）。
+        PlanMatch ownPlanOutsideCorridor = new PlanMatch(PlanMatchCode.NONE, full().plan(),
+                Map.of("time_window", "MATCH", "corridor", "MISMATCH", "identity", "MATCH"), List.of("CORRIDOR_MISMATCH"));
+        HitDetail unmatched = check.evaluate(context(state(), ownPlanOutsideCorridor, List.of(), null), params);
+        assertThat(unmatched.resultCode()).isEqualTo(ResultCode.NOT_APPLICABLE);
+        assertThat(unmatched.reasonCode()).isEqualTo("NO_PLAN");
     }
 
     @Test

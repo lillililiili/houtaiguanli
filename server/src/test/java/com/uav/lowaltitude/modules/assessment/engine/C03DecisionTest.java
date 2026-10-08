@@ -307,6 +307,22 @@ class C03DecisionTest {
     }
 
     @Test
+    void unmatchedTaskWithoutDeviationKeepsTheSameScoreGradeAndPrimaryReason() {
+        // 新-15：对不上任务时 C02-3 不再判偏航。无飞行授权 0.8 本来就比偏航 0.6 重，分数、等级、主原因与原来逐位相同，只少列一条偏航。
+        PlanMatch own = new PlanMatch(PlanMatchCode.NONE, full().plan(), Map.of("time", "MATCH", "corridor", "MISMATCH", "identity", "MATCH"), List.of("CORRIDOR_MISMATCH"));
+        EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), own);
+        HitDetail notApplicable = new HitDetail("C02-3", "rv-C02-3", ResultCode.NOT_APPLICABLE, "NO_PLAN", null, Map.of(), List.of(), List.of(), "不适用");
+        Decision before = decision.decide(ctx, List.of(pass("C02-1"), fail("C02-3", "ROUTE_DEVIATION")), params);
+        Decision after = decision.decide(ctx, List.of(pass("C02-1"), notApplicable), params);
+        assertThat(before.violationReasons()).containsExactly("NO_AUTHORIZATION", "ROUTE_DEVIATION");
+        assertThat(after.violationReasons()).containsExactly("NO_AUTHORIZATION");
+        assertThat(after.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(after.reasonCode()).isEqualTo(before.reasonCode()).isEqualTo("NO_AUTHORIZATION");
+        assertThat(after.score()).isEqualByComparingTo(before.score());
+        assertThat(after.grade()).isEqualTo(before.grade());
+    }
+
+    @Test
     void ignoredUndeterminedRulesStillAllowLegalButOthersDoNot() {
         EvaluationContext ctx = context(Freshness.FRESH, state("0.90"), goodTrack(), full());
         Decision legal = decision.decide(ctx, List.of(pass("C02-1"), pass("C02-3"), undetermined("C02-6", "PILOT_POSITION_UNAVAILABLE")), params);
