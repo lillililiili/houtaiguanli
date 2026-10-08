@@ -21,6 +21,8 @@ app:
     media-hls-origin: ${APP_VIDEO_MEDIA_HLS_ORIGIN:http://127.0.0.1:8888}
     media-username: ${APP_VIDEO_MEDIA_USERNAME:qa-platform}
     media-password: ${APP_VIDEO_MEDIA_PASSWORD:}
+    # 未设置上面的读取密码时，读设备模拟器"开启视频推流"自动生成的本机私有凭据文件（只取 read）。
+    media-password-file: ${APP_VIDEO_MEDIA_PASSWORD_FILE:${user.home}/.dongying-qa/qa-video-credentials.json}
   dev-seed:
     enabled: false
   fusion:
