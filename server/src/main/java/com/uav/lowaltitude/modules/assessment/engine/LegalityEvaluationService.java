@@ -169,8 +169,6 @@ public class LegalityEvaluationService {
         // Keep decisive airspace violations on the existing independent evidence path.
         // 无计划（NO_AUTHORIZATION，来自 C03.no_plan_status）也不靠行为偏差成立：数据质量已过第 2 步质量门、类别明确为无人机，
         // 不能因为夜航等行为项"依据不足"把它降成不可判定、不出告警；计划授权待核对仍由 decision_assurance 交给人工复核。
-        // 单独超视距（C02-6）不经这道门：它只看飞手与目标两点的距离、不依赖计划身份，C03 已把等级固定为 LOW，照常告警；
-        // 与行为偏差同时出现时按行为偏差处理（与没有超视距时一致），依据不足照旧降为不可判定。
         boolean behaviourViolation = hits.stream().anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode())
                 && hit.resultCode() == RuleContracts.ResultCode.FAIL);
         boolean airspaceViolation = hits.stream().anyMatch(hit -> RuleCodes.AIRSPACE_CHECKS.contains(hit.ruleCode())
@@ -280,7 +278,7 @@ public class LegalityEvaluationService {
 
     private static TargetState state(Resolved resolved, String trackId, StateRow row) {
         BigDecimal confidence = row.fusionConfidence() != null ? row.fusionConfidence() : row.classificationConfidence();
-        // 阶段 8.5：飞手位置随最新状态一起进规则，C02-6 才判得出超视距（共享改动，见 task-8.5.2 报告）。
+        // 阶段 8.5：飞手位置随最新状态一起进规则，C02-6 才算得出飞手离无人机多远（共享改动，见 task-8.5.2 报告；新-29 起只作提示）。
         return new TargetState(resolved.targetId(), trackId, resolved.uavSn(), row.longitude(), row.latitude(), row.altitudeAmslM(), row.heightAglM(),
                 row.speedMps(), row.headingDeg(), confidence, row.observedAt(), row.receivedAt(),
                 row.pilotLongitude(), row.pilotLatitude(), row.pilotObservedAt());

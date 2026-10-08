@@ -32,9 +32,10 @@ public final class UavAdvisoryRules {
         return null;
     }
     /**
-     * 研判的未知原因都不挡反制和暂不反制时为 true。只有“没有飞手位置”不挡：它只让 C02-6 超视距判不了，
+     * 研判的未知原因都不挡反制和暂不反制时为 true。只有“没有飞手位置”不挡：它只让 C02-6 飞手距离算不出，
      * C03 本来就忽略它、不因此不可判定（2026-10-07 业务决定）；黑飞常常测不到遥控器位置，不能因此连人工反制都申请不了
-     * （2026-10-08 验收预跑 3-4 / 8-8，新-19）。其他未知照样挡，读不出的也挡。
+     * （2026-10-08 验收预跑 3-4 / 8-8，新-19）。新-29 起这一项不判、不再记进未知原因，这里照旧放行以前的研判。
+     * 其他未知照样挡，读不出的也挡。
      */
     public static boolean noBlockingUnknowns(java.util.List<String> reasons) {
         return reasons != null && reasons.stream().allMatch(RuleCodes.PILOT_POSITION_UNAVAILABLE::equals);

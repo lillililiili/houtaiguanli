@@ -104,6 +104,29 @@ class TargetSummariesApiTest {
     }
 
     @Test
+    void legalitySummaryCarriesThePilotDistanceNoteOfTheLatestEvaluation() throws Exception {
+        // 新-29：飞手离得远只作提示，目标详情（“遥控器位置”后面）照样写这句，同时有别的违规（这里是禁飞区）时也写；
+        // 研判明细里没有这句时整项省略，不给空串。
+        String targetId = target();
+        legality(targetId, "ILLEGAL", "MEDIUM");
+        assertThat(detail(targetId).path("legality_summary").path("legal_status").asText()).isEqualTo("ILLEGAL");
+        assertThat(detail(targetId).path("legality_summary").has("pilot_distance_note")).isFalse();
+
+        String note = "飞手离无人机约 800 米（超过 500 米），是否经批准请核实";
+        jdbc.update("update rule_evaluation set hit_details=CAST(? AS JSON) where target_id=?",
+                "[{\"rule_code\":\"C02-5\",\"result_code\":\"PASS\",\"facts\":{}},"
+                        + "{\"rule_code\":\"C02-6\",\"result_code\":\"PASS\",\"facts\":{\"distance_m\":800.0,\"vlos_m\":500,"
+                        + "\"beyond_vlos\":true,\"pilot_distance_note\":\"" + note + "\"}}]", targetId);
+        assertThat(detail(targetId).path("legality_summary").path("pilot_distance_note").asText()).isEqualTo(note);
+        JsonNode listed = null;
+        for (JsonNode item : allItems("/api/v1/targets?size=100")) {
+            if (targetId.equals(item.path("target_id").asText())) listed = item;
+        }
+        assertThat(listed).isNotNull();
+        assertThat(listed.path("legality_summary").path("pilot_distance_note").asText()).isEqualTo(note);
+    }
+
+    @Test
     void onlyTheLatestOfEachKindIsReported() throws Exception {
         String targetId = target();
         risk(targetId, "LOW", "EXCLUDED", Instant.parse("2026-09-08T01:00:00Z"));

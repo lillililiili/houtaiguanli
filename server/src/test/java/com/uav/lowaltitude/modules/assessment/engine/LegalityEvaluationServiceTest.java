@@ -474,65 +474,88 @@ class LegalityEvaluationServiceTest {
     }
 
     /**
-     * 阶段 8.5：飞手位置写进 target_latest_state 之后，C02-6 从"恒未知"变成可判定。
-     * 目标在 POINT(118.025 37.025)：飞手北移 0.01° 约 1111 m（超 500 m 阈值），北移 0.0005° 约 55 m（阈内）。
+     * 阶段 8.5：飞手位置写进 target_latest_state 之后，C02-6 才算得出飞手离无人机多远；新-29 起只作提示、不判违规。
+     * 目标在 POINT(118.025 37.025)：飞手北移 0.01° 约 1112 m（超 500 m 阈值），北移 0.0005° 约 55 m（阈内）。
      */
     @Test
-    void visualLineOfSightBecomesDecidableOncePilotPositionIsStored() throws Exception {
-        assertThat(check(evaluateActive(), "C02-6").path("reason_code").asText(null))
-                .as("没有飞手位置时仍是未知").isEqualTo("PILOT_POSITION_UNAVAILABLE");
+    void pilotDistanceIsMeasuredOncePilotPositionIsStored() throws Exception {
+        JsonNode none = check(evaluateActive(), "C02-6");
+        assertThat(none.get("result_code").asText()).as("没有遥控器位置这一项不判").isEqualTo("NOT_APPLICABLE");
+        assertThat(none.path("reason_code").asText(null)).isEqualTo("PILOT_POSITION_UNAVAILABLE");
 
         setPilot("118.025 37.035");
         JsonNode far = check(evaluateActive(), "C02-6");
-        assertThat(far.get("result_code").asText()).isEqualTo("FAIL");
-        assertThat(far.get("reason_code").asText()).isEqualTo("BVLOS_EXCEEDED");
+        assertThat(far.get("result_code").asText()).isEqualTo("PASS");
+        assertThat(far.path("reason_code").isMissingNode() || far.path("reason_code").isNull()).isTrue();
         assertThat(far.path("facts").path("distance_m").asDouble()).isBetween(1000.0, 1200.0);
+        assertThat(far.path("facts").path("beyond_vlos").asBoolean()).isTrue();
+        assertThat(far.path("facts").path("pilot_distance_note").asText()).isEqualTo("飞手离无人机约 1112 米（超过 500 米），是否经批准请核实");
 
         setPilot("118.025 37.0255");
         JsonNode near = check(evaluateActive(), "C02-6");
         assertThat(near.get("result_code").asText()).isEqualTo("PASS");
         assertThat(near.path("facts").path("distance_m").asDouble()).isLessThan(500.0);
+        assertThat(near.path("facts").has("beyond_vlos")).isFalse();
+        assertThat(near.path("facts").has("pilot_distance_note")).isFalse();
     }
 
     /**
-     * 2026-10-07：只有超视距一项违规 → ILLEGAL、等级 LOW、可告警，计划与身份都对得上时证据充分。
-     * 目标在 POINT(118.025 37.025)，飞手正北 0.0071946° 约 800 m；没有飞手位置时仍是 LEGAL、不告警。
+     * 新-29（2026-10-08，法规核对，确认书 2-10）：有任务的无人机按航线飞、遥控器在 800 米外，只提示“是否经批准请核实”，
+     * 判合法、不告警，证据照常充分；没有遥控器位置的同样合法，未知原因里也不再记“没有飞手位置”。
+     * 目标在 POINT(118.025 37.025)，飞手正北 0.0071946° 约 800 m。
      */
     @Test
-    void bvlosAloneIsIllegalWithLowGradeAndEligibleForAlarm() throws Exception {
+    void farPilotAloneStaysLegalWithANoteAndNoAlarm() throws Exception {
         var legal = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
         assertThat(legal.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
-        assertThat(legal.unknownReasons()).containsExactly("PILOT_POSITION_UNAVAILABLE");
+        assertThat(legal.unknownReasons()).isEmpty();
         assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
 
         setPilot("118.025 37.0321946");
         var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
-        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
-        assertThat(result.grade()).isEqualTo("LOW");
-        assertThat(result.violationReasons()).containsExactly("BVLOS_EXCEEDED");
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+        assertThat(result.grade()).isNull();
+        assertThat(result.violationReasons()).isEmpty();
         assertThat(result.unknownReasons()).isEmpty();
-        assertThat(hooks.outcomes.get(1).alarmEligible()).isTrue();
-        assertThat(hooks.outcomes.get(1).grade()).isEqualTo("LOW");
+        assertThat(result.alarmCreated()).isFalse();
+        assertThat(hooks.outcomes.get(1).alarmEligible()).isFalse();
         Map<String, Object> row = jdbc.queryForMap("select grade,decision_assurance_code,hit_details from rule_evaluation where evaluation_id=?", result.evaluationId());
-        assertThat(row.get("grade")).isEqualTo("LOW");
+        assertThat(row.get("grade")).isNull();
         assertThat(row.get("decision_assurance_code")).isEqualTo("SUFFICIENT");
-        assertThat(check(row.get("hit_details"), "C02-6").path("message").asText())
-                .isEqualTo("超视距飞行（飞手离无人机约 800 米，超过 500 米）；参数为 DEMO 演示值，尚未确认");
+        JsonNode pilot = check(row.get("hit_details"), "C02-6");
+        assertThat(pilot.path("result_code").asText()).isEqualTo("PASS");
+        assertThat(pilot.path("message").asText()).isEqualTo("飞手离无人机约 800 米（超过 500 米），是否经批准请核实；参数为 DEMO 演示值，尚未确认");
+        assertThat(pilot.path("facts").path("pilot_distance_note").asText()).isEqualTo("飞手离无人机约 800 米（超过 500 米），是否经批准请核实");
+    }
+
+    /** 同时闯了禁飞区：照常按禁飞区判非法、高风险告警，违规原因里没有超视距，那句提示照样留在研判明细里（新-29）。 */
+    @Test
+    void farPilotBesideAProhibitedZoneAlarmsOnTheZoneOnly() throws Exception {
+        spatial.hits = List.of(covers("PROHIBITED"));
+        setPilot("118.025 37.0321946");
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(result.grade()).isEqualTo("HIGH");
+        assertThat(result.violationReasons()).containsExactly("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isTrue();
+        Map<String, Object> row = jdbc.queryForMap("select hit_details from rule_evaluation where evaluation_id=?", result.evaluationId());
+        assertThat(check(row.get("hit_details"), "C02-6").path("facts").path("pilot_distance_note").asText())
+                .isEqualTo("飞手离无人机约 800 米（超过 500 米），是否经批准请核实");
     }
 
     /**
-     * 超视距与依据不足的行为偏差同时出现时，结论与没有超视距时一致：计划高度越界但目标身份未核实，照旧降为不可判定、不告警
-     * （同 planAltitudeViolationWithUnverifiedIdentityStaysUndeterminedAndDoesNotCreateAlarm），超视距不改变这个结论。
+     * 飞手离得远与依据不足的行为偏差同时出现时，结论与没有它时一致：计划高度越界但目标身份未核实，照旧降为不可判定、不告警
+     * （同 planAltitudeViolationWithUnverifiedIdentityStaysUndeterminedAndDoesNotCreateAlarm）。
      */
     @Test
-    void bvlosBesideAnUnverifiedBehaviourViolationKeepsTheResultWithoutIt() {
+    void farPilotBesideAnUnverifiedBehaviourViolationChangesNothing() {
         jdbc.update("update target_latest_state set altitude_amsl_m=130 where target_id=?", targetId);
         jdbc.update("update target set uav_sn=null where target_id=?", targetId);
         setPilot("118.025 37.0321946");
         var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now());
         var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), run.runId());
         assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
-        assertThat(result.violationReasons()).containsExactlyInAnyOrder("PLAN_ALTITUDE_EXCEEDED", "BVLOS_EXCEEDED");
+        assertThat(result.violationReasons()).containsExactly("PLAN_ALTITUDE_EXCEEDED");
         assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
     }
 

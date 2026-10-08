@@ -63,7 +63,8 @@ public final class DecisionAssuranceAlgorithm {
         }
         if ("live".equals(context.sourceMode())) {
             parameterReason(params.paramStatus("C03", "ignore_undetermined_rules"), reasons);
-            for (HitDetail hit : details) checkParameters(hit, reasons);
+            // 飞手距离（C02-6）只作参考、不参与结论（新-29）：它的 500 米还是演示值，也不让真实观测的结论因此要人复核。
+            for (HitDetail hit : details) if (!RuleCodes.C02_6.equals(hit.ruleCode())) checkParameters(hit, reasons);
         }
 
         PlanMatch match = context.planMatch();
@@ -85,17 +86,18 @@ public final class DecisionAssuranceAlgorithm {
         List<String> ignored = params.list("C03", "ignore_undetermined_rules");
         for (HitDetail hit : details) {
             present.add(hit.ruleCode());
-            if (hit.resultCode() == ResultCode.UNDETERMINED && !ignored.contains(hit.ruleCode())) {
+            // 飞手距离（C02-6）只作参考、不参与结论（新-29），它判不清也不算依据不足。
+            if (hit.resultCode() == ResultCode.UNDETERMINED && !ignored.contains(hit.ruleCode()) && !RuleCodes.C02_6.equals(hit.ruleCode())) {
                 reasons.add(hit.reasonCode() == null ? "DECISIVE_EVIDENCE_MISSING" : hit.reasonCode());
             }
         }
         if (!present.containsAll(REQUIRED_CHECKS)) reasons.add("RULE_CHECKS_INCOMPLETE");
         if (verdict.status() == LegalStatus.ABNORMAL) reasons.add("BINARY_CONCLUSION_UNRESOLVED");
         if (verdict.status() == LegalStatus.UNDETERMINED) reasons.addAll(verdict.unknownReasons());
-        // 明确的行为偏差、或明确的超视距（C02-6 FAIL：飞手与目标两点距离，2026-10-07 起单独即判违法）本身就是结论的依据，
-        // 不再追加 DECISIVE_EVIDENCE_MISSING；计划/身份、未忽略的未知、参数状态等复核要求仍照常留在上面的 reasons 里。
+        // 明确的行为偏差本身就是结论的依据，不再追加 DECISIVE_EVIDENCE_MISSING；计划/身份、未忽略的未知、参数状态等复核要求
+        // 仍照常留在上面的 reasons 里。
         boolean explicitBehaviourViolation = verdict.status() == LegalStatus.ILLEGAL && details.stream()
-                .anyMatch(hit -> (RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode()) || RuleCodes.C02_6.equals(hit.ruleCode()))
+                .anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode())
                         && hit.resultCode() == ResultCode.FAIL && hit.reasonCode() != null && !hit.reasonCode().isBlank());
         if (verdict.status() != LegalStatus.LEGAL && !explicitBehaviourViolation && reasons.isEmpty()) reasons.add("DECISIVE_EVIDENCE_MISSING");
         // 即使调用方给出了 LEGAL，也不能接受与单项 FAIL 冲突的结论。

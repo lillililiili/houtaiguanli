@@ -94,6 +94,7 @@ B 的 `FusionInboxRepository.claim` 已按映射器前缀领取 `replay:` / `lin
 - 映射入口：`modules/fusion/ingest/InboxSourceRouter` 按 `source` 前缀分派 `FrameMapper`：`replay:`（`ReplayFrameMapper`）、`lingyun:`（`LingyunSenseDataMapper`）、`eo-edge:`（`EoTrackingReportMapper`）、`live-radar:`（`LiveRadarFrameMapper`）；`FusionInboxRepository.claim` 白名单同四个前缀（`live-radar:` 受开关控制）。
 - `class_source` 取值：`SENSE_DATA`（协议 A objectType）、`EO_TRACKING`（协议 C aiStatus）、`RADAR`（雷达分类码）、`MANUAL`（人工修订）。
 - C02-6：`TargetState.pilot*` 存在 → 目标与飞手位置大圆距离 > `C02-6.vlos_m` → FAIL `BVLOS_EXCEEDED`，≤ → PASS；不存在 → UNDETERMINED `PILOT_POSITION_UNAVAILABLE`（不变）。
+  2026-10-08 起（新-29，见 `docs/backend-stage7/rule-engine-api-contract.md` 文末）：超过阈值仍是 PASS，只在 `facts.pilot_distance_note` 提示“是否经批准请核实”，不出 `BVLOS_EXCEEDED`；没有飞手位置为 NOT_APPLICABLE（原因码不变），不进未知原因。
 - 高度：凌云来源 `altitude` 只落 `quality.altitude_raw`，`quality.altitude_datum=REFERENCE_UNKNOWN`，`altitude_amsl_m` 留空（决策 8.5-24）；`height` → `height_agl_m` + `quality.height_datum=DEVICE_GROUND`。
 - 协议 C：`external_target_id` 与 `source_session_key` 同取 `taskId`（8.5-20）；未映射事件返回空帧、inbox DONE（8.5-22）。协议 A 帧级 `observed_at` 取首个对象 `time`（8.5-21）。
 - A 写入的 `source_msg_id` 以 §2.1 / §2.2 为准（协议 A 为 `ptTime:msgCnt`，协议 C 为 `timestamp:event:deviceId:taskId`），**不要**只用 `msgCnt` 或 `extention.msgId` 去重。

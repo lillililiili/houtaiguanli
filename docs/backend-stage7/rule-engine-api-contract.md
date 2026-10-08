@@ -61,7 +61,7 @@
 
 ## 引擎接口（`modules/assessment/engine/RuleContracts.java`，领导冻结）
 
-`SpatialFactPort { airspaceHits(targetId, asOf); distanceToRoute(targetId, routeVersionId); ambiguousEffectiveAirspaceVersion(asOf) }` 是唯一 PostGIS 依赖。`RuleCheck { ruleCode(); defaultPriority(); evaluate(EvaluationContext, RuleParams) → HitDetail }`。`RuleParams.number/integer/bool/string/list(ruleCode, key)` 缺参数抛 `IllegalStateException`（配置缺失是部署错误，不是业务未知）；唯一例外是 C03 评分用的 `C03.severity.<reason>`：缺项按 0 计分（`RuleParams.has`），不让整次研判失败（`BVLOS_EXCEEDED` 不经严重度评分，见 C03 第 6 步）。
+`SpatialFactPort { airspaceHits(targetId, asOf); distanceToRoute(targetId, routeVersionId); ambiguousEffectiveAirspaceVersion(asOf) }` 是唯一 PostGIS 依赖。`RuleCheck { ruleCode(); defaultPriority(); evaluate(EvaluationContext, RuleParams) → HitDetail }`。`RuleParams.number/integer/bool/string/list(ruleCode, key)` 缺参数抛 `IllegalStateException`（配置缺失是部署错误，不是业务未知）；唯一例外是 C03 评分用的 `C03.severity.<reason>`：缺项按 0 计分（`RuleParams.has`），不让整次研判失败。
 
 评估流程：取 ACTIVE/SHADOW 版本 → 收集 `target_latest_state`、最近 `C03.track_points` 个轨迹点、候选计划、生效空域（`valid_from ≤ as_of < valid_to`）、空间事实 → 新鲜度（SCHEDULED：`observed_at ≥ now − C03.fresh_seconds` 否则 STALE → `NOT_APPLICABLE/STATE_STALE`；REPLAY/MANUAL 以 `observed_at` 为 `as_of`）→ C01 → C02-x → C03 → C06 → 写 `rule_evaluation` + 投影 + `legality_review(PENDING_REVIEW)`（`NOT_APPLICABLE` 研判不建复核行，否则 STALE 目标每 tick 都会灌满队列）；一条研判一个事务。
 
@@ -78,7 +78,7 @@
 | C02-3 航线偏离 | 距中心线 − 半宽 > `C02-3.tolerance_m` | `ROUTE_DEVIATION` | `CORRIDOR_WIDTH_UNKNOWN`、`POSITION_UNKNOWN`；无计划 NOT_APPLICABLE |
 | C02-4 时间窗 | `as_of ≥ end_at + C02-4.grace_min` 或 `< start_at − grace` | `TIME_WINDOW_OVERRUN` | `PLAN_TIME_UNKNOWN`；无计划 NOT_APPLICABLE |
 | C02-5 夜航 | `C02-5.timezone` 本地时 ∈ [`night_from`, 24) ∪ [0, `night_to`)，且 C01 没有匹配上计划（FULL/PARTIAL 即已在计划时段内，容差与白天同为 `C01.time_window_min`；超时另由 C02-4 判）；按规定无需申请的飞行（新-28）夜间 PASS | `NIGHT_FLIGHT` | — |
-| C02-6 超视距 | 目标与飞手位置距离 > `C02-6.vlos_m`；`message` 为 `超视距飞行（飞手离无人机约 X 米，超过 {vlos_m} 米）`（X 四舍五入到米，精确值在 `facts.distance_m`） | `BVLOS_EXCEEDED` | 无飞手位置 `PILOT_POSITION_UNAVAILABLE`；目标位置缺失 `POSITION_UNKNOWN` |
+| C02-6 飞手距离（原超视距） | 只作提示、不判违规（2026-10-08 新-29）：目标与飞手位置距离 > `C02-6.vlos_m` 时仍 PASS，`facts` 加 `beyond_vlos=true`、`vlos_m`、`pilot_distance_note`，`message` 为 `飞手离无人机约 X 米（超过 {vlos_m} 米），是否经批准请核实`（X 四舍五入到米，精确值在 `facts.distance_m`） | —（10-07 至新-29 之前的研判里是 `BVLOS_EXCEEDED`） | 目标位置缺失 `POSITION_UNKNOWN`（不挡结论）；无飞手位置为 NOT_APPLICABLE（`PILOT_POSITION_UNAVAILABLE`，不进未知原因） |
 | C02-7 计划高度 | 目标同基准高度 > `route_version.max_altitude_m` 或 < min | `PLAN_ALTITUDE_EXCEEDED` | 基准缺失；无计划 NOT_APPLICABLE |
 | C02-8 临时限制 | kind ∈ `C02-8.kinds` 且生效窗口内覆盖 | `TEMPORARY_RESTRICTION_ACTIVE` | 同 C02-1 |
 
@@ -89,10 +89,11 @@
 3. C01 NONE → `C03.no_plan_status`（默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`；已过质量门、类别为无人机，行为项依据不足也不降为不可判定，计划授权待核对由 `decision_assurance` 交人工复核）；完全没有报备任务、离地不超过 120 米、不在管控空域里的视同 `LEGAL`，按规定无需申请（2026-10-08 新-28，见文末）；C01 UNDETERMINED 且 C02-1/2/8 无 FAIL → `UNDETERMINED`，有空域 FAIL 则照常走第 4 步判 `ILLEGAL`（进禁飞/限高/临管空域不取决于属于哪个计划）。
 4. C02-1/2/8 任一 FAIL → `ILLEGAL`；任一 UNDETERMINED（无 FAIL）→ `UNDETERMINED`。
 5. C02-3/4/5/7 任一 FAIL → `ILLEGAL`；应用服务再校验证据充分性，不充分降为 `UNDETERMINED`（空域违规与无计划 `NO_AUTHORIZATION` 除外）。
-6. C02-6 FAIL（超视距）且前 5 步都没给出结论 → `ILLEGAL`，原因 `BVLOS_EXCEEDED`，`grade` 固定 `LOW`，不看加权分数（2026-10-07，写在代码里，已发布版本不重发也生效）；不经第 5 步的证据充分性降级。计划不明、空域未知、质量门、无计划按参数不可判定仍在第 2–4 步先判，不因超视距改判。
-7. 其余检查有 UNDETERMINED（排除 `C03.ignore_undetermined_rules`）→ `UNDETERMINED`；否则 `LEGAL`。
+6. 其余检查有 UNDETERMINED（排除 `C03.ignore_undetermined_rules`）→ `UNDETERMINED`；否则 `LEGAL`。
 
-`violation_reasons` = 全部 FAIL 原因码；评分仅 ILLEGAL/ABNORMAL：`score = 100·Σ w_k·F_k`（因子：最大违规严重度 `C03.severity.<reason>`（`BVLOS_EXCEEDED` 不参与取最大、不做主原因）、计划匹配 NONE 1/PARTIAL、UNDETERMINED .5/FULL 0、限制空域命中 1/0、轨迹桥接 .6/0、`1 − confidence`），`grade` 按 `C03.grade.high/medium`（第 6 步固定 `LOW`）。超视距与其他违规同时出现时，状态、分数、等级、主原因与去掉超视距时相同，只是 `violation_reasons` 多一个 `BVLOS_EXCEEDED`。
+C02-6（飞手距离）不参与结论：超过阈值只在明细里提示“是否经批准请核实”，它判不清也不挡 `LEGAL`，任何规则集版本都一样（2026-10-08 新-29，取代 2026-10-07 的“单独超视距判非法、固定低风险”第 6 步，见文末）。
+
+`violation_reasons` = 全部 FAIL 原因码；评分仅 ILLEGAL/ABNORMAL：`score = 100·Σ w_k·F_k`（因子：最大违规严重度 `C03.severity.<reason>`、计划匹配 NONE 1/PARTIAL、UNDETERMINED .5/FULL 0、限制空域命中 1/0、轨迹桥接 .6/0、`1 − confidence`），`grade` 按 `C03.grade.high/medium`。
 
 ### 模式、回滚、重算、C06
 
@@ -112,13 +113,13 @@
 | C02-3 | tolerance_m | 20 | NUMBER m |
 | C02-4 | grace_min | 10 | INTEGER min |
 | C02-5 | timezone / night_from / night_to | Asia/Shanghai / 20 / 6 | STRING / INTEGER h |
-| C02-6 | vlos_m | 500 | NUMBER m（有飞手位置时据此判超视距；缺飞手位置仍为未知，由 `ignore_undetermined_rules` 忽略） |
+| C02-6 | vlos_m | 500 | NUMBER m（有飞手位置时超过它只提示“是否经批准请核实”，不判违规，新-29；仍是演示值，列在待确认事项） |
 | C02-8 | kinds | TEMPORARY,TEMPORARY_CONTROL | LIST |
 | C03 | fresh_seconds / track_points / conf_min / min_points / gap_seconds | 120 / 10 / 0.75 / 3 / 30 | INTEGER s / INTEGER / NUMBER / INTEGER / INTEGER s |
 | C03 | no_plan_status | ILLEGAL | STRING |
 | C03 | ignore_undetermined_rules | C02-6 | LIST |
 | C03 | w.violation / w.plan_match / w.airspace / w.track / w.confidence | 0.40 / 0.25 / 0.15 / 0.10 / 0.10 | NUMBER |
-| C03 | severity.INSIDE_RESTRICTED_AIRSPACE / AIRSPACE_ALTITUDE_EXCEEDED / TEMPORARY_RESTRICTION_ACTIVE / NO_AUTHORIZATION / ROUTE_DEVIATION / PLAN_ALTITUDE_EXCEEDED / TIME_WINDOW_OVERRUN / NIGHT_FLIGHT | 1.0 / 0.9 / 0.9 / 0.8 / 0.6 / 0.5 / 0.4 / 0.3 | NUMBER（不设 `severity.BVLOS_EXCEEDED`：超视距单独违规等级固定 LOW、与其他违规同时出现时不参与取最大，配了也不生效；其他原因码缺严重度时 C03 按 0 计入评分，研判照常给出结论） |
+| C03 | severity.INSIDE_RESTRICTED_AIRSPACE / AIRSPACE_ALTITUDE_EXCEEDED / TEMPORARY_RESTRICTION_ACTIVE / NO_AUTHORIZATION / ROUTE_DEVIATION / PLAN_ALTITUDE_EXCEEDED / TIME_WINDOW_OVERRUN / NIGHT_FLIGHT | 1.0 / 0.9 / 0.9 / 0.8 / 0.6 / 0.5 / 0.4 / 0.3 | NUMBER（不设 `severity.BVLOS_EXCEEDED`：新-29 起超视距不算违规、不再产生这个原因码；其他原因码缺严重度时 C03 按 0 计入评分，研判照常给出结论） |
 | C03 | grade.high / grade.medium | 67 / 34 | NUMBER |
 | C06 | dedup_window_min / upgrade_window_min / auto_close_min | 5 / 10 / 15 | INTEGER min |
 | C06 | severity_by_grade | HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW | LIST |
@@ -174,7 +175,7 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 
 ## 尚未接入
 
-身份线索（TDOA/5G-A）、起降点、飞手/单位、真实规则参数确认、处置（转入处置按钮禁用）。飞手位置自阶段 8.5 随观测接入，超视距自 2026-10-07 参与判定（见文末）。
+身份线索（TDOA/5G-A）、起降点、飞手/单位、真实规则参数确认、处置（转入处置按钮禁用）。飞手位置自阶段 8.5 随观测接入；超视距 2026-10-07 起曾单独判违规，2026-10-08 起只作提示（新-29，见文末）。
 
 ## 2026-09-17：算法证据充分性与人工复核分流
 
@@ -247,7 +248,9 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 - 关联：ESCALATED 成员与本次研判的 `alarm_id` 都指向被升级的原告警，所以“最新研判关联的告警”就是事件所属告警。本节替代 2026-09-18 “合并成员的 `alarm_id` 仍只记录本次新建”：成员 `alarm_id` 记录本次新建或本次升级的告警，MERGED/DOWNGRADED 仍为空。`alarm_outcome.kind=ESCALATED` 计入 `alarm_merged_count` 与 `rule-effects` 的 `alarms_merged`，不计入新增告警。
 - 读接口与页面字段见 `docs/backend-stage4/alarm-risk-api-contract.md` 2026-10-06 一节。未改：自动核实条件、移送材料与证据链里冻结的告警入库等级、导出列。
 
-### 2026-10-07 超视距单独违规判非法、固定低风险
+### 2026-10-07 超视距单独违规判非法、固定低风险（已被 2026-10-08 新-29 取代）
+
+> 已取消：2026-10-08 起超视距只作提示、不算违规，见文末新-29 一节。以下为当时口径，留作历史；这期间产生的研判和告警原样保留。
 
 - 业务决定：C02-6 超视距是唯一一项违规时，C03 判 `ILLEGAL`，主原因 `BVLOS_EXCEEDED`，`grade` 固定 `LOW`（不看加权分数），照常走 C06 出告警：`C06.severity_by_grade` 的 `LOW:LOW` 映射为低风险告警，同事务建待核实事件。规则写在 `C03Decision` 第 6 步而不是参数里，已发布的 `LEGALITY-DEMO` 版本不重新发布、不加参数也按此执行；`C02-6.vlos_m` 仍为 500（DEMO）。
 - 与其他违规同时出现：等级按原来的方式只由其他违规计算，超视距不参与严重度取最大、不做主原因，高等级不会被压低、低等级也不会被抬高；`violation_reasons` 照常多列一个 `BVLOS_EXCEEDED`（与此前一致，C06 会把它当作新增原因做 ESCALATED 升级）。为此不设 `C03.severity.BVLOS_EXCEEDED`，即使某个版本配置了也不生效。
@@ -264,10 +267,20 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 
 ### 2026-10-08 没有报备任务、离地 120 米以下的普通区域飞行按规定无需申请（法规核对，确认书 2-2，新-28）
 
-- 业务决定：国家规定小型及以下无人机在真高 120 米以下的适飞空域飞行无需申请；系统分不出机型大小，同时满足下面三条的判 `LEGAL`、不出告警（`NoPlanExemption`，C03 第 3 步视同 `no_plan_status=LEGAL` 继续走第 4–7 步）：
+- 业务决定：国家规定小型及以下无人机在真高 120 米以下的适飞空域飞行无需申请；系统分不出机型大小，同时满足下面三条的判 `LEGAL`、不出告警（`NoPlanExemption`，C03 第 3 步视同 `no_plan_status=LEGAL` 继续走第 4–6 步）：
   1. 完全没有报备任务：C01 为 NONE 且没有挂上本机编号的计划（`plan` 为空）。有本机计划却飞出时段或航线的照旧按计划查，结论不变。
   2. 设备报的离地高度 `height_agl_m` 不超过 120 米（含 120）。没有离地高度不推算，照旧按 `C03.no_plan_status` 判。
   3. 不在管控空域里：`PROHIBITED`、`RESTRICTED`、`ALTITUDE_LIMIT` 及 C02-1/C02-2 `kinds` 另配的类型随时都算，`TEMPORARY_CONTROL` 及 C02-8 `kinds` 另配的类型只在生效窗口内算（与 C02-8 同口径），这些空域的关系都必须是 `DISJOINT`；水平上在限高区里、高度没超也不算普通区域。压在边界上（`TOUCHES`）、空域关系不明、同一空域两个版本同时生效（`VERSION_AMBIGUOUS`）的照旧报。
 - “看得准”由第 2 步质量门把关（置信度、轨迹点数、断点），不另设条件。120 米是法规数值，与 2-12 禁飞区定级一样写在代码里，已发布的规则集版本不重新发布、不加参数也按此执行。
 - C01 明细照实记 FAIL（`NO_PLAN_CANDIDATE` 等），`facts` 加 `no_plan_exempt=true`、`height_agl_m`，`message` 为 `没有报备任务；离地约 N 米，不超过 120 米，不在禁飞区、管制区、限高区、临时管控区内，按规定无需申请`（N 四舍五入到米，DEMO 参数时照例附 `；参数为 DEMO 演示值，尚未确认`）。C02-5 对这类飞行夜间 PASS（夜间只在原有违规上加注，确认书 2-9），C03 与证据充分性都不把 C01 的 FAIL、夜航当作与合法结论冲突，也不要求核对计划授权（不加 `PLAN_AUTHORIZATION_UNVERIFIED`）。
 - 已有研判与告警不动。本地回放场景 `no-plan`、`cross-scope` 及相关测试夹具的目标改到离地 150 米，继续验“没有任务 → 无飞行授权”。
+
+### 2026-10-08 超视距只作提示，不算违规（法规核对，确认书 2-10，新-29）
+
+- 业务决定：国家规定只有微型无人机必须在视距内飞，其他经批准可以超视距；系统分不出是不是微型，任务里也没写批没批超视距，所以 2026-10-07 那条“只有超视距时判 `ILLEGAL`、固定 `LOW`、照常告警”取消，C03 删去该步（原第 7 步改为第 6 步）。写在代码里，已发布的规则集版本不重新发布、不改参数也按此执行。
+- C02-6 照旧按 Haversine 算目标与飞手的距离：超过 `C02-6.vlos_m`（仍为 500，DEMO，列在待确认事项）时结果仍是 `PASS`，`facts` 带 `distance_m`、`vlos_m`、`beyond_vlos=true` 和 `pilot_distance_note`=`飞手离无人机约 N 米（超过 500 米），是否经批准请核实`（N 四舍五入到米），`message` 为这句（DEMO 参数时照例附 `；参数为 DEMO 演示值，尚未确认`）；不出 `BVLOS_EXCEEDED`、不告警。没超过时与此前相同。
+- 没有遥控器位置：这一项不判，结果 `NOT_APPLICABLE`（原因码仍记 `PILOT_POSITION_UNAVAILABLE`），不进 `unknown_reasons`，不影响合法、非法的结论。只有飞手位置、目标位置缺失时是 `UNDETERMINED`（`POSITION_UNKNOWN`），C03 第 6 步和证据充分性都不因 C02-6 的未知挡 `LEGAL`、算依据不足，不看 `ignore_undetermined_rules` 有没有列它；真实观测（`live`）下 C02-6 的演示参数也不要求人工复核。
+- 同时有别的违规（如闯禁飞区）：照常按那条违规定级、告警，`violation_reasons` 里没有超视距；那句提示照样留在 C02-6 明细里。
+- 目标列表与详情的 `legality_summary` 新增可选字段 `pilot_distance_note`：取最近一次研判 C02-6 `facts.pilot_distance_note`，没有这句时整项省略。页面在合法性研判页、告警详情和目标详情（“遥控器位置”后面）显示它。
+- 以前因超视距出的告警和研判原样保留；`BVLOS_EXCEEDED` 原因码、告警筛选项和导出中文名留给这些旧数据。`UavAdvisoryRules.noBlockingUnknowns` 照旧放行未知原因里只有 `PILOT_POSITION_UNAVAILABLE` 的旧研判（新-19）。
+- 验证：`C02ChecksTest`、`C03DecisionTest`、`DecisionAssuranceAlgorithmTest`、`LegalityEvaluationServiceTest`、`TargetSummariesApiTest`，端到端 `PilotDistanceNoteFlowTest`（H2）与 `PilotDistanceNoteFlowPostgresTest`（PostgreSQL/PostGIS，由原 `BvlosLowAlarmFlow*` 改写）：有任务按航线飞、飞手 501/800/3000 米外判 `LEGAL`、不告警、明细带提示；499 米与没有飞手位置不带提示；与禁飞区、无授权、偏航同时出现时结论、分数、等级、告警等级与没有飞手位置的同类目标逐项一致。

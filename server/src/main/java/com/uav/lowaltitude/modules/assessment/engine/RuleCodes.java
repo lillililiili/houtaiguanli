@@ -56,7 +56,10 @@ public final class RuleCodes {
     public static final String ROUTE_GEOMETRY_UNKNOWN = "ROUTE_GEOMETRY_UNKNOWN";
     public static final String PLAN_TIME_UNKNOWN = "PLAN_TIME_UNKNOWN";
     public static final String PILOT_POSITION_UNAVAILABLE = "PILOT_POSITION_UNAVAILABLE";
-    /** 阶段 8.5：目标与飞手的大圆距离超过 C02-6 阈值，即超视距飞行。 */
+    /**
+     * 阶段 8.5 起表示目标与飞手的大圆距离超过 C02-6 阈值（超视距）。新-29（2026-10-08）起不再产生：超视距只作提示、不算违规；
+     * 保留这个码给以前的研判和告警显示、筛选。
+     */
     public static final String BVLOS_EXCEEDED = "BVLOS_EXCEEDED";
     public static final String NO_PLAN = "NO_PLAN";
     public static final String STATE_STALE = "STATE_STALE";
