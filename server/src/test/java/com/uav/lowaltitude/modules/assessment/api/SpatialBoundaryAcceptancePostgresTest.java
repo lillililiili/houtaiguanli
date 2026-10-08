@@ -142,7 +142,9 @@ class SpatialBoundaryAcceptancePostgresTest extends SimulatorScenarioPostgresTes
         jdbc.update("insert into target(target_id,target_no,object_type_code,uav_sn,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,'UAV',?,?,?,'mock',?,?,?,?)",target,target,sn,observed.minusSeconds(20),observed,org,district,observed,observed);
         jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,protocol_version,created_at) values(?,?,?,?,?,'1.0',?)",link,target,source,id(),target,observed);
         jdbc.update("insert into target_latest_state(target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,unknown_fields,created_at,updated_at) values(?,CAST(? AS GEOMETRY),130,?,8,90,0.95,0.95,?,?,'[]',?,?)",target,point,amslOnly?null:80,observed,observed,observed,observed);
-        jdbc.update("update target_latest_state set pilot_location=CAST(? AS GEOMETRY),pilot_observed_at=? where target_id=?",POINT,observed,target);
+        // 飞手与目标同点：本类只验空域拓扑与时间边界，C02-6 只需可判定（不留 PILOT_POSITION_UNAVAILABLE）且通过。
+        // 2026-10-07 起单独超视距判 ILLEGAL，飞手若仍固定在 POINT，OUTSIDE 点（约 966 m）会因超视距而不是空域关系改变结论。
+        jdbc.update("update target_latest_state set pilot_location=CAST(? AS GEOMETRY),pilot_observed_at=? where target_id=?",point,observed,target);
         jdbc.update("insert into track(track_id,target_id,link_id,external_track_id,started_at,created_at) values(?,?,?,?,?,?)",track,target,link,track,observed.minusSeconds(20),observed);
         for(int i=0;i<5;i++) {
             var at=observed.minusSeconds(20-i*5);

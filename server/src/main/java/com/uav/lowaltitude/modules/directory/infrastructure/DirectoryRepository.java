@@ -15,6 +15,31 @@ public class DirectoryRepository {
  public int activateSimulatorChannels(long now){
   return jdbc.update("UPDATE notification_setting SET channel_type='API',endpoint_ref='local-data-simulator',valid_until=NULL,updated_at=?,version=version+1 WHERE channel_type='MOCK' AND endpoint_ref='local-qa-expiring-mock' AND enabled=TRUE",now);
  }
+ /** D-1（2026-10-08 自动配）：飞手短信、飞手电话、通知上级三条全局通道还是新装时的"未配置"才接到数据模拟器；已配过的不动。 */
+ public int prepareSimulatorGlobalChannels(long now){
+  return jdbc.update("UPDATE notification_setting SET channel_type='API',endpoint_ref='local-data-simulator',enabled=TRUE,valid_until=NULL,updated_at=?,version=version+1 WHERE setting_id IN('risk-superior','advisory-sms','advisory-voice') AND channel_type='NONE'",now);
+ }
+ /** 模拟器"处罚接收单位"建的配置都用这个前缀，与 QA 接口按执行单位建的 UAV_PUNISHMENT:单位 互不占用。 */
+ public static final String SIMULATOR_PUNISHMENT_ROUTE="UAV_PUNISHMENT:SIMULATOR:", SIMULATOR_ENDPOINT="local-data-simulator";
+ public record SimulatorPunishment(String settingId,String recipientId,String orgId,boolean recipientEnabled,String channelType,String endpointRef,boolean settingEnabled){}
+ public record PunishmentRecipient(String recipientId,String name,boolean simulator){}
+ public record OrgOption(String orgId,String name){}
+ public List<OrgOption> enabledOrganizations(){return jdbc.query("SELECT org_id,name FROM app_org WHERE enabled=TRUE ORDER BY name,org_id",(r,n)->new OrgOption(r.getString("org_id"),r.getString("name")));}
+ public List<SimulatorPunishment> simulatorPunishments(){
+  return jdbc.query("SELECT n.setting_id,n.recipient_id,n.recipient_org_id,r.enabled AS recipient_enabled,n.channel_type,n.endpoint_ref,n.enabled FROM notification_setting n JOIN handoff_recipient r ON r.recipient_id=n.recipient_id WHERE n.purpose='UAV_PUNISHMENT' AND n.routing_key LIKE ? ORDER BY n.setting_id",
+   (r,n)->new SimulatorPunishment(r.getString("setting_id"),r.getString("recipient_id"),r.getString("recipient_org_id"),r.getBoolean("recipient_enabled"),r.getString("channel_type"),r.getString("endpoint_ref"),r.getBoolean("enabled")),SIMULATOR_PUNISHMENT_ROUTE+"%");
+ }
+ /** 与处罚移送选接收单位同一口径：所有启用的 UAV_PUNISHMENT 接收方，不论是谁配的。 */
+ public List<PunishmentRecipient> enabledPunishmentRecipients(){
+  return jdbc.query("SELECT r.recipient_id,r.display_name,(SELECT COUNT(*) FROM notification_setting n WHERE n.recipient_id=r.recipient_id AND n.purpose='UAV_PUNISHMENT' AND n.routing_key LIKE ?) AS simulator FROM handoff_recipient r WHERE r.handoff_type='UAV_PUNISHMENT' AND r.enabled=TRUE ORDER BY r.recipient_id",
+   (r,n)->new PunishmentRecipient(r.getString("recipient_id"),r.getString("display_name"),r.getLong("simulator")>0),SIMULATOR_PUNISHMENT_ROUTE+"%");
+ }
+ public void enableRecipient(String id,String name){if(jdbc.update("UPDATE handoff_recipient SET display_name=?,enabled=TRUE,updated_at=CURRENT_TIMESTAMP WHERE recipient_id=? AND handoff_type='UAV_PUNISHMENT'",name,id)==0)insertRecipient(id,name);}
+ public int disableRecipient(String id){return jdbc.update("UPDATE handoff_recipient SET enabled=FALSE,updated_at=CURRENT_TIMESTAMP WHERE recipient_id=? AND enabled=TRUE",id);}
+ public void simulatorPunishmentSetting(String id,String orgId,boolean exists,long now){
+  if(exists)jdbc.update("UPDATE notification_setting SET recipient_org_id=?,channel_type='API',endpoint_ref='local-data-simulator',enabled=TRUE,valid_until=NULL,updated_at=?,version=version+1 WHERE setting_id=?",orgId,now,id);
+  else jdbc.update("INSERT INTO notification_setting(setting_id,purpose,routing_key,recipient_org_id,recipient_id,channel_type,endpoint_ref,enabled,created_at,updated_at,version) VALUES(?,'UAV_PUNISHMENT',?,?,?,'API','local-data-simulator',TRUE,?,?,0)",id,SIMULATOR_PUNISHMENT_ROUTE+orgId,orgId,id,now,now);
+ }
  private final JdbcTemplate jdbc; private final ObjectMapper json;
  public DirectoryRepository(JdbcTemplate jdbc,ObjectMapper json){this.jdbc=jdbc;this.json=json;}
  private static final String ORG="SELECT o.*,COALESCE(p.organization_type,'OTHER') AS organization_type,p.address,p.credit_code,p.remarks,p.responsibilities,parent.name AS parent_name,(SELECT COUNT(*) FROM business_contact c WHERE c.org_id=o.org_id) AS contact_count,(SELECT COUNT(*) FROM flight_plan f WHERE (f.operator_org_id=o.org_id OR f.source_binding_id IN(SELECT binding_id FROM plan_source_binding b WHERE b.org_id=o.org_id)) AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=f.plan_id)) AS plan_count FROM app_org o LEFT JOIN organization_profile p ON p.org_id=o.org_id LEFT JOIN app_org parent ON parent.org_id=o.parent_id";

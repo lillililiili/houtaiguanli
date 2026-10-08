@@ -89,9 +89,11 @@ public final class DecisionAssuranceAlgorithm {
         if (!present.containsAll(REQUIRED_CHECKS)) reasons.add("RULE_CHECKS_INCOMPLETE");
         if (verdict.status() == LegalStatus.ABNORMAL) reasons.add("BINARY_CONCLUSION_UNRESOLVED");
         if (verdict.status() == LegalStatus.UNDETERMINED) reasons.addAll(verdict.unknownReasons());
+        // 明确的行为偏差、或明确的超视距（C02-6 FAIL：飞手与目标两点距离，2026-10-07 起单独即判违法）本身就是结论的依据，
+        // 不再追加 DECISIVE_EVIDENCE_MISSING；计划/身份、未忽略的未知、参数状态等复核要求仍照常留在上面的 reasons 里。
         boolean explicitBehaviourViolation = verdict.status() == LegalStatus.ILLEGAL && details.stream()
-                .anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode()) && hit.resultCode() == ResultCode.FAIL
-                        && hit.reasonCode() != null && !hit.reasonCode().isBlank());
+                .anyMatch(hit -> (RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode()) || RuleCodes.C02_6.equals(hit.ruleCode()))
+                        && hit.resultCode() == ResultCode.FAIL && hit.reasonCode() != null && !hit.reasonCode().isBlank());
         if (verdict.status() != LegalStatus.LEGAL && !explicitBehaviourViolation && reasons.isEmpty()) reasons.add("DECISIVE_EVIDENCE_MISSING");
         // 即使调用方给出了 LEGAL，也不能接受与单项 FAIL 冲突的结论。
         if (verdict.status() == LegalStatus.LEGAL && details.stream().anyMatch(hit -> hit.resultCode() == ResultCode.FAIL)) reasons.add("DECISIVE_EVIDENCE_MISSING");

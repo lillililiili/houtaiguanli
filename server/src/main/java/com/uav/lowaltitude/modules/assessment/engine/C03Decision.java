@@ -27,8 +27,13 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TrackQuality;
  *    进禁飞/限高/临管空域本身就是违规，不取决于属于哪个计划：计划不唯一或身份未明时照样走第 4 步判 ILLEGAL。
  * 4. 空域类（C02-1/2/8）任一 FAIL → ILLEGAL；任一 UNDETERMINED（无 FAIL）→ UNDETERMINED。
  * 5. 行为类（C02-3/4/5/7）任一 FAIL → ILLEGAL；应用服务再校验证据充分性。
- * 6. 其余检查有 UNDETERMINED（排除 ignore_undetermined_rules）→ UNDETERMINED；否则 LEGAL。
+ * 6. 超视距（C02-6）FAIL 且走到这里（没有空域、行为、无授权违规）→ ILLEGAL，原因 BVLOS_EXCEEDED，等级固定 LOW，不看加权分数
+ *    （2026-10-07 业务决定，写在代码里而不是参数里：已发布的规则集版本不重新发布也照此执行）。
+ *    计划不明、空域未知照旧在第 3、4 步先判 UNDETERMINED：低风险的超视距不能盖过一个可能更重、尚未判明的问题。
+ * 7. 其余检查有 UNDETERMINED（排除 ignore_undetermined_rules）→ UNDETERMINED；否则 LEGAL。
  * 评分只在 ILLEGAL/ABNORMAL 给出，权重、严重度、等级阈值全部来自参数；某个原因码缺严重度参数时按 0 计入评分，不让整次研判失败。
+ * 超视距不参与严重度取最大，也不做主原因：与其他违规同时出现时，分数、等级、主原因与去掉超视距时完全一致（BVLOS_EXCEEDED
+ * 仍照常列在 violation_reasons 里），即使某个版本配置了 severity.BVLOS_EXCEEDED 也不会抬高或压低组合结论。
  */
 public final class C03Decision {
     public static final String RULE_CODE = RuleCodes.C03;
@@ -85,6 +90,7 @@ public final class C03Decision {
         boolean airspaceFail = anyResult(details, RuleCodes.AIRSPACE_CHECKS, ResultCode.FAIL);
         boolean airspaceUnknown = anyResult(details, RuleCodes.AIRSPACE_CHECKS, ResultCode.UNDETERMINED);
         boolean behaviourFail = anyResult(details, RuleCodes.BEHAVIOUR_CHECKS, ResultCode.FAIL);
+        boolean bvlosFail = anyResult(details, List.of(RuleCodes.C02_6), ResultCode.FAIL);
         List<String> allUnknowns = reasons(details, ResultCode.UNDETERMINED);
         // 计划不明（如附近多个执行中计划分不清，PLAN_AMBIGUOUS）只挡住依赖计划的结论；已判明的空域违规直接进第 4 步。
         if (match.code() == PlanMatchCode.UNDETERMINED && !airspaceFail) {
@@ -119,7 +125,14 @@ public final class C03Decision {
             unknowns.addAll(allUnknowns);
             return scored(LegalStatus.ILLEGAL, context, match, violations, unknowns, false, bridged, params);
         }
-        // 步骤 6：其余未知（忽略列表内的规则不阻断 LEGAL，但原因码仍保留给页面）。
+        // 步骤 6：超视距单独成立。走到这里已排除空域、行为与无授权违规，评分里也不含超视距的严重度，
+        // 等级按业务决定固定为 LOW；分数照常给出供页面参考，但不参与定级。
+        if (bvlosFail) {
+            unknowns.addAll(allUnknowns);
+            Decision weighted = scored(LegalStatus.ILLEGAL, context, match, violations, unknowns, false, bridged, params);
+            return new Decision(weighted.status(), weighted.reasonCode(), weighted.violationReasons(), weighted.unknownReasons(), weighted.score(), GRADE_LOW);
+        }
+        // 步骤 7：其余未知（忽略列表内的规则不阻断 LEGAL，但原因码仍保留给页面）。
         List<String> ignored = params.list(RULE_CODE, PARAM_IGNORE_UNDETERMINED);
         unknowns.addAll(allUnknowns);
         boolean blocking = details.stream().anyMatch(hit -> hit.resultCode() == ResultCode.UNDETERMINED && !ignored.contains(hit.ruleCode()));
@@ -140,18 +153,22 @@ public final class C03Decision {
         }
     }
 
-    /** score = 100·Σ w_k·F_k；因子：最大违规严重度、计划匹配、限制空域命中、轨迹桥接、1 − 置信度。 */
+    /** score = 100·Σ w_k·F_k；因子：最大违规严重度（超视距除外）、计划匹配、限制空域命中、轨迹桥接、1 − 置信度。 */
     private static Decision scored(LegalStatus status, EvaluationContext context, PlanMatch match, List<String> violations,
             Set<String> unknowns, boolean airspaceHit, boolean bridged, RuleParams params) {
         BigDecimal severity = BigDecimal.ZERO;
         String primary = null;
         for (String reason : violations) {
-            // 严重度只影响评分与等级，不改变结论：旧规则集版本缺某个原因码的严重度（如 severity.BVLOS_EXCEEDED）时按 0 计，
+            // 超视距的等级由步骤 6 固定为 LOW，不经严重度评分；与其他违规同时出现时也不参与取最大、不抢主原因，
+            // 组合结论因此与"没有超视距"时逐位相同，不会因为它被抬高或压低。
+            if (RuleCodes.BVLOS_EXCEEDED.equals(reason)) continue;
+            // 严重度只影响评分与等级，不改变结论：旧规则集版本缺某个原因码的严重度时按 0 计，
             // 不能因为一个评分参数缺项让整次研判抛错、这架目标之后再也判不出来。
             String key = PARAM_SEVERITY_PREFIX + reason;
             BigDecimal value = params.has(RULE_CODE, key) ? params.number(RULE_CODE, key) : BigDecimal.ZERO;
             if (primary == null || value.compareTo(severity) > 0) { severity = value; primary = reason; }
         }
+        if (primary == null && violations.contains(RuleCodes.BVLOS_EXCEEDED)) primary = RuleCodes.BVLOS_EXCEEDED;
         // 计划不明（UNDETERMINED）既不能当作有计划也不能当作无计划，取与 PARTIAL 相同的中间值。
         BigDecimal planFactor = switch (match.code()) {
             case NONE -> FACTOR_NONE;

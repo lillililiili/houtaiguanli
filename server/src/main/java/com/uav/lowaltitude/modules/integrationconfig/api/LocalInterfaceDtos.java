@@ -31,6 +31,7 @@ public final class LocalInterfaceDtos {
  public record BindingInput(@Pattern(regexp="RISK|UAV_EVENT|NOTIFICATION_CHANNEL") @NotNull String sourceKind,
   @NotBlank @Size(max=36) String sourceId,@NotNull Boolean enabled){}
  public record Binding(String sourceKind,String sourceId,boolean enabled,long expiresAt){}
+ public record PunishmentRecipientsInput(@NotNull @Size(max=5) List<@NotBlank @Size(max=36) String> orgIds){}
  public record ReceiptInput(@NotNull @Min(0) Long expectedVersion,
   @Pattern(regexp="DELIVERED|ACKNOWLEDGED|FAILED|TIMEOUT|ANSWERED|PLAYED") @NotNull String outcome,
   @Pattern(regexp="DISPERSED|NOT_DISPERSED") String receiptResult){

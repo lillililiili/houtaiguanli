@@ -19,6 +19,7 @@ class RealtimeSimulatorApiTest {
  @Autowired MockMvc mvc; @Autowired ObjectMapper json;
  @Autowired com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport transport;
  @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+ @Autowired com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
  private String login() throws Exception {
   return "Bearer "+json.readTree(mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText();
  }
@@ -99,6 +100,49 @@ class RealtimeSimulatorApiTest {
   token=login();
   mvc.perform(get("/api/v1/local-interface-simulator/context").header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.receiver_messages.length()").value(0));
   mvc.perform(post("/api/v1/local-interface-simulator/bindings").header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content("{\"source_kind\":\"NOTIFICATION_CHANNEL\",\"source_id\":\"receiver\",\"enabled\":true}")).andExpect(status().isForbidden());
+ }
+ @Test void connectingReceiverWiresOnlyStillUnconfiguredGlobalChannelsToSimulator() throws Exception {
+  jdbc.update("UPDATE notification_setting SET channel_type='NONE',endpoint_ref=NULL,enabled=FALSE,valid_until=NULL WHERE setting_id IN('risk-superior','advisory-sms')");
+  jdbc.update("UPDATE notification_setting SET channel_type='SMS',endpoint_ref='customer-sms-gateway',enabled=FALSE WHERE setting_id='advisory-voice'");
+  long before=jdbc.queryForObject("SELECT version FROM notification_setting WHERE setting_id='advisory-sms'",Long.class);
+  String token=login();connect(token);connect(token);
+  for(String id:new String[]{"risk-superior","advisory-sms"}) {
+   assertThat(jdbc.queryForObject("SELECT channel_type FROM notification_setting WHERE setting_id=?",String.class,id)).isEqualTo("API");
+   assertThat(jdbc.queryForObject("SELECT endpoint_ref FROM notification_setting WHERE setting_id=?",String.class,id)).isEqualTo("local-data-simulator");
+   assertThat(jdbc.queryForObject("SELECT enabled FROM notification_setting WHERE setting_id=?",Boolean.class,id)).isTrue();
+  }
+  // 第二次续租不再改动同一行。
+  assertThat(jdbc.queryForObject("SELECT version FROM notification_setting WHERE setting_id='advisory-sms'",Long.class)).isEqualTo(before+1);
+  assertThat(jdbc.queryForObject("SELECT channel_type FROM notification_setting WHERE setting_id='advisory-voice'",String.class)).isEqualTo("SMS");
+  assertThat(jdbc.queryForObject("SELECT endpoint_ref FROM notification_setting WHERE setting_id='advisory-voice'",String.class)).isEqualTo("customer-sms-gateway");
+  assertThat(directory.forHandoff("RISK_NOTICE",null).configured()).isTrue();
+ }
+ @Test void punishmentRecipientsFollowTheSimulatorSelection() throws Exception {
+  String token=login();connect(token);
+  var orgs=jdbc.queryForList("SELECT org_id FROM app_org WHERE enabled=TRUE ORDER BY org_id FETCH FIRST 2 ROWS ONLY",String.class);
+  String first=orgs.get(0),second=orgs.get(1);
+  String url="/api/v1/local-interface-simulator/punishment-recipients";
+  long others=jdbc.queryForObject("SELECT COUNT(*) FROM handoff_recipient WHERE handoff_type='UAV_PUNISHMENT' AND enabled=TRUE",Long.class);
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(java.util.Map.of("org_ids",java.util.List.of(first)))))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.selected.length()").value(1)).andExpect(jsonPath("$.data.selected[0]").value(first))
+   .andExpect(jsonPath("$.data.enabled_recipients.length()").value(others+1));
+  String firstRecipient=jdbc.queryForObject("SELECT recipient_id FROM notification_setting WHERE routing_key=?",String.class,"UAV_PUNISHMENT:SIMULATOR:"+first);
+  var target=directory.forHandoff("UAV_PUNISHMENT",firstRecipient);
+  assertThat(target.configured()).isTrue();
+  assertThat(target.recipientName()).isEqualTo(jdbc.queryForObject("SELECT name FROM app_org WHERE org_id=?",String.class,first));
+  assertThat(target.endpointRef()).isEqualTo("local-data-simulator");
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(java.util.Map.of("org_ids",java.util.List.of(first,second)))))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.selected.length()").value(2)).andExpect(jsonPath("$.data.enabled_recipients.length()").value(others+2));
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(java.util.Map.of("org_ids",java.util.List.of(second)))))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.selected.length()").value(1)).andExpect(jsonPath("$.data.selected[0]").value(second));
+  assertThat(jdbc.queryForObject("SELECT enabled FROM handoff_recipient WHERE recipient_id=?",Boolean.class,firstRecipient)).isFalse();
+  mvc.perform(get(url).header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.selected[0]").value(second))
+   .andExpect(jsonPath("$.data.organizations.length()").value(jdbc.queryForObject("SELECT COUNT(*) FROM app_org WHERE enabled=TRUE",Long.class)));
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content("{\"org_ids\":[\"missing-org\"]}")).andExpect(status().isBadRequest());
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content("{\"org_ids\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\"]}")).andExpect(status().isBadRequest());
+  mvc.perform(post(url).contentType(MediaType.APPLICATION_JSON).content("{\"org_ids\":[]}")).andExpect(status().isUnauthorized());
+  mvc.perform(post(url).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content("{\"org_ids\":[]}"))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.selected.length()").value(0)).andExpect(jsonPath("$.data.enabled_recipients.length()").value(others));
  }
  @Test void receiverRequiresLoginAndRenewalIsExplicit() throws Exception {
   String body="{\"source_kind\":\"NOTIFICATION_CHANNEL\",\"source_id\":\"receiver\",\"enabled\":true}";
