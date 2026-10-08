@@ -99,6 +99,35 @@ class C03DecisionTest {
         assertThat(decision.decide(ctx, List.of(fail("C02-5", "NIGHT_FLIGHT")), params).status()).isEqualTo(LegalStatus.UNDETERMINED);
     }
 
+    /**
+     * 2026-10-08 业务决定（确认书 2-12）：进禁飞区、管制区不管对没对上报备任务都是 HIGH。
+     * 对上任务时计划因子为 0，加权分只有 55，原来定为 MEDIUM，比对不上任务的超时飞行还低；分数照常给出，只是不再决定等级。
+     */
+    @Test
+    void restrictedAirspaceIsHighEvenWhenTheDroneMatchesItsTask() {
+        EvaluationContext filed = context(Freshness.FRESH, state("1.00"), goodTrack(), full());
+        Decision noFly = decision.decide(filed, List.of(pass("C01"), fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(noFly.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(noFly.reasonCode()).isEqualTo("INSIDE_RESTRICTED_AIRSPACE");
+        // 100*(0.4*1.0+0.25*0+0.15*1+0.1*0)=55，低于 grade.high=67。
+        assertThat(noFly.score()).isEqualByComparingTo("55.00");
+        assertThat(noFly.grade()).isEqualTo("HIGH");
+        // 超时飞行（对上任务）仍按分数定级，等级低于闯禁飞区。
+        Decision overrun = decision.decide(filed, List.of(pass("C01"), fail("C02-4", "TIME_WINDOW_OVERRUN")), params);
+        assertThat(overrun.grade()).isEqualTo("LOW");
+        // 同时还有别的违规时照样是 HIGH；限高、临管仍按分数定级（确认书只把禁飞区、管制区定为最重）。
+        assertThat(decision.decide(filed, List.of(fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE"), fail("C02-3", "ROUTE_DEVIATION")), params).grade())
+                .isEqualTo("HIGH");
+        assertThat(decision.decide(filed, List.of(fail("C02-2", "AIRSPACE_ALTITUDE_EXCEEDED")), params).grade()).isEqualTo("MEDIUM");
+        assertThat(decision.decide(filed, List.of(fail("C02-8", "TEMPORARY_RESTRICTION_ACTIVE")), params).grade()).isEqualTo("MEDIUM");
+        // 没有任务时本来就是 HIGH，不受影响。
+        PlanMatch none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        Decision noPlan = decision.decide(context(Freshness.FRESH, state("1.00"), goodTrack(), none),
+                List.of(fail("C01", null), fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(noPlan.score()).isEqualByComparingTo("80.00");
+        assertThat(noPlan.grade()).isEqualTo("HIGH");
+    }
+
     @Test
     void missingSeverityParameterOnlyLowersTheScoreAndNeverAbortsTheDecision() {
         // 已发布的旧版本没有 C03.severity.BVLOS_EXCEEDED（从未猜填）：无计划且超视距仍要给出结论。

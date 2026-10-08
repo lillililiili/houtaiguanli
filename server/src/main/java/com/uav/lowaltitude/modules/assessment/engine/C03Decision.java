@@ -32,6 +32,8 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TrackQuality;
  *    计划不明、空域未知照旧在第 3、4 步先判 UNDETERMINED：低风险的超视距不能盖过一个可能更重、尚未判明的问题。
  * 7. 其余检查有 UNDETERMINED（排除 ignore_undetermined_rules）→ UNDETERMINED；否则 LEGAL。
  * 评分只在 ILLEGAL/ABNORMAL 给出，权重、严重度、等级阈值全部来自参数；某个原因码缺严重度参数时按 0 计入评分，不让整次研判失败。
+ * 进禁飞区、管制区（INSIDE_RESTRICTED_AIRSPACE）不管对没对上报备任务，等级都定为 HIGH，不看加权分数
+ * （2026-10-08 业务决定，确认书 2-12；和超视距一样写在代码里，已发布的规则集版本不重新发布也照此执行；分数照常给出供页面参考）。
  * 超视距不参与严重度取最大，也不做主原因：与其他违规同时出现时，分数、等级、主原因与去掉超视距时完全一致（BVLOS_EXCEEDED
  * 仍照常列在 violation_reasons 里），即使某个版本配置了 severity.BVLOS_EXCEEDED 也不会抬高或压低组合结论。
  */
@@ -185,6 +187,8 @@ public final class C03Decision {
         BigDecimal score = weighted.multiply(PERCENT).setScale(SCORE_SCALE, RoundingMode.HALF_UP);
         String grade = score.compareTo(params.number(RULE_CODE, PARAM_GRADE_HIGH)) >= 0 ? GRADE_HIGH
                 : score.compareTo(params.number(RULE_CODE, PARAM_GRADE_MEDIUM)) >= 0 ? GRADE_MEDIUM : GRADE_LOW;
+        // 对上报备任务时计划因子为 0，进禁飞区只有约 55 分（中），比超时飞行还低；业务定为不管有没有任务都是高。
+        if (violations.contains(RuleCodes.INSIDE_RESTRICTED_AIRSPACE)) grade = GRADE_HIGH;
         return new Decision(status, primary, List.copyOf(violations), List.copyOf(unknowns), score, grade);
     }
 
