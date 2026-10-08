@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
-import { formatTime } from '@/utils/format.js';
+import { formatDeviceNo, formatTime } from '@/utils/format.js';
 import { informationCoverage, informationStates, informationValue } from '@/utils/deviceInformation.js';
 import { deviceReferenceModels } from '@/utils/deviceReferenceModels.js';
 import { informationGroups } from '@/utils/deviceInformationPresentation.js';
@@ -51,7 +51,7 @@ watch(() => props.information?.sample_sections, samples => {
 
 <template>
   <el-card class="device-information" v-loading="loading">
-    <template #header><div class="table-toolbar"><div><b>{{ title }}</b><span v-if="information" class="muted info-heading">{{ information.name }} · {{ information.device_no }}</span></div><el-button :loading="loading" @click="$emit('refresh')">刷新信息</el-button></div></template>
+    <template #header><div class="table-toolbar"><div><b>{{ title }}</b><span v-if="information" class="muted info-heading" :title="information.device_no">{{ information.name }} · {{ formatDeviceNo(information.device_no) }}</span></div><el-button :loading="loading" @click="$emit('refresh')">刷新信息</el-button></div></template>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <el-empty v-if="!information && !loading && !error" description="请选择设备查看信息" />
     <template v-if="information">

@@ -333,6 +333,30 @@ function Test-LocalPort {
     return [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
 }
 
+function Get-ListenerCommandLine {
+    param([Parameter(Mandatory)][int]$Port)
+    $owners = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+    foreach ($owner in $owners) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue
+        if ($process -and $process.CommandLine) { return [string]$process.CommandLine }
+    }
+    return ''
+}
+
+function Assert-SimulatorMapOrigin {
+    param(
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][int]$BusinessPort
+    )
+    if (-not (Test-Endpoint -Uri "http://127.0.0.1:$Port/")) { return }
+    $commandLine = Get-ListenerCommandLine -Port $Port
+    $expected = "--map-origin http://127.0.0.1:$BusinessPort"
+    if ($commandLine -and $commandLine -notmatch [regex]::Escape($expected)) {
+        throw "设备模拟器端口 $Port 已有实例，但地图来源不是 http://127.0.0.1:$BusinessPort；请先停止该实例，再使用当前启动脚本启动。"
+    }
+}
+
 function Test-ApiRoute {
     param(
         [Parameter(Mandatory)][int]$Port,
@@ -586,6 +610,7 @@ ${simulatorVideoEnvironment}
 & 'python.exe' $(Quote-PowerShell (Join-Path $simulatorDir 'server.py')) '--port' '$SimulatorPort' '--map-origin' 'http://127.0.0.1:$BusinessPort'
 "@
     Write-Host "[5/5] 启动设备模拟器（仅本机 $SimulatorPort）..."
+    Assert-SimulatorMapOrigin -Port $SimulatorPort -BusinessPort $BusinessPort
     Register-LocalService -Name 'simulator' -Service (Reuse-Or-Start -Name 'simulator' -ProbeUri "http://127.0.0.1:$SimulatorPort/" -WorkingDirectory $simulatorDir -Command $simulatorCommand)
 }
 else {

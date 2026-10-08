@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.Objects;
 import javax.sound.sampled.AudioSystem;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -60,6 +61,27 @@ public class AdvisoryVoiceRecording {
     public byte[] content(Row row) {
         byte[] data=read(row);
         return data!=null&&row.sha256().equals(sha256(data))?data:null;
+    }
+    /** 读取当前通知任务绑定的真实录音字节；仅接受当前生效录音的完整元数据匹配。 */
+    public byte[] content(Recording recording) {
+        if (recording == null) return null;
+        Row active = uploaded == null ? null : uploaded.active();
+        if (active != null) {
+            return same(active.recordingId(), active.name(), active.transcript(), active.sha256(), recording)
+                    ? content(active) : null;
+        }
+        Recording configured = configured();
+        if (configured == null || !configured.equals(recording)) return null;
+        try {
+            byte[] data = Files.readAllBytes(Path.of(path));
+            return wave(data) != null && configured.sha256().equals(sha256(data)) ? data : null;
+        } catch (Exception unavailable) {
+            return null;
+        }
+    }
+    private static boolean same(String id, String name, String transcript, String sha256, Recording recording) {
+        return Objects.equals(id, recording.id()) && Objects.equals(name, recording.name())
+                && Objects.equals(transcript, recording.transcript()) && Objects.equals(sha256, recording.sha256());
     }
     private byte[] read(Row row) {
         if(storage==null)return null;
