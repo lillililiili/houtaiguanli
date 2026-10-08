@@ -86,6 +86,70 @@ class LocalPlanFilingApiTest extends LocalInterfaceSimulatorApiTest {
   jdbc.update("UPDATE app_user SET role_code='ROLE-FILING-OP' WHERE account='admin1'");
   send("/plans",plan("operator-basic-plan"),200);
   send("/plans",body,403);
+  // A task carrying its own pilot and reporting unit says which permission the archive step needs.
+  var carriedBody=plan("directory-permission-carried");carriedBody.put("filing",carried(filing(false),"13800000000"));
+  assertThat(error("/plans",carriedBody,403)).contains("单位管理权限");
+ }
+ @org.springframework.beans.factory.annotation.Autowired com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService notifications;
+ @Test void carriedPilotAndReportingUnitAreFoundOrCreatedAndLinked() throws Exception {
+  long orgs=count("app_org"),contacts=count("business_contact"),bindings=count("plan_source_binding");
+  var body=plan("carried-first");body.put("filing",carried(filing(false),"138 0000 0000"));
+  String id=send("/plans",body,200).path("subject_id").asText();
+  var subjects=read("/api/v1/flight-plans/"+id+"/subjects");
+  assertThat(subjects.path("association_status").asText()).isEqualTo("LINKED");
+  assertThat(subjects.path("pilot_name").asText()).isEqualTo("模拟申报飞手");
+  assertThat(subjects.path("operator_org_name").asText()).isEqualTo("D2 模拟运营单位");
+  assertThat(subjects.path("reporting_org_name").asText()).isEqualTo("D2 模拟报送单位");
+  var pilot=jdbc.queryForMap("select * from business_contact where contact_id=?",subjects.path("pilot_contact_id").asText());
+  assertThat(pilot.get("verified_at")).isNotNull();
+  assertThat((String)pilot.get("verification_basis")).startsWith("随上级任务下发：").contains(read("/api/v1/flight-plans/"+id).path("plan_no").asText());
+  assertThat(jdbc.queryForObject("select org_code from app_org where org_id=?",String.class,subjects.path("reporting_org_id").asText())).isEqualTo("D2-REPORTING");
+  assertThat(List.of(count("app_org"),count("business_contact"),count("plan_source_binding"))).containsExactly(orgs+2,contacts+1,bindings+1);
+  // A later task with the same pilot (phone written differently) and the same reporting code reuses both records.
+  var second=plan("carried-second");second.put("uav_sn","SIM-INPUT-D2");second.put("filing",carried(filing(false),"138-0000-0000"));
+  var again=read("/api/v1/flight-plans/"+send("/plans",second,200).path("subject_id").asText()+"/subjects");
+  assertThat(again.path("pilot_contact_id").asText()).isEqualTo(subjects.path("pilot_contact_id").asText());
+  assertThat(again.path("source_binding_id").asText()).isEqualTo(subjects.path("source_binding_id").asText());
+  assertThat(List.of(count("app_org"),count("business_contact"),count("plan_source_binding"))).containsExactly(orgs+2,contacts+1,bindings+1);
+  // The pilot contact itself no longer blocks the advisory SMS for the task.
+  var target=notifications.forPilotPlan("ADVISORY_SMS",id);
+  assertThat(target.contactId()).isEqualTo(subjects.path("pilot_contact_id").asText());
+  assertThat(Objects.toString(target.blockedReason(),"")).doesNotContain("飞手");
+ }
+ @Test void carriedPilotNeedsNameAndUnitAndSelectedArchivesStillWin() throws Exception {
+  var body=plan("carried-check");
+  var data=carried(filing(false),"13800000000");data.remove("pilot_name");body.put("filing",data);
+  assertThat(error("/plans",body,400)).contains("飞手姓名");
+  data=carried(filing(false),"13800000000");data.remove("operator_name");body.put("filing",data);
+  assertThat(error("/plans",body,400)).contains("申报单位名称");
+  data=carried(filing(false),"13800000000");data.remove("reporting_org_code");body.put("filing",data);
+  assertThat(error("/plans",body,400)).contains("编码");
+  data=carried(filing(false),"call me");body.put("filing",data);
+  assertThat(error("/plans",body,400)).isEqualTo("飞手手机号格式不正确");
+  var linked=filing(true);long contacts=count("business_contact");
+  linked.put("pilot_phone","13900000000");body.put("filing",linked);
+  String id=send("/plans",body,200).path("subject_id").asText();
+  assertThat(read("/api/v1/flight-plans/"+id+"/subjects").path("pilot_name").asText()).isEqualTo("测试飞手档案");
+  assertThat(count("business_contact")).isEqualTo(contacts);
+ }
+ @Test void sameNamedOperatorUnitsAreNotGuessedAndDisabledPilotIsReported() throws Exception {
+  var data=carried(filing(false),"13700000000");
+  for(int i=0;i<2;i++)write("/api/v1/organization-profiles",Map.of("name","D2 模拟运营单位","organization_type","OPERATOR"));
+  var body=plan("carried-ambiguous");body.put("filing",data);
+  assertThat(error("/plans",body,409)).contains("不止一个");
+  String org=jdbc.queryForObject("select org_id from app_org where org_code='ORG-DEV'",String.class);
+  var pilot=write("/api/v1/contacts",Map.of("org_id",org,"name","停用飞手","roles",List.of("PILOT"),"phone","13700000000","enabled",false));
+  data.put("operator_org_id",org);body.put("filing",data);body.put("message_id","carried-disabled");
+  assertThat(error("/plans",body,409)).contains("不可用");
+  assertThat(jdbc.queryForObject("select count(*) from business_contact where phone='13700000000'",Long.class)).isEqualTo(1);
+  assertThat(pilot.path("enabled").asBoolean()).isFalse();
+ }
+ Map<String,Object> carried(Map<String,Object> data,String phone){
+  data.put("operator_name","D2 模拟运营单位");data.put("pilot_phone",phone);data.put("reporting_org_code","D2-REPORTING");data.put("reporting_org_name","D2 模拟报送单位");return data;
+ }
+ long count(String table){return jdbc.queryForObject("select count(*) from "+table,Long.class);}
+ String error(String path,Object body,int expected) throws Exception {
+  return json.readTree(mvc.perform(post(BASE+path).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body))).andExpect(status().is(expected)).andReturn().getResponse().getContentAsString()).path("error").path("message").asText();
  }
  Map<String,Object> filing(boolean linked) throws Exception {
   String source=jdbc.queryForObject("select source_id from integration_source where enabled=true and source_mode in ('mock','replay') fetch first 1 rows only",String.class);

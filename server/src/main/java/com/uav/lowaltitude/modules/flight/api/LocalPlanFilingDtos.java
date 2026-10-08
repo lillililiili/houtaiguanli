@@ -17,7 +17,11 @@ public final class LocalPlanFilingDtos {
   @DecimalMin("-90") @DecimalMax("90") BigDecimal takeoffLatitude,
   @DecimalMin("-180") @DecimalMax("180") BigDecimal landingLongitude,
   @DecimalMin("-90") @DecimalMax("90") BigDecimal landingLatitude,
-  @Size(max=36) String sourceBindingId,@Size(max=36) String operatorOrgId,@Size(max=36) String pilotContactId) { }
+  @Size(max=36) String sourceBindingId,@Size(max=36) String operatorOrgId,@Size(max=36) String pilotContactId,
+  // D-2（2026-10-08）：上级任务直接带来的飞手手机号和报送单位，平台收任务时据此找或建档案并关联，不设录入页。
+  @Pattern(regexp="[+0-9 ()-]{6,64}",message="飞手手机号格式不正确") String pilotPhone,
+  @Size(max=64,message="报送单位编码最多 64 个字符") String reportingOrgCode,
+  @Size(max=128,message="报送单位名称最多 128 字") String reportingOrgName) { }
  public record Update(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @NotNull @Min(0) Long expectedVersion,@NotNull @Valid Filing filing) { }
  public record Source(String sourceId,String sourceName,String sourceMode) { }
