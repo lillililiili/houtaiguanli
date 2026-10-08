@@ -33,3 +33,7 @@ app:
   disposal:
     device-run:
       enabled: false
+  # 同 application-test.yml：通知上级的自动补发由用例直接调 resend()。
+  handoff:
+    risk-notice-resend:
+      enabled: false

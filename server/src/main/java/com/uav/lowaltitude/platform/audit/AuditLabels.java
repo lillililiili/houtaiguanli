@@ -125,6 +125,7 @@ final class AuditLabels {
             Map.entry("risk_notified", "提交风险通知"),
             Map.entry("risk_acknowledged", "确认风险回执"),
             Map.entry("handoff_created", "提交业务交接"),
+            Map.entry("handoff_notification_resent", "自动补发通知上级"),
             Map.entry("legality_evaluation_revised", "复核合法性研判"),
             Map.entry("legality_evaluation_recomputed", "重新研判"),
             Map.entry("legality_evaluation_escalated", "研判转告警"),

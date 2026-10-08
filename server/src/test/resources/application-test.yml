@@ -27,6 +27,10 @@ app:
   disposal:
     device-run:
       enabled: false
+  # 通知上级没发出去的自动补发（新-23）产品默认打开；用例里由用例直接调 resend()。
+  handoff:
+    risk-notice-resend:
+      enabled: false
   evidence-dir: ./target/evidence-test
   map-package:
     data-dir: ./target/map-data-test
