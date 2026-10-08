@@ -65,6 +65,7 @@ public class AlarmReadRepository {
 
     public long count(AlarmQuery query, AccessDecision access) {
         Where where = where(query, access);
+        if (query.attentionGroups() != null) putAttentionTime(where.parameters);
         Long total = jdbc.queryForObject("SELECT COUNT(*)" + from() + where.sql, where.parameters, Long.class);
         return total == null ? 0 : total;
     }
@@ -216,6 +217,19 @@ public class AlarmReadRepository {
         add(sql, parameters, "a.district_id", "district_id", query.districtId());
         add(sql, parameters, "a.source_mode", "source_mode", query.sourceMode());
         add(sql, parameters, "a.alarm_type", "alarm_type", query.alarmType());
+        if (query.attentionGroups() != null) {
+            // 与每行返回的 attention_group 同一个分类表达式，筛出来的和页面分组一致；时刻参数由调用方放入。
+            sql.append(" AND (").append(AlarmAttentionSql.GROUP).append(") IN (:attention_groups)");
+            parameters.put("attention_groups", query.attentionGroups());
+        }
+        if (query.violationReason() != null) {
+            // 当前违规原因与列表展示同源：升级过取最近一次升级的累计原因，否则取告警明细的 violation_reasons。
+            // JSON 列只做 CAST 后的字符串匹配（PG 没有 jsonb LIKE）；H2 把 CAST(文本 AS JSON) 存成带转义的 JSON 字符串，
+            // 先去掉 \" 转义，再按带引号的完整代码匹配，PLAN_ALTITUDE_EXCEEDED 不会命中 AIRSPACE_ALTITUDE_EXCEEDED。
+            sql.append(" AND REPLACE(CASE WHEN esc.alarm_id IS NULL THEN CAST(a.detail AS VARCHAR) ELSE CAST(esc.reasons_after AS VARCHAR) END,")
+                    .append(" '\\\"', '\"') LIKE :violation_reason ESCAPE '\\'");
+            parameters.put("violation_reason", "%\"" + query.violationReason().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "\"%");
+        }
         if (query.targetId() != null) {
             // filter 也只接受与每条 alarm 同域的目标，错连 target 不能影响列表 total。
             sql.append(" AND EXISTS (SELECT 1 FROM target filter_target WHERE filter_target.target_id=a.target_id AND filter_target.target_id=:target_id AND filter_target.owner_org_id=a.owner_org_id AND filter_target.district_id=a.district_id)");
@@ -259,9 +273,13 @@ public class AlarmReadRepository {
     public record AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
             OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
             /* 阶段 15（决策 15-7）：按告警类别筛。 */
-            String alarmType) {
+            String alarmType,
+            /* 2026-10-07：按关注分组筛（待处置统计、状态筛选）；null 表示不限。 */
+            List<String> attentionGroups,
+            /* 2026-10-07：按当前违规原因代码筛（告警页"违规类别"）；null 表示不限。 */
+            String violationReason) {
         public static AlarmQuery empty() {
-            return new AlarmQuery(null, null, null, null, null, null, null, null, null);
+            return new AlarmQuery(null, null, null, null, null, null, null, null, null, null, null);
         }
     }
     /**
