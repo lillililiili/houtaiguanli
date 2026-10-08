@@ -247,6 +247,20 @@ class AutoVoiceApiTest {
                 .andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"))
                 .andExpect(jsonPath("$.data.auto_voice.reason").value(org.hamcrest.Matchers.containsString("飞手短信尚未送达")));
     }
+    @Test void leavingByLegalityIsNotDescribedAsLeavingTheAirspace()throws Exception {
+        // 新-31：短信发出时不在任何空域、之后研判恢复合法的，不拨打电话；原因写恢复合法，不写离开了告警空域。
+        long sms=jdbc.queryForObject("select updated_at from uav_auto_sms_task where event_id=?",Long.class,eventId);
+        org.mockito.Mockito.when(departure.assess(eq(eventId),eq(sms),anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.LEFT);
+        org.mockito.Mockito.when(departure.inAreaAtSms(eventId,sms)).thenReturn(false);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value("短信发出后的最新研判已恢复合法（例如回到航线），视为已离开告警区域，不拨打电话"))
+                .andExpect(jsonPath("$.data.notify_phase").doesNotExist());
+        org.mockito.Mockito.when(departure.inAreaAtSms(eventId,sms)).thenReturn(true);
+        read().andExpect(jsonPath("$.data.auto_voice.reason").value("最新位置已离开短信发出时所处的告警空域，不拨打电话"));
+        voiceService.process(eventId);
+        verify(voice,never()).simulate(anyString(),any(),anyString());
+    }
     @Test void callObservationKeepsTheAreaFromTheSmsAndReadsPositionsAfterPlayback()throws Exception {
         voiceService.process(eventId);
         long sms=jdbc.queryForObject("select updated_at from uav_auto_sms_task where event_id=?",Long.class,eventId);

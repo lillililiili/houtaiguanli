@@ -12,9 +12,14 @@ import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-/** 用短信发出时目标所在的本区空域作为告警区域，再用之后的新位置判断是否离开。没有新位置或区域不能判定时，不把目标当成已撤离。 */
+/**
+ * 用短信发出时目标所在的本区空域作为告警区域，再用之后的新位置判断是否离开。短信发出时不在任何空域的，改看最新违规研判。
+ * 没有新位置或不能判定时，不把目标当成已撤离。
+ */
 @Component
 public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
+    /** 研判看的那一帧不能比最新位置早太多，否则不能代表现在的情况。规则引擎对持续目标约 5 秒重评一次。 */
+    static final long CURRENT_EVALUATION_MILLIS = 30_000L;
     private final JdbcTemplate jdbc;
     private final boolean postgis;
     public PostgisPilotDepartureWatch(JdbcTemplate jdbc, DataSource dataSource) {
@@ -33,7 +38,7 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
         Point after = point(eventId, since, now);
         if (before == null || after == null || before.lon == null || after.lon == null) return Presence.UNKNOWN;
         Set<String> area = covered(eventId, before, smsAcceptedAt);
-        if (area.isEmpty()) return Presence.UNKNOWN;
+        if (area.isEmpty()) return byEvaluation(eventId, since, after, now);
         List<Hit> later = hits(eventId, after, after.observedAt);
         boolean still = false;
         boolean boundary = false;
@@ -45,6 +50,33 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
         if (still) return Presence.STILL_PRESENT;
         if (boundary) return Presence.UNKNOWN;
         return Presence.LEFT;
+    }
+    @Override
+    public boolean inAreaAtSms(String eventId, long smsAcceptedAt) {
+        if (!postgis) return true;
+        Point before = point(eventId, null, smsAcceptedAt);
+        return before == null || before.lon == null || !covered(eventId, before, smsAcceptedAt).isEmpty();
+    }
+    /**
+     * 短信发出时目标不在任何空域（例如先偏离任务航线、再飞进禁飞区），没有区域可比，改看这架无人机最新一次违规研判
+     * （2026-10-09 新-31）：仍判违规就是没有撤离；短信（电话后为录音播完）之后的位置判为合法才算撤离；其它情况仍不能判定。
+     */
+    private Presence byEvaluation(String eventId, long since, Point after, long now) {
+        var rows = jdbc.query("""
+                SELECT r.legal_status,r.freshness_code,r.observed_at FROM uav_event e
+                JOIN alarm a ON a.alarm_id=e.alarm_id
+                JOIN rule_evaluation r ON r.target_id=a.target_id AND r.owner_org_id=e.owner_org_id
+                  AND r.district_id=e.district_id AND r.source_mode=a.source_mode
+                WHERE e.event_id=? AND r.mode='ACTIVE' AND r.subject_kind='TARGET' AND r.evaluated_at<=?
+                ORDER BY r.evaluated_at DESC,r.evaluation_id DESC FETCH FIRST 1 ROW ONLY
+                """, (r, n) -> new Evaluation(r.getString(1), r.getString(2), r.getTimestamp(3) == null ? null : r.getTimestamp(3).getTime()),
+                eventId, new Timestamp(now));
+        if (rows.isEmpty()) return Presence.UNKNOWN;
+        Evaluation latest = rows.get(0);
+        if (!"FRESH".equals(latest.freshness) || latest.observedAt == null) return Presence.UNKNOWN;
+        if ("LEGAL".equals(latest.legal) && latest.observedAt > since) return Presence.LEFT;
+        if ("ILLEGAL".equals(latest.legal) && latest.observedAt >= after.observedAt - CURRENT_EVALUATION_MILLIS) return Presence.STILL_PRESENT;
+        return Presence.UNKNOWN;
     }
     private Point point(String eventId, Long afterExclusive, long untilInclusive) {
         String window = afterExclusive == null ? " AND p.observed_at<=?" : " AND p.observed_at>? AND p.observed_at<=?";
@@ -91,4 +123,5 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
     }
     private record Point(long observedAt, BigDecimal lon, BigDecimal lat) { }
     private record Hit(String airspaceId, String relation) { }
+    private record Evaluation(String legal, String freshness, Long observedAt) { }
 }

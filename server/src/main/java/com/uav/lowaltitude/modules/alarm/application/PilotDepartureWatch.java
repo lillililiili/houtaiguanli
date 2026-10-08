@@ -12,4 +12,6 @@ public interface PilotDepartureWatch {
     default Presence assess(String eventId, long smsAcceptedAt, long since, long now) {
         return since == smsAcceptedAt ? assess(eventId, smsAcceptedAt, now) : Presence.UNKNOWN;
     }
+    /** 短信发出时目标是否在某个告警空域里。不在时是按最新违规研判判断撤离的，说法不能写成“离开了告警空域”。 */
+    default boolean inAreaAtSms(String eventId, long smsAcceptedAt) { return true; }
 }
