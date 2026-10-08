@@ -77,7 +77,7 @@
 | C02-2 空域限高 | kind ∈ `C02-2.kinds` 水平覆盖；目标高度按 `airspace_version.altitude_datum` 取 `altitude_amsl_m` 或 `height_agl_m` | `AIRSPACE_ALTITUDE_EXCEEDED` | 同上 |
 | C02-3 航线偏离 | 距中心线 − 半宽 > `C02-3.tolerance_m` | `ROUTE_DEVIATION` | `CORRIDOR_WIDTH_UNKNOWN`、`POSITION_UNKNOWN`；无计划 NOT_APPLICABLE |
 | C02-4 时间窗 | `as_of ≥ end_at + C02-4.grace_min` 或 `< start_at − grace` | `TIME_WINDOW_OVERRUN` | `PLAN_TIME_UNKNOWN`；无计划 NOT_APPLICABLE |
-| C02-5 夜航 | `C02-5.timezone` 本地时 ∈ [`night_from`, 24) ∪ [0, `night_to`)，且 C01 没有匹配上计划（FULL/PARTIAL 即已在计划时段内，容差与白天同为 `C01.time_window_min`；超时另由 C02-4 判） | `NIGHT_FLIGHT` | — |
+| C02-5 夜航 | `C02-5.timezone` 本地时 ∈ [`night_from`, 24) ∪ [0, `night_to`)，且 C01 没有匹配上计划（FULL/PARTIAL 即已在计划时段内，容差与白天同为 `C01.time_window_min`；超时另由 C02-4 判）；按规定无需申请的飞行（新-28）夜间 PASS | `NIGHT_FLIGHT` | — |
 | C02-6 超视距 | 目标与飞手位置距离 > `C02-6.vlos_m`；`message` 为 `超视距飞行（飞手离无人机约 X 米，超过 {vlos_m} 米）`（X 四舍五入到米，精确值在 `facts.distance_m`） | `BVLOS_EXCEEDED` | 无飞手位置 `PILOT_POSITION_UNAVAILABLE`；目标位置缺失 `POSITION_UNKNOWN` |
 | C02-7 计划高度 | 目标同基准高度 > `route_version.max_altitude_m` 或 < min | `PLAN_ALTITUDE_EXCEEDED` | 基准缺失；无计划 NOT_APPLICABLE |
 | C02-8 临时限制 | kind ∈ `C02-8.kinds` 且生效窗口内覆盖 | `TEMPORARY_RESTRICTION_ACTIVE` | 同 C02-1 |
@@ -86,7 +86,7 @@
 
 1. NO_STATE / STALE → `NOT_APPLICABLE`。
 2. 质量门：`fusion_confidence`（缺则 `classification_confidence`）< `C03.conf_min` → `LOW_CONFIDENCE`；轨迹点数 < `C03.min_points` → `TRACK_DEGRADED`；相邻点间隔 > `C03.gap_seconds` → `TRACK_BRIDGED`；任一 → `UNDETERMINED`。
-3. C01 NONE → `C03.no_plan_status`（默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`；已过质量门、类别为无人机，行为项依据不足也不降为不可判定，计划授权待核对由 `decision_assurance` 交人工复核）；C01 UNDETERMINED 且 C02-1/2/8 无 FAIL → `UNDETERMINED`，有空域 FAIL 则照常走第 4 步判 `ILLEGAL`（进禁飞/限高/临管空域不取决于属于哪个计划）。
+3. C01 NONE → `C03.no_plan_status`（默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`；已过质量门、类别为无人机，行为项依据不足也不降为不可判定，计划授权待核对由 `decision_assurance` 交人工复核）；完全没有报备任务、离地不超过 120 米、不在管控空域里的视同 `LEGAL`，按规定无需申请（2026-10-08 新-28，见文末）；C01 UNDETERMINED 且 C02-1/2/8 无 FAIL → `UNDETERMINED`，有空域 FAIL 则照常走第 4 步判 `ILLEGAL`（进禁飞/限高/临管空域不取决于属于哪个计划）。
 4. C02-1/2/8 任一 FAIL → `ILLEGAL`；任一 UNDETERMINED（无 FAIL）→ `UNDETERMINED`。
 5. C02-3/4/5/7 任一 FAIL → `ILLEGAL`；应用服务再校验证据充分性，不充分降为 `UNDETERMINED`（空域违规与无计划 `NO_AUTHORIZATION` 除外）。
 6. C02-6 FAIL（超视距）且前 5 步都没给出结论 → `ILLEGAL`，原因 `BVLOS_EXCEEDED`，`grade` 固定 `LOW`，不看加权分数（2026-10-07，写在代码里，已发布版本不重发也生效）；不经第 5 步的证据充分性降级。计划不明、空域未知、质量门、无计划按参数不可判定仍在第 2–4 步先判，不因超视距改判。
@@ -261,3 +261,13 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 
 - 反制资格（申请、执行、排队下发及续链）和暂不反制的“当前可靠明确研判”，原来都要求研判的未知原因为空，现在改为“除 `PILOT_POSITION_UNAVAILABLE` 外没有未知原因”。没有飞手位置只让 C02-6 超视距判不了，它本来就被 `C03.ignore_undetermined_rules` 忽略，不影响结论和证据充分性；黑飞常常测不到遥控器位置，此前这类明确违规的告警连人工反制也申请不了。
 - 其他未知原因（计划不明、高度基准或量程未知等）照旧阻断；ILLEGAL / FRESH / SUFFICIENT、事件已核实、当前观测、权限与授权约束都不变。判断只在 `UavAdvisoryRules.noBlockingUnknowns` 一处，`can_request_counter`、自动规则反制、干扰续链、下发前检查和暂不反制同用。飞手自动短信、电话按事件核实状态发送，本来就不看研判的未知原因，不受影响。
+
+### 2026-10-08 没有报备任务、离地 120 米以下的普通区域飞行按规定无需申请（法规核对，确认书 2-2，新-28）
+
+- 业务决定：国家规定小型及以下无人机在真高 120 米以下的适飞空域飞行无需申请；系统分不出机型大小，同时满足下面三条的判 `LEGAL`、不出告警（`NoPlanExemption`，C03 第 3 步视同 `no_plan_status=LEGAL` 继续走第 4–7 步）：
+  1. 完全没有报备任务：C01 为 NONE 且没有挂上本机编号的计划（`plan` 为空）。有本机计划却飞出时段或航线的照旧按计划查，结论不变。
+  2. 设备报的离地高度 `height_agl_m` 不超过 120 米（含 120）。没有离地高度不推算，照旧按 `C03.no_plan_status` 判。
+  3. 不在管控空域里：`PROHIBITED`、`RESTRICTED`、`ALTITUDE_LIMIT` 及 C02-1/C02-2 `kinds` 另配的类型随时都算，`TEMPORARY_CONTROL` 及 C02-8 `kinds` 另配的类型只在生效窗口内算（与 C02-8 同口径），这些空域的关系都必须是 `DISJOINT`；水平上在限高区里、高度没超也不算普通区域。压在边界上（`TOUCHES`）、空域关系不明、同一空域两个版本同时生效（`VERSION_AMBIGUOUS`）的照旧报。
+- “看得准”由第 2 步质量门把关（置信度、轨迹点数、断点），不另设条件。120 米是法规数值，与 2-12 禁飞区定级一样写在代码里，已发布的规则集版本不重新发布、不加参数也按此执行。
+- C01 明细照实记 FAIL（`NO_PLAN_CANDIDATE` 等），`facts` 加 `no_plan_exempt=true`、`height_agl_m`，`message` 为 `没有报备任务；离地约 N 米，不超过 120 米，不在禁飞区、管制区、限高区、临时管控区内，按规定无需申请`（N 四舍五入到米，DEMO 参数时照例附 `；参数为 DEMO 演示值，尚未确认`）。C02-5 对这类飞行夜间 PASS（夜间只在原有违规上加注，确认书 2-9），C03 与证据充分性都不把 C01 的 FAIL、夜航当作与合法结论冲突，也不要求核对计划授权（不加 `PLAN_AUTHORIZATION_UNVERIFIED`）。
+- 已有研判与告警不动。本地回放场景 `no-plan`、`cross-scope` 及相关测试夹具的目标改到离地 150 米，继续验“没有任务 → 无飞行授权”。

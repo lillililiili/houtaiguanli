@@ -695,7 +695,7 @@ class LegalityReviewApiTest {
                 .andExpect(jsonPath("$.data.evaluation.trigger_kind").value("MANUAL"))
                 .andExpect(jsonPath("$.data.evaluation.legal_status").value(night ? "UNDETERMINED" : "ILLEGAL"))
                 .andExpect(jsonPath("$.data.evaluation.review.state").value("PENDING_REVIEW"));
-        // 白天没有计划的目标按 C03.no_plan_status 判非法并经 C06 生成一条告警；夜间不可判定不生成告警。
+        // 白天没有计划的目标（离地 150 米，高于新-28 的 120 米）按 C03.no_plan_status 判非法并经 C06 生成一条告警；夜间不可判定不生成告警。
         assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=? and source_id='rule-engine-legality-mock'", Long.class, target)).isEqualTo(night ? 0L : 1L);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where action='legality_evaluation_triggered' and result='SUCCESS' and user_id=(select user_id from app_session where session_id=?)", Long.class, session)).isEqualTo(1L);
         mvc.perform(post("/api/v1/legality-evaluations").header("Authorization", bearer(session))
@@ -756,12 +756,12 @@ class LegalityReviewApiTest {
         jdbc.update("insert into target (target_id,target_no,object_type_code,uav_sn,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'UAV',?,?,?,'mock',?,?,?,?,0)",
                 id, "MB-S7R-" + suffix, sn, at, ts(observed), orgId, district, at, ts(observed));
         jdbc.update("insert into target_source_link (link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,'seed-stage7-source',?,?,?)", link, id, "s-" + suffix, "x-" + suffix, at);
-        jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,created_at,updated_at,version) values (?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),80,60,10,90,0.9,0.95,?,?,?,?,0)",
+        jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,created_at,updated_at,version) values (?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),170,150,10,90,0.9,0.95,?,?,?,?,0)",
                 id, ts(observed), ts(observed), at, ts(observed));
         jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at) values (?,?,?,?,?,?)", track, id, link, "tr-" + suffix, at, at);
         for (int i = 0; i < 5; i++) {
             Timestamp seen = ts(observed.minusSeconds((4 - i) * 5L));
-            jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at) values (?,?,?,?,?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),80,60,?)",
+            jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at) values (?,?,?,?,?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),170,150,?)",
                     "s7r-pt-" + suffix + "-" + i, track, i, seen, seen, seen);
         }
     }

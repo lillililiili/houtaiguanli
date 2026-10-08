@@ -40,6 +40,30 @@ class DecisionAssuranceAlgorithmTest {
         assertThat(result.reasons()).contains("PLAN_AUTHORIZATION_UNVERIFIED");
     }
 
+    /**
+     * 新-28：完全没有报备任务、离地 120 米以下、不在管控空域里，按规定无需申请而判 LEGAL：不需要核对任务授权，C01 照实记的
+     * “对不上任务”和夜航都不算与合法结论冲突，可直接采纳（不出告警）。超过 120 米的照旧要人核对授权。
+     */
+    @Test void noTaskLowFlightThatNeedsNoApplicationIsReliablyLegal() {
+        var none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        var hits = replace(checks(), hit("C01", ResultCode.FAIL, null));
+        var low = context("mock", Freshness.FRESH, none, "0.95", goodTrack(), "60");
+        var verdict = new C03Decision().decide(low, hits, params);
+        assertThat(verdict.status()).isEqualTo(LegalStatus.LEGAL);
+        assertThat(algorithm.assess(low, hits, verdict, params).status()).isEqualTo("SUFFICIENT");
+        var night = replace(hits, hit("C02-5", ResultCode.FAIL, "NIGHT_FLIGHT"));
+        var nightVerdict = new C03Decision().decide(low, night, params);
+        assertThat(nightVerdict.status()).isEqualTo(LegalStatus.LEGAL);
+        assertThat(algorithm.assess(low, night, nightVerdict, params).reasons()).isEmpty();
+        // 调用方给出 LEGAL、但目标其实不在无需申请之列（离地 150 米）：C01 FAIL 仍与合法结论冲突。
+        var high = context("mock", Freshness.FRESH, none, "0.95", goodTrack());
+        var forced = new C03Decision.Decision(LegalStatus.LEGAL, null, List.of(), List.of(), null, null);
+        assertThat(algorithm.assess(high, hits, forced, params).reasons()).contains("PLAN_AUTHORIZATION_UNVERIFIED", "DECISIVE_EVIDENCE_MISSING");
+        var illegal = assess(high, hits);
+        assertThat(illegal.status()).isEqualTo("INSUFFICIENT");
+        assertThat(illegal.reasons()).contains("PLAN_AUTHORIZATION_UNVERIFIED");
+    }
+
     @Test void missingIdentityCannotBecomeReliableLegalFromTimeAndCorridorAlone() {
         var match = new PlanMatch(PlanMatchCode.PARTIAL, full().plan(), Map.of("identity", "UNDETERMINED"), List.of("IDENTITY_CLUE_MISSING"));
         var result = assess(context("mock", Freshness.FRESH, match, "0.95", goodTrack()), checks());
@@ -180,8 +204,13 @@ class DecisionAssuranceAlgorithmTest {
         return algorithm.assess(context, hits, new C03Decision().decide(context, hits, params), params);
     }
 
+    /** 离地 150 米：高于 120 米，没有报备任务时不属于按规定无需申请的飞行（新-28）。 */
     private static EvaluationContext context(String source, Freshness freshness, PlanMatch match, String confidence, TrackQuality track) {
-        var state = new TargetState("t", "tr", "SN1", new BigDecimal("118.5"), new BigDecimal("37.5"), new BigDecimal("100"), new BigDecimal("80"), BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal(confidence), NOW, NOW);
+        return context(source, freshness, match, confidence, track, "150");
+    }
+
+    private static EvaluationContext context(String source, Freshness freshness, PlanMatch match, String confidence, TrackQuality track, String heightAgl) {
+        var state = new TargetState("t", "tr", "SN1", new BigDecimal("118.5"), new BigDecimal("37.5"), new BigDecimal("170"), new BigDecimal(heightAgl), BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal(confidence), NOW, NOW);
         return new EvaluationContext(new Subject(SubjectKind.TARGET, "t", "o", "d", source), state, track, match, List.of(), NOW, freshness, RunMode.ACTIVE, source);
     }
 

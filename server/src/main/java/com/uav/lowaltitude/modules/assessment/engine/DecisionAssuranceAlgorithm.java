@@ -67,8 +67,11 @@ public final class DecisionAssuranceAlgorithm {
         }
 
         PlanMatch match = context.planMatch();
+        // 新-28：没有报备任务、按规定无需申请而判合法的，不需要核对任务授权；C01 照实记“对不上任务”、夜航不单独成立（C03 同样不计），
+        // 都不算与合法结论冲突。
+        boolean exemptNoPlan = verdict.status() == LegalStatus.LEGAL && NoPlanExemption.applies(context, params);
         if (match == null || match.code() == PlanMatchCode.NONE || match.code() == PlanMatchCode.NOT_APPLICABLE) {
-            reasons.add("PLAN_AUTHORIZATION_UNVERIFIED");
+            if (!exemptNoPlan) reasons.add("PLAN_AUTHORIZATION_UNVERIFIED");
         } else if (match.code() != PlanMatchCode.FULL) {
             reasons.addAll(match.reasonCodes().isEmpty() ? List.of(RuleCodes.PLAN_MATCH_UNDETERMINED) : match.reasonCodes());
         } else if (match.plan() == null || match.plan().uavSn() == null || match.plan().uavSn().isBlank()) {
@@ -96,7 +99,10 @@ public final class DecisionAssuranceAlgorithm {
                         && hit.resultCode() == ResultCode.FAIL && hit.reasonCode() != null && !hit.reasonCode().isBlank());
         if (verdict.status() != LegalStatus.LEGAL && !explicitBehaviourViolation && reasons.isEmpty()) reasons.add("DECISIVE_EVIDENCE_MISSING");
         // 即使调用方给出了 LEGAL，也不能接受与单项 FAIL 冲突的结论。
-        if (verdict.status() == LegalStatus.LEGAL && details.stream().anyMatch(hit -> hit.resultCode() == ResultCode.FAIL)) reasons.add("DECISIVE_EVIDENCE_MISSING");
+        if (verdict.status() == LegalStatus.LEGAL && details.stream().anyMatch(hit -> hit.resultCode() == ResultCode.FAIL
+                && !(exemptNoPlan && (RuleCodes.C01.equals(hit.ruleCode()) || RuleCodes.C02_5.equals(hit.ruleCode()))))) {
+            reasons.add("DECISIVE_EVIDENCE_MISSING");
+        }
         return reasons.isEmpty() ? sufficient() : insufficient(reasons);
     }
 

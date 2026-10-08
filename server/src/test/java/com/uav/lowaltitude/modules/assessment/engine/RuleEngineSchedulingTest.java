@@ -167,7 +167,7 @@ class RuleEngineSchedulingTest {
 
         // 来源回来、有了新的观测：照常研判。
         degradation(lost, "THREE_SOURCE", "0", true);
-        jdbc.update("update target_latest_state set fusion_confidence=0.95, altitude_amsl_m=80, height_agl_m=60 where target_id=?", lost);
+        jdbc.update("update target_latest_state set fusion_confidence=0.95, altitude_amsl_m=170, height_agl_m=150 where target_id=?", lost);
         advance(lost, now.plusSeconds(11));
         assertThat(scheduled(now.plusSeconds(20))).contains(lost);
         assertThat(evaluate(lost, now.plusSeconds(20)).legalStatus()).isEqualTo(LegalStatus.ILLEGAL);
@@ -205,7 +205,10 @@ class RuleEngineSchedulingTest {
         return jdbc.queryForObject("select count(*) from rule_evaluation where target_id=?", Integer.class, targetId);
     }
 
-    /** created 是平台建档时刻（target.created_at）；first/last_seen 是报文时刻，设备时钟慢时两者可以差很远。 */
+    /**
+     * created 是平台建档时刻（target.created_at）；first/last_seen 是报文时刻，设备时钟慢时两者可以差很远。
+     * 目标没有报备任务，离地 150 米：高于 120 米，按规定要申请（新-28），无计划照旧判违规。
+     */
     private String target(String name, OffsetDateTime created, OffsetDateTime observed, OffsetDateTime received) {
         String id = "zt06-" + name + "-" + suffix, link = "zt06-link-" + name + "-" + suffix, track = "zt06-track-" + name + "-" + suffix;
         OffsetDateTime firstSeen = created.isBefore(observed.minusSeconds(8)) ? created : observed.minusSeconds(8);
@@ -214,12 +217,12 @@ class RuleEngineSchedulingTest {
         jdbc.update("insert into target_source_link (link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,'seed-stage3-source',?,?,?)",
                 link, id, "s-" + name + "-" + suffix, "x-" + name + "-" + suffix, ts(created));
         jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,created_at,updated_at,version)"
-                + " values (?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),80,60,10,90,0.9,0.95,?,?,?,?,0)", id, ts(observed), ts(received), ts(created), ts(received));
+                + " values (?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),170,150,10,90,0.9,0.95,?,?,?,?,0)", id, ts(observed), ts(received), ts(created), ts(received));
         jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at) values (?,?,?,?,?,?)", track, id, link, "tr-" + name + "-" + suffix, ts(firstSeen), ts(created));
         for (int i = 0; i < 5; i++) {
             Timestamp seen = ts(observed.minusSeconds((4 - i) * 2L));
             jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at)"
-                    + " values (?,?,?,?,?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),80,60,?)", "zt06-pt-" + name + "-" + suffix + "-" + i, track, i, seen, seen, seen);
+                    + " values (?,?,?,?,?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),170,150,?)", "zt06-pt-" + name + "-" + suffix + "-" + i, track, i, seen, seen, seen);
         }
         return id;
     }

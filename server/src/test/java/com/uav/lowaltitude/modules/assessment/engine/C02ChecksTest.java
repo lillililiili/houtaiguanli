@@ -142,17 +142,36 @@ class C02ChecksTest {
     @Test
     void nightFlightUsesConfiguredTimezoneAndHalfOpenHours() {
         // 04:00Z = 12:00 上海，白天；13:00Z = 21:00 上海，夜航；21:30Z = 05:30 上海仍在夜航；22:30Z = 06:30 上海不算。
-        // 没有匹配上计划时，夜航时段内飞行即违规。
+        // 没有匹配上计划（离地 150 米，不属于按规定无需申请的飞行）时，夜航时段内飞行即违规。
         NightFlightCheck check = new NightFlightCheck();
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
-        HitDetail night = check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(13)), params);
+        assertThat(check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
+        HitDetail night = check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF.withHour(13)), params);
         assertThat(night.resultCode()).isEqualTo(ResultCode.FAIL);
         assertThat(night.reasonCode()).isEqualTo("NIGHT_FLIGHT");
         assertThat(night.ruleCode()).isEqualTo("C02-5");
         assertThat(night.facts()).containsEntry("local_hour", 21);
         assertThat(night.message()).contains("处于夜航时段", "没有匹配上的飞行任务");
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
+    }
+
+    /** 新-28 与确认书 2-9：没有报备任务、离地 120 米以下、不在管控空域里的飞行按规定无需申请，没有原有违规，夜航不单独算违规。 */
+    @Test
+    void nightFlightOfAFlightThatNeedsNoApplicationIsNotAViolation() {
+        NightFlightCheck check = new NightFlightCheck();
+        OffsetDateTime night = AS_OF.withHour(13);
+        HitDetail low = check.evaluate(context(state(), noPlan(), List.of(hit("PERMITTED", "COVERS", null, null, null, null)), night), params);
+        assertThat(low.resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(low.reasonCode()).isNull();
+        assertThat(low.facts()).containsEntry("local_hour", 21);
+        assertThat(low.message()).isEqualTo("本地时间 21:00 处于夜航时段；没有报备任务、离地 120 米以下的普通区域飞行按规定无需申请，夜间不单独算违规"
+                + "；参数为 DEMO 演示值，尚未确认");
+        // 在禁飞区里、压在管制区边界上、离地超过 120 米：照旧记夜航。
+        for (EvaluationContext ctx : List.of(context(state(), noPlan(), List.of(hit("PROHIBITED", "COVERS", null, null, null, null)), night),
+                context(state(), noPlan(), List.of(hit("RESTRICTED", "TOUCHES", null, null, null, null)), night),
+                context(aboveCeiling(), noPlan(), List.of(), night))) {
+            assertThat(check.evaluate(ctx, params).reasonCode()).isEqualTo("NIGHT_FLIGHT");
+        }
     }
 
     @Test
@@ -301,6 +320,11 @@ class C02ChecksTest {
     }
     private static TargetState state() {
         return new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("80.00"), new BigDecimal("60.00"),
+                null, null, new BigDecimal("0.9"), AS_OF, AS_OF);
+    }
+    /** 目标位置同 state()，离地 150 米：高于 120 米，没有报备任务时照旧按无计划判（新-28）。 */
+    private static TargetState aboveCeiling() {
+        return new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("170.00"), new BigDecimal("150.00"),
                 null, null, new BigDecimal("0.9"), AS_OF, AS_OF);
     }
     /** 目标位置同 state()，另带飞手位置：C02-6 的唯一新增输入。 */

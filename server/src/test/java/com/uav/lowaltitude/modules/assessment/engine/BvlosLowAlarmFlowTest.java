@@ -218,23 +218,27 @@ class BvlosLowAlarmFlowTest {
                 String.class, versionId)).isEqualTo("C02-6");
     }
 
-    /** 目标（编号唯一、状态与 5 个轨迹点都在 TICK 前 10–30 s）；withPlan 时另建本机计划（航线高度带 10–120 m AMSL，时段覆盖 TICK）。name 不超过 7 个字符（主键 36 位）。 */
+    /**
+     * 目标（编号唯一、状态与 5 个轨迹点都在 TICK 前 10–30 s）；withPlan 时另建本机计划（航线高度带 10–120 m AMSL，时段覆盖 TICK），目标飞在 80 m AMSL / 离地 60 m。
+     * 没有计划的目标飞在离地 150 m：120 米以下的普通区域飞行按规定无需申请（新-28），这里要验的是"没有任务 → 无飞行授权"。name 不超过 7 个字符（主键 36 位）。
+     */
     private String uav(String name, boolean withPlan) {
         String key = name + "-" + suffix, target = "bvlos-target-" + key, sn = "BVLOS-SN-" + key, link = "bvlos-link-" + key, track = "bvlos-track-" + key;
         String point = "SRID=4326;POINT(" + LONGITUDE + " " + LATITUDE + ")";
         OffsetDateTime observed = TICK.minusSeconds(10), created = TICK.minusMinutes(5);
+        String amsl = withPlan ? "80" : "170", agl = withPlan ? "60" : "150";
         jdbc.update("insert into target (target_id,target_no,object_type_code,uav_sn,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at,version)"
                 + " values (?,?,'UAV',?,?,?,'mock',?,?,?,?,0)", target, "BVLOS-T-" + key, sn, ts(created), ts(observed), org, district, ts(created), ts(observed));
         jdbc.update("insert into target_source_link (link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,?,?,?,?)",
                 link, target, LocalStage7RuleEngineSeeder.SOURCE_ID, "s-" + key, "x-" + key, ts(created));
         jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,"
-                + "observed_at,received_at,created_at,updated_at,version) values (?,CAST(? AS GEOMETRY),80,60,10,90,0.9,0.95,?,?,?,?,0)",
-                target, point, ts(observed), ts(observed), ts(created), ts(observed));
+                + "observed_at,received_at,created_at,updated_at,version) values (?,CAST(? AS GEOMETRY),?,?,10,90,0.9,0.95,?,?,?,?,0)",
+                target, point, new BigDecimal(amsl), new BigDecimal(agl), ts(observed), ts(observed), ts(created), ts(observed));
         jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at) values (?,?,?,?,?,?)", track, target, link, "tr-" + key, ts(created), ts(created));
         for (int i = 0; i < 5; i++) {
             Timestamp seen = ts(observed.minusSeconds((4 - i) * 5L));
             jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at)"
-                    + " values (?,?,?,?,?,CAST(? AS GEOMETRY),80,60,?)", "bvlos-pt-" + key + "-" + i, track, i, seen, seen, point, seen);
+                    + " values (?,?,?,?,?,CAST(? AS GEOMETRY),?,?,?)", "bvlos-pt-" + key + "-" + i, track, i, seen, seen, point, new BigDecimal(amsl), new BigDecimal(agl), seen);
         }
         if (withPlan) {
             String route = "bvlos-route-" + key, routeVersion = "bvlos-rv-" + key, plan = "bvlos-plan-" + key;

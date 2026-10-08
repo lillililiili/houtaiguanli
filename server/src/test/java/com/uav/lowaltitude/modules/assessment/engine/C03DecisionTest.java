@@ -128,6 +128,95 @@ class C03DecisionTest {
         assertThat(noPlan.grade()).isEqualTo("HIGH");
     }
 
+    /**
+     * 2026-10-08 业务决定（新-28，确认书 2-2）：完全没有报备任务、离地 120 米及以下、不在禁飞/管制/限高/生效中的临时管控空域里，
+     * 按规定无需申请，判 LEGAL，不出告警；超过 120 米或设备没报离地高度（不拿海拔推算）的，照旧按 no_plan_status 判。
+     */
+    @Test
+    void noTaskAtOrBelow120MetresOutsideControlledAirspaceNeedsNoApplication() {
+        List<HitDetail> hits = allPassExcept(fail("C01", null));
+        // 在适飞空域里、或离禁飞区还远（DISJOINT），都是普通区域。
+        List<AirspaceHit> ordinary = List.of(airspace("PERMITTED", "COVERS"), airspace("PROHIBITED", "DISJOINT"), airspace("ALTITUDE_LIMIT", "DISJOINT"));
+        for (String agl : List.of("0", "60", "119.99", "120", "120.00")) {
+            Decision legal = decision.decide(noPlan(agl, ordinary, noTask()), hits, params);
+            assertThat(legal.status()).as("离地 %s 米", agl).isEqualTo(LegalStatus.LEGAL);
+            assertThat(legal.violationReasons()).isEmpty();
+            assertThat(legal.score()).isNull();
+            assertThat(legal.grade()).isNull();
+        }
+        // 版本把 no_plan_status 配成 UNDETERMINED 也一样：这类飞行本身合规，参数只管其余没有任务的飞行。
+        assertThat(decision.decide(noPlan("60", ordinary, noTask()), hits, TestRuleParams.demoCatalog().put("C03", "no_plan_status", "UNDETERMINED"))
+                .status()).isEqualTo(LegalStatus.LEGAL);
+        for (String agl : java.util.Arrays.asList("120.01", "150", null)) {
+            Decision illegal = decision.decide(noPlan(agl, ordinary, noTask()), hits, params);
+            assertThat(illegal.status()).as("离地 %s 米", agl).isEqualTo(LegalStatus.ILLEGAL);
+            assertThat(illegal.reasonCode()).isEqualTo("NO_AUTHORIZATION");
+            assertThat(illegal.violationReasons()).containsExactly("NO_AUTHORIZATION");
+        }
+        // 看不准（置信度不够）照旧先由质量门判不可判定，不因为高度低就判合法。
+        EvaluationContext unsure = new EvaluationContext(subject(), new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"),
+                new BigDecimal("37.02"), null, new BigDecimal("60"), null, null, new BigDecimal("0.50"), AS_OF, AS_OF), goodTrack(), noTask(),
+                ordinary, AS_OF, Freshness.FRESH, RunMode.ACTIVE, "mock");
+        assertThat(decision.decide(unsure, hits, params).status()).isEqualTo(LegalStatus.UNDETERMINED);
+    }
+
+    /** 在管控空域里（哪怕高度在限值以下、C02 判通过）、压在其边界上、空域版本不明，或者有任务却对不上：都不是“普通区域无需申请”，结论照旧。 */
+    @Test
+    void controlledAirspaceBoundaryAmbiguityOrOwnTaskKeepTheNoTaskVerdict() {
+        List<HitDetail> hits = allPassExcept(fail("C01", null));
+        List<AirspaceHit> controlled = List.of(airspace("PROHIBITED", "COVERS"), airspace("RESTRICTED", "COVERS"), airspace("RESTRICTED", "TOUCHES"),
+                airspace("ALTITUDE_LIMIT", "COVERS"), airspace("ALTITUDE_LIMIT", "UNKNOWN"), airspace("TEMPORARY_CONTROL", "COVERS"),
+                airspace("TEMPORARY_CONTROL", "COVERS", AS_OF.minusHours(1), AS_OF.plusHours(1)),
+                new AirspaceHit("a-x", "av-x", "PERMITTED", "UNKNOWN", null, null, null, AS_OF.minusDays(1), null, "VERSION_AMBIGUOUS"));
+        for (AirspaceHit hit : controlled) {
+            Decision illegal = decision.decide(noPlan("60", List.of(airspace("PERMITTED", "COVERS"), hit), noTask()), hits, params);
+            assertThat(illegal.status()).as("%s %s", hit.kindCode(), hit.relation()).isEqualTo(LegalStatus.ILLEGAL);
+            assertThat(illegal.violationReasons()).containsExactly("NO_AUTHORIZATION");
+        }
+        // 临时管控区不在生效时段（已到期、未开始、没有生效时间）：和 C02-8 同一口径，不算管控空域。
+        List<AirspaceHit> inactive = List.of(airspace("TEMPORARY_CONTROL", "COVERS", AS_OF.minusHours(2), AS_OF.minusHours(1)),
+                airspace("TEMPORARY_CONTROL", "COVERS", AS_OF.minusHours(1), AS_OF),
+                airspace("TEMPORARY_CONTROL", "COVERS", AS_OF.plusMinutes(1), null),
+                airspace("TEMPORARY_CONTROL", "COVERS", null, null));
+        for (AirspaceHit hit : inactive) {
+            assertThat(decision.decide(noPlan("60", List.of(hit), noTask()), hits, params).status())
+                    .as("%s ~ %s", hit.validFrom(), hit.validTo()).isEqualTo(LegalStatus.LEGAL);
+        }
+        // 规则集版本在 C02-1 kinds 里另配的空域类型同样算管控空域；临时管控类型也配进 C02-1 的，C02-1 随时都看，不再只看生效窗口。
+        TestRuleParams wider = TestRuleParams.demoCatalog().put("C02-1", "kinds", "PROHIBITED,RESTRICTED,PERMITTED,TEMPORARY_CONTROL");
+        assertThat(decision.decide(noPlan("60", List.of(airspace("PERMITTED", "COVERS")), noTask()), hits, wider).status())
+                .isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(decision.decide(noPlan("60", List.of(inactive.get(0)), noTask()), hits, wider).status()).isEqualTo(LegalStatus.ILLEGAL);
+        // 空域类检查判不清（C02 未知）时不能说它在普通区域：照旧按没有任务判，未知原因留给复核。
+        Decision boundary = decision.decide(noPlan("60", List.of(), noTask()),
+                List.of(fail("C01", null), undetermined("C02-1", "BOUNDARY_POLICY_UNKNOWN")), params);
+        assertThat(boundary.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(boundary.violationReasons()).containsExactly("NO_AUTHORIZATION");
+        assertThat(boundary.unknownReasons()).contains("BOUNDARY_POLICY_UNKNOWN");
+        // 进了禁飞区：C02-1 FAIL，照旧 ILLEGAL/HIGH，无授权也照列。
+        Decision noFly = decision.decide(noPlan("60", List.of(airspace("PROHIBITED", "COVERS")), noTask()),
+                List.of(fail("C01", null), fail("C02-1", "INSIDE_RESTRICTED_AIRSPACE")), params);
+        assertThat(noFly.violationReasons()).containsExactly("NO_AUTHORIZATION", "INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(noFly.grade()).isEqualTo("HIGH");
+        // 有本机的任务、只是飞出了时段或航线（C01 NONE 但带着本机任务）：照旧按任务查，不当作“没有报备任务”。
+        PlanMatch ownTask = new PlanMatch(PlanMatchCode.NONE, full().plan(), Map.of("time", "MATCH", "corridor", "MISMATCH", "identity", "MATCH"),
+                List.of("CORRIDOR_MISMATCH"));
+        assertThat(decision.decide(noPlan("60", List.of(), ownTask), hits, params).violationReasons()).containsExactly("NO_AUTHORIZATION");
+    }
+
+    /** 确认书 2-9：夜间只在原有违规上加注。无需申请的飞行没有原有违规，夜航不单独成立；超过 120 米的照旧连夜航一起列。 */
+    @Test
+    void nightAloneDoesNotMakeANoApplicationFlightIllegal() {
+        List<HitDetail> night = new java.util.ArrayList<>(allPassExcept(fail("C02-5", "NIGHT_FLIGHT")));
+        night.set(0, fail("C01", null));
+        Decision low = decision.decide(noPlan("60", List.of(), noTask()), night, params);
+        assertThat(low.status()).isEqualTo(LegalStatus.LEGAL);
+        assertThat(low.violationReasons()).isEmpty();
+        Decision high = decision.decide(noPlan("150", List.of(), noTask()), night, params);
+        assertThat(high.status()).isEqualTo(LegalStatus.ILLEGAL);
+        assertThat(high.violationReasons()).containsExactly("NO_AUTHORIZATION", "NIGHT_FLIGHT");
+    }
+
     @Test
     void missingSeverityParameterOnlyLowersTheScoreAndNeverAbortsTheDecision() {
         // 已发布的旧版本没有 C03.severity.BVLOS_EXCEEDED（从未猜填）：无计划且超视距仍要给出结论。
@@ -358,9 +447,21 @@ class C03DecisionTest {
         return new EvaluationContext(subject(), state, track, planMatch, List.of(), AS_OF, freshness, RunMode.ACTIVE, "mock");
     }
     private static Subject subject() { return new Subject(SubjectKind.TARGET, "t-1", "org-1", "district-1", "mock"); }
+    /** 离地 150 米：高于 120 米，没有报备任务时不属于按规定无需申请的飞行（新-28），原有无计划用例的结论不受影响。 */
     private static TargetState state(String confidence) {
-        return new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("80.00"), new BigDecimal("60.00"),
+        return new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("170.00"), new BigDecimal("150.00"),
                 null, null, confidence == null ? null : new BigDecimal(confidence), AS_OF, AS_OF);
+    }
+    /** 没有报备任务的目标：离地高度按用例给（null 表示设备没报），置信度 0.90，周围空域按用例给。 */
+    private static EvaluationContext noPlan(String heightAgl, List<AirspaceHit> airspaces, PlanMatch match) {
+        TargetState state = new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("80.00"),
+                heightAgl == null ? null : new BigDecimal(heightAgl), null, null, new BigDecimal("0.90"), AS_OF, AS_OF);
+        return new EvaluationContext(subject(), state, goodTrack(), match, airspaces, AS_OF, Freshness.FRESH, RunMode.ACTIVE, "mock");
+    }
+    private static PlanMatch noTask() { return new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE")); }
+    private static AirspaceHit airspace(String kind, String relation) { return airspace(kind, relation, AS_OF.minusDays(1), null); }
+    private static AirspaceHit airspace(String kind, String relation, OffsetDateTime validFrom, OffsetDateTime validTo) {
+        return new AirspaceHit("a-" + kind, "av-" + kind, kind, relation, null, null, null, validFrom, validTo, null);
     }
     private static TrackQuality goodTrack() { return new TrackQuality(10, 5L, false); }
     private static PlanMatch full() {

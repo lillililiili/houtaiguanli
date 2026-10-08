@@ -25,6 +25,8 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TrackQuality;
  * 2. 质量门（置信度、轨迹点数、相邻间隔）任一不达标 → UNDETERMINED。
  * 3. C01 NONE → C03.no_plan_status（空域类 FAIL 时仍为 ILLEGAL）；C01 UNDETERMINED 且没有空域类 FAIL → UNDETERMINED。
  *    进禁飞/限高/临管空域本身就是违规，不取决于属于哪个计划：计划不唯一或身份未明时照样走第 4 步判 ILLEGAL。
+ *    完全没有报备任务、离地 120 米及以下、不在管控空域里的飞行按规定无需申请（{@link NoPlanExemption}，2026-10-08 业务决定，
+ *    确认书 2-2）：视同 no_plan_status=LEGAL 继续走后面几步；夜间只在原有违规上加注（确认书 2-9），这类飞行的夜航不单独成立。
  * 4. 空域类（C02-1/2/8）任一 FAIL → ILLEGAL；任一 UNDETERMINED（无 FAIL）→ UNDETERMINED。
  * 5. 行为类（C02-3/4/5/7）任一 FAIL → ILLEGAL；应用服务再校验证据充分性。
  * 6. 超视距（C02-6）FAIL 且走到这里（没有空域、行为、无授权违规）→ ILLEGAL，原因 BVLOS_EXCEEDED，等级固定 LOW，不看加权分数
@@ -91,7 +93,9 @@ public final class C03Decision {
         PlanMatch match = context.planMatch() == null ? PlanMatch.notApplicable() : context.planMatch();
         boolean airspaceFail = anyResult(details, RuleCodes.AIRSPACE_CHECKS, ResultCode.FAIL);
         boolean airspaceUnknown = anyResult(details, RuleCodes.AIRSPACE_CHECKS, ResultCode.UNDETERMINED);
-        boolean behaviourFail = anyResult(details, RuleCodes.BEHAVIOUR_CHECKS, ResultCode.FAIL);
+        boolean exempt = match.code() == PlanMatchCode.NONE && !airspaceFail && !airspaceUnknown && NoPlanExemption.applies(context, params);
+        boolean behaviourFail = details.stream().anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode())
+                && hit.resultCode() == ResultCode.FAIL && !(exempt && RuleCodes.C02_5.equals(hit.ruleCode())));
         boolean bvlosFail = anyResult(details, List.of(RuleCodes.C02_6), ResultCode.FAIL);
         List<String> allUnknowns = reasons(details, ResultCode.UNDETERMINED);
         // 计划不明（如附近多个执行中计划分不清，PLAN_AMBIGUOUS）只挡住依赖计划的结论；已判明的空域违规直接进第 4 步。
@@ -101,7 +105,8 @@ public final class C03Decision {
             return Decision.undetermined(unknowns, violations);
         }
         if (match.code() == PlanMatchCode.NONE) {
-            LegalStatus noPlan = noPlanStatus(params);
+            LegalStatus configured = noPlanStatus(params);
+            LegalStatus noPlan = exempt ? LegalStatus.LEGAL : configured;
             if (noPlan == LegalStatus.ILLEGAL || noPlan == LegalStatus.ABNORMAL) violations.add(0, RuleCodes.NO_AUTHORIZATION);
             // 无计划的状态是参数给的下限；进入禁飞空域这种更重的事实不能被参数压低成 ABNORMAL/LEGAL。
             LegalStatus status = airspaceFail ? LegalStatus.ILLEGAL : noPlan;

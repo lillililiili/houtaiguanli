@@ -12,6 +12,7 @@ import java.util.Optional;
 
 import org.springframework.stereotype.Component;
 
+import com.uav.lowaltitude.modules.assessment.engine.NoPlanExemption;
 import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationContext;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvidenceRef;
@@ -142,7 +143,14 @@ public class PlanMatchCheck implements RuleCheck {
             if (match.plan().routeVersionId() != null) evidence.add(new EvidenceRef("route_version", match.plan().routeVersionId()));
         }
         boolean demo = refs.stream().anyMatch(ref -> "DEMO".equals(ref.status()));
-        return new HitDetail(RULE_CODE, null, result, result == ResultCode.UNDETERMINED ? reason : null, null, facts, refs, List.copyOf(evidence), message(match, reason, demo));
+        String message = message(match, reason, demo);
+        // 新-28：没有报备任务、按规定无需申请的飞行，C01 照实记“对不上任务”，说明里写清为什么不算违规。
+        if (match.code() == PlanMatchCode.NONE && NoPlanExemption.applies(context, params)) {
+            facts.put(NoPlanExemption.FACT_EXEMPT, true);
+            facts.put(NoPlanExemption.FACT_HEIGHT_AGL_M, context.state().heightAglM());
+            message = NoPlanExemption.explanation(context.state().heightAglM()) + (demo ? "；参数为 DEMO 演示值，尚未确认" : "");
+        }
+        return new HitDetail(RULE_CODE, null, result, result == ResultCode.UNDETERMINED ? reason : null, null, facts, refs, List.copyOf(evidence), message);
     }
 
     private static boolean isCandidate(PlanFact plan, String targetSn, OffsetDateTime asOf, int windowMinutes) {

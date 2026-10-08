@@ -221,6 +221,7 @@ class LegalityEvaluationServiceTest {
     void cancelledPlanNoLongerAuthorisesTheFlightButCompletedPlanStillMatches() {
         onlyFixturePlanInTuple();
         jdbc.update("update flight_plan set status_code='CANCELLED' where plan_id=?", planId);
+        aboveCeiling();
         var cancelled = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
         assertThat(cancelled.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
         assertThat(cancelled.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
@@ -231,8 +232,9 @@ class LegalityEvaluationServiceTest {
         var bySubject = service.evaluate(new Subject(SubjectKind.PLAN, planId, null, null, null), RunMode.ACTIVE, now(),
                 runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
         assertThat(bySubject.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
-        // 已完成（到点自动转 COMPLETED）的计划仍参与匹配，超时继续飞才能对上本机计划。
+        // 已完成（到点自动转 COMPLETED）的计划仍参与匹配，超时继续飞才能对上本机计划。回到计划高度带（AMSL 10–100）内。
         jdbc.update("update flight_plan set status_code='COMPLETED' where plan_id=?", planId);
+        jdbc.update("update target_latest_state set altitude_amsl_m=80, height_agl_m=60 where target_id=?", targetId);
         var completed = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
         assertThat(completed.planMatchCode()).isEqualTo(PlanMatchCode.FULL);
         assertThat(completed.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
@@ -242,6 +244,7 @@ class LegalityEvaluationServiceTest {
     void noPlanUavAtNightIsIllegalAndAlarmedWhileAuthorisationStaysForReview() {
         nightAllDay();
         withoutCandidatePlan();
+        aboveCeiling();
         var result = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
         assertThat(result.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
         // 夜航"依据不足"不能把无计划飞行降成不可判定、不出告警。
@@ -252,6 +255,34 @@ class LegalityEvaluationServiceTest {
         assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, result.evaluationId())).isEqualTo("INSUFFICIENT");
         assertThat(jdbc.queryForObject("select decision_assurance_reasons from rule_evaluation where evaluation_id=?", String.class, result.evaluationId()))
                 .contains("PLAN_AUTHORIZATION_UNVERIFIED");
+    }
+
+    /**
+     * 新-28（确认书 2-2）：没有报备任务、离地 60 米、周围没有管控空域，按规定无需申请：判合法、不可告警，证据充分，
+     * 任务匹配一行照实记“对不上任务”并写明原因；夜里也一样（确认书 2-9 夜间只加在原有违规上）。升到 150 米照旧判无飞行授权。
+     */
+    @Test
+    void noPlanUavBelow120MetresInOrdinaryAirspaceNeedsNoApplication() {
+        withoutCandidatePlan();
+        spatial.hits = List.of(new AirspaceHit("e1-permitted", "e1-permitted-v1", "PERMITTED", "COVERS", null, null, null,
+                observedAt.minusDays(1), null, null));
+        var day = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(day.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(day.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+        assertThat(day.violationReasons()).isEmpty();
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+        assertThat(jdbc.queryForObject("select decision_assurance_code from rule_evaluation where evaluation_id=?", String.class, day.evaluationId())).isEqualTo("SUFFICIENT");
+        assertThat(jdbc.queryForObject("select CAST(hit_details AS VARCHAR) from rule_evaluation where evaluation_id=?", String.class, day.evaluationId()))
+                .contains("no_plan_exempt", "离地约 60 米", "按规定无需申请");
+        nightAllDay();
+        var night = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(night.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+        assertThat(night.violationReasons()).isEmpty();
+        aboveCeiling();
+        var high = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(high.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(high.violationReasons()).containsExactly("NO_AUTHORIZATION", "NIGHT_FLIGHT");
+        assertThat(hooks.outcomes.get(2).alarmEligible()).isTrue();
     }
 
     @Test
@@ -338,6 +369,11 @@ class LegalityEvaluationServiceTest {
     /** 夜航窗口改为全天（本地小时 ≥ 0 即夜航），测试结论不受运行时刻影响。 */
     private void nightAllDay() {
         jdbc.update("update rule_param set value_text='0' where rule_code='C02-5' and param_key='night_from' and rule_set_version_id=(select active_version_id from rule_set where rule_set_code=?)", code);
+    }
+
+    /** 离地 150 米：高于 120 米，没有报备任务按规定要申请（新-28，120 米以下的普通区域飞行无需申请）。 */
+    private void aboveCeiling() {
+        jdbc.update("update target_latest_state set altitude_amsl_m=170, height_agl_m=150 where target_id=?", targetId);
     }
 
     /** 同机构同区域的种子计划（无编号、时段覆盖当下）挪到两天前，候选里只剩用例自己的计划。 */
