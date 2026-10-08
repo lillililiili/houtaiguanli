@@ -231,7 +231,7 @@ public class LegalityEvaluationReadRepository {
                 + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
                 + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,"
                 + "COALESCE(e.recognition_class_code," + TargetRecognitionSql.type("tg", "recognition") + ") AS object_type_code,"
-                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons";
+                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons,e.input_snapshot";
     }
 
     private static Where where(EvaluationQuery query, AccessDecision access) {
@@ -356,7 +356,8 @@ public class LegalityEvaluationReadRepository {
                 rs.getString("member_alarm_id"), rs.getString("manual_alarm_id"), rs.getString("alarm_outcome"), rs.getString("member_kind"),
                 rs.getString("assessment_id"), rs.getString("owner_org_id"), rs.getString("owner_org_name"), rs.getString("district_id"),
                 rs.getString("district_name"), rs.getString("source_mode"), rs.getString("object_type_code"),
-                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"));
+                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"),
+                rs.getString("input_snapshot"));
     }
 
     private static RevisionRow revision(ResultSet rs, int i) throws SQLException {
@@ -409,7 +410,9 @@ public class LegalityEvaluationReadRepository {
             String reviewState, String manualStatus, Long reviewVersion, String supersedesEvaluationId, String supersededByEvaluationId,
             String engineAlarmId, String memberAlarmId, String manualAlarmId, String alarmOutcome, String memberKind, String assessmentId,
             String ownerOrgId, String ownerOrgName, String districtId, String districtName, String sourceMode, String objectTypeCode,
-            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons) {
+            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons,
+            /* 判定输入快照，不出 API：读接口只从里面取可信度、下限和来源数（CDX-P04）。 */
+            String inputSnapshot) {
         /** 引擎回填 > 合并成员 > 人工转告警历史；三者都空才算“无告警”。 */
         public String alarmId() { return engineAlarmId != null ? engineAlarmId : memberAlarmId != null ? memberAlarmId : manualAlarmId; }
     }

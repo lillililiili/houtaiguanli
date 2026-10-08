@@ -480,6 +480,47 @@ class LegalityReviewApiTest {
                 .andExpect(status().isForbidden());
     }
 
+    /**
+     * CDX-P04：研判页写“只有一路来源（可信度 65%），达不到 75%”要用的三个数，只从判定输入快照里取这三个，坐标等输入照旧不出 API；
+     * 早先的研判没存下限和来源数，就只带回当时的可信度；快照读不出这三个数时研判照常可读。
+     */
+    @Test
+    void evaluationCarriesConfidenceThresholdAndSourceCountFromItsSnapshotOnly() throws Exception {
+        snapshot("{\"freshness\":\"FRESH\",\"state\":{\"longitude\":118.61,\"latitude\":37.41,\"fusion_confidence\":0.65},"
+                + "\"confidence_check\":{\"value\":0.65,\"threshold\":0.75,\"source_count\":1}}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.confidence").value(0.65))
+                .andExpect(jsonPath("$.data.confidence_threshold").value(0.75))
+                .andExpect(jsonPath("$.data.source_count").value(1))
+                .andExpect(jsonPath("$.data.input_snapshot").doesNotExist())
+                .andExpect(jsonPath("$.data.state").doesNotExist())
+                .andExpect(jsonPath("$.data.longitude").doesNotExist());
+        mvc.perform(get("/api/v1/legality-evaluations?owner_org_id=" + orgId).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].confidence").value(0.65))
+                .andExpect(jsonPath("$.data.items[0].confidence_threshold").value(0.75))
+                .andExpect(jsonPath("$.data.items[0].source_count").value(1));
+
+        snapshot("{\"freshness\":\"FRESH\",\"state\":{\"fusion_confidence\":null,\"classification_confidence\":0.8}}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.confidence").value(0.8))
+                .andExpect(jsonPath("$.data.confidence_threshold").doesNotExist())
+                .andExpect(jsonPath("$.data.source_count").doesNotExist());
+
+        snapshot("{}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.legal_status").value("UNDETERMINED"))
+                .andExpect(jsonPath("$.data.confidence").doesNotExist())
+                .andExpect(jsonPath("$.data.source_count").doesNotExist());
+    }
+
+    private void snapshot(String json) {
+        jdbc.update("update rule_evaluation set input_snapshot=CAST(? AS JSON) where evaluation_id=?", json, evaluation);
+    }
+
     @Test
     void malformedStoredDecisionAssuranceFailsClosed() throws Exception {
         assertThatThrownBy(() -> jdbc.update(

@@ -264,6 +264,46 @@ class LegalityEvaluationServiceTest {
         assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
     }
 
+    /**
+     * CDX-P04：只有一台设备看到（一路来源，可信度 0.65）的无人机进了禁飞区，也只能“不可判定”、不出告警；
+     * 第二台设备也看到（两路，0.8）就照常判非法、可告警。每次研判都存下可信度、下限和来源数，研判页写原因要用。
+     */
+    @Test
+    void singleSourceInProhibitedAirspaceStaysUndeterminedAndTwoSourcesAreIllegal() throws Exception {
+        withoutCandidatePlan();
+        spatial.hits = List.of(covers("PROHIBITED"));
+        jdbc.update("update target_latest_state set fusion_confidence=0.65 where target_id=?", targetId);
+        degradation("SINGLE_SOURCE", "[\"radar-only\"]", "0.35");
+        var single = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(single.legalStatus()).isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
+        assertThat(single.unknownReasons()).contains("LOW_CONFIDENCE");
+        assertThat(single.violationReasons()).contains("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+        JsonNode check = snapshot(single.evaluationId()).path("confidence_check");
+        assertThat(check.path("value").decimalValue()).isEqualByComparingTo("0.65");
+        assertThat(check.path("threshold").decimalValue()).isEqualByComparingTo("0.75");
+        assertThat(check.path("source_count").intValue()).isEqualTo(1);
+
+        jdbc.update("update target_latest_state set fusion_confidence=0.8 where target_id=?", targetId);
+        degradation("FUSION_BOX_ONLY", "[\"radar-only\",\"tdoa\"]", "0.2");
+        var two = service.evaluate(subject(targetId), RunMode.ACTIVE, now(), runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, now()).runId());
+        assertThat(two.legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+        assertThat(two.violationReasons()).contains("INSIDE_RESTRICTED_AIRSPACE");
+        assertThat(hooks.outcomes.get(1).alarmEligible()).isTrue();
+        assertThat(snapshot(two.evaluationId()).path("confidence_check").path("source_count").intValue()).isEqualTo(2);
+    }
+
+    private void degradation(String level, String sourceIds, String deficit) {
+        jdbc.update("delete from target_degradation where target_id=?", targetId);
+        jdbc.update("insert into target_degradation (target_id,level,available_source_ids,confidence_deficit,determined,since,updated_at) values (?,?,CAST(? AS JSON),?,true,?,?)",
+                targetId, level, sourceIds, new BigDecimal(deficit), ts(observedAt), ts(observedAt));
+    }
+
+    private JsonNode snapshot(String evaluationId) throws Exception {
+        JsonNode node = json.readTree(text(jdbc.queryForObject("select input_snapshot from rule_evaluation where evaluation_id=?", Object.class, evaluationId)));
+        return node.isTextual() ? json.readTree(node.textValue()) : node;
+    }
+
     @Test
     void nightFlightWithTheMatchedPlanIsLegalButOutsideThePlanIsNot() {
         nightAllDay();

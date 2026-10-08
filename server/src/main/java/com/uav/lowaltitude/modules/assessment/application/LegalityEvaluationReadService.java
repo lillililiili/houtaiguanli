@@ -136,6 +136,7 @@ public class LegalityEvaluationReadService {
         if (verification != null) assurance = new DecisionAssuranceDto(assurance.algorithmVersion(), assurance.status(), false,
                 assurance.reasons(), assurance.accuracyStatus());
         ReviewDto review = row.reviewState() == null ? null : new ReviewDto(row.reviewState(), row.manualStatus(), row.reviewVersion() == null ? 0 : row.reviewVersion());
+        ConfidenceCheck confidence = confidenceCheck(row.inputSnapshot());
         return new EvaluationDto(row.evaluationId(), row.runId(), row.ruleSetCode(), row.ruleSetVersionId(), row.ruleSetVersionNo(), row.paramStatus(),
                 row.mode(), row.triggerKind(), row.subjectKind(), targetVisible ? row.targetId() : null, targetVisible ? row.targetNo() : null,
                 targetVisible ? row.trackId() : null, planVisible ? row.planId() : null, planVisible ? row.planNo() : null,
@@ -147,8 +148,35 @@ public class LegalityEvaluationReadService {
                 row.assessmentId(), row.ownerOrgId(), row.ownerOrgName(), row.districtId(), row.districtName(), row.sourceMode(),
                 targetVisible ? row.objectTypeCode() : null, assurance, verification == null ? null : new AlarmVerificationDto(
                         verification.eventId(), verification.conclusion(), verification.note(), verification.version(), verification.verifiedAt()),
-                "ABNORMAL".equals(row.legalStatus()) ? row.legalStatus() : null);
+                "ABNORMAL".equals(row.legalStatus()) ? row.legalStatus() : null, confidence.value(), confidence.threshold(), confidence.sourceCount());
     }
+
+    private record ConfidenceCheck(BigDecimal value, BigDecimal threshold, Integer sourceCount) {
+        static final ConfidenceCheck NONE = new ConfidenceCheck(null, null, null);
+    }
+
+    /**
+     * 从判定输入快照里只取三个数：可信度、下限、来源数（CDX-P04）；坐标等其余输入照旧不出 API。
+     * 早先的研判没有 confidence_check，只带回快照里的可信度。快照读不懂时三个数都不给，不让整条研判读失败。
+     */
+    private ConfidenceCheck confidenceCheck(String snapshot) {
+        if (snapshot == null) return ConfidenceCheck.NONE;
+        try {
+            JsonNode root = tree(snapshot);
+            JsonNode check = root.path("confidence_check");
+            if (check.isObject()) {
+                return new ConfidenceCheck(decimal(check.path("value")), decimal(check.path("threshold")),
+                        check.path("source_count").isIntegralNumber() ? check.path("source_count").intValue() : null);
+            }
+            JsonNode state = root.path("state");
+            BigDecimal value = decimal(state.path("fusion_confidence"));
+            return new ConfidenceCheck(value != null ? value : decimal(state.path("classification_confidence")), null, null);
+        } catch (Exception unreadable) {
+            return ConfidenceCheck.NONE;
+        }
+    }
+
+    private static BigDecimal decimal(JsonNode node) { return node != null && node.isNumber() ? node.decimalValue() : null; }
 
     private DecisionAssuranceDto assurance(EvaluationRow row) {
         String version = row.decisionAlgorithmVersion(), code = row.decisionAssuranceCode(), reasonsJson = row.decisionAssuranceReasons();

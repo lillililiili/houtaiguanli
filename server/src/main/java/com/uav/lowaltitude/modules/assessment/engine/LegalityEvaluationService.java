@@ -203,7 +203,7 @@ public class LegalityEvaluationService {
         repository.insertEvaluation(new EvaluationInsert(evaluationId, runId, run.ruleSetVersionId(), mode, subject.kind(), resolved.targetId(), trackId,
                 planId, routeVersionId, stateRow == null ? null : stateRow.observedAt(), effectiveAsOf, now, freshness.name(), planMatch.code().name(),
                 verdict.status().name(), verdict.score(), verdict.grade(), write(verdict.violationReasons()), write(hits), write(verdict.unknownReasons()),
-                write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness,execution)), supersedesEvaluationId, shadowOutcome,
+                write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness, ruleParams, execution)), supersedesEvaluationId, shadowOutcome,
                 resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons()), recognition),execution==null?executionRevision:execution.revision());
 
         String assessmentId = null;
@@ -334,9 +334,12 @@ public class LegalityEvaluationService {
         return checks;
     }
 
-    /** input_snapshot 不出 API，但仍只放判定用到的字段，不放原始载荷。 */
+    /**
+     * input_snapshot 不出 API，但仍只放判定用到的字段，不放原始载荷。
+     * confidence_check 例外：研判页要写清“几路来源、可信度多少、要求多少”（CDX-P04），读接口只取这三个数。
+     */
     private static Map<String, Object> snapshot(StateRow state, TrackQuality track, List<String> candidateIds, List<AirspaceHit> airspaces, Freshness freshness,
-            com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution) {
+            RuleParams params, com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         if(execution!=null)snapshot.put("execution",execution);
         snapshot.put("freshness", freshness.name());
@@ -348,6 +351,12 @@ public class LegalityEvaluationService {
             s.put("observed_at", state.observedAt() == null ? null : state.observedAt().toInstant().toEpochMilli());
             s.put("received_at", state.receivedAt() == null ? null : state.receivedAt().toInstant().toEpochMilli());
             snapshot.put("state", s);
+            // 与四态判定质量门用的是同一个可信度（融合优先，缺则类别置信度）和同一个下限。
+            Map<String, Object> check = new LinkedHashMap<>();
+            check.put("value", state.fusionConfidence() != null ? state.fusionConfidence() : state.classificationConfidence());
+            check.put("threshold", params.has(C03Decision.RULE_CODE, C03Decision.PARAM_CONF_MIN) ? params.number(C03Decision.RULE_CODE, C03Decision.PARAM_CONF_MIN) : null);
+            check.put("source_count", state.sourceCount());
+            snapshot.put("confidence_check", check);
         }
         Map<String, Object> t = new LinkedHashMap<>();
         t.put("point_count", track.pointCount()); t.put("max_gap_seconds", track.maxGapSeconds()); t.put("bridged", track.bridged());

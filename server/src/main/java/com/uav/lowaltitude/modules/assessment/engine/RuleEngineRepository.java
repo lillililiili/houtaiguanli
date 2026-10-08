@@ -19,6 +19,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanFact;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RunMode;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.Subject;
@@ -34,6 +37,7 @@ public class RuleEngineRepository {
     static final String LOSS_FRAME_LEVEL = "NONE";
     /** 计划来源系统给出的取消状态；取消后的计划不再授权飞行。 */
     static final String PLAN_STATUS_CANCELLED = "CANCELLED";
+    private static final ObjectMapper JSON = new ObjectMapper();
     private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;
@@ -256,7 +260,8 @@ public class RuleEngineRepository {
     public StateRow latestState(String targetId) {
         List<StateRow> rows = jdbc.query("SELECT " + locationColumns("s.location", "") + "," + locationColumns("s.pilot_location", "pilot_")
                 + ",s.altitude_amsl_m,s.height_agl_m,s.speed_mps,s.heading_deg,"
-                + "s.classification_confidence,s.fusion_confidence,s.observed_at,s.received_at,s.updated_at,s.pilot_observed_at,g.level AS degradation_level"
+                + "s.classification_confidence,s.fusion_confidence,s.observed_at,s.received_at,s.updated_at,s.pilot_observed_at,g.level AS degradation_level,"
+                + "g.available_source_ids"
                 + " FROM target_latest_state s LEFT JOIN target_degradation g ON g.target_id=s.target_id WHERE s.target_id=:id",
                 Map.of("id", targetId), (rs, i) -> {
                     BigDecimal[] point = location(rs, "");
@@ -266,9 +271,23 @@ public class RuleEngineRepository {
                             rs.getBigDecimal("classification_confidence"), rs.getBigDecimal("fusion_confidence"),
                             time(rs, "observed_at"), time(rs, "received_at"), time(rs, "updated_at"),
                             pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], time(rs, "pilot_observed_at"),
-                            LOSS_FRAME_LEVEL.equals(rs.getString("degradation_level")));
+                            LOSS_FRAME_LEVEL.equals(rs.getString("degradation_level")), sourceCount(rs.getObject("available_source_ids")));
                 });
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 这一帧有几路来源（融合层降级行里可用来源的个数）；没有降级行（非融合写入）或存的不是数组时为 null，不拿 0 冒充。 */
+    static Integer sourceCount(Object stored) {
+        if (stored == null) return null;
+        String text = stored instanceof byte[] bytes ? new String(bytes, java.nio.charset.StandardCharsets.UTF_8) : String.valueOf(stored);
+        try {
+            JsonNode node = JSON.readTree(text);
+            // H2 把 CAST(文本 AS JSON) 存成 JSON 字符串，要再解一层。
+            if (node != null && node.isTextual()) node = JSON.readTree(node.textValue());
+            return node != null && node.isArray() ? node.size() : null;
+        } catch (JsonProcessingException unreadable) {
+            return null;
+        }
     }
 
     public String latestTrackId(String targetId) {
@@ -559,12 +578,14 @@ public class RuleEngineRepository {
              * pilotObservedAt 暂时只到本行为止：冻结接口 TargetState 的第 15 个字段由领导添加，加完再接进 C02-6 的 facts（决策 8.5-28）。 */
             BigDecimal pilotLongitude, BigDecimal pilotLatitude, OffsetDateTime pilotObservedAt,
             /* 最新一帧是失联帧（本帧没有任何来源）；没有降级行的目标（非融合写入）为 false。 */
-            boolean lossFrame) {
+            boolean lossFrame,
+            /* 这一帧有几路来源（CDX-P04：研判页写“只有一路来源”要用）；没有降级行时为 null。 */
+            Integer sourceCount) {
         public StateRow(BigDecimal longitude, BigDecimal latitude, BigDecimal altitudeAmslM, BigDecimal heightAglM, BigDecimal speedMps,
                 BigDecimal headingDeg, BigDecimal classificationConfidence, BigDecimal fusionConfidence, OffsetDateTime observedAt,
                 OffsetDateTime receivedAt, OffsetDateTime updatedAt, BigDecimal pilotLongitude, BigDecimal pilotLatitude, OffsetDateTime pilotObservedAt) {
             this(longitude, latitude, altitudeAmslM, heightAglM, speedMps, headingDeg, classificationConfidence, fusionConfidence, observedAt,
-                    receivedAt, updatedAt, pilotLongitude, pilotLatitude, pilotObservedAt, false);
+                    receivedAt, updatedAt, pilotLongitude, pilotLatitude, pilotObservedAt, false, null);
         }
     }
     public record EvaluationLink(String evaluationId, String targetId, String planId, String assessmentId, String mode) { }
