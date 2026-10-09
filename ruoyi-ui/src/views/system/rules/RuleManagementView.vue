@@ -8,7 +8,6 @@ import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
 import RuleEditorDialog from './RuleEditorDialog.vue'
 import RuleSettingsDialog from './RuleSettingsDialog.vue'
-import RuleSetPanel from './RuleSetPanel.vue'
 import { CATEGORIES, actionSummary, categoryMeta, conditionText, enabledCount, scopeSummary, timeSummary } from './ruleModel'
 import { useAutomationRuleGroup } from './useAutomationRuleGroup'
 
@@ -16,8 +15,6 @@ const auth = useAuthStore()
 const editorVisible = ref(false), settingsVisible = ref(false), editingRule = ref(null)
 const { category, group, loading, saving, error, actionError, uncertain, recoveryRevision, load, mutate, clearActionError } = useAutomationRuleGroup()
 const canManage = computed(() => Boolean(group.value?.can_manage && auth.hasPermission('responsePlans.auth')))
-// 研判规则集（合法性、空间风险）按 rule:read / rule:manage 动作权限单独控制，与上面三类自动化规则互不影响。
-const canReadRuleSets = computed(() => auth.hasPermission('rule:read'))
 const count = computed(() => enabledCount(group.value))
 const meta = computed(() => categoryMeta(category.value))
 const catalog = computed(() => (group.value?.catalog || []).map(item => ({ ...item, used: group.value?.rules?.some(rule => rule.item_code === item.code) })))
@@ -77,7 +74,6 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
         <footer class="table-foot">数据不足时继续补充 {{ group.settings.insufficient_wait_seconds }} 秒，仍无结论则转为异常处理，不自动通过。</footer><p v-if="!canManage" class="readonly-note">当前账号只能查看规则配置。</p>
       </template><el-skeleton v-else-if="loading" :rows="6" animated />
     </el-card>
-    <RuleSetPanel v-if="canReadRuleSets" />
     <RuleEditorDialog v-model="editorVisible" :rule="editingRule" :catalog="catalog" :category="category" :category-label="meta.label" :execution-status="group?.execution_status" :execution-message="group?.execution_message" :busy="saving" :server-error="actionError" @save="saveRule" />
     <RuleSettingsDialog v-if="group" v-model="settingsVisible" :settings="group.settings" :category="category" :busy="saving" :server-error="actionError" @save="saveSettings" />
   </div>
