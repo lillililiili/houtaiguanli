@@ -10,6 +10,7 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
+import com.uav.lowaltitude.modules.evidence.domain.EvidenceCommandVisibility;
 
 /** One authorized, filtered relation owns list, count and statistics. No synthetic files or receipts. */
 @Repository
@@ -34,7 +35,7 @@ public class EvidenceLedgerRepository {
         return sql;
     }
 
-    public Relation relation(Query q, AccessDecision access, boolean ingest, boolean tracks, boolean commands, long now) {
+    public Relation relation(Query q, AccessDecision access, boolean ingest, boolean tracks, EvidenceCommandVisibility commands, long now) {
         Map<String, Object> p = new HashMap<>();
         p.put("user", access.userId()); p.put("now", now); p.put("nearing", now + 30L*86400000L);
         String held = "EXISTS(SELECT 1 FROM evidence_hold h WHERE h.evidence_id=f.evidence_id AND h.released_at IS NULL)";
@@ -62,7 +63,8 @@ public class EvidenceLedgerRepository {
         String command = "SELECT 'COMMAND',c.command_id,'COMMAND',c.command_no,c.command_type,CAST(NULL AS VARCHAR(32)),"
                 + "c.status,c.created_at,c.created_at,c.source_mode,CAST(NULL AS VARCHAR(16)),CAST(NULL AS BIGINT),CAST(NULL AS BIGINT),"
                 + "CAST(NULL AS BIGINT),FALSE,CAST(NULL AS VARCHAR(16)),0,CAST(NULL AS BIGINT),CAST(NULL AS BIGINT) FROM device_command c"
-                + " JOIN device_business_scope s ON s.ops_device_id=c.device_id WHERE " + (commands ? scope("s", access) : "1=0")
+                + " JOIN device_business_scope s ON s.ops_device_id=c.device_id WHERE " + (commands.any() ? scope("s", access) : "1=0")
+                + " AND (" + commandVisibility(commands, access) + ")"
                 + " AND (c.authorization_id IS NULL OR EXISTS(SELECT 1 FROM disposal_authorization a WHERE a.authorization_id=c.authorization_id AND " + scope("a", access) + "))";
         StringBuilder sql = new StringBuilder("SELECT * FROM (" + files + " UNION ALL " + track + " UNION ALL " + command + ") e WHERE 1=1");
         add(sql,p,"category",q.category()); add(sql,p,"status",q.status()); add(sql,p,"custody",q.custody());
@@ -107,6 +109,16 @@ public class EvidenceLedgerRepository {
     }
     private static void add(StringBuilder sql,Map<String,Object> p,String key,String value) {
         if(value!=null){ sql.append(" AND e.").append(key).append("=:").append(key);p.put(key,value); }
+    }
+    private static String commandVisibility(EvidenceCommandVisibility visibility, AccessDecision access) {
+        if (visibility.monitoring()) return "1=1";
+        String disposal = visibility.disposal() ? "c.authorization_id IS NOT NULL" : "1=0";
+        String tracking = visibility.tracking()
+                ? "EXISTS(SELECT 1 FROM eo_tracking_task eo JOIN target et ON et.target_id=eo.target_id"
+                    + " WHERE eo.ops_device_id=c.device_id AND (eo.begin_command_id=c.command_id OR eo.end_command_id=c.command_id)"
+                    + " AND et.source_mode=c.source_mode AND " + scope("et", access) + ")"
+                : "1=0";
+        return disposal + " OR " + tracking;
     }
     private static String trackSubject(String kind,boolean exact) {
         String end = exact ? " AND x.subject_id=:subject_id" : "";

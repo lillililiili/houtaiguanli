@@ -56,6 +56,7 @@ import com.uav.lowaltitude.platform.audit.AuditService;
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(com.uav.lowaltitude.modules.device.api.DeviceMonitoringPostgresFixture.NoScheduledJobs.class)
 class LegalityReviewApiTest {
     private static final OffsetDateTime T0 = OffsetDateTime.of(2026, 9, 5, 2, 0, 0, 0, ZoneOffset.UTC);
     @Autowired MockMvc mvc;
@@ -99,7 +100,7 @@ class LegalityReviewApiTest {
         insertRun(run, "MANUAL", "DONE");
         insertEvaluation(evaluation, run, "ABNORMAL", "[\"ROUTE_DEVIATION\"]", "MEDIUM", new BigDecimal("40"));
         insertReview(evaluation, "PENDING_REVIEW", 0);
-        session = user("ASSIGNED", "assessment:read", "assessment:revise", "assessment:evaluate", "assessment:escalate", "target:read", "alarm:read", "flight:read");
+        session = user("ASSIGNED", "assessment:read", "assessment:revise", "assessment:evaluate", "assessment:escalate", "target:read", "alarm:read", "alarm:verify", "flight:read");
     }
 
     @AfterEach
@@ -884,6 +885,118 @@ class LegalityReviewApiTest {
                 new Subject(SubjectKind.TARGET, target, null, null, null), target, null, null, null, orgId, district, "mock", status,
                 status == LegalStatus.NOT_APPLICABLE ? PlanMatchCode.NOT_APPLICABLE : PlanMatchCode.NONE, null, null, List.of(), List.of(),
                 T0, T0, T0, now(), null, null, false, null);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"UNDETERMINED,mock", "LEGAL,live", "ABNORMAL,replay", "ILLEGAL,mock"})
+    void illegalReviewCreatesConfirmedAlarmAtomically(String original, String source) throws Exception {
+        jdbc.update("update target set source_mode=? where target_id=?", source, target);
+        String id = "s7r-auto-" + suffix, key = "auto-" + UUID.randomUUID();
+        insertEvaluation(id, run, original, "[]", null, null, "INSUFFICIENT", now().minusSeconds(2), null, source);
+        insertReview(id, "PENDING_REVIEW", 0);
+        String conclusion = "ILLEGAL".equals(original) ? "CONFIRM" : "OVERRIDE";
+        String override = "CONFIRM".equals(conclusion) ? null : "ILLEGAL";
+        JsonNode data = json.readTree(revise(session, id, conclusion, override, "人工已核对违规事实", 0, key)
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.effective_legal_status").value("ILLEGAL"))
+                .andExpect(jsonPath("$.data.alarm_id").isString())
+                .andExpect(jsonPath("$.data.alarm_verification.conclusion").value("CONFIRMED"))
+                .andExpect(jsonPath("$.data.review.version").value(1))
+                .andReturn().getResponse().getContentAsString()).path("data");
+        String alarm = data.path("alarm_id").asText();
+        assertThat(jdbc.queryForObject("select state_code from uav_event where alarm_id=?", String.class, alarm)).isEqualTo("CONFIRMED");
+        String detail = jdbc.queryForObject("select cast(detail as varchar) from alarm where alarm_id=?", String.class, alarm);
+        JsonNode fact = json.readTree(detail); if (fact.isTextual()) fact = json.readTree(fact.textValue());
+        assertThat(fact.path("legal_status").asText()).isEqualTo("ILLEGAL");
+        assertThat(jdbc.queryForObject("select source_mode||'/'||severity from alarm where alarm_id=?", String.class, alarm)).isEqualTo(source + "/UNKNOWN");
+        assertThat(jdbc.queryForObject("select legal_status from rule_evaluation where evaluation_id=?", String.class, id)).isEqualTo(original);
+        assertThat(jdbc.queryForObject("select related_alarm_id from legality_review_history where evaluation_id=?", String.class, id)).isEqualTo(alarm);
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_verification v join uav_event e on e.event_id=v.event_id join app_user u on u.user_id=v.actor_id where e.alarm_id=? and u.name='复核测试员'", Long.class, alarm)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where object_id=? and action='legality_evaluation_escalated' and result='SUCCESS'", Long.class, id)).isEqualTo(1);
+        revise(session, id, conclusion, override, "人工已核对违规事实", 0, key).andExpect(status().isConflict());
+        revise(session, id, conclusion, override, "重复提交", 1).andExpect(status().isConflict());
+        escalate(session, id, "重复转告警", 1).andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=?", Long.class, id)).isEqualTo(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"PENDING_VERIFICATION", "CONFIRMED", "FALSE_POSITIVE", "UNLINKED_MEMBER"})
+    void illegalReviewMergesWithoutRepeatingVerification(String previousState) throws Exception {
+        boolean unlinkedMember = "UNLINKED_MEMBER".equals(previousState);
+        if (unlinkedMember) previousState = "PENDING_VERIFICATION";
+        JsonNode first = json.readTree(escalate(session, evaluation, "已有告警", 0).andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).path("data");
+        String firstAlarm = first.path("alarm_id").asText(), event = first.path("event_id").asText();
+        jdbc.update("update alarm_merge_group set window_expires_at=? where latest_alarm_id=?", ts(now().plusMinutes(5)), firstAlarm);
+        if (!"PENDING_VERIFICATION".equals(previousState)) {
+            jdbc.update("update uav_event set state_code=?,version=1 where event_id=?", previousState, event);
+            jdbc.update("insert into uav_event_verification (history_id,event_id,version,previous_state,resulting_state,conclusion,note,actor_id,created_at) values (?,?,1,'PENDING_VERIFICATION',?,?,'已有核实',?,?)", UUID.randomUUID().toString(), event, previousState, previousState, jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, session), ts(now().minusSeconds(1)));
+        }
+        String id = "s7r-merge-" + suffix;
+        insertEvaluation(id, run, "UNDETERMINED", "[]", null, null, "INSUFFICIENT", now(), null);
+        insertReview(id, "PENDING_REVIEW", 0);
+        if (unlinkedMember) {
+            String group = jdbc.queryForObject("select group_id from alarm_merge_group where latest_alarm_id=?", String.class, firstAlarm);
+            jdbc.update("insert into alarm_merge_member (member_id,group_id,evaluation_id,alarm_id,member_kind,severity_before,severity_after,created_at) values (?,?,?,null,'MERGED','MEDIUM','MEDIUM',?)", UUID.randomUUID().toString(), group, id, ts(now()));
+        }
+        var reviewed = revise(session, id, "OVERRIDE", "ILLEGAL", "人工已判非法", 0).andExpect(status().isOk());
+        // An older event confirmation remains valid for its event, but is not rewritten as a new evaluation's verification.
+        if ("CONFIRMED".equals(previousState)) reviewed.andExpect(jsonPath("$.data.alarm_verification").doesNotExist());
+        else reviewed.andExpect(jsonPath("$.data.alarm_verification.conclusion").value("CONFIRMED"));
+        JsonNode data = json.readTree(reviewed.andReturn().getResponse().getContentAsString()).path("data");
+        String alarm = data.path("alarm_id").asText();
+        assertThat(jdbc.queryForObject("select state_code from uav_event where alarm_id=?", String.class, alarm)).isEqualTo("CONFIRMED");
+        if ("FALSE_POSITIVE".equals(previousState)) {
+            assertThat(alarm).isNotEqualTo(firstAlarm);
+            assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?", String.class, event)).isEqualTo("FALSE_POSITIVE");
+        } else assertThat(alarm).isEqualTo(firstAlarm);
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isEqualTo("FALSE_POSITIVE".equals(previousState) ? 2 : 1);
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_verification v join uav_event e on e.event_id=v.event_id where e.alarm_id=?", Long.class, alarm)).isEqualTo(1);
+    }
+
+    @Test
+    void illegalReviewRequiresVerificationPermissionAndSupportsAuthorizedFollowUp() throws Exception {
+        String noVerify = user("ASSIGNED", "assessment:read", "assessment:revise", "assessment:escalate", "alarm:read");
+        revise(noVerify, evaluation, "OVERRIDE", "ILLEGAL", "缺核实权限", 0).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("select review_state||'/'||version from legality_review where evaluation_id=?", String.class, evaluation)).isEqualTo("PENDING_REVIEW/0");
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
+        String reviewer = user("ASSIGNED", "assessment:read", "assessment:revise", "target:read");
+        revise(reviewer, evaluation, "OVERRIDE", "ILLEGAL", "仅保存复核结论", 0).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.alarm_id").doesNotExist());
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(noVerify)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowed_actions").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("ESCALATE"))));
+        escalate(noVerify, evaluation, "缺权限转告警也回滚", 1).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
+        escalate(session, evaluation, "承接此前复核", 1).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.evaluation.alarm_verification.conclusion").value("CONFIRMED"));
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=? and conclusion='OVERRIDE'", Long.class, evaluation)).isEqualTo(1);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"OVERRIDE,LEGAL", "REJECT,", "CONFIRM,"})
+    void nonIllegalReviewsDoNotAutomaticallyAdvance(String conclusion, String manual) throws Exception {
+        revise(session, evaluation, conclusion, manual, "非非法复核", 0).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
+        if (!"CONFIRM".equals(conclusion)) {
+            mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowed_actions").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("ESCALATE"))));
+            escalate(session, evaluation, "合法或误判不允许转告警", 1).andExpect(status().isConflict());
+        }
+    }
+
+    @Test
+    void illegalReviewAuditFailureRollsBackAlarmConfirmationAndHistory() throws Exception {
+        AuditService spied = org.springframework.test.util.AopTestUtils.getTargetObject(audit);
+        org.mockito.Mockito.doThrow(new IllegalStateException("audit unavailable")).when(spied).record(
+                org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq("assessment"), org.mockito.ArgumentMatchers.eq("legality_evaluation_revised"),
+                org.mockito.ArgumentMatchers.eq("legality_evaluation"), org.mockito.ArgumentMatchers.eq(evaluation), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.eq("SUCCESS"), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        revise(session, evaluation, "OVERRIDE", "ILLEGAL", "审计失败整笔回滚", 0).andExpect(status().is5xxServerError());
+        assertThat(jdbc.queryForObject("select review_state||'/'||version from legality_review where evaluation_id=?", String.class, evaluation)).isEqualTo("PENDING_REVIEW/0");
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=?", Long.class, evaluation)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where object_id=? and result='SUCCESS'", Long.class, evaluation)).isZero();
     }
 
     // ---- helpers ----

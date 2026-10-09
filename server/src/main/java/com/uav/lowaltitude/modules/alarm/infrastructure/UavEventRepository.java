@@ -44,6 +44,24 @@ public class UavEventRepository {
     public EventRow find(String eventId, AccessDecision access) { return one(eventId, access, false); }
     public EventRow lock(String eventId, AccessDecision access) { return one(eventId, access, true); }
 
+    /** Only the same scoped target's persisted human verdict may supply an event's confirmation. */
+    public boolean reviewedIllegal(String eventId, String evaluationId) {
+        return Boolean.TRUE.equals(jdbc.getJdbcTemplate().queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM uav_event u JOIN alarm a ON a.alarm_id=u.alarm_id"
+                + " JOIN rule_evaluation e ON e.target_id=a.target_id AND e.owner_org_id=u.owner_org_id AND e.district_id=u.district_id AND e.source_mode=a.source_mode"
+                + " JOIN legality_review r ON r.evaluation_id=e.evaluation_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id"
+                + " WHERE u.event_id=? AND e.evaluation_id=? AND a.owner_org_id=u.owner_org_id AND a.district_id=u.district_id"
+                + " AND e.mode='ACTIVE' AND r.review_state IN ('CONFIRMED','OVERRIDDEN') AND r.manual_status='ILLEGAL'"
+                + " AND (e.alarm_id=a.alarm_id OR EXISTS (SELECT 1 FROM alarm_merge_member m WHERE m.evaluation_id=e.evaluation_id AND m.alarm_id=a.alarm_id)"
+                + " OR EXISTS (SELECT 1 FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.related_alarm_id=a.alarm_id)))",
+                Boolean.class, eventId, evaluationId));
+    }
+
+    public String eventIdForAlarm(String alarmId) {
+        var ids = jdbc.queryForList("SELECT event_id FROM uav_event WHERE alarm_id=:id", Map.of("id", alarmId), String.class);
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
     public long countVerifications(String eventId, AccessDecision access) {
         Where where = where(access); where.parameters.put("event_id", eventId); where.sql.append(" AND e.event_id=:event_id");
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM uav_event_verification h JOIN uav_event e ON e.event_id=h.event_id JOIN alarm a ON a.alarm_id=e.alarm_id" + where.sql, where.parameters, Long.class);

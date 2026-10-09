@@ -63,4 +63,23 @@ class LegalityScopePostgresTest {
     void manualConclusionDrivesListDetailFiltersAndSummaryWithoutRewritingFacts(String original, String manual, String source) throws Exception {
         fixture.manualConclusionDrivesListDetailFiltersAndSummaryWithoutRewritingFacts(original, manual, source);
     }
+    @ParameterizedTest
+    @CsvSource({"UNDETERMINED,mock", "LEGAL,live", "ABNORMAL,replay", "ILLEGAL,mock"})
+    void illegalReviewCreatesConfirmedAlarmAtomically(String original, String source) throws Exception {
+        fixture.illegalReviewCreatesConfirmedAlarmAtomically(original, source);
+    }
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"PENDING_VERIFICATION", "CONFIRMED", "FALSE_POSITIVE", "UNLINKED_MEMBER"})
+    void illegalReviewMergesWithoutRepeatingVerification(String previousState) throws Exception {
+        fixture.illegalReviewMergesWithoutRepeatingVerification(previousState);
+    }
+    @Test void illegalReviewRequiresVerificationPermissionAndSupportsAuthorizedFollowUp() throws Exception {
+        fixture.illegalReviewRequiresVerificationPermissionAndSupportsAuthorizedFollowUp();
+    }
+    @ParameterizedTest
+    @CsvSource({"OVERRIDE,LEGAL", "REJECT,", "CONFIRM,"})
+    void nonIllegalReviewsDoNotAutomaticallyAdvance(String conclusion, String manual) throws Exception {
+        fixture.nonIllegalReviewsDoNotAutomaticallyAdvance(conclusion, manual);
+    }
+
 }

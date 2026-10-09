@@ -44,10 +44,11 @@ public class AlarmReadService {
             "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group",
             "violation_reason");
     private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
-    /** 规则引擎会写进告警违规原因的代码：各项检查的 FAIL 原因，加无计划时的无授权（C03）。 */
+    /** 未匹配任务只作提示，不再列为违规原因；旧原因仍保留在不可变的告警事实中。 */
     private static final Set<String> VIOLATION_REASONS = Set.of(RuleCodes.INSIDE_RESTRICTED_AIRSPACE, RuleCodes.AIRSPACE_ALTITUDE_EXCEEDED,
             RuleCodes.TEMPORARY_RESTRICTION_ACTIVE, RuleCodes.ROUTE_DEVIATION, RuleCodes.TIME_WINDOW_OVERRUN, RuleCodes.NIGHT_FLIGHT,
-            RuleCodes.PLAN_ALTITUDE_EXCEEDED, RuleCodes.BVLOS_EXCEEDED, RuleCodes.NO_AUTHORIZATION);
+            RuleCodes.PLAN_ALTITUDE_EXCEEDED, RuleCodes.BVLOS_EXCEEDED);
+    private static final String NO_PLAN_NOTE = "旧规则曾因未匹配报备任务触发告警；此项现仅作提示，不作为违规原因";
     private final AccessControlService access;
     private final AlarmReadRepository repository;
     private final AuditService audit;
@@ -105,7 +106,7 @@ public class AlarmReadService {
      * 否则待定是否反制、已移送处罚在表里都只剩“告警已确认”。
      */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "编号", "告警类别", "违规原因", "等级", "核实状态", "处置进度", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组");
+            "编号", "告警类别", "违规原因", "等级", "核实状态", "处置进度", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组", "任务匹配提示");
 
     private AccessDecision optional(PermissionCode permission) {
         try { return access.require(permission); } catch (ApiException denied) { return null; }
@@ -120,7 +121,7 @@ public class AlarmReadService {
                 com.uav.lowaltitude.platform.export.CsvLabels.severity(row.severity()),
                 com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()), progress,
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
-                row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()));
+                row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()), taskMatchNote(row));
     }
 
     private static String observationLabel(String status) {
@@ -238,11 +239,19 @@ public class AlarmReadService {
                 requiredMillis(row.receivedAt()), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), targetId,
                 row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
                 row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()),
-                row.observationStatus(), row.attentionGroup());
+                row.observationStatus(), row.attentionGroup(), taskMatchNote(row));
     }
 
     /** 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。 */
     private List<String> violations(AlarmRow row) {
+        return recordedReasons(row).stream().filter(reason -> !RuleCodes.NO_AUTHORIZATION.equals(reason)).toList();
+    }
+
+    private String taskMatchNote(AlarmRow row) {
+        return recordedReasons(row).contains(RuleCodes.NO_AUTHORIZATION) ? NO_PLAN_NOTE : null;
+    }
+
+    private List<String> recordedReasons(AlarmRow row) {
         return row.escalationCount() > 0 ? reasons(row.escalatedReasonsJson()) : reasons(row.detailJson());
     }
 

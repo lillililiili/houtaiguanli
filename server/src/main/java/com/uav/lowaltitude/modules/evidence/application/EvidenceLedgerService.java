@@ -18,7 +18,6 @@ import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerReposit
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository.*;
 import com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
-import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
@@ -38,13 +37,13 @@ public class EvidenceLedgerService {
     private final EvidenceAssociationService files;
     private final AccessControlService access;
     private final DeviceRepository devices;
-    private final DeviceAccessPolicy deviceAccess;
+    private final EvidenceCommandAccess commandAccess;
     private final AppClock clock;
     private final AuditService audit;
     private final ObjectMapper json;
     public EvidenceLedgerService(EvidenceLedgerRepository ledger,EvidenceRepository subjects,EvidenceAssociationService files,
-            AccessControlService access,DeviceRepository devices,DeviceAccessPolicy deviceAccess,AppClock clock,AuditService audit,ObjectMapper json) {
-        this.ledger=ledger;this.subjects=subjects;this.files=files;this.access=access;this.devices=devices;this.deviceAccess=deviceAccess;
+            AccessControlService access,DeviceRepository devices,EvidenceCommandAccess commandAccess,AppClock clock,AuditService audit,ObjectMapper json) {
+        this.ledger=ledger;this.subjects=subjects;this.files=files;this.access=access;this.devices=devices;this.commandAccess=commandAccess;
         this.clock=clock;this.audit=audit;this.json=json;
     }
     @Transactional(readOnly=true)
@@ -99,7 +98,7 @@ public class EvidenceLedgerService {
                 catch(java.io.IOException e){throw new ApiException(HttpStatus.CONFLICT,"INVALID_RECEIPT_PAYLOAD","历史回执内容无法解析");}
                 receipts.add(new Receipt(string(receipt,"receipt_id"),string(receipt,"receipt_kind"),string(receipt,"device_result_code"),number(receipt,"occurred_at"),number(receipt,"received_at"),parsed));
             }
-            command=new Command(id,string(row,"command_no"),string(row,"device_name"),string(row,"device_no"),string(row,"command_type"),string(row,"reason"),string(row,"status"),number(row,"created_at"),number(row,"issued_at"),number(row,"completed_at"),string(row,"result_detail"),receipts);
+            command=new Command(id,string(row,"command_no"),string(row,"device_name"),string(row,"device_no"),string(row,"command_type"),string(row,"reason"),string(row,"status"),number(row,"created_at"),number(row,"issued_at"),number(row,"completed_at"),string(row,"result_detail"),receipts,Boolean.TRUE.equals(row.get("simulated")));
             Relation attached=relation(new Query(null,null,null,"COMMAND",id,null,"FILE",null),decision);
             if(ledger.count(attached)>1000)throw new ApiException(HttpStatus.CONFLICT,"TOO_MANY_ATTACHMENTS","附件过多，请从台账分页查看");
             attachments=entries(attached,0,1000);
@@ -148,10 +147,10 @@ public class EvidenceLedgerService {
     private static String string(Map<String,Object> row,String key){Object value=row.get(key);return value==null?null:value.toString();}
     private static Long number(Map<String,Object> row,String key){Object value=row.get(key);return value==null?null:((Number)value).longValue();}
     private List<Entry> entries(Relation relation,int offset,int size){return ledger.list(relation,offset,size).stream().map(r->new Entry(r.sourceKind(),r.sourceId(),r.category(),r.evidenceNo(),r.originalName(),r.kindCode(),r.status(),r.capturedAt(),r.storedAt(),r.sourceMode(),r.layer(),r.startedAt(),r.endedAt(),r.sizeBytes(),r.held(),r.custody(),r.linkCount(),r.retainUntil(),r.pointCount())).toList();}
-    private Relation relation(Query query,AccessDecision decision){return ledger.relation(query,decision,probe(PermissionCode.EVIDENCE_INGEST),probe(PermissionCode.TARGET_READ),canReadCommands(),clock.now().toEpochMilli());}
+    private Relation relation(Query query,AccessDecision decision){return ledger.relation(query,decision,probe(PermissionCode.EVIDENCE_INGEST),probe(PermissionCode.TARGET_READ),commandAccess.visibility(),clock.now().toEpochMilli());}
     private boolean visible(Query q,AccessDecision decision) {
         if(q.subjectKind()==null)return true;
-        if(Set.of("DEVICE","COMMAND","COMMISSION").contains(q.subjectKind())&&!canReadCommands())return false;
+        if(Set.of("DEVICE","COMMAND","COMMISSION").contains(q.subjectKind())&&!commandAccess.monitoring())return false;
         if(q.subjectKind().equals("CASE")&&!probe(PermissionCode.PUNISHMENT_READ))return false;
         if(q.subjectKind().equals("AUTHORIZATION")&&!probe(PermissionCode.DISPOSAL_READ))return false;
         return q.subjectId()==null||subjects.subjectVisible(q.subjectKind(),q.subjectId(),decision);
@@ -163,13 +162,12 @@ public class EvidenceLedgerService {
             case "PLAN" -> probe(PermissionCode.FLIGHT_READ);
             case "CASE" -> probe(PermissionCode.PUNISHMENT_READ);
             case "AUTHORIZATION" -> probe(PermissionCode.DISPOSAL_READ);
-            case "DEVICE", "COMMAND", "COMMISSION" -> canReadCommands();
+            case "DEVICE", "COMMAND", "COMMISSION" -> commandAccess.monitoring();
             default -> false;
         };
     }
     private boolean canReadCommands() {
-        try { deviceAccess.requireMonitoringRead(); return true; }
-        catch(ApiException e) { if(e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e; }
+        return commandAccess.visibility().any();
     }
     private boolean probe(PermissionCode permission) {
         try{access.require(permission);return true;}catch(ApiException e){if(e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e;}

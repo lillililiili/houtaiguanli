@@ -16,6 +16,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.alarm.application.AlarmMergePolicy.MergeOutcome;
+import com.uav.lowaltitude.modules.alarm.application.UavEventVerificationService;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EscalationResultDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvaluateResultDto;
 import com.uav.lowaltitude.modules.assessment.api.LegalityEvaluationDtos.EvaluationDto;
@@ -62,6 +63,7 @@ public class LegalityReviewService {
     private final LegalityEvaluationReadRepository evaluations;
     private final LegalityEvaluationReadService read;
     private final AlarmEscalationService escalation;
+    private final UavEventVerificationService verification;
     private final RuleRunService runs;
     private final RuleEngineRepository engine;
     private final IdempotencyGuard idempotency;
@@ -70,9 +72,10 @@ public class LegalityReviewService {
     private final ObjectMapper objectMapper;
 
     public LegalityReviewService(AccessControlService access, LegalityReviewRepository reviews, LegalityEvaluationReadRepository evaluations,
-            LegalityEvaluationReadService read, AlarmEscalationService escalation, RuleRunService runs, RuleEngineRepository engine,
+            LegalityEvaluationReadService read, AlarmEscalationService escalation, UavEventVerificationService verification, RuleRunService runs, RuleEngineRepository engine,
             IdempotencyGuard idempotency, AuditService audit, AppClock clock, ObjectMapper objectMapper) {
         this.access = access; this.reviews = reviews; this.evaluations = evaluations; this.read = read; this.escalation = escalation;
+        this.verification = verification;
         this.runs = runs; this.engine = engine; this.idempotency = idempotency;
         this.audit = audit; this.clock = clock; this.objectMapper = objectMapper;
     }
@@ -110,12 +113,29 @@ public class LegalityReviewService {
         String currentStatus = com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.current(review.legalStatus());
         String manualStatus = switch (conclusion) { case "CONFIRM" -> currentStatus; case "REJECT" -> null; default -> overrideStatus; };
         if ("OVERRIDE".equals(conclusion) && overrideStatus.equals(currentStatus)) throw validation("改判结论与系统结论相同，请使用确认");
+        boolean advanceIllegal = "ACTIVE".equals(review.mode()) && "ILLEGAL".equals(manualStatus)
+                && review.targetId() != null && canEscalate();
+        if (advanceIllegal) {
+            access.require(PermissionCode.ALARM_READ);
+            access.require(PermissionCode.ALARM_VERIFY);
+        }
         OffsetDateTime at = now();
         // 条件更新为 0 行代表竞争写入，绝不追加一条与实际状态不一致的复核历史。
         if (reviews.transition(id, expectedVersion, STATE_PENDING, nextState, manualStatus, at) != 1) throw conflict();
         AuthUser actor = AuthContext.require();
+        String relatedAlarmId = null;
+        if (advanceIllegal) {
+            // A review and its alarm must commit together; inspect persisted links before creating another alarm.
+            EvaluationRow linked = evaluations.find(id, readAccess);
+            relatedAlarmId = review.engineAlarmId() != null ? review.engineAlarmId() : linked == null ? null : linked.alarmId();
+            if (relatedAlarmId == null) {
+                MergeOutcome outcome = createAlarm(reviews.lockInternal(id), actor, note, expectedVersion + 1);
+                relatedAlarmId = outcome.alarmId();
+            }
+        }
         reviews.appendHistory(new HistoryInsert(UUID.randomUUID().toString(), id, expectedVersion + 1, STATE_PENDING, nextState, conclusion,
-                review.legalStatus(), manualStatus, note, actor.userId(), null, null, at));
+                review.legalStatus(), manualStatus, note, actor.userId(), null, relatedAlarmId, at));
+        if (advanceIllegal) verification.confirmFromLegalityReview(id, relatedAlarmId, note);
         audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "legality_evaluation_revised", OBJECT_TYPE, id,
                 "conclusion=" + conclusion + (manualStatus == null ? "" : "; manual_status=" + manualStatus) + "; version=" + (expectedVersion + 1), "SUCCESS", "", "");
         return read.detail(id, readAccess);
@@ -146,15 +166,30 @@ public class LegalityReviewService {
 
         AuthUser actor = AuthContext.require();
         // 同一目标已有未判误报的告警时并入并升级那条告警（不另起核实），升级记录写明操作人与说明。
-        MergeOutcome outcome = escalation.escalate(review, actor.userId(), note);
-        if (outcome == null || outcome.alarmId() == null) throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "告警入库未返回结果");
+        MergeOutcome outcome = createAlarm(review, actor, note, expectedVersion + 1);
         OffsetDateTime at = now();
         if (reviews.bump(id, expectedVersion, at) != 1) throw conflict();
         reviews.appendHistory(new HistoryInsert(UUID.randomUUID().toString(), id, expectedVersion + 1, review.reviewState(), review.reviewState(), "ESCALATE",
                 review.legalStatus(), review.manualStatus(), note, actor.userId(), null, outcome.alarmId(), at));
-        audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "legality_evaluation_escalated", OBJECT_TYPE, id,
-                "alarm_id=" + outcome.alarmId() + "; event_id=" + outcome.eventId() + "; version=" + (expectedVersion + 1), "SUCCESS", "", "");
+        if ("ILLEGAL".equals(review.manualStatus()) && Set.of(STATE_CONFIRMED, STATE_OVERRIDDEN).contains(review.reviewState()))
+            verification.confirmFromLegalityReview(id, outcome.alarmId(), note);
         return new EscalationResultDto(outcome.alarmId(), outcome.eventId(), read.detail(id, readAccess));
+    }
+
+    private boolean canEscalate() {
+        try { access.require(PermissionCode.ASSESSMENT_ESCALATE); return true; }
+        catch (ApiException error) {
+            if (error.getStatus() == HttpStatus.FORBIDDEN) return false;
+            throw error;
+        }
+    }
+
+    private MergeOutcome createAlarm(ReviewRow review, AuthUser actor, String note, long version) {
+        MergeOutcome outcome = escalation.escalate(review, actor.userId(), note);
+        if (outcome == null || outcome.alarmId() == null) throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "告警入库未返回结果");
+        audit.record(actor.userId(), actor.account(), actor.roleCode(), MODULE, "legality_evaluation_escalated", OBJECT_TYPE, review.evaluationId(),
+                "alarm_id=" + outcome.alarmId() + "; event_id=" + outcome.eventId() + "; version=" + version, "SUCCESS", "", "");
+        return outcome;
     }
 
     /**

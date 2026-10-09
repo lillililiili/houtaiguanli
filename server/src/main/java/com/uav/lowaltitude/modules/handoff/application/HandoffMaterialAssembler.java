@@ -64,8 +64,9 @@ public class HandoffMaterialAssembler {
      * 证据链按谁的可见范围冻结。后台自动移送和种子用 {@link #SYSTEM}（全部范围）；
      * 人工提交时用提交人的证据读取范围，轨迹和指令再看提交人能否查看目标和设备指令，与提交人在事件页看到的证据链一致。
      */
-    public record EvidenceScope(AccessDecision decision, boolean tracks, boolean commands) {
-        public static final EvidenceScope SYSTEM = new EvidenceScope(new AccessDecision("system:handoff-material", ScopeMode.ALL), true, true);
+    public record EvidenceScope(AccessDecision decision, boolean tracks, com.uav.lowaltitude.modules.evidence.domain.EvidenceCommandVisibility commands) {
+        public static final EvidenceScope SYSTEM = new EvidenceScope(new AccessDecision("system:handoff-material", ScopeMode.ALL), true,
+                com.uav.lowaltitude.modules.evidence.domain.EvidenceCommandVisibility.ALL);
     }
 
     /**
@@ -171,7 +172,7 @@ public class HandoffMaterialAssembler {
                         .thenComparing(EvidenceLedgerRepository.LedgerRow::sourceKind).thenComparing(EvidenceLedgerRepository.LedgerRow::sourceId))
                 .map(row -> new EvidenceChainItemDto(row.category(), row.sourceKind(), row.sourceId(), row.evidenceNo(), row.originalName(),
                         row.kindCode(), row.status(), row.capturedAt(), row.startedAt(), row.endedAt(), row.pointCount(), row.sizeBytes(),
-                        "FILE".equals(row.sourceKind()) ? digests.get(row.sourceId()) : null))
+                        "FILE".equals(row.sourceKind()) ? digests.get(row.sourceId()) : null, row.layer()))
                 .toList();
     }
 

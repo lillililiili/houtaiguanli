@@ -114,6 +114,31 @@ public class UavEventVerificationService {
                 millis(event.createdAt()), millis(event.updatedAt()), verify ? List.of("VERIFY") : List.of(),
                 verify ? verificationBasis(event.eventId()) : null);
     }
+
+    /** The saved illegal human verdict is this confirmation's basis; downstream action checks remain independent. */
+    @Transactional
+    public void confirmFromLegalityReview(String evaluationId, String alarmId, String note) {
+        AccessDecision read = access.require(PermissionCode.ALARM_READ);
+        access.require(PermissionCode.ALARM_VERIFY);
+        access.require(PermissionCode.ASSESSMENT_READ);
+        access.require(PermissionCode.ASSESSMENT_ESCALATE);
+        String eventId = repository.eventIdForAlarm(alarmId);
+        EventRow event = eventId == null ? null : repository.lock(eventId, read);
+        if (event == null) throw notFound();
+        if (!repository.reviewedIllegal(eventId, evaluationId))
+            throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "告警未关联本次有效的人工非法结论");
+        if ("FALSE_POSITIVE".equals(event.state()))
+            throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "告警已核实为误报，不能用本次改判覆盖");
+        if (!UavEventState.verifiable(event.state())) return;
+        OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
+        if (repository.update(eventId, event.version(), "CONFIRMED", at) != 1)
+            throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
+        AuthUser actor = AuthContext.require();
+        repository.appendHistory(UUID.randomUUID().toString(), eventId, event.state(), "CONFIRMED", "CONFIRMED",
+                note == null ? "" : note, event.version() + 1, actor.userId(), at);
+        audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarm", "uav_event_verified", "uav_event", eventId,
+                "conclusion=CONFIRMED; source=LEGALITY_REVIEW; evaluation_id=" + evaluationId + "; version=" + (event.version() + 1), "SUCCESS", "", "");
+    }
     /** 只给能核实的人：依据随目标数据时效变化，每次读取现算；页面据此提示“缺少依据”，提交时服务端再算一次。 */
     private VerificationBasisDto verificationBasis(String eventId) {
         long now = clock.nowMillis();

@@ -77,7 +77,7 @@ watch(() => props.visible, value => {
 <template>
   <el-dialog :model-value="visible" title="区域管理" width="min(720px, calc(100vw - 32px))" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy" @update:model-value="value => !value && close()">
     <section class="district-dialog">
-      <el-alert type="info" :closable="false" show-icon title="区域用来划分数据范围：设备、设备数据连接和账号都按“单位 + 区域”归属。新系统要先建好单位和至少一个区域，才能接入设备。区域编码保存后不能修改，区域也不能删除。" />
+      <el-alert type="info" :closable="false" show-icon title="区域用于标记设备和数据所属的地区，例如“东营区”。" description="新建账号按单位设置数据范围，包含所选单位范围内的全部区域，无需逐个选择区域。接入设备前，请先建好单位和至少一个区域。区域名称可以改，编码不能改，区域不能删除。" />
       <ErrorAlert :message="error" @retry="load" />
       <div class="table-toolbar"><span class="muted">共 {{ rows.length }} 个区域</span><el-button type="primary" :disabled="!canEdit || busy || form.mode === 'create'" @click="openCreate">新增区域</el-button></div>
       <el-form v-if="form.mode" ref="formRef" :model="form" :rules="rules" label-position="top" class="district-form" @submit.prevent="save">

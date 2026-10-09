@@ -81,7 +81,7 @@ public class HandoffSubmissionService {
     private final AutomationRuntimePolicy rulePolicy;
     private final AutomationRuntimeRepository ruleRuns;
     private final AutomationRuntimeEligibility ruleEligibility;
-    private final com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy deviceAccess;
+    private final com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess;
     static final String WAITING_RULES = "通知处罚规则尚未全部满足";
     /** 处罚交接的建立方式（2026-10-06）：后台在干扰完成后自动建立，或有人选定接收单位后提交。 */
     public static final String TRIGGER_JAMMING_COMPLETED = "JAMMING_COMPLETED";
@@ -98,8 +98,8 @@ public class HandoffSubmissionService {
             DisposalCompletionPort disposals, UavEventRepository events, HandoffMaterialAssembler materials, HandoffChannelPort channel,
             RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
             AutomationRuntimePolicy rulePolicy, AutomationRuntimeRepository ruleRuns, AutomationRuntimeEligibility ruleEligibility,
-            com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy deviceAccess) {
-        this.deviceAccess = deviceAccess;
+            com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess) {
+        this.commandAccess = commandAccess;
         this.rulePolicy = rulePolicy;
         this.ruleRuns = ruleRuns;
         this.ruleEligibility = ruleEligibility;
@@ -246,7 +246,7 @@ public class HandoffSubmissionService {
         AccessDecision evidence;
         try { evidence = access.require(PermissionCode.EVIDENCE_READ); }
         catch (ApiException denied) { return materials.assemble(eventId, (HandoffMaterialAssembler.EvidenceScope) null); }
-        return materials.assemble(eventId, new HandoffMaterialAssembler.EvidenceScope(evidence, allowed(PermissionCode.TARGET_READ), canReadCommands()));
+        return materials.assemble(eventId, new HandoffMaterialAssembler.EvidenceScope(evidence, allowed(PermissionCode.TARGET_READ), commandAccess.visibility()));
     }
 
     private boolean allowed(PermissionCode permission) {
@@ -254,10 +254,6 @@ public class HandoffSubmissionService {
         catch (ApiException denied) { if (denied.getStatus() == HttpStatus.FORBIDDEN) return false; throw denied; }
     }
 
-    private boolean canReadCommands() {
-        try { deviceAccess.requireMonitoringRead(); return true; }
-        catch (ApiException denied) { if (denied.getStatus() == HttpStatus.FORBIDDEN) return false; throw denied; }
-    }
 
 
     /**

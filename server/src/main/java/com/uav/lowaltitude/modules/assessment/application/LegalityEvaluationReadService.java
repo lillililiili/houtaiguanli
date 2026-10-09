@@ -222,8 +222,10 @@ public class LegalityEvaluationReadService {
         if (active && !superseded && has(PermissionCode.ASSESSMENT_EVALUATE) && has(subjectRead(row.subjectKind()))) actions.add(ACTION_RECOMPUTE);
         String effectiveStatus = com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.effective(
                 row.legalStatus(), row.mode(), row.reviewState(), row.manualStatus());
+        boolean reviewedIllegal = "ILLEGAL".equals(row.manualStatus()) && Set.of("CONFIRMED", "OVERRIDDEN").contains(row.reviewState());
         if (active && !superseded && com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.canEscalate(effectiveStatus)
-                && !linked && row.targetId() != null && has(PermissionCode.ASSESSMENT_ESCALATE)) actions.add(ACTION_ESCALATE);
+                && !linked && row.targetId() != null && has(PermissionCode.ASSESSMENT_ESCALATE)
+                && (!reviewedIllegal || (has(PermissionCode.ALARM_READ) && has(PermissionCode.ALARM_VERIFY)))) actions.add(ACTION_ESCALATE);
         return List.copyOf(actions);
     }
 

@@ -86,7 +86,12 @@ public final class HandoffDtos {
      */
     public record EvidenceChainItemDto(String category, String sourceKind, String sourceId, String evidenceNo, String name,
             String kindCode, String status, Long capturedAt, Long startedAt, Long endedAt, Long pointCount, Long sizeBytes,
-            String sha256) { }
+            String sha256, String layer) {
+        public EvidenceChainItemDto withLayer(String value) {
+            return new EvidenceChainItemDto(category, sourceKind, sourceId, evidenceNo, name, kindCode, status,
+                    capturedAt, startedAt, endedAt, pointCount, sizeBytes, sha256, value);
+        }
+    }
     /**
      * 当事人认定（提交时冻结）。IDENTIFIED：关联本事件的报备计划写明了飞手或运营单位；
      * UNIDENTIFIED：当事人不明，按待补线索移送，reasons 写明原因，uav_sn 等是已有线索。

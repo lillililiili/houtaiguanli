@@ -23,8 +23,7 @@ const actionBaseline = ref('{}')
 const createDialog = reactive({ visible: false, busy: false, form: { name: '', description: '' }, permissions: [] })
 const protectedCodes = new Set(['users', 'roles', 'audit', 'countermeasure'])
 const levels = [{ value: 'NONE', label: '无权限' }, { value: 'READ', label: '查看' }, { value: 'OP', label: '操作' }, { value: 'AUTH', label: '授权' }]
-const actionLevels = [{ value: 'NONE', label: '无' }, { value: 'READ', label: '查看' }, { value: 'OP', label: '操作' }]
-const directActionLevels = [{ value: 'NONE', label: '无' }, { value: 'OP', label: '允许' }]
+const actionLevels = [{ value: 'NONE', label: '无' }, { value: 'OP', label: '允许' }]
 const menuLabels = {
   responsePlans: '规则管理',
   dashboard: '数据大屏', sensing: '感知监测', statistics: '统计分析', stats: '报表管理',
@@ -47,11 +46,13 @@ const menuPermissions = computed(() => permissions.value.filter(isBusinessMenu))
 const createMenuPermissions = computed(() => createDialog.permissions.filter(isBusinessMenu))
 // devices.op 同时是前台反制/光电控制的独立守卫，不能因取消后台菜单配置而失去授权入口。
 const businessDevicePermission = computed(() => permissions.value.find(item => item.permission_code === 'devices'))
+const deviceReadAllowed = computed(() => ['READ', 'OP', 'AUTH'].includes(businessDevicePermission.value?.level))
+const deviceControlAllowed = computed(() => ['OP', 'AUTH'].includes(businessDevicePermission.value?.level))
 const backendOnlyActions = new Set(['map:upload', 'map:activate', 'map:delete', 'rule:manage'])
 const businessActionCatalog = computed(() => actionCatalog.value.map(group => ({
   ...group, actions: group.actions.filter(action => !backendOnlyActions.has(action.permission_code) && !isProtectedAction(action.permission_code))
 })).filter(group => group.actions.length))
-const actionPermissionCount = computed(() => businessActionCatalog.value.reduce((count, group) => count + group.actions.length, 0) + (businessDevicePermission.value ? 1 : 0))
+const actionPermissionCount = computed(() => businessActionCatalog.value.reduce((count, group) => count + group.actions.length, 0) + (businessDevicePermission.value ? 2 : 0))
 const dirty = computed(() => {
   if (!detail.value) return false
   return JSON.stringify(permissions.value) !== JSON.stringify(detail.value.permissions || []) || JSON.stringify(actionDraft) !== actionBaseline.value
@@ -77,7 +78,11 @@ function actionLabel(action) {
   const suffix = action.permission_code?.split('.').pop()
   return actionLabels[suffix] || action.permission_code
 }
-function actionLevelsFor(action) { return action.permission_code === 'disposal:direct' ? directActionLevels : actionLevels }
+// 旧动作等级按服务端实际授权显示和保存，直接反制仍只认显式 OP。
+function actionSelection(action) {
+  const level = actionDraft[action.permission_code]
+  return (action.permission_code === 'disposal:direct' ? level === 'OP' : ['READ', 'OP', 'AUTH'].includes(level)) ? 'OP' : 'NONE'
+}
 function actionDescription(action) { return action.permission_code === 'disposal:direct' ? '免逐次审批；仍校验反制范围、时效及设备权限。' : '' }
 function isPermissionLocked(row) { return locked.value || protectedCodes.has(row.permission_code) }
 // 只归超级管理员的动作：页面上锁定，保存时也不随整组提交（BUG-01）。
@@ -86,6 +91,8 @@ function isActionLocked(action) { return locked.value || isProtectedAction(actio
 function setLevel(row, level) { row.level = level; if (level === 'NONE') row.menu_enabled = false }
 function setMenu(row, enabled) { row.menu_enabled = enabled; if (enabled && row.level === 'NONE') row.level = 'READ' }
 function setBusinessDeviceLevel(level) { businessDevicePermission.value.level = level; businessDevicePermission.value.menu_enabled = false }
+function setDeviceRead(value) { setBusinessDeviceLevel(value === 'NONE' ? 'NONE' : deviceControlAllowed.value ? 'OP' : 'READ') }
+function setDeviceControl(value) { setBusinessDeviceLevel(value === 'OP' ? 'OP' : deviceReadAllowed.value ? 'READ' : 'NONE') }
 
 async function loadRoles() {
   roles.value = (await systemApi.roles()).filter(item => item.role_code !== 'ROLE-BACKEND')
@@ -128,8 +135,8 @@ async function savePermissions() {
       expected_version: detail.value.version,
       permissions: permissions.value.map(item => ({ permission_code: item.permission_code, level: item.level, menu_enabled: item.menu_enabled })),
       actions: Object.entries(actionDraft)
-        .filter(([permission_code, level]) => level !== 'AUTH' && !isActionLocked({ permission_code }))
-        .map(([permission_code, level]) => ({ permission_code, level }))
+        .filter(([permission_code]) => !isActionLocked({ permission_code }))
+        .map(([permission_code]) => ({ permission_code, level: actionSelection({ permission_code }) }))
     }
     const saved = await systemApi.updateRolePermissions(detail.value.role_code, body)
     resetDraft(saved)
@@ -250,13 +257,14 @@ onMounted(loadAll)
           </el-tab-pane>
           <el-tab-pane name="action">
             <template #label><span class="permission-tab-label"><span>动作权限</span><span class="permission-tab-count">{{ actionPermissionCount }}</span></span></template>
-            <div class="permission-intro"><div><h3>动作权限</h3><p>配置进入页面后可执行的具体业务操作。</p></div></div>
+            <div class="permission-intro"><div><h3>动作权限</h3><p>每项选择“无”或“允许”；允许仅授予该项动作，仍受数据范围和业务条件限制。</p></div></div>
             <section v-if="businessDevicePermission" class="action-group business-device-permission">
               <h4>前台设备操作</h4>
-              <div class="action-row"><span class="action-row__label"><span>设备查看与控制</span><small>用于前台设备读取、反制及光电控制；反制仍须单独授权，不开放后台设备管理。</small></span><el-select :model-value="businessDevicePermission.level" :disabled="locked || !canOperate" size="small" @change="setBusinessDeviceLevel"><el-option v-for="level in levels.filter(item => item.value !== 'AUTH')" :key="level.value" :label="level.label" :value="level.value" /></el-select></div>
+              <div class="action-row"><span class="action-row__label"><span>查看设备</span><small>允许读取前台设备信息；取消查看会同时取消控制。</small></span><el-radio-group :model-value="deviceReadAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="查看设备" @change="setDeviceRead"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
+              <div class="action-row"><span class="action-row__label"><span>控制设备</span><small>允许控制时同时允许查看；反制仍须单独授权，不开放后台设备管理。</small></span><el-radio-group :model-value="deviceControlAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="控制设备" @change="setDeviceControl"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
             </section>
             <div v-if="businessActionCatalog.length" class="action-grid"><section v-for="group in businessActionCatalog" :key="group.module_code" class="action-group"><h4>{{ moduleLabel(group) }}</h4>
-              <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label" :title="action.permission_code"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-select v-model="actionDraft[action.permission_code]" :disabled="isActionLocked(action) || actionDraft[action.permission_code]==='AUTH'" size="small"><el-option v-for="level in actionLevelsFor(action)" :key="level.value" :label="level.label" :value="level.value" /></el-select></div>
+              <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label" :title="action.permission_code"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-radio-group :model-value="actionSelection(action)" :disabled="isActionLocked(action) || !canOperate" size="small" :aria-label="actionLabel(action)" @change="value => actionDraft[action.permission_code] = value"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
             </section></div><el-empty v-else description="当前没有可配置的动作权限" />
           </el-tab-pane>
         </el-tabs>
@@ -295,6 +303,7 @@ onMounted(loadAll)
 </template>
 
 <style scoped>
+.action-row .el-radio-group{display:flex;flex:none;flex-wrap:nowrap;gap:14px}.action-row :deep(.el-radio){margin-right:0}.action-row :deep(.el-radio__label){padding-left:5px}.business-device-permission{margin-bottom:12px}
 .roles-layout{display:grid;grid-template-columns:minmax(248px,276px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);min-height:0;border:1px solid var(--admin-border);border-radius:10px;overflow:hidden;background:var(--admin-card);box-shadow:var(--admin-shadow)}
 .role-sidebar{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:#f8fafc}.role-sidebar__header{flex:none;padding:16px;border-bottom:1px solid var(--admin-border);background:var(--admin-card)}.role-sidebar__title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.role-sidebar__title strong,.role-sidebar__title small{display:block}.role-sidebar__title strong{color:var(--admin-text);font-size:15px}.role-sidebar__title small{margin-top:4px;color:var(--admin-muted);font-size:12px}.role-count{display:grid;min-width:28px;height:24px;padding:0 8px;place-items:center;border-radius:12px;color:var(--admin-primary);background:var(--admin-primary-soft);font:700 12px/1 Consolas,monospace}
 .role-list{display:flex;min-height:0;flex:1;flex-direction:column;gap:8px;padding:10px;overflow:auto}.role-item{position:relative;display:grid;width:100%;min-height:82px;gap:6px;padding:11px 12px 11px 15px;border:1px solid transparent;border-radius:8px;color:var(--admin-text);background:transparent;text-align:left;cursor:pointer;transition:border-color .16s ease,background-color .16s ease,box-shadow .16s ease}.role-item::before{position:absolute;top:10px;bottom:10px;left:0;width:3px;border-radius:0 3px 3px 0;background:transparent;content:""}.role-item:hover{border-color:#bfdbfe;background:var(--admin-card);box-shadow:0 4px 12px rgba(30,64,175,.06)}.role-item:active{background:#e7f0ff}.role-item.active{border-color:#93c5fd;background:#eff6ff;box-shadow:0 5px 14px rgba(30,64,175,.09)}.role-item.active::before{background:var(--admin-secondary)}.role-item__title{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px}.role-item__title strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.role-item code{overflow-wrap:anywhere;color:#42526b;font:12px/1.3 Consolas,"SFMono-Regular",monospace}.role-item small{color:var(--admin-muted);font-size:12px}.role-type{flex:none;padding:2px 6px;border:1px solid #bfdbfe;border-radius:4px;color:var(--admin-primary);background:var(--admin-primary-soft);font-size:11px;line-height:1.25}.role-type.is-custom{border-color:var(--admin-border);color:var(--admin-muted);background:var(--admin-card)}

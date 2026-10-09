@@ -96,13 +96,10 @@ describe('角色直接反制权限', () => {
 
   it('只提供无和允许两档，且选择允许不会联动审批权限', async () => {
     await mount()
-    directRow().querySelector('.el-select').click()
-    await settle()
-    const dropdowns = [...document.body.querySelectorAll('.el-select-dropdown')]
-    const options = [...dropdowns.at(-1).querySelectorAll('.el-select-dropdown__item')].map(item => item.textContent.trim())
+    const options = [...directRow().querySelectorAll('.el-radio')].map(item => item.textContent.trim())
     expect(options).toEqual(expect.arrayContaining(['无', '允许']))
     expect(options).not.toContain('查看')
-    const allow = [...dropdowns.at(-1).querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === '允许')
+    const allow = directRow().querySelector('input[value="OP"]')
     allow.click()
     await settle()
     const save = [...host.querySelectorAll('button')].find(item => item.textContent.includes('保存并立即生效'))
@@ -112,5 +109,11 @@ describe('角色直接反制权限', () => {
       { permission_code: 'disposal:approve', level: 'NONE' },
       { permission_code: 'disposal:direct', level: 'OP' }
     ]) }))
+  })
+
+  it.each(['READ', 'AUTH'])('旧 %s 不被显示为直接反制允许', async level => {
+    systemApi.role.mockResolvedValue({ ...customRole, actions: [{ permission_code: 'disposal:direct', level }] })
+    await mount()
+    expect(directRow().querySelector('input[value="NONE"]').checked).toBe(true)
   })
 })

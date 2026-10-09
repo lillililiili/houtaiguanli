@@ -32,6 +32,7 @@ public final class AlarmDtos {
          */
         private final String originalSeverity;
         private final List<String> violationReasons;
+        private final String taskMatchNote;
         private final int escalationCount;
         private final Long escalatedAt;
         private final String observationStatus, attentionGroup;
@@ -39,7 +40,7 @@ public final class AlarmDtos {
                 long receivedAt, String sourceCode, String sourceMode, String ownerOrgId, String districtId, String targetId,
                 String alarmNo, String sourceName, String ownerOrgName, String districtName, String targetNo,
                 String originalSeverity, List<String> violationReasons, int escalationCount, Long escalatedAt,
-                String observationStatus, String attentionGroup) {
+                String observationStatus, String attentionGroup, String taskMatchNote) {
             this.alarmId = alarmId; this.eventId = new EventId(eventId); this.state = state; this.alarmType = alarmType; this.severity = severity;
             this.occurredAt = occurredAt; this.receivedAt = receivedAt; this.sourceCode = sourceCode; this.sourceMode = sourceMode;
             this.ownerOrgId = ownerOrgId; this.districtId = districtId; this.targetId = targetId;
@@ -47,6 +48,7 @@ public final class AlarmDtos {
             this.originalSeverity = originalSeverity; this.violationReasons = violationReasons == null ? List.of() : List.copyOf(violationReasons);
             this.escalationCount = escalationCount; this.escalatedAt = escalatedAt;
             this.observationStatus = observationStatus; this.attentionGroup = attentionGroup;
+            this.taskMatchNote = taskMatchNote;
         }
         public String getAlarmId() { return alarmId; }
         /** 无事件是稳定业务事实；包装值非空而序列化结果为 null，避免改全局 NON_NULL。 */
@@ -68,6 +70,7 @@ public final class AlarmDtos {
         public String getTargetNo() { return targetNo; }
         public String getOriginalSeverity() { return originalSeverity; }
         public List<String> getViolationReasons() { return violationReasons; }
+        public String getTaskMatchNote() { return taskMatchNote; }
         public int getEscalationCount() { return escalationCount; }
         public Long getEscalatedAt() { return escalatedAt; }
         public String getObservationStatus() { return observationStatus; }

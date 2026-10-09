@@ -215,6 +215,19 @@ public class HandoffReadService {
         var evidenceChain = stored.evidenceChain();
         // 证据链清单与证据段同样按读者当前的 evidence:read 裁剪。
         if ((evidence != null || evidenceChain != null) && !mayReadEvidence()) { evidence = null; evidenceChain = null; }
+        if (evidenceChain != null && stored.event() != null) {
+            var ids = evidenceChain.stream().filter(item -> "TRACK".equals(item.sourceKind()) && item.layer() == null)
+                    .map(com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceChainItemDto::sourceId).toList();
+            if (!ids.isEmpty()) {
+                try {
+                    var layers = repository.frozenTrackLayers(ids, stored.event().targetId(), access.require(PermissionCode.TARGET_READ));
+                    evidenceChain = evidenceChain.stream().map(item -> item.layer() == null && "TRACK".equals(item.sourceKind())
+                            ? item.withLayer(layers.get(item.sourceId())) : item).toList();
+                } catch (ApiException denied) {
+                    if (denied.getStatus() != HttpStatus.FORBIDDEN) throw denied;
+                }
+            }
+        }
         return new MaterialV2Dto(schemaVersion, stored.event(), stored.verifications(), stored.disposals(),
                 evidence, stored.evidenceOmitted(), stored.references(), stored.advisoryRecords(), stored.pilotLocation(),
                 stored.judgments(), evidenceChain, stored.party());

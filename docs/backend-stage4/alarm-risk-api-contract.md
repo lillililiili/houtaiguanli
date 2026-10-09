@@ -199,3 +199,8 @@ GET /api/v1/alarms/{alarm_id}/escalations?page&size     alarm:read
 ```
 
 权限、范围与 404 同告警详情；只接受 `page,size`，其他参数 400 `VALIDATION_ERROR`。按 `seq` 正序分页，项：`escalation_id, seq, trigger_kind ENGINE|MANUAL, severity_before, severity_after, reasons_added, reasons_after, created_at`，可省略 `note, actor_id, actor_name`（只有人工转告警有操作人；说明为空时省略）。升级不改 `uav_event` 状态，已核实属实的告警升级后不要求重新核实。PostgreSQL 上该表只增，写入时发实时推送 `alarm` 主题。
+# 2026-10-09 未匹配任务只作提示
+
+告警列表、详情和 CSV 的 `violation_reasons` 不再包含 `NO_AUTHORIZATION`。告警原始明细或最新升级累计原因中有此码时，读取新增可选 `task_match_note`，说明旧规则曾因未匹配报备任务触发，此项现仅作提示、不作为违规原因；其他原因照常保留。CSV 末尾追加“任务匹配提示”，既有列顺序保持。`violation_reason=NO_AUTHORIZATION` 与其他无效原因一样返回 400，不再作为违规原因筛选项。
+
+这是只读展示口径调整，不改写告警、研判、升级历史或事件核实状态，不自动删除或解除旧告警。当前正式规则 `C03.no_plan_status=LEGAL` 继续生效，缺计划本身不判非法，其他独立违规照常判断。

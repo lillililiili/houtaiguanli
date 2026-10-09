@@ -43,6 +43,8 @@ class EvidenceApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired AppProperties properties;
+    @Autowired com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository handoffs;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.Countermeasure4ChControlRepository controls;
 
     private String suffix, org, district, otherOrg, otherDistrict, targetId;
 
@@ -108,7 +110,7 @@ class EvidenceApiTest {
     @Test
     void unifiedLedgerUsesExactMeasuredTrackAndDoesNotInventCommandReceipts() throws Exception {
         String token=reader("ASSIGNED",org,district);
-        grantAction(token,"evidence:read","target:read","monitoring");
+        grantAction(token,"evidence:read","target:read");
         String track="ledger-tr-"+suffix,device="ledger-dev-"+suffix,command="ledger-cmd-"+suffix;
         jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,current_timestamp,current_timestamp,'FUSED')",track,targetId,track);
         mvc.perform(get("/api/v1/evidence-ledger/records/TRACK/"+track).header("Authorization",bearer(token)))
@@ -123,6 +125,7 @@ class EvidenceApiTest {
         jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at) VALUES (?,?,?,'雷达','融合感知箱',true,'mock',true,0,0,0)",device,device,"测试设备");
         jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES (?,?,?,current_timestamp,current_timestamp)",device,org,district);
         jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at) VALUES (?,?,?,?,'EO_BEGIN_TRACK','测试夹具','SENT','mock',true,0,0)",command,command,device,user);
+        trackingTask(device, command, targetId);
         mvc.perform(get("/api/v1/evidence-ledger/records/COMMAND/"+command).header("Authorization",bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("SENT"))
                 .andExpect(jsonPath("$.data.command.receipts.length()").value(0));
@@ -542,19 +545,20 @@ class EvidenceApiTest {
     @Test
     void ledgerCommandDetailsKeepActualStateAndRespectDeviceScope() throws Exception {
         String token = reader("ASSIGNED", org, district);
-        grantAction(token, "evidence:read", "monitoring");
+        grantAction(token, "evidence:read", "target:read");
         String device = UUID.randomUUID().toString(), command = UUID.randomUUID().toString();
         String user = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
         jdbc.update("insert into ops_device (device_id,device_no,name,device_type_name,channel,source_mode,created_at,updated_at) values (?,?,?,'光电','mock','mock',0,0)", device, device, "证据接口测试设备");
         jdbc.update("insert into device_business_scope (ops_device_id,owner_org_id,district_id,created_at,updated_at) values (?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", device, org, district);
         jdbc.update("insert into device_command (command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,created_at,updated_at) values (?,?,?,?,'EO_BEGIN_TRACK','测试只读','QUEUED','mock',0,0)", command, command, device, user);
+        trackingTask(device, command, targetId);
         mvc.perform(get("/api/v1/evidence-ledger?category=COMMAND").header("Authorization", bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
         mvc.perform(get("/api/v1/evidence-ledger/records/COMMAND/" + command).header("Authorization", bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("QUEUED"))
                 .andExpect(jsonPath("$.data.command.receipts.length()").value(0));
         String outsider = reader("ASSIGNED", otherOrg, otherDistrict);
-        grantAction(outsider, "evidence:read", "monitoring");
+        grantAction(outsider, "evidence:read", "target:read");
         mvc.perform(get("/api/v1/evidence-ledger/records/COMMAND/" + command).header("Authorization", bearer(outsider)))
                 .andExpect(status().isNotFound());
     }
@@ -692,6 +696,112 @@ class EvidenceApiTest {
                 orgId, orgId.toUpperCase(), orgId);
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)",
                 districtId, districtId.toUpperCase(), districtId);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"mock", "replay", "live"})
+    void businessCommandEvidenceRequiresRelatedReadAndScopeWithoutGrantingMonitoring(String mode) throws Exception {
+        jdbc.update("UPDATE target SET source_mode=? WHERE target_id=?", mode, targetId);
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:read", "disposal:read");
+        String user = jdbc.queryForObject("SELECT user_id FROM app_session WHERE session_id=?", String.class, token);
+        String device = UUID.randomUUID().toString(), command = UUID.randomUUID().toString();
+        String authorization = UUID.randomUUID().toString(), tracking = UUID.randomUUID().toString(), unrelated = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,source_mode,created_at,updated_at) VALUES (?,?,?,'光电','mock',?,0,0)", device, device, "权限回归设备", mode);
+        jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES (?,?,?,current_timestamp,current_timestamp)", device, org, district);
+        jdbc.update("INSERT INTO disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,target_id,device_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,source_mode,created_at,updated_at)"
+                + " VALUES (?,?,'COUNTERMEASURE','TARGET',?,?,?,'LINGYUN_B','权限回归',?,current_timestamp,'REQUESTED','demo-v1',?,?,?,current_timestamp,current_timestamp)",
+                authorization, "AUTH-" + suffix, targetId, targetId, device, user, org, district, mode);
+        for (String id : java.util.List.of(command, tracking, unrelated)) {
+            jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,created_at,updated_at,authorization_id) VALUES (?,?,?,?,'EO_BEGIN_TRACK','权限回归','SENT',?,0,0,?)",
+                    id, id, device, user, mode, id.equals(command) ? authorization : null);
+        }
+        trackingTask(device, tracking, targetId);
+        String base = "/api/v1/evidence-ledger";
+        mvc.perform(get(base + "?category=COMMAND").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].source_id").value(command));
+        mvc.perform(get(base + "/stats?category=COMMAND").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        mvc.perform(get(base + "/materials/TARGET/" + targetId).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.coverage.COMMAND.count").value(1));
+        mvc.perform(get(base + "/records/COMMAND/" + command).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("SENT"));
+        for (String id : java.util.List.of(tracking, unrelated)) mvc.perform(get(base + "/records/COMMAND/" + id).header("Authorization", bearer(token))).andExpect(status().isNotFound());
+        mvc.perform(get(base + "/export.csv?category=COMMAND").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(r -> assertThat(r.getResponse().getContentAsString()).contains(command).doesNotContain(tracking, unrelated));
+        grantAction(token, "target:read");
+        mvc.perform(get(base + "?category=COMMAND").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2));
+        String evidenceOnly = reader("ASSIGNED", org, district); grantAction(evidenceOnly, "evidence:read", "monitoring");
+        mvc.perform(get(base + "/materials/TARGET/" + targetId).header("Authorization", bearer(evidenceOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.coverage.COMMAND.status").value("FORBIDDEN"));
+        String outsider = reader("ASSIGNED", otherOrg, otherDistrict); grantAction(outsider, "evidence:read", "target:read", "disposal:read");
+        for (String id : java.util.List.of(command, tracking, unrelated)) mvc.perform(get(base + "/records/COMMAND/" + id).header("Authorization", bearer(outsider))).andExpect(status().isNotFound());
+        jdbc.update("UPDATE disposal_authorization SET owner_org_id=?,district_id=? WHERE authorization_id=?", otherOrg, otherDistrict, authorization);
+        mvc.perform(get(base + "/records/COMMAND/" + command).header("Authorization", bearer(token))).andExpect(status().isNotFound());
+        jdbc.update("UPDATE target SET owner_org_id=?,district_id=? WHERE target_id=?", otherOrg, otherDistrict, targetId);
+        mvc.perform(get(base + "/records/COMMAND/" + tracking).header("Authorization", bearer(token))).andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?", Integer.class, device)).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?", String.class, command)).isEqualTo("SENT");
+        // Backend monitoring can still read unrelated scoped device commands; frontend monitoring grants cannot impersonate it.
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)", evidenceOnly);
+        jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) SELECT 'ROLE-BACKEND','evidence:read','READ',false,current_timestamp WHERE NOT EXISTS(SELECT 1 FROM app_role_permission WHERE role_code='ROLE-BACKEND' AND permission_code='evidence:read')");
+        mvc.perform(get(base + "/records/COMMAND/" + unrelated).header("Authorization", bearer(evidenceOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("SENT"));
+    }
+
+    @Test
+    void frozenTrackLayerLookupUsesExactIdsTargetAndCurrentScope() {
+        String token = reader("ASSIGNED", org, district);
+        String user = jdbc.queryForObject("SELECT user_id FROM app_session WHERE session_id=?", String.class, token);
+        String track = UUID.randomUUID().toString(), later = UUID.randomUUID().toString();
+        for (String id : java.util.List.of(track, later)) jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,current_timestamp,current_timestamp,'FUSED')",id,targetId,id);
+        var access = new com.uav.lowaltitude.modules.identity.domain.AccessDecision(user, com.uav.lowaltitude.modules.identity.domain.ScopeMode.ASSIGNED);
+        assertThat(handoffs.frozenTrackLayers(java.util.List.of(track),targetId,access)).containsOnlyKeys(track).containsEntry(track,"FUSED");
+        assertThat(handoffs.frozenTrackLayers(java.util.List.of(track),"missing-target",access)).isEmpty();
+        jdbc.update("UPDATE target SET owner_org_id=?,district_id=? WHERE target_id=?",otherOrg,otherDistrict,targetId);
+        assertThat(handoffs.frozenTrackLayers(java.util.List.of(track),targetId,access)).isEmpty();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"live,false", "live,true", "mock,true", "replay,true"})
+    void commandDetailPreservesSimulationFlagAndExactRelayReceipt(String mode, boolean simulated) throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:read", "disposal:read");
+        String user = jdbc.queryForObject("SELECT user_id FROM app_session WHERE session_id=?", String.class, token);
+        String device = UUID.randomUUID().toString(), command = UUID.randomUUID().toString(), authorization = UUID.randomUUID().toString();
+        long now = System.currentTimeMillis();
+        jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,source_mode,simulated,created_at,updated_at) VALUES (?,?,?,'反制','protocol',?,?,?,?)",
+                device, device, "指令来源回归设备", mode, !simulated, now, now);
+        jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES (?,?,?,current_timestamp,current_timestamp)", device, org, district);
+        jdbc.update("INSERT INTO disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,target_id,device_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,source_mode,created_at,updated_at)"
+                + " VALUES (?,?,'COUNTERMEASURE','TARGET',?,?,?,'COUNTERMEASURE_4CH','回执回归',?,current_timestamp,'REQUESTED','demo-v1',?,?,?,current_timestamp,current_timestamp)",
+                authorization, "AUTH-" + suffix, targetId, targetId, device, user, org, district, mode);
+        jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at,authorization_id) VALUES (?,?,?,?,'COUNTERMEASURE_4CH','回执回归','SUCCEEDED',?,?,?,?,?)",
+                command, command, device, user, mode, simulated, now, now, authorization);
+        String url = "/api/v1/evidence-ledger/records/COMMAND/" + command;
+        mvc.perform(get(url).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.entry.source_mode").value(mode))
+                .andExpect(jsonPath("$.data.command.simulated").value(simulated))
+                .andExpect(jsonPath("$.data.command.receipts.length()").value(0));
+        controls.addReceipt(command, command, "COUNTERMEASURE_SET_OK", now + 1,
+                json.writeValueAsString(Map.of("simulated", simulated, "detail", "继电器设置回码已确认；不代表射频已发射")));
+        mvc.perform(get(url).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.command.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.data.command.simulated").value(simulated))
+                .andExpect(jsonPath("$.data.command.receipts.length()").value(1))
+                .andExpect(jsonPath("$.data.command.receipts[0].receipt_kind").value("PROTOCOL_4CH"))
+                .andExpect(jsonPath("$.data.command.receipts[0].device_result_code").value("COUNTERMEASURE_SET_OK"))
+                .andExpect(jsonPath("$.data.command.receipts[0].occurred_at").value(now + 1))
+                .andExpect(jsonPath("$.data.command.receipts[0].payload.simulated").value(simulated));
+        assertThat(jdbc.queryForObject("SELECT simulated FROM device_command WHERE command_id=?", Boolean.class, command)).isEqualTo(simulated);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM command_receipt WHERE command_id=?", Integer.class, command)).isEqualTo(1);
+    }
+
+    private void trackingTask(String device, String command, String target) {
+        jdbc.update("INSERT INTO eo_tracking_task(task_id,target_id,ops_device_id,begin_command_id,status,bootstrap_json,created_at) VALUES (?,?,?,?,'OPEN','{}',0)",
+                UUID.randomUUID().toString(), target, device, command);
     }
 
     private String reader(String scope, String orgId, String districtId) {

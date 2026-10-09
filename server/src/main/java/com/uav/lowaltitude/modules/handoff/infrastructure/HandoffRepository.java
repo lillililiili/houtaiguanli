@@ -46,6 +46,19 @@ public class HandoffRepository {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
     }
 
+    /** Only resolve the layer of exact frozen track IDs; never read current point counts or substitute another track. */
+    public Map<String, String> frozenTrackLayers(List<String> ids, String targetId, AccessDecision access) {
+        if (ids.isEmpty() || targetId == null || access.scopeMode() == ScopeMode.NONE) return Map.of();
+        Where where = scope(access);
+        where.sql.append(" AND tr.track_id IN (:tracks) AND h.target_id=:target");
+        where.params.put("tracks", ids);
+        where.params.put("target", targetId);
+        Map<String, String> result = new HashMap<>();
+        jdbc.query("SELECT tr.track_id,tr.layer FROM track tr JOIN target h ON h.target_id=tr.target_id" + where.sql,
+                where.params, rs -> { result.put(rs.getString(1), rs.getString(2)); });
+        return result;
+    }
+
     /* ---- 接收方目录 ---- */
 
     public List<RecipientRow> enabledRecipients(String handoffType) {

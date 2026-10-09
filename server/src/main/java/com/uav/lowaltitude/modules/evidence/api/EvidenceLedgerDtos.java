@@ -16,7 +16,7 @@ public final class EvidenceLedgerDtos {
             Command command, List<Entry> attachments) { }
     public record Command(String commandId, String commandNo, String deviceName, String deviceNo,
             String commandType, String reason, String status, Long createdAt, Long issuedAt,
-            Long completedAt, String resultDetail, List<Receipt> receipts) { }
+            Long completedAt, String resultDetail, List<Receipt> receipts, boolean simulated) { }
     public record Receipt(String receiptId, String receiptKind, String deviceResultCode,
             Long occurredAt, Long receivedAt, JsonNode payload) { }
     public record Stats(long total, List<EvidenceDtos.CountDto> byKind,

@@ -108,13 +108,32 @@ describe('角色菜单仅配置业务前台', () => {
     await mount()
     ;[...host.querySelectorAll('[role="tab"]')].find(item => item.textContent.includes('动作权限')).click()
     await settle()
-    const select = host.querySelector('.business-device-permission .el-select')
-    select.click(); await settle()
-    const dropdown = document.body.querySelectorAll('.el-select-dropdown')[[...host.querySelectorAll('.el-select')].indexOf(select)]
-    ;[...dropdown.querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === '操作').click()
+    host.querySelector('[aria-label="控制设备"] input[value="OP"]').click()
     await settle()
     button('保存并立即生效', host).click(); await settle()
     expect(systemApi.updateRolePermissions.mock.calls[0][1].permissions).toContainEqual({ permission_code: 'devices', level: 'OP', menu_enabled: false })
+  })
+
+  it.each(['READ', 'OP', 'AUTH'])('设备旧 %s 等级分别显示读取和控制，撤销控制保留读取，撤销读取关闭控制', async level => {
+    role.permissions.find(item => item.permission_code === 'devices').level = level
+    await mount()
+    ;[...host.querySelectorAll('[role="tab"]')].find(item => item.textContent.includes('动作权限')).click()
+    await settle()
+    const read = () => host.querySelector('[aria-label="查看设备"] input[value="OP"]')
+    const control = () => host.querySelector('[aria-label="控制设备"] input[value="OP"]')
+    expect(read().checked).toBe(true)
+    expect(control().checked).toBe(level !== 'READ')
+    expect(button('保存并立即生效', host).disabled).toBe(true)
+    control().click(); await settle()
+    host.querySelector('[aria-label="控制设备"] input[value="NONE"]').click(); await settle()
+    expect(read().checked).toBe(true)
+    expect(control().checked).toBe(false)
+    control().click(); await settle()
+    host.querySelector('[aria-label="查看设备"] input[value="NONE"]').click(); await settle()
+    expect(read().checked).toBe(false)
+    expect(control().checked).toBe(false)
+    button('保存并立即生效', host).click(); await settle()
+    expect(systemApi.updateRolePermissions.mock.calls[0][1].permissions).toContainEqual({ permission_code: 'devices', level: 'NONE', menu_enabled: false })
   })
 
   it('后台管理动作不在前台角色中展示，历史值随完整草稿保留', async () => {

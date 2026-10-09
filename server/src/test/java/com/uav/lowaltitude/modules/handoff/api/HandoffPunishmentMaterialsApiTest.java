@@ -88,6 +88,32 @@ class HandoffPunishmentMaterialsApiTest {
     /* ---- 正面 ---- */
 
     @Test
+    void oldTrackSnapshotResolvesOnlyLayerAndKeepsFrozenCounts() throws Exception {
+        String target = target(eventId, "SN-" + UUID.randomUUID().toString().substring(0,8));
+        String reader = user("TRACK", List.of("handoff:create", "handoff:read", "alarm:read", "evidence:read", "target:read"));
+        String track = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,current_timestamp,current_timestamp,'FUSED')",track,target,track);
+        try {
+            String handoffId = body(submit(reader,eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+            var frozen = (com.fasterxml.jackson.databind.node.ObjectNode) detail(handoffId,reader).path("material");
+            for (JsonNode item : frozen.path("evidence_chain")) {
+                if (track.equals(item.path("source_id").asText())) {
+                    assertThat(item.path("layer").asText()).isEqualTo("FUSED");
+                    ((com.fasterxml.jackson.databind.node.ObjectNode)item).remove("layer");
+                    ((com.fasterxml.jackson.databind.node.ObjectNode)item).put("point_count",37);
+                }
+            }
+            jdbc.update("UPDATE handoff_material_snapshot SET snapshot=CAST(? AS JSON) WHERE handoff_id=?",objectMapper.writeValueAsString(frozen),handoffId);
+            String stored = jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,handoffId);
+            JsonNode response = detail(handoffId,reader).path("material").path("evidence_chain");
+            JsonNode resolved = java.util.stream.StreamSupport.stream(response.spliterator(),false).filter(row -> track.equals(row.path("source_id").asText())).findFirst().orElseThrow();
+            assertThat(resolved.path("layer").asText()).isEqualTo("FUSED");
+            assertThat(resolved.path("point_count").asLong()).isEqualTo(37);
+            assertThat(jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,handoffId)).isEqualTo(stored);
+        } finally { jdbc.update("DELETE FROM track WHERE track_id=?",track); }
+    }
+
+    @Test
     void snapshotFreezesAllFourSections() throws Exception {
         String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
                 .path("data").path("handoff_id").asText();

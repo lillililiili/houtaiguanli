@@ -237,7 +237,7 @@ public class LegalityEvaluationReadRepository {
                 + "(SELECT n.evaluation_id FROM rule_evaluation n WHERE n.supersedes_evaluation_id=e.evaluation_id ORDER BY n.evaluated_at DESC,n.evaluation_id DESC FETCH FIRST 1 ROWS ONLY) AS superseded_by_evaluation_id,"
                 + "e.alarm_id AS engine_alarm_id,m.alarm_id AS member_alarm_id,"
                 // 人工转告警不回写只增的研判行，其告警引用只存在于复核历史。
-                + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
+                + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion IN ('ESCALATE','OVERRIDE','CONFIRM') AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
                 + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,"
                 + "COALESCE(e.recognition_class_code," + TargetRecognitionSql.type("tg", "recognition") + ") AS object_type_code,"
                 + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons,e.input_snapshot,"
@@ -278,7 +278,7 @@ public class LegalityEvaluationReadRepository {
                 + " AND NOT EXISTS (SELECT 1 FROM uav_event verified_event JOIN alarm verified_alarm ON verified_alarm.alarm_id=verified_event.alarm_id"
                 + " JOIN uav_event_verification verified_history ON verified_history.event_id=verified_event.event_id"
                 + " WHERE verified_event.alarm_id=COALESCE(e.alarm_id,m.alarm_id,(SELECT h.related_alarm_id FROM legality_review_history h"
-                + " WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY))"
+                + " WHERE h.evaluation_id=e.evaluation_id AND h.conclusion IN ('ESCALATE','OVERRIDE','CONFIRM') AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY))"
                 + " AND verified_alarm.target_id=e.target_id AND verified_alarm.source_mode=e.source_mode"
                 + " AND verified_event.owner_org_id=e.owner_org_id AND verified_event.district_id=e.district_id"
                 + " AND verified_history.created_at>=e.evaluated_at AND verified_history.conclusion IN ('CONFIRMED','FALSE_POSITIVE'))";
@@ -296,7 +296,7 @@ public class LegalityEvaluationReadRepository {
             // 与 EvaluationRow.alarmId() 同源：引擎、合并成员、人工转告警历史；分页与 total 共用。
             String linked = "e.alarm_id IS NOT NULL OR m.alarm_id IS NOT NULL OR EXISTS ("
                     + "SELECT 1 FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id"
-                    + " AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL)";
+                    + " AND h.conclusion IN ('ESCALATE','OVERRIDE','CONFIRM') AND h.related_alarm_id IS NOT NULL)";
             where.sql.append(" AND (CASE WHEN " + linked + " THEN TRUE ELSE FALSE END)=:has_alarm");
             where.parameters.put("has_alarm", query.hasAlarm());
         }

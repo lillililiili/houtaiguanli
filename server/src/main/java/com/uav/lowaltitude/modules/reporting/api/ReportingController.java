@@ -42,8 +42,9 @@ public class ReportingController {
     public ApiResponse<OperationsReport> operations(
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
-            @RequestParam(name = "owner_org_id", required = false) String ownerOrgId) {
-        return ApiResponse.ok(service.operations(from, to, ownerOrgId));
+            @RequestParam(name = "owner_org_id", required = false) String ownerOrgId,
+            @RequestParam(name = "include_observations", defaultValue = "true") boolean includeObservations) {
+        return ApiResponse.ok(service.operations(from, to, ownerOrgId, includeObservations));
     }
 
     @GetMapping("/operations/organizations")

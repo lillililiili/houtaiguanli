@@ -78,7 +78,6 @@ class AlarmViolationReasonFilterApiTest {
         assertThat(escalated.alarmId()).isEqualTo(noAuthorization.alarmId());
 
         assertThat(ids("violation_reason=ROUTE_DEVIATION")).containsExactly(noAuthorization.alarmId());
-        assertThat(ids("violation_reason=NO_AUTHORIZATION")).containsExactly(noAuthorization.alarmId());
         assertThat(ids("violation_reason=PLAN_ALTITUDE_EXCEEDED")).containsExactly(planAltitude.alarmId());
         assertThat(ids("violation_reason=AIRSPACE_ALTITUDE_EXCEEDED")).containsExactly(airspaceAltitude.alarmId());
         assertThat(ids("violation_reason=NIGHT_FLIGHT")).containsExactly(airspaceAltitude.alarmId());
@@ -118,13 +117,34 @@ class AlarmViolationReasonFilterApiTest {
             reasonByNo.put(cells[0], cells[2]);
         }
         assertThat(reasonByNo).hasSize(3)
-                .containsEntry(noById.get(escalated.alarmId()), "无飞行授权、偏航（偏离报备航线）")
+                .containsEntry(noById.get(escalated.alarmId()), "偏航（偏离报备航线）")
                 .containsEntry(noById.get(planAltitude.alarmId()), "超出任务高度带")
                 .containsEntry(noById.get(bvlos.alarmId()), "超出目视视距");
+        assertThat(lines.get(0)).endsWith("任务匹配提示");
+        assertThat(lines.stream().filter(line -> line.startsWith(noById.get(escalated.alarmId()) + ",")).findFirst().orElseThrow())
+                .contains("未匹配报备任务").doesNotContain("无飞行授权");
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"violation_reason=NO_PLAN", "violation_reason=route_deviation", "violation_reason=ROUTE%25",
+    @ValueSource(booleans = {false, true})
+    void unmatchedPlanIsOnlyANoteAndDoesNotRewriteHistoricalAlarm(boolean withOtherViolation) throws Exception {
+        String target = target(withOtherViolation ? "MIXED" : "NO-PLAN");
+        List<String> reasons = withOtherViolation ? List.of("NO_AUTHORIZATION", "TIME_WINDOW_OVERRUN") : List.of("NO_AUTHORIZATION");
+        MergeOutcome alarm = alarm(target, "MEDIUM", T0.plusHours(withOtherViolation ? 2 : 1), reasons);
+        String original = jdbc.queryForObject("SELECT CAST(detail AS VARCHAR) FROM alarm WHERE alarm_id=?", String.class, alarm.alarmId());
+        for (String path : List.of("/api/v1/alarms", "/api/v1/alarms/" + alarm.alarmId())) {
+            JsonNode data = json.readTree(mvc.perform(get(path).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+            JsonNode row = data.has("items") ? data.path("items").get(0) : data;
+            assertThat(row.path("violation_reasons").toString()).isEqualTo(withOtherViolation ? "[\"TIME_WINDOW_OVERRUN\"]" : "[]");
+            assertThat(row.path("task_match_note").asText()).contains("未匹配报备任务", "不作为违规原因");
+            assertThat(row.path("state").asText()).isEqualTo("PENDING_VERIFICATION");
+        }
+        assertThat(jdbc.queryForObject("SELECT CAST(detail AS VARCHAR) FROM alarm WHERE alarm_id=?", String.class, alarm.alarmId())).isEqualTo(original);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"violation_reason=NO_AUTHORIZATION", "violation_reason=NO_PLAN", "violation_reason=route_deviation", "violation_reason=ROUTE%25",
             "violation_reason=", "violation_reason=NIGHT_FLIGHT&violation_reason=ROUTE_DEVIATION"})
     void unknownOrRepeatedReasonsAreRejectedNotIgnored(String query) throws Exception {
         alarm(target("V"), "MEDIUM", T0, List.of("NO_AUTHORIZATION"));

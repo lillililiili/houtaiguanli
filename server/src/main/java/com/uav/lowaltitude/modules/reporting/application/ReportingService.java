@@ -79,6 +79,11 @@ public class ReportingService {
     }
 
     public OperationsReport operations(String fromText, String toText, String ownerOrgId) {
+        return operations(fromText, toText, ownerOrgId, true);
+    }
+
+    /** Page callers may omit the unused track metrics; full reports and exports keep the default. */
+    public OperationsReport operations(String fromText, String toText, String ownerOrgId, boolean includeObservations) {
         access.requireBusinessData("statistics.read");
         AuthUser user = AuthContext.require();
         DateRange range = range(fromText, toText);
@@ -150,8 +155,8 @@ public class ReportingService {
         if(devicesAllowed) { var row=deviceRepository.overview(ownerOrgId,com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository.CountScope.STATISTICS,null);int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
         List<DayPoint> dayPoints=days.entrySet().stream().map(e->new DayPoint(e.getKey(),e.getKey().substring(5),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         List<RegionPoint> regionPoints=regions.entrySet().stream().sorted((a,b)->Integer.compare(b.getValue()[0],a.getValue()[0])).map(e->new RegionPoint(e.getKey(),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
-        var observations=observationMetrics.operations(range.from(),range.to(),ownerOrgId);
-        modes.addAll(observations.sourceModes());
+        var observations=includeObservations ? observationMetrics.operations(range.from(),range.to(),ownerOrgId) : null;
+        if (observations != null) modes.addAll(observations.sourceModes());
         return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),
             new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
             risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId,

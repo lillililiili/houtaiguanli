@@ -30,6 +30,8 @@ class ObservationStatisticsApiTest {
     @Autowired ObjectMapper json;
     @Autowired MockMvc mvc;
     @Autowired ObservationMetricsRepository repository;
+    @org.springframework.boot.test.mock.mockito.SpyBean
+    com.uav.lowaltitude.modules.reporting.application.ObservationMetricsService observationService;
     private final LocalDate date=LocalDate.of(2005,4,7);
     private final OffsetDateTime at=date.atTime(12,0).atOffset(ZoneOffset.ofHours(8));
     private record Fixture(String target,String track,String source,String org,String district) { }
@@ -89,6 +91,33 @@ class ObservationStatisticsApiTest {
         return json.readTree(mvc.perform(post("/api/v1/auth/login").contentType("application/json")
                 .content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText();
     }
+    @ParameterizedTest @CsvSource({"live,104.0", "replay,114.0"})
+    void pageQuerySkipsTrackCalculationAndPreservesRequestedStatistics(String mode, double longitude) throws Exception {
+        Fixture f=fixture(mode,longitude,true);String auth="Bearer "+token();
+        // The old target has observations today, but is not a new target for today's page metrics.
+        org.mockito.Mockito.clearInvocations(observationService);
+        var light=json.readTree(mvc.perform(get("/api/v1/stats/operations").header("Authorization",auth)
+                .param("from",date.toString()).param("to",date.toString()).param("owner_org_id",f.org)
+                .param("include_observations","false")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.observation_metrics").doesNotExist())
+                .andReturn().getResponse().getContentAsString()).path("data");
+        org.mockito.Mockito.verify(observationService,org.mockito.Mockito.never()).operations(
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        assertThat(light.path("source_mode").asText()).isEqualTo("unknown");
+        var full=json.readTree(mvc.perform(get("/api/v1/stats/operations").header("Authorization",auth)
+                .param("from",date.toString()).param("to",date.toString()).param("owner_org_id",f.org))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.observation_metrics.duration_seconds").value(2))
+                .andReturn().getResponse().getContentAsString()).path("data");
+        for(String field:List.of("summary","days","regions","by_risk","by_type","alt_bands","devices","availability"))
+            assertThat(light.path(field)).as(field).isEqualTo(full.path(field));
+        assertThat(full.path("source_mode").asText()).isEqualTo(mode);
+        mvc.perform(get("/api/v1/stats/operations").param("include_observations","false"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/stats/operations").header("Authorization",auth)
+                .param("include_observations","false").param("owner_org_id",id()))
+                .andExpect(status().isBadRequest());
+    }
+
     @Test void apiKeepsOldCountsAndCsvAndBusinessExportsUseSameMetric() throws Exception {
         Fixture f=fixture("live",100,true);String auth="Bearer "+token();
         mvc.perform(get("/api/v1/stats/operations").header("Authorization",auth).param("from",date.toString()).param("to",date.toString()).param("owner_org_id",f.org))
