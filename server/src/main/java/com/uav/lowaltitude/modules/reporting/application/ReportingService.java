@@ -70,6 +70,16 @@ public class ReportingService {
         return operations(fromText, toText, null);
     }
 
+    /**
+     * 只要按日、按区域等基础数字、不要轨迹观测指标（有效监测时长、已观测里程）的调用方用这个，如数据大屏的趋势。
+     * 观测指标要对时间段内每个融合点逐点计算，是 7 天报表里最慢的一块；其余数字与 {@link #operations(String, String)} 一致，
+     * 事务口径也一致（只读、可重复读），所以不要从别处直接调不带注解的四参重载。
+     */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public OperationsReport operationsWithoutObservations(String fromText, String toText) {
+        return operations(fromText, toText, null, false);
+    }
+
     public record OrganizationOption(String orgId, String name) { }
     public List<OrganizationOption> organizations() {
         access.requireBusinessData("statistics.read");
