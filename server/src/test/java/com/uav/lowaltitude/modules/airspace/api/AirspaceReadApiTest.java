@@ -32,6 +32,7 @@ class AirspaceReadApiTest {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired AirspaceReadRepository repository;
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     private String sessionId;
     private String userId;
@@ -271,6 +272,34 @@ class AirspaceReadApiTest {
         jdbc.update("insert into airspace_version (airspace_version_id,airspace_id,version_no,kind_code,valid_from,created_at) values (?,?,1,'PROHIBITED',current_timestamp,current_timestamp)", UUID.randomUUID().toString(), airspace);
         mvc.perform(get("/api/v1/airspaces/" + airspace).header("Authorization", "Bearer " + sessionId))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.current_version.version_no").value(1));
+        // 地图页一次取回：列表带 include=current_version 时每片空域带上与详情相同的当前版本；不带时列表不变。
+        String detail = mvc.perform(get("/api/v1/airspaces/" + airspace).header("Authorization", "Bearer " + sessionId))
+                .andReturn().getResponse().getContentAsString();
+        String withVersion = mvc.perform(get("/api/v1/airspaces").param("include", "current_version")
+                        .param("owner_org_id", org).param("district_id", district)
+                        .header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].current_version.version_no").value(1))
+                .andReturn().getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(withVersion).at("/data/items/0/current_version"))
+                .isEqualTo(objectMapper.readTree(detail).at("/data/current_version"));
+        mvc.perform(get("/api/v1/airspaces").param("owner_org_id", org).param("district_id", district)
+                        .header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].current_version").doesNotExist());
+        mvc.perform(get("/api/v1/airspaces").param("include", "versions").header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        // 不在有效期内的空域：列表本身不按时点筛选时照样列出，但不带当前版本，和详情一致。
+        jdbc.update("update airspace_version set valid_from=? where airspace_id=?",
+                OffsetDateTime.now().plusDays(1), airspace);
+        mvc.perform(get("/api/v1/airspaces").param("include", "current_version")
+                        .param("owner_org_id", org).param("district_id", district)
+                        .header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].airspace_id").value(airspace))
+                .andExpect(jsonPath("$.data.items[0].current_version").doesNotExist());
     }
 
     @Test
