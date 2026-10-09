@@ -139,6 +139,54 @@ public class UavAdvisoryService {
         return notifyPhase(event, automatic.overview(event, false), voice.overview(event, false));
     }
 
+    /**
+     * 告警导出的“处置进度”（2026-10-08 新-2 第 5 点）。先后和写法与告警页“状态”列一样（AlarmsPage.vue displayState）：
+     * 不反制的决定、已移送处罚、反制或干扰到了哪一步、通知到了哪一步。页面上只显示核实结论的
+     * （待核实、误报、已确认但还没有进展）返回 null，导出留空。调用方已校验告警读取权限；
+     * 反制进度和页面一样，只在有处置查看权限、授权在其范围内时才写，没有就接着看通知阶段。只读，不建任务、不发送。
+     */
+    public String progressLabel(String eventId, AccessDecision alarmScope, AccessDecision disposalScope) {
+        EventRow event=events.find(eventId,alarmScope);
+        if(event==null)return null;
+        boolean confirmed="CONFIRMED".equals(event.state());
+        if(!confirmed&&!"PENDING_VERIFICATION".equals(event.state()))return null;
+        if(confirmed) {
+            Boolean review=noCounter.reviewRequired(event);
+            if(Boolean.FALSE.equals(review))return "不反制 · 处置已结束";
+            if(Boolean.TRUE.equals(review))return "风险变化待决策";
+        }
+        String handoffId=handoffs.existingPunishment(eventId);
+        if(handoffId!=null&&!"FAILED".equals(handoffs.latestDeliveryStatus(handoffId)))return "已移送处罚";
+        if(!confirmed)return null;
+        if(disposalScope!=null) {
+            String counter=counterProgress(disposals.list(disposalScope,new DisposalRepository.Query("UAV_EVENT",eventId,null,null,null),0,50));
+            if(counter!=null)return counter;
+        }
+        var phase=notifyPhase(event,automatic.overview(event,false),voice.overview(event,false));
+        if(phase==null)return null;
+        return switch(phase){case AUTO_SMS->"自动短信";case WATCHING->"观察中";case AUTO_CALL->"自动电话";case AWAIT_COUNTER->"待定是否反制";};
+    }
+    /** 同页面 deriveAlarmProgress：只看信号干扰和联动反制，失败、驳回、撤销、过期的不算，取最近申请的一条（列表按申请时间倒序）。 */
+    private static String counterProgress(List<DisposalRepository.AuthorizationRow> rows) {
+        DisposalRepository.AuthorizationRow latest=null;
+        for(var row:rows) {
+            if(!List.of("JAMMING","COUNTERMEASURE").contains(row.actionType())||List.of("FAILED","REJECTED","CANCELLED","EXPIRED").contains(row.status()))continue;
+            if(latest==null||requestedMillis(row)>=requestedMillis(latest))latest=row;
+        }
+        if(latest==null)return null;
+        boolean jamming="JAMMING".equals(latest.actionType());
+        return switch(latest.status()) {
+            case "STOPPED"->"反制已中止";
+            case "APPROVED","EXECUTING"->jamming?"干扰中":"反制中";
+            case "COMPLETED"->jamming?"已干扰":"已反制";
+            case "REQUESTED"->"待审批";
+            default->null;
+        };
+    }
+    private static long requestedMillis(DisposalRepository.AuthorizationRow row) {
+        return row.requestedAt()==null?0L:row.requestedAt().toInstant().toEpochMilli();
+    }
+
     /** 调用方持有受限事件/授权范围；锁定事件并读取当前系统依据。 */
     @Transactional
     public void requireCounter(String eventId, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {

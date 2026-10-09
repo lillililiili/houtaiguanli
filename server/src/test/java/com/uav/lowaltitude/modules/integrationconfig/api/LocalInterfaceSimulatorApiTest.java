@@ -126,6 +126,21 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select source_mode from route where route_id=(select route_id from route_version where route_version_id=?)",String.class,version)).isEqualTo("replay");
   assertThat(received.path("result").path("route_version_id").asText()).isEqualTo(version);
  }
+ @Test void embeddedRouteWithoutOwnerIsRejectedWithChineseReasonWhateverTheClientLanguage() throws Exception {
+  long start=System.currentTimeMillis()+300000,end=start+3600000;
+  var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
+  for(var missing:List.of("owner_org_id","district_id")){
+   var route=new LinkedHashMap<String,Object>();route.put("name","上级计划直接携带航线");
+   route.put("geometry",Map.of("type","LineString","coordinates",List.of(List.of(118.60,37.46),List.of(118.61,37.46))));
+   route.put("corridor_width_m",100);route.put("owner_org_id",scope.get("owner_org_id"));route.put("district_id",scope.get("district_id"));route.put(missing,"");
+   var body=new LinkedHashMap<String,Object>();body.put("message_id","route-without-"+missing.replace('_','-'));body.put("route",route);body.put("uav_sn","SIM-NO-OWNER");body.put("start_at",start);body.put("end_at",end);
+   var error=json.readTree(mvc.perform(post(BASE+"/plans").header("Authorization",token).header("Accept-Language","en-US").header("Idempotency-Key",UUID.randomUUID().toString())
+     .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body))).andExpect(status().isBadRequest()).andReturn().getResponse().getContentAsString()).path("error");
+   assertThat(error.path("code").asText()).isEqualTo("VALIDATION_ERROR");
+   assertThat(error.path("message").asText()).isEqualTo("owner_org_id".equals(missing)?"航线归属单位不能为空":"航线所在区县不能为空");
+  }
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn='SIM-NO-OWNER'",Long.class)).isZero();
+ }
  @Test void explicitReplayPlanKeepsSourceAndMessageIdentity() throws Exception {
   var body=plan("input-plan-replay");body.put("source_mode","replay");
   var first=send("/plans",body,200);String id=first.path("subject_id").asText();
@@ -226,9 +241,114 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and state_code='PENDING_VERIFICATION'",Long.class,planId)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select count(*) from weather_forecast_risk_fact where risk_id in (select risk_id from flight_risk where plan_id=?)",Long.class,planId)).isEqualTo(1);
-  assertThat(jdbc.queryForObject("select reason_text from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",String.class,planId)).contains("WEATHER_THUNDERSTORM").contains("WEATHER_STRONG_WIND");
+  assertThat(jdbc.queryForObject("select reason_text from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",String.class,planId))
+   .startsWith("天气预报：雷雨、大风；区域 "+area+"；时段 ").contains("（北京时间）").doesNotContain("WEATHER_");
   send("/weather",input,200);
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
+ }
+ // P03: a forecast sent by the simulator showed 回放 on a replay flight task, while birds from the same simulator showed 模拟.
+ // Only file replay reads as 回放 now; the risk keeps its replay source mode underneath.
+ @Test void simulatorForecastReadsAsSimulatedOnAReplayFlightTask() throws Exception {
+  var body=plan("weather-sim-label-plan");body.put("source_mode","replay");
+  String planId=send("/plans",body,200).path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long start=(long)body.get("start_at"),end=(long)body.get("end_at");
+  var input=forecast("weather-sim-label",area,System.currentTimeMillis()-60000,period(start,end,"雷雨",12));input.put("plan_id",planId);
+  send("/weather",input,200);
+  var risk=jdbc.queryForMap("select risk_id,source_id from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",planId);
+  assertThat(risk.get("source_id")).isEqualTo("weather-forecast-rule-replay");
+  mvc.perform(get("/api/v1/risks/"+risk.get("risk_id")).header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.source_mode").value("replay"))
+   .andExpect(jsonPath("$.data.source_display_mode").value("mock"))
+   .andExpect(jsonPath("$.data.source_name").value("天气预报规则（模拟）"));
+  mvc.perform(get("/api/v1/flight-plans/"+planId+"/weather-forecast").header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
+   .andExpect(jsonPath("$.data.forecast.source_mode").value("mock"));
+ }
+ // CDX-P06: a forecast risk said 缺少气象有效时段 although the forecast carries its window, and a plan touched by several area
+ // forecasts showed only one of them on its weather tab. New forecast risks also read in Chinese and get a 风险-MMDD-NNN number.
+ @Test void everyOverlappingAreaForecastShowsAndItsRiskFollowsTheForecastWindow() throws Exception {
+  var body=plan("weather-p06-plan");String planId=send("/plans",body,200).path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long start=(long)body.get("start_at"),half=start+1800000,end=(long)body.get("end_at"),published=System.currentTimeMillis()-60000;
+  send("/weather",forecast("weather-p06-first",area,published,period(start,half,"多云",4)),200);
+  send("/weather",forecast("weather-p06-second",area,published+1000,period(half,end,"雷雨",12)),200);
+  send("/weather",forecast("weather-p06-update",area,published+2000,period(start,half,"小雨",4)),200);
+  send("/weather",forecast("weather-p06-after",area,published+3000,period(end,end+1800000,"晴",4)),200);
+  mvc.perform(get("/api/v1/flight-plans/"+planId+"/weather-forecast").header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("READY"))
+   .andExpect(jsonPath("$.data.forecast.published_at").value(published+2000))
+   .andExpect(jsonPath("$.data.forecast.periods",org.hamcrest.Matchers.hasSize(2)))
+   .andExpect(jsonPath("$.data.forecast.periods[0].summary").value("小雨"))
+   .andExpect(jsonPath("$.data.forecast.periods[0].published_at").value(published+2000))
+   .andExpect(jsonPath("$.data.forecast.periods[1].summary").value("雷雨"))
+   .andExpect(jsonPath("$.data.forecast.periods[1].published_at").value(published+1000));
+
+  String risks="select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'";
+  assertThat(jdbc.queryForObject(risks,Long.class,planId)).isEqualTo(1);
+  var risk=jdbc.queryForMap("select risk_id,source_risk_id,risk_no,reason_text from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",planId);
+  String riskId=(String)risk.get("risk_id");
+  assertThat((String)risk.get("source_risk_id")).startsWith("forecast:");
+  assertThat((String)risk.get("risk_no")).matches("风险-\\d{4}-\\d{3}");
+  assertThat((String)risk.get("reason_text")).matches("天气预报：雷雨、大风；区域 "+java.util.regex.Pattern.quote(area)
+    +"；时段 \\d{1,2}月\\d{1,2}日 \\d{2}:\\d{2}–(\\d{1,2}月\\d{1,2}日 )?\\d{2}:\\d{2}（北京时间）。当前状态为待核验，人工确认前不发送通知、不执行处置。");
+  mvc.perform(get("/api/v1/risks/"+riskId).header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.risk_no").value(risk.get("risk_no")))
+   .andExpect(jsonPath("$.data.current_status").value("NOT_STARTED"));
+  assertThat(currentRiskIds(planId)).doesNotContain(riskId);
+
+  long now=System.currentTimeMillis();
+  jdbc.update("update weather_forecast_risk_fact set valid_from=?,valid_to=? where risk_id=?",new java.sql.Timestamp(now-60000),new java.sql.Timestamp(now+600000),riskId);
+  mvc.perform(get("/api/v1/risks/"+riskId).header("Authorization",token)).andExpect(jsonPath("$.data.current_status").value("CURRENT"));
+  assertThat(currentRiskIds(planId)).contains(riskId);
+  jdbc.update("update weather_forecast_risk_fact set valid_from=?,valid_to=? where risk_id=?",new java.sql.Timestamp(now-600000),new java.sql.Timestamp(now-60000),riskId);
+  mvc.perform(get("/api/v1/risks/"+riskId).header("Authorization",token)).andExpect(jsonPath("$.data.current_status").value("EXPIRED"));
+  assertThat(currentRiskIds(planId)).doesNotContain(riskId);
+
+  // A risk raised before this change keeps its forecast-… number: the same forecast sent again under a new message number
+  // finds that risk instead of raising a second one.
+  jdbc.update("update flight_risk set source_risk_id=replace(source_risk_id,'forecast:','forecast-') where risk_id=?",riskId);
+  send("/weather",forecast("weather-p06-second-again",area,published+1000,period(half,end,"雷雨",12)),200);
+  assertThat(jdbc.queryForObject(risks,Long.class,planId)).isEqualTo(1);
+ }
+ // CDX-P07: resending an area forecast answered 对象不存在或不在当前权限范围 and its receipt never showed in the simulator's
+ // receipt list, because the receipt was looked up as a flight task. Same message and content now returns the first receipt.
+ @Test void areaForecastSentAgainReturnsTheFirstReceiptAndShowsInTheReceiptList() throws Exception {
+  var plan=send("/plans",plan("weather-area-again-plan"),200);String planId=plan.path("subject_id").asText();
+  String area=jdbc.queryForObject("select d.name from flight_plan p join app_district d on d.district_id=p.district_id where p.plan_id=?",String.class,planId);
+  long now=System.currentTimeMillis(),published=now-1000,from=now+300000,to=now+1200000;
+  var period=Map.of("from",from,"to",to,"summary","雷雨伴强风","temperature_c",22,"wind_speed_ms",12,"gust_ms",18,"wind_direction_deg",180,"precipitation_probability_pct",80,"humidity_pct",90);
+  var input=new HashMap<String,Object>();input.put("message_id","weather-area-again");input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));
+  var first=send("/weather",input,200);
+  String risks="select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'";
+  assertThat(jdbc.queryForObject(risks,Long.class,planId)).isEqualTo(1);
+
+  var again=send("/weather",input,200);
+  assertThat(again.path("message_id").asText()).isEqualTo(first.path("message_id").asText());
+  assertThat(again.path("state").asText()).isEqualTo("ACCEPTED");
+  assertThat(again.path("result")).isEqualTo(first.path("result"));
+  assertThat(jdbc.queryForObject(risks,Long.class,planId)).as("no second risk for the same forecast").isEqualTo(1);
+  assertThat(jdbc.queryForObject("select count(*) from local_interface_message where kind='WEATHER_FORECAST' and external_id='weather-area-again'",Long.class)).isEqualTo(1);
+
+  var context=json.readTree(mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+  var listed=new ArrayList<String>();context.path("messages").forEach(m->listed.add(m.path("message_id").asText()));
+  assertThat(listed).contains(first.path("message_id").asText());
+
+  input.put("published_at",published+1);
+  mvc.perform(post(BASE+"/weather").header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(input)))
+   .andExpect(status().isConflict()).andExpect(jsonPath("$.error.message").value("同一消息编号的内容已变化，请使用新编号"));
+ }
+ // The receipt is still only its submitter's: another operator neither sees it nor can claim the message number.
+ @Test void areaForecastReceiptStaysWithItsSubmitter() throws Exception {
+  long published=System.currentTimeMillis()-3600000L;
+  var period=Map.of("from",published,"to",published+3600000,"summary","区域多云","temperature_c",22,"wind_speed_ms",4,"gust_ms",6,"wind_direction_deg",180,"precipitation_probability_pct",20,"humidity_pct",75);
+  var input=new HashMap<String,Object>();input.put("message_id","weather-area-owner");input.put("area_name","模拟区域");input.put("published_at",published);input.put("periods",List.of(period));
+  var mine=send("/weather",input,200);
+  String other=jdbc.queryForObject("select user_id from app_user where account<>'admin1' fetch first 1 rows only",String.class);
+  jdbc.update("update local_interface_message set created_by=? where message_id=?",other,mine.path("message_id").asText());
+  var context=json.readTree(mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+  var listed=new ArrayList<String>();context.path("messages").forEach(m->listed.add(m.path("message_id").asText()));
+  assertThat(listed).doesNotContain(mine.path("message_id").asText());
  }
  @Test void rejectsInvalidInputAndUnauthenticatedAccess() throws Exception {
   mvc.perform(get(BASE+"/context")).andExpect(status().isUnauthorized());
@@ -293,6 +413,17 @@ class LocalInterfaceSimulatorApiTest {
   String mid=jdbc.queryForObject("select message_id from local_interface_message where subject_id=? and direction='OUT'",String.class,hid);
   mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.messages[?(@.message_id=='"+mid+"')].state").value("UNKNOWN"));
   send("/messages/"+mid+"/receipt",Map.of("expected_version",0,"outcome","DELIVERED"),409);
+ }
+ List<String> currentRiskIds(String planId) throws Exception {
+  var items=json.readTree(mvc.perform(get("/api/v1/risks/current").param("plan_id",planId).header("Authorization",token)).andExpect(status().isOk())
+   .andReturn().getResponse().getContentAsString()).path("data").path("items");
+  var ids=new ArrayList<String>();items.forEach(item->ids.add(item.path("risk").path("risk_id").asText()));return ids;
+ }
+ static Map<String,Object> forecast(String message,String area,long published,Map<String,Object> period) {
+  var input=new HashMap<String,Object>();input.put("message_id",message);input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));return input;
+ }
+ static Map<String,Object> period(long from,long to,String summary,int wind) {
+  return Map.of("from",from,"to",to,"summary",summary,"temperature_c",22,"wind_speed_ms",wind,"gust_ms",wind+2,"wind_direction_deg",180,"precipitation_probability_pct",30,"humidity_pct",70);
  }
  Map<String,Object> plan(String message) {
   String rv=jdbc.queryForObject("select v.route_version_id from route_version v join route r on r.route_id=v.route_id where r.source_mode='mock' and r.enabled=true and r.owner_org_id is not null fetch first 1 rows only",String.class);

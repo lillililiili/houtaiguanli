@@ -81,6 +81,11 @@ class DeviceMaintenanceNoticeApiTest {
         assertThat(attempt.path("outcome_state").asText()).isEqualTo("COMPLETED");
         verify(channel,never()).deliver(any());
     }
+    @Test void reasonStartsWithWhatTheDeviceReportsNow()throws Exception {
+        // CDX-P09：设备还在上报、自报故障时，待办说明先写故障和状态上报时间。
+        observe(true,now,"ONLINE");
+        assertThat(create().path("reason").asText()).startsWith("设备自报故障（工作状态：故障），状态上报时间 ");
+    }
     @Test void cooldownExpectedAttemptAndIdempotencyPreventRepeatedDispatch()throws Exception {
         create();String key=UUID.randomUUID().toString();
         mvc.perform(resendRequest(1,null,key)).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_RESEND_BLOCKED"));

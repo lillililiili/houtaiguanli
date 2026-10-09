@@ -210,8 +210,11 @@ public class AutomationRuntimeFactsRepository {
                 r.getString("freshness_code"), r.getString("grade"), r.getString("legal_status"), r.getString("alarm_id")));
         if (rows.isEmpty()) return;
         Risk r = rows.get(0);
-        if (!Objects.equals(r.alarm, b.alarm) || !fresh(r.observed, now) || r.evaluated == null || r.evaluated > now || !Objects.equals(r.observed, observed)
-                || !"FRESH".equals(r.freshness)) return;
+        // 取最近一次研判，不要求它研判的正是最新那一帧：规则引擎对老目标每 reevaluate-millis（5 秒）才重评一次，
+        // 观测却每秒都来，要求逐帧对上时风险等级大半时间读不到，反制规则在通过和等待之间来回跳，
+        // 下发前的复查就把已发起的自动反制取消了（2026-10-08 第二批复验）。研判的那一帧仍须在有效期内、不晚于最新观测。
+        if (!Objects.equals(r.alarm, b.alarm) || !fresh(r.observed, now) || r.evaluated == null || r.evaluated > now
+                || observed == null || r.observed > observed || !"FRESH".equals(r.freshness)) return;
         String evidence = "rule_evaluation:" + r.id;
         facts.put("disposeFreshness", value(BigDecimal.valueOf(now - r.observed, 3).toPlainString(), r.observed, evidence));
         if ("FALSE_POSITIVE".equals(b.state) || "LEGAL".equals(r.legal)) {

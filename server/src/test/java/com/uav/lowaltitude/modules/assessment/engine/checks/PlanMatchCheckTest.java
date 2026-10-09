@@ -213,9 +213,44 @@ class PlanMatchCheckTest {
         assertThat(notApplicable.resultCode()).isEqualTo(ResultCode.NOT_APPLICABLE);
     }
 
+    /** 新-28：完全没有报备任务、离地 120 米以下的普通区域飞行，C01 照实记“对不上任务”，说明里写清按规定无需申请，页面据此解释合法结论。 */
+    @Test
+    void noTaskLowFlightIsExplainedAsNotNeedingAnApplication() {
+        PlanMatch none = check.match(state("SN-1"), List.of(), distance("rv-a", 10, 50), AS_OF, params);
+        HitDetail low = check.evaluate(context(none, height("60.4")), params);
+        assertThat(low.resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(low.reasonCode()).isNull();
+        assertThat(low.facts()).containsEntry("match_reason", "NO_PLAN_CANDIDATE").containsEntry("no_plan_exempt", true)
+                .containsEntry("height_agl_m", new BigDecimal("60.4"));
+        assertThat(low.message()).isEqualTo("没有报备任务；离地约 60 米，不超过 120 米，不在禁飞区、管制区、限高区、临时管控区内，按规定无需申请；"
+                + "参数为 DEMO 演示值，尚未确认");
+        // 超过 120 米、设备没报离地高度：照旧，不带标记。
+        for (TargetState state : java.util.Arrays.asList(height("120.5"), height(null))) {
+            HitDetail detail = check.evaluate(context(none, state), params);
+            assertThat(detail.facts()).doesNotContainKeys("no_plan_exempt", "height_agl_m");
+            assertThat(detail.message()).doesNotContain("无需申请");
+        }
+        // 有本机任务、只是飞出了时段：照旧按任务说明，不当作没有报备任务。
+        PlanFact own = plan("plan-own", "rv-own", "SN-1", AS_OF.minusMinutes(90), AS_OF.minusMinutes(20));
+        PlanMatch outside = check.match(state("SN-1"), List.of(own), distance("rv-own", 10, 50), AS_OF, params);
+        HitDetail late = check.evaluate(context(outside, height("60")), params);
+        assertThat(late.facts()).doesNotContainKey("no_plan_exempt");
+        assertThat(late.message()).startsWith("不在任务时段");
+    }
+
     private static EvaluationContext context(PlanMatch match) {
-        return new EvaluationContext(new Subject(SubjectKind.TARGET, "t1", "org", "district", "mock"), state("SN-1"),
+        return context(match, state("SN-1"));
+    }
+
+    private static EvaluationContext context(PlanMatch match, TargetState state) {
+        return new EvaluationContext(new Subject(SubjectKind.TARGET, "t1", "org", "district", "mock"), state,
                 new TrackQuality(5, 5L, false), match, List.of(), AS_OF, Freshness.REPLAY, RunMode.ACTIVE, "mock");
+    }
+
+    /** 同 state("SN-1")，另带设备报的离地高度（null 表示没报）。 */
+    private static TargetState height(String agl) {
+        return new TargetState("t1", "tr1", "SN-1", new BigDecimal("118.5"), new BigDecimal("37.4"), new BigDecimal("60"),
+                agl == null ? null : new BigDecimal(agl), new BigDecimal("8"), new BigDecimal("90"), new BigDecimal("0.9"), AS_OF, AS_OF);
     }
 
     private static TargetState state(String sn) {

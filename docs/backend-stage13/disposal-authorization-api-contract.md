@@ -1,5 +1,28 @@
 # 处置授权 API 契约（阶段 13，v1.1）
 
+## 2026-10-08 增量：自动反制在设备忙时排队、没发出去时重发（第二批复验）
+
+本节修订“自动反制”（`AlarmRuleCounter`，反制规则 PASS 后由 `automation-rule` 直接授权发起）在设备忙时的做法。人工申请、人工直接反制不变。
+
+- 选中的反制设备正忙（有指令在途，或正为别的授权开着，见新-20）时，这一轮不建授权、不记事件，下一轮（2 秒）再看；设备空出来后照常新建、直接授权并下发。
+- 以前设备忙时已经建好、一次也没下发出去的自动反制（`APPROVED`、发起人 `automation-rule`、`DIRECT`、没有 `execution_command_id`、仍在有效期内）不再一直挂到过期：反制规则仍 PASS、设备空出来且可用时，系统以原授权下发，记 `EXECUTE`“反制设备空出来了，系统接着下发这条排队的自动反制。”。设备仍忙、离线或故障时安静地等下一轮，不重复记 `DEVICE_BUSY`。锁序与急停相同：事件→授权→设备→指令。
+- 这起事件有人工发起过的反制，或已有反制在执行、完成过、被停止、撤销或驳回时，系统不再自动发起。
+- 四通道反制还开着（`EXECUTING`、没到 `off_due_at`）却没接上信号干扰时，`DisposalDeviceRunTimer` 每轮补接一次：设备打开那一刻依据一时不满足、没接出干扰的，再接一次；接出的干扰一次也没发出去（当时设备忙、复查没过，停在 `APPROVED`）的，设备空出来且可用时再发，记 `EXECUTE`“反制设备打开后自动下发”。接与发照旧重新检查当前依据、发起人资格和急停；设备还忙或用不了时安静地等，不重复记受阻。来源反制关了就不再接。人工反制接出的干扰同样适用。
+- 以前的自动反制都没发出去时再发一次（第二批复验 告警-020）：启动指令在发出去之前被取消（授权 `FAILED`，结果码 `AUTHORIZATION_STOPPED` 或 `DEVICE_NOT_OPERABLE`），或一直没下发就 `EXPIRED`。新授权的 `DIRECT_AUTHORIZE` 说明写“前一次自动反制的启动指令没有发出去，这是第 N 次自动发起（最多 3 次）。”，快照带 `automatic_attempt`。一起事件最多自动发 3 次；设备回过失败、超时的不再自动重发（设备可能动过，要人核查）。
+
+## 2026-10-08 增量：四通道反制设备开着算反制中（新-20，确认书 3-9 / 3-6）
+
+本节修订第 2 节“回执同步”中四通道的部分。凌云 B、`MANUAL` 通道不变。
+
+- 四通道（`COUNTERMEASURE_4CH`）启动指令（COUNTERMEASURE `0x0F`、JAMMING `0x0D`）回 `SUCCEEDED` 只表示设备打开了：授权保持 `EXECUTING`（反制中），记 `RECEIPT`“设备回执：已打开，反制中；满 N 秒系统自动全部关闭，也可以随时急停”，并在 `disposal_device_run` 记下 `on_at`（设备回执时间）与 `off_due_at = on_at + policy.device_run_seconds`。`device_run_seconds` 在策略 `demo-v1` 中为演示值 60，待客户确认；策略缺这一项时报 `POLICY_PARAM_MISSING`，不猜缺省值。
+- 反制完成后自动接信号干扰（13-34）改为反制设备打开后立即接续。干扰那条打开后沿用来源反制的 `off_due_at`，两条一起关；来源反制的关闭时刻已过时，干扰一打开就关。
+- `DisposalDeviceRunTimer`（`app.disposal.device-run.enabled` 缺省开，`poll-millis` 缺省 5000，`max-off-attempts` 缺省 3）到时以最近一次下发它的人的名义下发全关 `0x00`：转干扰时由仍在执行中的干扰那条下发，来源反制不单独关。下发受理后 `execution_command_id` 改为这条关闭指令，记 `DEVICE_ALL_OFF_ISSUED`“反制已满设定时长，系统自动下发全部关闭”，`snapshot.source=RUN_DURATION_REACHED`。
+- 全关回 `SUCCEEDED` 才 `EXECUTING→COMPLETED`（`RECEIPT`“设备回执：已全部关闭”+ `COMPLETE`）；来源反制随干扰一起完成（`RECEIPT`“设备回执：已全部关闭（随信号干扰 AUTH-… 一起关闭）”+ `COMPLETE`），然后照常自动移送处罚。处罚交接、“已反制”统计因此比以前晚一个运行时长。
+- 全关失败、超时或下发被拒：授权保持 `EXECUTING`，下一轮再试；试满 `max-off-attempts` 次仍不成功就不再重试，记 `RECEIPT`“……设备可能还开着，请按急停或到现场关闭设备”。设备停没停只由人按急停或到现场确认，系统不替人认定。设备已不是在线的四通道设备、找不到下发人账号时同样不再重试并记这一条。
+- 反制中照常可以 `POST /{id}/stop` 或事件急停；已 `STOPPED` 的授权不再自动关闭。锁序与急停相同：事件→授权→设备→指令。
+- 同一台四通道设备正开着另一条授权（自己的来源反制除外）时执行被拒：记 `DEVICE_BUSY` 事件，授权保持 `APPROVED`，409 `DEVICE_BUSY`“这台反制设备正在执行另一条反制，本次没有下发；等那条反制到时自动关闭或急停后再执行”。
+- 不新增事件种类、不改接口字段。迁移：`V202610089002__disposal_device_run.sql`（新表 `disposal_device_run`，策略 `demo-v1` 参数加 `device_run_seconds`）。代码生效需要迁移和后端重启。
+
 ## 2026-09-17 增量：直接反制权限
 
 本节替代旧稿中“所有新反制一律逐次审批”的描述。普通申请仍走原来的申请、异人审批和执行流程。
@@ -52,7 +75,7 @@
 | POST | `/{id}/cancel` `{expected_version, note?}` | 申请人本人（`disposal:request`，直接授权凭 `disposal:direct`）或 `disposal:approve` | REQUESTED/APPROVED → CANCELLED；`result_code` 记 `CANCELLED_BY_REQUESTER` 或 `CANCELLED_BY_APPROVER`。已批准还没执行的授权（例如批准后设备掉线）可以撤销，撤销后同一主体可以马上重新申请（2026-10-06 BUG-03） |
 | GET | `/disposal-policies` | `disposal:read` | 当前策略与参数（含 DEMO 标记） |
 
-回执同步：`DisposalReceiptSync`（随 A 的 `device_command` 状态）`SUCCEEDED→COMPLETED`、`FAILED|TIMED_OUT→FAILED`；到期任务 `DisposalExpiryJob`（`app.disposal.expiry.enabled`，缺省关）把超过 `valid_until` 的 APPROVED 置 EXPIRED。
+回执同步：`DisposalReceiptSync`（随 A 的 `device_command` 状态）`SUCCEEDED→COMPLETED`、`FAILED|TIMED_OUT→FAILED`（四通道启动回 `SUCCEEDED` 仍是 `EXECUTING`，到时全关回 `SUCCEEDED` 才 `COMPLETED`，见 2026-10-08 增量）；到期任务 `DisposalExpiryJob`（`app.disposal.expiry.enabled`，缺省关）把超过 `valid_until` 的 APPROVED 置 EXPIRED。
 
 ## 2.1 错误码汇总
 `VALIDATION_ERROR`(400) / `SUBJECT_KIND_NOT_SUPPORTED`(400) / `POLICY_REQUIRES_CONFIRMED_EVENT`(409) / `ACTIVE_AUTHORIZATION_EXISTS`(409) / `DEVICE_UNAVAILABLE`(409，申请时) / `TARGET_NOT_ACTIVE`(409) / `TWO_PERSON_RULE`(409) / `INVALID_TRANSITION`(409) / `AUTHORIZATION_EXPIRED`(409) / `DEVICE_CONTROL_UNAVAILABLE`(409) / `DEVICE_NOT_BOUND`(409) / `DEVICE_OFFLINE`(409) / `VERSION_CONFLICT`(409) / `NOT_FOUND`(404，含越权)。前端逐码文案在 `ui/disposalAuthModal.js`（确定失败码集合 + 文案），状态/动作/通道/阻塞原因字典在 `ui/labels.js`；未列出的码走服务端消息兜底。

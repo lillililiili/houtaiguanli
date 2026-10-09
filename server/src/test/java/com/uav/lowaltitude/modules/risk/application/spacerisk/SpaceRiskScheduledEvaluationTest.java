@@ -11,6 +11,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -114,6 +115,71 @@ class SpaceRiskScheduledEvaluationTest {
         assertThat(risks(stuck)).isEmpty();
     }
 
+    /**
+     * P03：鸟群被判的每一次都记进它那条风险的评估历史，按事实分段（离航线按 50 米一档），飞远了“不构成风险”也记；
+     * 风险本身的等级不跟着改。设备停报时读到的同一份观测不重复计。
+     */
+    @Test
+    void everyJudgementOfAFlockIsKeptAsSegmentsOfItsRiskWithoutChangingTheRiskLevel() {
+        String flock = target("history");
+        // 第 0 轮：离中心线 120 米（走廊半宽 50 米外、300 米内）→ 中风险，新建风险，评估历史从这次开始。
+        refreshed(observation(flock, plan, "120.00", 0));
+        assertThat(scheduled(0).risksCreated()).isEqualTo(1);
+        String risk = risks(flock).get(0);
+        // 第 1 轮：130 米，还在 100–150 米这一档 → 并进第一段。
+        refreshed(observation(flock, plan, "130.00", 60));
+        assertThat(scheduled(1).risksDeduplicated()).isEqualTo(1);
+        // 第 2 轮：观测没更新（还是上一份）→ 不算一次新的评估。
+        scheduled(2);
+        // 第 3 轮：进了走廊（20 米、离地 60 米）→ 当时构成高风险，另起一段。
+        refreshed(observation(flock, plan, "20.00", 120));
+        scheduled(3);
+        // 第 4 轮：飞到 800 米 → 不构成风险，也记一段，看得出什么时候不再构成风险。
+        refreshed(observation(flock, plan, "800.00", 180));
+        RunRow away = scheduled(4);
+        assertThat(away.message()).isNull();
+        assertThat(away.risksCreated()).isZero();
+
+        List<Map<String, Object>> segments = segments(risk);
+        assertThat(segments).extracting(row -> row.get("segment_no")).containsExactly(1, 2, 3);
+        assertThat(segments.get(0)).containsEntry("evaluation_count", 2).containsEntry("distance_band_m", 100)
+                .containsEntry("corridor_relation", "NEAR").containsEntry("altitude_band", "CLIMB")
+                .containsEntry("risk_present", true).containsEntry("severity", "MEDIUM").containsEntry("from_detection", true);
+        assertThat(((BigDecimal) segments.get(0).get("min_distance_m"))).isEqualByComparingTo("120");
+        assertThat(((BigDecimal) segments.get(0).get("max_distance_m"))).isEqualByComparingTo("130");
+        assertThat(segments.get(1)).containsEntry("evaluation_count", 1).containsEntry("distance_band_m", 0)
+                .containsEntry("corridor_relation", "INSIDE").containsEntry("risk_present", true).containsEntry("severity", "HIGH")
+                .containsEntry("from_detection", false);
+        assertThat(segments.get(2)).containsEntry("evaluation_count", 1).containsEntry("distance_band_m", 800)
+                .containsEntry("corridor_relation", "OUTSIDE").containsEntry("risk_present", false).containsEntry("severity", null);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, risk))
+                .as("评估历史只记事实，不自动改风险等级").isEqualTo("MEDIUM");
+
+        // 这一段已满 5 分钟：事实没变也另起一段，长时间不变时每 5 分钟至少一条。
+        jdbc.update("update space_risk_evaluation_segment set first_evaluated_at=? where risk_id=? and segment_no=3",
+                ts(OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(6)), risk);
+        refreshed(observation(flock, plan, "810.00", 240));
+        scheduled(5);
+        assertThat(segments(risk)).extracting(row -> row.get("segment_no")).containsExactly(1, 2, 3, 4);
+
+        // 已有解除依据（飞离）的风险不再记：之后同一鸟群再被评估，归不到这条风险上。
+        clear(risk, flock);
+        refreshed(observation(flock, plan, "820.00", 300));
+        scheduled(6);
+        assertThat(segments(risk)).hasSize(4);
+    }
+
+    @Test
+    void aFlockWithoutAnOpenRiskLeavesNoHistory() {
+        String far = target("far");
+        refreshed(observation(far, plan, "800.00", 0));
+        RunRow run = scheduled(0);
+        assertThat(run.status()).isEqualTo("SUCCESS");
+        assertThat(run.risksCreated()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from space_risk_evaluation_segment s join flight_risk r on r.risk_id=s.risk_id"
+                + " where r.target_id=?", Long.class, far)).isZero();
+    }
+
     /** 第 n 轮定时评估：窗口按处理时间推进、与上一轮回叠 30 秒，观测下限为 30 分钟前。 */
     private RunRow scheduled(int tick) {
         OffsetDateTime to = now.plusMinutes(tick);
@@ -130,6 +196,18 @@ class SpaceRiskScheduledEvaluationTest {
         return new SpaceObservation(targetId, "TGT-" + targetId, "BIRD_FLOCK", planId, routeVersionOf(planId),
                 new BigDecimal("10.00"), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", null, "UNKNOWN",
                 org, district, new BigDecimal("118.025"), new BigDecimal("37.025"), now.minusSeconds(20));
+    }
+
+    /** 同一航线上离中心线 distance 米、离地 60 米的鸟群，观测时刻比首轮晚 observedAfterSeconds 秒。 */
+    private SpaceObservation observation(String targetId, String planId, String distance, int observedAfterSeconds) {
+        return new SpaceObservation(targetId, "TGT-" + targetId, "BIRD_FLOCK", planId, routeVersionOf(planId),
+                new BigDecimal(distance), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", null, "UNKNOWN",
+                org, district, new BigDecimal("118.025"), new BigDecimal("37.025"), now.minusSeconds(20).plusSeconds(observedAfterSeconds));
+    }
+
+    private List<Map<String, Object>> segments(String riskId) {
+        return jdbc.queryForList("select segment_no,evaluation_count,distance_band_m,min_distance_m,max_distance_m,corridor_relation,"
+                + "altitude_band,risk_present,severity,from_detection from space_risk_evaluation_segment where risk_id=? order by segment_no", riskId);
     }
 
     private List<String> risks(String targetId) {

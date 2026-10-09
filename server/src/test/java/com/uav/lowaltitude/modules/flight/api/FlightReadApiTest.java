@@ -148,6 +148,47 @@ class FlightReadApiTest {
     }
 
     @Test
+    void batchReadsRouteVersionsInScopeAndSkipsUnknownOrOutOfScopeIds() throws Exception {
+        // 地图页一次取回多条航线中心线；越权和不存在的编号直接略去，不报错也不泄露。
+        JsonNode batch = getJson("/api/v1/route-versions?route_version_ids=" + String.join(",",
+                routeVersionTwo, routeVersionOther, id(), routeVersionOne)).path("data");
+        assertThat(batch.path("items").findValuesAsText("route_version_id"))
+                .containsExactlyInAnyOrder(routeVersionOne, routeVersionTwo);
+        assertThat(batch.path("total").asLong()).isEqualTo(2);
+        JsonNode first = batch.path("items").get(0);
+        assertThat(first.path("centerline").path("type").asText()).isEqualTo("LineString");
+        assertThat(first.toString()).isEqualTo(getJson("/api/v1/route-versions/"
+                + first.path("route_version_id").asText()).path("data").toString());
+
+        assertError("/api/v1/route-versions", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_version_ids=", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_version_ids=" + routeVersionOne + "," + routeVersionOne,
+                400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_version_ids=" + routeVersionOne + ",", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_version_ids=" + "x".repeat(37), 400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_version_ids=" + String.join(",",
+                java.util.stream.Stream.generate(FlightReadApiTest::id).limit(101).toList()), 400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_version_ids=" + routeVersionOne + "&size=1", 400, "VALIDATION_ERROR");
+
+        // 按航线一次取回：每条航线的版本与逐条航线版本列表第一页一致，越权航线略去。
+        JsonNode byRoute = getJson("/api/v1/route-versions?route_ids=" + routeA + "," + routeB).path("data");
+        assertThat(byRoute.path("items").findValuesAsText("route_version_id"))
+                .containsExactly(routeVersionTwo, routeVersionOne);
+        assertThat(byRoute.path("items").toString()).isEqualTo(getJson("/api/v1/routes/" + routeA
+                + "/versions?size=20").path("data").path("items").toString());
+        for (int versionNo = 3; versionNo <= 22; versionNo++) {
+            routeVersion(id(), routeA, versionNo, T0.plusDays(versionNo), null);
+        }
+        JsonNode capped = getJson("/api/v1/route-versions?route_ids=" + routeA).path("data").path("items");
+        assertThat(capped).hasSize(20);
+        assertThat(capped.get(0).path("version_no").asInt()).isEqualTo(22);
+        assertThat(capped.get(19).path("version_no").asInt()).isEqualTo(3);
+        assertError("/api/v1/route-versions?route_ids=" + routeA + "&route_version_ids=" + routeVersionOne,
+                400, "VALIDATION_ERROR");
+        assertError("/api/v1/route-versions?route_ids=", 400, "VALIDATION_ERROR");
+    }
+
+    @Test
     void validatesRequestValuesAndChecksPermissionBeforePathsOrQueryValues() throws Exception {
         assertError("/api/v1/flight-plans?window_from=1", 400, "INVALID_TIME_RANGE");
         assertError("/api/v1/flight-plans?window_from=2&window_to=1", 400, "INVALID_TIME_RANGE");
@@ -161,6 +202,7 @@ class FlightReadApiTest {
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='route:read'", role);
         assertError("/api/v1/routes?enabled=not-a-boolean", 403, "FORBIDDEN");
         assertError("/api/v1/route-versions/" + "x".repeat(37), 403, "FORBIDDEN");
+        assertError("/api/v1/route-versions?route_version_ids=", 403, "FORBIDDEN");
     }
 
     @Test
@@ -193,6 +235,8 @@ class FlightReadApiTest {
         assertError("/api/v1/routes/" + crossedRoute, 404, "ROUTE_NOT_FOUND");
         assertError("/api/v1/routes/" + crossedRoute + "/versions", 404, "ROUTE_NOT_FOUND");
         assertError("/api/v1/route-versions/" + crossedVersion, 404, "ROUTE_VERSION_NOT_FOUND");
+        assertThat(getJson("/api/v1/route-versions?route_version_ids=" + crossedVersion + "," + routeVersionOne)
+                .path("data").path("items").findValuesAsText("route_version_id")).containsExactly(routeVersionOne);
     }
 
     @Test

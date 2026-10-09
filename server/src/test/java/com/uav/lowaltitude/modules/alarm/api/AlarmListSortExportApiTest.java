@@ -247,12 +247,12 @@ class AlarmListSortExportApiTest {
         assertThat(body[1] & 0xFF).isEqualTo(0xBB);
         assertThat(body[2] & 0xFF).isEqualTo(0xBF);
         String text = new String(body, 3, body.length - 3, StandardCharsets.UTF_8);
-        assertThat(text.lines().findFirst().orElseThrow()).startsWith("编号,告警类别,违规原因,等级,状态");
+        assertThat(text.lines().findFirst().orElseThrow()).startsWith("编号,告警类别,违规原因,等级,核实状态,处置进度");
         assertThat(result.getResponse().getHeader("Content-Disposition"))
                 .contains("attachment").contains("alarms-").contains(".csv");
         // 导出的次序必须与列表一致：两处不同的话，人对着页面核对导出表会核不上。
         List<String> exported = new ArrayList<>();
-        text.lines().skip(1).filter(l -> !l.isBlank()).forEach(l -> exported.add(l.split(",")[5]));
+        text.lines().skip(1).filter(l -> !l.isBlank()).forEach(l -> exported.add(l.split(",", -1)[6]));
         assertThat(exported).isSorted();
     }
 
@@ -288,7 +288,7 @@ class AlarmListSortExportApiTest {
         // 等级：三条种子分别是 LOW/HIGH/MEDIUM。
         assertThat(rows.stream().map(r -> r[3]).sorted().toList())
                 .containsExactlyInAnyOrder("低", "高", "中");
-        // 状态取自 uav_event，与风险的"待核验"不是同一套（告警核实、风险核验）。
+        // 核实状态取自 uav_event，与风险的"待核验"不是同一套（告警核实、风险核验）。
         assertThat(rows.stream().map(r -> r[4]).toList())
                 .containsExactlyInAnyOrder("待核实", "告警已确认", "误报");
         // 类别：字典里有的翻译，没有的原样给出（不写成"未知"，那会把信息抹掉）。

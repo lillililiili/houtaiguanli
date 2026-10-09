@@ -17,7 +17,7 @@ public final class LocalInterfaceDtos {
  public record PlanRoute(@NotBlank @Size(max=128) String name,
   @NotNull JsonNode geometry,@NotNull @DecimalMin("0.01") BigDecimal corridorWidthM,
   BigDecimal minAltitudeM,BigDecimal maxAltitudeM,String altitudeDatum,
-  @NotBlank @Size(max=36) String ownerOrgId,@NotBlank @Size(max=36) String districtId){}
+  @NotBlank(message="航线归属单位不能为空") @Size(max=36) String ownerOrgId,@NotBlank(message="航线所在区县不能为空") @Size(max=36) String districtId){}
  public record WeatherInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
   @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods){}

@@ -53,13 +53,14 @@ public class DeviceMaintenanceRepository {
         p.put("connectivity",r.connectivity); p.put("health",r.healthCode); p.put("observed",r.observedAt);
         p.put("heartbeat",r.lastHeartbeatAt); p.put("simulated",r.simulated); p.put("actor",r.reportedBy);
         p.put("actor_name",r.reportedByName); p.put("at",r.reportedAt); p.put("active",r.planId+":"+r.deviceId);
+        p.put("trigger",r.reportedBy==null?"SYSTEM":"USER");
         jdbc.update("""
                 INSERT INTO ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,plan_no,
                     device_no,device_name,reason,connectivity,health_code,observed_at,last_heartbeat_at,simulated,
-                    status,active_key,reported_by,reported_by_name,reported_at,version,workflow_source_mode)
+                    status,active_key,reported_by,reported_by_name,reported_at,version,workflow_source_mode,trigger_type)
                 VALUES(:id,:plan,:device,:org,:district,:plan_no,:device_no,:name,:reason,:connectivity,:health,
                     :observed,:heartbeat,:simulated,'PENDING',:active,:actor,:actor_name,:at,1,
-                    (SELECT source_mode FROM ops_device WHERE device_id=:device))
+                    (SELECT source_mode FROM ops_device WHERE device_id=:device),:trigger)
                 """,p);
     }
 

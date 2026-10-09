@@ -507,6 +507,24 @@ class TargetReadApiTest {
                 .isLessThan(item.path("points").get(1).path("sort_time").asLong());
         assertNoSensitiveFields(response);
 
+        String window = "/api/v1/tracks/recent?observed_from=" + from + "&observed_to=" + to + "&points_per_target=2";
+        JsonNode only = getJson(window + "&target_ids=" + targetLatest + "&slim=true").path("data").path("items");
+        assertThat(only).hasSize(1);
+        assertThat(only.get(0).path("target_id").asText()).isEqualTo(targetLatest);
+        assertThat(only.get(0).path("points").findValuesAsText("point_seq")).containsExactly("2", "3");
+        assertThat(only.get(0).path("points").get(0).path("location").path("longitude").isNumber()).isTrue();
+        assertThat(only.get(0).path("points").get(0).has("contributing")).isFalse();
+        assertThat(getJson(window + "&target_ids=" + id()).path("data").path("items")).isEmpty();
+        // 页面读完目标再要尾迹，期间目标又有新观测：指定目标时不因 last_seen_at 超过 observed_to 而丢尾迹。
+        jdbc.update("update target set last_seen_at=? where target_id=?", T0.plusMinutes(2), targetLatest);
+        assertThat(getJson(window).path("data").path("items")).isEmpty();
+        assertThat(getJson(window + "&target_ids=" + targetLatest).path("data").path("items").get(0)
+                .path("points").findValuesAsText("point_seq")).containsExactly("2", "3");
+        assertError(window + "&target_ids=" + targetLatest + "," + targetLatest, 400, "VALIDATION_ERROR");
+        assertError(window + "&target_ids=" + String.join(",", java.util.stream.Stream.generate(TargetReadApiTest::id).limit(101).toList()),
+                400, "VALIDATION_ERROR");
+        assertError(window + "&target_ids=", 400, "VALIDATION_ERROR");
+
         assertError("/api/v1/tracks/recent?observed_from=" + from + "&observed_to=" + to
                 + "&points_per_target=51", 400, "VALIDATION_ERROR");
         assertError("/api/v1/tracks/recent?observed_from=" + from + "&observed_to="

@@ -277,6 +277,13 @@ public class DisposalRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 这起事件的全部反制授权，按申请先后。自动反制据此决定新发、补发还是不再自动发；系统读取，不跟调用者范围。 */
+    public List<AuthorizationRow> counterAttempts(String eventId) {
+        return jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
+                + " AND a.subject_id=:id AND a.action_type='COUNTERMEASURE' ORDER BY a.requested_at, a.authorization_id",
+                Map.of("id", eventId), DisposalRepository::row);
+    }
+
     /** 该主体是否已有任一信号干扰授权（含手选），有则不再自动接。 */
     public boolean actionExists(String subjectKind, String subjectId, String actionType) {
         Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE subject_kind=:kind"
@@ -407,6 +414,116 @@ public class DisposalRepository {
                 Map.of("limit", limit), DisposalRepository::row);
     }
 
+    /* ---- 反制设备运行（新-20） ---- */
+
+    /** 四通道整组设置（SET_MASK）的值；单通道动作或别的协议的指令返回 null。 */
+    public Integer relayMask(String commandId) {
+        if (commandId == null) return null;
+        List<Integer> rows = jdbc.query("SELECT mask FROM countermeasure_4ch_command WHERE command_id=:id AND action='SET_MASK'",
+                Map.of("id", commandId), (rs, i) -> {
+                    int mask = rs.getInt(1);
+                    return rs.wasNull() ? null : mask;
+                });
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 系统推进（回执、到时关闭）用的加锁读，没有登录身份，不加范围谓词。锁序：事件→授权→设备→指令。 */
+    public AuthorizationRow lockForSystem(String id) {
+        List<AuthorizationRow> rows = jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a"
+                + " WHERE a.authorization_id=:id FOR UPDATE", Map.of("id", id), DisposalRepository::row);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 设备回“已打开”时记一行。已经记过就不动，返回 false；调用方须先锁住这条授权。 */
+    public boolean startRun(String authorizationId, String deviceId, String onCommandId, OffsetDateTime onAt,
+                            OffsetDateTime offDueAt, OffsetDateTime at) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("id", authorizationId); p.put("device", deviceId); p.put("cmd", onCommandId);
+        p.put("on", onAt); p.put("due", offDueAt); p.put("at", at);
+        return jdbc.update("INSERT INTO disposal_device_run (authorization_id,device_id,on_command_id,on_at,off_due_at,"
+                + "off_attempts,created_at) SELECT :id,:device,:cmd,:on,:due,0,:at"
+                + " WHERE NOT EXISTS (SELECT 1 FROM disposal_device_run WHERE authorization_id=:id)", p) == 1;
+    }
+
+    public RunRow run(String authorizationId) {
+        if (authorizationId == null) return null;
+        List<RunRow> rows = jdbc.query("SELECT * FROM disposal_device_run WHERE authorization_id=:id",
+                Map.of("id", authorizationId), DisposalRepository::runRow);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 到了关闭时刻、授权仍在执行中、还没放弃自动关闭的运行记录，最早到时的在前。 */
+    public List<RunRow> dueRuns(OffsetDateTime now, int limit) {
+        return jdbc.query("SELECT r.* FROM disposal_device_run r JOIN disposal_authorization a"
+                + " ON a.authorization_id=r.authorization_id WHERE a.status='EXECUTING' AND r.gave_up_at IS NULL"
+                + " AND r.off_due_at<=:now ORDER BY r.off_due_at ASC, r.authorization_id ASC LIMIT :limit",
+                Map.of("now", now, "limit", limit), DisposalRepository::runRow);
+    }
+
+    /** 这条反制接出的信号干扰（一条反制至多接出一条）。系统链式用，不跟调用者范围。 */
+    public AuthorizationRow chainedChild(String parentAuthorizationId) {
+        List<AuthorizationRow> rows = jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a"
+                + " WHERE a.chained_from_authorization_id=:id", Map.of("id", parentAuthorizationId), DisposalRepository::row);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /**
+     * 四通道反制还开着（反制中、没到关闭时刻、没放弃自动关闭）却还没接上信号干扰的：没接出干扰，
+     * 或接出的干扰一次也没下发出去。最早到时的在前。
+     */
+    public List<String> runsAwaitingJamming(OffsetDateTime now, int limit) {
+        return jdbc.queryForList("SELECT r.authorization_id FROM disposal_device_run r JOIN disposal_authorization a"
+                + " ON a.authorization_id=r.authorization_id WHERE a.status='EXECUTING' AND a.action_type='COUNTERMEASURE'"
+                + " AND a.channel='COUNTERMEASURE_4CH' AND a.subject_kind='UAV_EVENT' AND r.gave_up_at IS NULL"
+                + " AND r.off_due_at>:now AND NOT EXISTS (SELECT 1 FROM disposal_authorization c"
+                + " WHERE c.chained_from_authorization_id=a.authorization_id"
+                + " AND NOT (c.status='APPROVED' AND c.execution_command_id IS NULL))"
+                + " ORDER BY r.off_due_at ASC, r.authorization_id ASC LIMIT :limit",
+                Map.of("now", now, "limit", limit), String.class);
+    }
+
+    /** 这条反制接出的信号干扰是否仍在执行中：在的话，设备由干扰那条到时一起关闭。 */
+    public boolean executingChild(String parentAuthorizationId) {
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE chained_from_authorization_id=:id"
+                + " AND status='EXECUTING'", Map.of("id", parentAuthorizationId), Long.class);
+        return total != null && total > 0;
+    }
+
+    /** 记一次自动关闭尝试；下发被拒时 offCommandId 为 null。 */
+    public void recordOffAttempt(String authorizationId, String offCommandId, OffsetDateTime at) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("id", authorizationId); p.put("cmd", offCommandId); p.put("at", at);
+        jdbc.update("UPDATE disposal_device_run SET off_attempts=off_attempts+1,last_attempt_at=:at,off_command_id=:cmd"
+                + " WHERE authorization_id=:id", p);
+    }
+
+    public void giveUpRun(String authorizationId, OffsetDateTime at) {
+        jdbc.update("UPDATE disposal_device_run SET gave_up_at=:at WHERE authorization_id=:id AND gave_up_at IS NULL",
+                Map.of("id", authorizationId, "at", at));
+    }
+
+    /**
+     * 这台设备是否正为别的授权开着（反制中）。自己和自己的来源反制不算：转干扰就是在同一台开着的设备上切换输出。
+     * 不跟调用者范围：设备开着是物理事实，看不见那起事件也不能往同一台设备上再下发。
+     */
+    public boolean deviceRunningOther(String deviceId, String authorizationId) {
+        if (deviceId == null) return false;
+        Map<String, Object> p = new HashMap<>();
+        p.put("device", deviceId); p.put("id", authorizationId == null ? "" : authorizationId);
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a"
+                + " ON a.authorization_id=r.authorization_id WHERE r.device_id=:device AND a.status='EXECUTING'"
+                + " AND r.authorization_id<>:id AND r.authorization_id<>COALESCE((SELECT c.chained_from_authorization_id"
+                + " FROM disposal_authorization c WHERE c.authorization_id=:id),'')", p, Long.class);
+        return total != null && total > 0;
+    }
+
+    private static RunRow runRow(java.sql.ResultSet rs, int index) throws java.sql.SQLException {
+        return new RunRow(rs.getString("authorization_id"), rs.getString("device_id"), rs.getString("on_command_id"),
+                rs.getObject("on_at", OffsetDateTime.class), rs.getObject("off_due_at", OffsetDateTime.class),
+                rs.getString("off_command_id"), rs.getInt("off_attempts"),
+                rs.getObject("last_attempt_at", OffsetDateTime.class), rs.getObject("gave_up_at", OffsetDateTime.class));
+    }
+
     /* ---- 范围与筛选 ---- */
 
     private static Where filter(AccessDecision access, Query query) {
@@ -486,4 +603,9 @@ public class DisposalRepository {
 
     public record EventRow(String eventId, String authorizationId, String eventKind, String actorId, String note,
             String snapshot, OffsetDateTime occurredAt) { }
+
+    /** 反制设备的一次运行：何时打开、何时该关、自动关闭试了几次。 */
+    public record RunRow(String authorizationId, String deviceId, String onCommandId, OffsetDateTime onAt,
+            OffsetDateTime offDueAt, String offCommandId, int offAttempts, OffsetDateTime lastAttemptAt,
+            OffsetDateTime gaveUpAt) { }
 }

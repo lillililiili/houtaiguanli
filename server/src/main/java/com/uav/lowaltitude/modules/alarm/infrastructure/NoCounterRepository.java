@@ -45,7 +45,7 @@ public class NoCounterRepository {
         var basis=new Basis(r.getString("evaluation_id"),time(r,"observed_at"),time(r,"evaluated_at"),r.getString("legal_status"),r.getString("grade"),violations==null?List.of():violations);
         return new Evaluation(basis, "FRESH".equals(r.getString("freshness_code")) && "SUFFICIENT".equals(r.getString("decision_assurance_code"))
                 && r.getString("decision_algorithm_version")!=null && !r.getString("decision_algorithm_version").isBlank()
-                && unknown!=null && unknown.isEmpty() && violations!=null && NoCounterRules.explicit(basis.legalStatus()),r.getString("alarm_id"));
+                && com.uav.lowaltitude.modules.alarm.domain.UavAdvisoryRules.noBlockingUnknowns(unknown) && violations!=null && NoCounterRules.explicit(basis.legalStatus()),r.getString("alarm_id"));
     }
     public Snapshot snapshot(EventRow event) {
         Integer seconds=disposal.freshSeconds();
@@ -61,6 +61,11 @@ public class NoCounterRepository {
         if(reason.isEmpty())reason=operationBlock(event.eventId());
         Basis basis=current==null?null:current.basis();
         return new Snapshot(basis,reason,decision,active,review,new FrozenBasis(basis,reviewFrom,observed.stream().map(e->e.basis().evaluationId()).toList()));
+    }
+    /** 只看结论、不算当前依据（告警导出“处置进度”用）：没有不反制决定返回 null，决定仍有效返回 false，风险变了要重新决策返回 true。 */
+    public Boolean reviewRequired(EventRow event) {
+        Decision decision=decision(event.eventId());
+        return decision==null?null:reviewRequired(event,decision);
     }
     public boolean active(String eventId) {
         Decision decision=decision(eventId);

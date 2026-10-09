@@ -188,8 +188,9 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
         // boundary：恰在 P1 的西南顶点上（ST_Touches），航线经过该点。
         target("boundary", 5, ORG, DISTRICT, "S7-SN-BND", 118.296, 37.296, 50d, 40d, 0.90, T0, 5, 5);
         plan("boundary", 5, ORG, DISTRICT, "S7-SN-BND", 118.296, 37.296, 10, 100, "AMSL", start, end, at);
-        // no-plan：观测时刻在所有计划时间窗之外且 sn 无计划 → 无候选。
-        target("no-plan", 6, ORG, DISTRICT, "S7-SN-NOPLAN", 118.230, 37.230, 50d, 40d, 0.90, T0.plusSeconds(7_200), 5, 5);
+        // no-plan：观测时刻在所有计划时间窗之外且 sn 无计划 → 无候选。离地 150 米：120 米以下的普通区域飞行按规定无需申请（新-28），
+        // 这一行要验的是“没有报备任务 → 无飞行授权”，所以飞在 120 米以上。
+        target("no-plan", 6, ORG, DISTRICT, "S7-SN-NOPLAN", 118.230, 37.230, 170d, 150d, 0.90, T0.plusSeconds(7_200), 5, 5);
         // degraded：置信度 0.5 < 0.75，三点间隔 60 s > 30 s。
         target("degraded", 7, ORG, DISTRICT, "S7-SN-DEG", 118.240, 37.240, 50d, 40d, 0.50, T0, 3, 60);
         plan("degraded", 7, ORG, DISTRICT, "S7-SN-DEG", 118.240, 37.240, 10, 100, "AMSL", start, end, at);
@@ -199,8 +200,8 @@ public class LocalStage7RuleEngineSeeder implements ApplicationRunner {
         // merge：位于 T1（临时管制，生效窗内）→ ILLEGAL；回放对同一目标评估两次，验证只建一条告警。
         target("merge", 9, ORG, DISTRICT, "S7-SN-MERGE", 118.500, 37.500, 50d, 40d, 0.90, T0, 5, 5);
         plan("merge", 9, ORG, DISTRICT, "S7-SN-MERGE", 118.500, 37.500, 10, 100, "AMSL", start, end, at);
-        // cross-scope：另一元组、无计划 → ILLEGAL/NO_AUTHORIZATION，默认范围读不到。
-        target("cross-scope", 10, OTHER_ORG, OTHER_DISTRICT, "S7-SN-CROSS", 118.250, 37.250, 50d, 40d, 0.90, T0, 5, 5);
+        // cross-scope：另一元组、无计划 → ILLEGAL/NO_AUTHORIZATION，默认范围读不到。同 no-plan 飞离地 150 米。
+        target("cross-scope", 10, OTHER_ORG, OTHER_DISTRICT, "S7-SN-CROSS", 118.250, 37.250, 170d, 150d, 0.90, T0, 5, 5);
     }
 
     private void target(String scenario, int seq, String org, String district, String sn, double lon, double lat, Double amsl, Double agl, double confidence,

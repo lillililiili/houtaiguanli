@@ -114,6 +114,12 @@ class C02ChecksTest {
         assertThat(detail.reasonCode()).isEqualTo("CORRIDOR_WIDTH_UNKNOWN");
         HitDetail none = check.evaluate(context(state(), noPlan(), List.of(), null), params);
         assertThat(none.resultCode()).isEqualTo(ResultCode.NOT_APPLICABLE);
+        // 对不上任务（NONE）时挂着的本机计划只作时间窗、高度参考：离航线再远也不比偏航，原因只留无飞行授权（新-15）。
+        PlanMatch ownPlanOutsideCorridor = new PlanMatch(PlanMatchCode.NONE, full().plan(),
+                Map.of("time_window", "MATCH", "corridor", "MISMATCH", "identity", "MATCH"), List.of("CORRIDOR_MISMATCH"));
+        HitDetail unmatched = check.evaluate(context(state(), ownPlanOutsideCorridor, List.of(), null), params);
+        assertThat(unmatched.resultCode()).isEqualTo(ResultCode.NOT_APPLICABLE);
+        assertThat(unmatched.reasonCode()).isEqualTo("NO_PLAN");
     }
 
     @Test
@@ -136,17 +142,36 @@ class C02ChecksTest {
     @Test
     void nightFlightUsesConfiguredTimezoneAndHalfOpenHours() {
         // 04:00Z = 12:00 上海，白天；13:00Z = 21:00 上海，夜航；21:30Z = 05:30 上海仍在夜航；22:30Z = 06:30 上海不算。
-        // 没有匹配上计划时，夜航时段内飞行即违规。
+        // 没有匹配上计划（离地 150 米，不属于按规定无需申请的飞行）时，夜航时段内飞行即违规。
         NightFlightCheck check = new NightFlightCheck();
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
-        HitDetail night = check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(13)), params);
+        assertThat(check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF), params).resultCode()).isEqualTo(ResultCode.PASS);
+        HitDetail night = check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF.withHour(13)), params);
         assertThat(night.resultCode()).isEqualTo(ResultCode.FAIL);
         assertThat(night.reasonCode()).isEqualTo("NIGHT_FLIGHT");
         assertThat(night.ruleCode()).isEqualTo("C02-5");
         assertThat(night.facts()).containsEntry("local_hour", 21);
         assertThat(night.message()).contains("处于夜航时段", "没有匹配上的飞行任务");
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
-        assertThat(check.evaluate(context(state(), noPlan(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF.withHour(21).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.FAIL);
+        assertThat(check.evaluate(context(aboveCeiling(), noPlan(), List.of(), AS_OF.withHour(22).withMinute(30)), params).resultCode()).isEqualTo(ResultCode.PASS);
+    }
+
+    /** 新-28 与确认书 2-9：没有报备任务、离地 120 米以下、不在管控空域里的飞行按规定无需申请，没有原有违规，夜航不单独算违规。 */
+    @Test
+    void nightFlightOfAFlightThatNeedsNoApplicationIsNotAViolation() {
+        NightFlightCheck check = new NightFlightCheck();
+        OffsetDateTime night = AS_OF.withHour(13);
+        HitDetail low = check.evaluate(context(state(), noPlan(), List.of(hit("PERMITTED", "COVERS", null, null, null, null)), night), params);
+        assertThat(low.resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(low.reasonCode()).isNull();
+        assertThat(low.facts()).containsEntry("local_hour", 21);
+        assertThat(low.message()).isEqualTo("本地时间 21:00 处于夜航时段；没有报备任务、离地 120 米以下的普通区域飞行按规定无需申请，夜间不单独算违规"
+                + "；参数为 DEMO 演示值，尚未确认");
+        // 在禁飞区里、压在管制区边界上、离地超过 120 米：照旧记夜航。
+        for (EvaluationContext ctx : List.of(context(state(), noPlan(), List.of(hit("PROHIBITED", "COVERS", null, null, null, null)), night),
+                context(state(), noPlan(), List.of(hit("RESTRICTED", "TOUCHES", null, null, null, null)), night),
+                context(aboveCeiling(), noPlan(), List.of(), night))) {
+            assertThat(check.evaluate(ctx, params).reasonCode()).isEqualTo("NIGHT_FLIGHT");
+        }
     }
 
     @Test
@@ -181,34 +206,38 @@ class C02ChecksTest {
     }
 
     /**
-     * C02-6 三态：飞手位置接入后按目标与飞手的大圆距离判定，缺飞手位置仍是未知。
+     * C02-6 飞手距离：飞手位置接入后按目标与飞手的大圆距离算。2026-10-08 起（新-29）超过阈值也不算违规，
+     * 只在事实里带 beyond_vlos 和“是否经批准请核实”那句；没有飞手位置这一项不判（NOT_APPLICABLE）。
      * 阈值 500 m：飞手在 (118.02, 37.02)，目标北移 0.01° 约 1111 m（超），北移 0.001° 约 111 m（不超）。
      */
     @Test
-    void visualLineOfSightJudgesDistanceOnceThePilotPositionIsKnown() {
-        HitDetail unknown = new VisualLineOfSightCheck().evaluate(context(state(), full(), List.of(), null), params);
-        assertThat(unknown.ruleCode()).isEqualTo("C02-6");
-        assertThat(unknown.resultCode()).isEqualTo(ResultCode.UNDETERMINED);
-        assertThat(unknown.reasonCode()).isEqualTo("PILOT_POSITION_UNAVAILABLE");
-        assertThat(unknown.params()).anyMatch(ref -> "vlos_m".equals(ref.key()));
-        assertThat(unknown.facts()).doesNotContainKey("distance_m");
+    void pilotDistanceIsMeasuredOnceThePilotPositionIsKnownAndNeverFails() {
+        HitDetail none = new VisualLineOfSightCheck().evaluate(context(state(), full(), List.of(), null), params);
+        assertThat(none.ruleCode()).isEqualTo("C02-6");
+        assertThat(none.resultCode()).isEqualTo(ResultCode.NOT_APPLICABLE);
+        assertThat(none.reasonCode()).isEqualTo("PILOT_POSITION_UNAVAILABLE");
+        assertThat(none.message()).startsWith("没有遥控器位置，飞手距离这一项不判，不影响结论");
+        assertThat(none.params()).anyMatch(ref -> "vlos_m".equals(ref.key()));
+        assertThat(none.facts()).doesNotContainKeys("distance_m", "beyond_vlos", "pilot_distance_note");
 
         HitDetail far = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.03"), full(), List.of(), null), params);
-        assertThat(far.resultCode()).isEqualTo(ResultCode.FAIL);
-        assertThat(far.reasonCode()).isEqualTo("BVLOS_EXCEEDED");
+        assertThat(far.resultCode()).isEqualTo(ResultCode.PASS);
+        assertThat(far.reasonCode()).isNull();
         assertThat(((BigDecimal) far.facts().get("distance_m")).doubleValue()).isBetween(1000.0, 1200.0);
         assertThat(far.facts()).containsEntry("pilot_location", Map.of("longitude", new BigDecimal("118.02"), "latitude", new BigDecimal("37.03")));
         // 决策 8.5-28：飞手位置可能保留自若干帧之前，判定依据里必须带上它的观测时刻，读的人才知道有多旧。
         assertThat(far.facts()).containsEntry("pilot_observed_at", AS_OF.minusMinutes(3));
-        assertThat(far.message()).contains("演示");
-        assertThat(far.message()).isEqualTo("超视距飞行（飞手离无人机约 1112 米，超过 500 米）；参数为 DEMO 演示值，尚未确认");
+        assertThat(far.facts()).containsEntry("beyond_vlos", true).containsEntry("vlos_m", new BigDecimal("500"))
+                .containsEntry("pilot_distance_note", "飞手离无人机约 1112 米（超过 500 米），是否经批准请核实");
+        assertThat(far.message()).isEqualTo("飞手离无人机约 1112 米（超过 500 米），是否经批准请核实；参数为 DEMO 演示值，尚未确认");
 
         HitDetail near = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.021"), full(), List.of(), null), params);
         assertThat(near.resultCode()).isEqualTo(ResultCode.PASS);
         assertThat(near.reasonCode()).isNull();
         assertThat(((BigDecimal) near.facts().get("distance_m")).doubleValue()).isLessThan(500.0);
+        assertThat(near.facts()).doesNotContainKeys("beyond_vlos", "pilot_distance_note");
 
-        // 有飞手位置但目标位置缺失：不拿单边坐标硬算，也不当成"没接入"。
+        // 有飞手位置但目标位置缺失：不拿单边坐标硬算，也不当成"没接入"（C03 不因它挡结论）。
         TargetState noTarget = new TargetState("t-1", "tr-1", "SN-1", null, null, null, null, null, null, new BigDecimal("0.9"), AS_OF, AS_OF,
                 new BigDecimal("118.02"), new BigDecimal("37.02"));
         HitDetail missing = new VisualLineOfSightCheck().evaluate(context(noTarget, full(), List.of(), null), params);
@@ -217,26 +246,27 @@ class C02ChecksTest {
     }
 
     /**
-     * 超视距告警的可读原因：距离四舍五入到米，阈值取本版本 C02-6.vlos_m（去掉无意义的小数位）。
+     * 飞手距离提示：距离四舍五入到米，阈值取本版本 C02-6.vlos_m（去掉无意义的小数位）。
      * 飞手正北偏移：纬度差 Δ 度的大圆距离 = 6371008.8 m × Δ × π/180，501/800/3000 m 超阈值，499 m 不超。
      */
     @Test
-    void visualLineOfSightReasonQuotesTheRoundedDistanceAndTheThreshold() {
+    void pilotDistanceNoteQuotesTheRoundedDistanceAndTheThreshold() {
         String[][] beyond = {{"37.0245056", "501"}, {"37.0271946", "800"}, {"37.0469796", "3000"}};
         for (String[] row : beyond) {
-            HitDetail fail = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", row[0]), full(), List.of(), null), params);
-            assertThat(fail.resultCode()).isEqualTo(ResultCode.FAIL);
-            assertThat(fail.reasonCode()).isEqualTo("BVLOS_EXCEEDED");
-            assertThat(fail.message()).isEqualTo("超视距飞行（飞手离无人机约 " + row[1] + " 米，超过 500 米）；参数为 DEMO 演示值，尚未确认");
-            assertThat(((BigDecimal) fail.facts().get("distance_m")).setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()).isEqualTo(row[1]);
+            HitDetail hit = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", row[0]), full(), List.of(), null), params);
+            assertThat(hit.resultCode()).isEqualTo(ResultCode.PASS);
+            assertThat(hit.facts()).containsEntry("pilot_distance_note", "飞手离无人机约 " + row[1] + " 米（超过 500 米），是否经批准请核实");
+            assertThat(hit.message()).isEqualTo("飞手离无人机约 " + row[1] + " 米（超过 500 米），是否经批准请核实；参数为 DEMO 演示值，尚未确认");
+            assertThat(((BigDecimal) hit.facts().get("distance_m")).setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()).isEqualTo(row[1]);
         }
         HitDetail within = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.0244876"), full(), List.of(), null), params);
         assertThat(within.resultCode()).isEqualTo(ResultCode.PASS);
         assertThat(((BigDecimal) within.facts().get("distance_m")).doubleValue()).isBetween(498.5, 500.0);
-        // 阈值写成 500.0 的版本，原因里也是"500 米"。
+        assertThat(within.facts()).doesNotContainKey("pilot_distance_note");
+        // 阈值写成 500.0 的版本，提示里也是"500 米"。
         HitDetail decimal = new VisualLineOfSightCheck().evaluate(context(withPilot("118.02", "37.0271946"), full(), List.of(), null),
                 TestRuleParams.demoCatalog().put("C02-6", "vlos_m", "500.0"));
-        assertThat(decimal.message()).startsWith("超视距飞行（飞手离无人机约 800 米，超过 500 米）");
+        assertThat(decimal.message()).startsWith("飞手离无人机约 800 米（超过 500 米），是否经批准请核实");
     }
 
     @Test
@@ -295,6 +325,11 @@ class C02ChecksTest {
     }
     private static TargetState state() {
         return new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("80.00"), new BigDecimal("60.00"),
+                null, null, new BigDecimal("0.9"), AS_OF, AS_OF);
+    }
+    /** 目标位置同 state()，离地 150 米：高于 120 米，没有报备任务时照旧按无计划判（新-28）。 */
+    private static TargetState aboveCeiling() {
+        return new TargetState("t-1", "tr-1", "SN-1", new BigDecimal("118.02"), new BigDecimal("37.02"), new BigDecimal("170.00"), new BigDecimal("150.00"),
                 null, null, new BigDecimal("0.9"), AS_OF, AS_OF);
     }
     /** 目标位置同 state()，另带飞手位置：C02-6 的唯一新增输入。 */

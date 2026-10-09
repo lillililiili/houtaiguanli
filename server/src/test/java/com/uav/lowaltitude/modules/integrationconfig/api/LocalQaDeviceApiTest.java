@@ -94,7 +94,63 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         assertThat(jdbc.queryForObject("select connectivity from ops_device_state where device_id=?",String.class,id)).isEqualTo("OFFLINE");
         assertThat(jdbc.queryForObject("select health_code from ops_device_state where device_id=?",String.class,id)).isEqualTo("UNKNOWN");
     }
-    com.fasterxml.jackson.databind.JsonNode prepareScope(Map<String,String> body,int status) throws Exception {
+    @Test void newDeviceIsRegisteredAtTheGivenPositionSoTheMapCanDrawItsRange() throws Exception {
+        var device=prepareScope(positioned(new java.math.BigDecimal("118.61040000000001"),new java.math.BigDecimal("37.464")),200).path("device");
+        String id=device.path("device_id").asText();
+        assertThat(jdbc.queryForObject("select longitude from ops_device where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("118.6104");
+        assertThat(jdbc.queryForObject("select latitude from ops_device where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("37.464");
+        assertThat(jdbc.queryForObject("select coordinate_system from ops_device where device_id=?",String.class,id)).isEqualTo("WGS-84");
+        assertThat(device.path("longitude").decimalValue()).isEqualByComparingTo("118.6104");
+        assertThat(jdbc.queryForObject("select detail from audit_log where action='local_qa_device_prepare' and object_id=? order by occurred_at desc fetch first 1 rows only",String.class,id))
+            .contains("经度 118.6104000").contains("纬度 37.4640000");
+    }
+    @Test void registeredDeviceWithoutPositionGetsOneOnceAndAPositionSetLaterIsNeverMoved() throws Exception {
+        String id=prepareScope(scope(),200).path("device").path("device_id").asText();
+        assertThat(jdbc.queryForObject("select longitude from ops_device where device_id=?",java.math.BigDecimal.class,id)).isNull();
+        long version=jdbc.queryForObject("select version from ops_device where device_id=?",Long.class,id);
+        var placed=prepareScope(positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("37.46")),200).path("device");
+        assertThat(placed.path("device_id").asText()).isEqualTo(id);
+        assertThat(placed.path("longitude").decimalValue()).isEqualByComparingTo("118.6");
+        assertThat(jdbc.queryForObject("select version from ops_device where device_id=?",Long.class,id)).isEqualTo(version+1);
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action='local_qa_device_prepare' and object_id=? and detail like '补上%'",Long.class,id)).isEqualTo(1);
+        // A second start with another scene radar, or a position someone set in 设备管理, leaves the device where it is.
+        prepareScope(positioned(new java.math.BigDecimal("118.7"),new java.math.BigDecimal("37.5")),200);
+        assertThat(jdbc.queryForObject("select longitude from ops_device where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("118.6");
+        jdbc.update("update ops_device set longitude=118.55,latitude=37.45 where device_id=?",id);
+        prepareScope(positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("37.46")),200);
+        assertThat(jdbc.queryForObject("select longitude from ops_device where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("118.55");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action='local_qa_device_prepare' and object_id=? and detail like '补上%'",Long.class,id)).isEqualTo(1);
+    }
+    @Test void restoredDeviceAlsoGetsTheMissingPosition() throws Exception {
+        String id=prepareScope(scope(),200).path("device").path("device_id").asText();
+        jdbc.update("update ops_device set enabled=false,deleted_at=? where device_id=?",System.currentTimeMillis(),id);
+        var restored=prepareScope(positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("37.46")),200).path("device");
+        assertThat(restored.path("device_id").asText()).isEqualTo(id);
+        assertThat(restored.path("enabled").asBoolean()).isTrue();
+        assertThat(jdbc.queryForObject("select latitude from ops_device where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("37.46");
+    }
+    @Test void halfOrOutOfRangePositionIsRejectedBeforeAnythingIsRegistered() throws Exception {
+        long before=jdbc.queryForObject("select count(*) from ops_device",Long.class);
+        var half=new HashMap<String,Object>(scope());half.put("longitude",118.6);
+        assertThat(rejected(half)).contains("经度和纬度要一起填");
+        assertThat(rejected(positioned(new java.math.BigDecimal("181"),new java.math.BigDecimal("37.46")))).contains("经度必须在 -180 到 180 之间");
+        assertThat(rejected(positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("-90.5")))).contains("纬度必须在 -90 到 90 之间");
+        assertThat(jdbc.queryForObject("select count(*) from ops_device",Long.class)).isEqualTo(before);
+    }
+    Map<String,String> scope() {
+        String org=jdbc.queryForObject("select org_id from app_org where enabled order by org_id fetch first 1 rows only",String.class);
+        String district=jdbc.queryForObject("select district_id from app_district where enabled order by district_id fetch first 1 rows only",String.class);
+        return Map.of("owner_org_id",org,"district_id",district);
+    }
+    Map<String,Object> positioned(java.math.BigDecimal longitude,java.math.BigDecimal latitude) {
+        var body=new HashMap<String,Object>(scope());body.put("longitude",longitude);body.put("latitude",latitude);return body;
+    }
+    String rejected(Map<String,?> body) throws Exception {
+        return mvc.perform(post(PATH).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())
+            .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body)))
+            .andExpect(status().isBadRequest()).andReturn().getResponse().getContentAsString();
+    }
+    com.fasterxml.jackson.databind.JsonNode prepareScope(Map<String,?> body,int status) throws Exception {
         String response=mvc.perform(post(PATH).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())
             .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body)))
             .andExpect(status().is(status)).andReturn().getResponse().getContentAsString();

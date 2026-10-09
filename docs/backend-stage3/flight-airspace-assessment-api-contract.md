@@ -29,6 +29,7 @@
 | `GET /api/v1/routes/{route_id}` | `route:read` | 航线根详情；越权 404 |
 | `GET /api/v1/routes/{route_id}/versions` | `route:read` | `version_no DESC, route_version_id ASC` |
 | `GET /api/v1/route-versions/{route_version_id}` | `route:read` | WGS-84 中心线和高度带；越权 404 |
+| `GET /api/v1/route-versions?route_version_ids=a,b,…` 或 `?route_ids=a,b,…` | `route:read` | 一次取回多条航线版本（≤100 个、不可重复，二选一）：按版本编号取，或按航线取每条最新 20 个版本（同逐条版本列表第一页）；越权或不存在的编号直接略去，返回 `{items,page,size,total}` |
 | `GET /api/v1/airspaces` | `airspace:read` | `updated_at DESC, airspace_id ASC` |
 | `GET /api/v1/airspaces/{airspace_id}` | `airspace:read` | 返回当前有效版本摘要；越权 404 |
 | `GET /api/v1/airspaces/{airspace_id}/versions` | `airspace:read` | `version_no DESC, airspace_version_id ASC` |

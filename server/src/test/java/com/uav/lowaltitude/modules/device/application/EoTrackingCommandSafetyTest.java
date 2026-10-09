@@ -40,8 +40,26 @@ class EoTrackingCommandSafetyTest {
         when(edges.command("c")).thenReturn(command("QUEUED","EO_BEGIN_TRACK"));
         when(edges.updateCommand(eq("c"),eq("QUEUED"),eq("TIMED_OUT"),anyLong(),anyString(),anyString())).thenReturn(1);
         when(edges.openTask("device")).thenReturn(Map.of("task_id","t","status","OPEN"));
+        when(edges.taskByBegin("c")).thenReturn(Map.of("task_id","t","status","OPEN"));
         service.timeout("c","timeout");
         verify(edges).updateTask("t","OPEN","FAILED",null,now);
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"ENDING,replay", "ENDING,live", "ENDED,replay", "ENDED,live", "FAILED,replay", "FAILED,live"})
+    void queuedBeginTimeoutCannotChangeStoppingOrSubsequentTask(String taskStatus, String mode) {
+        String commandId=UUID.randomUUID().toString(), taskId=UUID.randomUUID().toString();
+        var expired=new HashMap<>(command("QUEUED","EO_BEGIN_TRACK"));
+        expired.put("source_mode",mode);
+        expired.put("simulated","replay".equals(mode));
+        when(edges.command(commandId)).thenReturn(expired);
+        when(edges.updateCommand(eq(commandId),eq("QUEUED"),eq("TIMED_OUT"),anyLong(),anyString(),anyString())).thenReturn(1);
+        var original=Map.<String,Object>of("task_id",taskId,"status",taskStatus);
+        when(edges.taskByBegin(commandId)).thenReturn(original);
+        // The same device may already have a subsequent open task when the old begin expires.
+        when(edges.openTask("device")).thenReturn("ENDING".equals(taskStatus) ? original
+                : Map.of("task_id",UUID.randomUUID().toString(),"status","OPEN"));
+        service.timeout(commandId,"timeout");
+        verify(edges,never()).updateTask(anyString(),anyString(),anyString(),any(),anyLong());
     }
     @Test void pauseOrStaleObservationCancelsQueuedAutomaticBegin() {
         when(edges.command("c")).thenReturn(command("QUEUED","EO_BEGIN_TRACK"));

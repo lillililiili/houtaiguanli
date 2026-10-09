@@ -44,12 +44,14 @@ public class RiskPresenceService {
         if(cleared!=null) return new Presence("CLEARED","新的有效实测位置已确认离开原风险范围，解除证据已保存",cleared.observedAt());
         if("WEATHER".equals(row.riskType())) {
             var fact=weather.find(row.riskId());
-            if(fact==null)return unknown("缺少气象有效时段，当前影响待确认");
-            if(fact.validFrom()>=fact.validTo()||fact.publishedAt()>now)return unknown("气象依据时间异常，当前影响待确认");
-            if(now<fact.validFrom())return new Presence("NOT_STARTED","气象风险尚未进入有效时段",null);
+            // 天气预报规则生成的风险没有画范围，时段就是预报自己带的时段（CDX-P06）。
+            var window=fact!=null?new WeatherRiskRepository.Window(fact.publishedAt(),fact.validFrom(),fact.validTo()):weather.findForecastWindow(row.riskId());
+            if(window==null)return unknown("缺少气象有效时段，当前影响待确认");
+            if(window.validFrom()>=window.validTo()||window.publishedAt()>now)return unknown("气象依据时间异常，当前影响待确认");
+            if(now<window.validFrom())return new Presence("NOT_STARTED","气象风险尚未进入有效时段",null);
             // 有效时段结束即"已过期"：依据本身写明了到什么时候，这不是"待确认"（ZT-47）。
             // 过期不等于解除：没有新的实测依据证明天气条件消失，历史与通知记录照旧保留。
-            if(now>=fact.validTo())return new Presence("EXPIRED","气象依据的有效时段已结束，不再计入当前风险",fact.validTo());
+            if(now>=window.validTo())return new Presence("EXPIRED","气象依据的有效时段已结束，不再计入当前风险",window.validTo());
             return new Presence("CURRENT","气象风险仍在有效时段内",null);
         }
         Decision decision=assess(row,now);

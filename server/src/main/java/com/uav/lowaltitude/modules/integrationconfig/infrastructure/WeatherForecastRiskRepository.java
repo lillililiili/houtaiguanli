@@ -60,6 +60,13 @@ public class WeatherForecastRiskRepository {
                 rs.getLong("start_at"), rs.getLong("end_at"), rs.getString("district_name")));
     }
 
+    /** 某个来源编号的风险是否已经有了（兼容 10 月 8 日前“forecast-”开头的编号）。 */
+    public boolean riskExists(String sourceId, String sourceRiskId) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM flight_risk WHERE source_id=:source AND source_risk_id=:source_risk",
+                Map.of("source", sourceId, "source_risk", sourceRiskId), Long.class);
+        return count != null && count > 0;
+    }
+
     public void insertFact(String riskId, String messageId, String areaName, OffsetDateTime publishedAt,
             OffsetDateTime validFrom, OffsetDateTime validTo, String summary, double windSpeedMs, double gustMs,
             int precipitationProbabilityPct, String ruleCode, String ruleVersion, String sourceMode) {

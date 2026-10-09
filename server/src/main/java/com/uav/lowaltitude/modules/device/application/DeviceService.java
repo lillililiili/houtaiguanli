@@ -207,6 +207,23 @@ public class DeviceService {
                 text(row, "unknown_reason"), metrics(text(row, "metrics_json")), bool(row, "simulated"));
     }
 
+    /** No credentials or controls are exposed by this internal, tuple-bound fact reader. */
+    public List<PlanInspectionDevice> inspectPlanDevices(String org, String district, boolean scheduled) {
+        if (!scheduled) { access.requireDevicesRead(); access.requireMonitoringRead(); }
+        return repository.forPlanInspection(org, district, !scheduled).stream().map(row -> {
+            String id = text(row,"device_id");
+            var state = new DeviceState(id, text(row,"connectivity","UNKNOWN"), text(row,"work_state_code"),
+                bool(row,"has_alarm"), text(row,"health_code","UNKNOWN"), longValue(row,"observed_at"),
+                longValue(row,"received_at"), longValue(row,"last_heartbeat_at"), text(row,"unknown_reason"),
+                metrics(text(row,"metrics_json")), bool(row,"simulated"));
+            return new PlanInspectionDevice(summary(row), decimal(row,"longitude"), decimal(row,"latitude"),
+                text(row,"coordinate_system"), state,
+                repository.planInspectionIncidents(id,org,district).stream().map(this::incident).toList());
+        }).toList();
+    }
+    public record PlanInspectionDevice(DeviceSummary device, BigDecimal longitude, BigDecimal latitude,
+            String coordinateSystem, DeviceState state, List<Incident> incidents) { }
+
     public StateHistory history(String id, String metricCode, Long from, Long to, int limit) {
         access.requireMonitoringRead();
         requiredDevice(id);

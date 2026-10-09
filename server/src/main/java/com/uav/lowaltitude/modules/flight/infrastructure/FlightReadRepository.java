@@ -143,6 +143,26 @@ public class FlightReadRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public List<RouteVersionRow> findRouteVersions(List<String> routeVersionIds, AccessDecision access) {
+        Where where = routeVersionWhere(null, access, null);
+        where.sql.append(" AND rv.route_version_id IN (:route_version_ids)");
+        where.parameters.put("route_version_ids", routeVersionIds);
+        return jdbc.query(routeVersionSelect() + " FROM route_version rv JOIN route r ON r.route_id=rv.route_id"
+                + where.sql + " ORDER BY rv.route_version_id ASC", where.parameters, this::routeVersionRow);
+    }
+
+    public List<RouteVersionRow> latestRouteVersionsOfRoutes(List<String> routeIds, int perRoute, AccessDecision access) {
+        Where where = routeVersionWhere(null, access, null);
+        where.sql.append(" AND rv.route_id IN (:route_ids)");
+        where.parameters.put("route_ids", routeIds);
+        where.parameters.put("per_route", perRoute);
+        return jdbc.query("SELECT * FROM (" + routeVersionSelect()
+                + ",ROW_NUMBER() OVER (PARTITION BY rv.route_id ORDER BY rv.version_no DESC,rv.route_version_id ASC) AS route_rank"
+                + " FROM route_version rv JOIN route r ON r.route_id=rv.route_id" + where.sql + ") ranked"
+                + " WHERE route_rank<=:per_route ORDER BY route_id ASC,version_no DESC,route_version_id ASC",
+                where.parameters, this::routeVersionRow);
+    }
+
     private static void excludeDuplicates(Where where) {
         where.sql.append(" AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate duplicate WHERE duplicate.duplicate_plan_id=p.plan_id)");
     }

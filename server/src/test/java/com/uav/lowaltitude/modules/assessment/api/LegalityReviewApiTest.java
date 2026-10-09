@@ -480,6 +480,47 @@ class LegalityReviewApiTest {
                 .andExpect(status().isForbidden());
     }
 
+    /**
+     * CDX-P04：研判页写“只有一路来源（可信度 65%），达不到 75%”要用的三个数，只从判定输入快照里取这三个，坐标等输入照旧不出 API；
+     * 早先的研判没存下限和来源数，就只带回当时的可信度；快照读不出这三个数时研判照常可读。
+     */
+    @Test
+    void evaluationCarriesConfidenceThresholdAndSourceCountFromItsSnapshotOnly() throws Exception {
+        snapshot("{\"freshness\":\"FRESH\",\"state\":{\"longitude\":118.61,\"latitude\":37.41,\"fusion_confidence\":0.65},"
+                + "\"confidence_check\":{\"value\":0.65,\"threshold\":0.75,\"source_count\":1}}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.confidence").value(0.65))
+                .andExpect(jsonPath("$.data.confidence_threshold").value(0.75))
+                .andExpect(jsonPath("$.data.source_count").value(1))
+                .andExpect(jsonPath("$.data.input_snapshot").doesNotExist())
+                .andExpect(jsonPath("$.data.state").doesNotExist())
+                .andExpect(jsonPath("$.data.longitude").doesNotExist());
+        mvc.perform(get("/api/v1/legality-evaluations?owner_org_id=" + orgId).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].confidence").value(0.65))
+                .andExpect(jsonPath("$.data.items[0].confidence_threshold").value(0.75))
+                .andExpect(jsonPath("$.data.items[0].source_count").value(1));
+
+        snapshot("{\"freshness\":\"FRESH\",\"state\":{\"fusion_confidence\":null,\"classification_confidence\":0.8}}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.confidence").value(0.8))
+                .andExpect(jsonPath("$.data.confidence_threshold").doesNotExist())
+                .andExpect(jsonPath("$.data.source_count").doesNotExist());
+
+        snapshot("{}");
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(session)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.legal_status").value("UNDETERMINED"))
+                .andExpect(jsonPath("$.data.confidence").doesNotExist())
+                .andExpect(jsonPath("$.data.source_count").doesNotExist());
+    }
+
+    private void snapshot(String json) {
+        jdbc.update("update rule_evaluation set input_snapshot=CAST(? AS JSON) where evaluation_id=?", json, evaluation);
+    }
+
     @Test
     void malformedStoredDecisionAssuranceFailsClosed() throws Exception {
         assertThatThrownBy(() -> jdbc.update(
@@ -643,7 +684,8 @@ class LegalityReviewApiTest {
 
     @Test
     void manualEvaluationCreatesRunAndEvaluationForVisibleTargetOnly() throws Exception {
-        // 手动研判以真实当前时刻为评估时点；种子夜航窗口为北京时间 20:00–06:00，夜间会叠加夜航与计划授权未核实而落为不可判定。
+        // 手动研判以真实当前时刻为评估时点；种子夜航窗口为北京时间 20:00–06:00。没有任务、过了质量门的无人机白天夜里都判非法
+        // （OBS-04 起夜航等行为项不再把它降成不可判定），夜里多记一条夜航。
         int beijingHour = OffsetDateTime.now(java.time.ZoneId.of("Asia/Shanghai")).getHour();
         boolean night = beijingHour >= 20 || beijingHour < 6;
         mvc.perform(post("/api/v1/legality-evaluations").header("Authorization", bearer(session))
@@ -652,10 +694,13 @@ class LegalityReviewApiTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.run_id").isString())
                 .andExpect(jsonPath("$.data.evaluation.trigger_kind").value("MANUAL"))
-                .andExpect(jsonPath("$.data.evaluation.legal_status").value(night ? "UNDETERMINED" : "ILLEGAL"))
+                .andExpect(jsonPath("$.data.evaluation.legal_status").value("ILLEGAL"))
+                .andExpect(jsonPath("$.data.evaluation.violation_reasons[0]").value("NO_AUTHORIZATION"))
+                .andExpect(jsonPath("$.data.evaluation.violation_reasons", night ? org.hamcrest.Matchers.hasItem("NIGHT_FLIGHT")
+                        : org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("NIGHT_FLIGHT"))))
                 .andExpect(jsonPath("$.data.evaluation.review.state").value("PENDING_REVIEW"));
-        // 白天没有计划的目标按 C03.no_plan_status 判非法并经 C06 生成一条告警；夜间不可判定不生成告警。
-        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=? and source_id='rule-engine-legality-mock'", Long.class, target)).isEqualTo(night ? 0L : 1L);
+        // 没有计划的目标（离地 150 米，高于新-28 的 120 米）按 C03.no_plan_status 判非法并经 C06 生成一条告警。
+        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=? and source_id='rule-engine-legality-mock'", Long.class, target)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where action='legality_evaluation_triggered' and result='SUCCESS' and user_id=(select user_id from app_session where session_id=?)", Long.class, session)).isEqualTo(1L);
         mvc.perform(post("/api/v1/legality-evaluations").header("Authorization", bearer(session))
                         .header("Idempotency-Key", "manual-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
@@ -715,12 +760,12 @@ class LegalityReviewApiTest {
         jdbc.update("insert into target (target_id,target_no,object_type_code,uav_sn,first_seen_at,last_seen_at,source_mode,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'UAV',?,?,?,'mock',?,?,?,?,0)",
                 id, "MB-S7R-" + suffix, sn, at, ts(observed), orgId, district, at, ts(observed));
         jdbc.update("insert into target_source_link (link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,'seed-stage7-source',?,?,?)", link, id, "s-" + suffix, "x-" + suffix, at);
-        jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,created_at,updated_at,version) values (?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),80,60,10,90,0.9,0.95,?,?,?,?,0)",
+        jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,created_at,updated_at,version) values (?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),170,150,10,90,0.9,0.95,?,?,?,?,0)",
                 id, ts(observed), ts(observed), at, ts(observed));
         jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at) values (?,?,?,?,?,?)", track, id, link, "tr-" + suffix, at, at);
         for (int i = 0; i < 5; i++) {
             Timestamp seen = ts(observed.minusSeconds((4 - i) * 5L));
-            jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at) values (?,?,?,?,?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),80,60,?)",
+            jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at) values (?,?,?,?,?,CAST('SRID=4326;POINT(118.61 37.41)' AS GEOMETRY),170,150,?)",
                     "s7r-pt-" + suffix + "-" + i, track, i, seen, seen, seen);
         }
     }

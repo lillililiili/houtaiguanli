@@ -7,6 +7,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import jakarta.annotation.PreDestroy;
 import org.eclipse.paho.client.mqttv3.*;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
@@ -39,7 +40,7 @@ public class MqttSessionSupervisor {
     private final LingyunControlService control;
     private final long heartbeatTimeout;
     private final String owner=UUID.randomUUID().toString();
-    private final Map<String,Session> sessions=new HashMap<>();
+    private final Map<String,Session> sessions=new ConcurrentHashMap<>();
     private boolean stopped;
 
     public MqttSessionSupervisor(MqttRepository repository,MqttIngressService ingress,MqttConfigurationService configuration,
@@ -177,14 +178,20 @@ public class MqttSessionSupervisor {
                 eoEdges.subscribedDevice(b.opsDeviceId(), b.enabled() && desired.contains(b.reportingTopic()));
         session.topics=desired;
     }
-    public synchronized void publish(String brokerId,String topic,byte[] payload) {
+    /**
+     * Deliberately not synchronized with reconcile: command dispatchers publish while holding device row locks, and
+     * reconcile writes those rows while holding this monitor, so sharing it deadlocks a restart (PostgreSQL waits forever).
+     * A client closed by a concurrent reconcile fails this publish, which callers already record as an unknown result.
+     */
+    public void publish(String brokerId,String topic,byte[] payload) {
         Session session=sessions.get(brokerId);
-        if(session==null || session.client==null || !session.client.isConnected())
+        MqttAsyncClient client=session==null?null:session.client;
+        if(client==null || !client.isConnected())
             throw new IllegalStateException("MQTT_NOT_CONNECTED");
         try {
             MqttMessage message=new MqttMessage(payload);
             message.setQos(1); message.setRetained(false);
-            session.client.publish(topic,message).waitForCompletion(5000);
+            client.publish(topic,message).waitForCompletion(5000);
         } catch(MqttException ex) { throw new IllegalStateException("MQTT_PUBLISH_FAILED", ex); }
     }
     private void close(Session session) {
@@ -204,7 +211,7 @@ public class MqttSessionSupervisor {
         sessions.clear();
     }
     private static final class Session {
-        MqttAsyncClient client;
+        volatile MqttAsyncClient client;
         Set<String> topics;
         long version=-1,retryAt;
         int failures;

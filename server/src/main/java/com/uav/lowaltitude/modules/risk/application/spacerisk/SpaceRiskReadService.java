@@ -24,6 +24,8 @@ import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.BucketDto;
+import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.EvaluationHistoryDto;
+import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.EvaluationSegmentDto;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.MetricDto;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.PageDto;
 import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.RuleVersionDto;
@@ -34,6 +36,8 @@ import com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.SummaryDto;
 import com.uav.lowaltitude.modules.risk.infrastructure.RiskRepository;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.CountRow;
+import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.EvaluationSegmentRow;
+import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.EvaluationSummaryRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.RunRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.SpaceFactRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.SubtypeRow;
@@ -50,6 +54,7 @@ public class SpaceRiskReadService {
     static final String MODULE = "risk";
     private static final Set<String> SUMMARY_FILTERS = Set.of("from", "to", "owner_org_id", "district_id", "exclude_demo_samples");
     private static final Set<String> RUN_FILTERS = Set.of("rule_code", "page", "size");
+    private static final Set<String> HISTORY_FILTERS = Set.of("page", "size");
     private static final Set<String> EVALUATION_FIELDS = Set.of("rule_code", "window_from", "window_to");
     private static final Set<String> RULE_CODES = Set.of("C04", "C05");
     private static final String AVAILABILITY_NO_DATA = "NO_DATA";
@@ -92,6 +97,26 @@ public class SpaceRiskReadService {
         SpaceFactRow row = repository.findFact(id);
         if (row == null) throw new ApiException(HttpStatus.NOT_FOUND, "SPACE_FACT_NOT_FOUND", "该风险没有空间事实记录");
         return dto(row);
+    }
+
+    /**
+     * P03 评估历史：先按范围确认风险可见（不可见一律 404），再按段号分页。只有 C04 风险记评估历史，
+     * 其他风险（天气、机场区域等）返回 applicable=false 和空列表，页面据此不显示这一栏。
+     */
+    @Transactional(readOnly = true)
+    public EvaluationHistoryDto evaluationHistory(String riskId, MultiValueMap<String, String> parameters) {
+        AccessDecision decision = access.require(PermissionCode.RISK_READ);
+        String id = id(riskId);
+        checkKeys(parameters, HISTORY_FILTERS);
+        Page page = page(parameters);
+        if (risks.find(id, decision) == null) throw new ApiException(HttpStatus.NOT_FOUND, "RISK_NOT_FOUND", "飞行风险不存在");
+        if (!C04DecisionTable.RULE_CODE.equals(repository.ruleCodeOf(id))) {
+            return new EvaluationHistoryDto(false, 0, null, null, false, List.of(), page.page(), page.size(), 0);
+        }
+        EvaluationSummaryRow summary = repository.evaluationSummary(id);
+        List<EvaluationSegmentDto> items = repository.segments(id, page.offset(), page.size()).stream().map(SpaceRiskReadService::dto).toList();
+        return new EvaluationHistoryDto(true, summary.evaluations(), millis(summary.firstEvaluatedAt()), millis(summary.lastEvaluatedAt()),
+                summary.fromDetection(), items, page.page(), page.size(), summary.segments());
     }
 
     @Transactional(readOnly = true)
@@ -170,6 +195,14 @@ public class SpaceRiskReadService {
                 row.objectCount(), row.trend(), strings(row.unknownReasonsJson()), row.longitude(), row.latitude(), row.targetAltitudeRaw(),
                 row.windowFrom().toInstant().toEpochMilli(), row.windowTo().toInstant().toEpochMilli());
     }
+
+    private static EvaluationSegmentDto dto(EvaluationSegmentRow row) {
+        return new EvaluationSegmentDto(row.segmentNo(), row.firstEvaluatedAt().toInstant().toEpochMilli(),
+                row.lastEvaluatedAt().toInstant().toEpochMilli(), row.evaluationCount(), row.distanceBandM(), row.minDistanceM(),
+                row.maxDistanceM(), row.corridorRelation(), row.altitudeBand(), row.riskPresent(), row.severity());
+    }
+
+    private static Long millis(OffsetDateTime value) { return value == null ? null : value.toInstant().toEpochMilli(); }
 
     private static RunDto dto(RunRow row) {
         return new RunDto(row.runId(), row.ruleCode(), row.triggerKind(), row.windowFrom().toInstant().toEpochMilli(),

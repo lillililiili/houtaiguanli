@@ -27,7 +27,7 @@ class DecisionAssuranceAlgorithmTest {
 
     @Test void explicitAirspaceViolationAllowsAutomaticIllegalDecisionWithUnrelatedUnknown() {
         var hits = replace(checks(), hit("C02-1", ResultCode.FAIL, "INSIDE_RESTRICTED_AIRSPACE"));
-        hits = replace(hits, hit("C02-6", ResultCode.UNDETERMINED, "PILOT_POSITION_UNAVAILABLE"));
+        hits = replace(hits, hit("C02-4", ResultCode.UNDETERMINED, "PLAN_TIME_UNKNOWN"));
         var result = assess(context("mock", Freshness.FRESH, full(), "0.95", goodTrack()), hits);
         assertThat(result.status()).isEqualTo("SUFFICIENT");
         assertThat(result.reasons()).isEmpty();
@@ -38,6 +38,30 @@ class DecisionAssuranceAlgorithmTest {
         var result = assess(context("mock", Freshness.FRESH, match, "0.95", goodTrack()), checks());
         assertThat(result.status()).isEqualTo("INSUFFICIENT");
         assertThat(result.reasons()).contains("PLAN_AUTHORIZATION_UNVERIFIED");
+    }
+
+    /**
+     * 新-28：完全没有报备任务、离地 120 米以下、不在管控空域里，按规定无需申请而判 LEGAL：不需要核对任务授权，C01 照实记的
+     * “对不上任务”和夜航都不算与合法结论冲突，可直接采纳（不出告警）。超过 120 米的照旧要人核对授权。
+     */
+    @Test void noTaskLowFlightThatNeedsNoApplicationIsReliablyLegal() {
+        var none = new PlanMatch(PlanMatchCode.NONE, null, Map.of(), List.of("NO_PLAN_CANDIDATE"));
+        var hits = replace(checks(), hit("C01", ResultCode.FAIL, null));
+        var low = context("mock", Freshness.FRESH, none, "0.95", goodTrack(), "60");
+        var verdict = new C03Decision().decide(low, hits, params);
+        assertThat(verdict.status()).isEqualTo(LegalStatus.LEGAL);
+        assertThat(algorithm.assess(low, hits, verdict, params).status()).isEqualTo("SUFFICIENT");
+        var night = replace(hits, hit("C02-5", ResultCode.FAIL, "NIGHT_FLIGHT"));
+        var nightVerdict = new C03Decision().decide(low, night, params);
+        assertThat(nightVerdict.status()).isEqualTo(LegalStatus.LEGAL);
+        assertThat(algorithm.assess(low, night, nightVerdict, params).reasons()).isEmpty();
+        // 调用方给出 LEGAL、但目标其实不在无需申请之列（离地 150 米）：C01 FAIL 仍与合法结论冲突。
+        var high = context("mock", Freshness.FRESH, none, "0.95", goodTrack());
+        var forced = new C03Decision.Decision(LegalStatus.LEGAL, null, List.of(), List.of(), null, null);
+        assertThat(algorithm.assess(high, hits, forced, params).reasons()).contains("PLAN_AUTHORIZATION_UNVERIFIED", "DECISIVE_EVIDENCE_MISSING");
+        var illegal = assess(high, hits);
+        assertThat(illegal.status()).isEqualTo("INSUFFICIENT");
+        assertThat(illegal.reasons()).contains("PLAN_AUTHORIZATION_UNVERIFIED");
     }
 
     @Test void missingIdentityCannotBecomeReliableLegalFromTimeAndCorridorAlone() {
@@ -70,9 +94,11 @@ class DecisionAssuranceAlgorithmTest {
     }
 
     @Test void explicitlyIgnoredNonDecisiveUnknownDoesNotForceReview() {
-        var result = assess(context("mock", Freshness.FRESH, full(), "0.95", goodTrack()),
-                replace(checks(), hit("C02-6", ResultCode.UNDETERMINED, "PILOT_POSITION_UNAVAILABLE")));
-        assertThat(result.status()).isEqualTo("SUFFICIENT");
+        var hits = replace(checks(), hit("C02-7", ResultCode.UNDETERMINED, "ALTITUDE_DATUM_OR_RANGE_UNKNOWN"));
+        var context = context("mock", Freshness.FRESH, full(), "0.95", goodTrack());
+        assertThat(assess(context, hits).status()).isEqualTo("INSUFFICIENT");
+        params.put("C03", "ignore_undetermined_rules", "C02-6,C02-7");
+        assertThat(assess(context, hits).status()).isEqualTo("SUFFICIENT");
     }
 
     @Test void unknownAirspaceEvidenceRequiresReview() {
@@ -103,27 +129,36 @@ class DecisionAssuranceAlgorithmTest {
         assertThat(assess(context("mock", Freshness.FRESH, full(), "0.10", goodTrack()), hits).status()).isEqualTo("INSUFFICIENT");
     }
 
-    /** 2026-10-07 起单独超视距判 ILLEGAL：飞手与目标的两点距离本身就是明确依据，数据与计划都齐全时可直接采纳，不再要求"关键依据缺失"复核。 */
-    @Test void explicitBvlosViolationWithCompleteEvidenceIsReliable() {
+    /**
+     * 新-29：飞手离得远只是提示（C02-6 PASS，事实里带那句“是否经批准请核实”），没有遥控器位置这一项不判（NOT_APPLICABLE），
+     * 它判不清也不算依据不足——哪怕某个版本的忽略列表里没有 C02-6：三种情况都是合法、可直接采纳，不出告警。
+     */
+    @Test void pilotDistanceNeverMakesALegalDecisionUnreliable() {
+        params.put("C03", "ignore_undetermined_rules", "");
         var context = context("mock", Freshness.FRESH, full(), "0.95", goodTrack());
-        var hits = replace(checks(), hit("C02-6", ResultCode.FAIL, "BVLOS_EXCEEDED"));
-        var verdict = new C03Decision().decide(context, hits, params);
-        assertThat(verdict.status()).isEqualTo(LegalStatus.ILLEGAL);
-        assertThat(verdict.grade()).isEqualTo("LOW");
-        var result = algorithm.assess(context, hits, verdict, params);
-        assertThat(result.status()).isEqualTo("SUFFICIENT");
-        assertThat(result.reasons()).isEmpty();
+        for (HitDetail pilot : List.of(farPilot("DEMO"), hit("C02-6", ResultCode.NOT_APPLICABLE, "PILOT_POSITION_UNAVAILABLE"),
+                hit("C02-6", ResultCode.UNDETERMINED, "POSITION_UNKNOWN"))) {
+            var hits = replace(checks(), pilot);
+            var verdict = new C03Decision().decide(context, hits, params);
+            assertThat(verdict.status()).as(pilot.resultCode().name()).isEqualTo(LegalStatus.LEGAL);
+            var result = algorithm.assess(context, hits, verdict, params);
+            assertThat(result.status()).as(pilot.resultCode().name()).isEqualTo("SUFFICIENT");
+            assertThat(result.reasons()).as(pilot.resultCode().name()).isEmpty();
+        }
     }
 
-    /** 超视距不放宽其余复核要求：身份未核实、实测数据配演示参数、置信度不足时仍不充分，且原因写清楚，不笼统写"关键依据缺失"。 */
-    @Test void bvlosViolationKeepsTheUsualReviewRequirements() {
-        var hits = replace(checks(), hit("C02-6", ResultCode.FAIL, "BVLOS_EXCEEDED"));
-        var partial = new PlanMatch(PlanMatchCode.PARTIAL, full().plan(), Map.of(), List.of("IDENTITY_CLUE_MISSING"));
-        var unverified = assess(context("mock", Freshness.FRESH, partial, "0.95", goodTrack()), hits);
-        assertThat(unverified.status()).isEqualTo("INSUFFICIENT");
-        assertThat(unverified.reasons()).contains("IDENTITY_CLUE_MISSING").doesNotContain("DECISIVE_EVIDENCE_MISSING");
-        assertThat(assess(context("live", Freshness.FRESH, full(), "0.95", goodTrack()), hits).reasons()).contains("DEMO_RULE_PARAMETERS");
-        assertThat(assess(context("mock", Freshness.FRESH, full(), "0.10", goodTrack()), hits).status()).isEqualTo("INSUFFICIENT");
+    /** 新-29：500 米仍是演示值（放进待确认事项）；真实观测其余参数都已确认时，不因这一项参考提示要人复核，别的检查用演示参数照旧要复核。 */
+    @Test void demoPilotDistanceParameterDoesNotBlockALiveDecision() {
+        var context = context("live", Freshness.FRESH, full(), "0.95", goodTrack());
+        RuleParams confirmed = confirmedExcept("vlos_m");
+        var hits = replace(checks(), farPilot("DEMO"));
+        var result = algorithm.assess(context, hits, new C03Decision().decide(context, hits, confirmed), confirmed);
+        assertThat(result.status()).isEqualTo("SUFFICIENT");
+        var other = replace(checks(), new HitDetail("C02-3", "rv-C02-3", ResultCode.PASS, null, null, Map.of(),
+                List.of(new ParamRef("tolerance_m", "20", "DEMO")), List.of(), "航线偏离检查使用演示参数"));
+        RuleParams demoTolerance = confirmedExcept("tolerance_m");
+        assertThat(algorithm.assess(context, other, new C03Decision().decide(context, other, demoTolerance), demoTolerance).reasons())
+                .contains("DEMO_RULE_PARAMETERS");
     }
 
     @Test void staleAndMissingObservationsRemainNotApplicable() {
@@ -180,8 +215,13 @@ class DecisionAssuranceAlgorithmTest {
         return algorithm.assess(context, hits, new C03Decision().decide(context, hits, params), params);
     }
 
+    /** 离地 150 米：高于 120 米，没有报备任务时不属于按规定无需申请的飞行（新-28）。 */
     private static EvaluationContext context(String source, Freshness freshness, PlanMatch match, String confidence, TrackQuality track) {
-        var state = new TargetState("t", "tr", "SN1", new BigDecimal("118.5"), new BigDecimal("37.5"), new BigDecimal("100"), new BigDecimal("80"), BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal(confidence), NOW, NOW);
+        return context(source, freshness, match, confidence, track, "150");
+    }
+
+    private static EvaluationContext context(String source, Freshness freshness, PlanMatch match, String confidence, TrackQuality track, String heightAgl) {
+        var state = new TargetState("t", "tr", "SN1", new BigDecimal("118.5"), new BigDecimal("37.5"), new BigDecimal("170"), new BigDecimal(heightAgl), BigDecimal.ONE, BigDecimal.ZERO, new BigDecimal(confidence), NOW, NOW);
         return new EvaluationContext(new Subject(SubjectKind.TARGET, "t", "o", "d", source), state, track, match, List.of(), NOW, freshness, RunMode.ACTIVE, source);
     }
 
@@ -194,6 +234,13 @@ class DecisionAssuranceAlgorithmTest {
     private static List<HitDetail> checks() {
         return List.of("C01", "C02-1", "C02-2", "C02-3", "C02-4", "C02-5", "C02-6", "C02-7", "C02-8").stream()
                 .map(code -> hit(code, ResultCode.PASS, null)).toList();
+    }
+    /** 飞手离无人机 800 米：超过 500 米，只提示（新-29）。 */
+    private static HitDetail farPilot(String paramStatus) {
+        return new HitDetail("C02-6", "rv-C02-6", ResultCode.PASS, null, null,
+                Map.of("distance_m", new BigDecimal("800.00"), "vlos_m", new BigDecimal("500"), "beyond_vlos", true,
+                        "pilot_distance_note", "飞手离无人机约 800 米（超过 500 米），是否经批准请核实"),
+                List.of(new ParamRef("vlos_m", "500", paramStatus)), List.of(), "飞手离无人机约 800 米（超过 500 米），是否经批准请核实");
     }
     private static HitDetail hit(String code, ResultCode result, String reason) {
         return new HitDetail(code, "rv-" + code, result, reason, null, Map.of(), List.of(), List.of(), "测试规则事实");

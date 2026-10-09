@@ -90,6 +90,13 @@ class AutomationRuntimeFactsPostgresTest {
             assertThat(current.facts().get("riskLevel").evidenceId()).isEqualTo("rule_evaluation:"+f.evaluation);
             assertThat(facts.candidates(NOW,1000)).contains(f.event);
 
+            // 最新一帧还没研判时仍用最近一次研判，反制规则不在通过和等待之间来回跳（2026-10-08 第二批复验）。
+            jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?",at(NOW+3_000),f.target);
+            var lagging=facts.read(f.event,NOW+3_000);
+            assertThat(lagging.facts().get("riskLevel").value()).isEqualTo("HIGH");
+            assertThat(lagging.facts().get("riskLevel").observedAt()).isEqualTo(NOW);
+            jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?",at(NOW),f.target);
+
             // Append a newer current assessment attached to another alarm. Do not mutate history.
             new TransactionTemplate(transactions).executeWithoutResult(status->{
                 String otherAlarm=uuid();
@@ -115,6 +122,7 @@ class AutomationRuntimeFactsPostgresTest {
                 jdbc.update("UPDATE target SET object_type_code='UAV' WHERE target_id=?",f.target);
                 jdbc.update("UPDATE uav_event SET state_code='PENDING_VERIFICATION' WHERE event_id=?",f.event);
                 jdbc.update("UPDATE app_org SET enabled=TRUE WHERE org_id=?",f.org);
+                jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?",at(NOW),f.target);
             });
         }
     }

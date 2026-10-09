@@ -89,8 +89,9 @@ public class FlightActualsService {
         if (assessment == null) return MatchDto.only(FORBIDDEN);
         if (evaluation == null) return MatchDto.only(NO_EVALUATION);
         List<HitDetailDto> c01 = hits.stream().filter(hit -> C01.equals(hit.ruleCode())).toList();
+        List<HitDetailDto> execution = hits.stream().filter(hit -> com.uav.lowaltitude.modules.assessment.engine.RuleCodes.EXECUTION_CHECKS.contains(hit.ruleCode())).toList();
         return new MatchDto(AVAILABLE, evaluation.planMatchCode(), evaluation.evaluationId(),
-                millis(evaluation.evaluatedAt()), evaluation.paramStatus(), c01, evaluation.targetId());
+                millis(evaluation.evaluatedAt()), evaluation.paramStatus(), c01, evaluation.targetId(), execution);
     }
 
     /**
@@ -150,7 +151,9 @@ public class FlightActualsService {
                 if (!node.isObject()) throw invalidStoredJson();
                 details.add(new HitDetailDto(node.path("rule_code").asText(null), node.path("result_code").asText(null),
                         node.path("reason_code").isNull() ? null : node.path("reason_code").asText(null),
-                        node.path("message").isNull() ? null : node.path("message").asText(null), facts(node.get("facts"))));
+                        node.path("message").isNull() ? null : node.path("message").asText(null), facts(node.get("facts")),
+                        node.path("params").isArray()?json.convertValue(node.get("params"),new com.fasterxml.jackson.core.type.TypeReference<List<com.uav.lowaltitude.modules.assessment.engine.RuleContracts.ParamRef>>(){}):List.of(),
+                        node.path("evidence").isArray()?json.convertValue(node.get("evidence"),new com.fasterxml.jackson.core.type.TypeReference<List<com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvidenceRef>>(){}):List.of()));
             }
             return List.copyOf(details);
         } catch (ApiException ex) {

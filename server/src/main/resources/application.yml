@@ -45,6 +45,8 @@ management:
 
 app:
   flight-device-check:
+    schedule:
+      enabled: ${APP_FLIGHT_DEVICE_CHECK_SCHEDULE_ENABLED:false}
     # 航线附近设备筛选距离（米），不代表已登记的实际监测覆盖范围。
     nearby-meters: ${FLIGHT_DEVICE_CHECK_NEARBY_METERS:5000}
     # 仅本地外部接口模拟器的 mock 计划可检查其明确标记的 replay 模拟设备；正式环境默认关闭。

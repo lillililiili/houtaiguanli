@@ -20,6 +20,9 @@ public record DisposalPolicy(String policyCode, String schemaStatus, Map<String,
 
     public int maxActivePerSubject() { return number("max_active_per_subject").intValue(); }
 
+    /** 四通道反制设备打开后保持多少秒，到时由系统下发全部关闭（新-20）。 */
+    public int deviceRunSeconds() { return number("device_run_seconds").intValue(); }
+
     /** 该动作的授权时限（分钟）：批准时刻 + 本值 = valid_until。 */
     public int timeLimitMinutes(String actionType) {
         return nested("time_limit_min", actionType) instanceof Number n ? n.intValue()

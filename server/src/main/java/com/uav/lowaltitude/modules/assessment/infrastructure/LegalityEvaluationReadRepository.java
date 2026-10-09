@@ -63,6 +63,27 @@ public class LegalityEvaluationReadRepository {
                         rs.getLong("illegal"), rs.getLong("undetermined"), rs.getLong("not_applicable")));
     }
 
+    /** 合法性研判页“全部无人机”那份取数：正式模式、每架无人机只取最新一次、按当前类别只看无人机。 */
+    public static final EvaluationQuery PAGE_LATEST_UAV = new EvaluationQuery("ACTIVE", true, null, null, null, null, null, null,
+            null, null, null, null, null, "UAV", null);
+
+    /**
+     * 合法性研判页“全部无人机”给这些目标的结论（目标 → 研判编号和结论），与页面列表、汇总同一条件、同一范围
+     * （2026-10-08 新-2 第 3 点）。运行统计和大屏的非法目标数按它数，研判页选“全部”时的非法数就是统计里的非法目标数。
+     */
+    public Map<String, LatestLegality> latestOnPage(List<String> targetIds, AccessDecision access) {
+        Map<String, LatestLegality> result = new HashMap<>();
+        if (targetIds.isEmpty()) return result;
+        Where where = where(PAGE_LATEST_UAV, access);
+        where.sql.append(" AND e.target_id IN (:page_target_ids)");
+        where.parameters.put("page_target_ids", targetIds);
+        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status" + from() + where.sql, where.parameters,
+                rs -> { result.put(rs.getString("target_id"), new LatestLegality(rs.getString("evaluation_id"), rs.getString("legal_status"))); });
+        return result;
+    }
+
+    public record LatestLegality(String evaluationId, String legalStatus) { }
+
     public List<EvaluationRow> list(EvaluationQuery query, AccessDecision access, int offset, int size) {
         Where where = where(query, access);
         where.parameters.put("offset", offset); where.parameters.put("size", size);
@@ -210,7 +231,7 @@ public class LegalityEvaluationReadRepository {
                 + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
                 + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,"
                 + "COALESCE(e.recognition_class_code," + TargetRecognitionSql.type("tg", "recognition") + ") AS object_type_code,"
-                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons";
+                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons,e.input_snapshot";
     }
 
     private static Where where(EvaluationQuery query, AccessDecision access) {
@@ -335,7 +356,8 @@ public class LegalityEvaluationReadRepository {
                 rs.getString("member_alarm_id"), rs.getString("manual_alarm_id"), rs.getString("alarm_outcome"), rs.getString("member_kind"),
                 rs.getString("assessment_id"), rs.getString("owner_org_id"), rs.getString("owner_org_name"), rs.getString("district_id"),
                 rs.getString("district_name"), rs.getString("source_mode"), rs.getString("object_type_code"),
-                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"));
+                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"),
+                rs.getString("input_snapshot"));
     }
 
     private static RevisionRow revision(ResultSet rs, int i) throws SQLException {
@@ -388,7 +410,9 @@ public class LegalityEvaluationReadRepository {
             String reviewState, String manualStatus, Long reviewVersion, String supersedesEvaluationId, String supersededByEvaluationId,
             String engineAlarmId, String memberAlarmId, String manualAlarmId, String alarmOutcome, String memberKind, String assessmentId,
             String ownerOrgId, String ownerOrgName, String districtId, String districtName, String sourceMode, String objectTypeCode,
-            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons) {
+            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons,
+            /* 判定输入快照，不出 API：读接口只从里面取可信度、下限和来源数（CDX-P04）。 */
+            String inputSnapshot) {
         /** 引擎回填 > 合并成员 > 人工转告警历史；三者都空才算“无告警”。 */
         public String alarmId() { return engineAlarmId != null ? engineAlarmId : memberAlarmId != null ? memberAlarmId : manualAlarmId; }
     }

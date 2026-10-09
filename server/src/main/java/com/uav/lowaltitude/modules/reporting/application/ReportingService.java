@@ -39,25 +39,30 @@ public class ReportingService {
     private final AppClock clock;
     private final com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess;
     private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository;
+    private final com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository legalityRepository;
     private final com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
     private final AuditService auditService;
     private final ReportPeriodResolver periodResolver;
     private final OperationsWorkbookWriter workbookWriter;
+    private final ObservationMetricsService observationMetrics;
 
     public ReportingService(AccessService access, ReportingRepository repository, AppClock clock,
             com.uav.lowaltitude.modules.identity.application.AccessControlService domainAccess,
             com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targetRepository,
+            com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository legalityRepository,
             com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository, AuditService auditService, ReportPeriodResolver periodResolver,
-            OperationsWorkbookWriter workbookWriter) {
+            OperationsWorkbookWriter workbookWriter, ObservationMetricsService observationMetrics) {
         this.access = access;
         this.repository = repository;
         this.clock = clock;
         this.domainAccess = domainAccess;
         this.targetRepository = targetRepository;
+        this.legalityRepository = legalityRepository;
         this.deviceRepository = deviceRepository;
         this.auditService = auditService;
         this.periodResolver = periodResolver;
         this.workbookWriter = workbookWriter;
+        this.observationMetrics = observationMetrics;
     }
 
     @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -88,7 +93,7 @@ public class ReportingService {
         boolean devicesAllowed = access.permissionCodes(user.roleCode()).contains("devices.read");
         var targets = targetsAllowed ? repository.targets(range.from(),range.to(),scope) : List.<ReportingRepository.TargetFact>of();
         var cases = casesAllowed ? repository.cases(range.from(),range.to(),scope) : List.<ReportingRepository.CaseFact>of();
-        TargetStates states = states(targets);
+        TargetStates states = states(targets, legalityAllowed);
         Map<String,int[]> days = new LinkedHashMap<>();
         for(LocalDate date=range.from();!date.isAfter(range.to());date=date.plusDays(1)) days.put(date.toString(),new int[4]);
         Map<String,int[]> regions = new LinkedHashMap<>();
@@ -130,13 +135,13 @@ public class ReportingService {
         }).sorted(java.util.Comparator.comparingInt(PartnerRank::caseCount).reversed().thenComparing(PartnerRank::name)).limit(5).toList();
         Map<String,MetricAvailability> availability=new LinkedHashMap<>();
         availability.put("total",metric(targetsAllowed,0,"按首次发现时间去重统计新增目标；被合并进其他目标的不另计"));
-        availability.put("illegal",metric(legalityAllowed,unknownLegality,"按生成时最新研判统计明确非法目标；无明确结论的目标不计入"));
-        availability.put("high_risk",metric(risksAllowed,unknownRisk,"按生成时最新风险等级统计高风险及超高风险目标；无等级目标不计入"));
+        availability.put("illegal",metric(legalityAllowed,unknownLegality,"与合法性研判页同一取法：每架无人机只取最新一次研判，判非法的计入"));
+        availability.put("high_risk",metric(risksAllowed,unknownRisk,"数的是目标附近空中异物这类风险，不是告警等级：按生成时最新风险等级统计高风险及超高风险目标；没有风险记录的目标不计入"));
         availability.put("punish",metric(casesAllowed,0,"按立案时间统计案件，移送及通知不计作立案"));
         availability.put("by_type",metric(targetsAllowed,0,"生成时目标类型"));
-        availability.put("by_risk",metric(risksAllowed,unknownRisk,"无风险等级的目标归入未识别"));
+        availability.put("by_risk",metric(risksAllowed,unknownRisk,"按目标附近空中异物这类风险的等级分档，不是告警等级；没有风险记录的目标归入未识别"));
         availability.put("by_duration",new MetricAvailability("UNAVAILABLE","尚无可靠的飞行时长汇总，不能用观测时间跨度代替",null));
-        availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无排除断点及重复轨迹的可靠里程汇总",null));
+        availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无完整实际飞行里程依据；已观测里程单独列示",null));
         availability.put("alt_bands",metric(targetsAllowed,targets.size()-altTotal,"仅统计最新状态中有效海拔高度，缺失海拔不以离地高度替代"));
         availability.put("by_penalty",metric(casesAllowed,undecided,"仅统计有效决定书对应的已确认处罚结果；未形成有效结果的案件不计入"));
         availability.put("partners",metric(casesAllowed,undecided,"金额单位为元；主体存在未形成有效处罚结果的案件时金额暂不可统计"));
@@ -145,14 +150,17 @@ public class ReportingService {
         if(devicesAllowed) { var row=deviceRepository.overview(ownerOrgId,com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository.CountScope.STATISTICS,null);int total=number(row,"total"),online=number(row,"online");devices=new DeviceCounts(total,online,total==0?null:Math.round(online*1000.0/total)/10.0); }
         List<DayPoint> dayPoints=days.entrySet().stream().map(e->new DayPoint(e.getKey(),e.getKey().substring(5),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
         List<RegionPoint> regionPoints=regions.entrySet().stream().sorted((a,b)->Integer.compare(b.getValue()[0],a.getValue()[0])).map(e->new RegionPoint(e.getKey(),value(targetsAllowed,e.getValue()[0]),value(legalityAllowed,e.getValue()[1]),value(casesAllowed,e.getValue()[2]),value(risksAllowed,e.getValue()[3]))).toList();
+        var observations=observationMetrics.operations(range.from(),range.to(),ownerOrgId);
+        modes.addAll(observations.sourceModes());
         return new OperationsReport(range.from().toString(),range.to().toString(),modes.isEmpty()?"unknown":modes.size()==1?modes.first():"mixed",modes.contains("mock")||modes.contains("replay"),
             new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
-            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId);
+            risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId,
+            observations);
     }
 
     /**
      * 某一天新增的目标，与运行统计选这一天时同一份取数（ZT-17 复测 2）。数据大屏的"今日感知目标"和"重点目标风险态势"用它，
-     * 与运行统计的"新增目标数""各风险等级分布"才对得上：同一批目标（按首次发现时间归属，被合并的目标不另计，
+     * 与运行统计的"新增目标数""各异物风险等级分布"才对得上：同一批目标（按首次发现时间归属，被合并的目标不另计，
      * 同一套来源与数据范围），同一套风险分档。只要求能读目标，风险分档另要能读风险，不要求能打开运行统计菜单。
      * 不能读目标时返回 null；能读目标、不能读风险时 risks 为 null。
      */
@@ -162,10 +170,10 @@ public class ReportingService {
         var targets = repository.targets(day, day, new Scope("ALL".equals(user.scopeMode()), user.userId()));
         int simulated = (int) targets.stream().filter(target -> StatisticsScope.SIMULATOR.equals(target.sourceMode())).count();
         if (!allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.RISK_READ)) return new DayTargets(targets.size(), simulated, null);
-        TargetStates states = states(targets);
+        TargetStates states = states(targets, false);
         int critical=0,high=0,medium=0,low=0,unknown=0;
         for (var target : targets) {
-            // 分档同"各风险等级分布"（riskLabel）：超高、高、中、低，其余（含没有风险记录）为未识别。
+            // 分档同"各异物风险等级分布"（riskLabel）：超高、高、中、低，其余（含没有风险记录）为未识别。
             String risk = states.risk(target.id());
             if ("CRITICAL".equals(risk)) critical++;
             else if ("HIGH".equals(risk)) high++;
@@ -176,24 +184,35 @@ public class ReportingService {
         return new DayTargets(targets.size(), simulated, new RiskTiers(critical, high, medium, low, unknown));
     }
 
-    /** 每个目标生成时的最新研判与风险，只认计入统计的记录；运行统计和大屏共用。 */
-    private TargetStates states(List<ReportingRepository.TargetFact> targets) {
+    /**
+     * 每个目标生成时的最新研判与风险，只认计入统计的记录；运行统计和大屏共用。
+     * 研判结论取合法性研判页“全部无人机”给这个目标的那一条（正式模式、每架无人机只取最新一次、按当前类别只看无人机，
+     * 同一套范围；2026-10-08 新-2 第 3 点），研判页选“全部”时的非法数就是这里的非法目标数。原先取这个目标任何模式里
+     * 最后写入的一条，影子模式后写的结论、按写入时间而不是研判时间排的先后，都会让两边差几个。
+     */
+    private TargetStates states(List<ReportingRepository.TargetFact> targets, boolean withLegality) {
         Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries = new java.util.HashMap<>();
+        Map<String,com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.LatestLegality> legality = new java.util.HashMap<>();
         var formalEvaluations=new java.util.HashSet<String>(); var formalRisks=new java.util.HashSet<String>();
+        var legalityScope = withLegality ? domainAccess.require(com.uav.lowaltitude.modules.identity.domain.PermissionCode.ASSESSMENT_READ) : null;
         for (int start=0; start<targets.size(); start+=500) {
             var batchIds=targets.subList(start,Math.min(start+500,targets.size())).stream().map(ReportingRepository.TargetFact::id).toList();
-            formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
+            if (legalityScope != null) {
+                formalEvaluations.addAll(repository.formalEvaluationIds(batchIds));
+                legality.putAll(legalityRepository.latestOnPage(batchIds, legalityScope));
+            }
             formalRisks.addAll(repository.formalRiskIds(batchIds));
             summaries.putAll(targetRepository.summaries(batchIds));
         }
-        return new TargetStates(summaries, formalEvaluations, formalRisks);
+        return new TargetStates(summaries, legality, formalEvaluations, formalRisks);
     }
 
     private record TargetStates(Map<String,com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow> summaries,
+            Map<String,com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationReadRepository.LatestLegality> legality,
             java.util.Set<String> formalEvaluations, java.util.Set<String> formalRisks) {
         String legal(String targetId) {
-            var state=summaries.get(targetId);
-            return state==null||state.legality()==null||!formalEvaluations.contains(state.legality().evaluationId())?null:state.legality().legalStatus();
+            var latest=legality.get(targetId);
+            return latest==null||!formalEvaluations.contains(latest.evaluationId())?null:latest.legalStatus();
         }
         String risk(String targetId) {
             var state=summaries.get(targetId);
@@ -275,11 +294,26 @@ public class ReportingService {
         line(out, "元数据", "数据来源", "simulated", String.valueOf(report.simulated()));
         line(out, "元数据", "生成时间", "generated_at", report.generatedAt());
         report.availability().forEach((key,metric) -> line(out,"指标口径",key,metric.status(),metric.reason()));
+        var observed = report.observationMetrics();
+        if (observed != null) {
+            line(out,"监测统计","状态",observed.status(),observed.reason());
+            line(out,"监测统计","口径","说明",observed.basis());
+            line(out,"监测统计","数据来源","来源模式",String.join("、",observed.sourceModes()));
+            line(out,"监测统计","配置依据","版本",String.join("、",observed.configVersions()));
+            line(out,"监测统计","合计","有效监测时长(秒)",observed.durationSeconds());
+            line(out,"监测统计","合计","已观测里程(米)",observed.distanceMeters());
+            line(out,"监测统计","合计","参与累计目标数",observed.measuredTargets());
+            for (var day:observed.days()) {
+                line(out,"监测统计",day.date(),"有效监测时长(秒)",day.durationSeconds());
+                line(out,"监测统计",day.date(),"已观测里程(米)",day.distanceMeters());
+            }
+            for (var exclusion:observed.exclusions()) line(out,"监测统计","未计入",exclusion.reason(),exclusion.count());
+        }
         Summary summary = report.summary();
         line(out, "总览", "合计", "新增目标数", summary.total());
         line(out, "总览", "合计", "非法目标数", summary.illegal());
         line(out, "总览", "合计", "处罚案件数", summary.punish());
-        line(out, "总览", "合计", "高风险目标数", summary.highRisk());
+        line(out, "总览", "合计", "异物高风险目标数", summary.highRisk());
         line(out, "总览", "合计", "新增无人机目标数", summary.uav());
         line(out, "总览", "合计", "异常目标数", summary.abnormal());
         DeviceCounts devices = report.devices();
@@ -292,15 +326,15 @@ public class ReportingService {
             line(out, "分日", day.date(), "新增目标数", day.total());
             line(out, "分日", day.date(), "非法飞行", day.illegal());
             line(out, "分日", day.date(), "处罚案件", day.punish());
-            line(out, "分日", day.date(), "高风险", day.highRisk());
+            line(out, "分日", day.date(), "异物高风险", day.highRisk());
         }
         for (RegionPoint region : report.regions()) {
             line(out, "区域", region.name(), "新增目标数", region.total());
             line(out, "区域", region.name(), "非法飞行", region.illegal());
             line(out, "区域", region.name(), "处罚案件", region.punish());
-            line(out, "区域", region.name(), "高风险", region.highRisk());
+            line(out, "区域", region.name(), "异物高风险", region.highRisk());
         }
-        for (NamedCount item : report.byRisk()) line(out, "风险等级", item.name(), "数量", item.value());
+        for (NamedCount item : report.byRisk()) line(out, "异物风险等级", item.name(), "数量", item.value());
         for (NamedCount item : report.byType()) line(out, "目标类型", item.name(), "数量", item.value());
         for (NamedCount item : report.byDuration()) line(out, "飞行时长(分钟)", item.name(), "次数", item.value());
         for (NamedCount item : report.byTrack()) line(out, "轨迹长度(公里)", item.name(), "次数", item.value());
@@ -370,7 +404,8 @@ public class ReportingService {
             Summary summary, DeviceCounts devices, List<DayPoint> days, List<NamedCount> byRisk,
             List<NamedCount> byType, List<NamedCount> byDuration, List<NamedCount> byTrack,
             List<NamedCount> altBands, Integer altTotal, List<RegionPoint> regions, List<NamedCount> byPenalty,
-            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability, String ownerOrgId) { }
+            List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability, String ownerOrgId,
+            com.uav.lowaltitude.modules.reporting.domain.ObservationMetrics.Result observationMetrics) { }
 
     public record MetricAvailability(String status, String reason, Integer missingCount) { }
 
@@ -391,6 +426,6 @@ public class ReportingService {
     /** 某一天新增的目标数、其中来自设备模拟器的个数、各风险等级的个数（不能读风险时为 null）。 */
     public record DayTargets(int total, int simulated, RiskTiers risks) { }
 
-    /** 与"各风险等级分布"同一套分档：超高风险、高风险、中风险、低风险、未识别。 */
+    /** 与"各异物风险等级分布"同一套分档：超高风险、高风险、中风险、低风险、未识别。 */
     public record RiskTiers(int critical, int high, int medium, int low, int unknown) { }
 }

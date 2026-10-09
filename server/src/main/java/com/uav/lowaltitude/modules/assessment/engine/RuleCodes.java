@@ -21,7 +21,8 @@ public final class RuleCodes {
     /** 命中即违法的空域类检查（C03 第 4 步）。 */
     public static final List<String> AIRSPACE_CHECKS = List.of(C02_1, C02_2, C02_8);
     /** 命中即异常的行为类检查（C03 第 5 步）。 */
-    public static final List<String> BEHAVIOUR_CHECKS = List.of(C02_3, C02_4, C02_5, C02_7);
+    public static final List<String> EXECUTION_CHECKS = List.of("C02-9","C02-10","C02-11","C02-12");
+    public static final List<String> BEHAVIOUR_CHECKS = List.of(C02_3, C02_4, C02_5, C02_7,"C02-9","C02-10","C02-11","C02-12");
 
     /** 契约默认优先级；rule_set_member.priority 存在时以其为准。 */
     public static final int PRIORITY_C01 = 100;
@@ -55,7 +56,10 @@ public final class RuleCodes {
     public static final String ROUTE_GEOMETRY_UNKNOWN = "ROUTE_GEOMETRY_UNKNOWN";
     public static final String PLAN_TIME_UNKNOWN = "PLAN_TIME_UNKNOWN";
     public static final String PILOT_POSITION_UNAVAILABLE = "PILOT_POSITION_UNAVAILABLE";
-    /** 阶段 8.5：目标与飞手的大圆距离超过 C02-6 阈值，即超视距飞行。 */
+    /**
+     * 阶段 8.5 起表示目标与飞手的大圆距离超过 C02-6 阈值（超视距）。新-29（2026-10-08）起不再产生：超视距只作提示、不算违规；
+     * 保留这个码给以前的研判和告警显示、筛选。
+     */
     public static final String BVLOS_EXCEEDED = "BVLOS_EXCEEDED";
     public static final String NO_PLAN = "NO_PLAN";
     public static final String STATE_STALE = "STATE_STALE";

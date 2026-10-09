@@ -382,6 +382,15 @@ class AutoSmsApiTest {
         evaluation("LEGAL","FRESH","[]",true,Instant.now(),true);
         read().andExpect(jsonPath("$.data.can_request_counter").value(false));
     }
+    /** 验收预跑 3-4 / 8-8（新-19）：没有遥控器位置只让超视距判不了，不挡反制；别的未知照样挡。 */
+    @Test void missingPilotPositionAloneDoesNotBlockCounter()throws Exception {
+        evaluation("ILLEGAL","FRESH","[\"PILOT_POSITION_UNAVAILABLE\"]",true,Instant.now(),true);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(true));
+        evaluation("ILLEGAL","FRESH","[\"PILOT_POSITION_UNAVAILABLE\",\"PLAN_MATCH_UNDETERMINED\"]",true,Instant.now(),true);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false));
+        evaluation("ILLEGAL","FRESH","[\"ALTITUDE_DATUM_OR_RANGE_UNKNOWN\"]",true,Instant.now(),true);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false));
+    }
     @Test void staleOrInsufficientSystemEvidenceCannotEnableCounter()throws Exception {
         read().andExpect(jsonPath("$.data.can_request_counter").value(false));
         evaluation("ILLEGAL","FRESH","[]",true,Instant.now(),true);

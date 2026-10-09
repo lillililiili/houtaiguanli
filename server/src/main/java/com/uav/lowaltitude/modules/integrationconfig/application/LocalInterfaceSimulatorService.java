@@ -159,7 +159,12 @@ public class LocalInterfaceSimulatorService {
   else throw bad("不支持的模拟通知来源");
   requireSimulated(mode);
  }
- private boolean visible(Row row){try{if("OUT".equals(row.direction())){var h=handoffs.find(row.subjectId(),access.require(PermissionCode.HANDOFF_READ));if(h==null)return false;source(h.sourceKind(),h.sourceId(),false);}else flights.flightPlan(row.subjectId());return true;}catch(ApiException e){if(e.getStatus()==HttpStatus.NOT_FOUND||e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e;}}
+ private boolean visible(Row row){try{if("OUT".equals(row.direction())){var h=handoffs.find(row.subjectId(),access.require(PermissionCode.HANDOFF_READ));if(h==null)return false;source(h.sourceKind(),h.sourceId(),false);}
+  // CDX-P07: an area forecast belongs to no flight task, so it is not looked up as one. Its own submitter may see it
+  // while still allowed to read flight tasks; nobody else can.
+  else if(areaForecast(row)){access.require(PermissionCode.FLIGHT_READ);return com.uav.lowaltitude.platform.security.AuthContext.require().userId().equals(row.actor());}
+  else flights.flightPlan(row.subjectId());return true;}catch(ApiException e){if(e.getStatus()==HttpStatus.NOT_FOUND||e.getStatus()==HttpStatus.FORBIDDEN)return false;throw e;}}
+ private boolean areaForecast(Row row){if(!"WEATHER_FORECAST".equals(row.kind()))return false;var plan=tree(row.payload()).path("plan_id");return !plan.isTextual()||plan.asText().isBlank();}
  private Message replay(Row row,Object input){if(!visible(row))throw missing();if(!tree(row.payload()).equals(tree(encode(input))))throw conflict("同一消息编号的内容已变化，请使用新编号");return dto(row);}
  private Message save(String external,String kind,String subject,String actor,Object payload,Object result){String id=UUID.randomUUID().toString();Row row=new Row(id,external,kind,"IN",subject,actor,"ACCEPTED",encode(payload),encode(result),clock.nowMillis(),0);repository.insert(row);var user=com.uav.lowaltitude.platform.security.AuthContext.require();audit.record(user.userId(),user.account(),"local_interface_input","local_interface",id,"接收模拟"+kind+"; subject_id="+subject,null);return dto(row);}
  public Message dto(Row row){

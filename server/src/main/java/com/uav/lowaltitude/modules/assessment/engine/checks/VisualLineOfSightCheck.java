@@ -16,16 +16,22 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TargetState;
 
 /**
- * C02-6 超视距：目标与飞手（遥控器）位置的大圆距离超过阈值即判超视距。
+ * C02-6 飞手距离（原“超视距”）：算目标与飞手（遥控器）位置的大圆距离，只给值班员参考，不再判违规。
+ * 2026-10-08 业务决定（法规核对，确认书 2-10，新-29）：国家规定只有微型无人机必须在视距内飞，其他经批准可以超视距；
+ * 系统分不出是不是微型，任务里也没写批没批超视距，所以超过 vlos_m 时照样 PASS，事实里带 beyond_vlos 和
+ * “飞手离无人机约 N 米（超过 500 米），是否经批准请核实”这句（pilot_distance_note，目标详情、告警详情也用它），
+ * 不出 BVLOS_EXCEEDED、不告警；10-07 那条“只有超视距时判非法、低风险告警”取消。
  * 距离在 Java 侧用 Haversine 算，不走 SpatialFactPort——点到点距离不需要 PostGIS，H2 环境也必须能判；
  * 走廊那类涉及几何图形的判定才必须交给数据库。
- * 飞手位置缺失仍是 PILOT_POSITION_UNAVAILABLE（阶段 8.5 之前恒定如此，C03 默认经 ignore_undetermined_rules 忽略）；
- * 只有飞手位置而目标位置缺失时是 POSITION_UNKNOWN——单边坐标算不出距离，也不能当成"没接入"。
- * FAIL（BVLOS_EXCEEDED）单独出现时 C03 判 ILLEGAL、告警等级固定为低风险（2026-10-07 业务决定，见 C03Decision 第 6 步）。
+ * 没有飞手位置：这一项不判（NOT_APPLICABLE，原因码仍记 PILOT_POSITION_UNAVAILABLE），不进未知原因、不影响结论；
+ * 只有飞手位置而目标位置缺失时是 POSITION_UNKNOWN——单边坐标算不出距离，C03 同样不因它挡结论。
  */
 @Component
 public class VisualLineOfSightCheck implements RuleCheck {
     static final String PARAM_VLOS_M = "vlos_m";
+    /** 超过阈值时 facts 里的标记和那句提示：研判页、目标详情、告警详情都据此显示，不在各处各拼一遍。 */
+    public static final String FACT_BEYOND_VLOS = "beyond_vlos";
+    public static final String FACT_PILOT_DISTANCE_NOTE = "pilot_distance_note";
     /** WGS84 平均地球半径（IUGG）：米制距离用球面近似即可，视距阈值是百米量级，椭球修正意义不大。 */
     private static final double EARTH_RADIUS_M = 6371008.8;
     private static final int METRIC_SCALE = 2;
@@ -39,8 +45,7 @@ public class VisualLineOfSightCheck implements RuleCheck {
         List<ParamRef> refs = List.of(CheckSupport.number(params, ruleCode(), PARAM_VLOS_M));
         TargetState state = context.state();
         if (state == null || state.pilotLongitude() == null || state.pilotLatitude() == null) {
-            return CheckSupport.undetermined(ruleCode(), RuleCodes.PILOT_POSITION_UNAVAILABLE, CheckSupport.facts(), refs, List.of(),
-                    "飞手位置缺失，无法判断是否超视距");
+            return CheckSupport.notApplicable(ruleCode(), RuleCodes.PILOT_POSITION_UNAVAILABLE, refs, "没有遥控器位置，飞手距离这一项不判，不影响结论");
         }
         Map<String, Object> facts = CheckSupport.facts();
         // 飞手位置作为一块坐标进 facts（与契约 §6 的 pilot_location 同名），而不是拆成两个平行字段。
@@ -56,11 +61,13 @@ public class VisualLineOfSightCheck implements RuleCheck {
         BigDecimal distance = greatCircleMetres(state.longitude(), state.latitude(), state.pilotLongitude(), state.pilotLatitude());
         facts.put("distance_m", distance);
         if (distance.compareTo(threshold) > 0) {
-            // 这句就是超视距告警的可读原因（研判明细 hit_details[].message）：距离取整到米、阈值取本版本参数，
-            // 精确距离仍在 facts.distance_m。
-            return CheckSupport.fail(ruleCode(), RuleCodes.BVLOS_EXCEEDED, facts, refs, evidence,
-                    "超视距飞行（飞手离无人机约 " + distance.setScale(0, RoundingMode.HALF_UP).toPlainString()
-                            + " 米，超过 " + threshold.stripTrailingZeros().toPlainString() + " 米）");
+            // 距离取整到米、阈值取本版本参数，精确距离仍在 facts.distance_m。结果仍是 PASS：超视距不再算违规（新-29）。
+            String note = "飞手离无人机约 " + distance.setScale(0, RoundingMode.HALF_UP).toPlainString()
+                    + " 米（超过 " + threshold.stripTrailingZeros().toPlainString() + " 米），是否经批准请核实";
+            facts.put("vlos_m", threshold);
+            facts.put(FACT_BEYOND_VLOS, true);
+            facts.put(FACT_PILOT_DISTANCE_NOTE, note);
+            return CheckSupport.pass(ruleCode(), facts, refs, evidence, note);
         }
         return CheckSupport.pass(ruleCode(), facts, refs, evidence,
                 "目标距飞手 " + distance.toPlainString() + " m，在视距阈值内");

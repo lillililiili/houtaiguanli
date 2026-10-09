@@ -41,8 +41,10 @@ public final class TargetDtos {
        不给空对象——空对象在页面上会渲染成一行没有内容的标题。 */
     public record RiskSummaryDto(String riskId, String severity, String state, Long occurredAt) { }
 
+    /* pilotDistanceNote（新-29）：最近一次研判里飞手离无人机超过阈值时的提示“飞手离无人机约 N 米（超过 500 米），是否经批准请核实”，
+       页面放在“遥控器位置”后面；没超过、没有遥控器位置或旧研判都没有这一项。 */
     public record LegalitySummaryDto(String evaluationId, String legalStatus, String grade,
-            List<String> violationReasons) { }
+            List<String> violationReasons, String pilotDistanceNote) { }
 
     public record DisposalSummaryDto(String authorizationId, String authorizationNo, String actionType,
             String status) { }

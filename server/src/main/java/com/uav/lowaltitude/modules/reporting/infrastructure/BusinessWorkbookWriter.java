@@ -38,6 +38,7 @@ public class BusinessWorkbookWriter {
                     for (var r : detail.items()) row(items, columns.stream().map(c -> ReportLabels.cell(section.key(),r,c.field())).toArray());
                 }
             }
+            ObservationWorkbookSheet.append(book, p.observationMetrics());
             for (Sheet s : book) {
                 s.getHeader().setCenter(title);
                 if (p.simulated()) s.getFooter().setLeft("模拟验收 · 不可作为现场正式报表");

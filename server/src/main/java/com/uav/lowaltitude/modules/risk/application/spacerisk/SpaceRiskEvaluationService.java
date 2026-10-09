@@ -30,6 +30,7 @@ import com.uav.lowaltitude.modules.risk.application.spacerisk.C04DecisionTable.T
 import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort.AirportProximity;
 import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort.SpaceObservation;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository;
+import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.EvaluationSegmentRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.RuleVersionRow;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.SpaceFactRow;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -54,6 +55,8 @@ public class SpaceRiskEvaluationService {
     /** 部分（计划, 目标）没能入库，其余照常生成；后面跟失败条数与前几条原因。 */
     public static final String MESSAGE_PARTIAL_FAILURE = "PARTIAL_FAILURE";
     private static final String REASON_AIRPORT_ZONE = "SPACE_OBJECT_IN_AIRPORT_ZONE";
+    /** 机场区域异物规则（进离场程序缓冲、保护目标周边）。 */
+    public static final String C05_RULE_CODE = "C05";
 
     private final C04DecisionTable decisionTable = new C04DecisionTable();
     private final SpaceRiskSpatialPort spatial;
@@ -100,6 +103,15 @@ public class SpaceRiskEvaluationService {
         return run(C04DecisionTable.RULE_CODE, windowFrom, windowTo, "SCHEDULED", null, observedSince);
     }
 
+    /**
+     * 定时 C05（2026-10-08 确认书 4-3，新-27）：窗口口径与 {@link #evaluateScheduled} 相同，按最新状态的写入时刻推进；
+     * 同一任务、同一目标已有未解除的机场区域风险时不再新建。
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public SpaceRiskRepository.RunRow evaluateScheduledAirport(OffsetDateTime windowFrom, OffsetDateTime windowTo, OffsetDateTime observedSince) {
+        return run(C05_RULE_CODE, windowFrom, windowTo, "SCHEDULED", null, observedSince);
+    }
+
     private SpaceRiskRepository.RunRow run(String ruleCode, OffsetDateTime windowFrom, OffsetDateTime windowTo, String triggerKind, String actorId,
             OffsetDateTime observedSince) {
         OffsetDateTime startedAt = clock.now().atOffset(ZoneOffset.UTC);
@@ -123,7 +135,7 @@ public class SpaceRiskEvaluationService {
         try {
             return C04DecisionTable.RULE_CODE.equals(ruleCode)
                     ? runC04(runId, windowFrom, windowTo, observedSince, params, version)
-                    : runC05(runId, windowFrom, windowTo, params, version);
+                    : runC05(runId, windowFrom, windowTo, observedSince, params, version);
         } catch (RuntimeException ex) {
             return finish(runId, STATUS_FAILED, 0, 0, 0, message(ex));
         }
@@ -138,6 +150,7 @@ public class SpaceRiskEvaluationService {
         Set<String> targetsSeen = new LinkedHashSet<>();
         int created = 0, deduplicated = 0, attempted = 0;
         List<String> failures = new ArrayList<>();
+        OffsetDateTime evaluatedAt = clock.now().atOffset(ZoneOffset.UTC);
         for (SpaceObservation observation : observations) {
             targetsSeen.add(observation.targetId());
             CorridorRelation relation = decisionTable.relation(observation.distanceToRouteM(), observation.corridorHalfWidthM(), params);
@@ -145,11 +158,18 @@ public class SpaceRiskEvaluationService {
             Trend trend = trend(observation.trend());
             Decision decision = decisionTable.decide(new Observation(relation, band, observation.planId() != null,
                     observation.objectCount(), trend), params);
-            if (!decision.generate()) continue;
+            C04EvaluationHistory.Evaluation evaluated = new C04EvaluationHistory.Evaluation(observation.distanceToRouteM(), relation.name(),
+                    band.name(), decision.generate(), decision.severity(), version.ruleSetVersionId(), evaluatedAt, observation.observedAt());
+            if (!decision.generate()) {
+                // P03：这一（计划, 目标）已有没解除的风险时，这次不构成风险也记进它的评估历史，页面才看得出它什么时候不再构成风险。
+                if (observation.planId() != null) recordEvaluation(null, observation, evaluated, false, failures);
+                continue;
+            }
             attempted++;
             try {
-                Boolean fresh = perItem.execute(status -> generateC04(observation, relation, band, trend, decision, version, from, to));
-                if (Boolean.TRUE.equals(fresh)) created++; else deduplicated++;
+                Generated generated = perItem.execute(status -> generateC04(observation, relation, band, trend, decision, version, from, to));
+                if (generated.fresh()) created++; else deduplicated++;
+                if (generated.riskId() != null) recordEvaluation(generated.riskId(), observation, evaluated, generated.fresh(), failures);
             } catch (RuntimeException ex) {
                 // 只回滚这一个（计划, 目标）的保存点：其他目标照常生成，运行记录也照常收尾。
                 failures.add(observation.planId() + "/" + observation.targetId() + ": " + message(ex));
@@ -169,24 +189,64 @@ public class SpaceRiskEvaluationService {
     }
 
     /**
-     * 一个（计划, 目标）的 C04 入库，返回是否新建。
+     * 一个（计划, 目标）的 C04 入库，返回这次评估归到哪条风险、是不是新建的。
      * 同一计划、同一目标已有未解除的 C04 风险时不再新建：source_risk_id 含窗口起点，只防同一窗口重算；
      * 异物一直停在航线上时每轮窗口都不同，不按"这一次"去重就会每分钟多出一条同样的风险。
      */
-    private boolean generateC04(SpaceObservation observation, CorridorRelation relation, AltitudeBand band, Trend trend, Decision decision,
+    private Generated generateC04(SpaceObservation observation, CorridorRelation relation, AltitudeBand band, Trend trend, Decision decision,
             RuleVersionRow version, OffsetDateTime from, OffsetDateTime to) {
-        if (repository.openC04Risk(observation.planId(), observation.targetId()) != null) return false;
+        String open = repository.openC04Risk(observation.planId(), observation.targetId());
+        if (open != null) return new Generated(open, false);
         String sourceRiskId = "C04:" + version.ruleSetVersionId() + ":" + observation.planId() + ":" + observation.targetId() + ":" + from.toInstant().toEpochMilli();
         String riskId = ingest(observation, decision, sourceRiskId, from);
         // space_risk_fact 只增：同一 source_risk_id 重复评估返回既有风险，事实行不重写，
-        // 否则同一条风险的"判定依据"会被后一次评估的参数悄悄改掉。
-        if (repository.factExists(riskId)) return false;
+        // 否则同一条风险的"判定依据"会被后一次评估的参数悄悄改掉。那条风险已有解除依据，这次评估也不再记进它的评估历史。
+        if (repository.factExists(riskId)) return new Generated(null, false);
         repository.insertFact(new SpaceFactRow(riskId, observation.subtypeCode(), null, ruleVersionId(version, C04DecisionTable.RULE_CODE),
                 version.ruleSetVersionId(), version.versionNo(), observation.distanceToRouteM(), relation.name(), band.name(),
                 observation.altitudeDatum(), observation.objectCount(), trend.name(), unknownReasons(decision),
                 observation.longitude(), observation.latitude(), observation.altitudeM(),
                 from, to, clock.now().atOffset(ZoneOffset.UTC)));
-        return true;
+        return new Generated(riskId, true);
+    }
+
+    /** riskId 为 null 表示这次评估没有归到任何还没解除的风险。 */
+    private record Generated(String riskId, boolean fresh) { }
+
+    /**
+     * P03：把一次 C04 评估记进风险的评估历史（{@link C04EvaluationHistory} 定怎么分段）。riskId 为 null 时先找这一（计划, 目标）
+     * 还没解除的风险，没有就不记。自己占一个保存点：记失败不回滚已生成的风险，只在运行记录里留一句，下一轮照常再记。
+     */
+    private void recordEvaluation(String riskId, SpaceObservation observation, C04EvaluationHistory.Evaluation evaluated, boolean detection,
+            List<String> failures) {
+        try {
+            perItem.executeWithoutResult(status -> {
+                String target = riskId != null ? riskId : repository.openC04Risk(observation.planId(), observation.targetId());
+                if (target != null) appendEvaluation(target, evaluated, detection);
+            });
+        } catch (RuntimeException ex) {
+            failures.add("history " + observation.planId() + "/" + observation.targetId() + ": " + message(ex));
+            log.warn("space risk C04 history failed: plan={}, target={}, error={}", observation.planId(), observation.targetId(), ex.toString());
+        }
+    }
+
+    private void appendEvaluation(String riskId, C04EvaluationHistory.Evaluation evaluated, boolean detection) {
+        OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
+        EvaluationSegmentRow last = repository.latestSegment(riskId);
+        switch (C04EvaluationHistory.next(last, evaluated)) {
+            case SKIP -> { }
+            case EXTEND -> {
+                // 同一段刚被并发的另一轮评估改过：这一次已经算在那一轮里，不另开一段。
+                if (repository.extendSegment(last, evaluated.evaluatedAt(), evaluated.observedAt(), evaluated.distanceM(), now) != 1) {
+                    log.info("space risk C04 history segment changed concurrently: risk={}, segment={}", riskId, last.segmentId());
+                }
+            }
+            case START -> repository.insertSegment(new EvaluationSegmentRow(UUID.randomUUID().toString(), riskId,
+                    last == null ? 1 : last.segmentNo() + 1, evaluated.evaluatedAt(), evaluated.evaluatedAt(), 1,
+                    evaluated.observedAt(), evaluated.observedAt(), evaluated.distanceBandM(), evaluated.distanceM(), evaluated.distanceM(),
+                    evaluated.corridorRelation(), evaluated.altitudeBand(), evaluated.riskPresent(), evaluated.severity(),
+                    evaluated.ruleSetVersionId(), detection && last == null), now);
+        }
     }
 
     private static String partialFailure(List<String> failures) {
@@ -194,32 +254,60 @@ public class SpaceRiskEvaluationService {
         return text.length() <= 500 ? text : text.substring(0, 500);
     }
 
-    /** C05：命中进离场缓冲或保护目标半径即为机场区域风险；没有活动计划时只统计，并如实说明缺前置条件。 */
-    private SpaceRiskRepository.RunRow runC05(String runId, OffsetDateTime from, OffsetDateTime to, RuleParams params, RuleVersionRow version) {
+    /**
+     * C05：命中进离场缓冲或保护目标半径即为机场区域风险；没有活动计划时只统计，并如实说明缺前置条件。
+     * observedSince 为空是手动评估（按观测时刻圈窗口），否则是定时评估（按写入时刻圈窗口，见 {@link #evaluateScheduled}）。
+     * 每个（计划, 目标）各占一个保存点，与 C04 相同：一个目标入库失败不拖垮整轮（BUG-17）。
+     */
+    private SpaceRiskRepository.RunRow runC05(String runId, OffsetDateTime from, OffsetDateTime to, OffsetDateTime observedSince,
+            RuleParams params, RuleVersionRow version) {
         int pad = params.integer(C04DecisionTable.RULE_CODE, "plan_window_pad_min");
-        BigDecimal procedureBuffer = params.number("C05", "procedure_buffer_m");
-        BigDecimal protectedPad = params.number("C05", "protected_target_pad_m");
-        List<AirportProximity> proximities = spatial.airportProximity(from, to, pad);
+        BigDecimal procedureBuffer = params.number(C05_RULE_CODE, "procedure_buffer_m");
+        BigDecimal protectedPad = params.number(C05_RULE_CODE, "protected_target_pad_m");
+        List<AirportProximity> proximities = observedSince == null
+                ? spatial.airportProximity(from, to, pad)
+                : spatial.refreshedAirportProximity(from, to, observedSince, pad);
         Set<String> targetsSeen = new LinkedHashSet<>();
-        int created = 0, deduplicated = 0, withoutPlan = 0;
+        int created = 0, deduplicated = 0, withoutPlan = 0, attempted = 0;
+        List<String> failures = new ArrayList<>();
         for (AirportProximity proximity : proximities) {
             targetsSeen.add(proximity.targetId());
             boolean hitProcedure = proximity.distanceToProcedureM() != null && proximity.distanceToProcedureM().compareTo(procedureBuffer) <= 0;
             boolean hitProtected = proximity.distanceToProtectedM() != null && proximity.distanceToProtectedM().compareTo(protectedPad) <= 0;
             if (!hitProcedure && !hitProtected) continue;
             if (proximity.planId() == null) { withoutPlan++; continue; }
-            String sourceRiskId = "C05:" + version.ruleSetVersionId() + ":" + proximity.planId() + ":" + proximity.targetId() + ":" + from.toInstant().toEpochMilli();
-            String riskId = ingestAirport(proximity, sourceRiskId, from);
-            if (repository.factExists(riskId)) { deduplicated++; continue; }
-            // C05 目前没有目标坐标查询（只算到程序/保护目标的距离），位置快照留空，页面不画点。
-            repository.insertFact(new SpaceFactRow(riskId, proximity.subtypeCode(), null, ruleVersionId(version, "C05"), version.ruleSetVersionId(),
-                    version.versionNo(), proximity.distanceToProcedureM(), CorridorRelation.UNKNOWN.name(), AltitudeBand.UNKNOWN.name(),
-                    proximity.altitudeDatum(), proximity.objectCount(),
-                    Trend.UNKNOWN.name(), write(List.of(C04DecisionTable.UNKNOWN_OBJECT_COUNT, C04DecisionTable.UNKNOWN_TREND)),
-                    null, null, proximity.altitudeM(), from, to, clock.now().atOffset(ZoneOffset.UTC)));
-            created++;
+            attempted++;
+            try {
+                Boolean fresh = perItem.execute(status -> generateC05(proximity, version, from, to));
+                if (Boolean.TRUE.equals(fresh)) created++; else deduplicated++;
+            } catch (RuntimeException ex) {
+                failures.add(proximity.planId() + "/" + proximity.targetId() + ": " + message(ex));
+                log.warn("space risk C05 item failed: run={}, plan={}, target={}, error={}", runId, proximity.planId(), proximity.targetId(), ex.toString());
+            }
         }
-        return finish(runId, STATUS_SUCCESS, targetsSeen.size(), created, deduplicated, withoutPlan > 0 ? MESSAGE_PLAN_REQUIRED : null);
+        int failedItems = attempted - created - deduplicated;
+        String status = attempted > 0 && failedItems == attempted ? STATUS_FAILED : STATUS_SUCCESS;
+        String message = !failures.isEmpty() ? partialFailure(failures) : withoutPlan > 0 ? MESSAGE_PLAN_REQUIRED : null;
+        return finish(runId, status, targetsSeen.size(), created, deduplicated, message);
+    }
+
+    /**
+     * 一个（计划, 目标）的 C05 入库，返回是否新建。
+     * 同一任务、同一目标已有未解除的机场区域风险时不再新建：异物一直停在进近航线旁时，每分钟一轮的定时评估窗口都不同，
+     * 只靠含窗口起点的 source_risk_id 去重会每轮多出一条同样的风险（与 C04 相同的口径，新-27）。
+     */
+    private boolean generateC05(AirportProximity proximity, RuleVersionRow version, OffsetDateTime from, OffsetDateTime to) {
+        if (repository.openSpaceRisk(C05_RULE_CODE, proximity.planId(), proximity.targetId()) != null) return false;
+        String sourceRiskId = "C05:" + version.ruleSetVersionId() + ":" + proximity.planId() + ":" + proximity.targetId() + ":" + from.toInstant().toEpochMilli();
+        String riskId = ingestAirport(proximity, sourceRiskId, from);
+        if (repository.factExists(riskId)) return false;
+        // C05 目前没有目标坐标查询（只算到程序/保护目标的距离），位置快照留空，页面不画点。
+        repository.insertFact(new SpaceFactRow(riskId, proximity.subtypeCode(), null, ruleVersionId(version, C05_RULE_CODE), version.ruleSetVersionId(),
+                version.versionNo(), proximity.distanceToProcedureM(), CorridorRelation.UNKNOWN.name(), AltitudeBand.UNKNOWN.name(),
+                proximity.altitudeDatum(), proximity.objectCount(),
+                Trend.UNKNOWN.name(), write(List.of(C04DecisionTable.UNKNOWN_OBJECT_COUNT, C04DecisionTable.UNKNOWN_TREND)),
+                null, null, proximity.altitudeM(), from, to, clock.now().atOffset(ZoneOffset.UTC)));
+        return true;
     }
 
     private String ingest(SpaceObservation observation, Decision decision, String sourceRiskId, OffsetDateTime from) {

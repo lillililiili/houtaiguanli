@@ -50,6 +50,11 @@ public class FlightReadController {
         return ApiResponse.ok(service.routeVersions(routeId, parameters));
     }
 
+    @GetMapping("/route-versions")
+    public ApiResponse<PageDto<RouteVersionDto>> routeVersionBatch(@RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(service.routeVersionBatch(parameters));
+    }
+
     @GetMapping("/route-versions/{routeVersionId}")
     public ApiResponse<RouteVersionDto> routeVersion(@PathVariable String routeVersionId) {
         return ApiResponse.ok(service.routeVersion(routeVersionId));

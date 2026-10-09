@@ -33,6 +33,25 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); });
 
 describe('业务报表', () => {
+  it('已有目标的监测片段不被新增目标零记录遮盖，未知时长不显示为零', async () => {
+    await mount();
+    pending[0].resolve({ ...makePreview(pending[0].params),
+      sections: [{ key: 'targets', title: '新增目标', accessible: true, total: 0, snapshot: false, basis: '首次发现时间', days: [], distributions: [] }],
+      observation_metrics: { status: 'PARTIAL', reason: '仅累计有效片段', basis: '不是完整飞行时长',
+        duration_seconds: 12.5, distance_meters: 106.25, observed_targets: 1, measured_targets: 1,
+        valid_segments: 2, source_modes: ['live'], exclusions: [], days: [] }
+    });
+    await settle();
+    expect(host.textContent).not.toContain('当前统计范围暂无业务记录');
+    expect(host.querySelector('.observation-metrics').textContent).toContain('12.5');
+    button('刷新预览').click(); await settle();
+    pending[1].resolve({ ...makePreview(pending[1].params), observation_metrics: {
+      status: 'INSUFFICIENT', reason: '只有孤立点', basis: '不是完整飞行时长', measured_targets: 0,
+      observed_targets: 1, valid_segments: 0, source_modes: ['live'], exclusions: [], days: []
+    } });
+    await settle();
+    expect(host.querySelector('.observation-metrics').textContent.match(/暂不可统计/g)).toHaveLength(2);
+  });
   it('已加载总览后切换类型，不以新类型请求旧分区明细', async () => {
     await mount();
     pending[0].resolve({ ...makePreview(pending[0].params), sections: [

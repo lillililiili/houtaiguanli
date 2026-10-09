@@ -65,7 +65,7 @@ class RuleReplayRegressionTest {
 
     /**
      * 场景决策表：场景码、期望四态、期望计划匹配等级、期望违规原因码（精确）、必须出现的未知原因码（包含）、是否评分、
-     * 期望告警合并结果（null 表示不告警）。C02-6 恒未知，所以 unknown_reasons 常带 PILOT_POSITION_UNAVAILABLE，只断言包含。
+     * 期望告警合并结果（null 表示不告警）。种子目标没有遥控器位置：新-29 起 C02-6 这一项不判、不再记进 unknown_reasons；未知原因仍只断言包含。
      */
     record Expectation(String scenario, String legalStatus, String planMatch, List<String> violationReasons, List<String> unknownReasons,
             boolean scored, String alarmKind) { }

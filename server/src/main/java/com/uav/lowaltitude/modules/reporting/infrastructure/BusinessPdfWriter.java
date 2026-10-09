@@ -34,6 +34,19 @@ public class BusinessPdfWriter {
                 layout.paragraph("来源口径："+(p.reportScope().equals("simulated")?"模拟验收（模拟与回放）":"正式统计（真实来源）"),10,Color.DARK_GRAY);
                 if(p.simulated()) layout.paragraph("注意：包含模拟或回放数据，不可作为现场正式报表。",11,Color.decode("#b45309"));
                 layout.paragraph(p.statusNote(),10,Color.GRAY);
+                var observed=p.observationMetrics();
+                if(observed!=null) {
+                    layout.heading("监测时长与里程");
+                    layout.paragraph(observed.basis(),10,Color.GRAY);
+                    layout.paragraph(observed.reason(),11,Color.DARK_GRAY);
+                    layout.paragraph("有效监测时长（秒）："+metric(observed.durationSeconds())
+                            +"；已观测里程（米）："+metric(observed.distanceMeters()),12,Color.decode("#123455"));
+                    layout.paragraph("参与累计目标："+observed.measuredTargets()+"；有效片段："+observed.validSegments()
+                            +"；来源："+String.join("、",observed.sourceModes()),10,Color.GRAY);
+                    for(var e:observed.exclusions())layout.paragraph("未计入："+e.reason()+"（"+e.count()+" 个点或相邻片段）",10,Color.GRAY);
+                    if(!observed.days().isEmpty())layout.table(List.of("日期（北京时间）","有效监测时长（秒）","已观测里程（米）"),
+                            observed.days().stream().map(d->List.of(d.date(),metric(d.durationSeconds()),metric(d.distanceMeters()))).toList());
+                }
                 layout.heading("指标摘要");
                 for(var s:p.sections()) layout.paragraph(s.title()+"："+(s.accessible()?s.total():"无权限")
                         +(s.snapshot()?"（当前快照）":""),12,Color.decode("#123455"));
@@ -80,6 +93,7 @@ public class BusinessPdfWriter {
             document.save(out); return out.toByteArray();
         } catch(IOException ex) { throw new IllegalStateException("PDF 报表生成失败",ex); }
     }
+    private static String metric(Double value) { return value==null?"暂不可统计":String.format(java.util.Locale.ROOT,"%.3f",value); }
     private static final class Layout implements AutoCloseable {
         private static final float LEFT=40, WIDTH=515, BOTTOM=48;
         private final PDDocument doc; private final PDType0Font font; private final String title;

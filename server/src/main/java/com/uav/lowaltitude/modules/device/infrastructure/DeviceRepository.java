@@ -122,6 +122,24 @@ public class DeviceRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** Internal plan inspection always has an explicit business tuple; never an unscoped device scan. */
+    public List<Map<String,Object>> forPlanInspection(String org, String district, boolean userScope) {
+        if (org == null || district == null) return List.of();
+        Map<String,Object> params = readParameters();
+        params.put("inspection_org", org); params.put("inspection_district", district);
+        return named.queryForList(DEVICE_SELECT + " WHERE d.deleted_at IS NULL"
+            + " AND business_scope.owner_org_id=:inspection_org AND business_scope.district_id=:inspection_district"
+            + " AND EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=:inspection_org AND o.enabled=TRUE)"
+            + " AND EXISTS(SELECT 1 FROM app_district a WHERE a.district_id=:inspection_district AND a.enabled=TRUE)"
+            + (userScope ? deviceScope(params) : "") + " ORDER BY d.device_id", params);
+    }
+
+    public List<Map<String,Object>> planInspectionIncidents(String id, String org, String district) {
+        return jdbc.queryForList("SELECT i.*,d.device_no,d.name AS device_name FROM device_incident i JOIN ops_device d ON d.device_id=i.device_id WHERE i.device_id=?"
+            + " AND EXISTS(SELECT 1 FROM device_business_scope s WHERE s.ops_device_id=i.device_id AND s.owner_org_id=? AND s.district_id=?)",
+            id, org, district);
+    }
+
     public Map<String, Object> findProfile(String deviceId) {
         List<Map<String, Object>> rows = named.queryForList(
                 "SELECT * FROM device_connection_profile WHERE device_id=:device_id",

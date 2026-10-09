@@ -53,12 +53,12 @@ class LocalStage7RuleEngineSeederTest {
         List<String> members = jdbc.queryForList("select rv.rule_code from rule_set_member m join rule_version rv on rv.rule_version_id=m.rule_version_id where m.rule_set_version_id=? order by m.priority", String.class, LocalStage7RuleEngineSeeder.VERSION_1);
         assertThat(members).containsExactly("C01", "C02-1", "C02-2", "C02-3", "C02-4", "C02-5", "C02-6", "C02-7", "C02-8", "C03", "C06");
         // 契约 DEMO 参数目录全量（37 项），v2 只改 C02-3.tolerance_m。
-        // C03.severity.BVLOS_EXCEEDED 仍待业务确认、不猜填：缺项时 C03 按 0 计入评分，研判照常进行（ZT-05）。
+        // C03.severity.BVLOS_EXCEEDED 不填：新-29 起超视距不再算违规、不再产生这个原因码；旧版本缺项时 C03 按 0 计入评分（ZT-05）。
         assertThat(jdbc.queryForObject("select count(*) from rule_param where rule_set_version_id=? and param_status='DEMO'", Long.class, LocalStage7RuleEngineSeeder.VERSION_1)).isEqualTo(37L);
         assertThat(jdbc.queryForObject("select count(*) from rule_param where rule_set_version_id=?", Long.class, LocalStage7RuleEngineSeeder.VERSION_2)).isEqualTo(37L);
         for (String version : List.of(LocalStage7RuleEngineSeeder.VERSION_1, LocalStage7RuleEngineSeeder.VERSION_2)) {
             assertThat(jdbc.queryForObject("select count(*) from rule_param where rule_set_version_id=? and rule_code='C03' and param_key='severity.BVLOS_EXCEEDED'", Long.class, version))
-                    .as("超视距严重度待确认，不猜填：" + version).isZero();
+                    .as("超视距严重度不填：" + version).isZero();
         }
         assertThat(jdbc.queryForObject("select value_text from rule_param where rule_set_version_id=? and rule_code='C02-3' and param_key='tolerance_m'", String.class, LocalStage7RuleEngineSeeder.VERSION_1)).isEqualTo("20");
         assertThat(jdbc.queryForObject("select value_text from rule_param where rule_set_version_id=? and rule_code='C02-3' and param_key='tolerance_m'", String.class, LocalStage7RuleEngineSeeder.VERSION_2)).isEqualTo("50");

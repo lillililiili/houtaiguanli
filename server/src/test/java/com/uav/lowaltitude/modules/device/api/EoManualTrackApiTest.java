@@ -38,8 +38,11 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:mqtt_eo_manual;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
-        "app.mqtt.enabled=false", "app.fusion.enabled=false", "app.rule-engine.enabled=false",
-        "app.eo-edge.auto-track.enabled=false"})
+        "app.mqtt.enabled=false", "app.outbox.enabled=false", "app.fusion.enabled=false", "app.rule-engine.enabled=false",
+        "app.eo-edge.auto-track.enabled=false",
+        // 用例把 AppClock 拨快 31 秒来跑停止重试；EoAutoTrackService 每秒一轮，不看 auto-track 开关也补发停止，
+        // 会抢在断言前改行，用例时好时坏。这里把它的轮询拉长，只认用例自己调的 scheduler.poll()。
+        "app.eo-edge.poll-millis=3600000"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -52,6 +55,7 @@ class EoManualTrackApiTest {
     @Autowired MqttRepository mqtt;
     @org.springframework.test.context.bean.override.mockito.MockitoSpyBean AppClock clock;
     @Autowired com.uav.lowaltitude.modules.device.application.EoEdgeCommandService edgeCommands;
+    @Autowired com.uav.lowaltitude.modules.device.application.DeviceOperationsProcessor operations;
     @Autowired com.uav.lowaltitude.modules.device.application.EoEdgeIngressService edgeIngress;
     @Autowired com.uav.lowaltitude.modules.device.application.EoTrackingScheduler scheduler;
     @Autowired com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository trackingRepository;
@@ -355,8 +359,10 @@ class EoManualTrackApiTest {
         assertThat(edges.task(nextTask).get("status")).isEqualTo("OPEN");
     }
 
-    @Test void automaticStopRetriesAreBoundedAcrossPollsAndKeepOccupancy() throws Exception {
-        String task = stoppedTask("UAV");
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"UAV","BIRD"})
+    void automaticStopRetriesAreBoundedAcrossPollsAndKeepOccupancy(String objectType) throws Exception {
+        String task = stoppedTask(objectType);
         for (int attempt = 1; attempt <= 3; attempt++) {
             String previous = String.valueOf(edges.task(task).get("end_command_id"));
             timeoutStopAndAdvance(task);
@@ -373,6 +379,11 @@ class EoManualTrackApiTest {
         mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status", target).header("Authorization", bearer()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("END_UNCONFIRMED"))
                 .andExpect(jsonPath("$.data.message").value(containsString("重试已达上限")));
+        // Reproduce the outbox timeout sweep between the status read and the late stop receipt.
+        operations.expireCommands(clock.nowMillis());
+        assertThat(edges.command(String.valueOf(edges.task(task).get("begin_command_id"))).get("status"))
+                .isEqualTo("TIMED_OUT");
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
         receiveStop(task, 200);
         assertThat(edges.task(task).get("status")).isEqualTo("ENDED");
         assertThat(edges.command(last).get("status")).isEqualTo("SUCCEEDED");

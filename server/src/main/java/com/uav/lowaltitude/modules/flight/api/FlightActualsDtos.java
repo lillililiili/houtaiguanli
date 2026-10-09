@@ -21,13 +21,15 @@ public final class FlightActualsDtos {
     /** param_status 是产生这条结论的规则集版本的参数状态（DEMO|CONFIRMED）：DEMO 的结论不能当已确认口径用。 */
     /** target_id 是产生这条研判的感知目标：飞行计划页"合法性判定"按钮据此跳到研判页并选中该目标。 */
     public record MatchDto(String availability, String planMatchCode, String evaluationId, Long evaluatedAt,
-            String paramStatus, List<HitDetailDto> hitDetailsC01, String targetId) {
-        public static MatchDto only(String availability) { return new MatchDto(availability, null, null, null, null, null, null); }
+            String paramStatus, List<HitDetailDto> hitDetailsC01, String targetId, List<HitDetailDto> executionChecks) {
+        public static MatchDto only(String availability) { return new MatchDto(availability, null, null, null, null, null, null, null); }
     }
 
     /** C01 明细：facts 是引擎已写入的安全字段，原样透出，前端不再自行推导匹配结论。 */
     public record HitDetailDto(String ruleCode, String resultCode, String reasonCode, String message,
-            Map<String, Object> facts) { }
+            Map<String, Object> facts,
+            List<com.uav.lowaltitude.modules.assessment.engine.RuleContracts.ParamRef> params,
+            List<com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvidenceRef> evidence) { }
 
     /**
      * 高度关系取自同一次研判的 C02-7 明细：ABOVE/WITHIN/BELOW 只在目标高度与计划高度带处于同一基准时给出，
