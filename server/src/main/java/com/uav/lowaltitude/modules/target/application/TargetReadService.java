@@ -81,6 +81,8 @@ public class TargetReadService {
     static final String TIME_UNTRUSTED = "TIME_UNTRUSTED";
     /** 详情里最多带回多少条类别变化记录（ZT-04）。 */
     private static final int CLASS_CHANGE_LIMIT = 20;
+    /** 近期尾迹最多按 100 个目标限定，查询串约 3.7 KB，留在请求行长度限制以内。 */
+    private static final int MAX_RECENT_TARGET_IDS = 100;
 
     /** 阶段 8：融合层轨迹默认与原始层一起返回；点默认只给实测与桥接，PRED 需显式请求。 */
     private static final Set<String> LAYERS = Set.of("RAW", "FUSED");
@@ -240,7 +242,7 @@ public class TargetReadService {
     public RecentTracksDto recentTracks(MultiValueMap<String, String> parameters) {
         AccessDecision access = accessControl.require(PermissionCode.TARGET_READ);
         parameters.keySet().stream()
-                .filter(key -> !Set.of("observed_from", "observed_to", "points_per_target").contains(key))
+                .filter(key -> !Set.of("observed_from", "observed_to", "points_per_target", "target_ids", "slim").contains(key))
                 .findFirst().ifPresent(key -> { throw RequestValues.validation(key); });
         RequestValues request = new RequestValues(parameters);
         TimeRange observed = request.timeRange("observed_from", "observed_to");
@@ -250,11 +252,14 @@ public class TargetReadService {
         }
         int pointsPerTarget = request.integer("points_per_target", 24);
         if (pointsPerTarget < 1 || pointsPerTarget > 50) throw RequestValues.validation("points_per_target");
-        List<RecentTrackRow> tracks = repository.recentFusedTracks(observed.from, observed.to, access);
+        // 态势页只要图上目标的尾迹：target_ids 限定目标；slim=true 不带逐点融合来源，尾迹只用坐标与时间。
+        List<String> targetIds = request.ids("target_ids", MAX_RECENT_TARGET_IDS);
+        boolean slim = request.flag("slim");
+        List<RecentTrackRow> tracks = repository.recentFusedTracks(observed.from, observed.to, targetIds, access);
         Map<String, List<TrackPointDto>> points = new LinkedHashMap<>();
         repository.recentPoints(tracks.stream().map(RecentTrackRow::trackId).toList(), observed.from, observed.to,
                 pointsPerTarget).forEach(row -> points.computeIfAbsent(row.point().trackId(), ignored -> new ArrayList<>())
-                        .add(point(row.point())));
+                        .add(slim ? slimPoint(row.point()) : point(row.point())));
         List<RecentTrackDto> items = tracks.stream().map(track -> new RecentTrackDto(
                 track.targetId(), track.trackId(), List.copyOf(points.getOrDefault(track.trackId(), List.of())))).toList();
         return new RecentTracksDto(observed.to.toInstant().toEpochMilli(), items);
@@ -515,6 +520,14 @@ public class TargetReadService {
         return normalized;
     }
 
+    /** 尾迹用的精简点：不带融合来源、来源切换与降级事实，其余字段与完整点一致。 */
+    private TrackPointDto slimPoint(PointRow row) {
+        TrackPointDto full = point(row);
+        return new TrackPointDto(full.pointId(), full.trackId(), full.pointSeq(), full.sortTime(), full.timeBasis(),
+                full.receivedAt(), full.observedAt(), full.location(), full.altitudeAmslM(), full.heightAglM(),
+                full.pointKind(), null, null, null, null);
+    }
+
     private static Long millis(OffsetDateTime value) {
         return value == null ? null : value.toInstant().toEpochMilli();
     }
@@ -582,6 +595,20 @@ public class TargetReadService {
             String value = optional(name, 16);
             if (value != null && !allowed.contains(value)) throw validation(name);
             return value;
+        }
+
+        /** 逗号分隔的 ID 集合；缺省返回 null（不限定），给了就必须非空、不重复且不超过 max 个。 */
+        private List<String> ids(String name, int max) {
+            if (!values.containsKey(name)) return null;
+            String raw = optional(name, max * 37);
+            List<String> ids = new ArrayList<>();
+            for (String part : raw.split(",")) {
+                String id = part.trim();
+                if (id.isEmpty() || id.length() > 36 || ids.contains(id)) throw validation(name);
+                ids.add(id);
+            }
+            if (ids.isEmpty() || ids.size() > max) throw validation(name);
+            return List.copyOf(ids);
         }
 
         /** kind 是逗号分隔集合，默认 MEAS,BRIDGE：预测点是推断而非观测，必须显式索取。 */

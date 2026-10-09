@@ -36,6 +36,8 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @Service
 public class FlightReadService {
 
+    private static final int MAX_BATCH_ROUTE_VERSIONS = 100;
+    private static final int VERSIONS_PER_ROUTE = 20;
     private static final Set<String> PLAN_PARAMETERS = Set.of("page", "size", "status_code", "source_code",
             "route_id", "uav_sn", "owner_org_id", "district_id", "window_from", "window_to", "keyword", "source_mode");
     private static final Set<String> ROUTE_PARAMETERS = Set.of("page", "size", "enabled", "source_mode",
@@ -113,6 +115,25 @@ public class FlightReadService {
         long total = repository.countRouteVersions(id, access);
         return new PageDto<>(repository.listRouteVersions(id, access, page.offset(), page.size()).stream()
                 .map(this::routeVersion).toList(), page.page(), page.size(), total);
+    }
+
+    /**
+     * 地图页一次取回多条航线版本，代替逐条请求：按版本编号取（route_version_ids），或按航线取每条航线最新的
+     * 20 个版本（route_ids，与逐条航线版本列表的第一页相同）。二者只能给一个；越权或不存在的编号直接略去。
+     */
+    @Transactional(readOnly = true)
+    public PageDto<RouteVersionDto> routeVersionBatch(MultiValueMap<String, String> parameters) {
+        AccessDecision access = accessControl.require(PermissionCode.ROUTE_READ);
+        RequestValues request = new RequestValues(parameters, Set.of("route_version_ids", "route_ids"));
+        boolean byRoute = parameters.containsKey("route_ids");
+        if (byRoute == parameters.containsKey("route_version_ids")) throw RequestValues.validation("route_version_ids");
+        List<String> ids = byRoute ? request.ids("route_ids", MAX_BATCH_ROUTE_VERSIONS)
+                : request.ids("route_version_ids", MAX_BATCH_ROUTE_VERSIONS);
+        List<RouteVersionRow> rows = byRoute
+                ? repository.latestRouteVersionsOfRoutes(ids, VERSIONS_PER_ROUTE, access)
+                : repository.findRouteVersions(ids, access);
+        List<RouteVersionDto> items = rows.stream().map(this::routeVersion).toList();
+        return new PageDto<>(items, 1, Math.max(items.size(), 1), items.size());
     }
 
     @Transactional(readOnly = true)
@@ -239,6 +260,20 @@ public class FlightReadService {
             String value = scalar(name, validation(name));
             if (value.isBlank() || value.length() > maximumLength) throw validation(name);
             return value;
+        }
+
+        private List<String> ids(String name, int max) {
+            if (!values.containsKey(name)) throw validation(name);
+            String raw = scalar(name, validation(name));
+            if (raw.length() > max * 37) throw validation(name);
+            List<String> ids = new ArrayList<>();
+            for (String part : raw.split(",", -1)) {
+                String id = part.trim();
+                if (id.isEmpty() || id.length() > 36 || ids.contains(id)) throw validation(name);
+                ids.add(id);
+            }
+            if (ids.size() > max) throw validation(name);
+            return ids;
         }
 
         private TimeRange timeRange(String fromName, String toName) {
