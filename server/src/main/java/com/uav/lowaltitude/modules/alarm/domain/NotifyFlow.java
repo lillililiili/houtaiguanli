@@ -33,7 +33,7 @@ public final class NotifyFlow {
         return Phase.AWAIT_COUNTER;
     }
     /** 没有可通知的执行飞手，或短信通道本身不可用。尚未核实的等待不在这里。 */
-    static boolean cannotNotify(String status, String reason) {
+    public static boolean cannotNotify(String status, String reason) {
         if ("UNAVAILABLE".equals(status) || "DISABLED".equals(status)) return true;
         if (!"BLOCKED".equals(status)) return false;
         return reason != null && (reason.contains("飞手") || reason.contains("任务") || reason.contains("计划") || reason.contains("联系") || reason.contains("名册") || reason.contains("通知配置"));

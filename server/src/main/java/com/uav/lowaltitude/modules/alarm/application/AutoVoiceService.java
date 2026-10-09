@@ -177,12 +177,21 @@ public class AutoVoiceService {
         PilotDepartureWatch.Presence presence;
         try { presence=departure.assess(event.eventId(),smsAt,now); }
         catch(RuntimeException unavailable) { presence=PilotDepartureWatch.Presence.UNKNOWN; }
-        if(presence==PilotDepartureWatch.Presence.LEFT)return blocked(waiting("已离开"),"BLOCKED","最新位置已离开短信发出时所处的告警空域，不拨打电话");
+        if(presence==PilotDepartureWatch.Presence.LEFT)return blocked(waiting("已离开"),"BLOCKED",leftReason(event.eventId(),smsAt));
         if(presence!=PilotDepartureWatch.Presence.STILL_PRESENT)return blocked(waiting("无法确认"),"BLOCKED","短信发出后没有新的位置，或无法判断是否仍在告警空域，不拨打电话，也不记为已撤离");
         if(task!=null&&!task.recordingMatches(recording))return blocked(waiting("仍在"),"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
         var pilot=requiredPilot(event.eventId());
         if(pilot==null||!pilot.configured())return blocked(waiting("仍在"),"BLOCKED",pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能拨打电话");
         return new Eligibility(true,"WAITING","短信送达已满 3 秒，目标仍在告警空域，等待后台拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);
+    }
+    /**
+     * 短信发出时不在任何告警空域的，撤离是按最新研判恢复合法判断的（新-31），不能写成离开了告警空域。
+     * 原因里不能出现 NotifyFlow.cannotNotify 认的词（飞手、任务、计划、联系等），否则会被当成通知不了而直接待定反制。
+     */
+    private String leftReason(String eventId,long smsAt) {
+        boolean area;
+        try { area=departure.inAreaAtSms(eventId,smsAt); } catch(RuntimeException unavailable) { area=true; }
+        return area?"最新位置已离开短信发出时所处的告警空域，不拨打电话":"短信发出后的最新研判已恢复合法（例如回到航线），视为已离开告警区域，不拨打电话";
     }
     private Eligibility waiting(String reason){return new Eligibility(false,"WAITING",reason,TRIGGER,null,null);}
     private Eligibility blocked(Eligibility e,String status,String reason){return new Eligibility(false,status,reason,e.source(),e.evaluation(),e.observedAt());}
