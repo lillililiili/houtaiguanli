@@ -21,7 +21,13 @@ public final class AirspaceDtos {
     public record AirspaceSummaryDto(
             String airspaceId, String airspaceNo, String name, String sourceMode,
             String ownerOrgId, String districtId, long createdAt, long updatedAt, long version,
-            String ownerOrgName, String districtName) {
+            String ownerOrgName, String districtName, AirspaceVersionDto currentVersion) {
+        public AirspaceSummaryDto(String airspaceId, String airspaceNo, String name, String sourceMode,
+                String ownerOrgId, String districtId, long createdAt, long updatedAt, long version,
+                String ownerOrgName, String districtName) {
+            this(airspaceId, airspaceNo, name, sourceMode, ownerOrgId, districtId, createdAt, updatedAt, version,
+                    ownerOrgName, districtName, null);
+        }
     }
     public record AirspaceDetailDto(String airspaceId, String airspaceNo, String name, String sourceMode,
             String ownerOrgId, String districtId, long createdAt, long updatedAt, long version,

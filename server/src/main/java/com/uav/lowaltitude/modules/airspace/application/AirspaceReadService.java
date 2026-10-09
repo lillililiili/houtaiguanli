@@ -59,9 +59,12 @@ public class AirspaceReadService {
                 values.optional("kind_code", 32), values.optional("source_mode", 8),
                 values.optional("owner_org_id", 36), values.optional("district_id", 36),
                 values.optionalInstant("valid_at"), values.optional("keyword", 128));
+        // include=current_version：地图页一次取回每片空域的当前版本（与详情接口同一口径），不再逐片请求详情。
+        boolean withVersion = values.include();
+        OffsetDateTime at = query.validAt() != null ? query.validAt() : clock.now().atOffset(ZoneOffset.UTC);
         long total = repository.countAirspaces(query, access);
         List<AirspaceSummaryDto> items = repository.listAirspaces(query, access, page.offset(), page.size()).stream()
-                .map(this::summary)
+                .map(row -> withVersion ? summary(row, currentVersion(row, at, access)) : summary(row))
                 .toList();
         return new PageDto<>(items, page.page(), page.size(), total);
     }
@@ -106,9 +109,19 @@ public class AirspaceReadService {
     }
 
     private AirspaceSummaryDto summary(AirspaceRow row) {
+        return summary(row, null);
+    }
+
+    private AirspaceSummaryDto summary(AirspaceRow row, AirspaceVersionDto currentVersion) {
         return new AirspaceSummaryDto(row.airspaceId(), row.airspaceNo(), row.name(), row.sourceMode(),
                 row.ownerOrgId(), row.districtId(), millis(row.createdAt()), millis(row.updatedAt()), row.version(),
-                row.ownerOrgName(), row.districtName());
+                row.ownerOrgName(), row.districtName(), currentVersion);
+    }
+
+    private AirspaceVersionDto currentVersion(AirspaceRow row, OffsetDateTime at, AccessDecision access) {
+        List<AirspaceVersionRow> current = repository.effectiveVersions(row.airspaceId(), at, access);
+        if (current.size() > 1) throw new ApiException(HttpStatus.CONFLICT, "VERSION_AMBIGUOUS", "空域有效版本重叠");
+        return current.isEmpty() ? null : version(current.get(0));
     }
 
     private AirspaceVersionDto version(AirspaceVersionRow row) {
@@ -166,7 +179,7 @@ public class AirspaceReadService {
 
     private static final class RequestValues {
         private static final Set<String> ALLOWED = Set.of(
-                "page", "size", "kind_code", "source_mode", "owner_org_id", "district_id", "valid_at", "keyword");
+                "page", "size", "kind_code", "source_mode", "owner_org_id", "district_id", "valid_at", "keyword", "include");
         private final MultiValueMap<String, String> parameters;
 
         private RequestValues(MultiValueMap<String, String> parameters) {
@@ -203,6 +216,13 @@ public class AirspaceReadService {
                 throw validation(name);
             }
             return values.get(0);
+        }
+
+        private boolean include() {
+            String value = optional("include", 32);
+            if (value == null) return false;
+            if (!"current_version".equals(value)) throw validation("include");
+            return true;
         }
 
         private OffsetDateTime optionalInstant(String name) {
