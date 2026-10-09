@@ -39,7 +39,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @SpringBootTest(properties = {
         "spring.datasource.url=jdbc:h2:mem:mqtt_eo_manual;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1",
         "app.mqtt.enabled=false", "app.outbox.enabled=false", "app.fusion.enabled=false", "app.rule-engine.enabled=false",
-        "app.eo-edge.auto-track.enabled=false"})
+        "app.eo-edge.auto-track.enabled=false",
+        // 用例把 AppClock 拨快 31 秒来跑停止重试；EoAutoTrackService 每秒一轮，不看 auto-track 开关也补发停止，
+        // 会抢在断言前改行，用例时好时坏。这里把它的轮询拉长，只认用例自己调的 scheduler.poll()。
+        "app.eo-edge.poll-millis=3600000"})
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)

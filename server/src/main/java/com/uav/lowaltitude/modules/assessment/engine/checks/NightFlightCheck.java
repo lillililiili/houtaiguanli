@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.springframework.stereotype.Component;
 
+import com.uav.lowaltitude.modules.assessment.engine.NoPlanExemption;
 import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationContext;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.HitDetail;
@@ -23,6 +24,8 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
  * 夜航时段内飞行是否违规看计划：C01 已匹配上计划（FULL/PARTIAL，时间窗按 C01 的计划时段与容差已对上），
  * 说明这段夜间飞行已经报备，判通过；没有计划、计划不明或已超出计划时段（C01 对不上）的夜间飞行仍记 NIGHT_FLIGHT。
  * 计划时段的容差与白天一致，超出宽限的超时仍由 C02-4 单独判。时区来自参数而不是服务器默认时区，回放与生产才能得到同一结论。
+ * 夜间只在原有违规上加注（确认书 2-9）：完全没有报备任务、离地 120 米及以下、不在管控空域里的飞行按规定无需申请
+ * （{@link NoPlanExemption}，新-28），没有原有违规，夜航判通过并写明原因。
  */
 @Component
 public class NightFlightCheck implements RuleCheck {
@@ -56,6 +59,10 @@ public class NightFlightCheck implements RuleCheck {
         boolean night = hour >= from || hour < to;
         if (!night) return CheckSupport.pass(ruleCode(), facts, refs, List.of(), "本地时间 " + time + " 不在夜航时段");
         PlanFact plan = matchedPlan(context.planMatch());
+        if (plan == null && NoPlanExemption.applies(context, params)) {
+            return CheckSupport.pass(ruleCode(), facts, refs, List.of(), "本地时间 " + time
+                    + " 处于夜航时段；没有报备任务、离地 120 米以下的普通区域飞行按规定无需申请，夜间不单独算违规");
+        }
         if (plan == null) {
             String why = context.planMatch() != null && context.planMatch().plan() != null ? "已超出本机飞行任务的时段或航线" : "没有匹配上的飞行任务";
             return CheckSupport.fail(ruleCode(), RuleCodes.NIGHT_FLIGHT, facts, refs, List.of(), "本地时间 " + time + " 处于夜航时段，" + why);

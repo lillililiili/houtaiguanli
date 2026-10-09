@@ -71,12 +71,30 @@ final class SpaceRiskFixture {
 
     void spaceFact(String riskId, String subtype, String relation, String band, Integer count, String unknownReasons,
             Double longitude, Double latitude) {
+        spaceFact(riskId, subtype, relation, band, count, unknownReasons, longitude, latitude, "space-risk-c04-v1");
+    }
+
+    void spaceFact(String riskId, String subtype, String relation, String band, Integer count, String unknownReasons,
+            Double longitude, Double latitude, String ruleVersionId) {
         String geometry = longitude == null || latitude == null ? null : "SRID=4326;POINT (" + longitude + " " + latitude + ")";
         jdbc.update("insert into space_risk_fact (risk_id,subtype_code,rule_version_id,rule_set_version_id,distance_to_route_m,corridor_relation,"
                 + "altitude_band,altitude_datum,object_count,trend,unknown_reasons,target_location,target_altitude_raw,window_from,window_to,created_at)"
-                + " values (?,?,'space-risk-c04-v1',?,?,?,?,?,?,'FLAT',CAST(? AS JSON),CAST(? AS GEOMETRY),?,?,?,?)",
-                riskId, subtype, RULE_SET_VERSION, new BigDecimal("42.00"), relation, band, band.equals("UNKNOWN") ? null : "AGL",
+                + " values (?,?,?,?,?,?,?,?,?,'FLAT',CAST(? AS JSON),CAST(? AS GEOMETRY),?,?,?,?)",
+                riskId, subtype, ruleVersionId, RULE_SET_VERSION, new BigDecimal("42.00"), relation, band, band.equals("UNKNOWN") ? null : "AGL",
                 count, unknownReasons, geometry, new BigDecimal("120.00"), ts(T0.minusMinutes(30)), ts(T0), ts(T0));
+    }
+
+    /** P03 评估历史的一段；读侧夹具直插，写路径一律经定时评估。distance 为 null 表示这段没有距离。 */
+    void segment(String riskId, int no, OffsetDateTime first, OffsetDateTime last, int count, String minDistance, String maxDistance,
+            String relation, boolean risk, String severity, boolean fromDetection) {
+        BigDecimal min = minDistance == null ? null : new BigDecimal(minDistance);
+        BigDecimal max = maxDistance == null ? null : new BigDecimal(maxDistance);
+        Integer band = min == null ? null : min.intValue() / 50 * 50;
+        jdbc.update("insert into space_risk_evaluation_segment (segment_id,risk_id,segment_no,first_evaluated_at,last_evaluated_at,evaluation_count,"
+                + "first_observed_at,last_observed_at,distance_band_m,min_distance_m,max_distance_m,corridor_relation,altitude_band,risk_present,"
+                + "severity,rule_set_version_id,from_detection,created_at,updated_at) values (?,?,?,?,?,?,?,?,?,?,?,?,'CLIMB',?,?,?,?,?,?)",
+                id(), riskId, no, ts(first), ts(last), count, ts(first), ts(last), band, min, max, relation, risk, severity,
+                RULE_SET_VERSION, fromDetection, ts(last), ts(last));
     }
 
     String role(String suffix, String... permissions) {

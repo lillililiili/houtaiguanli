@@ -3,7 +3,10 @@ package com.uav.lowaltitude.modules.integrationconfig.application;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -39,6 +42,11 @@ public class WeatherForecastRiskService {
     public static final String RULE_VERSION = "WEATHER-RULE-V1";
     private static final double STRONG_WIND_MS = 10.0;
     private static final double STRONG_GUST_MS = 15.0;
+    private static final ZoneId BEIJING = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm");
+    /** 依据说明里写中文，不写规则代码（CDX-P06）。 */
+    private static final Map<String, String> RULE_TEXT = Map.of("WEATHER_THUNDERSTORM", "雷雨",
+            "WEATHER_STRONG_WIND", "大风", "WEATHER_LOW_VISIBILITY", "低能见度");
 
     private final WeatherForecastRiskRepository repository;
     private final RiskIngestionService risks;
@@ -74,7 +82,11 @@ public class WeatherForecastRiskService {
         for (PlanCandidate plan : plans) {
             for (RuleHit hit : hits(input.periods(), plan.startAt(), plan.endAt())) {
                 String sourceId = "weather-forecast-rule-" + plan.sourceMode();
-                String sourceRiskId = sourceRiskId(input, plan, hit);
+                String key = sourceKey(input, plan, hit);
+                // 来源编号带冒号是技术键，风险才会取平台编号“风险-MMDD-NNN”（CDX-P06）；
+                // 10 月 8 日前用的是“forecast-”开头的编号，同一预报再交时沿用那条风险，不再多生成一条。
+                String legacy = "forecast-" + key;
+                String sourceRiskId = repository.riskExists(sourceId, legacy) ? legacy : "forecast:" + key;
                 OffsetDateTime occurredAt = instant(hit.period().from());
                 String reasonText = reason(input, plan, hit);
                 String riskId = risks.ingest(new TrustedRiskFact(sourceId, sourceRiskId, plan.planId(),
@@ -112,7 +124,7 @@ public class WeatherForecastRiskService {
         List<RuleHit> hits = new ArrayList<>();
         for (var entry : rules.entrySet()) {
             List<String> matched = entry.getValue();
-            String trigger = String.join("、", matched);
+            String trigger = String.join("、", matched.stream().map(RULE_TEXT::get).toList());
             String code = matched.size() == 1 ? matched.get(0) : "WEATHER_MULTI";
             String severity = matched.stream().anyMatch(rule -> !"WEATHER_LOW_VISIBILITY".equals(rule)) ? "HIGH" : "MEDIUM";
             hits.add(new RuleHit(code, trigger, severity, windows.get(entry.getKey())));
@@ -121,15 +133,26 @@ public class WeatherForecastRiskService {
     }
 
     private static String reason(WeatherInput input, PlanCandidate plan, RuleHit hit) {
-        return "天气预报命中规则：" + hit.triggerText() + "；区域=" + input.areaName() + "；时段="
-                + hit.period().from() + "-" + hit.period().to() + "；规则版本=" + RULE_VERSION
+        return "天气预报：" + hit.triggerText() + "；区域 " + input.areaName() + "；时段 "
+                + window(hit.period().from(), hit.period().to()) + "（北京时间）"
                 + "。当前状态为待核验，人工确认前不发送通知、不执行处置。";
     }
 
-    private static String sourceRiskId(WeatherInput input, PlanCandidate plan, RuleHit hit) {
+    /** 例如“10月7日 16:30–17:00”；跨天时结束时间也写日期。 */
+    static String window(long from, long to) {
+        ZonedDateTime start = Instant.ofEpochMilli(from).atZone(BEIJING), end = Instant.ofEpochMilli(to).atZone(BEIJING);
+        String endText = start.toLocalDate().equals(end.toLocalDate()) ? CLOCK.format(end) : day(end) + " " + CLOCK.format(end);
+        return day(start) + " " + CLOCK.format(start) + "–" + endText;
+    }
+
+    private static String day(ZonedDateTime time) {
+        return time.getMonthValue() + "月" + time.getDayOfMonth() + "日";
+    }
+
+    private static String sourceKey(WeatherInput input, PlanCandidate plan, RuleHit hit) {
         String key = plan.sourceMode() + "|" + plan.planId() + "|" + normalize(input.areaName()) + "|"
                 + input.publishedAt() + "|" + hit.period().from() + "|" + hit.period().to() + "|" + hit.ruleCode();
-        return "forecast-" + UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8));
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private static boolean areaMatches(String area, String district) {

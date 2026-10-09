@@ -26,6 +26,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  *
  * 窗口按服务器处理时间推进（BUG-17）：每轮评估"上一轮之后最新状态被写入过"的目标，并回叠 {@link #REFRESH_OVERLAP}，
  * 盖住跨轮才提交的写入；同一异物重复命中由"同计划同目标已有未解除风险"去重，不会每轮多造一条。
+ *
+ * 同一轮里接着评估 C05（机场区域异物，2026-10-08 确认书 4-3，新-27）：以前只能手动触发，机场附近的异物没人点就不出风险。
+ * C05 有自己的窗口，和 C04 互不拖累；系统里没有启用的机场时不跑，也不留空的运行记录。
  */
 @Component
 @ConditionalOnProperty(prefix = "app.rule-engine.c04", name = "enabled", havingValue = "true")
@@ -43,6 +46,7 @@ public class SpaceRiskEvaluationJob {
      */
     private final int windowMinutes;
     private volatile OffsetDateTime lastWindowTo;
+    private volatile OffsetDateTime lastAirportWindowTo;
     private volatile String lastSkipReason;
 
     public SpaceRiskEvaluationJob(SpaceRiskEvaluationService service, SpaceRiskRepository repository,
@@ -79,21 +83,45 @@ public class SpaceRiskEvaluationJob {
         lastSkipReason = null;
         OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime from = windowFrom(now);
-        if (!from.isBefore(now)) return;
+        if (from.isBefore(now)) {
+            try {
+                service.evaluateScheduled(from, now, now.minusMinutes(windowMinutes));
+                lastWindowTo = now;
+            } catch (RuntimeException ex) {
+                // 整轮失败不推进窗口：下一轮重算同一段（最多回看 windowMinutes），避免这段时间的异物被静默跳过。
+                log.warn("space risk scheduled evaluation failed: {}", ex.toString());
+            }
+        }
+        tickAirport(now);
+    }
+
+    /** C05 一轮：与 C04 同样的窗口推进与失败重算，各记各的窗口。 */
+    private void tickAirport(OffsetDateTime now) {
         try {
-            service.evaluateScheduled(from, now, now.minusMinutes(windowMinutes));
-            lastWindowTo = now;
+            if (!repository.anyEnabledAirport()) return;
+            OffsetDateTime from = windowFrom(now, lastAirportWindowTo);
+            if (!from.isBefore(now)) return;
+            service.evaluateScheduledAirport(from, now, now.minusMinutes(windowMinutes));
+            lastAirportWindowTo = now;
         } catch (RuntimeException ex) {
-            // 整轮失败不推进窗口：下一轮重算同一段（最多回看 windowMinutes），避免这段时间的异物被静默跳过。
-            log.warn("space risk scheduled evaluation failed: {}", ex.toString());
+            log.warn("airport-zone (C05) scheduled evaluation failed: {}", ex.toString());
         }
     }
 
     /** 本轮处理时间窗口的起点：上一轮终点回叠 {@link #REFRESH_OVERLAP}，但不早于回看下限。 */
     OffsetDateTime windowFrom(OffsetDateTime now) {
+        return windowFrom(now, lastWindowTo);
+    }
+
+    /** C05 本轮窗口的起点，口径同 {@link #windowFrom(OffsetDateTime)}。 */
+    OffsetDateTime airportWindowFrom(OffsetDateTime now) {
+        return windowFrom(now, lastAirportWindowTo);
+    }
+
+    private OffsetDateTime windowFrom(OffsetDateTime now, OffsetDateTime last) {
         OffsetDateTime earliest = now.minusMinutes(windowMinutes);
-        if (lastWindowTo == null) return earliest;
-        OffsetDateTime overlapped = lastWindowTo.minus(REFRESH_OVERLAP);
+        if (last == null) return earliest;
+        OffsetDateTime overlapped = last.minus(REFRESH_OVERLAP);
         return overlapped.isBefore(earliest) ? earliest : overlapped;
     }
 }

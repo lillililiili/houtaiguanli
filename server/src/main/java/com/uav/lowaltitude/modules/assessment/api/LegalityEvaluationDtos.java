@@ -40,6 +40,8 @@ public final class LegalityEvaluationDtos {
      * 研判列表项/详情。列表不带 hit_details（体积），详情带；alarm_id/event_id 只在具备 alarm:read 且告警仍在同一有效元组时返回，
      * target_id/target_no/object_type_code 同理受 target:read 约束，plan_id/plan_no 受 flight:read 约束。
      * object_type_code 为关联目标当前明确类别，不以历史研判结论或计划关联推断。
+     * confidence / confidence_threshold / source_count：本次研判用的可信度、四态判定要求的下限、这一帧有几路来源（CDX-P04），
+     * 页面据此写“只有一路来源（可信度 65%），达不到 75%”；早先的研判没存下限和来源数，这两个字段不出现。
      */
     public record EvaluationDto(String evaluationId, String runId, String ruleSetCode, String ruleSetVersionId, Integer ruleSetVersionNo,
             String paramStatus, String mode, String triggerKind, String subjectKind, String targetId, String targetNo, String trackId,
@@ -49,7 +51,8 @@ public final class LegalityEvaluationDtos {
             ReviewDto review, List<String> allowedActions, String supersedesEvaluationId, String supersededByEvaluationId,
             String alarmId, String eventId, String alarmOutcomeKind, String assessmentId, String ownerOrgId, String ownerOrgName,
             String districtId, String districtName, String sourceMode, String objectTypeCode, DecisionAssuranceDto decisionAssurance,
-            AlarmVerificationDto alarmVerification, String originalLegalStatus) { }
+            AlarmVerificationDto alarmVerification, String originalLegalStatus, BigDecimal confidence, BigDecimal confidenceThreshold,
+            Integer sourceCount) { }
 
     /** 复核历史项；actor_id 只提供操作归属 ID，actor_name 仅用于展示。 */
     public record RevisionDto(String historyId, long version, String previousState, String resultingState, String conclusion,

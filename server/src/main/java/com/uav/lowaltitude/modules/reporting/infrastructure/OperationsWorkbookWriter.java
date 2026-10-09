@@ -76,7 +76,7 @@ public class OperationsWorkbookWriter {
         rowIndex = metric(sheet, styles, rowIndex, "新增目标数", summary.total(), "按首次发现时间去重统计");
         rowIndex = metric(sheet, styles, rowIndex, "非法目标数", summary.illegal(), rate(summary.illegal(), summary.total()));
         rowIndex = metric(sheet, styles, rowIndex, "处罚案件数", summary.punish(), "统计窗口内立案数");
-        rowIndex = metric(sheet, styles, rowIndex, "高风险目标数", summary.highRisk(), rate(summary.highRisk(), summary.total()));
+        rowIndex = metric(sheet, styles, rowIndex, "异物高风险目标数", summary.highRisk(), rate(summary.highRisk(), summary.total()));
         rowIndex = metric(sheet, styles, rowIndex, "无人机次数", summary.uav(), rate(summary.uav(), summary.total()));
         rowIndex = metric(sheet, styles, rowIndex, "异常目标数", summary.abnormal(), rate(summary.abnormal(), summary.total()));
         if (report.devices() != null) {
@@ -100,7 +100,7 @@ public class OperationsWorkbookWriter {
         Sheet sheet = sheet(workbook, "每日趋势", new int[] { 16, 18, 18, 18, 18 });
         title(sheet, styles, period.label() + " · 每日趋势", 4);
         Row header = sheet.createRow(2);
-        String[] labels = { "日期", "新增目标数", "非法飞行", "处罚案件", "高风险目标" };
+        String[] labels = { "日期", "新增目标数", "非法飞行", "处罚案件", "异物高风险目标" };
         for (int i = 0; i < labels.length; i++) text(header, i, labels[i], styles.header());
         int rowIndex = 3;
         for (DayPoint day : days) {
@@ -123,7 +123,7 @@ public class OperationsWorkbookWriter {
         String[] labels = { "分类维度", "分组", "数量", "占比", "单位" };
         for (int i = 0; i < labels.length; i++) text(header, i, labels[i], styles.header());
         int rowIndex = 3;
-        rowIndex = distributionRows(sheet, styles, rowIndex, "风险等级", report.byRisk(), report.summary().total(), "目标");
+        rowIndex = distributionRows(sheet, styles, rowIndex, "异物风险等级", report.byRisk(), report.summary().total(), "目标");
         rowIndex = distributionRows(sheet, styles, rowIndex, "目标类型", report.byType(), report.summary().total(), "目标");
         rowIndex = distributionRows(sheet, styles, rowIndex, "飞行时长（分钟）", report.byDuration(), report.summary().total(), "次");
         rowIndex = distributionRows(sheet, styles, rowIndex, "轨迹长度（公里）", report.byTrack(), report.summary().total(), "次");
@@ -138,7 +138,7 @@ public class OperationsWorkbookWriter {
         Sheet sheet = sheet(workbook, "区域与处置", new int[] { 22, 18, 18, 18, 18 });
         title(sheet, styles, period.label() + " · 区域与处置", 4);
         Row regionHeader = sheet.createRow(2);
-        String[] regionLabels = { "区域", "新增目标数", "非法飞行", "处罚案件", "高风险目标" };
+        String[] regionLabels = { "区域", "新增目标数", "非法飞行", "处罚案件", "异物高风险目标" };
         for (int i = 0; i < regionLabels.length; i++) text(regionHeader, i, regionLabels[i], styles.header());
         int rowIndex = 3;
         for (RegionPoint region : report.regions()) {

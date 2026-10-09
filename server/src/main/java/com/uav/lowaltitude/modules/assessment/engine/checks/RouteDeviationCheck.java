@@ -11,6 +11,8 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationCon
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.HitDetail;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.ParamRef;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanFact;
+import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanMatch;
+import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanMatchCode;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RouteDistance;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleCheck;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
@@ -19,6 +21,9 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SpatialFactPo
 /**
  * C02-3 航线偏离：目标到中心线距离 − 走廊半宽 > C02-3.tolerance_m 即偏离。距离与 C01 走廊维度同源（同一个 SpatialFactPort）。
  * 没有匹配到计划就没有航线可比，记 NOT_APPLICABLE 而不是 PASS。
+ * 对不上任务（C01 NONE）时 PlanMatch 里也许挂着本机自己的计划（只给时间窗、高度参考），同样不再拿它比偏航：
+ * 没有任务就谈不上偏离任务航线，原因只写无飞行授权（2026-10-08 验收预跑 2-1，新-15）。
+ * 走廊外 C02-3 容差到 C01 走廊容差之间仍对得上任务，照常判偏航；再往外才是对不上任务。
  */
 @Component
 public class RouteDeviationCheck implements RuleCheck {
@@ -34,7 +39,8 @@ public class RouteDeviationCheck implements RuleCheck {
     public HitDetail evaluate(EvaluationContext context, RuleParams params) {
         BigDecimal tolerance = params.number(ruleCode(), PARAM_TOLERANCE_M);
         List<ParamRef> refs = List.of(CheckSupport.number(params, ruleCode(), PARAM_TOLERANCE_M));
-        PlanFact plan = context.planMatch() == null ? null : context.planMatch().plan();
+        PlanMatch match = context.planMatch();
+        PlanFact plan = match == null || match.code() == PlanMatchCode.NONE ? null : match.plan();
         if (plan == null) return CheckSupport.notApplicable(ruleCode(), RuleCodes.NO_PLAN, refs, "没有匹配到飞行任务，航线偏离不适用");
         Map<String, Object> facts = CheckSupport.facts();
         facts.put("plan_id", plan.planId());

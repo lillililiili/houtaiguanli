@@ -174,12 +174,88 @@ class SpaceRiskReadApiTest {
         }
     }
 
+    /** P03：鸟群风险的评估历史按时间先后分页，合计次数和最早、最近时刻覆盖全部段；不是 C04 风险的不显示这一栏。 */
+    @Test
+    void evaluationHistoryListsSegmentsInTimeOrderOnlyForBirdRisksInScope() throws Exception {
+        fixture.segment(spaceRisk, 1, SpaceRiskFixture.T0, SpaceRiskFixture.T0.plusMinutes(4), 5, "120.40", "141.00", "NEAR", true, "MEDIUM", true);
+        fixture.segment(spaceRisk, 2, SpaceRiskFixture.T0.plusMinutes(5), SpaceRiskFixture.T0.plusMinutes(6), 2, "18.20", "24.00", "INSIDE", true, "HIGH", false);
+        fixture.segment(spaceRisk, 3, SpaceRiskFixture.T0.plusMinutes(7), SpaceRiskFixture.T0.plusMinutes(7), 1, null, null, "UNKNOWN", false, null, false);
+
+        JsonNode all = data("/api/v1/risks/" + spaceRisk + "/evaluation-history", reader);
+        assertThat(all.path("applicable").asBoolean()).isTrue();
+        assertThat(all.path("evaluation_count").asLong()).isEqualTo(8);
+        assertThat(all.path("first_evaluated_at").asLong()).isEqualTo(SpaceRiskFixture.T0.toInstant().toEpochMilli());
+        assertThat(all.path("last_evaluated_at").asLong()).isEqualTo(SpaceRiskFixture.T0.plusMinutes(7).toInstant().toEpochMilli());
+        assertThat(all.path("from_detection").asBoolean()).isTrue();
+        assertThat(all.path("total").asLong()).isEqualTo(3);
+        assertThat(all.path("page").asInt()).isEqualTo(1);
+        assertThat(all.path("size").asInt()).isEqualTo(20);
+        assertThat(all.path("items")).extracting(node -> node.path("segment_no").asInt()).containsExactly(1, 2, 3);
+        JsonNode near = all.path("items").get(0);
+        assertThat(near.path("evaluation_count").asInt()).isEqualTo(5);
+        assertThat(near.path("distance_band_m").asInt()).isEqualTo(100);
+        assertThat(near.path("min_distance_m").decimalValue()).isEqualByComparingTo("120.40");
+        assertThat(near.path("max_distance_m").decimalValue()).isEqualByComparingTo("141.00");
+        assertThat(near.path("corridor_relation").asText()).isEqualTo("NEAR");
+        assertThat(near.path("altitude_band").asText()).isEqualTo("CLIMB");
+        assertThat(near.path("risk_present").asBoolean()).isTrue();
+        assertThat(near.path("severity").asText()).isEqualTo("MEDIUM");
+        assertThat(near.path("first_evaluated_at").asLong()).isEqualTo(SpaceRiskFixture.T0.toInstant().toEpochMilli());
+        // 没有距离、不构成风险的那段：距离和等级都省略，不用 0 或空串占位。
+        JsonNode unknown = all.path("items").get(2);
+        assertThat(unknown.path("risk_present").asBoolean()).isFalse();
+        assertThat(unknown.has("severity")).isFalse();
+        assertThat(unknown.has("distance_band_m")).isFalse();
+        assertThat(unknown.has("min_distance_m")).isFalse();
+
+        JsonNode secondPage = data("/api/v1/risks/" + spaceRisk + "/evaluation-history?page=2&size=2", reader);
+        assertThat(secondPage.path("items")).extracting(node -> node.path("segment_no").asInt()).containsExactly(3);
+        assertThat(secondPage.path("total").asLong()).isEqualTo(3);
+        assertThat(secondPage.path("evaluation_count").asLong()).as("合计不随分页变").isEqualTo(8);
+
+        // 作业风险、机场区域风险不记评估历史：applicable=false，页面不显示这一栏。
+        JsonNode plain = data("/api/v1/risks/" + plainRisk + "/evaluation-history", reader);
+        assertThat(plain.path("applicable").asBoolean()).isFalse();
+        assertThat(plain.path("items")).isEmpty();
+        assertThat(plain.path("total").asLong()).isZero();
+        String airportPlan = fixture.planWithRoute(org, district, suffix + "apt");
+        String airportRisk = fixture.risk(airportPlan, fixture.routeVersionOf(airportPlan), source, null, "SPACE_OBJECT", "MEDIUM",
+                "PENDING_VERIFICATION", org, district, "apt-" + suffix);
+        fixture.spaceFact(airportRisk, "BALLOON", "UNKNOWN", "UNKNOWN", null, "[]", null, null, "space-risk-c05-v1");
+        assertThat(data("/api/v1/risks/" + airportRisk + "/evaluation-history", reader).path("applicable").asBoolean()).isFalse();
+
+        // 看不到的风险一律 404，不能借评估历史确认它存在；参数只认 page、size。
+        error("/api/v1/risks/" + crossRisk + "/evaluation-history", reader, 404, "RISK_NOT_FOUND");
+        error("/api/v1/risks/no-such-risk/evaluation-history", reader, 404, "RISK_NOT_FOUND");
+        error("/api/v1/risks/" + spaceRisk + "/evaluation-history?sort=asc", reader, 400, "VALIDATION_ERROR");
+        error("/api/v1/risks/" + spaceRisk + "/evaluation-history?size=101", reader, 400, "VALIDATION_ERROR");
+        error("/api/v1/risks/" + spaceRisk + "/evaluation-history?page=0", reader, 400, "VALIDATION_ERROR");
+    }
+
+    /** 改动以前发现的风险：发现时那次没有记录（from_detection=false）；一次也没记时合计为 0，没有时刻。 */
+    @Test
+    void evaluationHistoryOfARiskFoundBeforeTheChangeSaysTheDetectionIsMissing() throws Exception {
+        JsonNode empty = data("/api/v1/risks/" + spaceRisk + "/evaluation-history", reader);
+        assertThat(empty.path("applicable").asBoolean()).isTrue();
+        assertThat(empty.path("evaluation_count").asLong()).isZero();
+        assertThat(empty.has("first_evaluated_at")).isFalse();
+        assertThat(empty.has("last_evaluated_at")).isFalse();
+        assertThat(empty.path("from_detection").asBoolean()).isFalse();
+        assertThat(empty.path("items")).isEmpty();
+
+        fixture.segment(spaceRisk, 1, SpaceRiskFixture.T0.plusMinutes(30), SpaceRiskFixture.T0.plusMinutes(32), 3, "60.00", "70.00", "NEAR", true, "MEDIUM", false);
+        JsonNode later = data("/api/v1/risks/" + spaceRisk + "/evaluation-history", reader);
+        assertThat(later.path("evaluation_count").asLong()).isEqualTo(3);
+        assertThat(later.path("from_detection").asBoolean()).isFalse();
+    }
+
     @Test
     void readingNeedsRiskReadPermission() throws Exception {
         String denied = fixture.session(fixture.role("D-" + suffix), org, district, "ASSIGNED");
         error("/api/v1/space-object-subtypes", denied, 403, "FORBIDDEN");
         error("/api/v1/space-risks/summary", denied, 403, "FORBIDDEN");
         error("/api/v1/risks/" + spaceRisk + "/space-fact", denied, 403, "FORBIDDEN");
+        error("/api/v1/risks/" + spaceRisk + "/evaluation-history", denied, 403, "FORBIDDEN");
     }
 
     private JsonNode data(String path, String session) throws Exception {

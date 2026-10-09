@@ -50,6 +50,9 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         jdbc.update("update alarm set source_mode='replay' where alarm_id=?",alarm);
         jdbc.update("update target set source_mode='replay' where target_id=?",target);
         appendEvaluation(target,"ILLEGAL");
+        // Earlier cases' targets stop being observed: an automatic counter whose start command never left is launched
+        // again once its rule passes (2026-10-08 retest), and those events would take this case's only device.
+        jdbc.update("update target_latest_state set observed_at=? where target_id<>?",Timestamp.from(clock.now().minusSeconds(90000)),target);
         jdbc.update("update automation_rule_condition set enabled=false");
         jdbc.update("update automation_rule_group set version=831,scope_mode='ALL',schedule_mode='ALL_DAY',wait_seconds=0 where category='counter'");
         jdbc.update("insert into automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) values(?,'counter','自动反制时效验收','counterFreshness','300',0,true,?,?,'qa-auto') on conflict(category,item_code) do update set enabled=true,value_text='300',hold_seconds=0",key(),clock.nowMillis(),clock.nowMillis());

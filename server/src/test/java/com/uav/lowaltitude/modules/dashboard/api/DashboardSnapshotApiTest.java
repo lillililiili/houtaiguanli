@@ -303,6 +303,56 @@ class DashboardSnapshotApiTest {
         assertThat(stats.path("summary").path("high_risk").asInt()).isEqualTo(tiers.path("critical").asInt() + tiers.path("high").asInt());
     }
 
+    /** 大屏“交接待办”就是“移送与处罚”页的“待发送”：无人机事件的处罚移送里还没发出去的；风险的“通知上级”不算（新-2 第 6 点）。 */
+    @Test
+    void handoffTodoIsThePunishPagesWaitingToSend() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantModule(token, "dashboard");
+        grantAction(token, "handoff:read");
+        String submitter = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
+        String punish = recipient("UAV_PUNISHMENT"), notice = recipient("RISK_NOTICE");
+        punishment("waiting-replay", "replay", "PENDING_DELIVERY", punish, submitter);
+        punishment("waiting-live", "live", "PENDING_DELIVERY", punish, submitter);
+        punishment("sent", "replay", "SUBMITTED", punish, submitter);
+        todayTarget("notice", "replay");
+        risk("notice", "replay", "HIGH");
+        handoff("dash-risk-notice-" + suffix, "RISK", null, "dash-risk-notice-" + suffix, "replay", "PENDING_DELIVERY", notice, submitter);
+
+        long punishPage = json.readTree(mvc.perform(get("/api/v1/handoffs?source_kind=UAV_EVENT&delivery_status=PENDING_DELIVERY&page=1&size=1")
+                .header("Authorization", bearer(token))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString())
+                .path("data").path("total").asLong();
+        JsonNode data = json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).get("data");
+        assertThat(punishPage).isEqualTo(2);
+        assertThat(data.path("kpis").path("pending_handoffs").asLong()).isEqualTo(punishPage);
+        assertThat(data.path("closure").path("pending_handoffs").asLong()).isEqualTo(punishPage);
+    }
+
+    private String recipient(String type) {
+        String id = "dash-rcpt-" + type.charAt(0) + "-" + suffix;
+        jdbc.update("insert into handoff_recipient(recipient_id,display_name,handoff_type,enabled,created_at,updated_at) values(?,?,?,true,?,?)",
+                id, "大屏交接接收方", type, ts(now()), ts(now()));
+        return id;
+    }
+
+    /** 无人机事件和它的处罚移送，最新一次投递是给定状态。 */
+    private void punishment(String name, String sourceMode, String delivery, String recipient, String submitter) {
+        String alarm = "dash-alarm-" + name + "-" + suffix, event = "dash-event-" + name + "-" + suffix;
+        jdbc.update("insert into alarm(alarm_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) values(?,?,?,'UAV_INTRUSION','HIGH',?,?,?,?,?,?)",
+                alarm, SOURCE, alarm, ts(now()), ts(now()), sourceMode, org, district, ts(now()));
+        jdbc.update("insert into uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values(?,?,'CONFIRMED',?,?,?,?,1)",
+                event, alarm, org, district, ts(now()), ts(now()));
+        handoff("dash-handoff-" + name + "-" + suffix, "UAV_EVENT", event, null, sourceMode, delivery, recipient, submitter);
+    }
+
+    private void handoff(String id, String kind, String event, String risk, String sourceMode, String delivery, String recipient, String submitter) {
+        String type = "RISK".equals(kind) ? "RISK_NOTICE" : "UAV_PUNISHMENT";
+        jdbc.update("insert into handoff(handoff_id,source_kind,source_id,event_id,risk_id,handoff_type,recipient_id,source_version,owner_org_id,district_id,source_mode,submitted_by,created_at) values(?,?,?,?,?,?,?,1,?,?,?,?,?)",
+                id, kind, event != null ? event : risk, event, risk, type, recipient, org, district, sourceMode, submitter, ts(now()));
+        jdbc.update("insert into handoff_delivery(delivery_id,handoff_id,attempt_no,delivery_status,receipt_status,created_at) values(?,?,1,?,'NOT_EXPECTED',?)",
+                UUID.randomUUID().toString(), id, delivery, ts(now()));
+    }
+
     /** 今天首次发现的目标，在读者的单位与区域里。 */
     private void todayTarget(String name, String sourceMode) {
         String id = "dash-today-" + name + "-" + suffix;

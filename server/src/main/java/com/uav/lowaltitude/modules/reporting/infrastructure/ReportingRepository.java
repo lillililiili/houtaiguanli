@@ -23,16 +23,13 @@ public class ReportingRepository {
     public ReportingRepository(NamedParameterJdbcTemplate named, StatisticsScope statistics) { this.named = named; this.statistics = statistics; }
 
     /**
-     * 计入统计的研判：结论依据充分。真实设备的研判还要求规则参数已确认；设备模拟器本来就是演示，
-     * 用演示参数得出的结论也计入，否则模拟器跑出的违规在统计里永远是 0。
+     * 计入统计的研判：和合法性研判页一样，有结论就算，依据充分与否、规则参数是否已确认都不再筛（2026-10-08 D-4
+     * “统计和页面用同一口径”）。原先只算依据充分的，研判页非法 10 条时大屏和运行统计只有 2 条。来源仍按统计口径。
      */
     public java.util.Set<String> formalEvaluationIds(List<String> targetIds) {
         if(targetIds.isEmpty()) return java.util.Set.of();
         return new java.util.HashSet<>(named.queryForList("SELECT e.evaluation_id FROM rule_evaluation e"
-            + " JOIN rule_set_version v ON v.rule_set_version_id=e.rule_set_version_id"
-            + " WHERE e.target_id IN (:ids) AND e.source_mode IN " + statistics.sqlIn()
-            + " AND (e.source_mode<>'live' OR v.param_status='CONFIRMED')"
-            + " AND e.decision_assurance_code='SUFFICIENT'",Map.of("ids",targetIds),String.class));
+            + " WHERE e.target_id IN (:ids) AND e.source_mode IN " + statistics.sqlIn(),Map.of("ids",targetIds),String.class));
     }
     public java.util.Set<String> formalRiskIds(List<String> targetIds) {
         if(targetIds.isEmpty()) return java.util.Set.of();

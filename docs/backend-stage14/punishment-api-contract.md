@@ -21,6 +21,8 @@
 
 2026-10-06 起 `handoff.trigger_source` 记录移送是怎么提交的：`JAMMING_COMPLETED`（干扰完成后后台自动移送）、`MANUAL`（有人选定接收单位提交），更早的交接按审计回填，查不到的保持空。启用了多个处罚接收单位时后台不自动移送，事件处置进度 `auto_handoff.status=MANUAL_REQUIRED`，由有移送权限的人选定接收单位后走本接口。
 
+2026-10-08 起 `GET /handoffs` 列表项与 `GET /handoffs/{id}` 详情带 `trigger_source`（确认书 3-6，新-24）。后台自动移送（`JAMMING_COMPLETED`）的 `submitted_by` / `submitted_by_name` 是那次反制（干扰）的申请人，用作提交人外键，不是动手移送的人；业务前台据此把提交人写成“系统自动（反制完成后生成）”，另起一行写“反制申请人”。旧记录按 2026-10-06 的回填显示，为空时照旧写提交人。
+
 `GET /handoffs/{id}` 的 `material` 按 `schema_version` 返回 v1 或 v2 形状；`availability.material`：UAV_EVENT 来源缺 `alarm:read` → `FORBIDDEN`，事件不在范围 → `SOURCE_NOT_VISIBLE`；新增 `availability.evidence ∈ AVAILABLE|FORBIDDEN|SOURCE_NOT_VISIBLE|OMITTED_AT_SUBMISSION`（以 `availability.material` 为前提，14-25）。
 
 ## 2. 案件域

@@ -206,7 +206,7 @@ class ReportingApiTest {
 
     /**
      * 2026-10-07 用户决定：设备模拟器（replay）的数据计入运行统计，系统自带的演示样例（mock）不计。
-     * 模拟器跑出的研判用的是演示参数，也要计入，否则模拟器的违规在统计里永远是 0；真实设备仍要求参数已确认。
+     * 2026-10-08 D-4：研判和合法性研判页同一口径，用演示参数得出的结论也算，真实设备的也一样。
      */
     @Test
     @org.springframework.transaction.annotation.Transactional
@@ -230,11 +230,78 @@ class ReportingApiTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
         assertThat(result.path("summary").path("total").asInt()).isEqualTo(2);
         assertThat(result.path("summary").path("uav").asInt()).isEqualTo(2);
-        // 真实设备那条用的是未确认的演示参数，不算；模拟器那条算。
-        assertThat(result.path("summary").path("illegal").asInt()).isEqualTo(1);
+        // 真实设备和模拟器各一条非法，都算（演示参数也算，和研判页一样）；演示样例那条不算。
+        assertThat(result.path("summary").path("illegal").asInt()).isEqualTo(2);
         assertThat(result.path("summary").path("high_risk").asInt()).isEqualTo(2);
         assertThat(result.path("source_mode").asText()).isEqualTo("mixed");
         assertThat(result.path("simulated").asBoolean()).isTrue();
+    }
+
+    /**
+     * 2026-10-08 D-4（方案 新-2）：依据不足、待人工复核的非法结论，合法性研判页算，运行统计和大屏也算，两边数字一致。
+     */
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void insufficientConclusionsCountLikeTheLegalityPage() throws Exception {
+        String token=login("admin1","changeme");
+        String org=UUID.randomUUID().toString(), district="seed-stage3-district";
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",org,org,"统计口径-研判页");
+        var at=java.time.OffsetDateTime.parse("2007-01-01T00:00:00+08:00");
+        jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) select 'stats-assurance-run',v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',3,3,0,0,'replay',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only",at,at,at);
+        int n=0;
+        for(String[] row:new String[][]{{"sufficient","ILLEGAL","SUFFICIENT"},{"insufficient","ILLEGAL","INSUFFICIENT"},{"legal","LEGAL","INSUFFICIENT"}}) {
+            String id="stats-assurance-"+row[0];
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','replay',?,?,?,?)",id,id,at,at,org,district,at,at);
+            jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons) select ?,r.run_id,r.rule_set_version_id,'ACTIVE','TARGET',?,r.as_of,r.started_at,'FRESH','FULL',?,?,?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,'replay',?,'legality-assurance-v1',?,CAST('[]' AS JSON) from rule_run r where r.run_id='stats-assurance-run'",
+                    "stats-assurance-eval-"+row[0],id,row[1],"LEGAL".equals(row[1])?null:60,"LEGAL".equals(row[1])?null:"HIGH",org,district,at.plusMinutes(n++),row[2]);
+        }
+        JsonNode stats=data(mvc.perform(get("/api/v1/stats/operations").param("from","2007-01-01").param("to","2007-01-01")
+                .param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        JsonNode page=data(mvc.perform(get("/api/v1/legality-evaluations/summary").param("mode","ACTIVE").param("latest_only","true")
+                .param("object_type_code","UAV").param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(page.path("illegal").asInt()).isEqualTo(2);
+        assertThat(stats.path("summary").path("illegal").asInt()).isEqualTo(page.path("illegal").asInt());
+        assertThat(stats.path("days").get(0).path("illegal").asInt()).isEqualTo(2);
+    }
+
+    /**
+     * 2026-10-08 新-2 第 3 点：每架无人机取哪一次研判，和合法性研判页一模一样——只看正式模式，按研判时间取最新。
+     * 原先取任何模式里最后写入的一条：影子模式后写的“合法”、写入晚但研判时间早的“合法”，都让统计少算非法。
+     */
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void latestConclusionPerDroneIsTheLegalityPagesOne() throws Exception {
+        String token=login("admin1","changeme");
+        String org=UUID.randomUUID().toString(), district="seed-stage3-district";
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",org,org,"统计口径-最新研判");
+        var at=java.time.OffsetDateTime.parse("2008-01-01T00:00:00+08:00");
+        for(String mode:java.util.List.of("ACTIVE","SHADOW"))
+            jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) select ?,v.rule_set_id,v.rule_set_version_id,?,'MANUAL',?,?,'DONE',2,2,0,0,'replay',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only","stats-latest-run-"+mode,mode,at,at,at);
+        for(String id:java.util.List.of("stats-latest-shadow","stats-latest-order"))
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','replay',?,?,?,?)",id,id,at,at,org,district,at,at);
+        // 目标 1：正式模式判非法，之后影子模式又判了一次合法。研判页只看正式模式。
+        evaluation("stats-latest-shadow-active","ACTIVE","stats-latest-shadow","ILLEGAL",at.plusMinutes(1),at.plusMinutes(1),org,district);
+        evaluation("stats-latest-shadow-shadow","SHADOW","stats-latest-shadow","LEGAL",at.plusMinutes(2),at.plusMinutes(2),org,district);
+        // 目标 2：研判时间较晚的是非法；研判时间较早的合法那条写入得更晚（比如重算补写）。研判页按研判时间取最新。
+        evaluation("stats-latest-order-illegal","ACTIVE","stats-latest-order","ILLEGAL",at.plusMinutes(5),at.plusMinutes(3),org,district);
+        evaluation("stats-latest-order-legal","ACTIVE","stats-latest-order","LEGAL",at.plusMinutes(4),at.plusMinutes(6),org,district);
+        JsonNode page=data(mvc.perform(get("/api/v1/legality-evaluations/summary").param("mode","ACTIVE").param("latest_only","true")
+                .param("object_type_code","UAV").param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        JsonNode stats=data(mvc.perform(get("/api/v1/stats/operations").param("from","2008-01-01").param("to","2008-01-01")
+                .param("owner_org_id",org).header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(page.path("illegal").asInt()).isEqualTo(2);
+        assertThat(stats.path("summary").path("illegal").asInt()).isEqualTo(page.path("illegal").asInt());
+        assertThat(stats.path("days").get(0).path("illegal").asInt()).isEqualTo(2);
+        assertThat(stats.path("availability").path("illegal").path("reason").asText()).contains("合法性研判页");
+    }
+
+    private void evaluation(String id,String mode,String target,String legal,java.time.OffsetDateTime evaluatedAt,java.time.OffsetDateTime createdAt,String org,String district) {
+        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons) select ?,r.run_id,r.rule_set_version_id,?,'TARGET',?,r.as_of,?,'FRESH','FULL',?,?,?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,'replay',?,'legality-assurance-v1','SUFFICIENT',CAST('[]' AS JSON) from rule_run r where r.run_id=?",
+                id,mode,target,evaluatedAt,legal,"LEGAL".equals(legal)?null:60,"LEGAL".equals(legal)?null:"HIGH",org,district,createdAt,"stats-latest-run-"+mode);
     }
 
     /**
@@ -411,6 +478,12 @@ class ReportingApiTest {
         assertThat(csv).contains("\"总览\",\"合计\",\"新增目标数\",\"" + total + "\"");
         assertThat(csv).contains("\"总览\",\"合计\",\"处罚案件数\",\"" + punish + "\"");
         assertThat(csv).contains("\"元数据\",\"统计区间\",\"开始日期\",\"" + from + "\"");
+        // 新-2 第 4 点：目标的风险等级是空中异物这类风险，不是告警等级；页面、口径说明和导出都写明“异物”。
+        int highRisk = data.path("summary").path("high_risk").asInt();
+        assertThat(csv).contains("\"总览\",\"合计\",\"异物高风险目标数\",\"" + highRisk + "\"").doesNotContain("\"高风险目标数\"");
+        assertThat(csv).contains("\"异物风险等级\",\"未识别\"");
+        assertThat(data.path("availability").path("high_risk").path("reason").asText()).contains("空中异物", "不是告警等级");
+        assertThat(data.path("availability").path("by_risk").path("reason").asText()).contains("空中异物", "不是告警等级");
         assertThat(jdbc.queryForObject(
                 "select count(*) from audit_log where action='stats_export_requested' and module_code='statistics' and detail like ?",
                 Integer.class, "%from=" + from + "; to=" + to + "%")).isGreaterThan(0);

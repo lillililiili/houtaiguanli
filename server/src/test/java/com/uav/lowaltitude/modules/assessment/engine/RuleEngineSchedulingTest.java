@@ -40,11 +40,13 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SubjectKind;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TargetState;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineHooks.EvaluationOutcome;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineHooks.HookResult;
+import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository;
 
 /**
  * 定时评估取数（ZT-06/ZT-20）：只决定"这一轮评谁、先评谁"，不改任何判定规则。
  * 新目标（建档 fast-window 内）每轮都评；老目标同版本 reevaluate 窗口内评过就等下一轮；从没评过的排最前；
- * 报文时刻过期但刚收到的目标也要评一次，留下 STALE/NOT_APPLICABLE 的研判写明不判的原因，而不是悄悄跳过。
+ * 报文时刻过期但刚收到的目标也要评一次，留下 STALE/NOT_APPLICABLE 的研判写明不判的原因，而不是悄悄跳过；
+ * 最新一帧是失联帧的目标不评，结论保持最后一次真实观测的研判。
  * 夹具沿用 LegalityEvaluationServiceTest 的做法（桩空间事实/计划匹配/钩子，直接插目标与规则集）。
  */
 @SpringBootTest
@@ -58,6 +60,7 @@ class RuleEngineSchedulingTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired RuleEngineRepository repository;
     @Autowired RecordingHooks hooks;
+    @Autowired TargetReadRepository targets;
 
     private String code, versionId, suffix;
     private OffsetDateTime now;
@@ -137,6 +140,39 @@ class RuleEngineSchedulingTest {
         assertThat(scheduled(now.plusSeconds(10))).doesNotContain(lagging);
     }
 
+    @Test
+    void lossFrameIsNotEvaluatedSoTheLastRealVerdictStands() {
+        // 第四次复测：一台设备整体停报约 5 秒后，目标研判从"违规"变成"不可判定（置信度不足）"，它的告警还是"违规"。
+        String lost = target("lost", now.minusMinutes(10), now.minusSeconds(3), now.minusSeconds(3));
+        degradation(lost, "THREE_SOURCE", "0", true);
+        assertThat(evaluate(lost, now.minusSeconds(2)).legalStatus()).as("真实观测：无计划判违规").isEqualTo(LegalStatus.ILLEGAL);
+        // 停报前最后一帧真实数据落在重评窗口里，还没轮到评；
+        advance(lost, now.minusSeconds(1));
+        // 随后融合层写下失联帧：观测时刻不变，位置留在最后一个点，高度速度清空，置信度调低到门槛以下。
+        lossFrame(lost, now);
+        assertThat(scheduled(now.plusSeconds(10))).as("失联帧不研判").doesNotContain(lost);
+        assertThat(repository.pendingSubjects(RunMode.ACTIVE, versionId, now.minusSeconds(FRESH_SECONDS), 1000))
+                .extracting(Subject::subjectId).as("非定时口径同样不研判").doesNotContain(lost);
+
+        // 取数时还是真实观测、轮到它时已是失联帧：不研判、不写行，批量运行记作跳过而不是失败。
+        int before = evaluationCount(lost);
+        assertThat(evaluate(lost, now.plusSeconds(10))).isNull();
+        var run = runs.start(code, RunMode.ACTIVE, LegalityEvaluationService.TRIGGER_SCHEDULED, null, null, now.plusSeconds(10));
+        var summary = runs.runBatch(run, List.of(new Subject(SubjectKind.TARGET, lost, null, null, null)), now.plusSeconds(10));
+        assertThat(summary.evaluatedCount()).isZero();
+        assertThat(summary.errors()).isEmpty();
+        assertThat(evaluationCount(lost)).isEqualTo(before);
+        assertThat(targets.summaries(List.of(lost)).get(lost).legality().legalStatus())
+                .as("目标摘要仍是最后一次真实观测的结论，与告警一致").isEqualTo("ILLEGAL");
+
+        // 来源回来、有了新的观测：照常研判。
+        degradation(lost, "THREE_SOURCE", "0", true);
+        jdbc.update("update target_latest_state set fusion_confidence=0.95, altitude_amsl_m=170, height_agl_m=150 where target_id=?", lost);
+        advance(lost, now.plusSeconds(11));
+        assertThat(scheduled(now.plusSeconds(20))).contains(lost);
+        assertThat(evaluate(lost, now.plusSeconds(20)).legalStatus()).isEqualTo(LegalStatus.ILLEGAL);
+    }
+
     private List<String> scheduled(OffsetDateTime tick) {
         return repository.pendingSubjects(RunMode.ACTIVE, versionId, tick.minusSeconds(FRESH_SECONDS), tick.minusSeconds(FAST_WINDOW_SECONDS),
                 tick.minusNanos(REEVALUATE_MILLIS * 1_000_000L), 1000).stream().map(Subject::subjectId).toList();
@@ -152,7 +188,27 @@ class RuleEngineSchedulingTest {
         jdbc.update("update target_latest_state set observed_at=?, received_at=?, updated_at=? where target_id=?", ts(observed), ts(observed), ts(observed), targetId);
     }
 
-    /** created 是平台建档时刻（target.created_at）；first/last_seen 是报文时刻，设备时钟慢时两者可以差很远。 */
+    /** 融合层的失联帧（DefaultFusedLayerWriter 无位置帧）：观测时刻不变，位置不动，高度速度清空，置信度调低，降级等级 NONE。 */
+    private void lossFrame(String targetId, OffsetDateTime received) {
+        jdbc.update("update target_latest_state set fusion_confidence=0.7, altitude_amsl_m=null, height_agl_m=null, speed_mps=null, heading_deg=null,"
+                + " received_at=?, updated_at=? where target_id=?", ts(received), ts(received), targetId);
+        degradation(targetId, "NONE", "0.3", true);
+    }
+
+    private void degradation(String targetId, String level, String deficit, boolean determined) {
+        jdbc.update("delete from target_degradation where target_id=?", targetId);
+        jdbc.update("insert into target_degradation (target_id,level,available_source_ids,confidence_deficit,determined,since,updated_at) values (?,?,CAST(? AS JSON),?,?,?,?)",
+                targetId, level, "NONE".equals(level) ? "[]" : "[\"seed-stage3-source\"]", new BigDecimal(deficit), determined, ts(now), ts(now));
+    }
+
+    private int evaluationCount(String targetId) {
+        return jdbc.queryForObject("select count(*) from rule_evaluation where target_id=?", Integer.class, targetId);
+    }
+
+    /**
+     * created 是平台建档时刻（target.created_at）；first/last_seen 是报文时刻，设备时钟慢时两者可以差很远。
+     * 目标没有报备任务，离地 150 米：高于 120 米，按规定要申请（新-28），无计划照旧判违规。
+     */
     private String target(String name, OffsetDateTime created, OffsetDateTime observed, OffsetDateTime received) {
         String id = "zt06-" + name + "-" + suffix, link = "zt06-link-" + name + "-" + suffix, track = "zt06-track-" + name + "-" + suffix;
         OffsetDateTime firstSeen = created.isBefore(observed.minusSeconds(8)) ? created : observed.minusSeconds(8);
@@ -161,12 +217,12 @@ class RuleEngineSchedulingTest {
         jdbc.update("insert into target_source_link (link_id,target_id,source_id,source_session_key,external_target_id,created_at) values (?,?,'seed-stage3-source',?,?,?)",
                 link, id, "s-" + name + "-" + suffix, "x-" + name + "-" + suffix, ts(created));
         jdbc.update("insert into target_latest_state (target_id,location,altitude_amsl_m,height_agl_m,speed_mps,heading_deg,classification_confidence,fusion_confidence,observed_at,received_at,created_at,updated_at,version)"
-                + " values (?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),80,60,10,90,0.9,0.95,?,?,?,?,0)", id, ts(observed), ts(received), ts(created), ts(received));
+                + " values (?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),170,150,10,90,0.9,0.95,?,?,?,?,0)", id, ts(observed), ts(received), ts(created), ts(received));
         jdbc.update("insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at) values (?,?,?,?,?,?)", track, id, link, "tr-" + name + "-" + suffix, ts(firstSeen), ts(created));
         for (int i = 0; i < 5; i++) {
             Timestamp seen = ts(observed.minusSeconds((4 - i) * 2L));
             jdbc.update("insert into track_point (point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,height_agl_m,created_at)"
-                    + " values (?,?,?,?,?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),80,60,?)", "zt06-pt-" + name + "-" + suffix + "-" + i, track, i, seen, seen, seen);
+                    + " values (?,?,?,?,?,CAST('SRID=4326;POINT(118.025 37.025)' AS GEOMETRY),170,150,?)", "zt06-pt-" + name + "-" + suffix + "-" + i, track, i, seen, seen, seen);
         }
         return id;
     }

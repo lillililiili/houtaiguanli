@@ -26,6 +26,7 @@ import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.MqttRepository;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
+import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.platform.api.ApiException;
 
 /**
@@ -46,6 +47,7 @@ class DisposalExecutionGatewayTest {
     private Countermeasure4ChControlService countermeasure;
     private MqttRepository mqtt;
     private DeviceRepository devices;
+    private DisposalRepository disposals;
 
     private DisposalExecutionGateway gateway(boolean bound, boolean enabled, boolean online) {
         return gateway(bound, enabled, online, "LINGYUN_MQTT_V8_6");
@@ -56,6 +58,7 @@ class DisposalExecutionGatewayTest {
         countermeasure = mock(Countermeasure4ChControlService.class);
         mqtt = mock(MqttRepository.class);
         devices = mock(DeviceRepository.class);
+        disposals = mock(DisposalRepository.class);
         when(mqtt.binding(anyString(), anyBoolean())).thenReturn(bound ? mock(Binding.class) : null);
         Map<String, Object> device = new HashMap<>();
         device.put("enabled", enabled);
@@ -66,7 +69,7 @@ class DisposalExecutionGatewayTest {
                 .thenReturn("cmd-1");
         when(countermeasure.enqueue(anyString(), anyString(), anyString(), anyString(), nullable(String.class),
                 any(), anyString())).thenReturn("cmd-4ch");
-        return new DisposalExecutionGateway(control, countermeasure, mqtt, devices);
+        return new DisposalExecutionGateway(control, countermeasure, mqtt, devices, disposals);
     }
 
     private DisposalExecutionGateway.Result dispatch(DisposalExecutionGateway gateway, int cmd) {
@@ -169,6 +172,20 @@ class DisposalExecutionGatewayTest {
         assertThat(gateway.dispatch4ch("dev-1", "key-1", "auth-1", DisposalRules.JAMMING, "理由"))
                 .isEqualTo(new DisposalExecutionGateway.Accepted("cmd-4ch"));
         verify(countermeasure).enqueue(anyString(), anyString(), anyString(), anyString(),
+                nullable(String.class), any(), anyString());
+    }
+
+    /** 新-20：设备正为另一条授权开着（反制中）时算忙，不往同一台设备上再下发。 */
+    @Test
+    void fourChannelDeviceStillOnForAnotherAuthorizationIsBusyAndNeverReachesA() {
+        DisposalExecutionGateway gateway = gateway(false, true, true,
+                DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0);
+        when(disposals.deviceRunningOther("dev-1", "auth-1")).thenReturn(true);
+        DisposalExecutionGateway.Rejected rejected = (DisposalExecutionGateway.Rejected)
+                gateway.dispatch4ch("dev-1", "key-1", "auth-1", DisposalRules.COUNTERMEASURE, "理由");
+        assertThat(rejected.eventKind()).isEqualTo("DEVICE_BUSY");
+        assertThat(rejected.detail()).contains("正在执行另一条反制");
+        verify(countermeasure, never()).enqueue(anyString(), anyString(), anyString(), anyString(),
                 nullable(String.class), any(), anyString());
     }
 

@@ -25,12 +25,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import com.uav.lowaltitude.modules.assessment.engine.checks.VisualLineOfSightCheck;
 import com.uav.lowaltitude.modules.fusion.domain.QualityFacts;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class TargetReadRepository {
+    /** 研判明细 C02-6 facts 里飞手距离提示的键（{@link VisualLineOfSightCheck#FACT_PILOT_DISTANCE_NOTE}），粗筛用。 */
+    private static final String PILOT_DISTANCE_NOTE_KEY = VisualLineOfSightCheck.FACT_PILOT_DISTANCE_NOTE;
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = new Where(); appendScope(w.sql, w.parameters, access);
@@ -581,14 +584,18 @@ public class TargetReadRepository {
         Map<String, LegalitySummaryRow> legality = new HashMap<>();
         // 类别已改判（例如无人机→鸟，ZT-04）后，按原类别做出的最近一次研判不再是这个目标的"现在怎么样"：摘要不显示它。
         // 研判记录、告警、通知本身都保留（页面在告警详情里写明类别变化）；目标头行类别为空或研判没记类别时照旧显示。
-        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status,e.grade,e.violation_reasons FROM rule_evaluation e"
+        // 飞手离无人机超过阈值时那句“是否经批准请核实”（新-29）在研判明细的 C02-6 facts 里：明细整列不小，
+        // 先用可移植的粗筛（LIKE 键名）只把带这句的明细取回来，取值交给服务层解析——与上面方位的读法一致。
+        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status,e.grade,e.violation_reasons,"
+                + " CASE WHEN CAST(e.hit_details AS VARCHAR) LIKE '%" + PILOT_DISTANCE_NOTE_KEY + "%' THEN e.hit_details END AS pilot_note_hits"
+                + " FROM rule_evaluation e"
                 + " JOIN target t ON t.target_id=e.target_id"
                 + " WHERE e.target_id IN (:ids) AND NOT EXISTS (SELECT 1 FROM rule_evaluation n"
                 + "   WHERE n.target_id=e.target_id AND (n.created_at, n.evaluation_id) > (e.created_at, e.evaluation_id))"
                 + " AND (e.recognition_class_code IS NULL OR t.object_type_code IS NULL OR e.recognition_class_code=t.object_type_code)",
                 params, rs -> { legality.put(rs.getString("target_id"), new LegalitySummaryRow(
                         rs.getString("evaluation_id"), rs.getString("legal_status"), rs.getString("grade"),
-                        jsonTextOf(rs.getObject("violation_reasons")))); });
+                        jsonTextOf(rs.getObject("violation_reasons")), jsonTextOf(rs.getObject("pilot_note_hits")))); });
         Map<String, DisposalSummaryRow> disposals = new HashMap<>();
         jdbc.query("SELECT d.target_id,d.authorization_id,d.authorization_no,d.action_type,d.status"
                 + " FROM disposal_authorization d WHERE d.target_id IN (:ids)"
@@ -629,7 +636,9 @@ public class TargetReadRepository {
     public record TargetSummariesRow(RiskSummaryRow risk, LegalitySummaryRow legality, DisposalSummaryRow disposal,
             BearingRow bearing) { }
     public record RiskSummaryRow(String riskId, String severity, String state, OffsetDateTime occurredAt) { }
-    public record LegalitySummaryRow(String evaluationId, String legalStatus, String grade, String violationReasonsJson) { }
+    /** pilotNoteHitsJson：只在研判明细带飞手距离提示时才有（整列 hit_details），否则为 null。 */
+    public record LegalitySummaryRow(String evaluationId, String legalStatus, String grade, String violationReasonsJson,
+            String pilotNoteHitsJson) { }
     public record DisposalSummaryRow(String authorizationId, String authorizationNo, String actionType, String status) { }
     public record BearingRow(BigDecimal bearingDeg, String deviceId) { }
 

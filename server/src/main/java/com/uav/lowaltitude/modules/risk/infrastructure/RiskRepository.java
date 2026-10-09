@@ -50,6 +50,13 @@ public class RiskRepository {
      * Classify by linked protocol contracts, never by target names or current IDs. */
     public boolean simulatedObservation(RiskRow row) {
         if("mock".equals(row.sourceMode())) return true;
+        // P03：天气预报规则的风险只由外部接口模拟器送来的预报产生（事实行必须挂一份 local_interface_message），
+        // 按“模拟器送来的标模拟、文件回放才标回放”，和同一模拟器送来的鸟群一样显示为模拟。
+        if("replay".equals(row.sourceMode()) && "WEATHER".equals(row.riskType())) {
+            return Boolean.TRUE.equals(jdbc.queryForObject("SELECT CASE WHEN EXISTS (SELECT 1 FROM weather_forecast_risk_fact f"
+                    + " JOIN local_interface_message m ON m.message_id=f.forecast_message_id WHERE f.risk_id=:risk) THEN TRUE ELSE FALSE END",
+                    Map.of("risk",row.riskId()),Boolean.class));
+        }
         if(!"replay".equals(row.sourceMode()) || row.targetId()==null) return false;
         String links=" FROM target_source_link l JOIN integration_source origin ON origin.source_id=l.source_id"
                 + " JOIN target t ON t.target_id=l.target_id WHERE l.target_id=:target"

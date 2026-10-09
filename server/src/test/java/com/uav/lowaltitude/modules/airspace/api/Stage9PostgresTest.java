@@ -553,6 +553,116 @@ class Stage9PostgresTest {
     }
 
     /**
+     * 新-27（确认书 4-3）：定时 C05 在任务时段内把进近航线 500 米以内的异物判成中风险“机场区域异物”并挂在任务上；
+     * 1 公里外的不判；异物还在原处时，下一轮不再给同一任务同一目标重复生成。
+     */
+    @Test
+    @Order(25)
+    void scheduledAirportZoneEvaluationFlagsObjectsNearTheApproachOnceAndIgnoresFarOnes() {
+        seedStage9SpaceRisk();
+        OffsetDateTime planFrom = jdbc.queryForObject("select start_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
+        OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
+        assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?", String.class, LocalStage9SpaceRiskSeeder.PLAN))
+                .as("任务必须是待执行或执行中").isEqualTo("PENDING");
+        OffsetDateTime observedAt = planFrom.plus(java.time.Duration.between(planFrom, planTo).dividedBy(2));
+        // 种子机场“18 号进近”的中心线是经线 118.788（北纬 37.560–37.575）；同一纬度向东 300 米、1 公里各放一个气球。
+        double metresPerDegree = 111320 * Math.cos(Math.toRadians(37.5675));
+        String near = spaceTarget("airport-near", "BALLOON", 118.788 + 300 / metresPerDegree, 37.5675, null, new BigDecimal("80.00"), observedAt);
+        String far = spaceTarget("airport-far", "BALLOON", 118.788 + 1000 / metresPerDegree, 37.5675, null, new BigDecimal("80.00"), observedAt);
+        jdbc.update("update target set object_type_code='UNKNOWN' where target_id in (?,?)", near, far);
+        double procedureBuffer = Double.parseDouble(jdbc.queryForObject("select p.value_text from rule_param p"
+                + " join rule_set_version v on v.rule_set_version_id=p.rule_set_version_id"
+                + " join rule_set s on s.rule_set_id=v.rule_set_id"
+                + " where s.rule_set_code='SPACE-RISK-DEMO' and p.rule_code='C05' and p.param_key='procedure_buffer_m'", String.class));
+        assertThat(distanceToApproach(near)).as("夹具气球应在进近航线缓冲内").isBetween(290.0, procedureBuffer);
+        assertThat(distanceToApproach(far)).as("夹具气球应在缓冲外").isGreaterThan(procedureBuffer);
+
+        SpaceRiskRepository.RunRow run = evaluationService.evaluateScheduledAirport(observedAt.minusMinutes(1), observedAt.plusMinutes(1),
+                observedAt.minusMinutes(30));
+        assertThat(run.status()).as("定时 C05 必须真正评估：" + run.message()).isEqualTo("SUCCESS");
+        assertThat(run.ruleCode()).isEqualTo("C05");
+        assertThat(run.triggerKind()).isEqualTo("SCHEDULED");
+        assertThat(airportRisks(near)).filteredOn(r -> LocalStage9SpaceRiskSeeder.PLAN.equals(r.get("plan_id"))).singleElement()
+                .satisfies(risk -> {
+                    assertThat(risk).containsEntry("severity", "MEDIUM").containsEntry("reason_code", "SPACE_OBJECT_IN_AIRPORT_ZONE");
+                    assertThat((String) risk.get("reason_text")).contains("机场区域异物").contains("距进离场程序");
+                });
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=?", Long.class, far)).as("1 公里外不出风险").isZero();
+
+        // 下一分钟气球还在原处：窗口不同，但同一任务同一目标已有未解除的机场区域风险，不再新建。
+        OffsetDateTime later = observedAt.plusMinutes(1);
+        jdbc.update("update target_latest_state set observed_at=?,received_at=?,updated_at=? where target_id in (?,?)", later, later, later, near, far);
+        int before = airportRisks(near).size();
+        SpaceRiskRepository.RunRow again = evaluationService.evaluateScheduledAirport(later.minusSeconds(30), later.plusMinutes(1),
+                later.minusMinutes(30));
+        assertThat(again.status()).isEqualTo("SUCCESS");
+        assertThat(again.risksCreated()).as("同一任务同一目标不重复生成").isZero();
+        assertThat(again.risksDeduplicated()).isPositive();
+        assertThat(airportRisks(near)).hasSize(before);
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=?", Long.class, far)).isZero();
+    }
+
+    /**
+     * P03：鸟群风险每轮评估都记进它的“评估历史”。发现那一轮是第一段（走廊内、构成高风险）；鸟群飞到约 660 米外后，
+     * 那一轮另起一段（走廊外、不构成风险）；风险本身的等级不跟着改。读接口在 PG 上按时间顺序给出这两段。
+     */
+    @Test
+    @Order(26)
+    void flockRiskKeepsEachEvaluationAsHistoryWithoutChangingItsLevel() throws Exception {
+        seedStage9SpaceRisk();
+        OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
+        // 观测放在其他用例都不用的时刻，手动评估的窗口只圈到这一个目标。
+        OffsetDateTime observedAt = planTo.plusHours(20);
+        String flock = spaceTarget("history", "BIRD_FLOCK", 118.025, 37.025, null, new BigDecimal("100.00"), observedAt);
+        SpaceRiskRepository.RunRow run = evaluationService.evaluate("C04", observedAt.minusMinutes(1), observedAt.plusMinutes(1), "MANUAL", null);
+        assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
+        String riskId = jdbc.queryForObject("select risk_id from flight_risk where target_id=? and route_version_id=? and risk_type='SPACE_OBJECT'",
+                String.class, flock, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId)).isEqualTo("HIGH");
+
+        OffsetDateTime later = observedAt.plusMinutes(1);
+        jdbc.update("update target_latest_state set location=ST_GeomFromEWKT('SRID=4326;POINT (118.025 37.031)'),observed_at=?,received_at=?,updated_at=?"
+                + " where target_id=?", later, later, later, flock);
+        double away = distanceToRoute(flock);
+        SpaceRiskRepository.RunRow again = evaluationService.evaluate("C04", later.minusMinutes(1), later.plusMinutes(1), "MANUAL", null);
+        assertThat(again.status()).as(again.message()).isEqualTo("SUCCESS");
+
+        List<Map<String, Object>> segments = jdbc.queryForList("select segment_no,evaluation_count,distance_band_m,corridor_relation,altitude_band,"
+                + "risk_present,severity,from_detection from space_risk_evaluation_segment where risk_id=? order by segment_no", riskId);
+        assertThat(segments).hasSize(2);
+        assertThat(segments.get(0)).containsEntry("segment_no", 1).containsEntry("evaluation_count", 1).containsEntry("corridor_relation", "INSIDE")
+                .containsEntry("altitude_band", "CLIMB").containsEntry("risk_present", true).containsEntry("severity", "HIGH")
+                .containsEntry("from_detection", true);
+        assertThat(segments.get(1)).containsEntry("segment_no", 2).containsEntry("corridor_relation", "OUTSIDE").containsEntry("risk_present", false)
+                .containsEntry("from_detection", false).containsEntry("distance_band_m", (int) (away / 50) * 50);
+        assertThat(segments.get(1).get("severity")).isNull();
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId))
+                .as("评估只记事实，不改风险等级").isEqualTo("HIGH");
+
+        String reader = session(readerRole());
+        mvc.perform(get("/api/v1/risks/{id}/evaluation-history", riskId).header("Authorization", "Bearer " + reader))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.applicable").value(true))
+                .andExpect(jsonPath("$.data.evaluation_count").value(2))
+                .andExpect(jsonPath("$.data.from_detection").value(true))
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.items[0].corridor_relation").value("INSIDE"))
+                .andExpect(jsonPath("$.data.items[0].severity").value("HIGH"))
+                .andExpect(jsonPath("$.data.items[1].corridor_relation").value("OUTSIDE"))
+                .andExpect(jsonPath("$.data.items[1].risk_present").value(false));
+    }
+
+    private double distanceToApproach(String targetId) {
+        return jdbc.queryForObject("select ST_Distance(pr.centerline::geography, s.location::geography) from airport_procedure_route pr, target_latest_state s"
+                + " where pr.route_id='seed-stage9-approach-18' and s.target_id=?", Double.class, targetId);
+    }
+
+    private List<Map<String, Object>> airportRisks(String targetId) {
+        return jdbc.queryForList("select severity,reason_code,reason_text,plan_id from flight_risk"
+                + " where target_id=? and risk_type='SPACE_OBJECT' and reason_code='SPACE_OBJECT_IN_AIRPORT_ZONE'", targetId);
+    }
+
+    /**
      * E1 9.1 自查项：`AirspaceDiffService` 曾在 `@Transactional(readOnly=true)` 里调用带 `FOR UPDATE` 的查询。
      * H2 会放行，PostgreSQL 直接报 `25006 cannot execute FOR UPDATE in a read-only transaction`——真实库上 diff 接口 500。
      * H2 单测抓不到这一类，所以这条只能在 PG 上钉：diff 必须 200，且字段差与几何可用性如实给出。

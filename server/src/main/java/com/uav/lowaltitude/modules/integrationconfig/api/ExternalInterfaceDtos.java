@@ -16,9 +16,16 @@ public final class ExternalInterfaceDtos {
     public record ForecastAvailability(String planId, String status, String message, Forecast forecast) { }
     /** 上级（管服平台）计划接口是否可用；available=false 时计划页须提示上级计划数据暂时取不到。时间均为 epoch 毫秒，未知时为空。 */
     public record PlanUpstreamStatus(String status, boolean available, String message, Long configuredAt, Long lastReceivedAt) { }
+    /** 合并了同一区域好几份预报时，published_at 是其中最新的发布时间，每个时段的 published_at 是它自己那份的（CDX-P06）。 */
     public record Forecast(String areaName, String providerName, long publishedAt, String sourceMode,
             java.util.List<ForecastPeriod> periods) { }
+    /** published_at：这一时段出自哪次发布；只有一份预报（天气模拟服务）时为空、不出现。 */
     public record ForecastPeriod(long from, long to, String summary, double temperatureC,
             double windSpeedMs, double gustMs, int windDirectionDeg,
-            int precipitationProbabilityPct, int humidityPct) { }
+            int precipitationProbabilityPct, int humidityPct, Long publishedAt) {
+        public ForecastPeriod(long from, long to, String summary, double temperatureC, double windSpeedMs, double gustMs,
+                int windDirectionDeg, int precipitationProbabilityPct, int humidityPct) {
+            this(from, to, summary, temperatureC, windSpeedMs, gustMs, windDirectionDeg, precipitationProbabilityPct, humidityPct, null);
+        }
+    }
 }

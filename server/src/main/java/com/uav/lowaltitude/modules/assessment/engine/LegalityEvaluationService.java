@@ -98,6 +98,7 @@ public class LegalityEvaluationService {
     /**
      * 供 {@link RuleRunService} 在自己的每主体事务里调用：不再套一层事务代理，失败时只回滚到本主体的保存点，
      * 不会把整个批次连接标成 rollback-only。调用方必须已开启事务。
+     * 定时运行读到的最新一帧是失联帧时不研判、不写任何行，返回 null（见 {@link RuleEngineRepository#pendingSubjects}）。
      */
     public EvaluationResult evaluateInCurrentTransaction(Subject subject, RunMode mode, OffsetDateTime asOf, String runId, String supersedesEvaluationId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("研判必须在事务内执行");
@@ -118,6 +119,8 @@ public class LegalityEvaluationService {
         long executionRevision=executionEnabled&&resolved.targetId()!=null?executionFacts.revision(resolved.targetId()):0;
         simulation.requireSourceMode(resolved.sourceMode());
         StateRow stateRow = resolved.targetId() == null ? null : repository.latestState(resolved.targetId());
+        // 定时取数时还是真实观测、轮到它时融合层刚写下失联帧：同样不评，保留最后一次真实观测的研判。
+        if (TRIGGER_SCHEDULED.equals(run.triggerKind()) && stateRow != null && stateRow.lossFrame()) return null;
         OffsetDateTime now = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime effectiveAsOf = asOf == null ? now : asOf;
         Freshness freshness = freshness(run.triggerKind(), stateRow, effectiveAsOf, ruleParams);
@@ -166,8 +169,6 @@ public class LegalityEvaluationService {
         // Keep decisive airspace violations on the existing independent evidence path.
         // 无计划（NO_AUTHORIZATION，来自 C03.no_plan_status）也不靠行为偏差成立：数据质量已过第 2 步质量门、类别明确为无人机，
         // 不能因为夜航等行为项"依据不足"把它降成不可判定、不出告警；计划授权待核对仍由 decision_assurance 交给人工复核。
-        // 单独超视距（C02-6）不经这道门：它只看飞手与目标两点的距离、不依赖计划身份，C03 已把等级固定为 LOW，照常告警；
-        // 与行为偏差同时出现时按行为偏差处理（与没有超视距时一致），依据不足照旧降为不可判定。
         boolean behaviourViolation = hits.stream().anyMatch(hit -> RuleCodes.BEHAVIOUR_CHECKS.contains(hit.ruleCode())
                 && hit.resultCode() == RuleContracts.ResultCode.FAIL);
         boolean airspaceViolation = hits.stream().anyMatch(hit -> RuleCodes.AIRSPACE_CHECKS.contains(hit.ruleCode())
@@ -200,7 +201,7 @@ public class LegalityEvaluationService {
         repository.insertEvaluation(new EvaluationInsert(evaluationId, runId, run.ruleSetVersionId(), mode, subject.kind(), resolved.targetId(), trackId,
                 planId, routeVersionId, stateRow == null ? null : stateRow.observedAt(), effectiveAsOf, now, freshness.name(), planMatch.code().name(),
                 verdict.status().name(), verdict.score(), verdict.grade(), write(verdict.violationReasons()), write(hits), write(verdict.unknownReasons()),
-                write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness,execution)), supersedesEvaluationId, shadowOutcome,
+                write(evidence), write(snapshot(stateRow, track, candidateIds, airspaces, freshness, ruleParams, execution)), supersedesEvaluationId, shadowOutcome,
                 resolved.ownerOrgId(), resolved.districtId(), resolved.sourceMode(), assurance.algorithmVersion(), assurance.status(), write(assurance.reasons()), recognition),execution==null?executionRevision:execution.revision());
 
         String assessmentId = null;
@@ -277,7 +278,7 @@ public class LegalityEvaluationService {
 
     private static TargetState state(Resolved resolved, String trackId, StateRow row) {
         BigDecimal confidence = row.fusionConfidence() != null ? row.fusionConfidence() : row.classificationConfidence();
-        // 阶段 8.5：飞手位置随最新状态一起进规则，C02-6 才判得出超视距（共享改动，见 task-8.5.2 报告）。
+        // 阶段 8.5：飞手位置随最新状态一起进规则，C02-6 才算得出飞手离无人机多远（共享改动，见 task-8.5.2 报告；新-29 起只作提示）。
         return new TargetState(resolved.targetId(), trackId, resolved.uavSn(), row.longitude(), row.latitude(), row.altitudeAmslM(), row.heightAglM(),
                 row.speedMps(), row.headingDeg(), confidence, row.observedAt(), row.receivedAt(),
                 row.pilotLongitude(), row.pilotLatitude(), row.pilotObservedAt());
@@ -331,9 +332,12 @@ public class LegalityEvaluationService {
         return checks;
     }
 
-    /** input_snapshot 不出 API，但仍只放判定用到的字段，不放原始载荷。 */
+    /**
+     * input_snapshot 不出 API，但仍只放判定用到的字段，不放原始载荷。
+     * confidence_check 例外：研判页要写清“几路来源、可信度多少、要求多少”（CDX-P04），读接口只取这三个数。
+     */
     private static Map<String, Object> snapshot(StateRow state, TrackQuality track, List<String> candidateIds, List<AirspaceHit> airspaces, Freshness freshness,
-            com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution) {
+            RuleParams params, com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Comparison execution) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         if(execution!=null)snapshot.put("execution",execution);
         snapshot.put("freshness", freshness.name());
@@ -345,6 +349,12 @@ public class LegalityEvaluationService {
             s.put("observed_at", state.observedAt() == null ? null : state.observedAt().toInstant().toEpochMilli());
             s.put("received_at", state.receivedAt() == null ? null : state.receivedAt().toInstant().toEpochMilli());
             snapshot.put("state", s);
+            // 与四态判定质量门用的是同一个可信度（融合优先，缺则类别置信度）和同一个下限。
+            Map<String, Object> check = new LinkedHashMap<>();
+            check.put("value", state.fusionConfidence() != null ? state.fusionConfidence() : state.classificationConfidence());
+            check.put("threshold", params.has(C03Decision.RULE_CODE, C03Decision.PARAM_CONF_MIN) ? params.number(C03Decision.RULE_CODE, C03Decision.PARAM_CONF_MIN) : null);
+            check.put("source_count", state.sourceCount());
+            snapshot.put("confidence_check", check);
         }
         Map<String, Object> t = new LinkedHashMap<>();
         t.put("point_count", track.pointCount()); t.put("max_gap_seconds", track.maxGapSeconds()); t.put("bridged", track.bridged());

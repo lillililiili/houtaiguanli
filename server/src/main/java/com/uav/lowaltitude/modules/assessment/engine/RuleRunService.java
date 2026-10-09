@@ -86,6 +86,8 @@ public class RuleRunService {
         for (Subject subject : subjects) {
             try {
                 EvaluationResult result = perSubject.execute(status -> evaluation.evaluateInCurrentTransaction(subject, run.mode(), asOf, run.runId(), null));
+                // 定时运行里刚变成失联帧的目标：没有研判，也不算失败。
+                if (result == null) continue;
                 evaluated++;
                 if (result.alarmCreated()) alarmsCreated++;
                 if (result.alarmMerged()) alarmsMerged++;

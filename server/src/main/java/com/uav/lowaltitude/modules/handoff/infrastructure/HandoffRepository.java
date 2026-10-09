@@ -290,6 +290,19 @@ public class HandoffRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /**
+     * 补发候选（新-23）：since 之后建立、只尝试过一次、那一次确实没发出去（待投递、没有提交时刻）的通知上级。
+     * 只是候选，补发前还要逐条加锁复核。
+     */
+    public List<String> unsentRiskNotices(OffsetDateTime since, int limit) {
+        return jdbc.query("SELECT h.handoff_id FROM handoff h JOIN handoff_delivery d ON d.handoff_id=h.handoff_id AND d.attempt_no=1"
+                + " WHERE h.handoff_type='RISK_NOTICE' AND h.created_at>=:since AND d.delivery_status='PENDING_DELIVERY'"
+                + " AND d.submitted_at IS NULL"
+                + " AND NOT EXISTS (SELECT 1 FROM handoff_delivery x WHERE x.handoff_id=h.handoff_id AND x.attempt_no>1)"
+                + " ORDER BY h.created_at OFFSET 0 ROWS FETCH NEXT :limit ROWS ONLY",
+                Map.of("since", since, "limit", limit), (rs, ignored) -> rs.getString(1));
+    }
+
     /* ---- SQL 片段 ---- */
 
     private Where where(HandoffQuery query, AccessDecision access) {
@@ -328,7 +341,7 @@ public class HandoffRepository {
                 + "h.district_id,h.source_mode,h.submitted_by,h.created_at,h.receipt_result,d.delivery_status,d.receipt_status,d.blocked_reason,"
                 + "org_ref.name AS owner_org_name,dist_ref.name AS district_name,su.name AS submitted_by_name,"
                 // 来源业务编号：风险取来源风险编号；无人机事件优先用告警编号，没有再用来源键。
-                + "COALESCE(fr.source_risk_id,NULLIF(al.alarm_no,''),al.source_alarm_id) AS source_no";
+                + "COALESCE(fr.source_risk_id,NULLIF(al.alarm_no,''),al.source_alarm_id) AS source_no,h.trigger_source";
     }
     private static String from() {
         // delivery_status 指最新一次尝试；列表、详情与 count 共用同一联接，避免口径漂移。
@@ -351,7 +364,8 @@ public class HandoffRepository {
                 rs.getString("recipient_id"), rs.getString("display_name"), rs.getLong("source_version"), rs.getString("owner_org_id"),
                 rs.getString("district_id"), rs.getString("source_mode"), rs.getString("submitted_by"), time(rs, "created_at"),
                 rs.getString("delivery_status"), rs.getString("receipt_status"), rs.getString("receipt_result"), rs.getString("blocked_reason"),
-                rs.getString("owner_org_name"), rs.getString("district_name"), rs.getString("submitted_by_name"), rs.getString("source_no"));
+                rs.getString("owner_org_name"), rs.getString("district_name"), rs.getString("submitted_by_name"), rs.getString("source_no"),
+                rs.getString("trigger_source"));
     }
     private static DeliveryRow delivery(ResultSet rs, int ignored) throws SQLException {
         return new DeliveryRow(rs.getString("delivery_id"), rs.getString("handoff_id"), rs.getInt("attempt_no"), rs.getString("delivery_status"),
@@ -379,7 +393,7 @@ public class HandoffRepository {
     public record HandoffRow(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId, String recipientName,
             long sourceVersion, String ownerOrgId, String districtId, String sourceMode, String submittedBy, OffsetDateTime createdAt,
             String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
-            String ownerOrgName, String districtName, String submittedByName, String sourceNo) { }
+            String ownerOrgName, String districtName, String submittedByName, String sourceNo, String triggerSource) { }
     public record DeliveryRow(String deliveryId, String handoffId, int attemptNo, String deliveryStatus, String receiptStatus, String blockedReason,
             OffsetDateTime createdAt, OffsetDateTime submittedAt, OffsetDateTime deliveredAt, OffsetDateTime acknowledgedAt) { }
     public record SnapshotRow(int schemaVersion, String json) { }

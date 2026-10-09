@@ -186,7 +186,14 @@ public class GlobalExceptionHandler {
             Map.entry("currentPassword", "当前密码"),
             Map.entry("current_password", "当前密码"),
             Map.entry("newPassword", "新密码"),
-            Map.entry("new_password", "新密码"));
+            Map.entry("new_password", "新密码"),
+            // 模拟器计划报文直接携带的航线（PlanRoute）：校验不带请求语言，中文说明缺的是哪一项。
+            Map.entry("route.ownerOrgId", "航线归属单位"),
+            Map.entry("route.districtId", "航线所在区县"),
+            // D-2：任务资料里上级带来的飞手手机号和报送单位。
+            Map.entry("filing.pilotPhone", "飞手手机号"),
+            Map.entry("filing.reportingOrgCode", "报送单位编码"),
+            Map.entry("filing.reportingOrgName", "报送单位名称"));
 
     private static String fieldMessage(String field, String defaultMessage) {
         String label = FIELD_LABELS.getOrDefault(field, field);

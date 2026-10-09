@@ -89,15 +89,98 @@ public class SpaceRiskRepository {
      * 有了解除依据（已离开）之后再进入，或换了新目标（新一批），才算新的一次。人工排除的风险同样算已处理，不再重复生成。
      */
     public String openC04Risk(String planId, String targetId) {
+        return openSpaceRisk("C04", planId, targetId);
+    }
+
+    /**
+     * 同 {@link #openC04Risk}，按规则代码取：C05（机场区域异物）也是"同一任务、同一目标只记一次"（2026-10-08 新-27）。
+     * C05 目前没有自动解除依据，所以一个异物在一次任务里最多一条机场区域风险。
+     */
+    public String openSpaceRisk(String ruleCode, String planId, String targetId) {
         List<String> rows = jdbc.queryForList("SELECT r.risk_id FROM flight_risk r"
                 + " JOIN space_risk_fact f ON f.risk_id=r.risk_id"
-                + " JOIN rule_version v ON v.rule_version_id=f.rule_version_id AND v.rule_code='C04'"
+                + " JOIN rule_version v ON v.rule_version_id=f.rule_version_id AND v.rule_code=:rule"
                 + " LEFT JOIN target_current_alias alias ON alias.historical_target_id=r.target_id"
                 + " WHERE r.risk_type='SPACE_OBJECT' AND r.plan_id=:plan AND COALESCE(alias.current_target_id,r.target_id)=:target"
                 + " AND NOT EXISTS (SELECT 1 FROM risk_clearance_evidence e WHERE e.risk_id=r.risk_id)"
                 + " ORDER BY r.received_at DESC, r.risk_id ASC FETCH FIRST 1 ROWS ONLY",
-                Map.of("plan", planId, "target", targetId), String.class);
+                Map.of("rule", ruleCode, "plan", planId, "target", targetId), String.class);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 风险的空间事实挂在哪条规则下（C04 / C05）；没有空间事实（天气、作业风险）返回 null。 */
+    public String ruleCodeOf(String riskId) {
+        List<String> rows = jdbc.queryForList("SELECT v.rule_code FROM space_risk_fact f"
+                + " JOIN rule_version v ON v.rule_version_id=f.rule_version_id WHERE f.risk_id=:risk", Map.of("risk", riskId), String.class);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    // ---- 评估历史（P03） ----
+
+    private static final String SEGMENT_COLUMNS = "segment_id,risk_id,segment_no,first_evaluated_at,last_evaluated_at,evaluation_count,"
+            + "first_observed_at,last_observed_at,distance_band_m,min_distance_m,max_distance_m,corridor_relation,altitude_band,"
+            + "risk_present,severity,rule_set_version_id,from_detection";
+
+    /** 这条风险最近的一段评估历史；还没有返回 null。 */
+    public EvaluationSegmentRow latestSegment(String riskId) {
+        List<EvaluationSegmentRow> rows = jdbc.query("SELECT " + SEGMENT_COLUMNS + " FROM space_risk_evaluation_segment WHERE risk_id=:risk"
+                + " ORDER BY segment_no DESC FETCH FIRST 1 ROWS ONLY", Map.of("risk", riskId), SpaceRiskRepository::segment);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 新开一段；(risk_id, segment_no) 唯一，并发评估抢同一个段号时后到的一方失败，不会出现两段同号。 */
+    public void insertSegment(EvaluationSegmentRow row, OffsetDateTime now) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("id", row.segmentId()); p.put("risk", row.riskId()); p.put("no", row.segmentNo());
+        p.put("first_at", row.firstEvaluatedAt()); p.put("last_at", row.lastEvaluatedAt()); p.put("count", row.evaluationCount());
+        p.put("first_observed", row.firstObservedAt()); p.put("last_observed", row.lastObservedAt());
+        p.put("band", row.distanceBandM()); p.put("min", row.minDistanceM()); p.put("max", row.maxDistanceM());
+        p.put("relation", row.corridorRelation()); p.put("altitude", row.altitudeBand()); p.put("present", row.riskPresent());
+        p.put("severity", row.severity()); p.put("rule_set_version", row.ruleSetVersionId()); p.put("detection", row.fromDetection());
+        p.put("now", now);
+        jdbc.update("INSERT INTO space_risk_evaluation_segment (" + SEGMENT_COLUMNS + ",created_at,updated_at)"
+                + " VALUES (:id,:risk,:no,:first_at,:last_at,:count,:first_observed,:last_observed,:band,:min,:max,:relation,:altitude,"
+                + ":present,:severity,:rule_set_version,:detection,:now,:now)", p);
+    }
+
+    /**
+     * 把一次评估并进已有的一段：次数加一、最近评估与观测时刻后移、距离范围放宽。
+     * 按读到的次数做条件更新，返回受影响行数：0 表示这段刚被另一轮评估改过，调用方不得当成已记上。
+     */
+    public int extendSegment(EvaluationSegmentRow last, OffsetDateTime evaluatedAt, OffsetDateTime observedAt, BigDecimal distanceM,
+            OffsetDateTime now) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("id", last.segmentId()); p.put("expected", last.evaluationCount()); p.put("last_at", evaluatedAt);
+        p.put("last_observed", observedAt == null ? last.lastObservedAt() : observedAt);
+        p.put("min", distanceM == null || last.minDistanceM() == null ? last.minDistanceM() : distanceM.min(last.minDistanceM()));
+        p.put("max", distanceM == null || last.maxDistanceM() == null ? last.maxDistanceM() : distanceM.max(last.maxDistanceM()));
+        p.put("now", now);
+        return jdbc.update("UPDATE space_risk_evaluation_segment SET evaluation_count=evaluation_count+1,last_evaluated_at=:last_at,"
+                + "last_observed_at=:last_observed,min_distance_m=:min,max_distance_m=:max,updated_at=:now"
+                + " WHERE segment_id=:id AND evaluation_count=:expected", p);
+    }
+
+    /** 评估历史的合计：段数、评估次数、最早与最近的评估时刻、是否从发现那次评估开始记。 */
+    public EvaluationSummaryRow evaluationSummary(String riskId) {
+        return jdbc.queryForObject("SELECT COUNT(*) AS segments,COALESCE(SUM(evaluation_count),0) AS evaluations,"
+                + "MIN(first_evaluated_at) AS first_at,MAX(last_evaluated_at) AS last_at,"
+                + "COALESCE(MAX(CASE WHEN from_detection THEN 1 ELSE 0 END),0) AS detection"
+                + " FROM space_risk_evaluation_segment WHERE risk_id=:risk", Map.of("risk", riskId),
+                (rs, i) -> new EvaluationSummaryRow(rs.getLong("segments"), rs.getLong("evaluations"), time(rs, "first_at"),
+                        time(rs, "last_at"), rs.getInt("detection") == 1));
+    }
+
+    /** 按时间先后分页取段（段号就是先后次序）。 */
+    public List<EvaluationSegmentRow> segments(String riskId, int offset, int size) {
+        Map<String, Object> p = new HashMap<>();
+        p.put("risk", riskId); p.put("offset", offset); p.put("size", size);
+        return jdbc.query("SELECT " + SEGMENT_COLUMNS + " FROM space_risk_evaluation_segment WHERE risk_id=:risk"
+                + " ORDER BY segment_no ASC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", p, SpaceRiskRepository::segment);
+    }
+
+    /** 有没有启用的机场：没有就不必每分钟跑一轮 C05、留一条空的运行记录。 */
+    public boolean anyEnabledAirport() {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM airport WHERE enabled = TRUE)", Map.of(), Boolean.class));
     }
 
     // ---- 评估运行 ----
@@ -252,6 +335,15 @@ public class SpaceRiskRepository {
         catch (NumberFormatException ex) { return new BigDecimal[] { null, null }; }
     }
 
+    private static EvaluationSegmentRow segment(ResultSet rs, int ignored) throws SQLException {
+        return new EvaluationSegmentRow(rs.getString("segment_id"), rs.getString("risk_id"), rs.getInt("segment_no"),
+                time(rs, "first_evaluated_at"), time(rs, "last_evaluated_at"), rs.getInt("evaluation_count"),
+                time(rs, "first_observed_at"), time(rs, "last_observed_at"), rs.getObject("distance_band_m", Integer.class),
+                rs.getBigDecimal("min_distance_m"), rs.getBigDecimal("max_distance_m"), rs.getString("corridor_relation"),
+                rs.getString("altitude_band"), rs.getBoolean("risk_present"), rs.getString("severity"), rs.getString("rule_set_version_id"),
+                rs.getBoolean("from_detection"));
+    }
+
     private static RunRow run(ResultSet rs, int ignored) throws SQLException {
         return new RunRow(rs.getString("run_id"), rs.getString("rule_code"), rs.getString("trigger_kind"), time(rs, "window_from"),
                 time(rs, "window_to"), rs.getString("status"), rs.getInt("targets_seen"), rs.getInt("risks_created"),
@@ -295,6 +387,13 @@ public class SpaceRiskRepository {
             BigDecimal targetAltitudeRaw, OffsetDateTime windowFrom, OffsetDateTime windowTo, OffsetDateTime createdAt) { }
     public record RunRow(String runId, String ruleCode, String triggerKind, OffsetDateTime windowFrom, OffsetDateTime windowTo, String status,
             int targetsSeen, int risksCreated, int risksDeduplicated, String message, String actorId, OffsetDateTime startedAt, OffsetDateTime finishedAt) { }
+    /** 评估历史的一段（P03）：distanceBandM 是距离档下沿，没有距离时三项距离都为 null；不构成风险时 severity 为 null。 */
+    public record EvaluationSegmentRow(String segmentId, String riskId, int segmentNo, OffsetDateTime firstEvaluatedAt,
+            OffsetDateTime lastEvaluatedAt, int evaluationCount, OffsetDateTime firstObservedAt, OffsetDateTime lastObservedAt,
+            Integer distanceBandM, BigDecimal minDistanceM, BigDecimal maxDistanceM, String corridorRelation, String altitudeBand,
+            boolean riskPresent, String severity, String ruleSetVersionId, boolean fromDetection) { }
+    public record EvaluationSummaryRow(long segments, long evaluations, OffsetDateTime firstEvaluatedAt, OffsetDateTime lastEvaluatedAt,
+            boolean fromDetection) { }
     public record CountRow(String bucket, long total) { }
     public record SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, boolean excludeDemoSamples) {
         public SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId) {

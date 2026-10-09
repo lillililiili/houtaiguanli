@@ -39,7 +39,7 @@ public class UavAdvisoryRepository {
             try {
                 var reasons=json.readTree(evaluation.unknowns());
                 if(reasons.isTextual()) reasons=json.readTree(reasons.asText());
-                noUnknowns=reasons.isArray()&&reasons.isEmpty();
+                noUnknowns=com.uav.lowaltitude.modules.alarm.domain.UavAdvisoryRules.noBlockingUnknowns(reasons);
             } catch(Exception invalid) { noUnknowns=false; }
         }
         return com.uav.lowaltitude.modules.alarm.domain.UavAdvisoryRules.counterBlockReason(

@@ -50,7 +50,7 @@ public final class DashboardDtos {
             @JsonInclude(JsonInclude.Include.ALWAYS) Integer illegal) { }
 
     /**
-     * 今日感知目标按最新风险等级分档，与运行统计"各风险等级分布"同一套：超高风险、高风险、中风险、低风险、未识别（ungraded）。
+     * 今日感知目标按最新风险等级分档，与运行统计"各异物风险等级分布"同一套：超高风险、高风险、中风险、低风险、未识别（ungraded）。
      * 五档相加等于 kpis.sensed_today；全量统计，truncated 恒为 false（保留字段兼容旧页面）。
      */
     public record TargetRiskDto(int critical, int high, int medium, int low, int ungraded, boolean truncated) { }

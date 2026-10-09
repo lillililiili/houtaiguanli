@@ -16,6 +16,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.uav.lowaltitude.Application;
+import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 
 /** 按 deploy/compose.yml 传给 api 的同名变量启动 production：空库得到可登录的唯一超级管理员。 */
 class InitialAdminBootstrapTest {
@@ -27,7 +28,8 @@ class InitialAdminBootstrapTest {
         try (ConfigurableApplicationContext context = start(database, TEMPORARY)) {
             JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
             List<Map<String, Object>> users = jdbc.queryForList(
-                    "SELECT account, role_code, status, scope_mode, must_change_password, password_hash FROM app_user");
+                    "SELECT account, role_code, status, scope_mode, must_change_password, password_hash FROM app_user"
+                            + " WHERE user_id <> ?", AutomationPrincipal.USER_ID);
             assertThat(users).hasSize(1);
             Map<String, Object> admin = users.get(0);
             assertThat(admin.get("account")).isEqualTo("admin1");
@@ -36,11 +38,15 @@ class InitialAdminBootstrapTest {
             assertThat(admin.get("scope_mode")).isEqualTo("ALL");
             assertThat(admin.get("must_change_password")).isEqualTo(true);
             assertThat(context.getBean(PasswordEncoder.class).matches(TEMPORARY, (String) admin.get("password_hash"))).isTrue();
+            // 迁移随安装建好的自动规则发起人：停用、不算已有账号，不妨碍空库建出管理员。
+            assertThat(jdbc.queryForObject("SELECT status FROM app_user WHERE user_id = ?", String.class,
+                    AutomationPrincipal.USER_ID)).isEqualTo("DISABLED");
         }
         // 改密后按说明删掉初始密码再重启：不再创建、不改动已有管理员
         try (ConfigurableApplicationContext context = start(database, "")) {
             JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
-            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM app_user", Integer.class)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM app_user WHERE user_id <> ?", Integer.class,
+                    AutomationPrincipal.USER_ID)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM app_user WHERE account='admin1' AND role_code='ROLE-ADMIN'",
                     Integer.class)).isEqualTo(1);
         }

@@ -57,6 +57,13 @@ class NoCounterApiTest {
         jdbc.update("delete from target_latest_state where target_id=(select target_id from alarm where alarm_id=(select alarm_id from uav_event where event_id=?))",eventId);
         noCounter().andExpect(jsonPath("$.data.can_decide").value(false));
     }
+    /** 新-19：只缺飞手位置（超视距判不了）的研判照样可靠，能决定暂不反制；别的未知照样不行。 */
+    @Test void missingPilotPositionAloneStillAllowsDecision() throws Exception {
+        append("ILLEGAL","[]","[\"PILOT_POSITION_UNAVAILABLE\"]","mock",Instant.now());
+        noCounter().andExpect(jsonPath("$.data.can_decide").value(true));
+        append("ILLEGAL","[]","[\"PILOT_POSITION_UNAVAILABLE\",\"MISSING\"]","mock",Instant.now());
+        noCounter().andExpect(jsonPath("$.data.can_decide").value(false));
+    }
     @Test void legalAndAbnormalReliableJudgmentsCanBeManuallyAccepted() throws Exception {
         append("LEGAL","[]","[]","mock",Instant.now());
         noCounter().andExpect(jsonPath("$.data.can_decide").value(true));

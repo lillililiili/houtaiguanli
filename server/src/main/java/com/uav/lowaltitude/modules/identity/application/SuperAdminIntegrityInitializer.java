@@ -12,6 +12,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 import com.uav.lowaltitude.platform.config.AppProperties;
 
 @Component
@@ -32,7 +33,8 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        if (count("SELECT COUNT(*) FROM app_user") == 0) return;
+        // 空库（只有迁移建好的自动规则发起人）照旧跳过，由自举创建管理员后再校验。
+        if (count("SELECT COUNT(*) FROM app_user WHERE user_id <> '" + AutomationPrincipal.USER_ID + "'") == 0) return;
         String account = normalized(properties.getSuperAdmin().getAccount());
         if (account.isEmpty()) {
             throw new IllegalStateException("APP_SUPER_ADMIN_ACCOUNT must identify the unique super administrator");

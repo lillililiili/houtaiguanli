@@ -29,3 +29,11 @@ app:
   # 同 application-test.yml：自动规则引擎的后台轮询会和收尾删 schema 互相等锁。
   automation-rules:
     enabled: false
+  # 同 application-test.yml：反制设备到时自动关闭由用例直接调 tick()。
+  disposal:
+    device-run:
+      enabled: false
+  # 同 application-test.yml：通知上级的自动补发由用例直接调 resend()。
+  handoff:
+    risk-notice-resend:
+      enabled: false

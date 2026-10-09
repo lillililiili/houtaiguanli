@@ -39,5 +39,22 @@ public final class SpaceRiskDtos {
 
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
 
+    /**
+     * P03 评估历史（只有空中异物 C04 风险有）：applicable=false 表示这类风险不记评估历史，页面不显示这一栏。
+     * evaluation_count 是各段次数之和；first/last_evaluated_at 是最早、最近一次评估的时刻，没有记录时省略。
+     * from_detection=false 表示发现这条风险的那次评估没有记录（改动以前产生的风险），前面的评估不在这里。
+     * items 按时间先后分页，total 是段数。
+     */
+    public record EvaluationHistoryDto(boolean applicable, long evaluationCount, Long firstEvaluatedAt, Long lastEvaluatedAt,
+            boolean fromDetection, List<EvaluationSegmentDto> items, int page, int size, long total) { }
+
+    /**
+     * 一段评估：这段时间里每次评估的事实都一样。distance_band_m 是距离档下沿（按 50 米一档），min/max_distance_m 是这段里测到的
+     * 最近、最远距离；没有距离时三项都省略。risk_present=false 表示当时不构成风险，此时没有 severity。
+     */
+    public record EvaluationSegmentDto(int segmentNo, long firstEvaluatedAt, long lastEvaluatedAt, int evaluationCount,
+            Integer distanceBandM, BigDecimal minDistanceM, BigDecimal maxDistanceM, String corridorRelation, String altitudeBand,
+            boolean riskPresent, String severity) { }
+
     public record EvaluationRequest(String ruleCode, Long windowFrom, Long windowTo) { }
 }

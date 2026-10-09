@@ -17,6 +17,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.MultiValueMap;
 
+import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
+import com.uav.lowaltitude.modules.assessment.engine.checks.VisualLineOfSightCheck;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository;
 import com.uav.lowaltitude.modules.fusion.application.FusionConfigService;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository.DegradationRow;
@@ -313,7 +315,25 @@ public class TargetReadService {
         if (summaries == null || summaries.legality() == null) return null;
         LegalitySummaryRow legality = summaries.legality();
         return new LegalitySummaryDto(legality.evaluationId(), legality.legalStatus(), legality.grade(),
-                violationReasons(legality.violationReasonsJson()));
+                violationReasons(legality.violationReasonsJson()), pilotDistanceNote(legality.pilotNoteHitsJson()));
+    }
+
+    /** 新-29：研判明细里 C02-6 的飞手距离提示；没有或读不出来就不给这一项，而不是让整条目标打不开。 */
+    private String pilotDistanceNote(String hitDetails) {
+        if (hitDetails == null || hitDetails.isBlank()) return null;
+        try {
+            JsonNode node = objectMapper.readTree(hitDetails);
+            if (node != null && node.isTextual()) node = objectMapper.readTree(node.textValue());
+            if (node == null || !node.isArray()) return null;
+            for (JsonNode hit : node) {
+                if (!RuleCodes.C02_6.equals(hit.path("rule_code").asText())) continue;
+                JsonNode note = hit.path("facts").path(VisualLineOfSightCheck.FACT_PILOT_DISTANCE_NOTE);
+                return note.isTextual() && !note.asText().isBlank() ? note.asText() : null;
+            }
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private DisposalSummaryDto disposalSummary(TargetSummariesRow summaries) {
