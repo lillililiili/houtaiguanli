@@ -235,6 +235,10 @@ class SpaceRiskScheduledEvaluationTest {
         assertThat(severityOf(risks(many).get(0))).as("报 25 只：上调一级").isEqualTo("HIGH");
         assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?", String.class, risks(unreported).get(0)))
                 .isEqualTo("PENDING_VERIFICATION");
+        // 修订版 4-2：依据（reason_text）里写“数量未知”；报了数量的写“规模约 N”，不写数量未知。
+        assertThat(reasonOf(risks(unreported).get(0))).as("没报数量").contains("数量未知").doesNotContain("规模约");
+        assertThat(reasonOf(risks(few).get(0))).as("报 10 只").contains("规模约 10").doesNotContain("数量未知");
+        assertThat(reasonOf(risks(many).get(0))).as("报 25 只").contains("规模约 25").doesNotContain("数量未知");
         assertThat(jdbc.queryForObject("select object_count from space_risk_fact where risk_id=?", Integer.class, risks(unreported).get(0))).isNull();
         assertThat(jdbc.queryForObject("select CAST(unknown_reasons AS VARCHAR) from space_risk_fact where risk_id=?", String.class, risks(unreported).get(0)))
                 .contains(C04DecisionTable.UNKNOWN_OBJECT_COUNT);
@@ -279,6 +283,10 @@ class SpaceRiskScheduledEvaluationTest {
 
     private String severityOf(String riskId) {
         return jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId);
+    }
+
+    private String reasonOf(String riskId) {
+        return jdbc.queryForObject("select reason_text from flight_risk where risk_id=?", String.class, riskId);
     }
 
     private List<Map<String, Object>> segments(String riskId) {

@@ -343,6 +343,8 @@ public class SpaceRiskEvaluationService {
             text.append("距航线中心线 ").append(observation.distanceToRouteM().setScale(0, java.math.RoundingMode.HALF_UP)).append(" 米");
         }
         if (observation.objectCount() != null) text.append("，规模约 ").append(observation.objectCount());
+        // 确认书修订版 4-2：设备没报数量时照常出风险，依据里要写明“数量未知”，免得读成数量不大。
+        else text.append("，数量未知");
         if (decision.escalated()) text.append("；因数量或趋势上调一级");
         return text.toString();
     }

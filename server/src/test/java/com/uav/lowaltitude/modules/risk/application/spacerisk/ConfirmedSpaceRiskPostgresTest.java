@@ -220,6 +220,9 @@ class ConfirmedSpaceRiskPostgresTest {
         assertThat(jdbc.queryForObject("select state_code from flight_risk where target_id=?", String.class, target)).isEqualTo("PENDING_VERIFICATION");
         assertThat(jdbc.queryForObject("select f.rule_version_id from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", String.class, target))
                 .isEqualTo("confirmed-20261008-C04");
+        // 报了数量的，依据写“规模约 N”，不写“数量未知”。
+        assertThat(jdbc.queryForObject("select reason_text from flight_risk where target_id=?", String.class, target))
+                .contains("规模约 " + count).doesNotContain("数量未知");
     }
 
     @Test
@@ -239,6 +242,9 @@ class ConfirmedSpaceRiskPostgresTest {
         assertThat(jdbc.queryForObject("select CAST(f.unknown_reasons AS VARCHAR) from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", String.class, target))
                 .contains(C04DecisionTable.UNKNOWN_OBJECT_COUNT);
         assertThat(jdbc.queryForObject("select f.object_count from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", Integer.class, target)).isNull();
+        // 确认书修订版 4-2：风险依据里要写“数量未知”，不写规模。
+        assertThat(jdbc.queryForObject("select reason_text from flight_risk where target_id=?", String.class, target))
+                .contains("距航线中心线").contains("数量未知").doesNotContain("规模约");
     }
 
     @ParameterizedTest
