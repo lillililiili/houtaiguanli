@@ -2,11 +2,13 @@ package com.uav.lowaltitude.modules.assessment.engine.checks;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 
 import org.springframework.stereotype.Component;
 
 import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
+import com.uav.lowaltitude.modules.assessment.engine.LegalityRulePolicy;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationContext;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.HitDetail;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.ParamRef;
@@ -14,7 +16,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanFact;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleCheck;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.RuleParams;
 
-/** C02-4 时间窗：as_of ≥ end_at + grace 或 as_of < start_at − grace 即超出计划时窗；计划无时间记 PLAN_TIME_UNKNOWN。 */
+/** C02-4 时间窗：确认版结束宽限端点包含在内，历史版为半开窗；计划无时间记 PLAN_TIME_UNKNOWN。 */
 @Component
 public class TimeWindowCheck implements RuleCheck {
     static final String PARAM_GRACE_MIN = "grace_min";
@@ -25,7 +27,9 @@ public class TimeWindowCheck implements RuleCheck {
     @Override
     public HitDetail evaluate(EvaluationContext context, RuleParams params) {
         int grace = params.integer(ruleCode(), PARAM_GRACE_MIN);
-        List<ParamRef> refs = List.of(CheckSupport.integer(params, ruleCode(), PARAM_GRACE_MIN));
+        List<ParamRef> refs = new ArrayList<>(List.of(CheckSupport.integer(params, ruleCode(), PARAM_GRACE_MIN)));
+        boolean inclusiveEnd = LegalityRulePolicy.inclusiveEnd(params, ruleCode(), "grace_end_inclusive");
+        if (params.has(ruleCode(), "grace_end_inclusive")) refs.add(CheckSupport.string(params, ruleCode(), "grace_end_inclusive"));
         PlanFact plan = context.planMatch() == null ? null : context.planMatch().plan();
         if (plan == null) return CheckSupport.notApplicable(ruleCode(), RuleCodes.NO_PLAN, refs, "没有匹配到飞行任务，时间窗不适用");
         Map<String, Object> facts = CheckSupport.facts();
@@ -38,7 +42,7 @@ public class TimeWindowCheck implements RuleCheck {
         facts.put("plan_start_at", plan.startAt().toInstant().toEpochMilli());
         facts.put("plan_end_at", plan.endAt().toInstant().toEpochMilli());
         facts.put("as_of", asOf.toInstant().toEpochMilli());
-        boolean late = !asOf.isBefore(plan.endAt().plusMinutes(grace));
+        boolean late = inclusiveEnd ? asOf.isAfter(plan.endAt().plusMinutes(grace)) : !asOf.isBefore(plan.endAt().plusMinutes(grace));
         boolean early = asOf.isBefore(plan.startAt().minusMinutes(grace));
         if (late || early) {
             facts.put("overrun_side", late ? "AFTER_END" : "BEFORE_START");

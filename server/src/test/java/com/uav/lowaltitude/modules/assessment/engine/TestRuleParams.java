@@ -39,6 +39,12 @@ final class TestRuleParams implements RuleParams {
 
     static TestRuleParams empty() { return new TestRuleParams("DEMO"); }
 
+    TestRuleParams withStatus(String status) {
+        TestRuleParams copy = new TestRuleParams(status);
+        copy.values.putAll(values);
+        return copy;
+    }
+
     TestRuleParams put(String ruleCode, String key, String value) { values.put(ruleCode + "." + key, value); return this; }
 
     /** 模拟旧版本缺某一项参数。 */

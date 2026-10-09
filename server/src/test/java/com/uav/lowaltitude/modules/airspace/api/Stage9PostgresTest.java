@@ -363,10 +363,10 @@ class Stage9PostgresTest {
                 .containsExactly("BALLOON", "BIRD_FLOCK", "KITE", "OTHER_OBJECT", "SKY_LANTERN");
         List<String> params = jdbc.queryForList("select p.rule_code||':'||p.param_key from rule_param p"
                 + " join rule_set_version v on v.rule_set_version_id=p.rule_set_version_id"
-                + " join rule_set s on s.rule_set_id=v.rule_set_id where s.rule_set_code='SPACE-RISK-DEMO' order by 1", String.class);
+                + " join rule_set s on s.rule_set_id=v.rule_set_id where s.rule_set_code='SPACE-RISK-DEMO' and v.rule_set_version_id='space-risk-demo-v1' order by 1", String.class);
         assertThat(params).containsExactlyElementsOf(DEMO_PARAM_KEYS.stream().sorted().toList());
         assertThat(jdbc.queryForObject("select count(*) from rule_param p join rule_set_version v on v.rule_set_version_id=p.rule_set_version_id"
-                + " join rule_set s on s.rule_set_id=v.rule_set_id where s.rule_set_code='SPACE-RISK-DEMO' and p.param_status<>'DEMO'", Long.class))
+                + " join rule_set s on s.rule_set_id=v.rule_set_id where s.rule_set_code='SPACE-RISK-DEMO' and v.rule_set_version_id='space-risk-demo-v1' and p.param_status<>'DEMO'", Long.class))
                 .as("阶段 9 阈值全部未经业务方确认").isZero();
         assertThat(jdbc.queryForObject("select status_code from rule_set_version where rule_set_version_id='space-risk-demo-v1'", String.class)).isEqualTo("PUBLISHED");
     }
@@ -383,12 +383,11 @@ class Stage9PostgresTest {
     @Order(9)
     void c04EvaluationOnPostgisGeneratesOnlyCorridorAndNearRisks() {
         seedStage9SpaceRisk();
-        // 当前风险预检只取最近观测窗口，但待执行计划不再要求观测时刻落在 start_at/end_at 内。
-        // 这里故意把观测放到计划结束之后，钉住“当前鸟群 + 待执行计划”仍会参与 C04。
+        // 客户确认：结束后的十五分钟尾窗仍参与，不能把十二小时之后的待执行状态当有效计划。
         OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
         assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?", String.class, LocalStage9SpaceRiskSeeder.PLAN))
                 .as("回归场景必须是待执行任务").isEqualTo("PENDING");
-        OffsetDateTime observedAt = planTo.plusHours(12);
+        OffsetDateTime observedAt = planTo.plusMinutes(10);
         OffsetDateTime observationWindowFrom = observedAt.minusMinutes(1);
         OffsetDateTime observationWindowTo = observedAt.plusMinutes(1);
         double halfWidth = jdbc.queryForObject("select corridor_width_m/2.0 from route_version where route_version_id=?",
@@ -396,17 +395,17 @@ class Stage9PostgresTest {
         double nearM = Double.parseDouble(jdbc.queryForObject("select p.value_text from rule_param p"
                 + " join rule_set_version v on v.rule_set_version_id=p.rule_set_version_id"
                 + " join rule_set s on s.rule_set_id=v.rule_set_id"
-                + " where s.rule_set_code='SPACE-RISK-DEMO' and p.rule_code='C04' and p.param_key='corridor_near_m'", String.class));
+                + " where s.rule_set_code='SPACE-RISK-DEMO' and v.rule_set_version_id='space-risk-demo-v1' and p.rule_code='C04' and p.param_key='corridor_near_m'", String.class));
 
         // 中心线 LINESTRING(118.02 37.02,118.03 37.03)：中点正上方即走廊内；北移 0.006° 约 660 m，远超 corridor_near_m。
         // 航线基准是 AMSL：只有同基准的高度才进带（AGL 与 AMSL 不互比），因此两个走廊内目标分别用 AMSL 与 AGL。
         String routeDatum = jdbc.queryForObject("select altitude_datum from route_version where route_version_id=?",
                 String.class, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         assertThat(routeDatum).as("阶段 3 演示航线声明了高度基准").isEqualTo("AMSL");
-        String inside = spaceTarget("inside", "BIRD_FLOCK", 118.025, 37.025, null, new BigDecimal("100.00"), observedAt);
+        String inside = spaceTarget("inside", "BIRD_FLOCK", 118.025, 37.025, new BigDecimal("100.00"), null, observedAt);
         // MQTT 当前只有主类别；空间计算不能漏掉它，也不能把回放来源改成 live。
-        jdbc.update("update target set subtype=null,source_mode='replay' where target_id=?", inside);
-        String insideOtherDatum = spaceTarget("datum", "BIRD_FLOCK", 118.0255, 37.0255, new BigDecimal("100.00"), null, observedAt);
+        jdbc.update("update target set subtype=null where target_id=?", inside);
+        String insideOtherDatum = spaceTarget("datum", "BIRD_FLOCK", 118.0255, 37.0255, null, new BigDecimal("100.00"), observedAt);
         String far = spaceTarget("far", "BIRD_FLOCK", 118.025, 37.031, null, new BigDecimal("100.00"), observedAt);
         double insideDistance = distanceToRoute(inside), farDistance = distanceToRoute(far);
         assertThat(insideDistance).as("夹具目标应落在走廊内").isLessThanOrEqualTo(halfWidth);
@@ -419,7 +418,7 @@ class Stage9PostgresTest {
         // 同一归属下有多条待执行/执行中的计划时，风险数会大于目标数，这不是重复入库。
         assertThat(run.risksCreated()).as("走廊内目标必须产出风险").isPositive();
         assertThat(jdbc.queryForList("select distinct source_mode from flight_risk where target_id=?", String.class, inside))
-                .containsExactly("replay");
+                .containsExactly("mock");
         assertThat(run.targetsSeen()).as("三个夹具目标都被观测到（含走廊外那个）").isGreaterThanOrEqualTo(3);
         // "看到"与"判成风险"是两件事：走廊外的目标计入 targets_seen 但不产生风险，页面不能把两者混为一谈。
         // 只统计本用例自己的三个夹具目标（种子另有两条演示风险，按自身归属过滤才不会串味）。
@@ -435,16 +434,16 @@ class Stage9PostgresTest {
         List<Map<String, Object>> insideOnRoute = factsOnRoute(inside, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         assertThat(insideOnRoute).hasSize(1);
         assertThat(insideOnRoute.get(0)).containsEntry("corridor_relation", "INSIDE").containsEntry("altitude_band", "CLIMB");
-        assertThat(insideOnRoute.get(0).get("severity")).as("走廊内 + 同基准高度在带内 + 有待执行/执行中任务 → HIGH").isEqualTo("HIGH");
+        assertThat(insideOnRoute.get(0).get("severity")).as("走廊内AGL高度在带内，鸟群数量升一级").isEqualTo("CRITICAL");
         assertThat(((Number) insideOnRoute.get(0).get("distance_to_route_m")).doubleValue()).isLessThanOrEqualTo(halfWidth);
         // 计划航线没声明高度基准时，高度带只能是 UNKNOWN——不猜，也不拿别的航线的基准顶替。
         assertThat(factsOf(inside)).filteredOn(f -> !LocalStage9SpaceRiskSeeder.ROUTE_VERSION.equals(f.get("route_version_id")))
-                .allSatisfy(fact -> assertThat(fact).containsEntry("altitude_band", "UNKNOWN"));
+                .allSatisfy(fact -> assertThat(fact).containsEntry("altitude_band", "CLIMB"));
         // 同样在走廊内，但目标高度是 AGL 而航线基准是 AMSL：不得互比，高度带只能 UNKNOWN，等级降为 MEDIUM。
         List<Map<String, Object>> datumOnRoute = factsOnRoute(insideOtherDatum, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
         assertThat(datumOnRoute).hasSize(1);
         assertThat(datumOnRoute.get(0)).containsEntry("corridor_relation", "INSIDE").containsEntry("altitude_band", "UNKNOWN");
-        assertThat(datumOnRoute.get(0).get("severity")).as("AGL 与 AMSL 不互比，高度不可判定时降为 MEDIUM").isEqualTo("MEDIUM");
+        assertThat(datumOnRoute.get(0).get("severity")).as("AMSL不作离地高度，保留未知高度，数量沿用既有升档").isEqualTo("HIGH");
         // 300 m 之外：不得生成任何风险。
         assertThat(factsOf(far)).as("距中心线 " + farDistance + " m，超出 corridor_near_m=" + nearM + " m").isEmpty();
         // 命中的事实一律不是 OUTSIDE：OUTSIDE 说明判定与生成口径脱节。
@@ -782,26 +781,31 @@ class Stage9PostgresTest {
     /**
      * 决策 9-24：PostGIS 可用时种子不再直插演示风险，而是播种后同步跑一次真实 C04。
      * 因此页面上看到的每一条空间风险都出自评估器，而不是"看起来像研判结论"的演示数据。
-     * 这里钉住三件事：走廊内那只鸟群恰好一条 HIGH（不是两条、也不是演示那条）、它带 `space_risk_fact`、
-     * 种子留下了 `rule_evaluation_run`；另外两只按几何各自落到 MEDIUM 与不生成。
+     * 旧种子没有独立数量事实时不能冒充满足鸟群门槛；只有测试上下文显式接入的25只来源观测才产生风险。
+     * 种子与评估器均须留下运行记录，所有生成风险必须有事实快照。
      */
     @Test
     @Order(16)
     void seederOnPostgisProducesEvaluatedRisksInsteadOfDemoRows() {
         seedStage9SpaceRisk();
-        // 走廊内鸟群：恰一条风险，HIGH，且确实带评估事实（INSIDE + 同基准高度带）。
-        // 注意：风险按 (计划, 目标) 生成（source_risk_id 含 plan_id），而阶段 3 演示数据里有两条时间重叠、
-        // 几何相同的计划（legal 声明 AMSL，undetermined 没有高度基准）。所以"走廊内那只鸟群"会有两条风险：
-        // 声明了基准的那条判到 HIGH，没基准的那条只能 MEDIUM。断言因此锁定"HIGH 恰好一条"，而不是"风险恰好一条"。
+        // 不修改 LocalStage*Seeder；旧鸟群仅凭目标类别和高度不足以证明数量达到20只。
         List<Map<String, Object>> flockA = jdbc.queryForList("select r.risk_id,r.severity,r.reason_text,r.route_version_id,"
                 + "f.corridor_relation,f.altitude_band from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id"
                 + " where r.target_id=? and r.risk_type='SPACE_OBJECT'", LocalStage9SpaceRiskSeeder.TARGET_FLOCK_A);
-        assertThat(flockA).as("走廊内鸟群至少有一条经评估器产出的风险").isNotEmpty();
+        assertThat(flockA).as("没有独立数量事实的旧种子不得制造鸟群风险").isEmpty();
+        OffsetDateTime countedAt = jdbc.queryForObject("select start_at from flight_plan where plan_id=?", OffsetDateTime.class,
+                LocalStage9SpaceRiskSeeder.PLAN).plusSeconds(1);
+        String countedTarget = spaceTarget("counted-seed", "BIRD_FLOCK", 118.025, 37.025, new BigDecimal("100"), null, countedAt);
+        SpaceRiskRepository.RunRow countedRun = evaluationService.evaluate("C04", countedAt.minusSeconds(1), countedAt.plusSeconds(1), "MANUAL", null);
+        assertThat(countedRun.status()).as(countedRun.message()).isEqualTo("SUCCESS");
+        flockA = jdbc.queryForList("select r.risk_id,r.severity,r.reason_text,r.route_version_id,f.corridor_relation,f.altitude_band"
+                + " from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id where r.target_id=? and r.risk_type='SPACE_OBJECT'", countedTarget);
+        assertThat(flockA).as("独立25只实测观测应由评估器生成风险").isNotEmpty();
         List<Map<String, Object>> highOnRoute = flockA.stream()
-                .filter(r -> "HIGH".equals(r.get("severity"))).toList();
-        assertThat(highOnRoute).as("恰好一条 HIGH：只有声明了 AMSL 基准的那条任务航线判得出高度带").hasSize(1);
+                .filter(r -> LocalStage9SpaceRiskSeeder.ROUTE_VERSION.equals(r.get("route_version_id"))).toList();
+        assertThat(highOnRoute).as("对应计划航线只生成一次").hasSize(1);
         assertThat(highOnRoute.get(0)).containsEntry("corridor_relation", "INSIDE").containsEntry("altitude_band", "CLIMB")
-                .containsEntry("route_version_id", LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
+                .containsEntry("route_version_id", LocalStage9SpaceRiskSeeder.ROUTE_VERSION).containsEntry("severity", "CRITICAL");
         // PG 分支不插演示风险：原因文案里不得再出现"未经评估器"的演示后缀。
         assertThat(flockA).allSatisfy(row -> assertThat((String) row.get("reason_text"))
                 .as("PostGIS 上的风险必须出自评估器，不是演示直插").doesNotContain("未经评估器"));
@@ -814,15 +818,11 @@ class Stage9PostgresTest {
                 + " group by r.plan_id,r.target_id having count(*)>1");
         assertThat(duplicated).as("同一任务下同一目标只能有一条空间风险，实际重复组：" + duplicated).isEmpty();
 
-        // 另一只鸟群只有 AGL 高度，航线基准是 AMSL：高度带判不出来，等级降为 MEDIUM。
+        // 另一只旧鸟群同样没有独立数量，不因有AGL就补造数量或风险。
         List<Map<String, Object>> flockB = jdbc.queryForList("select r.severity,f.corridor_relation,f.altitude_band from flight_risk r"
                 + " join space_risk_fact f on f.risk_id=r.risk_id where r.target_id=? and r.risk_type='SPACE_OBJECT'",
                 LocalStage9SpaceRiskSeeder.TARGET_FLOCK_B);
-        assertThat(flockB).isNotEmpty();
-        assertThat(flockB).allSatisfy(row -> {
-            assertThat(row.get("severity")).as("AGL 与航线的 AMSL 不互比 → 高度带 UNKNOWN → 降为 MEDIUM").isEqualTo("MEDIUM");
-            assertThat(row).containsEntry("altitude_band", "UNKNOWN");
-        });
+        assertThat(flockB).isEmpty();
         // 气球超出 corridor_near_m：只被看到，不生成风险。
         assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=? and risk_type='SPACE_OBJECT'",
                 Long.class, LocalStage9SpaceRiskSeeder.TARGET_BALLOON)).as("超出 corridor_near_m 的气球不生成风险").isZero();
@@ -1132,6 +1132,14 @@ class Stage9PostgresTest {
         jdbc.update("insert into target_latest_state (target_id,location,height_agl_m,altitude_amsl_m,observed_at,received_at,unknown_fields,created_at,updated_at,version)"
                 + " values (?,ST_GeomFromEWKT(?),?,?,?,?,cast('[]' as jsonb),?,?,0)", targetId,
                 "SRID=4326;POINT (" + lon + " " + lat + ")", aglM, amslM, observedAt, observedAt, observedAt, observedAt);
+        String observationId = UUID.randomUUID().toString(), trackId = UUID.randomUUID().toString();
+        jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,quality,source_mode,owner_org_id,district_id,created_at)"
+                + " values(?,'seed-stage3-source',?,?,?, ?,CAST('{\"object_count\":25}' AS JSON),'mock',?,?,?)", observationId, observationId, targetId, observedAt, observedAt,
+                LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT, observedAt);
+        jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)", trackId, targetId, trackId, observedAt, observedAt);
+        jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,observation_id,point_kind,created_at)"
+                + " values(?,?,1,?,?,ST_GeomFromEWKT(?),?,'MEAS',?)", UUID.randomUUID().toString(), trackId, observedAt, observedAt,
+                "SRID=4326;POINT (" + lon + " " + lat + ")", observationId, observedAt);
         return targetId;
     }
 

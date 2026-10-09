@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import com.uav.lowaltitude.modules.assessment.engine.NoPlanExemption;
 import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
+import com.uav.lowaltitude.modules.assessment.engine.LegalityRulePolicy;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationContext;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvidenceRef;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.HitDetail;
@@ -61,11 +62,13 @@ public class PlanMatchCheck implements RuleCheck {
     public PlanMatch match(TargetState state, List<PlanFact> tuplePlans, RouteDistanceSource distances, OffsetDateTime asOf, RuleParams params) {
         int windowMinutes = params.integer(RULE_CODE, PARAM_TIME_WINDOW_MIN);
         BigDecimal tolerance = params.number(RULE_CODE, PARAM_CORRIDOR_TOLERANCE_M);
+        boolean centerline = LegalityRulePolicy.centerline(params, RULE_CODE);
+        boolean inclusiveEnd = LegalityRulePolicy.inclusiveEnd(params, RULE_CODE, "time_window_end_inclusive");
         String targetSn = blankToNull(state == null ? null : state.uavSn());
         List<Candidate> candidates = new ArrayList<>();
         for (PlanFact plan : tuplePlans == null ? List.<PlanFact>of() : tuplePlans) {
-            if (plan == null || !isCandidate(plan, targetSn, asOf, windowMinutes)) continue;
-            candidates.add(grade(plan, state, targetSn, distances, asOf, windowMinutes, tolerance));
+            if (plan == null || !isCandidate(plan, targetSn, asOf, windowMinutes, inclusiveEnd)) continue;
+            candidates.add(grade(plan, state, targetSn, distances, asOf, windowMinutes, tolerance, centerline, inclusiveEnd));
         }
         if (candidates.isEmpty()) {
             return new PlanMatch(PlanMatchCode.NONE, null, unavailableDimensions(), List.of(REASON_NO_PLAN_CANDIDATE));
@@ -117,9 +120,12 @@ public class PlanMatchCheck implements RuleCheck {
     @Override
     public HitDetail evaluate(EvaluationContext context, RuleParams params) {
         PlanMatch match = context == null || context.planMatch() == null ? PlanMatch.notApplicable() : context.planMatch();
-        List<ParamRef> refs = List.of(
+        List<ParamRef> refs = new ArrayList<>(List.of(
                 new ParamRef(PARAM_TIME_WINDOW_MIN, Integer.toString(params.integer(RULE_CODE, PARAM_TIME_WINDOW_MIN)), params.paramStatus(RULE_CODE, PARAM_TIME_WINDOW_MIN)),
-                new ParamRef(PARAM_CORRIDOR_TOLERANCE_M, params.number(RULE_CODE, PARAM_CORRIDOR_TOLERANCE_M).toPlainString(), params.paramStatus(RULE_CODE, PARAM_CORRIDOR_TOLERANCE_M)));
+                new ParamRef(PARAM_CORRIDOR_TOLERANCE_M, params.number(RULE_CODE, PARAM_CORRIDOR_TOLERANCE_M).toPlainString(), params.paramStatus(RULE_CODE, PARAM_CORRIDOR_TOLERANCE_M))));
+        for (String key : List.of("distance_basis", "time_window_end_inclusive")) {
+            if (params.has(RULE_CODE, key)) refs.add(CheckSupport.string(params, RULE_CODE, key));
+        }
         String reason = match.reasonCodes().isEmpty() ? null : match.reasonCodes().get(0);
         ResultCode result = switch (match.code()) {
             case FULL, PARTIAL -> ResultCode.PASS;
@@ -153,29 +159,34 @@ public class PlanMatchCheck implements RuleCheck {
         return new HitDetail(RULE_CODE, null, result, result == ResultCode.UNDETERMINED ? reason : null, null, facts, refs, List.copyOf(evidence), message);
     }
 
-    private static boolean isCandidate(PlanFact plan, String targetSn, OffsetDateTime asOf, int windowMinutes) {
+    private static boolean isCandidate(PlanFact plan, String targetSn, OffsetDateTime asOf, int windowMinutes, boolean inclusiveEnd) {
         String planSn = blankToNull(plan.uavSn());
         if (targetSn != null && targetSn.equals(planSn)) return true;
         if (plan.startAt() == null || plan.endAt() == null || asOf == null) return false;
-        return !asOf.isBefore(plan.startAt().minusMinutes(windowMinutes)) && asOf.isBefore(plan.endAt().plusMinutes(windowMinutes));
+        return inWindow(plan, asOf, windowMinutes, inclusiveEnd);
+    }
+
+    private static boolean inWindow(PlanFact plan, OffsetDateTime asOf, int windowMinutes, boolean inclusiveEnd) {
+        return asOf != null && !asOf.isBefore(plan.startAt().minusMinutes(windowMinutes))
+                && (inclusiveEnd ? !asOf.isAfter(plan.endAt().plusMinutes(windowMinutes)) : asOf.isBefore(plan.endAt().plusMinutes(windowMinutes)));
     }
 
     private static Candidate grade(PlanFact plan, TargetState state, String targetSn, RouteDistanceSource distances,
-            OffsetDateTime asOf, int windowMinutes, BigDecimal tolerance) {
+            OffsetDateTime asOf, int windowMinutes, BigDecimal tolerance, boolean centerline, boolean inclusiveEnd) {
         Map<String, String> dims = new LinkedHashMap<>();
         List<String> reasons = new ArrayList<>();
         // 时间窗
         if (plan.startAt() == null || plan.endAt() == null) { dims.put(DIM_TIME, UNDETERMINED); reasons.add("PLAN_TIME_UNKNOWN"); }
-        else if (!asOf.isBefore(plan.startAt().minusMinutes(windowMinutes)) && asOf.isBefore(plan.endAt().plusMinutes(windowMinutes))) dims.put(DIM_TIME, MATCH);
+        else if (inWindow(plan, asOf, windowMinutes, inclusiveEnd)) dims.put(DIM_TIME, MATCH);
         else { dims.put(DIM_TIME, MISMATCH); reasons.add("TIME_WINDOW_MISMATCH"); }
         // 走廊：与 C02-3 同一距离来源；宽度或位置未知时只能不可判定，不能按 0 米推断在走廊内。
         if (state == null || state.longitude() == null || state.latitude() == null) { dims.put(DIM_CORRIDOR, UNDETERMINED); reasons.add("POSITION_UNKNOWN"); }
         else {
             RouteDistance distance = distances == null ? null : distances.distanceToRoute(plan.routeVersionId());
-            if (distance == null || distance.distanceM() == null || distance.halfWidthM() == null) {
+            if (distance == null || distance.distanceM() == null || (!centerline && distance.halfWidthM() == null)) {
                 dims.put(DIM_CORRIDOR, UNDETERMINED);
                 reasons.add(distance != null && distance.unknownReason() != null && !distance.unknownReason().isBlank() ? distance.unknownReason() : "CORRIDOR_WIDTH_UNKNOWN");
-            } else if (distance.distanceM().compareTo(distance.halfWidthM().add(tolerance)) <= 0) dims.put(DIM_CORRIDOR, MATCH);
+            } else if (distance.distanceM().compareTo(centerline ? tolerance : distance.halfWidthM().add(tolerance)) <= 0) dims.put(DIM_CORRIDOR, MATCH);
             else { dims.put(DIM_CORRIDOR, MISMATCH); reasons.add("CORRIDOR_MISMATCH"); }
         }
         // 身份：目标没有 sn 是“线索缺失”而非不匹配（TDOA/5G-A 身份线索尚未接入）。

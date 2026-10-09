@@ -28,6 +28,7 @@ import com.uav.lowaltitude.modules.identity.application.SystemManagementService;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1")
 public class RoleAdminController {
 

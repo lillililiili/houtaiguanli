@@ -49,6 +49,12 @@ public class NormalizedObservationMapper implements FrameMapper {
             Map<String, Object> quality = new LinkedHashMap<>();
             String subtype = text(node, "subtype");
             if (subtype != null) quality.put("subtype", subtype);
+            JsonNode count = node.has("object_count") ? node.get("object_count") : node.get("objectCount");
+            if (count != null && !count.isNull()) {
+                if (!count.isIntegralNumber() || !count.canConvertToInt() || count.intValue() <= 0)
+                    throw new IllegalStateException("规范化观测 object_count 必须为正整数");
+                quality.put("object_count", count.intValue());
+            }
             quality.put("source", "LOCAL_SIMULATOR");
             String serial = textAny(node, "uav_sn", "uavSn");
             if (serial != null) quality.put(IdentitySerials.QUALITY_KEY, serial);

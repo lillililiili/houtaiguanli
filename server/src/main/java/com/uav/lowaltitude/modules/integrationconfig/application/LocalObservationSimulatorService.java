@@ -155,6 +155,7 @@ public class LocalObservationSimulatorService {
 
     private void validateTargetItems(TargetObservationsInput input) {
         for (TargetItem item : input.items()) {
+            if (item.objectCount() != null && item.objectCount() <= 0) throw bad("object_count 必须为正整数");
             boolean hasPosition = item.longitude() != null || item.latitude() != null;
             if (hasPosition && (item.longitude() == null || item.latitude() == null)) throw bad("目标经纬度必须成对提供");
             if (hasPosition) validateCoordinate(item.longitude(), item.latitude());

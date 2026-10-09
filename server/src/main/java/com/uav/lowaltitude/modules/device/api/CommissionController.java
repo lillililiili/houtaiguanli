@@ -22,6 +22,7 @@ import com.uav.lowaltitude.modules.device.application.DeviceService.ConnectionPr
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1/commission-tasks")
 public class CommissionController {
 

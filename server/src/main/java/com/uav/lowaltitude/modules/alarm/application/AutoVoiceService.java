@@ -95,7 +95,8 @@ public class AutoVoiceService {
             }
             return null;
         }
-        if(!policy.enabled()||(task!=null&&TERMINAL.contains(task.status())))return null;
+        if(!policy.enabled()||(task!=null&&(TERMINAL.contains(task.status())
+                ||("BLOCKED".equals(task.status())&&task.attempts()>0))))return null;
         Recording recording=recordings.current();Eligibility e=eligible(event,now,task,recording);
         tasks.initialize(id,now,AutoVoicePolicy.CODE);
         if(!e.allowed()){tasks.block(id,e,now);return null;}
@@ -138,7 +139,9 @@ public class AutoVoiceService {
         if("FALSE_POSITIVE".equals(event.state())&&(task==null||task.attempts()==0))
             return view(event,enabled,"NOT_REQUIRED","已核实为误报，不需要拨打飞手电话",false,task,null,null);
         Recording recording=enabled?recordings.current():null;
-        if(task!=null&&(TERMINAL.contains(task.status())||"CALLING".equals(task.status())||"BLOCKED".equals(task.status()))) {
+        // 未外呼的暂停原因可能随计划关联、联系人或位置事实更新；读取只重算摘要，不领取任务。
+        if(task!=null&&(TERMINAL.contains(task.status())||"CALLING".equals(task.status())
+                ||("BLOCKED".equals(task.status())&&task.attempts()>0))) {
             boolean retry=enabled&&mayRetry&&"FAILED".equals(task.status())&&eligible(event,clock.nowMillis(),task,recording).allowed();
             return view(event,enabled,task.status(),task.reason(),retry,task,recording,null);
         }

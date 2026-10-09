@@ -45,8 +45,13 @@ class DirectoryScopeApiTest {
   assertThat(filtered.path("items")).isEmpty();
  }
 
- @Test void assignedWritesCannotChangeOrCreateOtherOrganizationsContacts() throws Exception {
-  String token=user("ASSIGNED",ownOrg,"organizations").token();
+ @Test void frontendCannotMaintainContactsAndBackendStillEnforcesAssignedScope() throws Exception {
+  Actor actor=user("ASSIGNED",ownOrg,"organizations");
+  String token=actor.token();
+  mvc.perform(write(patch("/api/v1/contacts/"+ownContact),token,body(ownOrg,0)))
+    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
+  // 保留防御性范围校验：历史或异常缩小范围的后台身份也不能越界。
+  jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=?",actor.userId());
   denied(write(patch("/api/v1/contacts/"+otherContact),token,body(otherOrg,0)));
   denied(write(post("/api/v1/contacts"),token,body(otherOrg,null)));
   assertThat(jdbc.queryForObject("SELECT name FROM business_contact WHERE contact_id=?",String.class,otherContact)).startsWith(tag);

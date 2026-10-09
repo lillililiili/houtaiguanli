@@ -40,6 +40,8 @@ describe('登录请求路由', () => {
       expect(route.rewrite(`${request.baseURL}${request.url}`)).toBe(`/api${request.url}`)
     }
     expect(requests.map(request => request.url)).toEqual(['/v1/auth/login', '/v1/auth/me'])
+    expect(JSON.parse(requests[0].data).client_type).toBe('BACKEND')
+    expect(requests.every(request => request.headers['X-Client-Type'] === 'BACKEND')).toBe(true)
   })
 
   it('生产环境默认使用公共 /api 路径', async () => {

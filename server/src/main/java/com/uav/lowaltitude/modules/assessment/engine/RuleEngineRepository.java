@@ -18,6 +18,8 @@ import javax.sql.DataSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -41,11 +43,15 @@ public class RuleEngineRepository {
     private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
     private final NamedParameterJdbcTemplate jdbc;
     private final boolean postgis;
+    private final boolean localSimulatorPlanBridge;
+    private static final String LOCAL_PLAN_SIMULATOR = "local-flight-plan-simulator";
 
-    public RuleEngineRepository(JdbcTemplate jdbcTemplate, DataSource dataSource, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+    public RuleEngineRepository(JdbcTemplate jdbcTemplate, DataSource dataSource, com.uav.lowaltitude.platform.config.SimulationPolicy simulation, Environment environment) {
         this.simulation=simulation;
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
         this.postgis = databaseIsPostgres(dataSource);
+        this.localSimulatorPlanBridge = simulation.allowed() && environment.acceptsProfiles(Profiles.of("local & !prod & !production"))
+                && environment.getProperty("app.flight-device-check.simulator-device-bridge-enabled", Boolean.class, false);
     }
 
     // ---- 规则集与版本 ----
@@ -302,15 +308,28 @@ public class RuleEngineRepository {
                 Map.of("id", trackId, "limit", limit), (rs, i) -> time(rs, "at"));
     }
 
+    /** Confirmed quality window excludes stale and future points before applying the point limit. */
+    public List<OffsetDateTime> recentPointTimes(String trackId, int limit, OffsetDateTime from, OffsetDateTime through) {
+        return jdbc.query("SELECT COALESCE(observed_at,received_at) AS at FROM track_point WHERE track_id=:id"
+                + " AND COALESCE(observed_at,received_at)>=:from AND COALESCE(observed_at,received_at)<=:through"
+                + " ORDER BY COALESCE(observed_at,received_at) DESC,point_seq DESC FETCH FIRST :limit ROWS ONLY",
+                Map.of("id", trackId, "limit", limit, "from", from, "through", through), (rs, i) -> time(rs, "at"));
+    }
+
     /**
-     * C01 候选：与目标同 (owner_org_id, district_id)、未取消的计划，uav_sn 相等 或 [start_at − 窗口, end_at + 窗口) 覆盖 as_of。
+     * C01 候选：同单位/区县及来源模式的未取消计划，sn 相等或扩展时间窗覆盖 as_of。
+     * 查询包含结束端点，再由各版本 C01 决定其闭合语义；只有明确开启的本地模拟器桥接可跨 mock/replay。
      * 计划状态来自计划来源系统（PENDING/EXECUTING/COMPLETED/CANCELLED）：已取消的计划不再授权任何飞行，不进入匹配；
      * 已完成的计划仍要参与，否则超时继续飞的无人机会对不上本机计划，说不清是"不在计划时段"。
      * 别的编号的计划仍会作为时段候选取出，但 C01 只把同编号计划当本机计划，其余只用于说明"编号不匹配"，不挂到研判上。
      */
-    public List<PlanFact> candidatePlans(String ownerOrgId, String districtId, String uavSn, OffsetDateTime asOf, int windowMinutes) {
+    public List<PlanFact> candidatePlans(String ownerOrgId, String districtId, String uavSn, OffsetDateTime asOf, int windowMinutes, String targetSourceMode) {
         Map<String, Object> p = new HashMap<>();
         p.put("org", ownerOrgId); p.put("district", districtId);
+        p.put("source_mode", targetSourceMode);
+        // The explicit local simulator bridge is one-way: replay observations may use its mock plans.
+        // A real target never sees a mock/replay authorization, even when the bridge is enabled.
+        boolean bridge = localSimulatorPlanBridge && "replay".equals(targetSourceMode);
         p.put("latest_start", asOf.plusMinutes(windowMinutes)); p.put("earliest_end", asOf.minusMinutes(windowMinutes));
         // 目标无 sn 时不拼 sn 谓词：PostgreSQL 无法为孤立的 NULL 参数推断类型，且"无线索"本来就不该匹配任何 sn。
         String bySn = "";
@@ -318,8 +337,9 @@ public class RuleEngineRepository {
         return jdbc.query("SELECT p.plan_id,p.route_version_id,p.uav_sn,p.start_at,p.end_at,rv.corridor_width_m,rv.min_altitude_m,rv.max_altitude_m,rv.altitude_datum,"
                 + "p.owner_org_id,p.district_id FROM flight_plan p JOIN route_version rv ON rv.route_version_id=p.route_version_id"
                 + " WHERE p.owner_org_id=:org AND p.district_id=:district AND p.status_code<>'" + PLAN_STATUS_CANCELLED + "'"
+                + " AND (p.source_mode=:source_mode" + (bridge ? " OR (p.source_mode='mock' AND p.source_id='" + LOCAL_PLAN_SIMULATOR + "')" : "") + ")"
                 + " AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)"
-                + " AND (" + bySn + "(p.start_at IS NOT NULL AND p.end_at IS NOT NULL AND p.start_at<=:latest_start AND :earliest_end<p.end_at))"
+                + " AND (" + bySn + "(p.start_at IS NOT NULL AND p.end_at IS NOT NULL AND p.start_at<=:latest_start AND :earliest_end<=p.end_at))"
                 + " ORDER BY p.start_at ASC,p.plan_id ASC", p,
                 (rs, i) -> new PlanFact(rs.getString("plan_id"), rs.getString("route_version_id"), rs.getString("uav_sn"), time(rs, "start_at"), time(rs, "end_at"),
                         rs.getBigDecimal("corridor_width_m"), rs.getBigDecimal("min_altitude_m"), rs.getBigDecimal("max_altitude_m"), rs.getString("altitude_datum"),
@@ -348,13 +368,25 @@ public class RuleEngineRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    /** 计划主体的观测来源：同元组、同 sn 且有最新状态的目标，取观测最新者。 */
-    public TargetRow latestTargetBySn(String uavSn, String ownerOrgId, String districtId) {
+    public PlanSource planSource(String planId) {
+        List<PlanSource> rows = jdbc.query("SELECT source_id,source_mode FROM flight_plan WHERE plan_id=:id", Map.of("id", planId),
+                (rs, i) -> new PlanSource(rs.getString("source_id"), rs.getString("source_mode")));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public record PlanSource(String sourceId, String sourceMode) { }
+
+    /** 计划主体的观测来源：同元组、同 sn、同来源模式（或明确本地桥接），取观测最新者。 */
+    public TargetRow latestTargetBySn(String uavSn, String ownerOrgId, String districtId, PlanSource planSource) {
+        if (planSource == null) return null;
         Map<String, Object> p = new HashMap<>();
         p.put("sn", uavSn); p.put("org", ownerOrgId); p.put("district", districtId);
+        p.put("source_mode", planSource.sourceMode());
+        boolean bridge = localSimulatorPlanBridge && "mock".equals(planSource.sourceMode()) && LOCAL_PLAN_SIMULATOR.equals(planSource.sourceId());
         List<TargetRow> rows = jdbc.query("SELECT t.target_id,t.target_no,CASE WHEN t.unified THEN a.identity_clue ELSE t.uav_sn END AS uav_sn,t.source_mode,t.owner_org_id,t.district_id FROM target t"
                 + " JOIN target_latest_state s ON s.target_id=t.target_id LEFT JOIN target_attribute_selection a ON a.target_id=t.target_id"
                 + " WHERE (CASE WHEN t.unified THEN a.identity_clue ELSE t.uav_sn END)=:sn AND t.owner_org_id=:org AND t.district_id=:district"
+                + " AND (t.source_mode=:source_mode" + (bridge ? " OR t.source_mode='replay'" : "") + ")"
                 + " ORDER BY s.observed_at DESC,t.target_id ASC FETCH FIRST 1 ROWS ONLY", p,
                 (rs, i) -> new TargetRow(rs.getString("target_id"), rs.getString("target_no"), rs.getString("uav_sn"), rs.getString("source_mode"),
                         rs.getString("owner_org_id"), rs.getString("district_id")));

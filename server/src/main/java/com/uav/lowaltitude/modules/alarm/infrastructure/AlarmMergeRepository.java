@@ -94,6 +94,20 @@ public class AlarmMergeRepository {
                 Map.of("threshold", threshold), AlarmMergeRepository::group);
     }
 
+    public List<GroupRow> lockOpenGroupsLastHitBefore(OffsetDateTime threshold) {
+        return jdbc.query(groupSelect() + " WHERE g.state='OPEN' AND g.last_hit_at<=:threshold ORDER BY g.last_hit_at ASC,g.group_id ASC FOR UPDATE",
+                Map.of("threshold", threshold), AlarmMergeRepository::group);
+    }
+
+    /** Use the actual verification record, never infer its time from group creation or event updates. */
+    public OffsetDateTime falsePositiveAt(String eventId) {
+        if (eventId == null) return null;
+        List<OffsetDateTime> rows = jdbc.query("SELECT created_at FROM uav_event_verification WHERE event_id=:event"
+                + " AND conclusion='FALSE_POSITIVE' ORDER BY version DESC,created_at DESC FETCH FIRST 1 ROWS ONLY",
+                Map.of("event", eventId), (rs, i) -> time(rs, "created_at"));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
     public void insertGroup(GroupRow g) {
         Map<String, Object> params = new HashMap<>();
         params.put("id", g.groupId()); params.put("target", g.targetId()); params.put("type", g.alarmType()); params.put("rule_set", g.ruleSetId());
@@ -170,6 +184,20 @@ public class AlarmMergeRepository {
         List<String> rows = jdbc.queryForList("SELECT legal_status FROM rule_evaluation WHERE target_id=:target AND mode='ACTIVE'"
                 + " ORDER BY evaluated_at DESC,evaluation_id DESC FETCH FIRST 1 ROWS ONLY", Map.of("target", targetId), String.class);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** Closing a confirmed episode requires a current, sufficient LEGAL fact, not an old last-known label. */
+    public boolean latestLegalEvidenceIsCurrent(String targetId, OffsetDateTime now, int freshSeconds) {
+        List<Boolean> rows = jdbc.query("SELECT legal_status,as_of,observed_at,freshness_code,decision_assurance_code"
+                + " FROM rule_evaluation WHERE target_id=:target AND mode='ACTIVE'"
+                + " ORDER BY evaluated_at DESC,evaluation_id DESC FETCH FIRST 1 ROWS ONLY", Map.of("target", targetId), (rs, i) -> {
+                    OffsetDateTime asOf = time(rs, "as_of"), observed = time(rs, "observed_at"), from = now.minusSeconds(freshSeconds);
+                    return "LEGAL".equals(rs.getString("legal_status")) && "SUFFICIENT".equals(rs.getString("decision_assurance_code"))
+                            && ("FRESH".equals(rs.getString("freshness_code")) || "REPLAY".equals(rs.getString("freshness_code")))
+                            && asOf != null && observed != null && !asOf.isBefore(from) && !asOf.isAfter(now)
+                            && !observed.isBefore(from) && !observed.isAfter(now);
+                });
+        return !rows.isEmpty() && Boolean.TRUE.equals(rows.get(0));
     }
 
     private static String groupSelect() {

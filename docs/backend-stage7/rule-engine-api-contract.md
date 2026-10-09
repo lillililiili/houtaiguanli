@@ -1,5 +1,29 @@
 # 阶段 7 规则引擎与合法性判定接口契约
 
+## 2026-10-08 合并时确认的适用口径
+
+- 用户明确采用远端“超视距只提示不算非法”：新研判 C02-6 超过距离阈值只提供 `beyond_vlos` 与 `pilot_distance_note`，不计违规、风险等级或证据充分性的阻断项；不回写旧研判和旧告警。
+- 保留正式修订版 `C03.no_plan_status=LEGAL`，缺计划本身不构成违规，夜间及空域等独立检查仍生效。远端的 120 米低空豁免只用于原先会因无计划判违的规则版本；展示该说明必须有 C01 的 `no_plan_exempt=true`，不能由 `LEGAL` 与 `NONE` 自行推断高度或空域事实。
+- 沿用远端未匹配任务时不比较偏航的改动：C01 为 `NONE` 时 C02-3 返回 `NOT_APPLICABLE`；已匹配任务仍按该版本的距离基准与偏航阈值判断，不用候选任务冒充已关联任务。可靠关联但仅超时的本机计划仍保留本地超时原因。
+- 读取响应兼容保留本地 `effective_legal_status` 和远端 `confidence`、`confidence_threshold`、`source_count`。原始记录、复核有效结论、目标识别信息分别按各自字段读取。
+- C04 保留已确认的高度带、数量、趋势及计划前后 15 分钟；C05 按计划本身时段检查，不套用 C04 的前后扩展时段。来源隔离与并发去重保持。
+
+## 2026-10-08 第二、第四部分确认规则
+
+本节按用户提供的《规则与做法确认书（含验收方法）-2026-10-08》第二、第四部分及本会话的高度分层补充确认执行，替代下方历史演示参数口径。源文件 SHA-256：`b6e07da1a820843ea2b3634fa64fe2cc08a043c3f4d9c7f8274c685506877566`。
+
+**同日最新修订优先：**用户撤回第 2-2 条，并明确“合法，但是这和告警没关系”。最终启用修订版的 `C03.no_plan_status=LEGAL`：没有匹配报备计划本身不构成违规，其他可检查项通过且证据充分时可以判合法；C01 的未匹配事实仍展示。独立空域、夜间等已确认检查和数据质量要求继续生效，不把低置信度、断轨或未知空域当合法。已有告警不因该修订被删除、核实或解除，告警办理流程不改。第 2-1 条验收示例中的“未匹配即无授权”亦不再适用，历史版本和历史结果保留。
+
+本次待启用的合法性版本为 `legality-confirmed-20261008-r2`，空间风险版本为 `space-risk-confirmed-20261008`。r2 复制初版配置，仅修订 `C03.no_plan_status` 及其确认说明；初版 `legality-confirmed-20261008` 仅在未被生效/影子/回滚指针、激活历史或规则运行引用时标为 `RETIRED`（已撤回，不能启用）。已使用的初版及全部历史结果保留，迁移不代替验证和实际启用操作。
+
+- 规则以独立 `PUBLISHED`、`CONFIRMED` 版本发布，通过原有 `shadow`、`activate` API 和真实管理员会话启用。迁移不覆盖旧版本、不改已有生效指针，不增加发布公共接口。新库在关闭开发种子时也有正式规则目录；启用操作仍需要 `rule:manage`。
+- 合法性：关联计划使用中心线 100 米与前后 10 分钟；中心线偏离超过 20 米、计划结束超过 10 分钟、计划限高、有效禁限飞/临时管控/限高空域分别产生具体原因。夜间为北京时间 20:00–06:00；有计划且时间匹配时不因夜间单独判违，其他情况追加夜间原因。已可靠确认计划身份及位置而仅超时的目标保留超时原因，不叠加“无授权”。遥控器测算距离超过 500 米才判断超视距，位置缺失不猜测。
+- 证据：使用最近 120 秒；置信度至少 0.75、至少 3 点、相邻间隔不超过 30 秒。资料不足为 `UNDETERMINED`，不经 C06 生成违规告警。评分因素、优先顺序和 67/34 分界按确认书；原权重及严重度系数沿用既有实现，参数说明明确其未逐值单独确认。
+- 空间风险：C04 使用航线 300 米、计划前后 15 分钟、鸟群至少 20 只和最近 30 分钟实测趋势。AGL<150 为爬升高度带，150≤AGL<300 为进近高度带；不推断实际航段，不拿海拔代替离地高度。缺高度保留原有未知依据及人工核验提示，不声称已满足高度条件；鸟群缺数量不按“默认20只”制造鸟群风险。
+- C05 仅在对应计划时段内按进离场航线 500 米或保护目标周围 200 米判断机场异物，固定中风险；取消计划不参与。无计划仍只保留目标观测，不新建独立区域风险流程。风险核验、排除和通知继续使用原状态机、权限与人工入口。
+- 受控模拟 `POST /api/v1/local-interface-simulator/target-observations` 的 `items[].object_count` 为可选正整数；缺失表示未知。按来源观测写入 `quality.object_count`，融合点从明确引用的观测读取；多设备数量不求和，冲突保持未知。同源消息幂等、范围校验和模拟门禁保持原样，真实设备字段需由对应适配器提供，不能从“鸟”类别推导数量。
+- 第 25 项 C02-9～C02-12、确认书其余章节、模拟来源标识与反制授权不在本次规则确认范围内。历史研判和冻结材料继续引用历史版本，不回填为正式确认。
+
 > 状态：领导冻结稿（2026-09-05）。执行者按本文实现；改契约先向领导提出。配套：`docs/superpowers/plans/2026-09-05-collaborator-b-stages-4-to-6.md` §0 全局约束、`docs/backend-stage3/flight-airspace-assessment-api-contract.md`（只读契约，本文修订其"不返回规则参数"一条：有 `rule:read` 时返回参数值与 DEMO/CONFIRMED 状态）。
 
 ## 交付边界
@@ -86,6 +110,7 @@
 
 1. NO_STATE / STALE → `NOT_APPLICABLE`。
 2. 质量门：`fusion_confidence`（缺则 `classification_confidence`）< `C03.conf_min` → `LOW_CONFIDENCE`；轨迹点数 < `C03.min_points` → `TRACK_DEGRADED`；相邻点间隔 > `C03.gap_seconds` → `TRACK_BRIDGED`；任一 → `UNDETERMINED`。
+3. C01 NONE → `C03.no_plan_status`（历史演示默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`；已过质量门、类别为无人机，行为项依据不足也不降为不可判定，计划授权待核对由 `decision_assurance` 交人工复核）。2026-10-08 r2 改为 `LEGAL`，仅未匹配计划不添加违规原因，继续执行其余检查及证据充分性校验，具体以本文顶部修订说明为准。C01 UNDETERMINED 且 C02-1/2/8 无 FAIL → `UNDETERMINED`，有空域 FAIL 则照常走第 4 步判 `ILLEGAL`（进禁飞/限高/临管空域不取决于属于哪个计划）。
 3. C01 NONE → `C03.no_plan_status`（默认 `ILLEGAL`，原因 `NO_AUTHORIZATION`；已过质量门、类别为无人机，行为项依据不足也不降为不可判定，计划授权待核对由 `decision_assurance` 交人工复核）；完全没有报备任务、离地不超过 120 米、不在管控空域里的视同 `LEGAL`，按规定无需申请（2026-10-08 新-28，见文末）；C01 UNDETERMINED 且 C02-1/2/8 无 FAIL → `UNDETERMINED`，有空域 FAIL 则照常走第 4 步判 `ILLEGAL`（进禁飞/限高/临管空域不取决于属于哪个计划）。
 4. C02-1/2/8 任一 FAIL → `ILLEGAL`；任一 UNDETERMINED（无 FAIL）→ `UNDETERMINED`。
 5. C02-3/4/5/7 任一 FAIL → `ILLEGAL`；应用服务再校验证据充分性，不充分降为 `UNDETERMINED`（空域违规与无计划 `NO_AUTHORIZATION` 除外）。
@@ -102,7 +127,9 @@ C02-6（飞手距离）不参与结论：超过阈值只在明细里提示“是
 - 重算：新 `rule_evaluation(trigger=RECOMPUTE, supersedes_evaluation_id=旧)`，旧 `legality_review → SUPERSEDED`（version+1，历史 `RECOMPUTE`）。
 - C06（E2）：`AlarmIngestionService.ingest(TrustedAlarmFact(sourceId, sourceAlarmId, targetId, alarmType, severity, occurredAt, receivedAt, detail, sourceMode))` 镜像 `RiskIngestionService`：校验 → `lockSource` → 目标元组存在且目录启用（否则 `INVALID_ALARM_FACT`，引擎记 `alarm_outcome.kind=BLOCKED`）→ `(source_id, source_alarm_id)` 幂等 → 插 `alarm` → `UavEventRepository.createForAlarm(…, PENDING_VERIFICATION)`。来源按目标 `source_mode` 取 `rule-engine-legality-{mode}`；`source_alarm_id = "eval:" + evaluation_id`（手动 `"manual:" + evaluation_id`）；`alarm_type = RULE_LEGALITY`；`severity` 由 `C06.severity_by_grade`。合并：同目标同类型 OPEN 组 `FOR UPDATE`；窗口内：等级更高或带来新的违规原因 → ESCALATED 升级组内当前告警（不建告警，2026-10-06 起，见文末）；同级且无新原因 → MERGED 不建告警、`hit_count++`、延长窗口；更低 → DOWNGRADED；当前告警已核实为误报时更高等级且在升级窗 → 新告警 UPGRADED；过期 → 新组。自动关闭：`window_expires_at + C06.auto_close_min < now` 且最近研判非 ABNORMAL/ILLEGAL → `AUTO_CLOSED`，**不改 `uav_event.state_code`，`alarm` 行永不 UPDATE**。REJECT 复核不删告警/组。
 
-## DEMO 参数目录（`LEGALITY-DEMO` v1，全部 `param_status=DEMO`）
+## 历史 DEMO 参数目录（`LEGALITY-DEMO` v1，全部 `param_status=DEMO`）
+
+本表保留历史版本原值，不代表本次待启用的确认版本；r2 的 `C03.no_plan_status=LEGAL`，其余确认口径见本文顶部。
 
 | rule_code | key | 值 | 类型/单位 |
 | --- | --- | --- | --- |
@@ -176,6 +203,16 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 ## 尚未接入
 
 身份线索（TDOA/5G-A）、起降点、飞手/单位、真实规则参数确认、处置（转入处置按钮禁用）。飞手位置自阶段 8.5 随观测接入；超视距 2026-10-07 起曾单独判违规，2026-10-08 起只作提示（新-29，见文末）。
+
+## 2026-10-08：人工复核后的生效结论
+
+研判列表、详情及复核返回值新增 `effective_legal_status`。`legal_status` 继续保留原始系统结论（历史 ABNORMAL 的现行投影仍为 UNDETERMINED）。仅 ACTIVE 研判自身的 CONFIRMED/OVERRIDDEN 复核中明确保存的合法、非法、不可判定人工结论生效；被替代记录保留当次人工结论供历史查询，新的研判不继承旧记录的改判。REJECT 未指定替代结论，不能自动理解为合法；SHADOW 不采纳人工结论。
+
+同日用户补充确认：REJECT 表示人工认定本次系统误判，主结果显示“系统误判”，不继续显示原来的不可判定、非法或合法。读取投影 `effective_legal_status=REJECTED` 表达该复核结果，原始 `legal_status`、`manual_status=null`、规则依据和历史保持。`legal_status=REJECTED` 可筛选此结果；原有“已驳回”复核筛选继续可用。summary 新增 `rejected` 单独计数，已驳回记录不计入合法、非法、不可判定，也不再进入 `needs_attention=true`。页面保留三类合法性页签，通过“全部”及“已驳回”查看系统误判。重新研判使旧头行变为 SUPERSEDED 后，仍依据该条研判的 REJECT 历史保留系统误判展示，新研判独立计算；SHADOW 保持系统原始结果。REJECTED 只扩展读取和展示投影，不作为引擎结论或可选人工改判结论。
+
+列表的现行 `legal_status` 分类筛选、`needs_attention`、全量 summary 与页面主结论均使用同一生效结论，在分页前计算。兼容旧客户端的 ABNORMAL 历史筛选和规则效果分析继续使用原始事实。原始规则命中、风险评分、告警核实及动作授权不被改写。
+
+同一研判只允许从 PENDING_REVIEW 执行一次确认、驳回或改判，重复复核返回 `INVALID_TRANSITION`。复核历史包含重新研判、转告警等追加操作，`version` 是并发版本而非复核次数。前台不显示“第几次复核”，记录未超过当前每页条数时隐藏历史分页；已有审计记录保留。
 
 ## 2026-09-17：算法证据充分性与人工复核分流
 
@@ -260,6 +297,9 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 - 可读原因：后端只在研判明细 `hit_details[].message`（合法性详情页逐条展示）给出 `超视距飞行（飞手离无人机约 X 米，超过 500 米）`，DEMO 参数时末尾照例附 `；参数为 DEMO 演示值，尚未确认`。`alarm` 行与告警接口不带可读原因，只有 `detail.violation_reasons` 原因码，告警列表文字由前端按原因码映射；接口不新增字段。
 - 自动反制不受影响：自动规则的风险等级取最新研判 `grade`，可选条件只有"高风险""中风险或高风险"，`LOW` 不满足任何一项（预置的反制条件为"达到高风险"）。
 
+### 2026-10-08 当前无人机队列稳定显示
+
+`GET /legality-evaluations` 与 `/legality-evaluations/summary` 接受可选 `sort`。省略或 `evaluated_at_desc` 保留原研判时间倒序；`target_created_at_desc` 仅允许与 `latest_only=true&object_type_code=UAV` 同用，在分页前按目标 `created_at DESC, target_id DESC` 排序，再以研判时间及记录 ID 作确定性后序。新目标正常进入队列，同一目标重新研判不会改变所在页；仍返回每个目标最新的结论、时间和依据。筛选、total、来源隔离、对象权限及动作守卫不变，summary 仅校验排序参数，不改变统计口径。
 ### 2026-10-08 没有飞手位置不挡反制（验收预跑 3-4 / 8-8，新-19）
 
 - 反制资格（申请、执行、排队下发及续链）和暂不反制的“当前可靠明确研判”，原来都要求研判的未知原因为空，现在改为“除 `PILOT_POSITION_UNAVAILABLE` 外没有未知原因”。没有飞手位置只让 C02-6 超视距判不了，它本来就被 `C03.ignore_undetermined_rules` 忽略，不影响结论和证据充分性；黑飞常常测不到遥控器位置，此前这类明确违规的告警连人工反制也申请不了。

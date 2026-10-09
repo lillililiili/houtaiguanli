@@ -33,7 +33,7 @@ class MqttConnectionAdminApiTest {
     @Autowired JdbcTemplate jdbc;
 
     @Test void capabilitiesOfferReplayInTestEnvironment() throws Exception {
-        mvc.perform(get("/api/v1/mqtt-brokers/capabilities").header("Authorization", user("interfaces", "READ")))
+        mvc.perform(get("/api/v1/mqtt-brokers/capabilities").header("Authorization", backend()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.source_modes.length()").value(2))
                 .andExpect(jsonPath("$.data.source_modes[0]").value("live"))
@@ -41,8 +41,8 @@ class MqttConnectionAdminApiTest {
                 .andExpect(jsonPath("$.data.simulation_allowed").value(true));
     }
 
-    @Test void interfaceOperatorPreparesReplayConnectionWithoutDevicePermission() throws Exception {
-        String token = user("interfaces", "OP");
+    @Test void backendUserPreparesReplayConnectionWithoutConfiguringPermissions() throws Exception {
+        String token = backend();
         JsonNode scope = data(mvc.perform(get("/api/v1/mqtt-brokers/scopes").header("Authorization", token)).andExpect(status().isOk())).get(0);
         String name = "itest-replay-" + UUID.randomUUID().toString().substring(0, 8), key = "mqtt-create-" + name;
         ObjectNode body = mapper.createObjectNode().put("name", name).put("host", "127.0.0.1").put("port", 1883).put("tls", false)
@@ -87,6 +87,12 @@ class MqttConnectionAdminApiTest {
                 user, "mqtt-test-" + suffix, "连接测试", role);
         jdbc.update("INSERT INTO app_session (session_id,user_id,expire_at,ip,permission_version) VALUES (?,?,?,'127.0.0.1',0)", token, user, System.currentTimeMillis() + 3_600_000);
         return "Bearer " + token;
+    }
+
+    private String backend() {
+        String token = user("interfaces", "NONE");
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)", token.substring(7));
+        return token;
     }
 
     private JsonNode data(ResultActions result) throws Exception {

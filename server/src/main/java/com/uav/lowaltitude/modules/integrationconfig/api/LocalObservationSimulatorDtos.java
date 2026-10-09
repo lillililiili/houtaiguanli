@@ -53,7 +53,8 @@ public final class LocalObservationSimulatorDtos {
             String uavSn,
             String subtype,
             BigDecimal pilotLongitude,
-            BigDecimal pilotLatitude) { }
+            BigDecimal pilotLatitude,
+            @Positive Integer objectCount) { }
 
     public record WeatherObservationInput(
             @NotBlank @Size(max = 64) String messageId,

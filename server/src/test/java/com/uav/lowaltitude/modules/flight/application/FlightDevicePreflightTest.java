@@ -8,6 +8,8 @@ import java.time.*;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.mock.env.MockEnvironment;
 import com.uav.lowaltitude.modules.device.application.DeviceService;
 import com.uav.lowaltitude.modules.device.application.DeviceService.*;
@@ -129,5 +131,38 @@ class FlightDevicePreflightTest {
 
         assertThat(result.rows()).isEmpty();
         assertThat(result.conclusion()).isEqualTo("CHECK_INCOMPLETE");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints={3000,5000,8000})
+    void confirmedRangeUsesFiveKilometresFromRoute(int distance) {
+        when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(distance),BigDecimal.TEN,null));
+        var result=service.read("future-plan");
+        assertThat(result.nearbyMeters()).isEqualByComparingTo("5000");
+        assertThat(result.rows()).hasSize(distance<=5000?1:0);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"RADAR","EO","TDOA","FIVE_G_A","FUSION_BOX"})
+    void confirmedDetectorTypesAreCheckedAndUnknownPositionIsCountedSeparately(String type) {
+        when(device.deviceTypeCode()).thenReturn(type);
+        assertThat(service.read("future-plan").rows()).hasSize(1);
+        when(devices.detail("sensor").longitude()).thenReturn(null);
+        var unknown=service.read("future-plan");
+        assertThat(unknown.rows()).isEmpty();
+        assertThat(unknown.uncheckedLocations()).isEqualTo(1);
+        assertThat(unknown.complete()).isFalse();
+    }
+
+    @Test void disabledLiveDetectorIsAbnormalWhileCountermeasureIsExcluded() {
+        when(plan.sourceMode()).thenReturn("live");
+        when(device.sourceMode()).thenReturn("live");
+        when(device.enabled()).thenReturn(false);
+        var checked=service.read("future-plan");
+        assertThat(checked.rows()).hasSize(1);
+        assertThat(checked.rows().get(0).abnormal()).isTrue();
+        assertThat(checked.rows().get(0).connectivity()).isEqualTo("DISABLED");
+        when(device.deviceTypeCode()).thenReturn("COUNTERMEASURE");
+        assertThat(service.read("future-plan").rows()).isEmpty();
     }
 }

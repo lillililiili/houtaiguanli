@@ -52,6 +52,29 @@ describe('账号数据范围', { timeout: 30_000 }, () => {
     expect(rows[2]).toContain('指定单位和区域')
   })
 
+  it('前台用户改为后台用户后无需选角色，并发送类型与全部单位范围', async () => {
+    await mount()
+    buttons('修改')[0].click(); await settle()
+    radio('后台用户').querySelector('input').click(); await settle()
+    expect(dialog().textContent).toContain('无需配置业务角色')
+    expect(dialog().textContent).toContain('修改用户类型会撤销该账号全部旧会话')
+    expect(radio('全部单位').querySelector('input').disabled).toBe(true)
+    buttons('保存并立即生效')[0].click(); await settle()
+    expect(systemApi.updateUser).toHaveBeenCalledWith('u-1', expect.objectContaining({ user_type: 'BACKEND', data_scope: 'ALL' }))
+    expect(systemApi.updateUser.mock.calls[0][1]).not.toHaveProperty('role_code')
+  })
+
+  it('后台用户改回前台时必须重新选择业务角色', async () => {
+    systemApi.users.mockResolvedValue({ items: [row({ user_type: 'BACKEND', role_code: 'ROLE-BACKEND', data_scope: 'ALL' })], total: 1 })
+    await mount()
+    buttons('修改')[0].click(); await settle()
+    radio('前台用户').querySelector('input').click(); await settle()
+    expect(dialog().textContent).not.toContain('无需配置业务角色')
+    buttons('保存并立即生效')[0].click(); await settle()
+    expect(systemApi.updateUser).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith('请完整填写姓名、所属单位和前台角色。')
+  })
+
   it('新增用户默认只看本单位', async () => {
     await mount()
     buttons('新增用户')[0].click(); await settle()
@@ -74,7 +97,7 @@ describe('账号数据范围', { timeout: 30_000 }, () => {
     await mount()
     buttons('修改')[2].click(); await settle()
     expect(dialog().textContent).toContain('早期审批设置')
-    expect(dialog().querySelector('.el-radio.is-checked')).toBeNull()
+    expect(radio('全部单位').closest('.el-radio-group').querySelector('.el-radio.is-checked')).toBeNull()
     buttons('保存并立即生效')[0].click(); await settle()
     expect(systemApi.updateUser).toHaveBeenCalledWith('u-3', expect.not.objectContaining({ data_scope: expect.anything() }))
     expect(ElMessage.success).toHaveBeenCalledWith('用户资料已保存。')

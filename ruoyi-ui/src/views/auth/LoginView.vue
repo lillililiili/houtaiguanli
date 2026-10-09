@@ -45,13 +45,14 @@ async function submit() {
       <div class="login-card">
         <header><span class="brand__mark brand__mark--login"><img src="/assets/img/brand/logo-mark.png" alt="" aria-hidden="true" width="1251" height="559" /></span><div><h2>后台管理系统</h2><p>请使用平台账号登录</p></div></header>
         <el-alert v-if="route.query.expired === '1'" class="login-expired" title="登录已过期，请重新登录。" type="warning" show-icon :closable="false" />
+        <el-alert v-if="route.query.denied === '1'" class="login-expired" title="该账号不能进入后台管理系统，请使用后台用户账号。" type="error" show-icon :closable="false" />
         <el-form ref="formRef" :model="form" :rules="rules" label-position="top" size="large" @submit.prevent="submit">
           <el-form-item label="账号" prop="account"><el-input v-model="form.account" autocomplete="username" placeholder="请输入账号" :prefix-icon="User" /></el-form-item>
           <el-form-item label="密码" prop="password"><el-input v-model="form.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :prefix-icon="Lock" @keyup.enter="submit" /></el-form-item>
           <div class="login-options"><el-checkbox v-model="form.remember">记住账号</el-checkbox><span>忘记密码请联系系统管理员</span></div>
           <el-button native-type="submit" type="primary" :loading="loading" class="login-submit">登录</el-button>
         </el-form>
-        <footer>管理端与业务前台共用账号和权限数据，会话相互独立。</footer>
+        <footer>仅后台用户可登录；前台用户请前往业务前台。</footer>
       </div>
     </section>
   </main>

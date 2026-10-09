@@ -101,9 +101,11 @@ public final class C03Decision {
             unknowns.addAll(allUnknowns);
             return Decision.undetermined(unknowns, violations);
         }
-        if (match.code() == PlanMatchCode.NONE) {
-            LegalStatus configured = noPlanStatus(params);
-            LegalStatus noPlan = exempt ? LegalStatus.LEGAL : configured;
+        boolean ownPlanOverrun = LegalityRulePolicy.ownPlanTimeMismatch(match, params)
+                && details.stream().anyMatch(hit -> RuleCodes.C02_4.equals(hit.ruleCode()) && hit.resultCode() == ResultCode.FAIL
+                        && RuleCodes.TIME_WINDOW_OVERRUN.equals(hit.reasonCode()));
+        if (match.code() == PlanMatchCode.NONE && !ownPlanOverrun) {
+            LegalStatus noPlan = exempt ? LegalStatus.LEGAL : noPlanStatus(params);
             if (noPlan == LegalStatus.ILLEGAL || noPlan == LegalStatus.ABNORMAL) violations.add(0, RuleCodes.NO_AUTHORIZATION);
             // 无计划的状态是参数给的下限；进入禁飞空域这种更重的事实不能被参数压低成 ABNORMAL/LEGAL。
             LegalStatus status = airspaceFail ? LegalStatus.ILLEGAL : noPlan;
@@ -165,7 +167,7 @@ public final class C03Decision {
         }
         // 计划不明（UNDETERMINED）既不能当作有计划也不能当作无计划，取与 PARTIAL 相同的中间值。
         BigDecimal planFactor = switch (match.code()) {
-            case NONE -> FACTOR_NONE;
+            case NONE -> LegalityRulePolicy.ownPlanTimeMismatch(match, params) ? FACTOR_FULL : FACTOR_NONE;
             case PARTIAL, UNDETERMINED -> FACTOR_PARTIAL;
             default -> FACTOR_FULL;
         };

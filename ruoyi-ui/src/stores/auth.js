@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { authApi } from '@/api/auth.js';
 import { readToken, writeToken } from '@/services/apiClient.js';
+import { isBackendUser } from '@/utils/userType.js';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -25,7 +26,14 @@ export const useAuthStore = defineStore('auth', {
       writeToken('');
     },
     async loadCurrentUser() {
-      this.user = await authApi.me();
+      const user = await authApi.me();
+      if (!isBackendUser(user)) {
+        this.clear();
+        const error = new Error('该账号是前台用户，不能登录后台管理系统');
+        error.code = 'BACKEND_ACCESS_DENIED';
+        throw error;
+      }
+      this.user = user;
       this.restoreError = '';
       return this.user;
     },
@@ -35,7 +43,8 @@ export const useAuthStore = defineStore('auth', {
       if (!this.restoring) {
         this.restoring = this.loadCurrentUser().catch(error => {
           // 已就地标记过期的会话留给重新登录弹窗处理，不清掉页面（ZT-29）。
-          if (error.status === 401) { if (!this.sessionExpired) this.clear(); }
+          if (error.code === 'BACKEND_ACCESS_DENIED') this.clear();
+          else if (error.status === 401) { if (!this.sessionExpired) this.clear(); }
           else this.restoreError = error.message;
           return null;
         }).finally(() => { this.restoring = null; });

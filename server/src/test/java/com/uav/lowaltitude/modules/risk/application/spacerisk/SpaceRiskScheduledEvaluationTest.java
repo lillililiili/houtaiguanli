@@ -23,6 +23,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort.SpaceObservation;
+import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskSpatialPort.AirportProximity;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.RunRow;
 
 /**
@@ -66,7 +67,7 @@ class SpaceRiskScheduledEvaluationTest {
         assertThat(second.risksCreated()).isZero();
         assertThat(second.risksDeduplicated()).isEqualTo(1);
         // 手动按观测窗口评估同一鸟群，也归到那一条。
-        when(spatial.observations(any(), any(), anyInt())).thenReturn(List.of(observation(flock, plan)));
+        when(spatial.observations(any(), any(), anyInt(), anyInt())).thenReturn(List.of(observation(flock, plan)));
         RunRow manual = evaluation.evaluate("C04", now.minusMinutes(5), now.plusMinutes(5), "MANUAL", null);
         assertThat(manual.risksCreated()).isZero();
         assertThat(risks(flock)).hasSize(1);
@@ -115,6 +116,43 @@ class SpaceRiskScheduledEvaluationTest {
         assertThat(risks(stuck)).isEmpty();
     }
 
+    @Test
+    void airportRiskIsMediumPendingVerificationAndDeduplicatesAcrossScheduledAndManualWindows() {
+        String balloon = target("airport");
+        AirportProximity fact = airport(balloon, plan, "500", "201");
+        when(spatial.refreshedAirportProximity(any(), any(), any(), anyInt())).thenReturn(List.of(fact));
+        RunRow first = evaluation.evaluateScheduledAirport(now.minusMinutes(1), now, now.minusMinutes(30));
+        assertThat(first.status()).as(first.message()).isEqualTo("SUCCESS");
+        assertThat(first.risksCreated()).isEqualTo(1);
+        String risk = risks(balloon).get(0);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, risk)).isEqualTo("MEDIUM");
+        assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?", String.class, risk)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(evaluation.evaluateScheduledAirport(now, now.plusMinutes(1), now.minusMinutes(29)).risksDeduplicated()).isEqualTo(1);
+        when(spatial.airportProximity(any(), any(), anyInt())).thenReturn(List.of(fact));
+        assertThat(evaluation.evaluate("C05", now.minusMinutes(2), now.plusMinutes(2), "MANUAL", null).risksDeduplicated()).isEqualTo(1);
+        assertThat(risks(balloon)).hasSize(1);
+    }
+
+    @Test
+    void airportDistancesHaveInclusiveBoundariesAndNoPlanNeverCreatesRisk() {
+        String protectedBoundary = target("protected"), outside = target("outside"), noPlan = target("noplan");
+        when(spatial.refreshedAirportProximity(any(), any(), any(), anyInt())).thenReturn(List.of(
+                airport(protectedBoundary, plan, "501", "200"), airport(outside, plan, "500.01", "200.01"),
+                airport(noPlan, null, "100", "100")));
+        RunRow run = evaluation.evaluateScheduledAirport(now.minusMinutes(1), now, now.minusMinutes(30));
+        assertThat(run.risksCreated()).as(run.message()).isEqualTo(1);
+        assertThat(run.message()).isEqualTo(SpaceRiskEvaluationService.MESSAGE_PLAN_REQUIRED);
+        assertThat(risks(protectedBoundary)).hasSize(1);
+        assertThat(risks(outside)).isEmpty();
+        assertThat(risks(noPlan)).isEmpty();
+    }
+
+    private AirportProximity airport(String target, String planId, String procedureDistance, String protectedDistance) {
+        return new AirportProximity(target, "BALLOON", "airport-" + suffix, "测试机场", planId,
+                planId == null ? null : routeVersionOf(planId), new BigDecimal(procedureDistance), new BigDecimal(protectedDistance),
+                new BigDecimal("80"), "AGL", null, now.minusSeconds(20));
+    }
+
     /**
      * P03：鸟群被判的每一次都记进它那条风险的评估历史，按事实分段（离航线按 50 米一档），飞远了“不构成风险”也记；
      * 风险本身的等级不跟着改。设备停报时读到的同一份观测不重复计。
@@ -122,7 +160,7 @@ class SpaceRiskScheduledEvaluationTest {
     @Test
     void everyJudgementOfAFlockIsKeptAsSegmentsOfItsRiskWithoutChangingTheRiskLevel() {
         String flock = target("history");
-        // 第 0 轮：离中心线 120 米（走廊半宽 50 米外、300 米内）→ 中风险，新建风险，评估历史从这次开始。
+        // 第 0 轮：离中心线 120 米（走廊半宽 50 米外、300 米内），25 只达到数量阈值上调为高风险。
         refreshed(observation(flock, plan, "120.00", 0));
         assertThat(scheduled(0).risksCreated()).isEqualTo(1);
         String risk = risks(flock).get(0);
@@ -131,7 +169,7 @@ class SpaceRiskScheduledEvaluationTest {
         assertThat(scheduled(1).risksDeduplicated()).isEqualTo(1);
         // 第 2 轮：观测没更新（还是上一份）→ 不算一次新的评估。
         scheduled(2);
-        // 第 3 轮：进了走廊（20 米、离地 60 米）→ 当时构成高风险，另起一段。
+        // 第 3 轮：进了走廊（20 米、离地 60 米），数量阈值将当时高风险上调为紧急，另起一段。
         refreshed(observation(flock, plan, "20.00", 120));
         scheduled(3);
         // 第 4 轮：飞到 800 米 → 不构成风险，也记一段，看得出什么时候不再构成风险。
@@ -144,16 +182,16 @@ class SpaceRiskScheduledEvaluationTest {
         assertThat(segments).extracting(row -> row.get("segment_no")).containsExactly(1, 2, 3);
         assertThat(segments.get(0)).containsEntry("evaluation_count", 2).containsEntry("distance_band_m", 100)
                 .containsEntry("corridor_relation", "NEAR").containsEntry("altitude_band", "CLIMB")
-                .containsEntry("risk_present", true).containsEntry("severity", "MEDIUM").containsEntry("from_detection", true);
+                .containsEntry("risk_present", true).containsEntry("severity", "HIGH").containsEntry("from_detection", true);
         assertThat(((BigDecimal) segments.get(0).get("min_distance_m"))).isEqualByComparingTo("120");
         assertThat(((BigDecimal) segments.get(0).get("max_distance_m"))).isEqualByComparingTo("130");
         assertThat(segments.get(1)).containsEntry("evaluation_count", 1).containsEntry("distance_band_m", 0)
-                .containsEntry("corridor_relation", "INSIDE").containsEntry("risk_present", true).containsEntry("severity", "HIGH")
+                .containsEntry("corridor_relation", "INSIDE").containsEntry("risk_present", true).containsEntry("severity", "CRITICAL")
                 .containsEntry("from_detection", false);
         assertThat(segments.get(2)).containsEntry("evaluation_count", 1).containsEntry("distance_band_m", 800)
                 .containsEntry("corridor_relation", "OUTSIDE").containsEntry("risk_present", false).containsEntry("severity", null);
         assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, risk))
-                .as("评估历史只记事实，不自动改风险等级").isEqualTo("MEDIUM");
+                .as("评估历史只记事实，不自动改风险等级").isEqualTo("HIGH");
 
         // 这一段已满 5 分钟：事实没变也另起一段，长时间不变时每 5 分钟至少一条。
         jdbc.update("update space_risk_evaluation_segment set first_evaluated_at=? where risk_id=? and segment_no=3",
@@ -188,20 +226,20 @@ class SpaceRiskScheduledEvaluationTest {
     }
 
     private void refreshed(SpaceObservation... observations) {
-        when(spatial.refreshedObservations(any(), any(), any())).thenReturn(List.of(observations));
+        when(spatial.refreshedObservations(any(), any(), any(), anyInt(), anyInt())).thenReturn(List.of(observations));
     }
 
     /** 走廊内（10 m ≤ 半宽 50 m）、同基准 AGL 60 m 的鸟群：HIGH，必须生成。 */
     private SpaceObservation observation(String targetId, String planId) {
         return new SpaceObservation(targetId, "TGT-" + targetId, "BIRD_FLOCK", planId, routeVersionOf(planId),
-                new BigDecimal("10.00"), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", null, "UNKNOWN",
+                new BigDecimal("10.00"), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", 25, "UNKNOWN",
                 org, district, new BigDecimal("118.025"), new BigDecimal("37.025"), now.minusSeconds(20));
     }
 
     /** 同一航线上离中心线 distance 米、离地 60 米的鸟群，观测时刻比首轮晚 observedAfterSeconds 秒。 */
     private SpaceObservation observation(String targetId, String planId, String distance, int observedAfterSeconds) {
         return new SpaceObservation(targetId, "TGT-" + targetId, "BIRD_FLOCK", planId, routeVersionOf(planId),
-                new BigDecimal(distance), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", null, "UNKNOWN",
+                new BigDecimal(distance), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", 25, "UNKNOWN",
                 org, district, new BigDecimal("118.025"), new BigDecimal("37.025"), now.minusSeconds(20).plusSeconds(observedAfterSeconds));
     }
 

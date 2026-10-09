@@ -71,6 +71,11 @@ public class AuthService {
 
     @Transactional
     public LoginResponse login(String account, String password, String ip, String userAgent) {
+        return login(account, password, ip, userAgent, false);
+    }
+
+    @Transactional
+    public LoginResponse login(String account, String password, String ip, String userAgent, boolean backend) {
         String normalizedAccount = account == null ? "" : account.trim();
         AppUser user = userMapper.findByAccount(normalizedAccount);
         if (user == null) {
@@ -97,6 +102,11 @@ public class AuthService {
                     appProperties.getLogin().getFailLimit(),
                     appProperties.getLogin().getLockMinutes());
             throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "账号或密码错误");
+        }
+        if (backend && com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.getRoleCode())
+                != com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND) {
+            loginFailureRecorder.backendDenied(user, ip, userAgent);
+            throw new ApiException(HttpStatus.FORBIDDEN, "BACKEND_ACCESS_DENIED", "该账号是前台用户，不能登录后台管理系统");
         }
         userMapper.recordSuccessfulLogin(user.getUserId(), now, ip == null ? "" : ip);
         AppSession session = new AppSession();
@@ -131,7 +141,8 @@ public class AuthService {
                 user.getRoleCode(), role == null ? user.getRoleCode() : role.getName(), user.getScopeMode(), scopes,
                 accessService.menuKeys(user.getRoleCode()), accessService.permissionCodes(user.getRoleCode()),
                 user.getPermissionVersion(), user.isMustChangePassword(), appProperties.getSourceMode(),
-                DataScope.of(user.getScopeMode(), user.getScopeOrgRule()).name(), user.getVersion());
+                DataScope.of(user.getScopeMode(), user.getScopeOrgRule()).name(), user.getVersion(),
+                com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.getRoleCode()).name());
     }
 
     /** 本人修改姓名和电话（ZT-28）。不动权限版本，当前会话保持有效。 */

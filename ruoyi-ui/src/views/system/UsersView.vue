@@ -11,6 +11,7 @@ import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
+import { userTypeLabel } from '@/utils/userType'
 import { DATA_SCOPE_OPTIONS, DEFAULT_DATA_SCOPE, dataScopeHint, dataScopeLabel, followsOrganization, isAssignableDataScope } from '@/utils/dataScope'
 
 const auth = useAuthStore()
@@ -22,7 +23,7 @@ const roles = ref([])
 const organizations = ref([])
 const total = ref(0)
 const selectedOrgId = ref(ALL_ORGS)
-const filters = reactive({ keyword: '', roleCode: '', status: '', page: 1, size: 20 })
+const filters = reactive({ keyword: '', roleCode: '', user_type: '', status: '', page: 1, size: 20 })
 const userDialog = reactive({ visible: false, busy: false, mode: 'create', row: null, form: {} })
 const orgDialog = reactive({ visible: false, row: null, parent: null, mode: 'view' })
 const resetDialog = reactive({ visible: false, busy: false, row: null, password: '' })
@@ -34,7 +35,14 @@ const canEditDirectory = computed(() => canReadDirectory.value && auth.hasPermis
 const canEditBasic = computed(() => canReadUsers.value && auth.hasPermission('users.auth'))
 const canManageOrganization = computed(() => canEditDirectory.value || canEditBasic.value)
 const selectedOrg = computed(() => organizations.value.find(item => item.org_id === selectedOrgId.value))
-const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false))
+const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false && !item.builtin && !['ROLE-ADMIN', 'ROLE-BACKEND'].includes(item.role_code)))
+const backendForm = computed(() => userDialog.form.user_type === 'BACKEND')
+const typeChanged = computed(() => userDialog.mode === 'edit' && userDialog.form.user_type !== rowUserType(userDialog.row))
+function rowUserType(row) { return row?.user_type || (isAdmin(row) || row?.role_code === 'ROLE-BACKEND' ? 'BACKEND' : 'FRONTEND') }
+function changeUserType(type) {
+  userDialog.form.role_code = ''
+  userDialog.form.data_scope = type === 'BACKEND' ? 'ALL' : DEFAULT_DATA_SCOPE
+}
 // 数据范围或（按单位维护时）所属单位变了，服务端会让该用户的登录失效，按新范围重新登录。
 const scopeChanged = computed(() => userDialog.mode === 'edit' && userDialog.form.data_scope !== userDialog.row?.data_scope)
 const scopeNeedsRelogin = computed(() => scopeChanged.value
@@ -86,7 +94,7 @@ async function loadUsers() {
   error.value = ''
   try {
     const result = await systemApi.users({
-      keyword: filters.keyword.trim(), roleCode: filters.roleCode, status: filters.status,
+      keyword: filters.keyword.trim(), roleCode: filters.roleCode, user_type: filters.user_type, status: filters.status,
       orgId: selectedOrgId.value === ALL_ORGS ? '' : selectedOrgId.value,
       page: filters.page, size: filters.size
     })
@@ -102,7 +110,7 @@ async function refreshAll() {
   catch (e) { error.value = e.message || '系统管理数据加载失败。'; loading.value = false }
 }
 function search() { filters.page = 1; loadUsers() }
-function resetFilters() { Object.assign(filters, { keyword: '', roleCode: '', status: '', page: 1 }); loadUsers() }
+function resetFilters() { Object.assign(filters, { keyword: '', roleCode: '', user_type: '', status: '', page: 1 }); loadUsers() }
 function selectOrg(data) { selectedOrgId.value = data.org_id; filters.page = 1; loadUsers() }
 
 function openUser(mode, row = null) {
@@ -112,13 +120,14 @@ function openUser(mode, row = null) {
     account: '', name: row?.name || '', phone: row?.phone || '',
     org_id: row?.org_id || selectedOrg.value?.org_id || '',
     role_code: row?.role_code || '', temporary_password: '',
+    user_type: rowUserType(row),
     data_scope: row ? row.data_scope : DEFAULT_DATA_SCOPE
   }
   userDialog.visible = true
 }
 async function saveUser() {
   const form = userDialog.form
-  if (!form.name?.trim() || !form.org_id || (!isAdmin(userDialog.row) && !form.role_code)) return ElMessage.warning('请完整填写姓名、所属单位和角色。')
+  if (!form.name?.trim() || !form.org_id || (!backendForm.value && !form.role_code)) return ElMessage.warning('请完整填写姓名、所属单位和前台角色。')
   if (userDialog.mode === 'create') {
     if (!form.account?.trim() || !form.temporary_password) return ElMessage.warning('请填写登录账号和临时密码。')
     const invalid = passwordError(form.temporary_password, form.account.trim())
@@ -127,10 +136,13 @@ async function saveUser() {
   userDialog.busy = true
   try {
     if (userDialog.mode === 'create') {
-      await systemApi.createUser({ account: form.account.trim(), name: form.name.trim(), phone: form.phone?.trim() || '', org_id: form.org_id, role_code: form.role_code, temporary_password: form.temporary_password, data_scope: form.data_scope })
+      await systemApi.createUser({ account: form.account.trim(), name: form.name.trim(), phone: form.phone?.trim() || '', org_id: form.org_id, user_type: form.user_type, ...(backendForm.value ? {} : { role_code: form.role_code }), temporary_password: form.temporary_password, data_scope: form.data_scope })
     } else {
       const body = { name: form.name.trim(), phone: form.phone?.trim() || '', org_id: form.org_id, expected_version: userDialog.row.version }
-      if (!isAdmin(userDialog.row)) body.role_code = form.role_code
+      if (!isAdmin(userDialog.row)) {
+        body.user_type = form.user_type
+        if (!backendForm.value) body.role_code = form.role_code
+      }
       // 只在管理员改了范围时发送；早期账号的“指定单位和区域”不动就原样保留。
       if (scopeChanged.value && isAssignableDataScope(form.data_scope)) body.data_scope = form.data_scope
       await systemApi.updateUser(userDialog.row.user_id, body)
@@ -188,13 +200,13 @@ function handleOrgCommand(command, row) {
   else if (command === 'view') openOrg(row, null, 'view')
 }
 
-watch(() => [filters.roleCode, filters.status], search)
+watch(() => [filters.roleCode, filters.status, filters.user_type], search)
 onMounted(refreshAll)
 </script>
 
 <template>
   <div class="page-stack page-stack--viewport">
-    <PageHeader title="用户管理" description="单位、区域、账号、角色与状态统一管理；唯一超级管理员受服务端保护。">
+    <PageHeader title="用户管理" description="统一维护前台与后台用户；前台按角色授权，后台拥有全部管理功能。">
       <el-button v-if="canReadUsers" @click="districtDialogVisible = true">区域管理</el-button>
       <el-button v-if="canReadUsers" :disabled="!canOperate" type="primary" @click="openUser('create')">新增用户</el-button>
     </PageHeader>
@@ -227,6 +239,7 @@ onMounted(refreshAll)
       <main class="table-panel">
         <el-form v-if="canReadUsers" class="filter-bar" inline @submit.prevent="search">
           <el-form-item label="用户"><el-input v-model="filters.keyword" clearable placeholder="账号、姓名或联系电话" @keyup.enter="search" /></el-form-item>
+          <el-form-item label="用户类型"><el-select v-model="filters.user_type" clearable placeholder="全部类型"><el-option label="前台用户" value="FRONTEND" /><el-option label="后台用户" value="BACKEND" /></el-select></el-form-item>
           <el-form-item label="角色"><el-select v-model="filters.roleCode" clearable placeholder="全部角色"><el-option v-for="role in roles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
           <el-form-item label="状态"><el-select v-model="filters.status" clearable placeholder="全部状态"><el-option label="启用" value="ACTIVE" /><el-option label="停用" value="DISABLED" /></el-select></el-form-item>
           <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
@@ -235,6 +248,7 @@ onMounted(refreshAll)
         <el-empty v-if="!canReadUsers" description="选择左侧单位后点击查看单位，维护单位资料。当前账号没有用户列表读取权限。" />
         <div v-else class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
+          <el-table-column label="用户类型" min-width="100"><template #default="{ row }">{{ userTypeLabel(rowUserType(row)) }}</template></el-table-column>
           <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" />
           <el-table-column label="数据范围" min-width="128"><template #default="{ row }">{{ dataScopeLabel(row.data_scope) }}</template></el-table-column>
           <el-table-column label="状态" width="82"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
@@ -256,17 +270,21 @@ onMounted(refreshAll)
         <el-form-item label="姓名" required><el-input v-model="userDialog.form.name" maxlength="64" /></el-form-item>
         <el-form-item label="联系电话"><el-input v-model="userDialog.form.phone" maxlength="32" /></el-form-item>
         <el-form-item label="所属单位" required><el-select v-model="userDialog.form.org_id" filterable><el-option v-for="org in organizations" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item>
-        <el-form-item label="角色" required><el-select v-model="userDialog.form.role_code" :disabled="isAdmin(userDialog.row)"><el-option v-for="role in activeRoles" :key="role.role_code" :label="role.name" :value="role.role_code" :disabled="role.role_code === 'ROLE-ADMIN' && !isAdmin(userDialog.row)" /></el-select></el-form-item>
+        <el-form-item label="用户类型" required><el-radio-group v-model="userDialog.form.user_type" :disabled="isAdmin(userDialog.row)" @change="changeUserType"><el-radio label="FRONTEND">前台用户</el-radio><el-radio label="BACKEND">后台用户</el-radio></el-radio-group></el-form-item>
+        <el-form-item v-if="!backendForm" label="角色" required><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
+        <el-alert v-else class="dialog-grid__wide" title="后台用户拥有全部后台菜单和管理功能，无需配置业务角色。" type="info" :closable="false" />
         <el-form-item v-if="userDialog.mode === 'create'" label="临时密码" required><el-input v-model="userDialog.form.temporary_password" type="password" show-password autocomplete="new-password" maxlength="32" /><small>6–32 位，包含大小写字母、数字和特殊字符。</small></el-form-item>
         <el-form-item label="数据范围" required class="dialog-grid__wide">
-          <el-radio-group v-model="userDialog.form.data_scope" :disabled="isAdmin(userDialog.row)">
+          <el-radio-group v-model="userDialog.form.data_scope" :disabled="backendForm">
             <el-radio v-for="option in DATA_SCOPE_OPTIONS" :key="option.value" :label="option.value">{{ option.label }}</el-radio>
           </el-radio-group>
           <small v-if="isAdmin(userDialog.row)">超级管理员固定能看到全部单位的数据。</small>
+          <small v-else-if="backendForm">后台用户固定管理全部单位；不自动获得前台反制操作授权。</small>
           <small v-else-if="!isAssignableDataScope(userDialog.form.data_scope)">当前为“{{ dataScopeLabel(userDialog.form.data_scope) }}”（早期审批设置）。不选就保持原样；选择后改为按所属单位确定范围。</small>
           <small v-else>{{ dataScopeHint(userDialog.form.data_scope) }}告警、统计、导出和证据都按这个范围显示。</small>
         </el-form-item>
         <el-alert v-if="scopeNeedsRelogin" class="dialog-grid__wide" title="保存后该用户需要重新登录，之后按新的数据范围查看。" type="warning" show-icon :closable="false" />
+        <el-alert v-if="typeChanged" class="dialog-grid__wide" title="修改用户类型会撤销该账号全部旧会话，重新登录后按新类型访问。" type="warning" show-icon :closable="false" />
       </el-form>
       <template #footer><el-button @click="userDialog.visible=false">取消</el-button><el-button type="primary" :loading="userDialog.busy" @click="saveUser">保存并立即生效</el-button></template>
     </el-dialog>

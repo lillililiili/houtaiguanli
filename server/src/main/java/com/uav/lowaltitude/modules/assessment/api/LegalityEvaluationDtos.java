@@ -16,7 +16,7 @@ public final class LegalityEvaluationDtos {
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
 
     /** 与列表同源的全量统计，不受分页大小影响。 */
-    public record SummaryDto(long total, long legal, long abnormal, long illegal, long undetermined, long notApplicable) { }
+    public record SummaryDto(long total, long legal, long abnormal, long illegal, long undetermined, long notApplicable, long rejected) { }
 
     /** 复核头行快照；SHADOW 研判没有复核行时整个 review 为 null。 */
     public record ReviewDto(String state, String manualStatus, long version) { }
@@ -40,6 +40,7 @@ public final class LegalityEvaluationDtos {
      * 研判列表项/详情。列表不带 hit_details（体积），详情带；alarm_id/event_id 只在具备 alarm:read 且告警仍在同一有效元组时返回，
      * target_id/target_no/object_type_code 同理受 target:read 约束，plan_id/plan_no 受 flight:read 约束。
      * object_type_code 为关联目标当前明确类别，不以历史研判结论或计划关联推断。
+     * legal_status 保留系统结论；effective_legal_status 为该条研判复核后的展示、筛选及统计结论。
      * confidence / confidence_threshold / source_count：本次研判用的可信度、四态判定要求的下限、这一帧有几路来源（CDX-P04），
      * 页面据此写“只有一路来源（可信度 65%），达不到 75%”；早先的研判没存下限和来源数，这两个字段不出现。
      */
@@ -51,8 +52,7 @@ public final class LegalityEvaluationDtos {
             ReviewDto review, List<String> allowedActions, String supersedesEvaluationId, String supersededByEvaluationId,
             String alarmId, String eventId, String alarmOutcomeKind, String assessmentId, String ownerOrgId, String ownerOrgName,
             String districtId, String districtName, String sourceMode, String objectTypeCode, DecisionAssuranceDto decisionAssurance,
-            AlarmVerificationDto alarmVerification, String originalLegalStatus, BigDecimal confidence, BigDecimal confidenceThreshold,
-            Integer sourceCount) { }
+            AlarmVerificationDto alarmVerification, String originalLegalStatus, String effectiveLegalStatus, BigDecimal confidence, BigDecimal confidenceThreshold, Integer sourceCount) { }
 
     /** 复核历史项；actor_id 只提供操作归属 ID，actor_name 仅用于展示。 */
     public record RevisionDto(String historyId, long version, String previousState, String resultingState, String conclusion,

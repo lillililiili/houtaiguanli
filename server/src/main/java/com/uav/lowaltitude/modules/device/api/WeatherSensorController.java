@@ -10,6 +10,8 @@ public class WeatherSensorController {
     private final WeatherSensorService service;
     public WeatherSensorController(WeatherSensorService service) { this.service=service; }
     @GetMapping("/{id}") public ApiResponse<Sensor> get(@PathVariable String id) { return ApiResponse.ok(service.get(id)); }
+    @com.uav.lowaltitude.platform.security.BackendOnly
     @PostMapping public ApiResponse<Sensor> create(@Valid @RequestBody Input input) { return ApiResponse.ok(service.create(input)); }
+    @com.uav.lowaltitude.platform.security.BackendOnly
     @PutMapping("/{id}") public ApiResponse<Sensor> update(@PathVariable String id,@Valid @RequestBody Input input) { return ApiResponse.ok(service.update(id,input)); }
 }

@@ -19,6 +19,8 @@ public interface SpaceRiskSpatialPort {
      */
     List<SpaceObservation> observations(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes);
 
+    List<SpaceObservation> observations(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes, int trendWindowMinutes);
+
     /**
      * 定时评估用：最新状态在 [refreshedFrom, refreshedTo) 内被写入过（服务器处理时间）、且观测时刻不早于 observedSince 的异物目标。
      * 按观测时刻切定时窗口时，融合积压或设备时钟偏差会让最新状态落进已经算过的窗口，目标被静默跳过（BUG-17）；
@@ -26,12 +28,15 @@ public interface SpaceRiskSpatialPort {
      */
     List<SpaceObservation> refreshedObservations(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo, OffsetDateTime observedSince);
 
+    List<SpaceObservation> refreshedObservations(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo,
+            OffsetDateTime observedSince, int planWindowPadMinutes, int trendWindowMinutes);
+
     /** C05：目标到机场进离场程序中心线与保护目标的最近距离（米），用于缓冲判定。 */
     List<AirportProximity> airportProximity(OffsetDateTime windowFrom, OffsetDateTime windowTo, int planWindowPadMinutes);
 
     /**
      * 定时 C05（2026-10-08 确认书 4-3，新-27）：窗口口径与 {@link #refreshedObservations} 相同，按最新状态的写入时刻切。
-     * 只关联待执行/执行中、且时段（前后放宽 planWindowPadMinutes）盖住这次观测时刻的计划：任务时段外的异物只计数，不生成任务风险。
+     * C05 使用计划本身的左闭右开时段，planWindowPadMinutes 传 0；任务时段外的异物不生成任务风险。
      */
     List<AirportProximity> refreshedAirportProximity(OffsetDateTime refreshedFrom, OffsetDateTime refreshedTo, OffsetDateTime observedSince,
             int planWindowPadMinutes);
@@ -45,7 +50,15 @@ public interface SpaceRiskSpatialPort {
             String routeAltitudeDatum, Integer objectCount, String trend, String ownerOrgId, String districtId,
             /* 评估时刻的目标坐标：写入 space_risk_fact 的位置快照（决策 9-19）；缺坐标时为 null，不补零。 */
             BigDecimal longitude, BigDecimal latitude,
-            OffsetDateTime observedAt) { }
+            OffsetDateTime observedAt, OffsetDateTime receivedAt) {
+        public SpaceObservation(String targetId, String targetNo, String subtypeCode, String planId, String routeVersionId,
+                BigDecimal distanceToRouteM, BigDecimal corridorHalfWidthM, BigDecimal altitudeM, String altitudeDatum,
+                String routeAltitudeDatum, Integer objectCount, String trend, String ownerOrgId, String districtId,
+                BigDecimal longitude, BigDecimal latitude, OffsetDateTime observedAt) {
+            this(targetId, targetNo, subtypeCode, planId, routeVersionId, distanceToRouteM, corridorHalfWidthM, altitudeM,
+                    altitudeDatum, routeAltitudeDatum, objectCount, trend, ownerOrgId, districtId, longitude, latitude, observedAt, null);
+        }
+    }
 
     /** C05：命中机场进离场缓冲或保护目标半径的目标。 */
     record AirportProximity(String targetId, String subtypeCode, String airportId, String airportName, String planId,

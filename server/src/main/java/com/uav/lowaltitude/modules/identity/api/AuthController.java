@@ -32,7 +32,8 @@ public class AuthController {
 
     @PostMapping("/login")
     public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest req, HttpServletRequest http) {
-        return ApiResponse.ok(authService.login(req.account(), req.password(), clientIp(http), userAgent(http)));
+        return ApiResponse.ok(authService.login(req.account(), req.password(), clientIp(http), userAgent(http),
+                "BACKEND".equals(req.clientType()) || "BACKEND".equals(http.getHeader("X-Client-Type"))));
     }
 
     @PostMapping("/logout")

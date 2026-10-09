@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 
 // ZT-29：会话过期时就地重新登录，页面和已填内容保留；ZT-28：改密输错当前密码不能当成会话失效。
 const originalAdapter = axios.defaults.adapter
-const user = { user_id: 'u-1', account: 'duty-1', name: '值班员', menu_keys: ['devices'], permission_codes: ['devices.read'], must_change_password: false, version: 3 }
+const user = { user_id: 'u-1', account: 'duty-1', name: '值班员', user_type: 'BACKEND', menu_keys: ['devices'], permission_codes: ['devices.read'], must_change_password: false, version: 3 }
 
 function failWith(status, code, message) {
   return async config => {

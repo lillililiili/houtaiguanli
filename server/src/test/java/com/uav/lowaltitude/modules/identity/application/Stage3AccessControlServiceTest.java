@@ -103,7 +103,7 @@ class Stage3AccessControlServiceTest {
         assertThat(jdbc.queryForObject("""
                 select count(*) from app_role_permission
                 where permission_code in ('flight:read', 'route:read', 'airspace:read', 'assessment:read')
-                  and role_code <> 'ROLE-ADMIN' and role_code not like 'ROLE-DEMO-%'
+                  and role_code not in ('ROLE-ADMIN', 'ROLE-BACKEND') and role_code not like 'ROLE-DEMO-%'
                 """, Integer.class)).isZero();   // 演示复核员是 local/test 种子角色（15-34），不是生产角色
         // 按名放行之外再钉死内容：**每个演示角色各自持哪几个**都列出来。
         // 只写"ROLE-DEMO- 开头的放行"等于把守卫拆了——种子多授一个、或多出第六个演示角色，都不会有人知道。

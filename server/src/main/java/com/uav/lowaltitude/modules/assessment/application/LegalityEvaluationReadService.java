@@ -44,9 +44,9 @@ import com.uav.lowaltitude.platform.api.ApiException;
 public class LegalityEvaluationReadService {
     public static final String ACTION_REVIEW = "REVIEW", ACTION_RECOMPUTE = "RECOMPUTE", ACTION_ESCALATE = "ESCALATE";
     private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id", "object_type_code",
-            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "needs_attention", "has_alarm", "page", "size");
+            "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "needs_attention", "has_alarm", "page", "size", "sort");
     private static final Set<String> MODES = Set.of("ACTIVE", "SHADOW");
-    private static final Set<String> LEGAL_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE");
+    private static final Set<String> LEGAL_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE", "REJECTED");
     private static final Set<String> PLAN_MATCHES = Set.of("FULL", "PARTIAL", "NONE", "UNDETERMINED", "NOT_APPLICABLE");
     private static final Set<String> REVIEW_STATES = Set.of("PENDING_REVIEW", "CONFIRMED", "REJECTED", "OVERRIDDEN", "SUPERSEDED");
     private static final Set<String> SUBJECTS = Set.of("TARGET", "PLAN");
@@ -67,8 +67,9 @@ public class LegalityEvaluationReadService {
         Request request = new Request(values);
         Page page = request.page();
         EvaluationQuery query = evaluationQuery(request);
+        boolean stableTargetOrder = stableTargetOrder(request, query);
         long total = repository.count(query, decision);
-        return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row, decision)).toList(), page.page, page.size, total);
+        return new PageDto<>(repository.list(query, decision, page.offset(), page.size, stableTargetOrder).stream().map(row -> dto(row, decision)).toList(), page.page, page.size, total);
     }
 
     @Transactional(readOnly = true)
@@ -77,8 +78,18 @@ public class LegalityEvaluationReadService {
         Request request = new Request(values);
         // 保留列表参数校验；分页不会缩小统计范围。
         request.page().offset();
-        var counts = repository.summarize(evaluationQuery(request), decision);
-        return new SummaryDto(counts.total(), counts.legal(), counts.abnormal(), counts.illegal(), counts.undetermined(), counts.notApplicable());
+        EvaluationQuery query = evaluationQuery(request);
+        stableTargetOrder(request, query);
+        var counts = repository.summarize(query, decision);
+        return new SummaryDto(counts.total(), counts.legal(), counts.abnormal(), counts.illegal(), counts.undetermined(), counts.notApplicable(), counts.rejected());
+    }
+
+    private boolean stableTargetOrder(Request request, EvaluationQuery query) {
+        String sort = request.enumerated("sort", Set.of("evaluated_at_desc", "target_created_at_desc"));
+        boolean stable = "target_created_at_desc".equals(sort);
+        if (stable && (!query.latestOnly() || !"UAV".equals(query.objectTypeCode())))
+            throw Request.invalid("目标稳定排序仅适用于 latest_only=true 且 object_type_code=UAV 的当前无人机队列");
+        return stable;
     }
 
     private AccessDecision authorizeQuery(MultiValueMap<String, String> values) {
@@ -148,7 +159,9 @@ public class LegalityEvaluationReadService {
                 row.assessmentId(), row.ownerOrgId(), row.ownerOrgName(), row.districtId(), row.districtName(), row.sourceMode(),
                 targetVisible ? row.objectTypeCode() : null, assurance, verification == null ? null : new AlarmVerificationDto(
                         verification.eventId(), verification.conclusion(), verification.note(), verification.version(), verification.verifiedAt()),
-                "ABNORMAL".equals(row.legalStatus()) ? row.legalStatus() : null, confidence.value(), confidence.threshold(), confidence.sourceCount());
+                "ABNORMAL".equals(row.legalStatus()) ? row.legalStatus() : null,
+                com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.effective(
+                        row.legalStatus(), row.mode(), row.reviewRejected() ? "REJECTED" : row.reviewState(), row.manualStatus()), confidence.value(), confidence.threshold(), confidence.sourceCount());
     }
 
     private record ConfidenceCheck(BigDecimal value, BigDecimal threshold, Integer sourceCount) {
@@ -198,7 +211,7 @@ public class LegalityEvaluationReadService {
 
     /**
      * REVIEW：PENDING_REVIEW 且有 revise；RECOMPUTE：ACTIVE、有复核行、非 SUPERSEDED 且有 evaluate（含主体读权限）；
-     * ESCALATE：ACTIVE、结论 ≠ LEGAL、尚无任何告警关联、有目标且有 escalate。动作权限缺失时不给出误导入口。
+     * ESCALATE：ACTIVE、生效结论为非法或不可判定、尚无告警关联、有目标且有 escalate。
      */
     private List<String> allowedActions(EvaluationRow row, boolean linked) {
         if (!repository.recognitionCurrent(row.evaluationId())) return List.of();
@@ -207,7 +220,10 @@ public class LegalityEvaluationReadService {
         boolean superseded = "SUPERSEDED".equals(row.reviewState());
         if (active && !linked && "PENDING_REVIEW".equals(row.reviewState()) && has(PermissionCode.ASSESSMENT_REVISE)) actions.add(ACTION_REVIEW);
         if (active && !superseded && has(PermissionCode.ASSESSMENT_EVALUATE) && has(subjectRead(row.subjectKind()))) actions.add(ACTION_RECOMPUTE);
-        if (active && !superseded && !"LEGAL".equals(row.legalStatus()) && !linked && row.targetId() != null && has(PermissionCode.ASSESSMENT_ESCALATE)) actions.add(ACTION_ESCALATE);
+        String effectiveStatus = com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.effective(
+                row.legalStatus(), row.mode(), row.reviewState(), row.manualStatus());
+        if (active && !superseded && com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.canEscalate(effectiveStatus)
+                && !linked && row.targetId() != null && has(PermissionCode.ASSESSMENT_ESCALATE)) actions.add(ACTION_ESCALATE);
         return List.copyOf(actions);
     }
 

@@ -44,6 +44,9 @@ public final class DecisionAssuranceAlgorithm {
             for (String key : List.of("fresh_seconds", "track_points", "conf_min", "min_points", "gap_seconds")) {
                 parameterReason(params.paramStatus("C03", key), reasons);
             }
+            for (String key : List.of("quality_window_basis", "own_plan_time_mismatch_policy")) {
+                if (params.has("C03", key)) parameterReason(params.paramStatus("C03", key), reasons);
+            }
         }
         if (!reasons.isEmpty()) return insufficient(reasons);
 
@@ -68,12 +71,16 @@ public final class DecisionAssuranceAlgorithm {
         }
 
         PlanMatch match = context.planMatch();
-        // 新-28：没有报备任务、按规定无需申请而判合法的，不需要核对任务授权；C01 照实记“对不上任务”、夜航不单独成立（C03 同样不计），
-        // 都不算与合法结论冲突。
+        boolean ownTimeMismatch = LegalityRulePolicy.ownPlanTimeMismatch(match, params);
         boolean exemptNoPlan = verdict.status() == LegalStatus.LEGAL && NoPlanExemption.applies(context, params);
-        if (match == null || match.code() == PlanMatchCode.NONE || match.code() == PlanMatchCode.NOT_APPLICABLE) {
-            if (!exemptNoPlan) reasons.add("PLAN_AUTHORIZATION_UNVERIFIED");
-        } else if (match.code() != PlanMatchCode.FULL) {
+        boolean noPlanPermitted = LegalityRulePolicy.noPlanIsPermitted(match, params) || exemptNoPlan;
+        if (noPlanPermitted) {
+            // C01 still records NONE/FAIL as the actual matching result. The confirmed LEGAL policy
+            // does not require an absent plan/identity comparison to establish this conclusion.
+            if ("live".equals(context.sourceMode())) parameterReason(params.paramStatus("C03", "no_plan_status"), reasons);
+        } else if (match == null || (match.code() == PlanMatchCode.NONE && !ownTimeMismatch) || match.code() == PlanMatchCode.NOT_APPLICABLE) {
+            reasons.add("PLAN_AUTHORIZATION_UNVERIFIED");
+        } else if (match.code() != PlanMatchCode.FULL && !ownTimeMismatch) {
             reasons.addAll(match.reasonCodes().isEmpty() ? List.of(RuleCodes.PLAN_MATCH_UNDETERMINED) : match.reasonCodes());
         } else if (match.plan() == null || match.plan().uavSn() == null || match.plan().uavSn().isBlank()) {
             reasons.add("PLAN_IDENTITY_UNKNOWN");
@@ -102,9 +109,8 @@ public final class DecisionAssuranceAlgorithm {
         if (verdict.status() != LegalStatus.LEGAL && !explicitBehaviourViolation && reasons.isEmpty()) reasons.add("DECISIVE_EVIDENCE_MISSING");
         // 即使调用方给出了 LEGAL，也不能接受与单项 FAIL 冲突的结论。
         if (verdict.status() == LegalStatus.LEGAL && details.stream().anyMatch(hit -> hit.resultCode() == ResultCode.FAIL
-                && !(exemptNoPlan && (RuleCodes.C01.equals(hit.ruleCode()) || RuleCodes.C02_5.equals(hit.ruleCode()))))) {
-            reasons.add("DECISIVE_EVIDENCE_MISSING");
-        }
+                && !(noPlanPermitted && RuleCodes.C01.equals(hit.ruleCode()))
+                && !(exemptNoPlan && RuleCodes.C02_5.equals(hit.ruleCode())))) reasons.add("DECISIVE_EVIDENCE_MISSING");
         return reasons.isEmpty() ? sufficient() : insufficient(reasons);
     }
 

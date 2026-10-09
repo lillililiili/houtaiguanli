@@ -48,19 +48,21 @@ public class LegalityEvaluationReadRepository {
         return total == null ? 0 : total;
     }
 
-    public record EvaluationCounts(long total, long legal, long abnormal, long illegal, long undetermined, long notApplicable) { }
+    public record EvaluationCounts(long total, long legal, long abnormal, long illegal, long undetermined, long notApplicable, long rejected) { }
 
     public EvaluationCounts summarize(EvaluationQuery query, AccessDecision access) {
         Where where = where(query, access);
+        String effectiveStatus = LegalityStatusProjection.effectiveSql("e", "r");
         return jdbc.queryForObject("SELECT COUNT(*) AS total,"
-                + " COALESCE(SUM(CASE WHEN e.legal_status='LEGAL' THEN 1 ELSE 0 END),0) AS legal,"
+                + " COALESCE(SUM(CASE WHEN " + effectiveStatus + "='LEGAL' THEN 1 ELSE 0 END),0) AS legal,"
                 + " 0 AS abnormal,"
-                + " COALESCE(SUM(CASE WHEN e.legal_status='ILLEGAL' THEN 1 ELSE 0 END),0) AS illegal,"
-                + " COALESCE(SUM(CASE WHEN " + LegalityStatusProjection.sql("e.legal_status") + "='UNDETERMINED' THEN 1 ELSE 0 END),0) AS undetermined,"
-                + " COALESCE(SUM(CASE WHEN e.legal_status='NOT_APPLICABLE' THEN 1 ELSE 0 END),0) AS not_applicable"
+                + " COALESCE(SUM(CASE WHEN " + effectiveStatus + "='ILLEGAL' THEN 1 ELSE 0 END),0) AS illegal,"
+                + " COALESCE(SUM(CASE WHEN " + effectiveStatus + "='UNDETERMINED' THEN 1 ELSE 0 END),0) AS undetermined,"
+                + " COALESCE(SUM(CASE WHEN " + effectiveStatus + "='NOT_APPLICABLE' THEN 1 ELSE 0 END),0) AS not_applicable"
+                + ", COALESCE(SUM(CASE WHEN " + effectiveStatus + "='REJECTED' THEN 1 ELSE 0 END),0) AS rejected"
                 + from() + where.sql, where.parameters,
                 (rs, i) -> new EvaluationCounts(rs.getLong("total"), rs.getLong("legal"), rs.getLong("abnormal"),
-                        rs.getLong("illegal"), rs.getLong("undetermined"), rs.getLong("not_applicable")));
+                        rs.getLong("illegal"), rs.getLong("undetermined"), rs.getLong("not_applicable"), rs.getLong("rejected")));
     }
 
     /** 合法性研判页“全部无人机”那份取数：正式模式、每架无人机只取最新一次、按当前类别只看无人机。 */
@@ -85,9 +87,16 @@ public class LegalityEvaluationReadRepository {
     public record LatestLegality(String evaluationId, String legalStatus) { }
 
     public List<EvaluationRow> list(EvaluationQuery query, AccessDecision access, int offset, int size) {
+        return list(query, access, offset, size, false);
+    }
+
+    public List<EvaluationRow> list(EvaluationQuery query, AccessDecision access, int offset, int size, boolean stableTargetOrder) {
         Where where = where(query, access);
         where.parameters.put("offset", offset); where.parameters.put("size", size);
-        return jdbc.query(select(false) + from() + where.sql + " ORDER BY e.evaluated_at DESC,e.evaluation_id DESC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",
+        // 当前目标队列在分页前按目标入库时间排序；重新研判只替换结果，不移动目标所在页。
+        String order = stableTargetOrder ? "tg.created_at DESC,tg.target_id DESC,e.evaluated_at DESC,e.evaluation_id DESC"
+                : "e.evaluated_at DESC,e.evaluation_id DESC";
+        return jdbc.query(select(false) + from() + where.sql + " ORDER BY " + order + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",
                 where.parameters, (rs, i) -> row(rs, false));
     }
 
@@ -231,14 +240,15 @@ public class LegalityEvaluationReadRepository {
                 + "(SELECT h.related_alarm_id FROM legality_review_history h WHERE h.evaluation_id=e.evaluation_id AND h.conclusion='ESCALATE' AND h.related_alarm_id IS NOT NULL ORDER BY h.version DESC FETCH FIRST 1 ROWS ONLY) AS manual_alarm_id,"
                 + "e.alarm_outcome,m.member_kind,e.assessment_id,e.owner_org_id,org_ref.name AS owner_org_name,e.district_id,dist_ref.name AS district_name,e.source_mode,"
                 + "COALESCE(e.recognition_class_code," + TargetRecognitionSql.type("tg", "recognition") + ") AS object_type_code,"
-                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons,e.input_snapshot";
+                + "e.decision_algorithm_version,e.decision_assurance_code,e.decision_assurance_reasons,e.input_snapshot,"
+                + "CASE WHEN " + LegalityStatusProjection.rejectedSql("e", "r") + " THEN TRUE ELSE FALSE END AS review_rejected";
     }
 
     private static Where where(EvaluationQuery query, AccessDecision access) {
         Where where = scope(access, "e");
         add(where, "e.mode", "mode", query.mode());
         // The old ABNORMAL filter remains available for historical API clients only.
-        add(where, "ABNORMAL".equals(query.legalStatus()) ? "e.legal_status" : LegalityStatusProjection.sql("e.legal_status"), "legal_status", query.legalStatus());
+        add(where, "ABNORMAL".equals(query.legalStatus()) ? "e.legal_status" : LegalityStatusProjection.effectiveSql("e", "r"), "legal_status", query.legalStatus());
         add(where, "e.plan_match_code", "plan_match", query.planMatch());
         add(where, "e.subject_kind", "subject_kind", query.subjectKind());
         if (query.objectTypeCode() != null) {
@@ -278,7 +288,7 @@ public class LegalityEvaluationReadRepository {
         }
         if (query.needsAttention() != null) {
             // 并集在权限、最新记录筛选和分页前执行；同一条同时满足两项也只计一次。
-            where.sql.append(" AND (CASE WHEN " + LegalityStatusProjection.sql("e.legal_status") + "='UNDETERMINED' OR (" + reviewRequired
+            where.sql.append(" AND (CASE WHEN " + LegalityStatusProjection.effectiveSql("e", "r") + "='UNDETERMINED' OR (" + reviewRequired
                     + ") THEN TRUE ELSE FALSE END)=:needs_attention");
             where.parameters.put("needs_attention", query.needsAttention());
         }
@@ -356,8 +366,7 @@ public class LegalityEvaluationReadRepository {
                 rs.getString("member_alarm_id"), rs.getString("manual_alarm_id"), rs.getString("alarm_outcome"), rs.getString("member_kind"),
                 rs.getString("assessment_id"), rs.getString("owner_org_id"), rs.getString("owner_org_name"), rs.getString("district_id"),
                 rs.getString("district_name"), rs.getString("source_mode"), rs.getString("object_type_code"),
-                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"),
-                rs.getString("input_snapshot"));
+                rs.getString("decision_algorithm_version"), rs.getString("decision_assurance_code"), rs.getString("decision_assurance_reasons"), rs.getBoolean("review_rejected"), rs.getString("input_snapshot"));
     }
 
     private static RevisionRow revision(ResultSet rs, int i) throws SQLException {
@@ -410,9 +419,7 @@ public class LegalityEvaluationReadRepository {
             String reviewState, String manualStatus, Long reviewVersion, String supersedesEvaluationId, String supersededByEvaluationId,
             String engineAlarmId, String memberAlarmId, String manualAlarmId, String alarmOutcome, String memberKind, String assessmentId,
             String ownerOrgId, String ownerOrgName, String districtId, String districtName, String sourceMode, String objectTypeCode,
-            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons,
-            /* 判定输入快照，不出 API：读接口只从里面取可信度、下限和来源数（CDX-P04）。 */
-            String inputSnapshot) {
+            String decisionAlgorithmVersion, String decisionAssuranceCode, String decisionAssuranceReasons, boolean reviewRejected, String inputSnapshot) {
         /** 引擎回填 > 合并成员 > 人工转告警历史；三者都空才算“无告警”。 */
         public String alarmId() { return engineAlarmId != null ? engineAlarmId : memberAlarmId != null ? memberAlarmId : manualAlarmId; }
     }

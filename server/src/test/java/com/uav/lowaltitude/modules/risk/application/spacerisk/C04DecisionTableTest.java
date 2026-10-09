@@ -42,7 +42,7 @@ class C04DecisionTableTest {
 
     @Test
     void nearRouteIsMedium() {
-        Decision decision = table.decide(observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 2, Trend.FLAT), params());
+        Decision decision = table.decide(observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, 2, Trend.FLAT), params());
         assertThat(decision.generate()).isTrue();
         assertThat(decision.severity()).isEqualTo("MEDIUM");
         assertThat(decision.reasonCode()).isEqualTo(C04DecisionTable.REASON_NEAR_ROUTE);
@@ -67,34 +67,34 @@ class C04DecisionTableTest {
     @Test
     void flockCountOrRisingTrendEscalatesOneLevelCappedAtCritical() {
         // 数量达到阈值：MEDIUM → HIGH。
-        Decision escalatedFromMedium = table.decide(observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 20, Trend.FLAT), params());
+        Decision escalatedFromMedium = table.decide(observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, 20, Trend.FLAT), params());
         assertThat(escalatedFromMedium.severity()).isEqualTo("HIGH");
         assertThat(escalatedFromMedium.escalated()).isTrue();
         // 趋势上升同样上调一级。
-        assertThat(table.decide(observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 1, Trend.RISING), params()).severity()).isEqualTo("HIGH");
+        assertThat(table.decide(observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, 1, Trend.RISING), params()).severity()).isEqualTo("HIGH");
         // HIGH 上调到 CRITICAL，并且不会越过 CRITICAL。
         Decision capped = table.decide(observation(CorridorRelation.INSIDE, AltitudeBand.APPROACH, true, 200, Trend.RISING), params());
         assertThat(capped.severity()).isEqualTo("CRITICAL");
         // 数量低于阈值且趋势平稳：不上调。
-        assertThat(table.decide(observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 19, Trend.FLAT), params()).severity()).isEqualTo("MEDIUM");
+        assertThat(table.decide(observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, 19, Trend.FLAT), params()).severity()).isEqualTo("MEDIUM");
     }
 
     @Test
     void missingCountOrTrendNeverEscalatesAndIsRecordedAsUnknown() {
         // 决策 9-18：数量与趋势当前没有数据源。"不知道有多少只"不能当成"少于阈值"，
         // 因此既不上调等级，也要如实记下缺了哪项事实。
-        Decision decision = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, null, Trend.UNKNOWN), params());
+        Decision decision = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, null, Trend.UNKNOWN), params());
         assertThat(decision.generate()).isTrue();
         assertThat(decision.severity()).isEqualTo("MEDIUM");
         assertThat(decision.escalated()).isFalse();
         assertThat(decision.unknownReasons())
                 .containsExactly(C04DecisionTable.UNKNOWN_OBJECT_COUNT, C04DecisionTable.UNKNOWN_TREND);
         // 有数量、缺趋势：只记趋势未知，数量仍照常参与上调判断。
-        Decision counted = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 20, Trend.UNKNOWN), params());
+        Decision counted = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, 20, Trend.UNKNOWN), params());
         assertThat(counted.severity()).isEqualTo("HIGH");
         assertThat(counted.unknownReasons()).containsExactly(C04DecisionTable.UNKNOWN_TREND);
         // 两项都有：没有未知项。
-        assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 3, Trend.FLAT), params()).unknownReasons()).isEmpty();
+        assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.APPROACH, true, 3, Trend.FLAT), params()).unknownReasons()).isEmpty();
         // 不生成风险时同样给出未知项：页面要能解释"为什么这次没结论"。
         assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, false, null, Trend.UNKNOWN), params()).unknownReasons())
                 .containsExactly(C04DecisionTable.UNKNOWN_OBJECT_COUNT, C04DecisionTable.UNKNOWN_TREND);
@@ -103,13 +103,38 @@ class C04DecisionTableTest {
     @Test
     void bandIsUnknownWhenDatumsDiffer() {
         // AGL 与 AMSL 不互比：基准不同或缺失时只能给 UNKNOWN，不做换算。
-        assertThat(table.band(new BigDecimal("120"), "AGL", "AMSL", params())).isEqualTo(AltitudeBand.UNKNOWN);
+        assertThat(table.band(new BigDecimal("120"), "AMSL", "AMSL", params())).isEqualTo(AltitudeBand.UNKNOWN);
+        assertThat(table.band(new BigDecimal("120"), "AGL", "AMSL", params())).isEqualTo(AltitudeBand.CLIMB);
         assertThat(table.band(new BigDecimal("120"), null, "AGL", params())).isEqualTo(AltitudeBand.UNKNOWN);
         assertThat(table.band(null, "AGL", "AGL", params())).isEqualTo(AltitudeBand.UNKNOWN);
         // 同基准才按参数分带：< 150 爬升段，< 300 进近段，其上巡航段。
         assertThat(table.band(new BigDecimal("100"), "AGL", "AGL", params())).isEqualTo(AltitudeBand.CLIMB);
         assertThat(table.band(new BigDecimal("250"), "AGL", "AGL", params())).isEqualTo(AltitudeBand.APPROACH);
         assertThat(table.band(new BigDecimal("500"), "AGL", "AGL", params())).isEqualTo(AltitudeBand.CRUISE);
+    }
+
+    @Test
+    void confirmedFlockThresholdDoesNotApplyToBalloonsOrInventMissingCounts() {
+        for (Integer count : new Integer[] {null, 10, 19}) {
+            assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.RISING, "BIRD_FLOCK"), params()).generate())
+                    .as("bird count %s", count).isFalse();
+        }
+        for (int count : new int[] {20, 25, 70}) {
+            assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.FLAT, "BIRD_FLOCK"), params()).generate())
+                    .as("bird count %s", count).isTrue();
+        }
+        assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, null, Trend.UNKNOWN, "BALLOON"), params()).generate()).isTrue();
+    }
+
+    @Test
+    void confirmedAltitudeAndDistanceBoundariesDoNotExpandWithCorridorWidth() {
+        assertThat(table.band(new BigDecimal("149.99"), "AGL", null, params())).isEqualTo(AltitudeBand.CLIMB);
+        assertThat(table.band(new BigDecimal("150"), "AGL", null, params())).isEqualTo(AltitudeBand.APPROACH);
+        assertThat(table.band(new BigDecimal("299.99"), "AGL", null, params())).isEqualTo(AltitudeBand.APPROACH);
+        assertThat(table.band(new BigDecimal("300"), "AGL", null, params())).isEqualTo(AltitudeBand.CRUISE);
+        assertThat(table.decide(new Observation(CorridorRelation.INSIDE, AltitudeBand.CRUISE, true, 25, Trend.RISING, "BIRD_FLOCK"), params()).generate()).isFalse();
+        assertThat(table.relation(new BigDecimal("300"), new BigDecimal("500"), params())).isEqualTo(CorridorRelation.INSIDE);
+        assertThat(table.relation(new BigDecimal("300.01"), new BigDecimal("500"), params())).isEqualTo(CorridorRelation.OUTSIDE);
     }
 
     @Test

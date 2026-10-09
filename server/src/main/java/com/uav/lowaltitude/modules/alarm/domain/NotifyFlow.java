@@ -18,7 +18,7 @@ public final class NotifyFlow {
         }
         if (now < smsAt + SMS_WATCH_MILLIS) return Phase.WATCHING;
         if (cannotNotify(voiceStatus, voiceReason)) return Phase.AWAIT_COUNTER;
-        // BLOCKED 已停止自动拨号；新位置恢复也不能把持久化终止任务显示为自动外呼。
+        // 仍为 BLOCKED 的摘要不得仅凭位置显示自动外呼；未尝试任务由服务重新核对全部条件。
         if ("BLOCKED".equals(voiceStatus)) return afterSms == PilotDepartureWatch.Presence.LEFT ? null : Phase.AWAIT_COUNTER;
         // 未知结果等待对账，不代表仍在外呼，也不能开始播完后的观察。
         if ("UNKNOWN".equals(voiceStatus)) return null;

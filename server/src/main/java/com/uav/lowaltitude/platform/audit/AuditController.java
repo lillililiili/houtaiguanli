@@ -20,6 +20,7 @@ import com.uav.lowaltitude.platform.audit.AuditQueryService.AuditFilter;
 import com.uav.lowaltitude.platform.audit.AuditQueryService.AuditResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1/audit-logs")
 public class AuditController {
 

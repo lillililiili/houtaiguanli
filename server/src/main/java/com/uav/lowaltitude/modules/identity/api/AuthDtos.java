@@ -12,7 +12,8 @@ public final class AuthDtos {
     private AuthDtos() {
     }
 
-    public record LoginRequest(@NotBlank String account, @NotBlank String password) {
+    public record LoginRequest(@NotBlank String account, @NotBlank String password,
+            @Pattern(regexp = "FRONTEND|BACKEND") String clientType) {
         @Override public String toString() { return "LoginRequest[account=" + account + ", password=***]"; }
     }
 
@@ -48,7 +49,8 @@ public final class AuthDtos {
             // ZT-14：数据范围（ALL/OWN_ORG/OWN_ORG_TREE/CUSTOM/NONE），个人资料页展示用。
             String dataScope,
             // ZT-28：本人改资料时作为 expected_version 回传。
-            int version) {
+            int version,
+            String userType) {
     }
 
     /** 本人可改的资料只有姓名和电话；单位、角色、数据范围由管理员在用户管理里调整。 */

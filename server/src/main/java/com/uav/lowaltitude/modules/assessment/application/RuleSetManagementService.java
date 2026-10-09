@@ -233,6 +233,7 @@ public class RuleSetManagementService {
 
     /** 与 activate 的守卫顺序一致（未发布 → 参数不允许 → 已生效）；返回 null 表示当前部署可以启用该版本。 */
     private String activationBlockReason(VersionDetailRow row) {
+        if ("RETIRED".equals(row.statusCode())) return "版本已撤回，不能启用";
         if (!STATUS_PUBLISHED.equals(row.statusCode())) return "版本尚未发布";
         if (!paramsActivatable(row.paramStatus())) return "演示参数尚未经业务方确认，正式环境不能启用";
         if (row.active()) return "该版本已是生效版本";

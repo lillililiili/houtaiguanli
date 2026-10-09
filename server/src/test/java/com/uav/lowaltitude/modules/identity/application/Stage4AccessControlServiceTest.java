@@ -105,7 +105,7 @@ class Stage4AccessControlServiceTest {
         assertThat(jdbc.queryForObject("""
                 select count(*) from app_role_permission
                 where permission_code in ('alarm:verify', 'risk:read', 'risk:verify')
-                  and role_code <> 'ROLE-ADMIN' and role_code not like 'ROLE-DEMO-%'
+                  and role_code not in ('ROLE-ADMIN', 'ROLE-BACKEND') and role_code not like 'ROLE-DEMO-%'
                 """, Integer.class)).isZero();   // 演示复核员是 local/test 种子角色（15-34），不是生产角色
         // 按名放行之外再钉死内容：每个演示角色各自持哪几个都列出来（第六个演示角色一出现就会红）。
         assertThat(jdbc.queryForList("""

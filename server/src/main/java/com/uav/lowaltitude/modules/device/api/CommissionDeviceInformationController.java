@@ -7,6 +7,7 @@ import com.uav.lowaltitude.modules.device.application.CommissionDeviceInformatio
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 public class CommissionDeviceInformationController {
     private final CommissionDeviceInformationService service;
     public CommissionDeviceInformationController(CommissionDeviceInformationService service) { this.service = service; }

@@ -37,7 +37,7 @@ class DeviceOperationsApiTest {
     @Autowired OutboxWorker outboxWorker;
 
     @Test
-    void monitorInformationUsesMonitoringPermissionAndRedactsConnectionForReadOnlyUsers() throws Exception {
+    void monitorInformationRequiresBackendIdentityAndStillEnforcesScope() throws Exception {
         String token = login("admin1");
         String id = getJson("/api/v1/devices", token).path("data").path("items").get(0).path("device_id").asText();
         String url = "/api/v1/device-monitor/devices/" + id + "/information";
@@ -53,21 +53,15 @@ class DeviceOperationsApiTest {
         jdbc.update("INSERT INTO app_role (role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES ('ROLE-MONITOR-TEST','监测只读测试','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("INSERT INTO app_role_permission (role_code,permission_code,permission_level,menu_enabled) VALUES ('ROLE-MONITOR-TEST','monitoring','READ',TRUE)");
         jdbc.update("UPDATE app_user SET role_code='ROLE-MONITOR-TEST',scope_mode='ALL' WHERE account='admin1'");
-        JsonNode readOnly = getJson(url, token).path("data");
-        JsonNode connection = java.util.stream.StreamSupport.stream(readOnly.path("sections").spliterator(), false)
-                .filter(section -> section.path("code").asText().equals("connection")).findFirst().orElseThrow();
-        for (JsonNode field : connection.path("fields")) {
-            assertThat(field.path("status").asText()).isEqualTo("REDACTED");
-            assertThat(field.path("value").isNull() || field.path("value").isMissingNode()).isTrue();
-        }
+        mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/commission-tasks/device-information/" + id).header("Authorization", bearer(token)))
                 .andExpect(status().isForbidden());
-        jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED' WHERE account='admin1'");
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND',scope_mode='ASSIGNED' WHERE account='admin1'");
         jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=(SELECT user_id FROM app_user WHERE account='admin1')");
         mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isNotFound());
         jdbc.update("UPDATE app_user SET scope_mode='NONE' WHERE account='admin1'");
         mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isForbidden());
-        jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE account='admin1'");
+        jdbc.update("UPDATE app_user SET role_code='ROLE-MONITOR-TEST',scope_mode='ALL' WHERE account='admin1'");
         jdbc.update("DELETE FROM app_role_permission WHERE role_code='ROLE-MONITOR-TEST'");
         mvc.perform(get(url).header("Authorization", bearer(token))).andExpect(status().isForbidden());
     }

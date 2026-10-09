@@ -33,6 +33,7 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 
 /** 电话通知录音：后台“接口配置 → 电话通知录音”上传、试听、选用、停止使用和删除。 */
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1/advisory-voice-recordings")
 public class AdvisoryVoiceRecordingController {
     private final AdvisoryVoiceRecordingService recordings;

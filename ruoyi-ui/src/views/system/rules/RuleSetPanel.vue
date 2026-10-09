@@ -14,6 +14,7 @@ const paramLabel = value => ({ CONFIRMED: ['已确认参数', 'success'], DEMO: 
 function versionState(version) {
   if (version.is_active) return ['生效中', 'success']
   if (version.is_shadow) return ['影子验证中', 'warning']
+  if (version.status_code === 'RETIRED') return ['已撤回', 'info']
   return version.status_code === 'PUBLISHED' ? ['未启用', 'info'] : ['未发布', 'info']
 }
 function activeVersion(set) { return set.versions.find(item => item.is_active) }

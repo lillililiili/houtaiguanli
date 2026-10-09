@@ -23,6 +23,14 @@ public class DatabaseAccessControlService implements AccessControlService {
     @Override
     public AccessDecision require(PermissionCode permission) {
         AuthUser current = requireCurrentUser();
+        if (current.mustChangePassword()) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "PASSWORD_CHANGE_REQUIRED", "请先修改临时密码");
+        }
+        if (permission == PermissionCode.RULE_MANAGE
+                && com.uav.lowaltitude.modules.identity.domain.UserType.forRole(current.roleCode())
+                != com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND) {
+            throw forbidden();
+        }
         String storedScopeMode = accessControlMapper.findGrantedScopeMode(
                 current.userId(), permission.value());
         if (storedScopeMode == null) {

@@ -144,9 +144,10 @@ public class SpaceRiskEvaluationService {
     private SpaceRiskRepository.RunRow runC04(String runId, OffsetDateTime from, OffsetDateTime to, OffsetDateTime observedSince,
             RuleParams params, RuleVersionRow version) {
         int pad = params.integer(C04DecisionTable.RULE_CODE, "plan_window_pad_min");
+        int trendWindow = params.integer(C04DecisionTable.RULE_CODE, "trend_window_min");
         List<SpaceObservation> observations = observedSince == null
-                ? spatial.observations(from, to, pad)
-                : spatial.refreshedObservations(from, to, observedSince);
+                ? spatial.observations(from, to, pad, trendWindow)
+                : spatial.refreshedObservations(from, to, observedSince, pad, trendWindow);
         Set<String> targetsSeen = new LinkedHashSet<>();
         int created = 0, deduplicated = 0, attempted = 0;
         List<String> failures = new ArrayList<>();
@@ -157,7 +158,7 @@ public class SpaceRiskEvaluationService {
             AltitudeBand band = decisionTable.band(observation.altitudeM(), observation.altitudeDatum(), observation.routeAltitudeDatum(), params);
             Trend trend = trend(observation.trend());
             Decision decision = decisionTable.decide(new Observation(relation, band, observation.planId() != null,
-                    observation.objectCount(), trend), params);
+                    observation.objectCount(), trend, observation.subtypeCode()), params);
             C04EvaluationHistory.Evaluation evaluated = new C04EvaluationHistory.Evaluation(observation.distanceToRouteM(), relation.name(),
                     band.name(), decision.generate(), decision.severity(), version.ruleSetVersionId(), evaluatedAt, observation.observedAt());
             if (!decision.generate()) {
@@ -195,6 +196,8 @@ public class SpaceRiskEvaluationService {
      */
     private Generated generateC04(SpaceObservation observation, CorridorRelation relation, AltitudeBand band, Trend trend, Decision decision,
             RuleVersionRow version, OffsetDateTime from, OffsetDateTime to) {
+        String mode = repository.targetSourceMode(observation.targetId());
+        repository.lockRiskSource(sourceId(mode), mode);
         String open = repository.openC04Risk(observation.planId(), observation.targetId());
         if (open != null) return new Generated(open, false);
         String sourceRiskId = "C04:" + version.ruleSetVersionId() + ":" + observation.planId() + ":" + observation.targetId() + ":" + from.toInstant().toEpochMilli();
@@ -261,7 +264,7 @@ public class SpaceRiskEvaluationService {
      */
     private SpaceRiskRepository.RunRow runC05(String runId, OffsetDateTime from, OffsetDateTime to, OffsetDateTime observedSince,
             RuleParams params, RuleVersionRow version) {
-        int pad = params.integer(C04DecisionTable.RULE_CODE, "plan_window_pad_min");
+        int pad = 0; // C05 只检查任务本身时段，不借用 C04 的前后十五分钟。
         BigDecimal procedureBuffer = params.number(C05_RULE_CODE, "procedure_buffer_m");
         BigDecimal protectedPad = params.number(C05_RULE_CODE, "protected_target_pad_m");
         List<AirportProximity> proximities = observedSince == null
@@ -297,6 +300,8 @@ public class SpaceRiskEvaluationService {
      * 只靠含窗口起点的 source_risk_id 去重会每轮多出一条同样的风险（与 C04 相同的口径，新-27）。
      */
     private boolean generateC05(AirportProximity proximity, RuleVersionRow version, OffsetDateTime from, OffsetDateTime to) {
+        String mode = repository.targetSourceMode(proximity.targetId());
+        repository.lockRiskSource(sourceId(mode), mode);
         if (repository.openSpaceRisk(C05_RULE_CODE, proximity.planId(), proximity.targetId()) != null) return false;
         String sourceRiskId = "C05:" + version.ruleSetVersionId() + ":" + proximity.planId() + ":" + proximity.targetId() + ":" + from.toInstant().toEpochMilli();
         String riskId = ingestAirport(proximity, sourceRiskId, from);
@@ -352,8 +357,8 @@ public class SpaceRiskEvaluationService {
         };
     }
 
-    private static String ruleVersionId(RuleVersionRow version, String ruleCode) {
-        return "space-risk-" + ruleCode.toLowerCase(java.util.Locale.ROOT) + "-v" + version.versionNo();
+    private String ruleVersionId(RuleVersionRow version, String ruleCode) {
+        return repository.memberVersionId(version.ruleSetVersionId(), ruleCode);
     }
 
     private static Trend trend(String value) {

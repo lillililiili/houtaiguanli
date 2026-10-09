@@ -85,8 +85,8 @@ public class SpaceRiskEvaluationJob {
         OffsetDateTime from = windowFrom(now);
         if (from.isBefore(now)) {
             try {
-                service.evaluateScheduled(from, now, now.minusMinutes(windowMinutes));
-                lastWindowTo = now;
+                var run = service.evaluateScheduled(from, now, now.minusMinutes(windowMinutes));
+                if (run == null || SpaceRiskEvaluationService.STATUS_SUCCESS.equals(run.status())) lastWindowTo = now;
             } catch (RuntimeException ex) {
                 // 整轮失败不推进窗口：下一轮重算同一段（最多回看 windowMinutes），避免这段时间的异物被静默跳过。
                 log.warn("space risk scheduled evaluation failed: {}", ex.toString());
@@ -101,8 +101,8 @@ public class SpaceRiskEvaluationJob {
             if (!repository.anyEnabledAirport()) return;
             OffsetDateTime from = windowFrom(now, lastAirportWindowTo);
             if (!from.isBefore(now)) return;
-            service.evaluateScheduledAirport(from, now, now.minusMinutes(windowMinutes));
-            lastAirportWindowTo = now;
+            var run = service.evaluateScheduledAirport(from, now, now.minusMinutes(windowMinutes));
+            if (run == null || SpaceRiskEvaluationService.STATUS_SUCCESS.equals(run.status())) lastAirportWindowTo = now;
         } catch (RuntimeException ex) {
             log.warn("airport-zone (C05) scheduled evaluation failed: {}", ex.toString());
         }

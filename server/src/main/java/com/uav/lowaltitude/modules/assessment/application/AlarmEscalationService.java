@@ -13,6 +13,7 @@ import com.uav.lowaltitude.modules.alarm.application.AlarmMergePolicy;
 import com.uav.lowaltitude.modules.alarm.application.AlarmMergePolicy.MergeInput;
 import com.uav.lowaltitude.modules.alarm.application.AlarmMergePolicy.MergeOutcome;
 import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityReviewRepository.ReviewRow;
+import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
@@ -33,7 +34,9 @@ public class AlarmEscalationService {
     @Transactional
     public MergeOutcome escalate(ReviewRow review, String actorId, String note) {
         MergeInput input = new MergeInput(review.evaluationId(), review.targetId(), review.ownerOrgId(), review.districtId(), review.sourceMode(),
-                review.ruleSetId(), review.ruleSetVersionId(), review.legalStatus(), review.planMatchCode(), review.grade(), review.score(),
+                review.ruleSetId(), review.ruleSetVersionId(),
+                LegalityStatusProjection.effective(review.legalStatus(), review.mode(), review.reviewState(), review.manualStatus()),
+                review.planMatchCode(), review.grade(), review.score(),
                 violations(review.violationReasons()), review.asOf(), clock.now().atOffset(ZoneOffset.UTC));
         return policy.escalateManually(input, actorId, note);
     }

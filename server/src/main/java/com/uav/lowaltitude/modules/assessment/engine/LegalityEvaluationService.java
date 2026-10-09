@@ -125,9 +125,10 @@ public class LegalityEvaluationService {
         OffsetDateTime effectiveAsOf = asOf == null ? now : asOf;
         Freshness freshness = freshness(run.triggerKind(), stateRow, effectiveAsOf, ruleParams);
         // 手动/重算/回放以观测时刻为评估时点，保证同一状态重跑得到同一结论；定时以 tick 时刻为准并受新鲜度约束。
-        if (stateRow != null && !TRIGGER_SCHEDULED.equals(run.triggerKind())) effectiveAsOf = stateRow.observedAt();
+        if (stateRow != null && !TRIGGER_SCHEDULED.equals(run.triggerKind())
+                && (!LegalityRulePolicy.qualityWindow(ruleParams) || TRIGGER_REPLAY.equals(run.triggerKind()))) effectiveAsOf = stateRow.observedAt();
         String trackId = resolved.targetId() == null ? null : repository.latestTrackId(resolved.targetId());
-        TrackQuality track = trackQuality(trackId, ruleParams);
+        TrackQuality track = trackQuality(trackId, ruleParams, effectiveAsOf);
         TargetState state = stateRow == null ? null : state(resolved, trackId, stateRow);
 
         PlanMatch planMatch = PlanMatch.notApplicable();
@@ -242,8 +243,11 @@ public class LegalityEvaluationService {
         PlanFact plan = repository.planSubject(subject.subjectId().trim());
         if (plan == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "飞行任务不存在: " + subject.subjectId());
         if (plan.ownerOrgId() == null || plan.districtId() == null) throw new IllegalStateException("任务缺少组织/区域归属，不能研判: " + plan.planId());
-        TargetRow target = plan.uavSn() == null ? null : repository.latestTargetBySn(plan.uavSn(), plan.ownerOrgId(), plan.districtId());
-        String sourceMode = target == null ? repository.planSourceMode(plan.planId()) : target.sourceMode();
+        var planSource = repository.planSource(plan.planId());
+        String planSourceMode = planSource == null ? null : planSource.sourceMode();
+        simulation.requireSourceMode(planSourceMode);
+        TargetRow target = plan.uavSn() == null ? null : repository.latestTargetBySn(plan.uavSn(), plan.ownerOrgId(), plan.districtId(), planSource);
+        String sourceMode = target == null ? planSourceMode : target.sourceMode();
         Subject full = new Subject(SubjectKind.PLAN, plan.planId(), plan.ownerOrgId(), plan.districtId(), sourceMode);
         return new Resolved(full, target == null ? null : target.targetId(), target == null ? null : target.uavSn(), plan, plan.planId(), plan.routeVersionId(),
                 plan.ownerOrgId(), plan.districtId(), sourceMode);
@@ -256,21 +260,27 @@ public class LegalityEvaluationService {
     private static Freshness freshness(String trigger, StateRow state, OffsetDateTime asOf, RuleParams ruleParams) {
         if (state == null || state.observedAt() == null) return Freshness.NO_STATE;
         if (TRIGGER_REPLAY.equals(trigger)) return Freshness.REPLAY;
-        if (!TRIGGER_SCHEDULED.equals(trigger)) return Freshness.FRESH;
+        if (!TRIGGER_SCHEDULED.equals(trigger) && !LegalityRulePolicy.qualityWindow(ruleParams)) return Freshness.FRESH;
         int freshSeconds = ruleParams.integer(RuleCodes.C03, PARAM_FRESH_SECONDS);
-        return state.observedAt().isBefore(asOf.minusSeconds(freshSeconds)) ? Freshness.STALE : Freshness.FRESH;
+        return state.observedAt().isBefore(asOf.minusSeconds(freshSeconds))
+                || (LegalityRulePolicy.qualityWindow(ruleParams) && state.observedAt().isAfter(asOf)) ? Freshness.STALE : Freshness.FRESH;
     }
 
-    private TrackQuality trackQuality(String trackId, RuleParams ruleParams) {
+    private TrackQuality trackQuality(String trackId, RuleParams ruleParams, OffsetDateTime asOf) {
         int limit = ruleParams.integer(RuleCodes.C03, PARAM_TRACK_POINTS);
         long gapSeconds = ruleParams.integer(RuleCodes.C03, PARAM_GAP_SECONDS);
         if (trackId == null) return new TrackQuality(0, null, false);
-        List<OffsetDateTime> times = repository.recentPointTimes(trackId, limit);
+        List<OffsetDateTime> times = LegalityRulePolicy.qualityWindow(ruleParams)
+                ? repository.recentPointTimes(trackId, limit, asOf.minusSeconds(ruleParams.integer(RuleCodes.C03, PARAM_FRESH_SECONDS)), asOf)
+                : repository.recentPointTimes(trackId, limit);
         Long maxGap = null;
         for (int i = 1; i < times.size(); i++) {
             OffsetDateTime newer = times.get(i - 1), older = times.get(i);
             if (newer == null || older == null) continue;
-            long gap = Math.abs(Duration.between(older, newer).getSeconds());
+            Duration interval = Duration.between(older, newer).abs();
+            long gap = interval.getSeconds();
+            // TrackQuality stores whole seconds; round upward under the confirmed strict >30s policy.
+            if (LegalityRulePolicy.qualityWindow(ruleParams) && interval.getNano() > 0) gap++;
             if (maxGap == null || gap > maxGap) maxGap = gap;
         }
         return new TrackQuality(times.size(), maxGap, maxGap != null && maxGap > gapSeconds);
@@ -289,7 +299,7 @@ public class LegalityEvaluationService {
         // 计划主体：只拿这条计划做候选；已取消的计划不授权飞行，按没有候选计划处理。
         if (resolved.plan() != null) return repository.planCancelled(resolved.plan().planId()) ? List.of() : List.of(resolved.plan());
         int window = ruleParams.integer(RuleCodes.C01, PARAM_TIME_WINDOW_MIN);
-        return repository.candidatePlans(resolved.ownerOrgId(), resolved.districtId(), resolved.uavSn(), asOf, window);
+        return repository.candidatePlans(resolved.ownerOrgId(), resolved.districtId(), resolved.uavSn(), asOf, window, resolved.sourceMode());
     }
 
     /** 版本歧义是时间版本事实，先于几何：以 UNKNOWN/VERSION_AMBIGUOUS 行进入上下文，空域类检查据此直接给未知。 */

@@ -73,10 +73,10 @@ afterEach(() => {
 })
 
 describe('自定义角色保存动作权限（BUG-01）', () => {
-  it('只归超级管理员的动作锁定且不随整组提交，勾选的动作照常保存', async () => {
+  it('后台专属动作不显示且不随整组提交，前台动作照常保存', async () => {
     await mount()
-    expect(row('启用地图版本').querySelector('.el-select').classList.contains('is-disabled')
-      || row('启用地图版本').querySelector('.is-disabled')).toBeTruthy()
+    expect(row('启用地图版本')).toBeUndefined()
+    expect(row('清理审计日志')).toBeUndefined()
     await choose('查看告警', '查看')
     await choose('核实告警', '操作')
     const save = [...host.querySelectorAll('button')].find(item => item.textContent.includes('保存并立即生效'))

@@ -74,7 +74,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Service
 public class SystemManagementService {
 
-    private static final Set<String> BUILTIN_ROLES = Set.of("ROLE-ADMIN");
+    private static final Set<String> BUILTIN_ROLES = Set.of("ROLE-ADMIN", "ROLE-BACKEND");
     /**
      * 矩阵里不能授给自定义角色的模块（决策 15-2，18-13 修订）。
      * `audit` 已经不在里面：看审计日志是审计员的本职，把它一并收成超管专有是规则过严。
@@ -132,7 +132,15 @@ public class SystemManagementService {
 
     public PageResponse<UserResponse> listUsers(String keyword, String status, String roleCode, String orgId,
             PageQuery page) {
+        return listUsers(keyword, status, roleCode, orgId, null, page);
+    }
+
+    public PageResponse<UserResponse> listUsers(String keyword, String status, String roleCode, String orgId,
+            String userType, PageQuery page) {
         accessService.require("users.read");
+        if (!blank(userType) && !Set.of("FRONTEND", "BACKEND").contains(userType)) {
+            throw bad("INVALID_USER_TYPE", "用户类型无效");
+        }
         String query = normalized(keyword).toLowerCase(Locale.ROOT);
         Set<String> orgScope = orgScope(orgId);
         Predicate<UserAdminRow> filter = row -> (query.isEmpty()
@@ -141,6 +149,7 @@ public class SystemManagementService {
                 || contains(row.getPhone(), query))
                 && (blank(status) || status.equals(row.getStatus()))
                 && (blank(roleCode) || roleCode.equals(row.getRoleCode()))
+                && (blank(userType) || userType.equals(com.uav.lowaltitude.modules.identity.domain.UserType.forRole(row.getRoleCode()).name()))
                 && (orgScope == null || orgScope.contains(row.getOrgId()));
         List<UserResponse> items = mapper.listUsers(appClock.nowMillis()).stream()
                 .filter(filter)
@@ -162,16 +171,37 @@ public class SystemManagementService {
         accessService.require("users.auth");
         UserAdminRow current = requireUserRow(userId);
         OrgRow org = requireEnabledOrg(request.orgId());
-        boolean roleChanged = !blank(request.roleCode()) && !request.roleCode().trim().equals(current.getRoleCode());
+        var currentType = com.uav.lowaltitude.modules.identity.domain.UserType.forRole(current.getRoleCode());
+        String nextType = request.userType() == null ? currentType.name() : request.userType();
+        String roleCode = blank(request.roleCode()) ? current.getRoleCode() : request.roleCode().trim();
+        if ("ROLE-ADMIN".equals(current.getRoleCode())) {
+            if (!"BACKEND".equals(nextType) || !"ROLE-ADMIN".equals(roleCode)) {
+                throw bad("SUPER_ADMIN_PROTECTED", "超级管理员的用户类型和角色不能修改");
+            }
+        } else if ("BACKEND".equals(nextType)) {
+            // 类型切换时前台旧角色不继承到后台；显式提交的后台身份只接受固定角色。
+            roleCode = roleForUserType(nextType, request.roleCode()).getRoleCode();
+        } else if (currentType == com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND || !roleCode.equals(current.getRoleCode())) {
+            roleCode = roleForUserType(nextType, request.roleCode()).getRoleCode();
+        }
+        boolean roleChanged = !roleCode.equals(current.getRoleCode());
         RoleRow nextRole = null;
         if (roleChanged) {
             if ("ROLE-ADMIN".equals(current.getRoleCode())) {
                 throw bad("SUPER_ADMIN_PROTECTED", "超级管理员角色不能修改");
             }
-            nextRole = requireAssignableRole(request.roleCode().trim());
+            nextRole = requireEnabledRole(roleCode);
         }
         DataScope currentScope = dataScope(current);
         DataScope nextScope = request.dataScope() == null ? currentScope : assignableDataScope(request.dataScope());
+        if ("BACKEND".equals(nextType) && !"ROLE-ADMIN".equals(current.getRoleCode())) {
+            if (request.dataScope() != null && !"ALL".equals(request.dataScope())) {
+                throw bad("BACKEND_SCOPE_FIXED", "后台用户固定管理全部单位");
+            }
+            nextScope = DataScope.ALL;
+        } else if (!nextType.equals(currentType.name()) && request.dataScope() == null) {
+            nextScope = DEFAULT_DATA_SCOPE;
+        }
         boolean scopeChanged = nextScope != currentScope;
         if (scopeChanged && "ROLE-ADMIN".equals(current.getRoleCode())) {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员的数据范围固定为全部单位");
@@ -189,9 +219,10 @@ public class SystemManagementService {
                 conflict();
             }
             sessionMapper.expireAllForUser(userId);
-            String reason = blank(request.reason()) ? "超级管理员直接调整用户角色" : request.reason().trim();
+            String reason = blank(request.reason()) ? directChangeReason("调整用户角色") : request.reason().trim();
             audit("users", "user_access_updated", "user", userId,
                     json(Map.of("from_role", current.getRoleCode(), "to_role", nextRole.getRoleCode(),
+                            "from_user_type", currentType.name(), "to_user_type", nextType,
                             "reason", reason)), meta);
         }
         if (scopeChanged) {
@@ -297,17 +328,24 @@ public class SystemManagementService {
     @Transactional
     public UserResponse createUser(UserCreationRequest request, String idempotencyKey, RequestMeta meta) {
         idempotencyGuard.claim(idempotencyKey,
-                "user-create-direct:" + request.account() + ":" + request.roleCode() + ":" + request.orgId());
+                "user-create-direct:" + request.account() + ":" + request.roleCode() + ":" + request.orgId() + ":" + request.userType());
         accessService.require("users.auth");
         String account = request.account().trim();
         if (!account.matches("[A-Za-z0-9._-]{3,64}")) {
             throw bad("INVALID_ACCOUNT", "登录账号只能包含字母、数字、点、下划线和连字符，长度为3至64位");
         }
         if (userMapper.findByAccount(account) != null) throw conflict("DUPLICATE_ACCOUNT", "登录账号已存在");
-        RoleRow role = requireAssignableRole(request.roleCode());
+        String userType = request.userType() == null ? "FRONTEND" : request.userType();
+        RoleRow role = roleForUserType(userType, request.roleCode());
         OrgRow org = requireEnabledOrg(request.orgId());
         DataScope dataScope = request.dataScope() == null ? DEFAULT_DATA_SCOPE
                 : assignableDataScope(request.dataScope());
+        if ("BACKEND".equals(userType)) {
+            if (request.dataScope() != null && !"ALL".equals(request.dataScope())) {
+                throw bad("BACKEND_SCOPE_FIXED", "后台用户固定管理全部单位");
+            }
+            dataScope = DataScope.ALL;
+        }
         passwordPolicy.validateTemporary(request.temporaryPassword(), account);
         String userId = UUID.randomUUID().toString();
         long now = appClock.nowMillis();
@@ -321,7 +359,8 @@ public class SystemManagementService {
         dataScopes.refreshUser(userId);
         audit("users", "user_created", "user", userId,
                 json(Map.of("account", account, "role_code", role.getRoleCode(), "data_scope", dataScope.name(),
-                        "reason", "超级管理员直接创建用户")), meta);
+                        "user_type", userType,
+                        "reason", directChangeReason("创建用户"))), meta);
         return toUser(requireUserRow(userId));
     }
 
@@ -333,6 +372,9 @@ public class SystemManagementService {
         UserAdminRow user = requireUserRow(userId);
         if ("ROLE-ADMIN".equals(user.getRoleCode())) {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员角色不能修改");
+        }
+        if ("ROLE-BACKEND".equals(user.getRoleCode())) {
+            throw bad("BACKEND_ROLE_FIXED", "后台用户无需配置业务角色，请通过用户资料修改用户类型");
         }
         RoleRow role = requireAssignableRole(request.roleCode());
         if (role.getRoleCode().equals(user.getRoleCode())) throw bad("NO_CHANGES", "角色没有变化");
@@ -502,7 +544,7 @@ public class SystemManagementService {
     @Transactional
     public RoleResponse createRole(RoleCreateRequest request, String idempotencyKey, RequestMeta meta) {
         String reason = request.reason() == null || request.reason().isBlank()
-                ? "超级管理员直接创建角色" : request.reason().trim();
+                ? directChangeReason("创建角色") : request.reason().trim();
         idempotencyGuard.claim(idempotencyKey, "role-create:" + request.name() + ":" + reason);
         accessService.require("roles.auth");
         String roleCode = "ROLE-CUSTOM-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
@@ -571,7 +613,7 @@ public class SystemManagementService {
                 : replaceRoleActions(roleCode, request.actions());
         mapper.bumpPermissionVersionForRole(roleCode);
         sessionMapper.expireAllForRole(roleCode);
-        String reason = blank(request.reason()) ? "超级管理员直接调整角色权限" : request.reason().trim();
+        String reason = blank(request.reason()) ? directChangeReason("调整角色权限") : request.reason().trim();
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("before", before);
         detail.put("after", permissions);
@@ -837,7 +879,8 @@ public class SystemManagementService {
         return new UserResponse(row.getUserId(), row.getAccount(), row.getName(), row.getPhone(), row.getOrgId(),
                 row.getOrgName(), row.getRoleCode(), row.getRoleName(), row.getStatus(), dataScope(row).name(),
                 row.isMustChangePassword(), row.isOnline(), row.getLastLoginAt(), row.getLastLoginIp(),
-                row.getCreatedAt(), row.getVersion());
+                row.getCreatedAt(), row.getVersion(),
+                com.uav.lowaltitude.modules.identity.domain.UserType.forRole(row.getRoleCode()).name());
     }
 
     private static DataScope dataScope(UserAdminRow row) {
@@ -985,11 +1028,27 @@ public class SystemManagementService {
     }
 
     private RoleRow requireAssignableRole(String roleCode) {
+        if (blank(roleCode)) throw bad("ROLE_REQUIRED", "前台用户必须选择业务角色");
         RoleRow role = requireEnabledRole(roleCode);
         if (role.isBuiltin() || "ROLE-ADMIN".equals(roleCode)) {
             throw bad("SUPER_ADMIN_ASSIGNMENT_FORBIDDEN", "新用户和普通用户不能被授予超级管理员角色");
         }
         return role;
+    }
+
+    private String directChangeReason(String action) {
+        return ("ROLE-ADMIN".equals(AuthContext.require().roleCode()) ? "超级管理员" : "后台用户") + "直接" + action;
+    }
+
+    private RoleRow roleForUserType(String userType, String roleCode) {
+        if ("BACKEND".equals(userType)) {
+            if (!blank(roleCode) && !"ROLE-BACKEND".equals(roleCode)) {
+                throw bad("BACKEND_ROLE_FIXED", "后台用户无需选择业务角色");
+            }
+            return requireEnabledRole("ROLE-BACKEND");
+        }
+        if (!"FRONTEND".equals(userType)) throw bad("INVALID_USER_TYPE", "用户类型无效");
+        return requireAssignableRole(roleCode);
     }
 
     private OrgRow requireOrganization(String id) {

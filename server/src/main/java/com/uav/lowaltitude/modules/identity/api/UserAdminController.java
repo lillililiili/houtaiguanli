@@ -37,6 +37,7 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 import java.util.List;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1")
 public class UserAdminController {
 
@@ -52,9 +53,10 @@ public class UserAdminController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String roleCode,
             @RequestParam(required = false) String orgId,
+            @RequestParam(name = "user_type", required = false) String userType,
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size) {
-        return ApiResponse.ok(service.listUsers(keyword, status, roleCode, orgId, page(page, size)));
+        return ApiResponse.ok(service.listUsers(keyword, status, roleCode, orgId, userType, page(page, size)));
     }
 
     @GetMapping("/users/{userId}")

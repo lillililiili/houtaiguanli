@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.PermissionRow;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
+import com.uav.lowaltitude.modules.identity.domain.UserType;
 import com.uav.lowaltitude.modules.identity.infrastructure.IdentityAdminMapper;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.security.AuthContext;
@@ -17,6 +18,19 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 
 @Service
 public class AccessService {
+
+    private static final Set<String> BACKEND_MODULES = Set.of("devices", "monitoring", "commissioning", "interfaces",
+            "maps", "statistics", "organizations", "responsePlans", "users", "roles", "audit", "notificationSettings");
+    private static final Set<String> BACKEND_ONLY_MODULES = Set.of("users", "roles", "audit", "interfaces", "maps",
+            "commissioning", "monitoring", "notificationSettings");
+    private static final Set<String> BUSINESS_MENUS = Set.of("bigscreen", "situation", "flights", "legality",
+            "alarms", "punish", "stats", "evidence");
+
+    public void requireBackend() {
+        if (UserType.forRole(AuthContext.require().roleCode()) != UserType.BACKEND) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "BACKEND_ACCESS_DENIED", "该操作仅限后台用户");
+        }
+    }
 
     private final IdentityAdminMapper mapper;
 
@@ -28,6 +42,10 @@ public class AccessService {
         AuthUser user = AuthContext.require();
         if (user.mustChangePassword()) {
             throw new ApiException(HttpStatus.FORBIDDEN, "PASSWORD_CHANGE_REQUIRED", "请先修改临时密码");
+        }
+        if (BACKEND_ONLY_MODULES.contains(permissionCode.split("\\.")[0])
+                || Set.of("organizations.auth", "responsePlans.auth", "rule:manage", "map:upload", "map:activate", "map:delete").contains(permissionCode)) {
+            requireBackend();
         }
         if (!permissionCodes(user.roleCode()).contains(permissionCode)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "当前账号没有执行此操作的权限");
@@ -61,6 +79,9 @@ public class AccessService {
     }
 
     public List<String> menuKeys(String roleCode) {
+        if (UserType.BACKEND_ROLE.equals(roleCode)) {
+            return List.of("devices", "monitor", "commission", "interfaces", "maps", "stats", "users", "responsePlans", "roles", "archive");
+        }
         Set<String> keys = new LinkedHashSet<>();
         List<PermissionRow> permissions = "ROLE-ADMIN".equals(roleCode)
                 ? mapper.listPermissionCatalog() : mapper.listPermissionsForRole(roleCode);
@@ -69,7 +90,7 @@ public class AccessService {
                 if (permission.getRouteKey() != null) keys.add(permission.getRouteKey());
                 continue;
             }
-            if (permission.isMenuEnabled() && permission.getRouteKey() != null
+            if (permission.isMenuEnabled() && BUSINESS_MENUS.contains(permission.getRouteKey() == null ? "" : permission.getRouteKey())
                     && level(permission.getPermissionLevel()) >= level("READ")) {
                 keys.add(permission.getRouteKey());
             }
@@ -79,6 +100,13 @@ public class AccessService {
 
     public List<String> permissionCodes(String roleCode) {
         List<String> codes = new ArrayList<>();
+        if (UserType.BACKEND_ROLE.equals(roleCode)) {
+            for (String module : BACKEND_MODULES) {
+                codes.add(module + ".read"); codes.add(module + ".op"); codes.add(module + ".auth");
+            }
+            codes.addAll(mapper.listActionCodesForRole(roleCode));
+            return List.copyOf(codes);
+        }
         boolean superAdmin = "ROLE-ADMIN".equals(roleCode);
         List<PermissionRow> permissions = superAdmin
                 ? mapper.listPermissionCatalog() : mapper.listPermissionsForRole(roleCode);

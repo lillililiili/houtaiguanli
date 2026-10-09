@@ -38,7 +38,7 @@ public final class SystemDtos {
             String orgId, String orgName, String roleCode, String roleName,
             String status, String dataScope,
             boolean mustChangePassword, boolean online, Long lastLoginAt,
-            String lastLoginIp, long createdAt, int version) {
+            String lastLoginIp, long createdAt, int version, String userType) {
     }
 
     public record UserCreationRequest(
@@ -46,13 +46,14 @@ public final class SystemDtos {
             @NotBlank @Size(max = 64) String name,
             @Size(max = 32) String phone,
             @NotBlank String orgId,
-            @NotBlank String roleCode,
+            @Size(max = 64) String roleCode,
             @NotBlank(message = "临时密码不能为空")
             @Size(min = 6, max = 32, message = "临时密码长度必须在6到32位之间")
             String temporaryPassword,
             @Size(max = 1000) String reason,
             // 缺省为 OWN_ORG（本单位）。
-            @Pattern(regexp = DATA_SCOPE_PATTERN, message = DATA_SCOPE_MESSAGE) String dataScope) {
+            @Pattern(regexp = DATA_SCOPE_PATTERN, message = DATA_SCOPE_MESSAGE) String dataScope,
+            @Pattern(regexp = "FRONTEND|BACKEND") String userType) {
         @Override public String toString() {
             return "UserCreationRequest[account=" + account + ", roleCode=" + roleCode
                     + ", dataScope=" + dataScope + ", temporaryPassword=***]";
@@ -67,7 +68,8 @@ public final class SystemDtos {
             @Size(max = 1000) String reason,
             @Min(0) int expectedVersion,
             // 缺省表示不改数据范围。
-            @Pattern(regexp = DATA_SCOPE_PATTERN, message = DATA_SCOPE_MESSAGE) String dataScope) {
+            @Pattern(regexp = DATA_SCOPE_PATTERN, message = DATA_SCOPE_MESSAGE) String dataScope,
+            @Pattern(regexp = "FRONTEND|BACKEND") String userType) {
     }
 
     public record UserStatusRequest(

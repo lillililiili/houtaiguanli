@@ -32,6 +32,7 @@ import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityEvaluationR
 import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityReviewRepository;
 import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityReviewRepository.HistoryInsert;
 import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityReviewRepository.ReviewRow;
+import com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
@@ -135,7 +136,8 @@ public class LegalityReviewService {
         idempotency.claim(idempotencyKey, stable("legality-escalation", id, "", "", note, expectedVersion));
         if (review.version() != expectedVersion) throw conflict();
         if (STATE_SUPERSEDED.equals(review.reviewState())) throw superseded();
-        if ("LEGAL".equals(review.legalStatus())) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "系统结论为合法的研判不能转告警");
+        String effectiveStatus = LegalityStatusProjection.effective(review.legalStatus(), review.mode(), review.reviewState(), review.manualStatus());
+        if (!LegalityStatusProjection.canEscalate(effectiveStatus)) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "当前生效结论为合法、系统误判或不适用，不能转告警");
         if (review.targetId() == null) throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "研判没有关联目标，无法生成来源告警");
         requireCurrentRecognition(id);
         // 已有告警关联（引擎回填、合并成员或此前人工转告警）就不能再建第二条；这里读未脱敏的行，不受操作者 alarm:read 影响。

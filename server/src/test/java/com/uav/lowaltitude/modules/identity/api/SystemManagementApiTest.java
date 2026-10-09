@@ -51,7 +51,7 @@ class SystemManagementApiTest {
 
     @Test
     void freshSeedContainsOnlyOneBuiltinSuperAdmin() {
-        assertThat(jdbc.queryForObject("select count(*) from app_role where builtin=true", Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from app_role where builtin=true", Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("select name from app_role where role_code='ROLE-ADMIN'", String.class))
                 .isEqualTo("超级管理员");
         assertThat(jdbc.queryForObject("select count(*) from app_user where role_code='ROLE-ADMIN'", Integer.class))
@@ -139,7 +139,8 @@ class SystemManagementApiTest {
         String userSession = login(account, NEW_PASSWORD);
         mvc.perform(get("/api/v1/auth/me").header("Authorization", bearer(userSession)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.menu_keys[?(@ == 'devices')]").exists())
+                .andExpect(jsonPath("$.data.menu_keys[?(@ == 'devices')]").doesNotExist())
+                .andExpect(jsonPath("$.data.user_type").value("FRONTEND"))
                 .andExpect(jsonPath("$.data.menu_keys[?(@ == 'users')]").doesNotExist())
                 .andExpect(jsonPath("$.data.permission_codes[?(@ == 'devices.read')]").exists())
                 .andExpect(jsonPath("$.data.scope_mode").value("ASSIGNED"))

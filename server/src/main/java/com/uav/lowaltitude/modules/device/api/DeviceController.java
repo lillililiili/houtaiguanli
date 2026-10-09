@@ -87,6 +87,7 @@ public class DeviceController {
     }
 
     @PostMapping("/onboard")
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> onboard(@RequestBody JsonNode body, @RequestHeader(value="Idempotency-Key",required=false) String key) {
         String protocol = body.path("protocol_code").asText();
         if (LingyunEnvelope.PROTOCOL.equals(protocol) || DeviceProtocolCodes.EO_EDGE_MQTT_20250826.equals(protocol))
@@ -100,11 +101,13 @@ public class DeviceController {
     }
 
     @PostMapping
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> create(@Valid @RequestBody DeviceRequest request) {
         return ApiResponse.ok(service.create(request.toMutation(),request.ownerOrgId(),request.districtId()));
     }
 
     @PutMapping("/{deviceId}")
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> update(@PathVariable String deviceId, @RequestBody JsonNode body,
                                           @RequestHeader(value="Idempotency-Key",required=false) String key) {
         if (mqtt.isMqtt(deviceId)) {
@@ -119,6 +122,7 @@ public class DeviceController {
     }
 
     @PatchMapping("/{deviceId}/enabled")
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> setEnabled(@PathVariable String deviceId, @Valid @RequestBody EnabledRequest request,
                                               @RequestHeader(value="Idempotency-Key",required=false) String key) {
         if (mqtt.isMqtt(deviceId)) {
@@ -129,6 +133,7 @@ public class DeviceController {
     }
 
     @DeleteMapping("/{deviceId}")
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceService.DeviceDeletion> delete(@PathVariable String deviceId,
             @Valid @RequestBody DeleteRequest request,
             @RequestHeader(value = "Idempotency-Key", required = false) String key) {
@@ -138,6 +143,7 @@ public class DeviceController {
     public record DeleteRequest(@NotNull Long version, @NotBlank String reason) { }
 
     @PutMapping("/{deviceId}/sensing-profile")
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> upsertSensingProfile(
             @PathVariable String deviceId,
             @RequestBody SensingProfileRequest request,
@@ -146,6 +152,7 @@ public class DeviceController {
     }
 
     @DeleteMapping("/{deviceId}/sensing-profile")
+    @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> deleteSensingProfile(
             @PathVariable String deviceId,
             @RequestBody SensingProfileVersionRequest request,

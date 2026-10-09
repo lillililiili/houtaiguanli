@@ -5,6 +5,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
 import { useAuthStore } from '@/stores/auth'
+import { isBusinessMenu } from '@/config/businessMenus'
 
 const auth = useAuthStore()
 const loading = ref(false)
@@ -42,8 +43,15 @@ const filteredRoles = computed(() => {
   const text = query.value.trim().toLowerCase()
   return roles.value.filter(item => !text || [item.name, item.role_code, item.description].some(value => String(value || '').toLowerCase().includes(text)))
 })
-const menuPermissions = computed(() => permissions.value.filter(item => item.route_key))
-const actionPermissionCount = computed(() => actionCatalog.value.reduce((count, group) => count + group.actions.length, 0))
+const menuPermissions = computed(() => permissions.value.filter(isBusinessMenu))
+const createMenuPermissions = computed(() => createDialog.permissions.filter(isBusinessMenu))
+// devices.op 同时是前台反制/光电控制的独立守卫，不能因取消后台菜单配置而失去授权入口。
+const businessDevicePermission = computed(() => permissions.value.find(item => item.permission_code === 'devices'))
+const backendOnlyActions = new Set(['map:upload', 'map:activate', 'map:delete', 'rule:manage'])
+const businessActionCatalog = computed(() => actionCatalog.value.map(group => ({
+  ...group, actions: group.actions.filter(action => !backendOnlyActions.has(action.permission_code) && !isProtectedAction(action.permission_code))
+})).filter(group => group.actions.length))
+const actionPermissionCount = computed(() => businessActionCatalog.value.reduce((count, group) => count + group.actions.length, 0) + (businessDevicePermission.value ? 1 : 0))
 const dirty = computed(() => {
   if (!detail.value) return false
   return JSON.stringify(permissions.value) !== JSON.stringify(detail.value.permissions || []) || JSON.stringify(actionDraft) !== actionBaseline.value
@@ -77,9 +85,10 @@ function isProtectedAction(code) { return code === 'map:activate' || ['users', '
 function isActionLocked(action) { return locked.value || isProtectedAction(action.permission_code) }
 function setLevel(row, level) { row.level = level; if (level === 'NONE') row.menu_enabled = false }
 function setMenu(row, enabled) { row.menu_enabled = enabled; if (enabled && row.level === 'NONE') row.level = 'READ' }
+function setBusinessDeviceLevel(level) { businessDevicePermission.value.level = level; businessDevicePermission.value.menu_enabled = false }
 
 async function loadRoles() {
-  roles.value = await systemApi.roles()
+  roles.value = (await systemApi.roles()).filter(item => item.role_code !== 'ROLE-BACKEND')
   if (!roles.value.some(item => item.role_code === selectedCode.value)) selectedCode.value = roles.value.find(item => item.role_code === 'ROLE-ADMIN')?.role_code || roles.value[0]?.role_code || ''
 }
 function resetDraft(data) {
@@ -139,7 +148,7 @@ async function createRole() {
   createDialog.busy = true
   try {
     const saved = await systemApi.createRole({
-      name: createDialog.form.name.trim(), description: createDialog.form.description.trim(), reason: '超级管理员直接创建角色',
+      name: createDialog.form.name.trim(), description: createDialog.form.description.trim(),
       permissions: createDialog.permissions.map(item => ({ permission_code: item.permission_code, level: item.level, menu_enabled: item.menu_enabled }))
     })
     createDialog.visible = false
@@ -176,7 +185,7 @@ onMounted(loadAll)
 
 <template>
   <div class="page-stack page-stack--viewport">
-    <PageHeader title="角色管理" description="菜单访问和业务动作分层授权；完整权限目录仍覆盖业务前台。">
+    <PageHeader title="角色管理" description="配置前台用户的业务角色；后台用户固定拥有全部后台功能。">
       <el-button type="primary" :disabled="!canOperate" @click="openCreate">新增角色</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="loadAll" />
@@ -213,7 +222,7 @@ onMounted(loadAll)
         <el-tabs v-model="activePermissionTab" class="permission-tabs">
           <el-tab-pane name="menu">
             <template #label><span class="permission-tab-label"><span>菜单权限</span><span class="permission-tab-count">{{ menuPermissions.length }}</span></span></template>
-            <div class="permission-intro"><div><h3>菜单权限</h3><p>配置角色可进入的菜单，以及对应模块的权限等级。</p></div></div>
+            <div class="permission-intro"><div><h3>前台菜单权限</h3><p>配置角色可进入的业务前台菜单及对应模块权限；工作台固定可见。</p></div></div>
             <div class="permission-matrix" role="table" aria-label="菜单权限">
               <div class="permission-matrix__head" role="row">
                 <span role="columnheader">菜单入口</span>
@@ -242,7 +251,11 @@ onMounted(loadAll)
           <el-tab-pane name="action">
             <template #label><span class="permission-tab-label"><span>动作权限</span><span class="permission-tab-count">{{ actionPermissionCount }}</span></span></template>
             <div class="permission-intro"><div><h3>动作权限</h3><p>配置进入页面后可执行的具体业务操作。</p></div></div>
-            <div v-if="actionCatalog.length" class="action-grid"><section v-for="group in actionCatalog" :key="group.module_code" class="action-group"><h4>{{ moduleLabel(group) }}</h4>
+            <section v-if="businessDevicePermission" class="action-group business-device-permission">
+              <h4>前台设备操作</h4>
+              <div class="action-row"><span class="action-row__label"><span>设备查看与控制</span><small>用于前台设备读取、反制及光电控制；反制仍须单独授权，不开放后台设备管理。</small></span><el-select :model-value="businessDevicePermission.level" :disabled="locked || !canOperate" size="small" @change="setBusinessDeviceLevel"><el-option v-for="level in levels.filter(item => item.value !== 'AUTH')" :key="level.value" :label="level.label" :value="level.value" /></el-select></div>
+            </section>
+            <div v-if="businessActionCatalog.length" class="action-grid"><section v-for="group in businessActionCatalog" :key="group.module_code" class="action-group"><h4>{{ moduleLabel(group) }}</h4>
               <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label" :title="action.permission_code"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-select v-model="actionDraft[action.permission_code]" :disabled="isActionLocked(action) || actionDraft[action.permission_code]==='AUTH'" size="small"><el-option v-for="level in actionLevelsFor(action)" :key="level.value" :label="level.label" :value="level.value" /></el-select></div>
             </section></div><el-empty v-else description="当前没有可配置的动作权限" />
           </el-tab-pane>
@@ -253,13 +266,14 @@ onMounted(loadAll)
 
     <el-dialog v-model="createDialog.visible" title="新增自定义角色" width="860px" destroy-on-close>
       <el-form label-position="top" class="role-fields"><el-form-item label="角色名称" required><el-input v-model="createDialog.form.name" /></el-form-item><el-form-item label="角色说明"><el-input v-model="createDialog.form.description" /></el-form-item></el-form>
+      <div class="permission-intro"><div><h3>前台菜单权限</h3><p>配置新角色可进入的业务前台菜单；工作台固定可见。</p></div></div>
       <div class="permission-matrix is-dialog" role="table" aria-label="初始菜单权限">
         <div class="permission-matrix__head" role="row">
           <span role="columnheader">菜单入口</span>
           <span role="columnheader">权限等级</span>
           <span role="columnheader">限制</span>
         </div>
-        <div v-for="row in createDialog.permissions.filter(item=>item.route_key)" :key="row.permission_code" class="permission-matrix__row" role="row">
+        <div v-for="row in createMenuPermissions" :key="row.permission_code" class="permission-matrix__row" role="row">
           <div class="permission-matrix__entry" role="cell">
             <el-checkbox v-model="row.menu_enabled" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setMenu(row,value)">
               <span class="permission-matrix__meta"><strong>{{ menuLabel(row) }}</strong><small class="code-note">{{ row.permission_code }}</small></span>

@@ -67,7 +67,7 @@ class Stage7AccessControlServiceTest {
         List<Map<String, Object>> rows = jdbc.queryForList("select permission_code, permission_kind, route_key, module_code from app_permission where permission_code in ('rule:read','rule:manage','assessment:evaluate','assessment:revise','assessment:escalate') order by permission_code");
         assertThat(rows).extracting(row -> row.get("permission_code")).containsExactlyElementsOf(STAGE7_CODES);
         assertThat(rows).allSatisfy(row -> { assertThat(row.get("permission_kind")).isEqualTo("ACTION"); assertThat(row.get("route_key")).isNull(); });
-        assertThat(jdbc.queryForObject("select count(*) from app_role_permission where permission_code in ('rule:read','rule:manage','assessment:evaluate','assessment:revise','assessment:escalate') and role_code<>'ROLE-ADMIN'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from app_role_permission where permission_code in ('rule:read','rule:manage','assessment:evaluate','assessment:revise','assessment:escalate') and role_code not in ('ROLE-ADMIN','ROLE-BACKEND')", Integer.class)).isZero();
         // 规则引擎自身的来源目录由迁移登记：三种模式各一行，启用但不带凭据。
         assertThat(jdbc.queryForObject("select count(*) from integration_source where source_code in ('RULE-ENGINE-LEGALITY-MOCK','RULE-ENGINE-LEGALITY-REPLAY','RULE-ENGINE-LEGALITY-LIVE') and enabled=true and credential_ref is null", Integer.class)).isEqualTo(3);
     }

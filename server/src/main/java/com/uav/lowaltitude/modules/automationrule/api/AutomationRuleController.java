@@ -7,6 +7,7 @@ import com.uav.lowaltitude.modules.automationrule.application.AutomationRuleServ
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1/automation-rule-groups/{category}")
 public class AutomationRuleController {
     private final AutomationRuleService service;

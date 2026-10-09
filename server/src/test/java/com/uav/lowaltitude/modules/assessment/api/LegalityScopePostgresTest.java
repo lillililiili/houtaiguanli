@@ -39,10 +39,28 @@ class LegalityScopePostgresTest {
     @Test void objectTypeFilterKeepsOnlyConfirmedUavTargetsAndCountsSameScope() throws Exception {
         fixture.objectTypeFilterKeepsOnlyConfirmedUavTargetsAndCountsSameScope();
     }
+    @Test void stableTargetOrderKeepsPagesAcrossReevaluationAndPreservesLatestFacts() throws Exception {
+        fixture.stableTargetOrderKeepsPagesAcrossReevaluationAndPreservesLatestFacts();
+    }
+    @Test void stableTargetSortValidatesScopeAndChecksPermissionFirst() throws Exception {
+        fixture.stableTargetSortValidatesScopeAndChecksPermissionFirst();
+    }
     @ParameterizedTest
     @CsvSource({"LEGAL,NULL", "ILLEGAL,0", "ILLEGAL,99", "ILLEGAL,NULL"})
     void reliableConclusionsDoNotRequireReviewRegardlessOfScore(String conclusion, String score) throws Exception {
         fixture.reliableConclusionsDoNotRequireReviewRegardlessOfScore(conclusion, score);
     }
     @AfterAll static void closeDatabase() { DATABASE.close(); }
+
+    @ParameterizedTest
+    @CsvSource({"UNDETERMINED,mock", "ILLEGAL,live", "LEGAL,replay", "ABNORMAL,live"})
+    void rejectedEvaluationsAreMisjudgmentsAndKeepTheirHistory(String original, String source) throws Exception {
+        fixture.rejectedEvaluationsAreMisjudgmentsAndKeepTheirHistory(original, source);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"UNDETERMINED,LEGAL,mock", "ILLEGAL,LEGAL,live", "LEGAL,ILLEGAL,mock", "ABNORMAL,LEGAL,live", "ILLEGAL,UNDETERMINED,mock"})
+    void manualConclusionDrivesListDetailFiltersAndSummaryWithoutRewritingFacts(String original, String manual, String source) throws Exception {
+        fixture.manualConclusionDrivesListDetailFiltersAndSummaryWithoutRewritingFacts(original, manual, source);
+    }
 }

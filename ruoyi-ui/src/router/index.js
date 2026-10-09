@@ -3,6 +3,7 @@ import NProgress from 'nprogress';
 import AdminLayout from '@/layout/AdminLayout.vue';
 import { canAccessMenu, firstAccessiblePath } from '@/config/navigation.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { isBackendUser } from '@/utils/userType.js';
 
 const routes = [
   { path: '/login', name: 'Login', component: () => import('@/views/auth/LoginView.vue'), meta: { public: true, title: '登录' } },
@@ -65,6 +66,7 @@ router.beforeEach(async to => {
   if (auth.sessionExpired && auth.canReloginInPlace) return false;
   if (auth.token && !auth.user && auth.restoreError) return { path: '/service-unavailable', query: { from: to.fullPath } };
   if (!auth.authenticated) return loginRoute(to.fullPath, hadSession);
+  if (!isBackendUser(auth.user)) { auth.clear(); return { path: '/login', query: { denied: '1' } }; }
   if (auth.mustChangePassword && to.path !== '/change-password') return '/change-password';
   // 主动改密在个人资料里，旧地址转过去。
   if (!auth.mustChangePassword && to.path === '/change-password') return { path: '/profile', query: { section: 'password' } };
@@ -92,6 +94,11 @@ window.addEventListener('admin:unauthorized', event => {
   // 打开页面时的首次校验由路由守卫带着目标地址转登录页，这里再跳会把目标地址冲掉。
   if (current === START_LOCATION) return;
   if (current.name !== 'Login') router.replace(loginRoute(current.fullPath, hadSession));
+});
+
+window.addEventListener('admin:access-denied', () => {
+  useAuthStore().clear();
+  router.replace({ path: '/login', query: { denied: '1' } });
 });
 
 export { safeRedirect };

@@ -86,13 +86,13 @@ class ProductionStage13SeedIsolationTest {
                     .contains("approval_required").contains("two_person_rule")
                     .contains("time_limit_min").contains("requires_confirmed_event").contains("max_active_per_subject");
 
-            // 权限目录行（迁移 0101）：只登记不授权。授权矩阵是部署时的决定，迁移不该替部署做主。
+            // 后台身份仅有管理报表所需的读取资格，不预置业务处置动作。
             assertThat(jdbc.queryForObject(
                     "select count(*) from app_permission where permission_code like 'disposal:%'", Integer.class))
                     .as("处置权限码来自迁移，生产也要有").isPositive();
             assertThat(jdbc.queryForObject(
-                    "select count(*) from app_role_permission where permission_code like 'disposal:%' and role_code <> 'ROLE-ADMIN'",
-                    Integer.class)).as("除内置超级管理员外不得预先授予处置权限").isZero();
+                    "select count(*) from app_role_permission where permission_code like 'disposal:%' and role_code <> 'ROLE-ADMIN' and not (role_code='ROLE-BACKEND' and permission_code='disposal:read')",
+                    Integer.class)).as("后台只读资格不能授予处置动作").isZero();
         }
     }
 

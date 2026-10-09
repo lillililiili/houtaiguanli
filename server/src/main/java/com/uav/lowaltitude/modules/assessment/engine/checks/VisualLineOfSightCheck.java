@@ -3,11 +3,13 @@ package com.uav.lowaltitude.modules.assessment.engine.checks;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Map;
 
 import org.springframework.stereotype.Component;
 
 import com.uav.lowaltitude.modules.assessment.engine.RuleCodes;
+import com.uav.lowaltitude.modules.assessment.engine.LegalityRulePolicy;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.EvaluationContext;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.HitDetail;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.ParamRef;
@@ -42,7 +44,12 @@ public class VisualLineOfSightCheck implements RuleCheck {
     @Override
     public HitDetail evaluate(EvaluationContext context, RuleParams params) {
         BigDecimal threshold = params.number(ruleCode(), PARAM_VLOS_M);
-        List<ParamRef> refs = List.of(CheckSupport.number(params, ruleCode(), PARAM_VLOS_M));
+        List<ParamRef> refs = new ArrayList<>(List.of(CheckSupport.number(params, ruleCode(), PARAM_VLOS_M)));
+        boolean qualityWindow = LegalityRulePolicy.qualityWindow(params);
+        if (qualityWindow) {
+            refs.add(new ParamRef("C03.fresh_seconds", Integer.toString(params.integer("C03", "fresh_seconds")), params.paramStatus("C03", "fresh_seconds")));
+            refs.add(new ParamRef("C03.quality_window_basis", params.string("C03", "quality_window_basis"), params.paramStatus("C03", "quality_window_basis")));
+        }
         TargetState state = context.state();
         if (state == null || state.pilotLongitude() == null || state.pilotLatitude() == null) {
             return CheckSupport.notApplicable(ruleCode(), RuleCodes.PILOT_POSITION_UNAVAILABLE, refs, "没有遥控器位置，飞手距离这一项不判，不影响结论");
@@ -51,9 +58,15 @@ public class VisualLineOfSightCheck implements RuleCheck {
         // 飞手位置作为一块坐标进 facts（与契约 §6 的 pilot_location 同名），而不是拆成两个平行字段。
         facts.put("pilot_location", Map.of("longitude", state.pilotLongitude(), "latitude", state.pilotLatitude()));
         // 决策 8.5-27 之后飞手位置可以保留自若干帧之前，因此判定依据必须带上它的观测时刻；
-        // 本期不设独立过期阈值，由目标整体新鲜度兜底（8.5-28），但"有多旧"要让读的人看得见。
+        // 历史方法由目标整体新鲜度兜底；确认书版本对本条位置本身也应用 C03 的有效时段。
         facts.put("pilot_observed_at", state.pilotObservedAt());
         var evidence = CheckSupport.evidence(CheckSupport.EVIDENCE_TARGET, state.targetId());
+        if (qualityWindow && (context.asOf() == null || state.pilotObservedAt() == null
+                || state.pilotObservedAt().isBefore(context.asOf().minusSeconds(params.integer("C03", "fresh_seconds")))
+                || state.pilotObservedAt().isAfter(context.asOf()))) {
+            return CheckSupport.undetermined(ruleCode(), RuleCodes.PILOT_POSITION_UNAVAILABLE, facts, refs, evidence,
+                    "遥控器位置缺少有效观测时间或不在本次数据有效时段内，本项不判");
+        }
         if (!CheckSupport.positionKnown(state)) {
             return CheckSupport.undetermined(ruleCode(), RuleCodes.POSITION_UNKNOWN, facts, refs, evidence,
                     "目标位置缺失，无法计算与飞手的距离");

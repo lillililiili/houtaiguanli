@@ -39,6 +39,10 @@ public final class NoPlanExemption {
 
     public static boolean applies(EvaluationContext context, RuleParams params) {
         if (context == null) return false;
+        // 已确认允许无计划飞行的版本继续按自身规则判断夜间等独立行为；
+        // 120 米豁免只用于原本会因无计划判违的规则版本，不覆盖其余已确认口径。
+        if (params != null && params.has(RuleCodes.C03, "no_plan_status")
+                && "LEGAL".equals(params.string(RuleCodes.C03, "no_plan_status"))) return false;
         PlanMatch match = context.planMatch();
         if (match == null || match.code() != PlanMatchCode.NONE || match.plan() != null) return false;
         TargetState state = context.state();

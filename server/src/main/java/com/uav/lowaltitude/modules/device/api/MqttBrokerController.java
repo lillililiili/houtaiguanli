@@ -10,6 +10,7 @@ import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.*;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1/mqtt-brokers")
 public class MqttBrokerController {
     private final MqttConfigurationService service;

@@ -38,6 +38,12 @@ public class LoginFailureRecorder {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void backendDenied(AppUser user, String ip, String userAgent) {
+        auditService.record(user.getUserId(), user.getAccount(), user.getRoleCode(), "authentication", "login_fail",
+                "user", user.getUserId(), "backend_access_denied", "FAILURE", ip, userAgent);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void badPassword(AppUser user, String account, String ip, String userAgent,
             long now, int failLimit, int lockMinutes) {
         int fails = user.getFailCount() + 1;

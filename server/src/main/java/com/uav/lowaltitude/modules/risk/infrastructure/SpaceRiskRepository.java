@@ -104,8 +104,23 @@ public class SpaceRiskRepository {
                 + " WHERE r.risk_type='SPACE_OBJECT' AND r.plan_id=:plan AND COALESCE(alias.current_target_id,r.target_id)=:target"
                 + " AND NOT EXISTS (SELECT 1 FROM risk_clearance_evidence e WHERE e.risk_id=r.risk_id)"
                 + " ORDER BY r.received_at DESC, r.risk_id ASC FETCH FIRST 1 ROWS ONLY",
-                Map.of("rule", ruleCode, "plan", planId, "target", targetId), String.class);
+                Map.of("plan", planId, "target", targetId, "rule", ruleCode), String.class);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 先锁既有引擎来源再检查活动风险，人工评估和定时评估不能跨窗口同时建两条。 */
+    public void lockRiskSource(String sourceId, String mode) {
+        List<String> rows = jdbc.queryForList("SELECT source_id FROM integration_source WHERE source_id=:id AND source_mode=:mode AND enabled=TRUE FOR UPDATE",
+                Map.of("id", sourceId, "mode", mode), String.class);
+        if (rows.isEmpty()) throw new IllegalStateException("空间风险来源未启用");
+    }
+
+    public String memberVersionId(String setVersionId, String ruleCode) {
+        List<String> rows = jdbc.queryForList("SELECT v.rule_version_id FROM rule_set_member m JOIN rule_version v ON v.rule_version_id=m.rule_version_id"
+                + " WHERE m.rule_set_version_id=:set AND v.rule_code=:rule AND m.enabled=TRUE ORDER BY m.priority,v.rule_version_id",
+                Map.of("set", setVersionId, "rule", ruleCode), String.class);
+        if (rows.size() != 1) throw new IllegalStateException("空间风险规则成员缺失或冲突: " + ruleCode);
+        return rows.get(0);
     }
 
     /** 风险的空间事实挂在哪条规则下（C04 / C05）；没有空间事实（天气、作业风险）返回 null。 */

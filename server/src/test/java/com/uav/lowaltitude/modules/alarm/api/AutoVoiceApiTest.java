@@ -34,6 +34,7 @@ class AutoVoiceApiTest {
     @Autowired AutoSmsService automatic;
     @Autowired com.uav.lowaltitude.modules.alarm.application.AutoVoiceService voiceService;
     @Autowired com.uav.lowaltitude.modules.alarm.application.AutoVoiceJob voiceJob;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository voiceTasks;
     @SpyBean com.uav.lowaltitude.integration.mock.LocalAdvisoryVoiceAdapter voice;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoVoicePolicy voicePolicy;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording recordings;
@@ -90,6 +91,80 @@ class AutoVoiceApiTest {
         jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=? AND status='SIMULATED_DELIVERED'",System.currentTimeMillis()-61_000L,eventId);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"mock,FULL", "replay,PARTIAL"})
+    void unattemptedBlockedCallRecoversWhenLatestEvaluationMatches(String mode,String match)throws Exception {
+        jdbc.update("UPDATE alarm SET source_mode=? WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?)",mode,eventId);
+        evaluation("ILLEGAL","FRESH","[]",false,Instant.now().minusSeconds(2));
+        voiceService.process(eventId);
+        var paused=voiceTasks.find(eventId);
+        assertThat(paused.status()).isEqualTo("BLOCKED");
+        assertThat(paused.attempts()).isZero();
+        assertThat(paused.reason()).contains("尚无精确关联任务");
+        assertThat(voiceTasks.candidates()).contains(eventId);
+
+        evaluation("ILLEGAL","FRESH","[]",true,Instant.now(),match);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("尚无精确关联任务"))))
+                .andExpect(jsonPath("$.data.auto_voice.can_retry").value(false));
+        // GET 重算当前摘要，不改历史任务，也不直接外呼。
+        assertThat(voiceTasks.find(eventId)).isEqualTo(paused);
+        assertThat(count("uav_event_voice_advisory")).isZero();
+        voiceJob.poll();voiceJob.poll();
+        assertThat(voiceTasks.find(eventId).status()).isEqualTo("SIMULATED_PLAYED");
+        assertThat(voiceTasks.find(eventId).attempts()).isEqualTo(1);
+        assertThat(voiceTasks.find(eventId).providerKey()).isEqualTo(paused.providerKey());
+        assertThat(count("uav_event_voice_advisory")).isEqualTo(1);
+        assertThat(voiceTasks.candidates()).doesNotContain(eventId);
+    }
+    @Test void blockedCallShowsCurrentPositionBlockerAfterTaskMatchReturns()throws Exception {
+        evaluation("ILLEGAL","FRESH","[]",false,Instant.now().minusSeconds(2));
+        voiceService.process(eventId);
+        evaluation("ILLEGAL","FRESH","[]",true,Instant.now());
+        when(departure.assess(eq(eventId),anyLong(),anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.UNKNOWN);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("BLOCKED"))
+                .andExpect(jsonPath("$.data.auto_voice.reason").value(org.hamcrest.Matchers.containsString("没有新的位置")));
+        voiceJob.poll();
+        assertThat(voiceTasks.find(eventId).attempts()).isZero();
+        assertThat(count("uav_event_voice_advisory")).isZero();
+        // 有任务不等于当前研判关联本事件；不得借用旧研判拨打。
+        when(departure.assess(eq(eventId),anyLong(),anyLong()))
+                .thenReturn(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.STILL_PRESENT);
+        evaluation("ILLEGAL","FRESH","[]",false,Instant.now().plusMillis(1));
+        voiceJob.poll();
+        assertThat(voiceTasks.find(eventId).reason()).contains("尚无精确关联任务");
+        assertThat(voiceTasks.find(eventId).attempts()).isZero();
+    }
+    @Test void blockedCallStillChecksChannelAndDisabledPolicy()throws Exception {
+        evaluation("ILLEGAL","FRESH","[]",false,Instant.now().minusSeconds(2));
+        voiceService.process(eventId);
+        evaluation("ILLEGAL","FRESH","[]",true,Instant.now());
+        doReturn(false).when(voicePolicy).enabled();
+        voiceJob.poll();
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("DISABLED"));
+        assertThat(voiceTasks.find(eventId).attempts()).isZero();
+        doReturn(true).when(voicePolicy).enabled();
+        jdbc.update("UPDATE alarm SET source_mode='live' WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?)",eventId);
+        doReturn(false).when(voice).simulationAvailable("live");
+        voiceJob.poll();
+        assertThat(voiceTasks.find(eventId).status()).isEqualTo("UNAVAILABLE");
+        assertThat(voiceTasks.find(eventId).attempts()).isZero();
+        assertThat(count("uav_event_voice_advisory")).isZero();
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"BLOCKED","FAILED","UNKNOWN","SIMULATED_PLAYED"})
+    void attemptedCallNeverReentersAutomaticCandidates(String status)throws Exception {
+        voiceService.process(eventId);
+        jdbc.update("UPDATE uav_auto_voice_task SET status=? WHERE event_id=?",status,eventId);
+        var attempted=voiceTasks.find(eventId);
+        assertThat(attempted.attempts()).isEqualTo(1);
+        assertThat(voiceTasks.candidates()).doesNotContain(eventId);
+        voiceService.process(eventId);
+        read().andExpect(jsonPath("$.data.auto_voice.status").value(status));
+        assertThat(voiceTasks.find(eventId)).isEqualTo(attempted);
+        assertThat(count("uav_event_voice_advisory")).isEqualTo(1);
+    }
     @Test void configurationRevokedBetweenEligibilityAndClaimNeverSends()throws Exception {
         var calls=new java.util.concurrent.atomic.AtomicInteger();
         doAnswer(call->{if(calls.incrementAndGet()==2)jdbc.update("UPDATE notification_setting SET enabled=FALSE WHERE setting_id='advisory-voice'");return call.callRealMethod();})
@@ -348,10 +423,13 @@ class AutoVoiceApiTest {
     private int count(String table){return jdbc.queryForObject("select count(*) from "+table+" where event_id=?",Integer.class,eventId);}
     private void observation(String outcome){jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,outcome,danger,note,urgent,simulated) values(?,?,0,'OBSERVATION',0,?,?,'UNKNOWN','人工现场核查',false,false)",UUID.randomUUID().toString(),eventId,userId,outcome);}
     protected void evaluation(String legal,String fresh,String unknowns,boolean linked,Instant at) {
+        evaluation(legal,fresh,unknowns,linked,at,"FULL");
+    }
+    private void evaluation(String legal,String fresh,String unknowns,boolean linked,Instant at,String match) {
         var version=jdbc.queryForMap("SELECT rule_set_id,rule_set_version_id FROM rule_set_version FETCH FIRST 1 ROWS ONLY");
         String run=UUID.randomUUID().toString(),id=UUID.randomUUID().toString();Timestamp time=Timestamp.from(at);
         jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,source_mode,created_at) values(?,?,?,'ACTIVE','SCHEDULED',?,?,'DONE','mock',?)",run,version.get("rule_set_id"),version.get("rule_set_version_id"),time,time,time);
         String alarm=linked?jdbc.queryForObject("select alarm_id from uav_event where event_id=?",String.class,eventId):null;
-        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at) values(?,?,?,'ACTIVE','TARGET',?,?,?,?,?,?,'FULL',?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,'mock',?)",id,run,version.get("rule_set_version_id"),targetId,pilotPlanId,time,time,time,fresh,legal,unknowns,alarm,ORG,DISTRICT,time);
+        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,plan_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at) values(?,?,?,'ACTIVE','TARGET',?,?,?,?,?,?,?,?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST(? AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,'mock',?)",id,run,version.get("rule_set_version_id"),targetId,pilotPlanId,time,time,time,fresh,match,legal,unknowns,alarm,ORG,DISTRICT,time);
     }
 }

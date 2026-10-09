@@ -86,6 +86,7 @@ class RiskClearancePostgresTest {
     void retainedFusionPositionCannotGenerateAnotherRisk(String mode,String kind) {
         position(37);
         jdbc.update("update target set source_mode=? where target_id=?",mode,target);
+        jdbc.update("update flight_plan set source_mode=? where plan_id=?",mode,plan);
         String airport=id();
         jdbc.update("insert into airport(airport_id,icao_code,name,reference_point,owner_org_id,district_id,created_at) values(?,?,'QA prediction guard',ST_SetSRID(ST_MakePoint(118.05,37),4326),?,?,?)",airport,airport.substring(0,8),ORG,DISTRICT,ts(now));
         var from=Instant.ofEpochMilli(now-2000).atOffset(ZoneOffset.UTC);
@@ -266,7 +267,7 @@ class RiskClearancePostgresTest {
         String observation=id(),sourceSession=id();sourceLink=id();
         // Observations are append-only. A separate source session also preserves the identity/time unique key.
         jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) values(?,?,'seed-stage3-source',?,?,?)",sourceLink,target,sourceSession,target,ts(received));
-        jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,source_mode,owner_org_id,district_id,created_at) values(?,'seed-stage3-source',?,?,?,?,ST_SetSRID(ST_MakePoint(118.05,?),4326),5,'mock',?,?,?)",observation,sourceSession,target,ts(observed),ts(received),latitude,owner,DISTRICT,ts(received));
+        jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,quality,source_mode,owner_org_id,district_id,created_at) values(?,'seed-stage3-source',?,?,?,?,ST_SetSRID(ST_MakePoint(118.05,?),4326),5,CAST('{\"object_count\":25}' AS JSON),'mock',?,?,?)",observation,sourceSession,target,ts(observed),ts(received),latitude,owner,DISTRICT,ts(received));
         return observation;
     }
     void replaceSourceObservation(long observed,long received,double latitude,String owner) {

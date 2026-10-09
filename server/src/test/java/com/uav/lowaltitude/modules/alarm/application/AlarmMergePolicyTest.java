@@ -12,6 +12,8 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -206,6 +208,72 @@ class AlarmMergePolicyTest {
     }
 
     @Test
+    void confirmedCloseWindowStartsAtLastViolationAndUnknownDoesNotProveItStopped() {
+        RuleParams confirmed = new StubParams().put("auto_close_basis", "LAST_HIT");
+        var first = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0), "ILLEGAL", "HIGH", T0), confirmed);
+        var alarmBefore = alarm(first.alarmId());
+        var eventBefore = event(first.alarmId());
+        evaluation("UNDETERMINED", null, T0.plusMinutes(1));
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(16), confirmed)).isZero();
+        evaluation("NOT_APPLICABLE", null, T0.plusMinutes(2));
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(16), confirmed)).isZero();
+        evaluation("LEGAL", null, T0.plusMinutes(3), T0.plusMinutes(3), "SUFFICIENT");
+        // A previously lawful observation followed by silence is not current stopping evidence.
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(15), confirmed)).isZero();
+        for(int minute:List.of(5,7,9,11,13,14)) evaluation("LEGAL", null, T0.plusMinutes(minute), T0.plusMinutes(minute), "SUFFICIENT");
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(15).minusNanos(1_000_000), confirmed)).isZero();
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(15), confirmed)).isEqualTo(1);
+        assertThat(alarm(first.alarmId())).isEqualTo(alarmBefore);
+        assertThat(event(first.alarmId())).isEqualTo(eventBefore);
+    }
+
+    @Test
+    void confirmedFalsePositiveUpgradeWindowUsesActualVerificationTime() {
+        RuleParams confirmed = new StubParams().put("upgrade_window_basis", "FALSE_POSITIVE_AT");
+        var first = policy.apply(input(evaluation("ILLEGAL", "LOW", T0), "ILLEGAL", "LOW", T0, List.of("NIGHT_FLIGHT")), confirmed);
+        for (int minute : List.of(4, 8, 12)) policy.apply(input(evaluation("ILLEGAL", "LOW", T0.plusMinutes(minute)), "ILLEGAL", "LOW", T0.plusMinutes(minute), List.of("NIGHT_FLIGHT")), confirmed);
+        jdbc.update("UPDATE uav_event SET state_code='FALSE_POSITIVE',version=version+1 WHERE alarm_id=?", first.alarmId());
+        jdbc.update("INSERT INTO uav_event_verification(history_id,event_id,version,previous_state,resulting_state,conclusion,note,actor_id,created_at)"
+                + " VALUES (?,?,1,'PENDING_VERIFICATION','FALSE_POSITIVE','FALSE_POSITIVE','test',?,?)", UUID.randomUUID().toString(), first.eventId(), actor, Timestamp.from(T0.plusMinutes(13).toInstant()));
+        var escalated = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0.plusMinutes(14)), "ILLEGAL", "HIGH", T0.plusMinutes(14)), confirmed);
+        assertThat(escalated.kind()).isEqualTo("UPGRADED");
+        assertThat(escalated.alarmId()).isNotEqualTo(first.alarmId());
+        assertThat(event(first.alarmId()).get("state_code")).isEqualTo("FALSE_POSITIVE");
+    }
+
+    @ParameterizedTest @CsvSource({"-1,MERGED", "0,MERGED", "1,CREATED"})
+    void confirmedDedupWindowIncludesExactlyFiveMinutes(long offsetMillis, String expected) {
+        RuleParams confirmed = new StubParams().put("auto_close_basis", "LAST_HIT");
+        var first = policy.apply(input(evaluation("ILLEGAL", "HIGH", T0), "ILLEGAL", "HIGH", T0), confirmed);
+        var nextAt=T0.plusMinutes(5).plusNanos(offsetMillis*1_000_000);
+        var next=policy.apply(input(evaluation("ILLEGAL", "HIGH", nextAt), "ILLEGAL", "HIGH", nextAt), confirmed);
+        assertThat(next.kind()).isEqualTo(expected);
+        assertThat(next.groupId().equals(first.groupId())).isEqualTo(offsetMillis<=0);
+    }
+
+    @ParameterizedTest @CsvSource({"-121,SUFFICIENT,0", "-120,SUFFICIENT,1", "0,SUFFICIENT,1", "1,SUFFICIENT,0", "0,INSUFFICIENT,0"})
+    void confirmedCloseRequiresFreshObservedEvidenceAndAssurance(long observedOffset,String assurance,int expected) {
+        RuleParams confirmed=new StubParams().put("auto_close_basis","LAST_HIT");
+        var first=policy.apply(input(evaluation("ILLEGAL","HIGH",T0),"ILLEGAL","HIGH",T0),confirmed);
+        var alarmBefore=alarm(first.alarmId());
+        var eventBefore=event(first.alarmId());
+        OffsetDateTime closingAt=T0.plusMinutes(15);
+        evaluation("LEGAL",null,closingAt,closingAt.plusSeconds(observedOffset),assurance);
+        assertThat(policy.autoCloseExpired(closingAt,confirmed)).isEqualTo(expected);
+        assertThat(alarm(first.alarmId())).isEqualTo(alarmBefore);
+        assertThat(event(first.alarmId())).isEqualTo(eventBefore);
+    }
+
+    @Test void confirmedCloseRejectsMissingObservedTimeAndAnOutdatedAssessmentMoment() {
+        RuleParams confirmed=new StubParams().put("auto_close_basis","LAST_HIT");
+        policy.apply(input(evaluation("ILLEGAL","HIGH",T0),"ILLEGAL","HIGH",T0),confirmed);
+        evaluation("LEGAL",null,T0.plusMinutes(10),T0.plusMinutes(15),"SUFFICIENT");
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(15),confirmed)).isZero();
+        evaluation("LEGAL",null,T0.plusMinutes(15),null,"SUFFICIENT");
+        assertThat(policy.autoCloseExpired(T0.plusMinutes(15),confirmed)).isZero();
+    }
+
+    @Test
     void rejectedIngestionIsReportedAsBlockedAndSameEvaluationIsIdempotent() {
         jdbc.update("update app_org set enabled=false where org_id=?", org);
         String evaluation = evaluation("ILLEGAL", "HIGH", T0);
@@ -304,12 +372,17 @@ class AlarmMergePolicyTest {
     }
 
     private String evaluation(String legalStatus, String grade, OffsetDateTime at) {
+        return evaluation(legalStatus,grade,at,null,null);
+    }
+
+    private String evaluation(String legalStatus, String grade, OffsetDateTime at, OffsetDateTime observedAt, String assurance) {
         String id = UUID.randomUUID().toString();
         // score 与 grade 必须成对（ck_stage7_rule_evaluation_score_grade）：有等级就给一个分数。
         jdbc.update("insert into rule_evaluation (evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,"
-                + "violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at)"
-                + " values (?,?,?,'ACTIVE','TARGET',?,?,?,'REPLAY','FULL',?,?,?,cast('[]' as json),cast('[]' as json),cast('[]' as json),cast('[]' as json),cast('{}' as json),?,?,'mock',?)",
-                id, run, ruleSetVersion, target, Timestamp.from(at.toInstant()), Timestamp.from(at.toInstant()), legalStatus, grade == null ? null : new BigDecimal("70"), grade, org, district, Timestamp.from(at.toInstant()));
+                + "violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at,observed_at,decision_algorithm_version,decision_assurance_code,decision_assurance_reasons)"
+                + " values (?,?,?,'ACTIVE','TARGET',?,?,?,'REPLAY','FULL',?,?,?,cast('[]' as json),cast('[]' as json),cast('[]' as json),cast('[]' as json),cast('{}' as json),?,?,'mock',?,?,?,?,CAST(? AS JSON))",
+                id, run, ruleSetVersion, target, Timestamp.from(at.toInstant()), Timestamp.from(at.toInstant()), legalStatus, grade == null ? null : new BigDecimal("70"), grade, org, district, Timestamp.from(at.toInstant()),
+                observedAt==null?null:Timestamp.from(observedAt.toInstant()),assurance==null?null:"EVIDENCE_SUFFICIENCY_V2",assurance,assurance==null?null:"[]");
         return id;
     }
 
@@ -336,8 +409,9 @@ class AlarmMergePolicyTest {
     private Map<String, Object> event(String alarmId) { return jdbc.queryForMap("select state_code,version,updated_at from uav_event where alarm_id=?", alarmId); }
 
     private static final class StubParams implements RuleParams {
-        private final Map<String, String> values = Map.of("C06.dedup_window_min", "5", "C06.upgrade_window_min", "10", "C06.auto_close_min", "15",
-                "C06.severity_by_grade", "HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW");
+        private final Map<String, String> values = new java.util.HashMap<>(Map.of("C06.dedup_window_min", "5", "C06.upgrade_window_min", "10", "C06.auto_close_min", "15",
+                "C06.severity_by_grade", "HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW", "C03.fresh_seconds", "120"));
+        StubParams put(String key, String value) { values.put("C06." + key, value); return this; }
         @Override public String ruleSetVersionId() { return "rsv-test"; }
         @Override public String paramStatus(String ruleCode, String key) { return "DEMO"; }
         @Override public BigDecimal number(String ruleCode, String key) { return new BigDecimal(required(ruleCode, key)); }

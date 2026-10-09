@@ -14,6 +14,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.api.ApiResponse;
 
 @RestController
+@com.uav.lowaltitude.platform.security.BackendOnly
 @RequestMapping("/api/v1")
 public class DeviceMonitorController {
 

@@ -70,7 +70,8 @@ public class AlarmMergePolicy {
         OffsetDateTime at = in.mergedAt();
         GroupRow group = repository.lockOpenGroup(in.targetId(), AlarmIngestionService.ALARM_TYPE_RULE_LEGALITY);
         if (group != null) {
-            boolean withinDedup = at.isBefore(group.windowExpiresAt());
+            // The confirmed window method includes exactly five minutes; old published methods retain [from,to).
+            boolean withinDedup = confirmedWindows(params) ? !at.isAfter(group.windowExpiresAt()) : at.isBefore(group.windowExpiresAt());
             if (!withinDedup) {
                 // 去重窗已过：旧组只改组状态（告警行不动），随后按“新组”处理。
                 if (repository.closeGroup(group.groupId(), group.version(), CLOSED_EXPIRED_NEW_HIT, at) != 1) throw conflict();
@@ -79,6 +80,11 @@ public class AlarmMergePolicy {
                 int delta = rank(severity) - rank(group.currentSeverity());
                 boolean withinUpgrade = at.isBefore(group.windowOpenedAt().plusMinutes(upgradeMinutes));
                 AlarmState current = repository.alarmState(group.latestAlarmId());
+                if (params.has(RULE_CODE, "upgrade_window_basis")
+                        && "FALSE_POSITIVE_AT".equals(params.string(RULE_CODE, "upgrade_window_basis")) && !live(current)) {
+                    OffsetDateTime verifiedAt = current == null ? null : repository.falsePositiveAt(current.eventId());
+                    withinUpgrade = verifiedAt != null && !at.isBefore(verifiedAt) && !at.isAfter(verifiedAt.plusMinutes(upgradeMinutes));
+                }
                 if (live(current)) {
                     // 同一架无人机只留一条告警（BUG-16）：等级更高或出现新的违规原因（如偏航、进入禁飞区，BUG-11）就升级原告警，
                     // 不受升级窗限制——升级不新建告警，也就没有刷屏的问题；原告警已核实属实的照样升级，不要求重新核实。
@@ -158,12 +164,21 @@ public class AlarmMergePolicy {
     public int autoCloseExpired(OffsetDateTime now, RuleParams params) {
         int closed = 0;
         OffsetDateTime threshold = now.minusMinutes(params.integer(RULE_CODE, PARAM_AUTO_CLOSE_MIN));
-        for (GroupRow group : repository.lockOpenGroupsExpiredBefore(threshold)) {
+        boolean lastHit = confirmedWindows(params);
+        List<GroupRow> expired = lastHit ? repository.lockOpenGroupsLastHitBefore(threshold) : repository.lockOpenGroupsExpiredBefore(threshold);
+        for (GroupRow group : expired) {
             String latest = repository.latestActiveLegalStatus(group.targetId());
             if ("ABNORMAL".equals(latest) || "ILLEGAL".equals(latest)) continue;
+            // Unknown, stale and missing observations do not establish that a violation stopped.
+            if (lastHit && (!"LEGAL".equals(latest)
+                    || !repository.latestLegalEvidenceIsCurrent(group.targetId(), now, params.integer("C03", "fresh_seconds")))) continue;
             if (repository.closeGroup(group.groupId(), group.version(), CLOSED_AUTO, now) == 1) closed++;
         }
         return closed;
+    }
+
+    private static boolean confirmedWindows(RuleParams params) {
+        return params.has(RULE_CODE, "auto_close_basis") && "LAST_HIT".equals(params.string(RULE_CODE, "auto_close_basis"));
     }
 
     /** C06.severity_by_grade：形如 HIGH:HIGH,MEDIUM:MEDIUM,LOW:LOW；grade 缺失或未映射时为 UNKNOWN，不默认成 LOW。 */

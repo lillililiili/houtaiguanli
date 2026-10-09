@@ -88,8 +88,8 @@ class ProductionStage14SeedIsolationTest {
                     "select count(*) from app_permission where permission_code like 'punishment:%' and permission_kind<>'ACTION'",
                     Integer.class)).as("五条都必须是 ACTION 类").isZero();
             assertThat(jdbc.queryForObject(
-                    "select count(*) from app_role_permission where permission_code like 'punishment:%' and role_code <> 'ROLE-ADMIN'",
-                    Integer.class)).as("除内置超级管理员外不得预先授予处罚权限").isZero();
+                    "select count(*) from app_role_permission where permission_code like 'punishment:%' and role_code <> 'ROLE-ADMIN' and not (role_code='ROLE-BACKEND' and permission_code='punishment:read')",
+                    Integer.class)).as("后台只读资格不能授予处罚动作").isZero();
         }
     }
 

@@ -19,13 +19,17 @@ class DeviceCatalogScopeApiTest extends CommissionScopeApiTest {
         sqlSession.clearCache();
     }
     @ParameterizedTest @ValueSource(strings={"devices","monitoring"})
-    void overviewSupportsEitherPageReadPermissionAndStillEnforcesScope(String module) throws Exception {
+    void legacyFrontendGrantsCannotOpenOverviewAndBackendStillEnforcesScope(String module) throws Exception {
         onlyReadModule(module);
         mvc.perform(get("/api/v1/device-monitor/overview").header("Authorization","Bearer "+token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+                .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/mqtt-brokers").header("Authorization","Bearer "+token)).andExpect(status().isForbidden());
         String other="devices".equals(module)?"/device-monitor/tree":"/devices";
         mvc.perform(get("/api/v1"+other).header("Authorization","Bearer "+token)).andExpect(status().isForbidden());
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=?",user);
+        sqlSession.clearCache();
+        mvc.perform(get("/api/v1/device-monitor/overview").header("Authorization","Bearer "+token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
         jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=?",user);
         mvc.perform(get("/api/v1/device-monitor/overview").header("Authorization","Bearer "+token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));

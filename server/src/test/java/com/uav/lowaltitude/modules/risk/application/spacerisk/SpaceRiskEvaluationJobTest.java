@@ -37,11 +37,13 @@ class SpaceRiskEvaluationJobTest {
         when(clock.now()).thenReturn(T0);
         job.tick();
         verify(service).evaluateScheduled(at(T0.minusSeconds(1800)), at(T0), at(T0.minusSeconds(1800)));
+        verify(service).evaluateScheduledAirport(at(T0.minusSeconds(1800)), at(T0), at(T0.minusSeconds(1800)));
 
         // 下一轮从上一轮终点前 30 秒开始：上一轮查询之后才提交、写入时刻却早于上一轮终点的最新状态仍会被看到。
         when(clock.now()).thenReturn(T0.plusSeconds(60));
         job.tick();
         verify(service).evaluateScheduled(at(T0.minusSeconds(30)), at(T0.plusSeconds(60)), at(T0.plusSeconds(60).minusSeconds(1800)));
+        verify(service).evaluateScheduledAirport(at(T0.minusSeconds(30)), at(T0.plusSeconds(60)), at(T0.plusSeconds(60).minusSeconds(1800)));
         // 旧的观测窗口接口不再被定时任务使用。
         verify(service, never()).evaluate(any(), any(), any(), any(), any());
     }
@@ -58,6 +60,7 @@ class SpaceRiskEvaluationJobTest {
         when(service.evaluateScheduled(any(), any(), any())).thenThrow(new IllegalStateException("database unavailable"));
         job.tick();
         // 整轮失败：下一轮仍从上一次成功的终点（回叠后）算起，这段时间的写入不会被跳过。
+        verify(service).evaluateScheduledAirport(at(T0.minusSeconds(30)), at(T0.plusSeconds(60)), at(T0.plusSeconds(60).minusSeconds(1800)));
         assertThat(job.windowFrom(at(T0.plusSeconds(120)))).isEqualTo(at(T0.minusSeconds(30)));
         // 长时间失败后窗口也不会无限变长：最多回看 window-minutes。
         assertThat(job.windowFrom(at(T0.plusSeconds(7200)))).isEqualTo(at(T0.plusSeconds(7200 - 1800)));
@@ -126,6 +129,7 @@ class SpaceRiskEvaluationJobTest {
 
     private static SpaceRiskEvaluationJob job(SpaceRiskEvaluationService service, AppClock clock) {
         SpaceRiskRepository repository = mock(SpaceRiskRepository.class);
+        when(repository.anyEnabledAirport()).thenReturn(true);
         when(repository.activeRuleSetVersion(SpaceRiskEvaluationService.RULE_SET_CODE))
                 .thenReturn(new RuleVersionRow("SPACE-RISK-DEMO", "space-risk-confirmed-v2", 2, "CONFIRMED"));
         return new SpaceRiskEvaluationJob(service, repository, new RuleEngineProperties(), clock, 30);

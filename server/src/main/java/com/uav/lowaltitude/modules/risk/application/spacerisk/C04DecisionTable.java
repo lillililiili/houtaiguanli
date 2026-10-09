@@ -28,7 +28,11 @@ public final class C04DecisionTable {
 
     /** 一次判定的输入事实；`objectCount` 为 null 表示数量未知（不参与上调）。 */
     public record Observation(CorridorRelation corridorRelation, AltitudeBand altitudeBand, boolean activePlan,
-            Integer objectCount, Trend trend) { }
+            Integer objectCount, Trend trend, String subtypeCode) {
+        public Observation(CorridorRelation relation, AltitudeBand band, boolean activePlan, Integer count, Trend trend) {
+            this(relation, band, activePlan, count, trend, null);
+        }
+    }
 
     /**
      * 判定结果；`generate=false` 时等级与原因码为 null——不生成风险就没有等级可言。
@@ -46,6 +50,11 @@ public final class C04DecisionTable {
         // 无活动计划就没有被威胁的飞行活动：只计入 targets_seen，不生成风险。
         // flight_risk.plan_id 非空，没有计划的"异物"没有可挂靠的业务对象，硬造一条会污染风险队列。
         if (!observation.activePlan()) return Decision.none(unknown);
+        if (observation.altitudeBand() == AltitudeBand.CRUISE) return Decision.none(unknown);
+        // 客户确认 4-2：鸟群达到数量门槛才进入风险判定，未知数量不能冒充满足门槛。
+        // 气球等异物不受鸟群数量条件约束。
+        if ("BIRD_FLOCK".equals(observation.subtypeCode())
+                && (observation.objectCount() == null || observation.objectCount() < flockThreshold)) return Decision.none(unknown);
         String base = baseSeverity(observation);
         if (base == null) return Decision.none(unknown);
         boolean escalate = escalates(observation, flockThreshold);
@@ -96,12 +105,13 @@ public final class C04DecisionTable {
     }
 
     /**
-     * 高度带：只有目标高度基准与航线/计划高度基准相同才分带。
-     * AGL 与 AMSL 之间没有可信换算（需要地形高程），互比会把"离地 100 m"当成"海拔 100 m"，
-     * 因此基准不同或任一缺失一律 UNKNOWN，由 {@link #decide} 降到中风险。
+     * 客户确认按离地高度分带；只有 AGL 可与离地阈值比较。
+     * AGL 与 AMSL 之间没有可信换算，因此只有海拔高度或高度缺失时一律 UNKNOWN。
      */
     public AltitudeBand band(BigDecimal altitude, String altitudeDatum, String referenceDatum, RuleParams params) {
-        if (altitude == null || altitudeDatum == null || referenceDatum == null || !altitudeDatum.equals(referenceDatum)) {
+        // 参数是离地高度；AMSL 即使与航线基准相同也不能拿来与 AGL 阈值比较。
+        // 已有可信 AGL 时不依赖航线自身采用的高度基准。
+        if (altitude == null || !"AGL".equals(altitudeDatum)) {
             return AltitudeBand.UNKNOWN;
         }
         BigDecimal climb = params.number(RULE_CODE, "climb_band_agl_m");
@@ -114,7 +124,8 @@ public final class C04DecisionTable {
     /** 走廊关系：距离 ≤ 走廊半宽即 INSIDE，≤ corridor_near_m 即 NEAR，其余 OUTSIDE；距离未知则 UNKNOWN。 */
     public CorridorRelation relation(BigDecimal distanceM, BigDecimal corridorHalfWidthM, RuleParams params) {
         if (distanceM == null) return CorridorRelation.UNKNOWN;
+        if (distanceM.compareTo(params.number(RULE_CODE, "corridor_near_m")) > 0) return CorridorRelation.OUTSIDE;
         if (corridorHalfWidthM != null && distanceM.compareTo(corridorHalfWidthM) <= 0) return CorridorRelation.INSIDE;
-        return distanceM.compareTo(params.number(RULE_CODE, "corridor_near_m")) <= 0 ? CorridorRelation.NEAR : CorridorRelation.OUTSIDE;
+        return CorridorRelation.NEAR;
     }
 }

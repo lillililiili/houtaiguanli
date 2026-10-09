@@ -16,6 +16,8 @@ import java.util.concurrent.ThreadLocalRandom;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -593,6 +595,68 @@ class LegalityEvaluationServiceTest {
         assertThat(row.get("assessment_id")).isNull();
         assertThat(jdbc.queryForObject("select count(*) from assessment_result where plan_id=?", Long.class, planId)).isZero();
         assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+    }
+
+    @Test
+    void confirmedQualityWindowRejectsOldAndFutureTrackPointsBeforeCounting() {
+        confirmedQualityWindow();
+        String track = engineRepository.latestTrackId(targetId);
+        jdbc.update("UPDATE track_point SET observed_at=? WHERE track_id=? AND point_seq<3", ts(observedAt.minusSeconds(121)), track);
+        spatial.hits = List.of(covers("PROHIBITED"));
+        var run = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, observedAt);
+        var result = service.evaluate(subject(targetId), RunMode.ACTIVE, observedAt, run.runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.UNDETERMINED);
+        assertThat(result.unknownReasons()).contains("TRACK_DEGRADED");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+        assertThat(engineRepository.recentPointTimes(track, 10, observedAt.minusSeconds(120), observedAt)).hasSize(2);
+        jdbc.update("UPDATE track_point SET observed_at=? WHERE track_id=? AND point_seq=2", ts(observedAt.plusSeconds(1)), track);
+        assertThat(engineRepository.recentPointTimes(track, 10, observedAt.minusSeconds(120), observedAt)).hasSize(2);
+        jdbc.update("UPDATE track_point SET observed_at=? WHERE track_id=? AND point_seq=2", ts(observedAt.minusSeconds(10)), track);
+        var freshRun = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, observedAt);
+        assertThat(service.evaluate(subject(targetId), RunMode.ACTIVE, observedAt, freshRun.runId()).legalStatus()).isEqualTo(RuleContracts.LegalStatus.ILLEGAL);
+    }
+
+    @Test
+    void confirmedManualEvaluationCannotMakeStaleObservationFreshByReanchoringTime() {
+        confirmedQualityWindow();
+        var manual = runs.start(code, RunMode.ACTIVE, "MANUAL", null, null, observedAt.plusSeconds(121));
+        var stale = service.evaluate(subject(targetId), RunMode.ACTIVE, observedAt.plusSeconds(121), manual.runId());
+        assertThat(stale.freshness()).isEqualTo(RuleContracts.Freshness.STALE);
+        assertThat(stale.legalStatus()).isEqualTo(RuleContracts.LegalStatus.NOT_APPLICABLE);
+        var replay = runs.start(code, RunMode.ACTIVE, "REPLAY", "confirmed-quality-test", null, observedAt);
+        var historical = service.evaluate(subject(targetId), RunMode.ACTIVE, observedAt, replay.runId());
+        assertThat(historical.freshness()).isEqualTo(RuleContracts.Freshness.REPLAY);
+        assertThat(historical.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+    }
+
+    private void confirmedQualityWindow() {
+        String version = jdbc.queryForObject("SELECT active_version_id FROM rule_set WHERE rule_set_code=?", String.class, code);
+        jdbc.update("INSERT INTO rule_param(rule_param_id,rule_set_version_id,rule_code,param_key,value_text,value_type,param_status)"
+                + " VALUES (?,?,'C03','quality_window_basis','AS_OF','STRING','CONFIRMED')", UUID.randomUUID().toString(), version);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","mock","replay"})
+    void permittedUnregisteredFlightIsSufficientLegalWithoutAnyAlarmSideEffect(String sourceMode) {
+        String version=jdbc.queryForObject("SELECT active_version_id FROM rule_set WHERE rule_set_code=?",String.class,code);
+        jdbc.update("UPDATE rule_param SET param_status='CONFIRMED' WHERE rule_set_version_id=?",version);
+        jdbc.update("UPDATE rule_set_version SET param_status='CONFIRMED' WHERE rule_set_version_id=?",version);
+        jdbc.update("UPDATE rule_param SET value_text='LEGAL' WHERE rule_set_version_id=? AND rule_code='C03' AND param_key='no_plan_status'",version);
+        jdbc.update("UPDATE target SET source_mode=? WHERE target_id=?",sourceMode,targetId);
+        matcher.forced=new PlanMatch(PlanMatchCode.NONE,null,Map.of(),List.of("NO_PLAN_CANDIDATE"));
+        String alarmId=UUID.randomUUID().toString(),eventId=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at)"
+                + " VALUES (?,?,'seed-stage3-source',?,'RULE_LEGALITY','LOW',?,?,'mock','seed-stage3-org','seed-stage3-district',?)",alarmId,targetId,alarmId,ts(observedAt.minusMinutes(5)),ts(observedAt.minusMinutes(5)),ts(observedAt.minusMinutes(5)));
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) VALUES (?,?,'PENDING_VERIFICATION','seed-stage3-org','seed-stage3-district',?,?,0)",eventId,alarmId,ts(observedAt.minusMinutes(5)),ts(observedAt.minusMinutes(5)));
+        var historical=jdbc.queryForMap("SELECT state_code,version,updated_at FROM uav_event WHERE event_id=?",eventId);
+        var run=runs.start(code,RunMode.ACTIVE,"MANUAL",null,null,now());
+        var result=service.evaluate(subject(targetId),RunMode.ACTIVE,now(),run.runId());
+        assertThat(result.legalStatus()).isEqualTo(RuleContracts.LegalStatus.LEGAL);
+        assertThat(result.planMatchCode()).isEqualTo(PlanMatchCode.NONE);
+        assertThat(result.violationReasons()).doesNotContain("NO_AUTHORIZATION");
+        assertThat(jdbc.queryForObject("SELECT decision_assurance_code FROM rule_evaluation WHERE evaluation_id=?",String.class,result.evaluationId())).isEqualTo("SUFFICIENT");
+        assertThat(hooks.outcomes.get(0).alarmEligible()).isFalse();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM alarm WHERE target_id=?",Integer.class,targetId)).isEqualTo(1);
+        assertThat(jdbc.queryForMap("SELECT state_code,version,updated_at FROM uav_event WHERE event_id=?",eventId)).isEqualTo(historical);
     }
 
     @Test

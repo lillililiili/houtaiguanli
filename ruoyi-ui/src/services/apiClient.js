@@ -32,6 +32,7 @@ export function newIdempotencyKey(prefix = 'admin') {
 const client = axios.create({ baseURL, timeout: 15000 });
 
 client.interceptors.request.use(config => {
+  config.headers['X-Client-Type'] = 'BACKEND';
   const token = readToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
@@ -51,6 +52,9 @@ function normalizeError(error) {
   if (error instanceof ApiError) return error;
   const response = error?.response;
   const payload = response?.data?.error || {};
+  if (payload.code === 'BACKEND_ACCESS_DENIED' && !SESSION_FREE_URLS.has(error.config?.url || response.config?.url)) {
+    window.dispatchEvent(new CustomEvent('admin:access-denied'));
+  }
   if (response?.status === 401) notifyUnauthorized(error.config || response.config);
   if (!response) return new ApiError('暂时无法连接系统，请检查网络；若刚提交过操作，请先核对最新记录，避免重复提交。', 'NETWORK_ERROR', 0);
   return new ApiError(payload.message || '系统暂时无法完成操作，请查看最新记录；仍有问题请联系管理员。', payload.code || 'REQUEST_FAILED', response.status);
