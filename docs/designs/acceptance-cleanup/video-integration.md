@@ -5,7 +5,7 @@
 
 ## 开启
 
-默认关闭。后端必须同时启用 local、qa，且不能含 prod / production，另设 `APP_VIDEO_QA_ENABLED=true`（或 `app.video.qa-enabled=true`）。既有数据库、通知配置保持不变。
+2026-10-09 用户确认：本地默认开启。后端必须同时启用 local、qa，且不能含 prod / production；`APP_VIDEO_QA_ENABLED=false`（或 `app.video.qa-enabled=false`）可显式关闭。模拟器连接系统时默认准备本机媒体服务及私有凭据，`QA_VIDEO_ENABLED=false` 或页面“停止视频推流”可关闭。既有数据库、通知配置保持不变。
 
 媒体服务可使用 `docker compose -f deploy/compose.qa-video.yml --profile qa-video up -d`。
 Windows 离线部署可预备官方 MediaMTX 1.21.1 可执行文件，用 `deploy/start-qa-video.ps1 -MediaMtxPath <可执行文件绝对路径>` 启动。
@@ -13,7 +13,7 @@ FFmpeg 使用已安装的本地程序或在模拟器设置绝对路径；二进�
 启动前设置两组不同的24–128位base64url随机密码：`QA_VIDEO_PUBLISH_PASSWORD` 和 `QA_VIDEO_READ_PASSWORD`。配置文件默认拒绝所有匿名访问。
 模拟器使用 qa-publisher 和发布密码（只保存在进程内存）；后端设置 `APP_VIDEO_MEDIA_USERNAME=qa-platform`、`APP_VIDEO_MEDIA_PASSWORD` 为读取密码。
 
-一键开启（2026-10-08）：没有配置发布密码时，点设备模拟器“开启视频推流”会自动在本机私有凭据文件 `~/.dongying-qa/qa-video-credentials.json`（仅本人可读，`QA_VIDEO_CREDENTIALS_FILE` 可改路径）生成两组不同的随机密码，并用本机 `mediamtx`（或 `QA_MEDIAMTX_PATH`）、否则用 Docker 拉起同一份回环配置的 MediaMTX。local,qa 后端未设置 `APP_VIDEO_MEDIA_PASSWORD` 时按 `app.video.media-password-file`（默认同一文件，`APP_VIDEO_MEDIA_PASSWORD_FILE` 可改）读取其中的读取密码，文件变化后自动换用；生产配置不读该文件。后端仍须 `APP_VIDEO_QA_ENABLED=true`。发布账户不能读取视频，读取账户不能推流。密码不得进入源码、日志或场景导出。
+一键开启（2026-10-08）：没有配置发布密码时，点设备模拟器“开启视频推流”会自动在本机私有凭据文件 `~/.dongying-qa/qa-video-credentials.json`（仅本人可读，`QA_VIDEO_CREDENTIALS_FILE` 可改路径）生成两组不同的随机密码，并用本机 `mediamtx`（或 `QA_MEDIAMTX_PATH`）、否则用 Docker 拉起同一份回环配置的 MediaMTX。local,qa 后端未设置 `APP_VIDEO_MEDIA_PASSWORD` 时按 `app.video.media-password-file`（默认同一文件，`APP_VIDEO_MEDIA_PASSWORD_FILE` 可改）读取其中的读取密码，文件变化后自动换用；生产配置不读该文件。后端 local+qa 已默认开启；显式关闭时可设 `APP_VIDEO_QA_ENABLED=true` 恢复。发布账户不能读取视频，读取账户不能推流。密码不得进入源码、日志或场景导出。
 所有媒体端口仅监听本机：8554 RTSP、8888 HLS、9997 状态 API；匿名直接访问也被拒绝。平台视频清单与分片使用业务同源授权接口。
 
 ## 协议

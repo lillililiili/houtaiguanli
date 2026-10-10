@@ -34,7 +34,7 @@ class FlightDevicePreflightTest {
         var environment=new MockEnvironment().withProperty("app.flight-device-check.simulator-device-bridge-enabled","true");
         environment.setActiveProfiles("local");
         service=new FlightDeviceCheckService(devices,plans,mock(AccessControlService.class),spatial,
-            new AppClock(Clock.fixed(now,ZoneOffset.UTC)),BigDecimal.valueOf(5000),environment);
+            new AppClock(Clock.fixed(now,ZoneOffset.UTC)),environment);
         when(plans.findPlan(eq("future-plan"),any())).thenReturn(plan);
         when(plan.sourceMode()).thenReturn("mock");when(plan.statusCode()).thenReturn("PENDING");
         when(plan.routeVersionId()).thenReturn("route");
@@ -44,6 +44,7 @@ class FlightDevicePreflightTest {
         device=mock(DeviceSummary.class);when(device.deviceId()).thenReturn("sensor");
         when(device.sourceMode()).thenReturn("mock");when(device.deviceTypeCode()).thenReturn("radar");
         when(device.enabled()).thenReturn(true);
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(1000),null,null,null,null,"测试配置",null,1L));
         detail=mock(DeviceDetail.class);when(detail.coordinateSystem()).thenReturn("WGS-84");
         when(detail.longitude()).thenReturn(BigDecimal.valueOf(118));when(detail.latitude()).thenReturn(BigDecimal.valueOf(37));
         when(devices.inspectPlanDevices(any(),any(),eq(false))).thenAnswer(call -> List.of(
@@ -135,12 +136,72 @@ class FlightDevicePreflightTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints={3000,5000,8000})
-    void confirmedRangeUsesFiveKilometresFromRoute(int distance) {
+    @ValueSource(ints={200,1000,1001,3000,8000})
+    void usesDeviceRadiusInsteadOfFixedNearbyDistance(int distance) {
         when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(distance),BigDecimal.TEN,null));
+        assertThat(service.read("future-plan").rows()).hasSize(distance<=1000?1:0);
+    }
+
+    @Test void longRangeDeviceBeyondFiveKilometresStillCoversRoute() {
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(10000),null,null,null,null,"测试配置",null,1L));
+        when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(8000),BigDecimal.TEN,null));
+        assertThat(service.read("future-plan").rows()).hasSize(1);
+    }
+
+    @Test void missingCoverageDoesNotFallBackToFiveKilometres() {
+        when(device.coverage()).thenReturn(null);
         var result=service.read("future-plan");
-        assertThat(result.nearbyMeters()).isEqualByComparingTo("5000");
-        assertThat(result.rows()).hasSize(distance<=5000?1:0);
+        assertThat(result.rows()).isEmpty();
+        assertThat(result.complete()).isFalse();
+    }
+
+    @Test void offlineDeviceStillBelongsToConfiguredCoverage() {
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","UNAVAILABLE",BigDecimal.valueOf(1000),null,null,null,"设备非在线","测试配置",null,1L));
+        state("OFFLINE","UNKNOWN");
+        var result=service.read("future-plan");
+        assertThat(result.rows()).hasSize(1);
+        assertThat(result.rows().get(0).abnormal()).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans={false,true})
+    void sectorUsesWholeRouteIntersection(boolean intersects) {
+        when(device.coverage()).thenReturn(new Coverage("SECTOR","AVAILABLE",null,BigDecimal.valueOf(1000),BigDecimal.ZERO,BigDecimal.valueOf(60),null,"测试配置",null,1L));
+        when(plans.routeIntersectsScanSector(eq("route"),any(),any(),any(),any(),any())).thenReturn(intersects);
+        assertThat(service.read("future-plan").rows()).hasSize(intersects?1:0);
+        verify(plans).routeIntersectsScanSector("route",BigDecimal.valueOf(118),BigDecimal.valueOf(37),
+            BigDecimal.valueOf(1000),BigDecimal.ZERO,BigDecimal.valueOf(60));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints={0,-1})
+    void invalidRadiusIsUnknownInsteadOfUnlimitedCoverage(int radius) {
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(radius),null,null,null,null,"测试配置",null,1L));
+        var result=service.read("future-plan");
+        assertThat(result.rows()).isEmpty();
+        assertThat(result.uncheckedCoverage()).isEqualTo(1);
+        assertThat(result.selectionBasis()).isEqualTo("DEVICE_SCAN_COVERAGE");
+    }
+
+    @Test void incompleteSectorIsUnknown() {
+        when(device.coverage()).thenReturn(new Coverage("SECTOR","AVAILABLE",null,BigDecimal.valueOf(1000),null,BigDecimal.valueOf(60),null,"测试配置",null,1L));
+        assertThat(service.read("future-plan").uncheckedCoverage()).isEqualTo(1);
+    }
+
+    @Test void scheduledAndManualChecksShareCoverageSelection() {
+        var current=devices.state("sensor");
+        when(devices.inspectPlanDevices(any(),any(),eq(true))).thenReturn(List.of(
+            new PlanInspectionDevice(device,BigDecimal.valueOf(118),BigDecimal.valueOf(37),"WGS-84",current,List.of())));
+        assertThat(service.scheduled(plan).rows()).hasSize(1);
+        when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(1500),BigDecimal.TEN,null));
+        assertThat(service.scheduled(plan).rows()).isEmpty();
+        assertThat(service.read("future-plan").rows()).isEmpty();
+    }
+
+    @Test void livePlanCannotUseMockCoverage() {
+        when(plan.sourceMode()).thenReturn("live");
+        assertThat(service.read("future-plan").rows()).isEmpty();
+        verify(devices,never()).detail(anyString());
     }
 
     @ParameterizedTest

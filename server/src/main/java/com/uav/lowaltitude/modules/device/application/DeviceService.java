@@ -162,12 +162,11 @@ public class DeviceService {
                 mode, total > 0 && simulated == total);
     }
 
-    /** 大屏地图点：只返回有经纬度的启用设备；非 WGS-84 仍带回坐标系，由调用方决定是否绘制。 */
-    public List<DeviceMapMarker> mapMarkers(int limit) {
+    /** 大屏地图点：返回授权范围内全部有经纬度的启用设备；非 WGS-84 由调用方决定是否绘制。 */
+    public List<DeviceMapMarker> mapMarkers() {
         access.requireMonitoringRead();
-        int safe = Math.min(Math.max(limit, 1), 100);
         List<DeviceMapMarker> markers = new ArrayList<>();
-        for (Map<String, Object> row : repository.listForTree(query(new DeviceFilter(null, null, null, null, null, null, true, false)), safe)) {
+        for (Map<String, Object> row : repository.listForMap(query(new DeviceFilter(null, null, null, null, null, null, true, false)))) {
             DeviceMapMarker marker = marker(row);
             if (marker != null) markers.add(marker);
         }

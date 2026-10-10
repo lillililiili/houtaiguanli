@@ -43,12 +43,12 @@ public class FlightScheduledCheckService {
         var facts=check.rows().stream().sorted(Comparator.comparing(FlightDeviceCheckService.DeviceRow::deviceId))
             .map(r->Arrays.asList(r.deviceId(),r.connectivity(),r.healthCode(),r.abnormal(),r.complete(),
                 r.incidents().stream().filter(i->i.closedAt()==null).map(i->i.incidentId()).sorted().toList())).toList();
-        String fingerprint=hash(Arrays.asList(check.conclusion(),check.complete(),check.uncheckedLocations(),facts));
+        String fingerprint=hash(Arrays.asList(check.conclusion(),check.complete(),check.selectionBasis(),check.uncheckedLocations(),check.uncheckedCoverage(),facts));
         String verification=same?prior.verification():null;
         if(!same || !fingerprint.equals(prior.fingerprint())) {
             var history=records.verifications(id);long revision=history.isEmpty()?1:history.get(0).revisionNo()+1;
             verification=UUID.randomUUID().toString();
-            String evidence="系统自动检查；航线附近 "+check.nearbyMeters()+" 米；"+check.message();
+            String evidence="系统自动检查；按设备扫描范围与航线相交检查；"+check.message();
             records.insert(new Verification(verification,id,revision,check.conclusion(),"UNKNOWN",evidence,check.message(),null,"系统自动检查",now));
             audit.record(null,"flight-device-check",null,"flight","plan_device_checked","flight_verification",verification,"系统自动检查；plan_id="+id,"SUCCESS","","");
         }

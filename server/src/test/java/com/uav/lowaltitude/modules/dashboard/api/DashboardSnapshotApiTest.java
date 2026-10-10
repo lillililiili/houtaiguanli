@@ -77,6 +77,47 @@ class DashboardSnapshotApiTest {
     }
 
     @Test
+    void pendingAssessmentsOnlyCountLatestRecordsWithinTodayInShanghai() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantModule(token, "dashboard");
+        grantAction(token, "assessment:read");
+        long start = LocalDate.now(ZoneId.of("Asia/Shanghai")).atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+        long end = start + 86_400_000L;
+        String run = "dash-pending-run-" + suffix;
+        jdbc.update("insert into rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at)"
+                + " select ?,v.rule_set_id,v.rule_set_version_id,'ACTIVE','MANUAL',?,?,'DONE',1,1,0,0,'live',? from rule_set_version v order by v.rule_set_version_id fetch first 1 row only",
+                run, ts(now()), ts(now()), ts(now()));
+        pendingEvaluation(run, "yesterday", "live", start - 1, "PENDING_REVIEW");
+        pendingEvaluation(run, "start", "live", start, "PENDING_REVIEW");
+        pendingEvaluation(run, "end", "replay", end - 1, "PENDING_REVIEW");
+        pendingEvaluation(run, "tomorrow", "replay", end, "PENDING_REVIEW");
+        pendingEvaluation(run, "confirmed", "live", start + 1, "CONFIRMED");
+        pendingEvaluation(run, "demo", "mock", start + 1, "PENDING_REVIEW");
+        pendingEvaluation(run, "hidden", "live", start + 1, "PENDING_REVIEW");
+        jdbc.update("update rule_evaluation set owner_org_id=?,district_id=? where evaluation_id=?",
+                otherOrg, otherDistrict, "dash-pending-hidden-" + suffix);
+        // 同一目标今天已有较新结论，旧待复核记录不能回流到统计中。
+        pendingEvaluation(run, "old", "live", start + 1, "PENDING_REVIEW");
+        pendingEvaluation(run, "new", "live", start + 2, "CONFIRMED");
+        jdbc.update("update rule_evaluation set target_id=? where evaluation_id=?",
+                "dash-today-old-" + suffix, "dash-pending-new-" + suffix);
+
+        mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.kpis.pending_assessment").value(2));
+    }
+
+    private void pendingEvaluation(String run, String name, String sourceMode, long at, String reviewState) {
+        todayTarget(name, sourceMode);
+        String id = "dash-pending-" + name + "-" + suffix;
+        jdbc.update("insert into rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at)"
+                + " select ?,r.run_id,r.rule_set_version_id,'ACTIVE','TARGET',?,?,?,'FRESH','NONE','UNDETERMINED',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,?,? from rule_run r where r.run_id=?",
+                id, "dash-today-" + name + "-" + suffix, ts(at), ts(at), org, district, sourceMode, ts(now()), run);
+        jdbc.update("insert into legality_review(evaluation_id,review_state,version,owner_org_id,district_id,created_at,updated_at) values (?,?,0,?,?,?,?)",
+                id, reviewState, org, district, ts(now()), ts(now()));
+    }
+
+    @Test
     void unauthenticatedRequestIsRejected() throws Exception {
         mvc.perform(get("/api/v1/dashboard/snapshot"))
                 .andExpect(status().isUnauthorized())
