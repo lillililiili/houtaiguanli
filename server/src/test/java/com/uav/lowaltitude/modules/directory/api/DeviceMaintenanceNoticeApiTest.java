@@ -184,5 +184,12 @@ class DeviceMaintenanceNoticeApiTest {
         @Override public Instant now(){return current;}
     }
     void observe(boolean abnormal,long observed){observe(abnormal,observed,abnormal?"OFFLINE":"ONLINE");}
-    void observe(boolean abnormal,long observed,String connectivity){var row=new FlightDeviceCheckService.DeviceRow(device,"测试设备",true,BigDecimal.ONE,connectivity,abnormal?"BAD":"GOOD",observed,observed,abnormal,true,List.of());doReturn(new FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","设备检查",now,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(row),false)).when(checks).read(plan);}
+    void observe(boolean abnormal,long observed,String connectivity){
+        // A mocked plan check must still refer to a device explicitly belonging to that plan's tuple.
+        var tuple=jdbc.queryForMap("SELECT owner_org_id,district_id FROM flight_plan WHERE plan_id=?",plan);
+        int changed=jdbc.update("UPDATE device_business_scope SET owner_org_id=?,district_id=? WHERE ops_device_id=?",tuple.get("owner_org_id"),tuple.get("district_id"),device);
+        if(changed==0)jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,current_timestamp,current_timestamp)",device,tuple.get("owner_org_id"),tuple.get("district_id"));
+        var row=new FlightDeviceCheckService.DeviceRow(device,"测试设备",true,BigDecimal.ONE,connectivity,abnormal?"BAD":"GOOD",observed,observed,abnormal,true,List.of());
+        doReturn(new FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","设备检查",now,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(row),false)).when(checks).read(plan);
+    }
 }

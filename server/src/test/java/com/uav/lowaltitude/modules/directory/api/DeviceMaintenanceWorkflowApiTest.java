@@ -110,17 +110,16 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
         mvc.perform(write(post(path()),Map.of("action","COMPLETE","expected_version",4,"note","尝试完成"),UUID.randomUUID().toString())).andExpect(status().isConflict());
         assertThat(action("RESUME",4,"继续处理").path("state").asText()).isEqualTo("PROCESSING");
     }
-    @Test void replayOldStartReturnsLatestStateAndCurrentFieldPermissions() throws Exception {
+    @Test void replayOldStartCannotBypassCurrentBackendIdentity() throws Exception {
         create();String key=UUID.randomUUID().toString();var body=Map.of("action","START","expected_version",1);
         data(write(post(path()),body,key));action("SUBMIT_VERIFICATION",2,"提交恢复核验");
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-MAINT-OP','运维操作测试','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-MAINT-OP','monitoring','OP',TRUE)");
         jdbc.update("UPDATE app_user SET role_code='ROLE-MAINT-OP' WHERE account='admin1'");sqlSession.clearCache();
-        JsonNode replay=data(write(post(path()),body,key));
-        assertThat(replay.path("state").asText()).isEqualTo("PENDING_VERIFICATION");
-        assertThat(replay.path("version").asLong()).isEqualTo(3);
-        assertThat(replay.path("events")).hasSize(2);
-        assertThat(replay.path("task").has("plan_id")).isFalse();
+        mvc.perform(write(post(path()),body,key)).andExpect(status().isForbidden());
+        mvc.perform(auth(get("/api/v1/device-maintenance-tasks/"+taskId+"/workflow"))).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT workflow_state FROM ops_device_maintenance_task WHERE task_id=?",String.class,taskId)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_maintenance_workflow_event WHERE task_id=?",Long.class,taskId)).isEqualTo(2L);
     }
     @Test void inboxReadReceiptIsSeparateAndLegacyHandlingCannotBypassWorkflow() throws Exception {
         create();JsonNode before=data(auth(get("/api/v1/device-maintenance-messages")));
@@ -170,12 +169,12 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
         mvc.perform(auth(post("/api/v1/device-maintenance-messages/"+taskId+"/read"))).andExpect(status().isNotFound());
         assertThat(data(auth(get("/api/v1/device-maintenance-messages"))).path("items").toString()).doesNotContain(taskId);
     }
-    @Test void monitoringReadAloneCannotMutateOrReceiveOperatorInbox() throws Exception {
+    @Test void frontendMonitoringReadCannotReadMutateOrReceiveBackendInbox() throws Exception {
         create();
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-MAINT-READ','运维只读测试','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-MAINT-READ','monitoring','READ',TRUE)");
         jdbc.update("UPDATE app_user SET role_code='ROLE-MAINT-READ' WHERE account='admin1'");sqlSession.clearCache();
-        assertThat(workflow().path("allowed_actions")).isEmpty();
+        mvc.perform(auth(get("/api/v1/device-maintenance-tasks/"+taskId+"/workflow"))).andExpect(status().isForbidden());
         mvc.perform(auth(get("/api/v1/device-maintenance-messages"))).andExpect(status().isForbidden());
         mvc.perform(write(post(path()),Map.of("action","START","expected_version",1),UUID.randomUUID().toString())).andExpect(status().isForbidden());
     }

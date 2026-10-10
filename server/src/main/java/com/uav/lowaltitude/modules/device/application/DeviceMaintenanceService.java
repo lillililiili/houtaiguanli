@@ -52,9 +52,7 @@ public class DeviceMaintenanceService {
 
     @Transactional
     public Task create(String planId,CreateRequest body,String requestKey) {
-        access.require(PermissionCode.HANDOFF_CREATE);
-        AuthUser actor=deviceAccess.requireMonitoringRead();
-        deviceAccess.requireDevicesRead();
+        AuthUser actor=requireReporter();
         String key=key(requestKey),planKey=id(planId),deviceId=id(body==null?null:body.deviceId());
         var plan=plans.findPlan(planKey,access.require(PermissionCode.FLIGHT_READ));
         if(plan==null)throw missing();
@@ -78,7 +76,9 @@ public class DeviceMaintenanceService {
         if(!row.abnormal()&&row.incidents().stream().noneMatch(item->item.closedAt()==null))
             throw conflict("DEVICE_NOT_ABNORMAL","重新检查未发现当前异常或未关闭告警，无需生成运维待办");
         // CDX-P09：先写设备现在真正的问题，再写还没关的旧异常记录；已恢复上报的心跳超时只注一句待核验。
-        String reasons=MaintenanceReason.text(row,devices.state(deviceId).hasAlarm(),clock.nowMillis());
+        var facts=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),false).stream()
+                .filter(item->deviceId.equals(item.device().deviceId())).findFirst().orElseThrow(DeviceMaintenanceService::missing);
+        String reasons=MaintenanceReason.text(row,facts.state().hasAlarm(),clock.nowMillis());
         String actorName=actor.name()==null?actor.account():actor.name();
         Row task=new Row(UUID.randomUUID().toString(),planKey,deviceId,plan.ownerOrgId(),plan.districtId(),
                 plan.planNo(),device.deviceNo(),row.name(),reasons,row.connectivity(),row.healthCode(),row.observedAt(),
@@ -179,8 +179,7 @@ public class DeviceMaintenanceService {
     }
     @Transactional
     public Task resend(String taskId,ResendRequest body,String requestKey) {
-        access.require(PermissionCode.HANDOFF_CREATE);
-        AuthUser actor=deviceAccess.requireMonitoringRead();deviceAccess.requireDevicesRead();
+        AuthUser actor=requireReporter();
         String taskKey=id(taskId),key=key(requestKey);
         if(body==null||body.expectedAttemptNo()==null||body.expectedAttemptNo()<1)throw bad("请先刷新通知记录再操作");
         String reason=body.reason()==null||body.reason().isBlank()?"人工再次通知":body.reason().trim();
@@ -237,13 +236,19 @@ public class DeviceMaintenanceService {
         if(latest==null)return "尚未取得原通知记录，请先刷新核对";
         if(!Set.of("NOT_SENT","COMPLETED").contains(latest.outcomeState()))return "原通知正在发送或结果未知，请先核对原通知结果";
         if(checkPermissions){
-            try{access.require(PermissionCode.HANDOFF_CREATE);deviceAccess.requireMonitoringRead();deviceAccess.requireDevicesRead();
+            try{requireReporter();
                 if(plans.findPlan(task.planId(),access.require(PermissionCode.FLIGHT_READ))==null)return "关联任务不可见";
                 devices.detail(task.deviceId());
             }catch(ApiException error){if(error.getStatus()!=HttpStatus.FORBIDDEN&&error.getStatus()!=HttpStatus.NOT_FOUND)throw error;return "没有再次通知权限或关联对象不可见";}
         }
         if(clock.nowMillis()<latest.requestedAt()+resendCooldownMillis)return "距离上次通知不足"+(resendCooldownMillis/1000)+"秒，请稍后再试";
         return null;
+    }
+
+    /** Reporting is a business action; processing and recovery remain backend monitoring actions. */
+    private AuthUser requireReporter() {
+        access.require(PermissionCode.HANDOFF_CREATE);
+        return deviceAccess.requireDevicesRead();
     }
 
     private static String id(String v) { if(v==null||v.isBlank()||v.trim().length()>36)throw bad("对象编号无效");return v.trim(); }
