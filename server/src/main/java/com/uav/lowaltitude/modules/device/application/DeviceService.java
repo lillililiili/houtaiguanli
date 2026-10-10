@@ -207,9 +207,9 @@ public class DeviceService {
                 text(row, "unknown_reason"), metrics(text(row, "metrics_json")), bool(row, "simulated"));
     }
 
-    /** No credentials or controls are exposed by this internal, tuple-bound fact reader. */
+    /** Plan-only fact projection; the flight caller checks plan/route access. No monitoring controls or credentials. */
     public List<PlanInspectionDevice> inspectPlanDevices(String org, String district, boolean scheduled) {
-        if (!scheduled) { access.requireDevicesRead(); access.requireMonitoringRead(); }
+        if (!scheduled) access.requireDevicesRead();
         return repository.forPlanInspection(org, district, !scheduled).stream().map(row -> {
             String id = text(row,"device_id");
             var state = new DeviceState(id, text(row,"connectivity","UNKNOWN"), text(row,"work_state_code"),

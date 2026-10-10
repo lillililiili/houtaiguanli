@@ -26,6 +26,9 @@ class FlightDevicePreflightTest {
     SpatialFactPort spatial=mock(SpatialFactPort.class);
     FlightReadRepository.PlanRow plan=mock(FlightReadRepository.PlanRow.class);
     DeviceSummary device;
+    DeviceDetail detail;
+    DeviceState observedState;
+    List<Incident> incidents=List.of();
     FlightDeviceCheckService service;
     @BeforeEach void setup() {
         var environment=new MockEnvironment().withProperty("app.flight-device-check.simulator-device-bridge-enabled","true");
@@ -41,17 +44,16 @@ class FlightDevicePreflightTest {
         device=mock(DeviceSummary.class);when(device.deviceId()).thenReturn("sensor");
         when(device.sourceMode()).thenReturn("mock");when(device.deviceTypeCode()).thenReturn("radar");
         when(device.enabled()).thenReturn(true);
-        when(devices.list(any(),anyInt(),anyInt(),anyString())).thenReturn(new DevicePage(List.of(device),1,100,1));
-        var detail=mock(DeviceDetail.class);when(detail.coordinateSystem()).thenReturn("WGS-84");
+        detail=mock(DeviceDetail.class);when(detail.coordinateSystem()).thenReturn("WGS-84");
         when(detail.longitude()).thenReturn(BigDecimal.valueOf(118));when(detail.latitude()).thenReturn(BigDecimal.valueOf(37));
-        when(devices.detail("sensor")).thenReturn(detail);
+        when(devices.inspectPlanDevices(any(),any(),eq(false))).thenAnswer(call -> List.of(
+            new PlanInspectionDevice(device,detail.longitude(),detail.latitude(),detail.coordinateSystem(),observedState,incidents)));
         when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.TEN,BigDecimal.TEN,null));
-        when(devices.incidents(anyString(),any(),any(),anyInt(),anyInt())).thenReturn(new IncidentPage(List.of(),1,100,0));
         state("ONLINE","GOOD");
     }
     void state(String connectivity,String health) {
         long at=now.minusSeconds(5).toEpochMilli();
-        when(devices.state("sensor")).thenReturn(new DeviceState("sensor",connectivity,"1",false,health,at,at,at,null,List.of(),true));
+        observedState=new DeviceState("sensor",connectivity,"1",false,health,at,at,at,null,List.of(),true);
     }
     @Test void futurePlanChecksCurrentNormalDeviceWithoutTakeoffConclusion() {
         var result=service.read("future-plan");
@@ -61,8 +63,7 @@ class FlightDevicePreflightTest {
     }
     @Test void futurePlanShowsCurrentFaultAndIgnoresClosedPastIncident() {
         state("ONLINE","BAD");
-        when(devices.incidents(anyString(),any(),any(),anyInt(),anyInt())).thenReturn(new IncidentPage(List.of(
-            new Incident("old","old","sensor","sensor","雷达","FAULT","HIGH","CLOSED",now.minusSeconds(900).toEpochMilli(),"旧故障",now.minusSeconds(600).toEpochMilli(),null,true,null)),1,100,1));
+        incidents=List.of(new Incident("old","old","sensor","sensor","雷达","FAULT","HIGH","CLOSED",now.minusSeconds(900).toEpochMilli(),"旧故障",now.minusSeconds(600).toEpochMilli(),null,true,null));
         var result=service.read("future-plan");
         assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_ABNORMAL");
         assertThat(result.rows().get(0).abnormal()).isTrue();
@@ -73,7 +74,7 @@ class FlightDevicePreflightTest {
         assertThat(service.read("future-plan").conclusion()).isEqualTo("CHECK_INCOMPLETE");
     }
     @Test void lingyunWorkingStateDoesNotReplaceUnknownHealth() {
-        var sensor=devices.list(null,1,100,"device_no_asc").items().get(0);
+        var sensor=device;
         when(sensor.protocolCode()).thenReturn("LINGYUN_MQTT_V8_6");
         state("ONLINE","UNKNOWN");
         var result=service.read("future-plan");
@@ -84,10 +85,10 @@ class FlightDevicePreflightTest {
         assertThat(service.read("future-plan").conclusion()).isEqualTo("CHECK_INCOMPLETE");
     }
     @Test void lingyunExplicitFaultStillCountsAsAbnormal() {
-        var sensor=devices.list(null,1,100,"device_no_asc").items().get(0);
+        var sensor=device;
         when(sensor.protocolCode()).thenReturn("LINGYUN_MQTT_V8_6");
         long at=now.minusSeconds(5).toEpochMilli();
-        when(devices.state("sensor")).thenReturn(new DeviceState("sensor","ONLINE","2",false,"UNKNOWN",at,at,at,null,List.of(),true));
+        observedState=new DeviceState("sensor","ONLINE","2",false,"UNKNOWN",at,at,at,null,List.of(),true);
         var result=service.read("future-plan");
         assertThat(result.rows().get(0).abnormal()).isTrue();
         assertThat(result.rows().get(0).healthCode()).isEqualTo("BAD");
@@ -122,7 +123,7 @@ class FlightDevicePreflightTest {
     }
     @Test void replayPlanIgnoresDisabledHistoricalReplayDevices() {
         when(plan.sourceMode()).thenReturn("replay");
-        var sensor=devices.list(null,1,100,"device_no_asc").items().get(0);
+        var sensor=device;
         when(sensor.sourceMode()).thenReturn("replay");
         when(sensor.simulated()).thenReturn(false);
         when(sensor.enabled()).thenReturn(false);
@@ -147,7 +148,7 @@ class FlightDevicePreflightTest {
     void confirmedDetectorTypesAreCheckedAndUnknownPositionIsCountedSeparately(String type) {
         when(device.deviceTypeCode()).thenReturn(type);
         assertThat(service.read("future-plan").rows()).hasSize(1);
-        when(devices.detail("sensor").longitude()).thenReturn(null);
+        when(detail.longitude()).thenReturn(null);
         var unknown=service.read("future-plan");
         assertThat(unknown.rows()).isEmpty();
         assertThat(unknown.uncheckedLocations()).isEqualTo(1);

@@ -32,6 +32,9 @@ public final class DisposalDtos {
             String executionBlockReason, String policyVersion, String policyStatus, String ownerOrgId, String districtId, String sourceMode,
             long version, List<String> allowedActions, String authorizationMode) { }
 
+    /** 只读处置分组；每个成员保持原授权身份、状态和动作，根授权 ID 作为稳定的展示 ID。 */
+    public record AuthorizationGroupDto(String disposalId, List<AuthorizationDto> authorizations) { }
+
     public record EventDto(String eventId, String eventKind, String actorId, String actorName, String note,
             Map<String, Object> snapshot, long occurredAt) { }
 

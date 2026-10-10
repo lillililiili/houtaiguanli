@@ -255,12 +255,12 @@ public class UavAdvisoryService {
             boolean inspect = canInspectHandoffRecipients(eventId);
             // Match the automatic submission gate, without selecting a recipient or starting any work.
             int recipients = inspect ? handoffs.enabledRecipients("UAV_PUNISHMENT").size() : -1;
-            if (disposals.completedJammingRequester(eventId) == null)
-                return new AutoHandoff(true, "WAITING", recipients > 1 ? "干扰完成后，需要有权限的人员选择处罚接收单位再移送"
-                        : recipients == 0 ? "干扰完成后移送到处罚。目前还没有启用的处罚接收单位，请联系管理员配置" : "干扰完成后自动移送到处罚",
+            if (disposals.punishmentCompletion(eventId) == null)
+                return new AutoHandoff(true, "WAITING", recipients > 1 ? "反制结束且停止确认后，需要有权限的人员选择处罚接收单位再移送"
+                        : recipients == 0 ? "反制结束且停止确认后移送到处罚。目前还没有启用的处罚接收单位，请联系管理员配置" : "反制结束且停止确认后自动移送到处罚",
                         null, null, null, null, null);
             if (!inspect)
-                return new AutoHandoff(true, "WAITING", "干扰已完成，处罚移送进度需由有权限人员核查", null, null, null, null, null);
+                return new AutoHandoff(true, "WAITING", "处置完成依据已具备，处罚移送进度需由有权限人员核查", null, null, null, null, null);
             if (recipients == 0)
                 return new AutoHandoff(true, "BLOCKED", "还没有启用的处罚接收单位，暂时不能移送。请联系管理员配置处罚接收单位", null, null, null, null, null);
             if (recipients > 1) {
@@ -271,7 +271,7 @@ public class UavAdvisoryService {
                 return new AutoHandoff(true, "MANUAL_REQUIRED", "启用了 " + recipients + " 个处罚接收单位，系统不会替你选择。请选择接收单位后移送到处罚",
                         null, null, null, assessment.status(), assessment.reasons().isEmpty() ? null : assessment.reasons());
             }
-            return new AutoHandoff(true, "WAITING", "干扰已完成，等待后台自动移送", null, null, null, null, null);
+            return new AutoHandoff(true, "WAITING", "处置完成依据已具备，等待后台自动移送", null, null, null, null, null);
         }
         var latest = handoffs.latestDelivery(handoffId);
         String trigger = handoffs.triggerSource(handoffId);

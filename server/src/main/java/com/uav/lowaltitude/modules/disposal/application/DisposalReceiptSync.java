@@ -52,18 +52,16 @@ public class DisposalReceiptSync {
     private final DeviceRepository devices;
     private final AppClock clock;
     private final ObjectMapper json;
-    private final DisposalJammingChain jammingChain;
     private final HandoffSubmissionService handoffs;
     private final DisposalPolicyRepository policies;
     private final EmergencyStopRepository stops;
     private final boolean scheduledEnabled;
 
     public DisposalReceiptSync(DisposalRepository repository, DeviceRepository devices, AppClock clock,
-            ObjectMapper json, DisposalJammingChain jammingChain, HandoffSubmissionService handoffs,
+            ObjectMapper json, HandoffSubmissionService handoffs,
             DisposalPolicyRepository policies, EmergencyStopRepository stops,
             @Value("${app.disposal.receipt-sync.enabled:false}") boolean scheduledEnabled) {
         this.repository = repository; this.devices = devices; this.clock = clock; this.json = json;
-        this.jammingChain = jammingChain;
         this.handoffs = handoffs;
         this.policies = policies;
         this.stops = stops;
@@ -125,18 +123,17 @@ public class DisposalReceiptSync {
                 write(Map.of("status", next)), at);
         // 转干扰的来源反制和干扰开的是同一台设备，设备关了它也一起完成。
         if (allOff && DisposalRules.JAMMING.equals(row.actionType())) completeSourceCounter(row, command, at);
-        // 四通道的干扰在设备打开时就接上了（deviceOn），关了以后不再接。
-        if (!allOff && DisposalRules.COMPLETED.equals(next) && DisposalRules.COUNTERMEASURE.equals(row.actionType())) {
-            jammingChain.scheduleAfterComplete(row.authorizationId());
-        }
+        // Preserve the historical child hook. New countermeasures are picked up by the existing
+        // handoff job after this transaction commits, so an administrative failure cannot roll
+        // back a confirmed device stop. No new continuation is created.
         if (DisposalRules.COMPLETED.equals(next) && DisposalRules.JAMMING.equals(row.actionType())) {
-            handoffs.automaticAfterJamming(row.subjectId());
+            handoffs.automaticAfterDisposal(row.subjectId());
         }
     }
 
     /**
      * 启动指令回“成功”：设备打开了。授权保持执行中，记下该在什么时候全部关闭。
-     * 转干扰的那条沿用来源反制的关闭时刻，两条一起关；反制打开后立即接上信号干扰（与以前接续的时机相同）。
+     * 历史干扰授权沿用来源反制的关闭时刻，两条一起关；新反制不再追加干扰授权。
      */
     private void deviceOn(AuthorizationRow seen, Map<String, Object> command) {
         // 已经记过（读时同步、定时兜底大多走到这里就结束），不必加锁。
@@ -164,7 +161,6 @@ public class DisposalReceiptSync {
                 source == null ? "设备回执：已打开，反制中；满 " + seconds + " 秒系统自动全部关闭，也可以随时急停"
                         : "设备回执：已转为信号干扰，和来源反制一起到时自动全部关闭，也可以随时急停",
                 write(snapshot), at);
-        if (DisposalRules.COUNTERMEASURE.equals(row.actionType())) jammingChain.scheduleAfterDeviceOn(row.authorizationId());
     }
 
     /** 设备已全部关闭：接出这条干扰的来源反制仍在执行中时，一起记完成。 */

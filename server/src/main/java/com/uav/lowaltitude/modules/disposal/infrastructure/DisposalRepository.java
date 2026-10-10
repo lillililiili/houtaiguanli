@@ -237,6 +237,59 @@ public class DisposalRepository {
         return total == null ? 0 : total;
     }
 
+    public long countGroups(AccessDecision access, Query query) {
+        Where visible = scope(access), matching = groupFilter(query);
+        visible.params.putAll(matching.params);
+        Long total = jdbc.queryForObject(groupedCte(visible) + " SELECT COUNT(DISTINCT a.disposal_id)"
+                + " FROM grouped_authorizations a" + matching.sql, visible.params, Long.class);
+        return total == null ? 0 : total;
+    }
+
+    /** 先按组筛选和分页，再读全部可见成员；不能先按授权分页，否则父子会被拆开。 */
+    public List<GroupedAuthorizationRow> listGroups(AccessDecision access, Query query, long offset, int limit) {
+        Where visible = scope(access), matching = groupFilter(query);
+        visible.params.putAll(matching.params);
+        visible.params.put("limit", limit); visible.params.put("offset", offset);
+        String sql = groupedCte(visible)
+                + ", matching_groups AS (SELECT DISTINCT a.disposal_id FROM grouped_authorizations a" + matching.sql + ")"
+                + ", selected_groups AS (SELECT root.authorization_id,root.requested_at FROM matching_groups m"
+                + " JOIN visible_authorizations root ON root.authorization_id=m.disposal_id"
+                + " ORDER BY root.requested_at DESC,root.authorization_id DESC LIMIT :limit OFFSET :offset)"
+                + " SELECT a.disposal_id," + COLUMNS + NAME_COLUMNS + " FROM grouped_authorizations a"
+                + " JOIN selected_groups selected ON selected.authorization_id=a.disposal_id" + JOINS
+                + " ORDER BY selected.requested_at DESC,selected.authorization_id DESC,"
+                + " CASE WHEN a.authorization_id=a.disposal_id THEN 0 ELSE 1 END,a.requested_at,a.authorization_id";
+        return jdbc.query(sql, visible.params, (rs, i) -> new GroupedAuthorizationRow(rs.getString("disposal_id"), row(rs, i)));
+    }
+
+    /**
+     * 只认明确的单层反制→干扰关系，并在组装关系前完成成员范围过滤。
+     * 父子主体、组织、区域、来源必须完全一致；缺父、越权、环、多级或多子关系一律各自保留。
+     */
+    private static String groupedCte(Where visible) {
+        return "WITH visible_authorizations AS (SELECT a.* FROM disposal_authorization a" + visible.sql + ")"
+                + ", disposal_pairs AS (SELECT parent.authorization_id AS parent_id,child.authorization_id AS child_id"
+                + " FROM visible_authorizations parent JOIN visible_authorizations child"
+                + " ON child.chained_from_authorization_id=parent.authorization_id"
+                + " WHERE parent.chained_from_authorization_id IS NULL AND parent.action_type='COUNTERMEASURE'"
+                + " AND child.action_type='JAMMING' AND parent.authorization_id<>child.authorization_id"
+                + " AND parent.subject_kind=child.subject_kind AND parent.subject_id=child.subject_id"
+                + " AND parent.owner_org_id=child.owner_org_id AND parent.district_id=child.district_id"
+                + " AND parent.source_mode=child.source_mode"
+                + " AND NOT EXISTS (SELECT 1 FROM disposal_authorization next_child"
+                + " WHERE next_child.chained_from_authorization_id=child.authorization_id)"
+                + " AND (SELECT COUNT(*) FROM disposal_authorization sibling"
+                + " WHERE sibling.chained_from_authorization_id=parent.authorization_id)=1)"
+                + ", grouped_authorizations AS (SELECT visible.*,COALESCE(pair.parent_id,visible.authorization_id) AS disposal_id"
+                + " FROM visible_authorizations visible LEFT JOIN disposal_pairs pair ON pair.child_id=visible.authorization_id)";
+    }
+
+    private static Where groupFilter(Query query) {
+        Where where = new Where();
+        where.sql.append(" WHERE 1=1");
+        return filters(where, query);
+    }
+
     /** 同主体同动作的活动授权数，用于 max_active_per_subject。范围不参与：并发上限是业务事实，不随谁在看而变。 */
     public long activeCount(String subjectKind, String subjectId, String actionType) {
         Map<String, Object> p = new HashMap<>();
@@ -274,6 +327,39 @@ public class DisposalRepository {
         List<String> rows = jdbc.query("SELECT requested_by FROM disposal_authorization WHERE subject_kind='UAV_EVENT'"
                 + " AND subject_id=:id AND action_type='JAMMING' AND status='COMPLETED' ORDER BY requested_at DESC"
                 + " FETCH FIRST 1 ROW ONLY", Map.of("id", eventId), (r, n) -> r.getString(1));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /* 新单次反制必须有本授权、同设备的明确全关成功事实；启动成功或仅有 COMPLETED 标签均不够。
+       旧父子链仍按原 JAMMING 完成事实处理，避免从父授权推断子链已经停机。 */
+    private static final String PUNISHMENT_COMPLETION = "a.status='COMPLETED' AND (a.action_type='JAMMING' OR ("
+            + "a.action_type='COUNTERMEASURE' AND a.channel='COUNTERMEASURE_4CH'"
+            + " AND a.chained_from_authorization_id IS NULL"
+            + " AND NOT EXISTS (SELECT 1 FROM disposal_authorization child WHERE child.chained_from_authorization_id=a.authorization_id)"
+            + " AND EXISTS (SELECT 1 FROM disposal_device_run r JOIN device_command c ON c.command_id=r.off_command_id"
+            + " JOIN countermeasure_4ch_command stop ON stop.command_id=c.command_id"
+            + " WHERE r.authorization_id=a.authorization_id AND r.device_id=a.device_id"
+            + " AND c.device_id=a.device_id AND a.execution_command_id=r.off_command_id"
+            + " AND c.status='SUCCEEDED' AND c.completed_at IS NOT NULL"
+            + " AND stop.authorization_id=a.authorization_id AND stop.action='SET_MASK' AND stop.mask=0)))";
+
+    public List<String> completedWithoutPunishment() {
+        return jdbc.queryForList("SELECT DISTINCT a.subject_id FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT' AND "
+                + PUNISHMENT_COMPLETION + " AND NOT EXISTS (SELECT 1 FROM handoff h WHERE h.source_kind='UAV_EVENT'"
+                + " AND h.source_id=a.subject_id AND h.handoff_type='UAV_PUNISHMENT') ORDER BY a.subject_id FETCH FIRST 50 ROWS ONLY",
+                Map.of(), String.class);
+    }
+
+    public record PunishmentCompletionRow(String requestedBy, String triggerSource) { }
+
+    public PunishmentCompletionRow punishmentCompletion(String eventId) {
+        if (eventId == null || eventId.isBlank()) return null;
+        var rows = jdbc.query("SELECT a.requested_by,a.action_type FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
+                + " AND a.subject_id=:id AND " + PUNISHMENT_COMPLETION
+                + " ORDER BY a.requested_at DESC,a.authorization_id DESC FETCH FIRST 1 ROW ONLY", Map.of("id", eventId),
+                (r, n) -> new PunishmentCompletionRow(
+                        r.getString("requested_by"), "JAMMING".equals(r.getString("action_type"))
+                                ? "JAMMING_COMPLETED" : "COUNTERMEASURE_COMPLETED"));
         return rows.isEmpty() ? null : rows.get(0);
     }
 
@@ -482,10 +568,12 @@ public class DisposalRepository {
                 Map.of("now", now, "limit", limit), String.class);
     }
 
-    /** 这条反制接出的信号干扰是否仍在执行中：在的话，设备由干扰那条到时一起关闭。 */
+    /** 仅已记录设备运行的历史子授权承担一起关闭；尚未启动的旧队列不能阻止父授权到时关闭。 */
     public boolean executingChild(String parentAuthorizationId) {
-        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE chained_from_authorization_id=:id"
-                + " AND status='EXECUTING'", Map.of("id", parentAuthorizationId), Long.class);
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization child"
+                + " JOIN disposal_device_run child_run ON child_run.authorization_id=child.authorization_id"
+                + " WHERE child.chained_from_authorization_id=:id AND child.status='EXECUTING'",
+                Map.of("id", parentAuthorizationId), Long.class);
         return total != null && total > 0;
     }
 
@@ -527,7 +615,10 @@ public class DisposalRepository {
     /* ---- 范围与筛选 ---- */
 
     private static Where filter(AccessDecision access, Query query) {
-        Where where = scope(access);
+        return filters(scope(access), query);
+    }
+
+    private static Where filters(Where where, Query query) {
         add(where, "a.subject_kind", "f_kind", query.subjectKind());
         add(where, "a.subject_id", "f_subject", query.subjectId());
         add(where, "a.status", "f_status", query.status());
@@ -588,6 +679,8 @@ public class DisposalRepository {
     public record TargetCounterFacts(String objectTypeCode, String eventState, String alarmNo) { }
 
     public record Query(String subjectKind, String subjectId, String status, String excludeStatus, String actionType) { }
+
+    public record GroupedAuthorizationRow(String disposalId, AuthorizationRow authorization) { }
 
     public record AuthorizationInsert(String authorizationId, String authorizationNo, String actionType,
             String subjectKind, String subjectId, String targetId, String deviceId, String channel, String reason,

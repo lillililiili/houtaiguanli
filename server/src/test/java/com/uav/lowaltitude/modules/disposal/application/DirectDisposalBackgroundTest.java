@@ -1,11 +1,6 @@
 package com.uav.lowaltitude.modules.disposal.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyMap;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -27,7 +22,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture;
-import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /** Isolated H2 fixtures; the transport gateway is replaced so no device can be reached. */
@@ -45,8 +39,6 @@ class DirectDisposalBackgroundTest {
     private Instant at;
 
     @BeforeEach void fixture() {
-        when(gateway.dispatchAs(any(AuthUser.class), anyString(), anyString(), anyString(), any(), eq("JAMMING"), anyMap(), anyString()))
-                .thenReturn(new DisposalExecutionGateway.Rejected("DEVICE_NOT_BOUND", "DEVICE_NOT_BOUND", "隔离测试未接通设备"));
         at = clock.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
         userId = UUID.randomUUID().toString();
         role = "DIRECT-BG-" + UUID.randomUUID().toString().substring(0, 8);
@@ -149,134 +141,38 @@ class DirectDisposalBackgroundTest {
         assertThat(guard.mayStart("external-protocol-authorization")).isTrue();
     }
 
-    @Test void directJammingKeepsDirectModeWithoutInventingApprovalAndCapsParentWindow() {
-        String parent = authorization("DIRECT", "COMPLETED", "MANUAL", 60);
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "DIRECT,LINGYUN_B", "REVIEW,LINGYUN_B",
+            "DIRECT,COUNTERMEASURE_4CH", "REVIEW,COUNTERMEASURE_4CH",
+            "DIRECT,MANUAL", "REVIEW,MANUAL"})
+    void retiredContinuationNeverCreatesOrDispatchesAnotherAuthorization(String mode, String channel) {
+        String parent = authorization(mode, "COMPLETED", channel, 300);
         chain.chain(parent);
-        String child = child(parent);
-        assertThat(child).isNotNull();
-        assertThat(jdbc.queryForObject("select authorization_mode from disposal_authorization where authorization_id=?", String.class, child)).isEqualTo("DIRECT");
-        assertThat(jdbc.queryForObject("select requested_by from disposal_authorization where authorization_id=?", String.class, child)).isEqualTo(userId);
-        assertThat(jdbc.queryForObject("select approved_by from disposal_authorization where authorization_id=?", String.class, child)).isNull();
-        assertThat(jdbc.queryForObject("select approved_at from disposal_authorization where authorization_id=?", Timestamp.class, child)).isNull();
-        assertThat(jdbc.queryForObject("select valid_until from disposal_authorization where authorization_id=?", Timestamp.class, child)).isEqualTo(Timestamp.from(at.plusSeconds(60)));
-        assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?", String.class, child)).contains("DIRECT_AUTHORIZE").doesNotContain("APPROVE");
+        chain.scheduleAfterComplete(parent);
+        chain.scheduleAfterDeviceOn(parent);
+        chain.retryWhileOn(parent);
+        chain.chain(parent);
+        assertThat(child(parent)).isNull();
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization_event where authorization_id=?",
+                Integer.class, parent)).isZero();
         verifyNoInteractions(gateway);
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"USER", "ROLE", "SCOPE", "ORG", "DISTRICT", "PASSWORD", "DIRECT", "DEVICES"})
-    void directJammingCannotContinueAfterPrivilegeOrScopeRevocation(String revoked) {
-        String parent = authorization("DIRECT", "COMPLETED", "LINGYUN_B", 300);
-        revoke(revoked);
-        chain.chain(parent);
-        assertThat(child(parent)).isNull();
+    @org.junit.jupiter.params.provider.CsvSource({
+            "DIRECT,LINGYUN_B", "REVIEW,LINGYUN_B",
+            "DIRECT,COUNTERMEASURE_4CH", "REVIEW,COUNTERMEASURE_4CH"})
+    void oldChainedAuthorizationCannotStartAgain(String mode, String channel) {
+        String parent = authorization(mode, "COMPLETED", channel, 300);
+        String child = authorization(mode, "EXECUTING", channel, 300);
+        jdbc.update("update disposal_authorization set action_type='JAMMING',chained_from_authorization_id=? where authorization_id=?",
+                parent, child);
+        assertThat(guard.mayStart(child)).isFalse();
+        chain.retryWhileOn(parent);
+        assertThat(jdbc.queryForObject("select status from disposal_authorization where authorization_id=?",
+                String.class, child)).isEqualTo("EXECUTING");
         verifyNoInteractions(gateway);
-    }
-
-    @Test void expiredDirectCountermeasureCannotMintFreshJammingWindow() {
-        String parent = authorization("DIRECT", "COMPLETED", "MANUAL", -1);
-        chain.chain(parent);
-        assertThat(child(parent)).isNull();
-        verifyNoInteractions(gateway);
-    }
-
-    @Test void directJammingDispatchesAsOriginalRequesterAndDoesNotRepeat() {
-        String parent = authorization("DIRECT", "COMPLETED", "LINGYUN_B", 300);
-        when(gateway.dispatchAs(any(AuthUser.class), anyString(), anyString(), anyString(), any(), eq("JAMMING"), anyMap(), anyString()))
-                .thenReturn(new DisposalExecutionGateway.Rejected("DEVICE_NOT_BOUND", "DEVICE_NOT_BOUND", "隔离测试未接通设备"));
-        chain.chain(parent);
-        String child = child(parent);
-        assertThat(child).isNotNull();
-        verify(gateway).dispatchAs(org.mockito.ArgumentMatchers.argThat(actor -> userId.equals(actor.userId())), anyString(), anyString(), eq(child), any(), eq("JAMMING"), anyMap(), anyString());
-        chain.chain(parent);
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?", Integer.class, parent)).isEqualTo(1);
-        org.mockito.Mockito.verifyNoMoreInteractions(gateway);
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"ACCEPTED", "REJECTED"})
-    void directJammingRecordsDispatchAfterItsAuthorization(String result) {
-        // TIMESTAMP rounds nanoseconds to microseconds in both H2 and PostgreSQL. Keep the
-        // clock inside that rounding interval to reproduce an immediately rechecked window.
-        Instant dispatchTime = clock.now().plusMillis(1)
-                .truncatedTo(java.time.temporal.ChronoUnit.MICROS).plusNanos(700);
-        org.mockito.Mockito.doReturn(dispatchTime).when(clock).now();
-        String parent = authorization("DIRECT", "COMPLETED", "LINGYUN_B", 300);
-        DisposalExecutionGateway.Result dispatchResult = "ACCEPTED".equals(result)
-                ? new DisposalExecutionGateway.Accepted(UUID.randomUUID().toString())
-                : new DisposalExecutionGateway.Rejected("DEVICE_NOT_BOUND", "DEVICE_NOT_BOUND", "隔离测试未接通设备");
-        when(gateway.dispatchAs(any(AuthUser.class), anyString(), anyString(), anyString(), any(), eq("JAMMING"), anyMap(), anyString()))
-                .thenReturn(dispatchResult);
-        chain.chain(parent);
-        String child = child(parent);
-        assertThat(child).isNotNull();
-        String dispatchKind = "ACCEPTED".equals(result) ? "EXECUTE" : "DEVICE_NOT_BOUND";
-        assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=? order by occurred_at,event_id", String.class, child))
-                .containsExactly("REQUEST", "DIRECT_AUTHORIZE", dispatchKind);
-        Timestamp authorizedAt = jdbc.queryForObject("select occurred_at from disposal_authorization_event where authorization_id=? and event_kind='DIRECT_AUTHORIZE'", Timestamp.class, child);
-        Timestamp dispatchAt = jdbc.queryForObject("select occurred_at from disposal_authorization_event where authorization_id=? and event_kind=?", Timestamp.class, child, dispatchKind);
-        assertThat(dispatchAt).isAfter(authorizedAt);
-    }
-
-    @Test void reviewJammingKeepsApprovalMode() {
-        String parent = authorization("REVIEW", "COMPLETED", "MANUAL", 300);
-        chain.chain(parent);
-        String child = child(parent);
-        assertThat(child).isNotNull();
-        assertThat(jdbc.queryForObject("select authorization_mode from disposal_authorization where authorization_id=?", String.class, child)).isEqualTo("REVIEW");
-        assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?", String.class, child)).contains("REQUEST", "APPROVE").doesNotContain("DIRECT_AUTHORIZE");
-    }
-
-    @Test void reviewJammingCarriesTheRealApprovalAndNeverOutlivesItsParent() {
-        // ZT-41：审批链续上的干扰沿用原批准：有效期截到原授权，批准人/批准时刻照抄原记录，
-        // 续链这一刻没有人再批，批准事件不挂任何人的名字，也不写“自动批准”。
-        String parent = authorization("REVIEW", "COMPLETED", "MANUAL", 120);
-        chain.chain(parent);
-        String child = child(parent);
-        assertThat(child).isNotNull();
-        var row = jdbc.queryForMap("select authorization_mode,approved_by,approved_at,valid_until,decision_note from disposal_authorization where authorization_id=?", child);
-        assertThat(row.get("authorization_mode")).isEqualTo("REVIEW");
-        assertThat(instant(child, "valid_until")).isEqualTo(at.plusSeconds(120));
-        assertThat(row.get("approved_by")).isEqualTo(userId);
-        assertThat(instant(child, "approved_at")).isEqualTo(at.minusSeconds(60));
-        assertThat(row.get("decision_note").toString()).contains("沿用", "没有再审批").doesNotContain("自动批准");
-        var approval = jdbc.queryForMap("select actor_id,note,cast(snapshot as varchar) as snapshot from disposal_authorization_event where authorization_id=? and event_kind='APPROVE'", child);
-        assertThat(approval.get("actor_id")).isNull();
-        assertThat(approval.get("note").toString()).doesNotContain("自动批准");
-        assertThat(approval.get("snapshot").toString()).contains("CHAINED_FROM_PARENT", userId);
-    }
-
-    /** 时间列在 H2 / PostgreSQL 上取出来的 Java 类型不一样，统一按时刻比较。 */
-    private Instant instant(String authorizationId, String column) {
-        return jdbc.queryForObject("select " + column + " from disposal_authorization where authorization_id=?",
-                Timestamp.class, authorizationId).toInstant();
-    }
-
-    @Test void expiredReviewedCountermeasureCannotMintFreshJammingWindow() {
-        String parent = authorization("REVIEW", "COMPLETED", "LINGYUN_B", -1);
-        chain.chain(parent);
-        assertThat(child(parent)).isNull();
-        verifyNoInteractions(gateway);
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"ACCEPTED", "REJECTED"})
-    void reviewJammingRecordsDispatchAfterItsApproval(String result) {
-        Instant dispatchTime = clock.now().plusMillis(1)
-                .truncatedTo(java.time.temporal.ChronoUnit.MICROS).plusNanos(700);
-        org.mockito.Mockito.doReturn(dispatchTime).when(clock).now();
-        String parent = authorization("REVIEW", "COMPLETED", "LINGYUN_B", 300);
-        DisposalExecutionGateway.Result dispatchResult = "ACCEPTED".equals(result)
-                ? new DisposalExecutionGateway.Accepted(UUID.randomUUID().toString())
-                : new DisposalExecutionGateway.Rejected("DEVICE_NOT_BOUND", "DEVICE_NOT_BOUND", "隔离测试未接通设备");
-        when(gateway.dispatchAs(any(AuthUser.class), anyString(), anyString(), anyString(), any(), eq("JAMMING"), anyMap(), anyString()))
-                .thenReturn(dispatchResult);
-        chain.chain(parent);
-        String child = child(parent);
-        assertThat(child).isNotNull();
-        String dispatchKind = "ACCEPTED".equals(result) ? "EXECUTE" : "DEVICE_NOT_BOUND";
-        assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=? order by occurred_at,event_id", String.class, child))
-                .containsExactly("REQUEST", "APPROVE", dispatchKind);
     }
 
     private void revoke(String revoked) {

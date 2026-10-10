@@ -29,6 +29,9 @@ public class DisposalCommandGuard {
 
     public boolean mayStart(String authorizationId) {
         var initial = authorizations.findUnlocked(authorizationId);
+        // 旧自动接续任务也不能从队列再次启动；停止指令不经过 mayStart。
+        if (initial != null && "JAMMING".equals(initial.actionType()) && stops.parent(authorizationId) != null)
+            return false;
         if (initial != null && "UAV_EVENT".equals(initial.subjectKind())) {
             stops.lockEvent(initial.subjectId());
             if (Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType())

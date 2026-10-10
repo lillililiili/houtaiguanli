@@ -43,7 +43,7 @@ public class AutomationRuntimeWorker {
                             if(state==null||!"PASS".equals(state.status()))continue;
                             if("verify".equals(category))verification.confirmIfPassed(event,state.runId());
                             else if("counter".equals(category))counter.launchIfPassed(event,state.runId());
-                            else if("dispose".equals(category))handoffs.automaticAfterJamming(event);
+                            else if("dispose".equals(category))handoffs.automaticAfterDisposal(event);
                         }
                         catch(RuntimeException failed){error="部分事件判定异常，需检查后台日志";org.slf4j.LoggerFactory.getLogger(getClass()).warn("Rule evaluation failed for {} / {}: {}",category,event,failed.getClass().getSimpleName());}
                     }
