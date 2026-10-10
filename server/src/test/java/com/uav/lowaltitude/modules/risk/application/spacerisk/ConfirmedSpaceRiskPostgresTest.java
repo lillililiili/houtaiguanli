@@ -189,8 +189,12 @@ class ConfirmedSpaceRiskPostgresTest {
         SpaceObservation preserved = reader.enrich(List.of(earlier), 30).get(0);
         assertThat(preserved.objectCount()).isEqualTo(10);
         assertThat(preserved.distanceToRouteM()).isEqualByComparingTo(earlier.distanceToRouteM());
-        assertThat(new C04DecisionTable().decide(new C04DecisionTable.Observation(C04DecisionTable.CorridorRelation.NEAR,
-                C04DecisionTable.AltitudeBand.CLIMB, true, preserved.objectCount(), C04DecisionTable.Trend.UNKNOWN, "BIRD_FLOCK"), C04DecisionTableTest.params()).generate()).isFalse();
+        // 判定只拿到当时的 10 只：出中风险（出不出不看数量）且不上调；若被后来的 25 只串进来，就会错误地升到高。
+        C04DecisionTable.Decision decision = new C04DecisionTable().decide(new C04DecisionTable.Observation(C04DecisionTable.CorridorRelation.NEAR,
+                C04DecisionTable.AltitudeBand.CLIMB, true, preserved.objectCount(), C04DecisionTable.Trend.UNKNOWN, "BIRD_FLOCK"), C04DecisionTableTest.params());
+        assertThat(decision.generate()).isTrue();
+        assertThat(decision.severity()).isEqualTo("MEDIUM");
+        assertThat(decision.escalated()).isFalse();
         // 若原锚点已不再是可信实测点，返回未知；不得改用最新的25只补齐。
         jdbc.update("update track_point set point_kind='PRED' where point_id=?", oldPoint);
         assertThat(reader.enrich(List.of(earlier), 30).get(0).objectCount()).isNull();
@@ -201,8 +205,8 @@ class ConfirmedSpaceRiskPostgresTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"25,true", "20,true", "19,false", "10,false"})
-    void countGateAndConfirmedRuleMembershipReachTheStoredRisk(int count, boolean expectedRisk) {
+    @CsvSource({"25,HIGH", "20,HIGH", "19,MEDIUM", "10,MEDIUM"})
+    void flockCountOnlyLiftsTheLevelAndConfirmedRuleMembershipReachTheStoredRisk(int count, String expectedSeverity) {
         String counted = observation(source, now, count);
         jdbc.update("update track_point set observation_id=? where point_id=?", counted, point);
         // 使用实际发布成员关系，不能从规则集版本号拼接 rule_version_id。
@@ -210,12 +214,37 @@ class ConfirmedSpaceRiskPostgresTest {
         jdbc.update("update rule_set set active_version_id=? where rule_set_code='SPACE-RISK-DEMO'", formal);
         var run = evaluation.evaluate("C04", now.minusSeconds(1), now.plusSeconds(1), "MANUAL", null);
         assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
-        assertThat(riskCount()).isEqualTo(expectedRisk ? 1 : 0);
-        if (expectedRisk) {
-            assertThat(jdbc.queryForObject("select state_code from flight_risk where target_id=?", String.class, target)).isEqualTo("PENDING_VERIFICATION");
-            assertThat(jdbc.queryForObject("select f.rule_version_id from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", String.class, target))
-                    .isEqualTo("confirmed-20261008-C04");
-        }
+        // 确认书修订版 4-1、4-2：出不出风险不看数量，20 只及以上只把等级上调一级。
+        assertThat(riskCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where target_id=?", String.class, target)).isEqualTo(expectedSeverity);
+        assertThat(jdbc.queryForObject("select state_code from flight_risk where target_id=?", String.class, target)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(jdbc.queryForObject("select f.rule_version_id from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", String.class, target))
+                .isEqualTo("confirmed-20261008-C04");
+        // 报了数量的，依据写“规模约 N”，不写“数量未知”。
+        assertThat(jdbc.queryForObject("select reason_text from flight_risk where target_id=?", String.class, target))
+                .contains("规模约 " + count).doesNotContain("数量未知");
+    }
+
+    @Test
+    void aFlockWithoutAnyReportedCountStillReachesTheStoredRiskAndRecordsTheCountAsUnknown() {
+        // 现在雷达、光电、MQTT 设备协议都报不出只数：来源观测里没有 object_count，风险照出，并如实记"数量未采集"。
+        String uncounted = id();
+        jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,height_agl_m,quality,source_mode,owner_org_id,district_id,created_at)"
+                + " select ?,source_id,?,?,?, ?,ST_SetSRID(ST_MakePoint(118,37.001),4326),1,100,CAST('{}' AS JSON),source_mode,?,?,? from integration_source where source_id=?",
+                uncounted, id(), target, ts(now), ts(now), org, district, ts(now), source);
+        jdbc.update("update track_point set observation_id=? where point_id=?", uncounted, point);
+        assertThat(observation().objectCount()).isNull();
+        var run = evaluation.evaluate("C04", now.minusSeconds(1), now.plusSeconds(1), "MANUAL", null);
+        assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
+        assertThat(riskCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where target_id=?", String.class, target)).isEqualTo("MEDIUM");
+        assertThat(jdbc.queryForObject("select state_code from flight_risk where target_id=?", String.class, target)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(jdbc.queryForObject("select CAST(f.unknown_reasons AS VARCHAR) from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", String.class, target))
+                .contains(C04DecisionTable.UNKNOWN_OBJECT_COUNT);
+        assertThat(jdbc.queryForObject("select f.object_count from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", Integer.class, target)).isNull();
+        // 确认书修订版 4-2：风险依据里要写“数量未知”，不写规模。
+        assertThat(jdbc.queryForObject("select reason_text from flight_risk where target_id=?", String.class, target))
+                .contains("距航线中心线").contains("数量未知").doesNotContain("规模约");
     }
 
     @ParameterizedTest
