@@ -108,6 +108,16 @@ public class AirspaceReadService {
         return conflictService.conflicts(planId);
     }
 
+    @Transactional(readOnly = true)
+    public AirspaceDtos.VersionContextDto versionContext(String versionId) {
+        AccessDecision access = accessControl.require(PermissionCode.AIRSPACE_READ);
+        AirspaceVersionRow version = repository.findVersion(pathId(versionId), access);
+        if (version == null) throw new ApiException(HttpStatus.NOT_FOUND, "AIRSPACE_VERSION_NOT_FOUND", "空域版本不存在");
+        AirspaceRow row = repository.findAirspace(version.airspaceId(), access);
+        if (row == null) throw new ApiException(HttpStatus.NOT_FOUND, "AIRSPACE_NOT_FOUND", "空域不存在");
+        return new AirspaceDtos.VersionContextDto(row.airspaceId(), row.airspaceNo(), row.name(), row.sourceMode(), row.ownerOrgName(), version(version));
+    }
+
     private AirspaceSummaryDto summary(AirspaceRow row) {
         return summary(row, null);
     }

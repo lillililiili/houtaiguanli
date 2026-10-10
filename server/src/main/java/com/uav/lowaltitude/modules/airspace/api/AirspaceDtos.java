@@ -40,6 +40,10 @@ public final class AirspaceDtos {
             List<FieldIssueDto> fieldIssues, long createdAt) {
     }
 
+    /** 边界与限制固定到历史版本；名称与管理单位为当前目录辨识资料。 */
+    public record VersionContextDto(String airspaceId, String airspaceNo, String name, String sourceMode,
+            String ownerOrgName, AirspaceVersionDto version) { }
+
     public record AirspaceConflictDto(
             String planId, String routeVersionId, String airspaceId, String airspaceVersionId,
             String horizontalRelation, String heightRelation, String timeRelation,
