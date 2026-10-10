@@ -83,8 +83,9 @@ public class HandoffSubmissionService {
     private final AutomationRuntimeEligibility ruleEligibility;
     private final com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess;
     static final String WAITING_RULES = "通知处罚规则尚未全部满足";
-    /** 处罚交接的建立方式（2026-10-06）：后台在干扰完成后自动建立，或有人选定接收单位后提交。 */
+    /** 处罚交接的建立方式：单次反制停止确认、旧干扰完成链，或人工选择接收单位后提交。 */
     public static final String TRIGGER_JAMMING_COMPLETED = "JAMMING_COMPLETED";
+    public static final String TRIGGER_COUNTERMEASURE_COMPLETED = "COUNTERMEASURE_COMPLETED";
     public static final String TRIGGER_MANUAL = "MANUAL";
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(HandoffSubmissionService.class);
     /** 自动移送停下时，同一事件、同一接收单位数只记一次日志；后台每 15 秒扫一次，不能刷屏。只留最近 1000 个事件。 */
@@ -378,18 +379,26 @@ public class HandoffSubmissionService {
     private static final AccessDecision SYSTEM_SCOPE = new AccessDecision("system:auto-punishment-handoff", ScopeMode.ALL);
     private final HandoffChannelPort channel;
 
-    /** 干扰完成后自动建立处罚交接。引擎开启时，通知处罚规则全部满足才发出通知；未满足时保留交接，人工按钮仍可发送。 */
+    /** 历史调用入口保留；新旧完成事实统一检查，不再要求创建新的干扰授权。 */
     @Transactional
     public void automaticAfterJamming(String eventId) {
+        automaticAfterDisposal(eventId);
+    }
+
+    /** 反制停止确认或旧干扰完成后自动建立交接；通知渠道与规则沿用，启动成功不能作为停止事实。 */
+    @Transactional
+    public void automaticAfterDisposal(String eventId) {
         if (eventId == null || eventId.isBlank()) return;
+        var completion = disposals.punishmentCompletion(eventId);
+        if (completion == null) return;
         boolean send = automaticPunishmentSend(eventId);
         String existing = repository.existingPunishment(eventId);
         if (existing != null) {
             if (send) sendWaitingPunishment(existing, eventId);
             return;
         }
-        String submitter = disposals.completedJammingRequester(eventId);
-        if (submitter == null) return;
+        String submitter = completion.requestedBy();
+        String triggerSource = completion.triggerSource();
         var recipients = repository.enabledRecipients("UAV_PUNISHMENT");
         // 处罚移送不给默认接收单位（决策 18-14）：没有或有多个启用的接收单位时，后台不替人选择，
         // 由告警处置进度提示有权限的人员选定接收单位后提交，这里只记一次日志。
@@ -404,7 +413,7 @@ public class HandoffSubmissionService {
         try {
             repository.insertHandoff(new HandoffInsert(handoffId, "UAV_EVENT", eventId, null, eventId, "UAV_PUNISHMENT",
                     recipient.recipientId(), event.version(), event.ownerOrgId(), event.districtId(),
-                    materials.sourceMode(eventId), submitter, at, TRIGGER_JAMMING_COMPLETED));
+                    materials.sourceMode(eventId), submitter, at, triggerSource));
         } catch (DuplicateKeyException ignored) {
             return;
         }
@@ -414,14 +423,14 @@ public class HandoffSubmissionService {
             repository.insertDelivery(new DeliveryInsert(UUID.randomUUID().toString(), handoffId, 1, HandoffRules.PENDING_DELIVERY,
                     HandoffRules.NOT_EXPECTED, WAITING_RULES, at, null, null, null));
             audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
-                    "source_id=" + eventId + "; trigger=JAMMING_COMPLETED; delivery=WAITING_RULES; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
+                    "source_id=" + eventId + "; trigger=" + triggerSource + "; delivery=WAITING_RULES; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
             return;
         }
         DeliveryOutcome outcome = dispatch(handoffId, "UAV_EVENT", eventId, "UAV_PUNISHMENT", recipient, snapshot, at, materials.sourceMode(eventId));
         repository.insertDelivery(delivery(handoffId, outcome, at));
         if (outcome.receiptResult() != null) repository.updateReceiptResult(handoffId, outcome.receiptResult());
         audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
-                "source_id=" + eventId + "; trigger=JAMMING_COMPLETED; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
+                "source_id=" + eventId + "; trigger=" + triggerSource + "; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
     }
 
     private void noteManualRequired(String eventId, int recipients) {

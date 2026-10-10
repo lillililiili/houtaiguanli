@@ -50,12 +50,12 @@ class DisposalReceiptSyncTest {
     @BeforeEach
     void setup() {
         sync = new DisposalReceiptSync(repository, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)),
-                new ObjectMapper(), jammingChain, handoffs, policies, stops, false);
+                new ObjectMapper(), handoffs, policies, stops, false);
     }
 
-    /** 新-20：四通道设备回“已打开”不算完成，仍是反制中，记下到时关闭的时刻，并接上信号干扰。 */
+    /** 启动成功仍是反制中，只记运行与关闭时刻，不追加授权。 */
     @Test
-    void relayOnKeepsCounterExecutingRecordsTheRunAndChainsJamming() {
+    void relayOnKeepsCounterExecutingRecordsTheRunWithoutChainingJamming() {
         AuthorizationRow row = row("auth-1", DisposalRules.COUNTERMEASURE, "cmd-1");
         when(repository.findExecutingByCommand("cmd-1")).thenReturn(row);
         when(devices.findCommand("cmd-1")).thenReturn(Map.of("status", "SUCCEEDED", "result_code", "COUNTERMEASURE_SET_OK",
@@ -70,9 +70,9 @@ class DisposalReceiptSyncTest {
         verify(repository, never()).transitionFromStatus(anyString(), anyString(), anyString(), any(), any(), any());
         verify(repository).insertEvent(anyString(), eq("auth-1"), eq("RECEIPT"), isNull(), contains("满 60 秒系统自动全部关闭"),
                 anyString(), eq(AT));
-        verify(jammingChain).scheduleAfterDeviceOn("auth-1");
+        verify(jammingChain, never()).scheduleAfterDeviceOn(any());
         verify(jammingChain, never()).scheduleAfterComplete(any());
-        verify(handoffs, never()).automaticAfterJamming(any());
+        verify(handoffs, never()).automaticAfterDisposal(any());
     }
 
     /** 转干扰沿用来源反制的关闭时刻，两条一起关。 */
@@ -96,7 +96,7 @@ class DisposalReceiptSyncTest {
         verify(repository).insertEvent(anyString(), eq("auth-2"), eq("RECEIPT"), isNull(), contains("和来源反制一起到时自动全部关闭"),
                 anyString(), eq(AT));
         verify(jammingChain, never()).scheduleAfterDeviceOn(any());
-        verify(handoffs, never()).automaticAfterJamming(any());
+        verify(handoffs, never()).automaticAfterDisposal(any());
     }
 
     /** 已经记过运行（读时同步、定时兜底反复走到）：什么都不再做，也不加锁。 */
@@ -146,7 +146,7 @@ class DisposalReceiptSyncTest {
         verify(repository).insertEvent(anyString(), eq("auth-2"), eq("RECEIPT"), isNull(), eq("设备回执：已全部关闭"), anyString(), any());
         verify(repository).insertEvent(anyString(), eq("auth-1"), eq("COMPLETE"), isNull(), isNull(), anyString(), any());
         verify(jammingChain, never()).scheduleAfterComplete(any());
-        verify(handoffs).automaticAfterJamming("event-1");
+        verify(handoffs).automaticAfterDisposal("event-1");
     }
 
     /** 全部关闭没成功：授权仍是反制中，交给到时关闭的定时任务重试。 */
@@ -160,6 +160,20 @@ class DisposalReceiptSyncTest {
 
         verify(repository, never()).transitionFromStatus(anyString(), anyString(), anyString(), any(), any(), any());
         verify(repository, never()).insertEvent(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void counterStopCompletesWithoutCallingAdministrativeHandoffInItsTransaction() {
+        when(repository.findExecutingByCommand("off-1")).thenReturn(row("auth-1", DisposalRules.COUNTERMEASURE, "off-1"));
+        when(devices.findCommand("off-1")).thenReturn(Map.of("status", "SUCCEEDED", "result_code", "COUNTERMEASURE_SET_OK"));
+        when(repository.relayMask("off-1")).thenReturn(0);
+        when(repository.transitionFromStatus(eq("auth-1"), eq(DisposalRules.EXECUTING), eq(DisposalRules.COMPLETED),
+                any(), eq("COUNTERMEASURE_SET_OK"), isNull())).thenReturn(1);
+
+        sync.syncByCommand("off-1");
+
+        verify(repository).insertEvent(anyString(), eq("auth-1"), eq("COMPLETE"), isNull(), isNull(), anyString(), any());
+        org.mockito.Mockito.verifyNoInteractions(handoffs, jammingChain);
     }
 
     private static AuthorizationRow row(String id, String action, String commandId) {

@@ -14,7 +14,7 @@ public final class Item4HttpRestartProcess {
     public static void main(String[] args) throws Exception {
         String url = System.getenv("ITEM4_HTTP_DB_URL");
         if (url == null || !(url.matches("jdbc:postgresql://127\\.0\\.0\\.1:25432/maintenance_flow_verify_item4_[a-z0-9_]+\\?currentSchema=item4_[a-f0-9]{32},public")
-                || url.matches("jdbc:postgresql://127\\.0\\.0\\.1:25432/stage456_verify_item4_[a-z0-9_]+\\?currentSchema=monitor_events_[a-f0-9]{32},public")))
+                || url.matches("jdbc:postgresql://127\\.0\\.0\\.1:(?:25432|5432)/stage456_verify_item4_[a-z0-9_]+\\?currentSchema=monitor_events_[a-f0-9]{32},public")))
             throw new IllegalArgumentException("Only isolated item4 schemas are permitted");
         List<String> settings = new ArrayList<>(List.of("--spring.profiles.active=test", "--server.port=0", "--server.address=127.0.0.1",
                 "--spring.datasource.url=" + url, "--spring.datasource.driver-class-name=org.postgresql.Driver",

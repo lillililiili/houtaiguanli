@@ -179,6 +179,8 @@ class ReportingApiTest {
         assertThat(result.path("observation_metrics").path("status").asText()).isEqualTo("UNAVAILABLE");
         assertThat(result.path("observation_metrics").hasNonNull("duration_seconds")).isFalse();
         assertThat(result.path("by_type").isEmpty()).isTrue();
+        assertThat(result.path("discovery_hours").isEmpty()).isTrue();
+        assertThat(result.path("availability").path("discovery_hours").path("status").asText()).isEqualTo("UNAVAILABLE");
     }
 
     @Test
@@ -384,6 +386,92 @@ class ReportingApiTest {
     }
 
     @Test
+    @org.springframework.transaction.annotation.Transactional
+    void discoveryHoursUseShanghaiFirstSeenTimeAndScopedFacts() throws Exception {
+        String token = login("admin1", "changeme");
+        String org = UUID.randomUUID().toString();
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)", org, org, "时段统计隔离测试");
+        var start = java.time.OffsetDateTime.parse("2005-04-30T00:00:00+08:00");
+        long[] seconds = {-1, 0, 3599, 3600, 86399, 86400, 90000, 172800, 43200, 46800, 50000};
+        for (int i = 0; i < seconds.length; i++) {
+            String id = UUID.randomUUID().toString();
+            var first = start.plusSeconds(seconds[i]).withOffsetSameInstant(java.time.ZoneOffset.UTC);
+            String mode = i == 8 ? "replay" : i == 9 ? "mock" : "live";
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV',?,?,'seed-stage3-district',?,?)",
+                    id, id, first, start.plusDays(7), mode, org, first, start.plusDays(7));
+            if (i == 10) jdbc.update("insert into target_track_status(target_id,status,since,updated_at) values(?,'MERGE',?,?)", id, first, first);
+        }
+        for (int day = 0; day < 2; day++) {
+            String date = start.plusDays(day).toLocalDate().toString();
+            JsonNode report = data(mvc.perform(get("/api/v1/stats/operations").param("from", date).param("to", date)
+                    .param("owner_org_id", org).param("include_observations", "false").header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            JsonNode hours = report.path("discovery_hours");
+            assertThat(hours.size()).isEqualTo(24);
+            for (int hour = 0; hour < 24; hour++) assertThat(hours.get(hour).path("hour").asInt()).isEqualTo(hour);
+            assertThat(sum(hours, "total")).isEqualTo(day == 0 ? 5 : 2);
+            assertThat(sum(hours, "total")).isEqualTo(report.path("summary").path("total").asInt());
+            assertThat(hours.get(0).path("total").asInt()).isEqualTo(day == 0 ? 2 : 1);
+            assertThat(hours.get(1).path("total").asInt()).isEqualTo(1);
+            assertThat(hours.get(12).path("total").asInt()).isEqualTo(day == 0 ? 1 : 0);
+            assertThat(hours.get(13).path("total").asInt()).isZero();
+            assertThat(hours.get(23).path("total").asInt()).isEqualTo(day == 0 ? 1 : 0);
+        }
+        JsonNode combined = data(mvc.perform(get("/api/v1/stats/operations").param("from", "2005-04-30").param("to", "2005-05-01")
+                .param("owner_org_id", org).header("Authorization", bearer(token))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(sum(combined.path("discovery_hours"), "total")).isEqualTo(7);
+        assertThat(combined.path("discovery_hours").get(0).path("total").asInt()).isEqualTo(3);
+        String csv = mvc.perform(get("/api/v1/stats/operations/export.csv").param("from", "2005-04-30").param("to", "2005-05-01")
+                .param("owner_org_id", org).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(csv.lines().filter(line -> line.startsWith("\"目标发现时段（北京时间）\"")).toList()).hasSize(24);
+        assertThat(csv).contains("\"00:00-01:00\",\"新增目标数\",\"3\"");
+        JsonNode empty = data(mvc.perform(get("/api/v1/stats/operations").param("from", "2005-05-03").param("to", "2005-05-03")
+                .param("owner_org_id", org).header("Authorization", bearer(token))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(empty.path("discovery_hours").size()).isEqualTo(24);
+        assertThat(sum(empty.path("discovery_hours"), "total")).isZero();
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void regionsContainOnlyScopedFactsAndExportsUseTheSameRows() throws Exception {
+        String token = login("admin1", "changeme");
+        String org = UUID.randomUUID().toString();
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)", org, org, "区域事实统计测试");
+        // Real configured regions may have no facts. They must not produce invented report rows.
+        String unused = UUID.randomUUID().toString();
+        jdbc.update("insert into app_district(district_id,district_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)", unused, unused, "无业务区域-" + unused);
+        for (int day = 1; day <= 2; day++) {
+            String district = UUID.randomUUID().toString();
+            String name = "业务区域-" + district;
+            jdbc.update("insert into app_district(district_id,district_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)", district, district, name);
+            var at = java.time.OffsetDateTime.parse("2003-02-0" + day + "T12:00:00+08:00");
+            for (String source : java.util.List.of("live", "mock")) {
+                String id = UUID.randomUUID().toString();
+                jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV',?,?,?,?,?)",
+                        id, id, at, at, source, org, source.equals("mock") ? unused : district, at, at);
+            }
+            String date = at.toLocalDate().toString();
+            JsonNode report = data(mvc.perform(get("/api/v1/stats/operations").param("from", date).param("to", date)
+                    .param("owner_org_id", org).header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            assertThat(report.path("summary").path("total").asInt()).isEqualTo(1);
+            assertThat(report.path("regions").size()).isEqualTo(1);
+            assertThat(report.path("regions").get(0).path("name").asText()).isEqualTo(name);
+            assertThat(report.path("regions").get(0).path("total").asInt()).isEqualTo(1);
+            String csv = mvc.perform(get("/api/v1/stats/operations/export.csv").param("from", date).param("to", date)
+                    .param("owner_org_id", org).header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+            assertThat(csv).contains(name).doesNotContain("无业务区域-" + unused);
+            assertThat(csv.lines().filter(line -> line.startsWith("\"区域\"")).toList()).hasSize(4).allMatch(line -> line.contains(name));
+        }
+        mvc.perform(get("/api/v1/stats/operations").param("from", "2003-02-03").param("to", "2003-02-03")
+                .param("owner_org_id", org).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.summary.total").value(0))
+                .andExpect(jsonPath("$.data.regions").isEmpty());
+    }
+
+    @Test
     void operationsAggregatesBusinessFactsAndDeviceCounts() throws Exception {
         String token = login("admin1", "changeme");
         JsonNode data = data(mvc.perform(get("/api/v1/stats/operations").header("Authorization", bearer(token)))
@@ -403,6 +491,8 @@ class ReportingApiTest {
         assertThat(punish).isGreaterThanOrEqualTo(0);
         assertThat(data.path("days").size()).isEqualTo(30);
         assertThat(sum(data.path("days"), "total")).isEqualTo(total);
+        assertThat(data.path("discovery_hours").size()).isEqualTo(24);
+        assertThat(sum(data.path("discovery_hours"), "total")).isEqualTo(total);
         assertThat(sum(data.path("days"), "illegal")).isEqualTo(illegal);
         assertThat(sum(data.path("days"), "punish")).isEqualTo(punish);
         assertThat(sum(data.path("regions"), "total")).isEqualTo(total);
@@ -415,7 +505,9 @@ class ReportingApiTest {
         assertThat(data.path("alt_total").asInt()).isBetween(0,total);
         assertThat(sum(data.path("by_penalty"), "value")).isLessThanOrEqualTo(punish);
         assertThat(data.path("by_risk").size()).isEqualTo(5);
-        assertThat(data.path("regions").size()).isGreaterThanOrEqualTo(6);
+        for (JsonNode region : data.path("regions")) {
+            assertThat(region.path("total").asInt() + region.path("punish").asInt()).isPositive();
+        }
         assertThat(data.path("partners").size()).isBetween(0, 5);
 
         // 统计口径：正式接入设备加上报过的设备模拟器设备（StatisticsScope），不含系统自带的演示样例设备。

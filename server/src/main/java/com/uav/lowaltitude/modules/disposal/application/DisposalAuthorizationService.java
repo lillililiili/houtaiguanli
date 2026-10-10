@@ -56,7 +56,6 @@ public class DisposalAuthorizationService {
     private final DisposalPolicyRepository policies;
     private final UavEventRepository events;
     private final DisposalExecutionGateway gateway;
-    private final DisposalJammingChain jammingChain;
     private final IdempotencyGuard idempotency;
     private final AppClock clock;
     private final AuditService audit;
@@ -65,14 +64,14 @@ public class DisposalAuthorizationService {
 
     public DisposalAuthorizationService(AccessControlService access, DisposalRepository repository,
             DisposalPolicyRepository policies, UavEventRepository events, DisposalExecutionGateway gateway,
-            DisposalJammingChain jammingChain, IdempotencyGuard idempotency, AppClock clock, AuditService audit,
+            IdempotencyGuard idempotency, AppClock clock, AuditService audit,
             ObjectMapper json, com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops,
             com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory,
             com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy devices) {
         this.devices = devices;
         this.advisory = advisory;
         this.access = access; this.repository = repository; this.policies = policies; this.events = events;
-        this.gateway = gateway; this.jammingChain = jammingChain; this.idempotency = idempotency; this.clock = clock;
+        this.gateway = gateway; this.idempotency = idempotency; this.clock = clock;
         this.audit = audit; this.json = json;
         this.emergencyStops = emergencyStops;
     }
@@ -207,6 +206,8 @@ public class DisposalAuthorizationService {
         // 先事件后授权，与核查写入/急停采用一致锁顺序。
         AuthorizationRow initial = repository.find(id, decision);
         if (initial == null) throw notFound();
+        if (DisposalRules.JAMMING.equals(initial.actionType()) && emergencyStops.parent(id) != null)
+            throw conflict("LEGACY_JAMMING_RETIRED", "自动接续信号干扰已停用，历史授权不能再次执行");
         if ("UAV_EVENT".equals(initial.subjectKind()) && Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType()))
             advisory.requireCounter(initial.subjectId(), decision);
         AuthorizationRow row = locked(id, decision);

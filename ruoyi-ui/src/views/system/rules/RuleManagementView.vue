@@ -24,7 +24,7 @@ const policyText = computed(() => {
   if (!count.value) return `未启用规则时，不会自动${meta.value.noun}。`
   if (category.value === 'verify') return '适用范围内，已启用规则全部满足后，系统自动核实属实，并进入飞手通知。'
   if (category.value === 'counter') return '进入待反制且规则全部满足后，系统自动发起反制。证据、急停和唯一可用设备仍要过。没满足也不会关掉「发起反制」。'
-  return '干扰完成后，规则全部满足则自动通知处罚部门。没满足也不会关掉「通知处罚部门」。'
+  return '反制结束且停止确认后，规则全部满足则自动通知处罚部门。历史干扰记录保留原流程；没满足也不会关掉「通知处罚部门」。'
 })
 const emptyText = computed(() => '暂无规则。未启用规则时，这一步不会自动执行。')
 const executionType = computed(() => ({ CONNECTED: 'success', STARTING: 'warning', DISABLED: 'info', UNAVAILABLE: 'error' })[group.value?.execution_status] || 'warning')

@@ -116,13 +116,6 @@ class DisposalExecutionTest {
     @Test
     void existingJammingIsNotReplacedByAutoChain() throws Exception {
         String eventId = event("CONFIRMED");
-        String jamBody = "{\"action_type\":\"JAMMING\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""
-                + eventId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"" + deviceId
-                + "\",\"reason\":\"先手选干扰\"}";
-        String existing = body(mvc.perform(post("/api/v1/disposal-authorizations")
-                        .header("Authorization", bearer(requester)).header("Idempotency-Key", key())
-                        .contentType(MediaType.APPLICATION_JSON).content(jamBody))
-                .andExpect(status().isCreated())).path("data").path("authorization_id").asText();
         String cmBody = "{\"action_type\":\"COUNTERMEASURE\",\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""
                 + eventId + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"" + deviceId
                 + "\",\"reason\":\"再走反制\"}";
@@ -130,6 +123,8 @@ class DisposalExecutionTest {
                         .header("Authorization", bearer(requester)).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON).content(cmBody))
                 .andExpect(status().isCreated())).path("data").path("authorization_id").asText();
+        // Preserve a pre-existing independent JAMMING record without invoking the retired continuation.
+        String existing = historicalJamming(counter);
         mvc.perform(post("/api/v1/disposal-authorizations/{id}/approve", counter)
                         .header("Authorization", bearer(approver)).header("Idempotency-Key", key())
                         .contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0}"))
@@ -369,6 +364,18 @@ class DisposalExecutionTest {
                 + " values (?,?, 'COUNTERMEASURE','UAV_EVENT',?,'MANUAL','历史人工执行',?,?,?,?,?,?,?,'demo-v1',?,?,'mock',2,?,?,'REVIEW')",
                 id, "EX-" + id.substring(0, 12), subjectId, requesterId, now, approverId, from, from, until, status,
                 ORG, DISTRICT, now, now);
+        return id;
+    }
+
+    /** Isolated historical record; no production creation, queue or device dispatch is involved. */
+    private String historicalJamming(String basisId) {
+        String id = UUID.randomUUID().toString();
+        jdbc.update("insert into disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,"
+                + "target_id,device_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,"
+                + "source_mode,version,created_at,updated_at,authorization_mode)"
+                + " select ?,?,'JAMMING',subject_kind,subject_id,target_id,device_id,channel,'isolated historical jamming',"
+                + "requested_by,requested_at,'REQUESTED',policy_version,owner_org_id,district_id,source_mode,0,created_at,updated_at,"
+                + "authorization_mode from disposal_authorization where authorization_id=?", id, "OLD-" + id.substring(0, 12), basisId);
         return id;
     }
 

@@ -132,7 +132,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
     }
 
     @ParameterizedTest @ValueSource(strings={"VALID","RULE_DISABLED","VERSION","SCHEDULE","AUTH_EXPIRED","POSITION_STALE","EVIDENCE_LEGAL"})
-    void automaticContinuationRechecksAfterTheFirstRealReceipt(String change) throws Exception {
+    void automaticReceiptNeverCreatesSuccessorUnderAnyCurrentBoundary(String change) throws Exception {
         String id=queueAutomatic(), command=commandOf(id);
         awaitWire(1);
         String target=jdbc.queryForObject("select target_id from disposal_authorization where authorization_id=?",String.class,id);
@@ -145,25 +145,26 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
             case "EVIDENCE_LEGAL" -> appendEvaluation(target,"LEGAL");
             default -> { }
         }
+        var authorizedUntil=disposalRepository.findUnlocked(id).validUntil();
         reply(command,0);
         Awaitility.await().atMost(Duration.ofSeconds(8)).untilAsserted(()->assertThat(statusOf(id)).isEqualTo("COMPLETED"));
-        if ("VALID".equals(change)) {
-            awaitWire(2);
-            assertThat(children(id)).hasSize(1);
-            var child=disposalRepository.findUnlocked(children(id).get(0));
-            assertThat(child.requestedBy()).isEqualTo(AutomationPrincipal.USER_ID);
-            assertThat(child.approvedBy()).isNull();
-            assertThat(child.validUntil()).isEqualTo(disposalRepository.findUnlocked(id).validUntil());
-            assertThat(frames.get(1).path("data").path("operationCmd").asInt()).isEqualTo(60002);
-        } else {
-            outbox.poll();
-            assertThat(children(id)).isEmpty();
-            assertThat(frames).hasSize(1);
-        }
-        reply(command,0);
+        automatic.poll();
         outbox.poll();
-        assertThat(frames).hasSize("VALID".equals(change)?2:1);
-        saveEvidence("automatic-continuation-"+change,id);
+        assertThat(children(id)).isEmpty();
+        assertThat(frames).hasSize(1);
+        var completed=disposalRepository.findUnlocked(id);
+        assertThat(completed.requestedBy()).isEqualTo(AutomationPrincipal.USER_ID);
+        assertThat(completed.approvedBy()).isNull();
+        assertThat(completed.validUntil()).isEqualTo(authorizedUntil);
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,eventId)).isEqualTo(1);
+        reply(command,0);
+        automatic.poll();
+        outbox.poll();
+        assertThat(children(id)).isEmpty();
+        assertThat(frames).hasSize(1);
+        assertThat(commandOf(id)).isEqualTo(command);
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,binding.opsDeviceId())).isEqualTo(1);
+        saveEvidence("automatic-single-authorization-"+change,id);
     }
 
     @ParameterizedTest @ValueSource(strings={"DISABLED","OUT_OF_SCHEDULE"})

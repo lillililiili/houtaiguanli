@@ -142,7 +142,7 @@ public class HandoffRepository {
                 + ":version,:org,:district,:mode,:submitter,:created,:trigger)", params);
     }
 
-    /** 处罚交接是后台自动建立（JAMMING_COMPLETED）还是有人选定接收单位后提交（MANUAL）；旧记录可能为空。 */
+    /** 处罚交接是后台自动建立（COUNTERMEASURE_COMPLETED / 旧 JAMMING_COMPLETED）还是人工提交（MANUAL）；旧记录可能为空。 */
     public String triggerSource(String handoffId) {
         List<String> rows = jdbc.query("SELECT trigger_source FROM handoff WHERE handoff_id=:id",
                 Map.of("id", handoffId), (r, n) -> r.getString(1));
@@ -555,7 +555,7 @@ public class HandoffRepository {
     public record EvidenceMaterialRow(String evidenceId, String evidenceNo, String kindCode, String sha256,
             OffsetDateTime capturedAt, String status) { }
 
-    /** triggerSource：处罚交接填 JAMMING_COMPLETED（后台自动）或 MANUAL（人选定接收单位后提交）；风险通知为空。 */
+    /** triggerSource：处罚交接填 COUNTERMEASURE_COMPLETED / 旧 JAMMING_COMPLETED（后台自动）或 MANUAL；风险通知为空。 */
     public record HandoffInsert(String handoffId, String sourceKind, String sourceId, String riskId, String eventId, String handoffType,
             String recipientId, long sourceVersion, String ownerOrgId, String districtId, String sourceMode, String submittedBy,
             OffsetDateTime createdAt, String triggerSource) { }

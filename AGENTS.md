@@ -1,5 +1,9 @@
 # AGENTS.md
 
+2026-10-09 用户确认：业务前台区域分布整块（含排行）替换为目标发现时段分布。新增 `discovery_hours: [{hour:0..23,total:整数}]` 和 `availability.discovery_hours`，按 Asia/Shanghai 首次发现小时累计查询期内同源新增目标，排除合并别名、系统样例及无权限范围。24 项按小时升序、合计等于 summary.total；可读但无数据为实际 0，无目标权限返回空数组及 UNAVAILABLE。CSV 和兼容 XLSX 分类分布追加同源时段统计，原 regions 和导出历史内容保留；后台现有适配器可兼容忽略新增字段。
+
+- 2026-10-09 用户确认：运行统计不显示假数据或占位数据。区域分布按权限、来源及时间范围内的实际业务记录归属聚合，禁止预填固定地区；无事实返回空结果，真实零值与未知区分。前台、后台兼容报表和 CSV/XLSX 同源；保留历史，设备模拟器按既有来源口径标识，不冒充真实设备。
+
 本仓库包含管理前端与平台唯一后端。`ruoyi-ui/` 使用 Vue 3、Vite、Pinia、Element Plus 和 npm；`server/` 使用 Java 17、Spring Boot 3.4.5、MyBatis、Flyway 与 PostgreSQL/PostGIS。
 
 - npm 命令只在 `ruoyi-ui/` 运行，Maven 命令只在 `server/` 运行。

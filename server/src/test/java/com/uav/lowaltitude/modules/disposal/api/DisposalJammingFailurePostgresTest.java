@@ -32,7 +32,7 @@ import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
-/** R11: explicit synthetic actor authority, two actual loopback commands, independent final receipts. */
+/** No successor command is created; already-sent historical failures remain separately auditable. */
 @EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches="jdbc:postgresql://[^/]+/stage456_verify_[a-z0-9_]+")
 class DisposalJammingFailurePostgresTest extends AutomationMqttFixture {
     private static final DeviceMonitoringPostgresFixture DATABASE = new DeviceMonitoringPostgresFixture();
@@ -49,52 +49,29 @@ class DisposalJammingFailurePostgresTest extends AutomationMqttFixture {
     @SpyBean com.uav.lowaltitude.modules.disposal.application.DisposalJammingChain chain;
 
     @Test
-    void completedCountermeasureThenExpiredObservationBlocksTheRealJammingContinuation() throws Exception {
+    void completedCountermeasureNeverCreatesAnotherAuthorizationAfterObservationChanges() throws Exception {
         String actor = user("disposal:direct","disposal:read","devices","target:read");
-        String parent = data(request("/api/v1/disposal-authorizations/direct-execute",actor,key(),body("QA R09 expiry after parent completion"))
+        String parent = data(request("/api/v1/disposal-authorizations/direct-execute",actor,key(),body("isolated no successor regression"))
                 .andExpect(status().isCreated())).path("authorization_id").asText();
-        String target = jdbc.queryForObject("select target_id from disposal_authorization where authorization_id=?",String.class,parent);
-        var injected = new java.util.concurrent.atomic.AtomicBoolean();
-        var chronology = new java.util.concurrent.ConcurrentHashMap<String,Object>();
-        doAnswer(call -> {
-            // Only inject the observation timing; the receipt transition, transaction callback and
-            // real chain eligibility still execute. Never stub the eligibility result or child creation.
-            assertThat(statusOf(parent)).isEqualTo("COMPLETED");
-            assertThat(advisory.counterBlockReason(eventId)).isEmpty();
-            chronology.put("parent_status_before_expiry",statusOf(parent));
-            chronology.put("parent_completed_at",clock.nowMillis());
-            chronology.put("previous_observed_at",jdbc.queryForObject("select observed_at from target_latest_state where target_id=?",java.sql.Timestamp.class,target).toInstant().toString());
-            var stale = java.sql.Timestamp.from(clock.now().minusSeconds(120));
-            jdbc.update("update target_latest_state set observed_at=? where target_id=?",stale,target);
-            chronology.put("replacement_observed_at",stale.toInstant().toString());
-            chronology.put("block_reason",advisory.counterBlockReason(eventId));
-            assertThat(advisory.counterBlockReason(eventId)).isNotEmpty();
-            Object result = call.callRealMethod();
-            injected.set(true);
-            return result;
-        }).when(chain).scheduleAfterComplete(eq(parent));
         outbox.poll(); awaitWire(1);
         reply(commandOf(parent),0);
-        Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
-            assertThat(injected.get()).isTrue();
-            assertThat(statusOf(parent)).isEqualTo("COMPLETED");
-            assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?",Integer.class,commandOf(parent))).isEqualTo(1);
-        });
+        Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(statusOf(parent)).isEqualTo("COMPLETED"));
+        String target = jdbc.queryForObject("select target_id from disposal_authorization where authorization_id=?",String.class,parent);
+        jdbc.update("update target_latest_state set observed_at=? where target_id=?",
+                java.sql.Timestamp.from(clock.now().minusSeconds(120)),target);
+        chain.scheduleAfterComplete(parent);
+        chain.retryWhileOn(parent);
         outbox.poll();
         assertThat(children(parent)).isEmpty();
         assertThat(frames).hasSize(1);
         assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,binding.opsDeviceId())).isEqualTo(1);
         assertThat(jdbc.queryForObject("select count(*) from handoff where event_id=?",Integer.class,eventId)).isZero();
-        chronology.put("synthetic_fixture",true); chronology.put("parent_authorization_id",parent);
-        chronology.put("event_id",eventId); chronology.put("target_id",target);
-        chronology.put("final_parent_status",statusOf(parent)); chronology.put("children",children(parent)); chronology.put("wire_frames",frames);
-        Path output = Path.of("target","supplemental-r11"); Files.createDirectories(output);
-        Files.writeString(output.resolve("r09-expire-after-completed.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(chronology));
     }
 
     @ParameterizedTest(name="R11 device negative response={0}")
     @ValueSource(strings={"QA simulated execution failure", "QA simulated explicit device rejection"})
-    void counterSuccessAndJammingNegativeReceiptStaySeparateWithoutAutomaticHandoff(String replyText) throws Exception {
+    void historicalJammingNegativeReceiptStaysSeparateWithoutAutomaticHandoff(String replyText) throws Exception {
         String actor = user("disposal:direct", "disposal:read", "devices", "target:read", "handoff:create", "handoff:read", "evidence:read");
         String recipient = key();
         jdbc.update("update handoff_recipient set enabled=false where handoff_type='UAV_PUNISHMENT'");
@@ -113,11 +90,10 @@ class DisposalJammingFailurePostgresTest extends AutomationMqttFixture {
         reply(commandOf(parent),0);
         Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
             assertThat(statusOf(parent)).isEqualTo("COMPLETED");
-            assertThat(children(parent)).hasSize(1);
         });
-        String child = children(parent).get(0);
-        outbox.poll(); awaitWire(2);
-        assertThat(frames.get(1).path("data").path("operationCmd").asInt()).isEqualTo(60002);
+        assertThat(children(parent)).isEmpty();
+        String child = historicalSentChild(parent);
+        assertThat(frames).hasSize(1);
         publishNegative(commandOf(child),replyText);
         Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(statusOf(child)).isEqualTo("FAILED"));
         assertThat(statusOf(parent)).isEqualTo("COMPLETED");
@@ -153,7 +129,7 @@ class DisposalJammingFailurePostgresTest extends AutomationMqttFixture {
         assertThat(jdbc.queryForObject("select count(*) from punishment_case where event_id=?",Integer.class,eventId)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=?",Integer.class,commandOf(child))).isEqualTo(1);
         verify(channel,times(1)).deliver(any());
-        assertThat(frames).hasSize(2);
+        assertThat(frames).hasSize(1);
         var evidence = new LinkedHashMap<String,Object>();
         evidence.put("synthetic_fixture",true); evidence.put("event_id",eventId);
         evidence.put("parent",parentRead); evidence.put("child",childRead);
@@ -162,6 +138,28 @@ class DisposalJammingFailurePostgresTest extends AutomationMqttFixture {
         evidence.put("receipts",jdbc.queryForList("select r.* from command_receipt r join device_command c on c.command_id=r.command_id where c.device_id=?",binding.opsDeviceId()));
         Path output = Path.of("target","supplemental-r11"); Files.createDirectories(output);
         Files.writeString(output.resolve(replyText.contains("rejection")?"device-rejection.json":"device-failure.json"),json.writerWithDefaultPrettyPrinter().writeValueAsString(evidence));
+    }
+
+    /** Already-sent legacy fact in the isolated schema; no second device command is dispatched. */
+    private String historicalSentChild(String parent) {
+        String child=key(), command=key(), number="OLD-"+key();
+        jdbc.update("insert into disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,"
+                + "target_id,device_id,channel,reason,requested_by,requested_at,valid_from,valid_until,status,policy_version,"
+                + "owner_org_id,district_id,source_mode,chained_from_authorization_id,authorization_mode,version,created_at,updated_at)"
+                + " select ?,?,'JAMMING',subject_kind,subject_id,target_id,device_id,channel,'isolated historical child',requested_by,"
+                + "requested_at,valid_from,valid_until,'APPROVED',policy_version,owner_org_id,district_id,source_mode,authorization_id,"
+                + "authorization_mode,0,created_at,updated_at from disposal_authorization where authorization_id=?",
+                child,"OLD-"+child.substring(0,12),parent);
+        jdbc.update("insert into device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,"
+                + "source_mode,simulated,deadline_at,created_at,updated_at,authorization_id,issued_at)"
+                + " select ?,?,device_id,requested_by,command_type,'isolated already-sent command','SENT',source_mode,simulated,"
+                + "?,?,?, ?,? from device_command where command_id=?",command,number,clock.nowMillis()+120000,
+                clock.nowMillis(),clock.nowMillis(),child,clock.nowMillis(),commandOf(parent));
+        jdbc.update("insert into lingyun_control_command(command_id,msg_no,operation_type,operation_cmd,params_json,authorization_id)"
+                + " select ?,?,operation_type,60002,params_json,? from lingyun_control_command where command_id=?",
+                command,number,child,commandOf(parent));
+        jdbc.update("update disposal_authorization set status='EXECUTING',execution_command_id=? where authorization_id=?",command,child);
+        return child;
     }
 
     private JsonNode read(String path,String token) throws Exception {

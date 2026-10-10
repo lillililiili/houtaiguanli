@@ -19,9 +19,11 @@
 | `evidence_chain[]`（2026-10-06 新增） | `category ∈ VIDEO/TRACK/IMAGE/COMMAND, source_kind ∈ FILE/TRACK/COMMAND, source_id, evidence_no, name, kind_code, status, captured_at, started_at, ended_at, point_count, size_bytes, sha256`。与事件页“证据链”同一查询（证据台账按事件主体取，含关联到目标的证据），每类最多 100 条；文件带 `sha256`，可与证据台账逐项比对。人工提交按提交人的证据查看范围冻结，后台自动移送按全部范围；与 `evidence` 一样，提交人缺 `evidence:read` 时省略，读者缺 `evidence:read` 时读不到 |
 | `party`（2026-10-06 新增） | `status ∈ IDENTIFIED/UNIDENTIFIED, label, reasons[], plan_id, plan_no, pilot_name, operator_name, uav_sn`。关联本事件告警、计划匹配为完全或部分匹配的报备计划写明了飞手或运营单位才算 `IDENTIFIED`；否则 `label="当事人不明，按待补线索移送"`，`reasons` 写明原因，已有线索（序列号、计划号）照样带上。当事人不明不拦提交（待产品确认） |
 
-2026-10-06 起 `handoff.trigger_source` 记录移送是怎么提交的：`JAMMING_COMPLETED`（干扰完成后后台自动移送）、`MANUAL`（有人选定接收单位提交），更早的交接按审计回填，查不到的保持空。启用了多个处罚接收单位时后台不自动移送，事件处置进度 `auto_handoff.status=MANUAL_REQUIRED`，由有移送权限的人选定接收单位后走本接口。
+2026-10-06 起 `handoff.trigger_source` 记录移送是怎么提交的：`JAMMING_COMPLETED`（旧干扰完成后后台自动移送）、`MANUAL`（有人选定接收单位提交），更早的交接按审计回填，查不到的保持空。2026-10-09 起增加 `COUNTERMEASURE_COMPLETED`：单次反制授权已结束且有本授权、同设备全关成功事实后，沿用既有自动移送规则；不再要求后台追加干扰授权。启用了多个处罚接收单位时后台不自动移送，事件处置进度 `auto_handoff.status=MANUAL_REQUIRED`，由有移送权限的人选定接收单位后走本接口。
 
-2026-10-08 起 `GET /handoffs` 列表项与 `GET /handoffs/{id}` 详情带 `trigger_source`（确认书 3-6，新-24）。后台自动移送（`JAMMING_COMPLETED`）的 `submitted_by` / `submitted_by_name` 是那次反制（干扰）的申请人，用作提交人外键，不是动手移送的人；业务前台据此把提交人写成“系统自动（反制完成后生成）”，另起一行写“反制申请人”。旧记录按 2026-10-06 的回填显示，为空时照旧写提交人。
+新自动触发的事实门槛是 `COUNTERMEASURE/COUNTERMEASURE_4CH/COMPLETED`，无历史干扰子链，运行记录 `off_command_id` 与授权当前指令一致，且同设备指令 `SUCCEEDED`、完成时间非空、结构化四通道指令关联同一授权并为 `SET_MASK/0`。只收到启动成功、停止失败/超时、缺运行记录、指令关联不符及凌云当前仅启动完成均不能自动移送。旧干扰完成链与冻结材料保留；人工移送按已核实事件事实、权限、接收单位及现有规则办理，不新增“必须反制完成”条件。即时回执、定时补偿与通知处罚规则使用同一个完成事实入口；缺通知规则通过事实时只冻结 `PENDING_DELIVERY` 材料，不能伪称已发送。
+
+2026-10-08 起 `GET /handoffs` 列表项与 `GET /handoffs/{id}` 详情带 `trigger_source`（确认书 3-6，新-24）。后台自动移送（`JAMMING_COMPLETED` 或 `COUNTERMEASURE_COMPLETED`）的 `submitted_by` / `submitted_by_name` 是对应处置的申请人，用作提交人外键，不是动手移送的人；业务前台据此把提交人写成系统自动，另起一行写“反制申请人”。旧记录按原触发来源显示，为空时照旧写提交人。
 
 `GET /handoffs/{id}` 的 `material` 按 `schema_version` 返回 v1 或 v2 形状；`availability.material`：UAV_EVENT 来源缺 `alarm:read` → `FORBIDDEN`，事件不在范围 → `SOURCE_NOT_VISIBLE`；新增 `availability.evidence ∈ AVAILABLE|FORBIDDEN|SOURCE_NOT_VISIBLE|OMITTED_AT_SUBMISSION`（以 `availability.material` 为前提，14-25）。
 
