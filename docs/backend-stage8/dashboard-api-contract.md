@@ -45,7 +45,7 @@
 | --- | --- | --- |
 | `kpis.sensed_today` | 运行统计选今天时的“新增目标数”：`first_seen_at` 在今日、统计口径（live + replay）、不含被合并的目标（`track_status=MERGE`）、有单位与区域、在用户数据范围内 | `null` |
 | `kpis.alarms_today` | 今日 `occurred` 窗口内、统计口径的告警总数 | `null` |
-| `kpis.pending_assessment` | `latest_only=true` 且 `review_state=PENDING_REVIEW`、统计口径的研判总数 | `null` |
+| `kpis.pending_assessment` | 北京时间当天 `evaluated_at`（含 00:00、不含次日 00:00），`latest_only=true` 且 `review_state=PENDING_REVIEW`，按既有权限与来源口径计数；页面显示“今日待研判目标”（2026-10-09） | `null` |
 | `kpis.pending_handoffs` | `delivery_status=PENDING_DELIVERY`、统计口径的交接总数 | `null` |
 | `trend` | 近 7 日（含今日）`days[{date,md,total,illegal}]`，以及 `simulated`/`source_mode`；运行统计不给的数（缺 `target:read` 或 `assessment:read`）为 `null` | 整块 `null` |
 | `statistics_source_modes` | 计数计入的来源：允许模拟的环境为 `["live","replay"]`，正式环境为 `["live"]`；页面据此写口径说明 | 同左（与权限无关） |
@@ -59,7 +59,7 @@
 | `flights.today` / `flights.executing` / `flights.completed` | 今日窗口内统计口径的计划总数、其中 `status_code=EXECUTING` 数、`status_code=COMPLETED` 数 | 整块 `null` |
 | `alarms.items` / `alarms.total` | 今日告警最多 8 条（全部来源，按 `received_at DESC`）与同口径总数 | `[]` / `null` |
 | `map.targets` | 有 WGS-84 位置的目标（最多 100，按 `last_seen` 倒序，不按今日窗口过滤） | `[]` |
-| `map.devices` | 有经纬度的启用设备（最多 46）；非 WGS-84 不画 | `[]` |
+| `map.devices` | 当前授权范围内全部有经纬度的启用设备，不按固定台数截断；非 WGS-84 不画 | `[]` |
 | `map.airspaces` | 当前有效版本且含边界的空域（最多 40） | `[]` |
 | `map.alarms` | 今日告警中能关联到已返回目标位置的点（最多 8） | `[]` |
 

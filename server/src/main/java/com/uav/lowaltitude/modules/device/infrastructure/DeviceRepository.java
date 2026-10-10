@@ -114,6 +114,12 @@ public class DeviceRepository {
                 + " ORDER BY d.channel, d.device_type_name, d.device_no OFFSET 0 ROWS FETCH NEXT :limit ROWS ONLY", where.params);
     }
 
+    public List<Map<String, Object>> listForMap(DeviceQuery query) {
+        SqlWhere where = where(query);
+        return named.queryForList(DEVICE_SELECT + where.sql
+                + " AND d.longitude IS NOT NULL AND d.latitude IS NOT NULL ORDER BY d.device_id", where.params);
+    }
+
     public Map<String, Object> find(String deviceId) {
         Map<String,Object> params=readParameters();
         params.put("device_id",deviceId);

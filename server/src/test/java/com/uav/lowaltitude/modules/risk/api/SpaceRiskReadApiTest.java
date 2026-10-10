@@ -155,6 +155,33 @@ class SpaceRiskReadApiTest {
     }
 
     @Test
+    void summaryOccurrenceWindowMatchesListAndKeepsReceiptWindowCompatible() throws Exception {
+        var start = SpaceRiskFixture.T0;
+        long from = start.toInstant().toEpochMilli();
+        long to = start.plusDays(1).toInstant().toEpochMilli();
+        String window = "occurred_from=" + from + "&occurred_to=" + to;
+        // Received tomorrow, but occurred exactly at today's inclusive start.
+        jdbc.update("update flight_risk set occurred_at=?, received_at=? where risk_id=?",
+                start, start.plusDays(2), spaceRisk);
+        JsonNode today = data("/api/v1/space-risks/summary?" + window, reader);
+        assertThat(today.path("total").path("value").asLong()).isEqualTo(1);
+        assertThat(today.path("routes_involved").path("value").asLong()).isEqualTo(1);
+        assertThat(today.path("total").path("value").asLong()).isEqualTo(
+                data("/api/v1/risks?risk_type=SPACE_OBJECT&" + window, reader).path("total").asLong());
+        assertThat(data("/api/v1/space-risks/summary?from=" + from + "&to=" + to, reader)
+                .path("total").path("availability").asText()).isEqualTo("NO_DATA");
+        // Previous day, next midnight, and unknown occurrence must not enter today.
+        for (var occurred : new java.time.OffsetDateTime[]{start.minusNanos(1_000_000), start.plusDays(1), null}) {
+            jdbc.update("update flight_risk set occurred_at=? where risk_id=?", occurred, spaceRisk);
+            assertThat(data("/api/v1/space-risks/summary?" + window, reader)
+                    .path("total").path("availability").asText()).isEqualTo("NO_DATA");
+        }
+        error("/api/v1/space-risks/summary?occurred_from=" + from, reader, 400, "INVALID_TIME_RANGE");
+        error("/api/v1/space-risks/summary?occurred_from=" + to + "&occurred_to=" + from,
+                reader, 400, "INVALID_TIME_RANGE");
+    }
+
+    @Test
     void summaryCanExcludePresetSamplesWithoutDroppingRuleEvaluatedMockRisks() throws Exception {
         String samplePlan = fixture.planWithRoute(org, district, suffix + "demo");
         String sample = fixture.risk(samplePlan, fixture.routeVersionOf(samplePlan), source, null,

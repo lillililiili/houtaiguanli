@@ -163,6 +163,15 @@ public class AlarmReadRepository {
         return total == null ? 0 : total;
     }
 
+    /** 只读实际升级引用，不把合并窗口里的后续普通研判当成触发历史。调用前须鉴权告警。 */
+    public List<AirspaceEvaluationReference> airspaceEvaluationReferences(String alarmId) {
+        return jdbc.query("SELECT x.evaluation_id,x.seq FROM alarm_escalation x JOIN alarm a ON a.alarm_id=x.alarm_id"
+                + " AND a.owner_org_id=x.owner_org_id AND a.district_id=x.district_id"
+                + " WHERE x.alarm_id=:alarm ORDER BY x.seq", Map.of("alarm", alarmId),
+                (rs, i) -> new AirspaceEvaluationReference(rs.getString("evaluation_id"), rs.getInt("seq")));
+    }
+    public record AirspaceEvaluationReference(String evaluationId, int occurrence) { }
+
     public List<EscalationRow> escalations(String alarmId, int offset, int size) {
         return jdbc.query("SELECT x.escalation_id,x.seq,x.trigger_kind,x.severity_before,x.severity_after,x.reasons_added,x.reasons_after,"
                 + "x.note,x.actor_id,au.name AS actor_name,x.created_at FROM alarm_escalation x LEFT JOIN app_user au ON au.user_id=x.actor_id"

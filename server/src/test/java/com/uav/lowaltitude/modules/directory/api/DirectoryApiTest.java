@@ -112,7 +112,7 @@ class DirectoryApiTest {
  void maintenanceTodoUsesBackendInboxIndependentlyOfLegacyNotificationSetting(boolean withLegacySetting) throws Exception {
   String plan="seed-stage3-plan-legal",device=jdbc.queryForObject("select device_id from ops_device where deleted_at is null order by device_id fetch first 1 row only",String.class);
   var row=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(device,"隔离测试异常设备",true,java.math.BigDecimal.ONE,"OFFLINE","ERROR",1L,1L,true,true,List.of());
-  var check=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","隔离测试",System.currentTimeMillis(),java.math.BigDecimal.TEN,true,0,List.of(row),false);
+  var check=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","隔离测试",System.currentTimeMillis(),"DEVICE_SCAN_COVERAGE",true,0,0,List.of(row),false);
   doReturn(check).when(checks).read(plan);
   String settingId=UUID.randomUUID().toString();
   long now=System.currentTimeMillis();

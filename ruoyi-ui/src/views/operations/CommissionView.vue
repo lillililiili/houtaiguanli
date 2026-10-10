@@ -449,14 +449,16 @@ useRealtimeRefresh(['device', 'device_state'], topics => {
 
 <style scoped>
 .commission-workspace { display: grid; grid-template-columns: 253px minmax(360px, 1fr) 320px; gap: 12px; align-items: stretch; }
-.commission-column { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-width: 0; }
+.commission-column { display: grid; grid-template-rows: auto auto; align-content: start; gap: 12px; min-width: 0; }
 .commission-workspace > .el-card { min-width: 0; }
 .commission-steps :deep(.el-step__title) { font-size: 14px; }
 .commission-steps :deep(.el-step__description) { font-size: 12px; }
-.commission-device-list { max-height: 150px; overflow: auto; }
+.commission-device-list { max-height: 360px; overflow: auto; }
 .commission-selection-actions { display: flex; align-items: center; gap: 8px; }
 .commission-selection-actions .muted { font-size: 12px; white-space: nowrap; }
-.commission-selection.filters-collapsed .commission-device-list { max-height: 234px; }
+.commission-selection.filters-collapsed .commission-device-list { max-height: 444px; }
+.commission-selection .device-tree-copy { overflow: visible; }
+.commission-selection .device-tree-copy b, .commission-selection .device-tree-copy small { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .commission-selection .tree-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .commission-selection .tree-filters > .el-input { grid-column: 1 / -1; }
 .commission-details { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px 12px; font-size: 12px; line-height: 1.6; margin: 0; }

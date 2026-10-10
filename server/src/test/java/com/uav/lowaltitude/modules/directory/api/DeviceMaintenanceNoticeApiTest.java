@@ -116,7 +116,7 @@ class DeviceMaintenanceNoticeApiTest {
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DEVICE_NOT_ABNORMAL"));
         observe(true,now-301000,"ONLINE");
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_OBSERVATION_STALE"));
-        doReturn(new FlightDeviceCheckService.Check(plan,"CHECK_INCOMPLETE","没有附近设备",now,BigDecimal.TEN,false,1,List.of(),false)).when(checks).read(plan);
+        doReturn(new FlightDeviceCheckService.Check(plan,"CHECK_INCOMPLETE","没有附近设备",now,"DEVICE_SCAN_COVERAGE",false,1,0,List.of(),false)).when(checks).read(plan);
         mvc.perform(resendRequest(1,null,UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DEVICE_NOT_NEAR_PLAN"));
         verify(channel,never()).deliver(any());
     }
@@ -184,5 +184,5 @@ class DeviceMaintenanceNoticeApiTest {
         @Override public Instant now(){return current;}
     }
     void observe(boolean abnormal,long observed){observe(abnormal,observed,abnormal?"OFFLINE":"ONLINE");}
-    void observe(boolean abnormal,long observed,String connectivity){var row=new FlightDeviceCheckService.DeviceRow(device,"测试设备",true,BigDecimal.ONE,connectivity,abnormal?"BAD":"GOOD",observed,observed,abnormal,true,List.of());doReturn(new FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","设备检查",now,BigDecimal.TEN,true,0,List.of(row),false)).when(checks).read(plan);}
+    void observe(boolean abnormal,long observed,String connectivity){var row=new FlightDeviceCheckService.DeviceRow(device,"测试设备",true,BigDecimal.ONE,connectivity,abnormal?"BAD":"GOOD",observed,observed,abnormal,true,List.of());doReturn(new FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","设备检查",now,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(row),false)).when(checks).read(plan);}
 }

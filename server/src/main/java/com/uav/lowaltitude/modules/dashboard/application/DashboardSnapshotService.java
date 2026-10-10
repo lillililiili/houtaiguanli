@@ -141,7 +141,7 @@ public class DashboardSnapshotService {
         Long sensedToday = todayTargets == null ? null : (long) todayTargets.total();
         Long alarmsToday = alarmCount == null ? null : alarmCount.total();
         Long allSourceAlarmsToday = canAlarm ? countAlarms(from, to, null, null) : null;
-        Long pendingAssessment = canAssessment ? scoped(mode -> countEvaluations("PENDING_REVIEW", mode)).total() : null;
+        Long pendingAssessment = canAssessment ? scoped(mode -> countEvaluations(from, to, "PENDING_REVIEW", mode)).total() : null;
         Long pendingHandoffs = canHandoff ? scoped(this::countHandoffs).total() : null;
         DeviceCounts deviceCounts = canDevice ? deviceCounts() : null;
         FlightCounts flightCounts = canFlight ? flightCounts(from, to) : null;
@@ -270,9 +270,9 @@ public class DashboardSnapshotService {
         return alarms.list(q("page", "1", "size", String.valueOf(size), "occurred_from", from, "occurred_to", to)).items();
     }
 
-    private long countEvaluations(String reviewState, String sourceMode) {
+    private long countEvaluations(String from, String to, String reviewState, String sourceMode) {
         return evaluations.list(q("page", "1", "size", "1", "latest_only", "true", "review_state", reviewState,
-                "source_mode", sourceMode)).total();
+                "from", from, "to", to, "source_mode", sourceMode)).total();
     }
 
     private Map<String, EvaluationDto> latestEvaluationsByTarget() {
@@ -312,7 +312,7 @@ public class DashboardSnapshotService {
 
     private List<MapDeviceDto> mapDevices() {
         List<MapDeviceDto> items = new ArrayList<>();
-        for (DeviceMapMarker marker : devices.mapMarkers(46)) {
+        for (DeviceMapMarker marker : devices.mapMarkers()) {
             if (marker.coordinateSystem() != null && !"WGS84".equalsIgnoreCase(marker.coordinateSystem())
                     && !"WGS-84".equalsIgnoreCase(marker.coordinateSystem())) continue;
             items.add(new MapDeviceDto(marker.deviceId(), marker.deviceNo(), marker.name(), marker.deviceTypeName(),

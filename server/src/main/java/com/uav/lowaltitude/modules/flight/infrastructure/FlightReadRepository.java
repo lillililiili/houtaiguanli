@@ -143,6 +143,40 @@ public class FlightReadRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** 航线已由调用方校验访问权限；完整折线与扇形相交，不能仅比较最近点的方位。 */
+    public Boolean routeIntersectsScanSector(String routeVersionId,BigDecimal longitude,BigDecimal latitude,
+            BigDecimal rangeM,BigDecimal azimuthDeg,BigDecimal fovDeg) {
+        if(!postgis)throw new com.uav.lowaltitude.platform.api.ApiException(
+            org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR,"SPATIAL_BACKEND_UNAVAILABLE","扫描范围检查需要 PostGIS");
+        // 以设备为中心的等距投影保留径向距离和方位。航线先按 25 米加密再投影，
+        // 外包扇形仅限定角度，最后用精确圆距离裁定射程，避免折线近似圆弧漏掉边缘。
+        var parameters=Map.of("route",routeVersionId,"lon",longitude,"lat",latitude,
+            "range",rangeM,"azimuth",azimuthDeg,"fov",fovDeg);
+        var result=jdbc.query("""
+            WITH config AS (
+              SELECT CAST(:range AS double precision) AS radius,CAST(:azimuth AS double precision) AS azimuth,
+                CAST(:fov AS double precision) AS fov,ceil(CAST(:fov AS double precision)/45)::int AS steps
+            ), points AS (
+              SELECT 0 AS ord,ST_MakePoint(0,0) AS geom
+              UNION ALL
+              SELECT n+1,ST_MakePoint(2*radius*sin(radians(azimuth-fov/2+fov*n/steps)),
+                2*radius*cos(radians(azimuth-fov/2+fov*n/steps)))
+              FROM config CROSS JOIN LATERAL generate_series(0,steps) n
+              UNION ALL SELECT steps+2,ST_MakePoint(0,0) FROM config
+            ), sector AS (
+              SELECT ST_MakePolygon(ST_MakeLine(geom ORDER BY ord)) AS geom FROM points
+            ), path AS (
+              SELECT ST_Transform(ST_Segmentize(centerline::geography,25)::geometry,
+                '+proj=aeqd +lat_0='||CAST(:lat AS text)||' +lon_0='||CAST(:lon AS text)||' +datum=WGS84 +units=m +no_defs') AS geom
+              FROM route_version WHERE route_version_id=:route
+            )
+            SELECT CASE WHEN path.geom IS NULL OR ST_IsEmpty(path.geom) THEN NULL ELSE
+              ST_DWithin(ST_Intersection(path.geom,sector.geom),ST_MakePoint(0,0),config.radius) END AS covered
+            FROM path CROSS JOIN sector CROSS JOIN config
+            """,parameters,(rs,i)->(Boolean)rs.getObject("covered"));
+        return result.isEmpty()?null:result.get(0);
+    }
+
     public List<RouteVersionRow> findRouteVersions(List<String> routeVersionIds, AccessDecision access) {
         Where where = routeVersionWhere(null, access, null);
         where.sql.append(" AND rv.route_version_id IN (:route_version_ids)");
