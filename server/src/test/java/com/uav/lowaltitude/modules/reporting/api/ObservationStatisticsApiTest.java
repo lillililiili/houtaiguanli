@@ -118,6 +118,43 @@ class ObservationStatisticsApiTest {
                 .andExpect(status().isBadRequest());
     }
 
+    private void todayTarget(String mode) {
+        String org=id(),district=id(),target=id();var now=OffsetDateTime.now();
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",org,org,org);
+        jdbc.update("insert into app_district(district_id,district_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",district,district,district);
+        jdbc.update("insert into target(target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,first_seen_at,last_seen_at,created_at,updated_at,version) values(?,?,'UAV',?,?,?,?,?,?,?,0)",target,target,mode,org,district,now,now,now,now);
+    }
+    private com.fasterxml.jackson.databind.JsonNode statsDays(String auth,LocalDate from,LocalDate to) throws Exception {
+        return json.readTree(mvc.perform(get("/api/v1/stats/operations").header("Authorization",auth)
+                .param("from",from.toString()).param("to",to.toString())).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("days");
+    }
+
+    /** 数据大屏的趋势只要按日数字：不再为它对每个融合点逐点算监测时长和里程（7 天报表里最慢的一块），按日数字与完整报表一致。 */
+    @ParameterizedTest @CsvSource({"live","replay"})
+    void dashboardTrendSkipsTrackCalculationAndKeepsTheDailyNumbers(String mode) throws Exception {
+        String auth="Bearer "+token();
+        LocalDate today=LocalDate.now(ZoneId.of("Asia/Shanghai")),from=today.minusDays(6);
+        todayTarget(mode);
+        org.mockito.Mockito.clearInvocations(observationService);
+        var trend=json.readTree(mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization",auth))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("trend");
+        org.mockito.Mockito.verify(observationService,org.mockito.Mockito.never()).operations(
+                org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        // 完整报表确实会算观测指标；没有这一步，上面的 never() 证明不了什么。
+        var full=statsDays(auth,from,today);
+        org.mockito.Mockito.verify(observationService,org.mockito.Mockito.atLeastOnce()).operations(
+                org.mockito.ArgumentMatchers.eq(from),org.mockito.ArgumentMatchers.eq(today),org.mockito.ArgumentMatchers.isNull());
+        assertThat(trend.path("days")).hasSize(7);assertThat(full).hasSize(7);
+        assertThat(trend.path("days").get(6).path("total").asInt()).isGreaterThanOrEqualTo(1);
+        for(int i=0;i<7;i++)
+            for(String field:List.of("date","md","total","illegal"))
+                assertThat(trend.path("days").get(i).path(field)).as("day "+i+" "+field).isEqualTo(full.get(i).path(field));
+        assertThat(trend.path("from").asText()).isEqualTo(from.toString());assertThat(trend.path("to").asText()).isEqualTo(today.toString());
+        // 今天新出现的目标来自模拟器（replay）时，趋势仍标明含模拟数据（页面的“含模拟数据”提示靠它）。
+        if ("replay".equals(mode)) assertThat(trend.path("simulated").asBoolean()).isTrue();
+    }
+
     @Test void apiKeepsOldCountsAndCsvAndBusinessExportsUseSameMetric() throws Exception {
         Fixture f=fixture("live",100,true);String auth="Bearer "+token();
         mvc.perform(get("/api/v1/stats/operations").header("Authorization",auth).param("from",date.toString()).param("to",date.toString()).param("owner_org_id",f.org))

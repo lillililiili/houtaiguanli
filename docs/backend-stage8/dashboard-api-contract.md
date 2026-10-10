@@ -6,7 +6,7 @@
 
 `GET /api/v1/dashboard/snapshot` 给 `#/bigscreen` 一次读取 KPI、趋势、设备健康、飞行计划计数、告警列表和地图叠加。天气、统一检索、证据文件、真实光电流、处罚案件、联动反制完成事实均不在本接口。
 
-趋势图与运行统计页同源，读取 `GET /stats/operations` 的样本事实表 `days`，带 `simulated`/`source_mode`；不得把它解释成目标/告警领域表的官方运行指标。
+趋势图与运行统计页同源，读取 `GET /stats/operations` 的样本事实表 `days`，带 `simulated`/`source_mode`；不得把它解释成目标/告警领域表的官方运行指标。2026-10-09（新-35）：大屏只画按日数字，趋势改走不带轨迹观测指标的精简查询（`ReportingService.operationsWithoutObservations`，事务口径与 `operations(from,to)` 相同），`days` 与完整运行统计逐日一致；`simulated`/`source_mode` 因此只描述被统计的目标与案件，不含仅在轨迹分区出现的历史目标来源。原先每次快照都把 7 天内每个融合点逐点算一遍监测时长和里程，大屏用不上，却要好几秒。大屏页面自己再取的运行统计同样带 `include_observations=false`。
 
 统计口径（ZT-17；2026-10-07 用户决定设备模拟器的数据也计入，取代 10-06 的“只计 live”）：大屏上所有计数——`kpis.*`、`closure.pending_verification`/`closure.confirmed_blocked`、`target_risk`、`flights.*`、`devices.*`——与运行统计同一口径，**计 `source_mode` 为 `live`（真实设备）或 `replay`（设备模拟器）的数据**，不计建库时系统自带的演示样例（`mock`）。只有允许模拟的环境（local+qa、test）把 `replay` 算进来，正式环境只计 `live`，库里留有历史模拟记录也不进统计。口径定义在 `platform/query/StatisticsScope`，改口径只改那里。其中来自设备模拟器的条数放在 `simulated_included` 里，页面必须写明，免得被当成现场真实数据。`alarms.items`/`alarms.total` 和 `map.*` 不是计数，仍按**全部来源**给。业务报表默认正式口径仍只计 live；验收环境显式开启的模拟报表口径仅计 mock/replay，见[运行统计接口契约](../运行统计接口契约.md)，不与本节计数口径混用。
 
