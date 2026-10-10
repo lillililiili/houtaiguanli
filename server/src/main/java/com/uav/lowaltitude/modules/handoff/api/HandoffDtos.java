@@ -21,7 +21,8 @@ public final class HandoffDtos {
             long sourceVersion, String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
             long createdAt) { }
     /**
-     * trigger_source：JAMMING_COMPLETED 反制（干扰）完成后后台自动移送，此时 submitted_by 是那次反制的申请人，不是动手移送的人；
+     * trigger_source：COUNTERMEASURE_COMPLETED 反制结束且停止确认后后台自动移送；JAMMING_COMPLETED 保留旧干扰完成链。
+     * 自动移送时 submitted_by 是对应处置的申请人，不是动手移送的人；
      * MANUAL 有人选定接收单位后提交；更早的记录可能为空（2026-10-08 确认书 3-6，新-24）。
      */
     public record HandoffDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,

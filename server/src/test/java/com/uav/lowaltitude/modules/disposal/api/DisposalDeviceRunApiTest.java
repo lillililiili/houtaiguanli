@@ -54,189 +54,187 @@ class DisposalDeviceRunApiTest {
     }
 
     @Test
-    void counterStaysOnUntilTheAutoAllOffThenCompletesTogetherWithItsJamming() throws Exception {
+    void counterHasOneAuthorizationUntilItsOwnSuccessfulAutoStop() throws Exception {
         String counter = directCounter();
         String start = commandOf(counter);
         assertThat(mask(start)).isEqualTo(15);
         deviceReplies(start, "SUCCEEDED");
-
-        // 设备回“已打开”：仍是反制中，记下 60 秒（策略演示值）后关闭，并立即转干扰。
         assertThat(statusOf(counter)).isEqualTo("EXECUTING");
-        Map<String, Object> run = run(counter);
-        long onAt = millis(run.get("on_at")), dueAt = millis(run.get("off_due_at"));
+        long onAt = millis(run(counter).get("on_at")), dueAt = millis(run(counter).get("off_due_at"));
         assertThat(dueAt - onAt).isEqualTo(60_000L);
-        assertThat(notes(counter, "RECEIPT")).anyMatch(note -> note.contains("反制中") && note.contains("满 60 秒"));
-        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, counter);
-        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
-        String driveAway = commandOf(jamming);
-        assertThat(mask(driveAway)).isEqualTo(13);
-        deviceReplies(driveAway, "SUCCEEDED");
-        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
-        assertThat(statusOf(counter)).isEqualTo("EXECUTING");
-        assertThat(millis(run(jamming).get("off_due_at"))).as("转干扰和来源反制一起关").isEqualTo(dueAt);
-
-        // 还没到时：不关。
+        assertThat(children(counter)).isEmpty();
+        deviceReplies(start, "SUCCEEDED");
+        assertThat(millis(run(counter).get("off_due_at"))).isEqualTo(dueAt);
         timer.tick();
         assertThat(allOffCommands()).isEmpty();
-
-        // 到时：只给干扰那条下发一次全部关闭，授权跟着关闭指令走。
-        due(counter); due(jamming);
-        timer.tick();
-        List<String> allOff = allOffCommands();
-        assertThat(allOff).hasSize(1);
-        assertThat(commandOf(jamming)).isEqualTo(allOff.get(0));
-        assertThat(commandOf(counter)).isEqualTo(start);
-        assertThat(notes(jamming, "DEVICE_ALL_OFF_ISSUED")).containsExactly("反制已满设定时长，系统自动下发全部关闭");
-        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
-
-        // 设备回“已全部关闭”：干扰和来源反制一起完成。
-        deviceReplies(allOff.get(0), "SUCCEEDED");
-        assertThat(statusOf(jamming)).isEqualTo("COMPLETED");
-        assertThat(statusOf(counter)).isEqualTo("COMPLETED");
-        assertThat(notes(jamming, "RECEIPT")).contains("设备回执：已全部关闭");
-        assertThat(notes(counter, "RECEIPT")).anyMatch(note -> note.startsWith("设备回执：已全部关闭（随信号干扰"));
+        assertThat(children(counter)).isEmpty();
+        due(counter);
         timer.tick();
         assertThat(allOffCommands()).hasSize(1);
+        String stop = commandOf(counter);
+        assertThat(stop).isNotEqualTo(start);
+        assertThat(mask(stop)).isZero();
+        assertThat(statusOf(counter)).isEqualTo("EXECUTING");
+        deviceReplies(stop, "SUCCEEDED");
+        assertThat(statusOf(counter)).isEqualTo("COMPLETED");
+        timer.tick();
+        assertThat(children(counter)).isEmpty();
+        assertThat(allOffCommands()).hasSize(1);
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",
+                Integer.class, eventId)).isEqualTo(1);
     }
 
     @Test
-    void emergencyStopWorksWhileTheDeviceIsOnAndNoAutoAllOffFollows() throws Exception {
+    void emergencyStopWorksWithoutASecondAuthorizationAndNoAutoStopFollows() throws Exception {
         String counter = directCounter();
         deviceReplies(commandOf(counter), "SUCCEEDED");
-        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, counter);
-        deviceReplies(commandOf(jamming), "SUCCEEDED");
-
-        // 以前这里设备开着、授权却已完成，急停报“没有进行中的反制”。
         request("/api/v1/uav-events/" + eventId + "/emergency-stop", operator, key(), Map.of()).andExpect(status().isOk());
         assertThat(statusOf(counter)).isEqualTo("STOPPED");
-        assertThat(statusOf(jamming)).isEqualTo("STOPPED");
+        assertThat(children(counter)).isEmpty();
         assertThat(allOffCommands()).hasSize(1);
-
-        due(counter); due(jamming);
+        due(counter);
         timer.tick();
-        assertThat(allOffCommands()).as("急停已停下的授权不再自动关闭").hasSize(1);
+        assertThat(allOffCommands()).hasSize(1);
     }
 
     @Test
     void failedAutoAllOffIsRetriedThenLeftToTheOperatorWhileStillCountingAsOn() throws Exception {
         String counter = directCounter();
         deviceReplies(commandOf(counter), "SUCCEEDED");
-        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, counter);
-        // 转干扰没打开：来源反制自己到时关闭。
-        deviceReplies(commandOf(jamming), "FAILED");
-        assertThat(statusOf(jamming)).isEqualTo("FAILED");
         due(counter);
-
         timer.tick();
         String first = commandOf(counter);
         assertThat(mask(first)).isZero();
         deviceReplies(first, "FAILED");
-        assertThat(statusOf(counter)).as("关闭没成功仍算反制中").isEqualTo("EXECUTING");
-
+        assertThat(statusOf(counter)).isEqualTo("EXECUTING");
         timer.tick();
         String second = commandOf(counter);
         assertThat(second).isNotEqualTo(first);
-        assertThat(notes(counter, "RECEIPT")).anyMatch(note -> note.startsWith("自动全部关闭没有成功") && note.contains("马上再试"));
         deviceReplies(second, "TIMED_OUT");
         timer.tick();
         String third = commandOf(counter);
         deviceReplies(third, "FAILED");
         timer.tick();
-        assertThat(notes(counter, "RECEIPT")).anyMatch(note -> note.contains("试了 3 次都没成功") && note.contains("请按急停"));
-        assertThat(jdbc.queryForObject("select gave_up_at from disposal_device_run where authorization_id=?", Timestamp.class, counter))
-                .isNotNull();
+        assertThat(jdbc.queryForObject("select gave_up_at from disposal_device_run where authorization_id=?",
+                Timestamp.class, counter)).isNotNull();
         assertThat(statusOf(counter)).isEqualTo("EXECUTING");
         timer.tick();
         assertThat(allOffCommands()).hasSize(3);
-
-        // 还开着就还能急停。
+        assertThat(children(counter)).isEmpty();
         request("/api/v1/uav-events/" + eventId + "/emergency-stop", operator, key(), Map.of()).andExpect(status().isOk());
         assertThat(statusOf(counter)).isEqualTo("STOPPED");
     }
 
     @Test
-    void jammingNotSentBecauseTheDeviceWasBusyIsSentByALaterRoundWhileTheCounterIsStillOn() throws Exception {
+    void laterAvailableDeviceAndEvidenceNeverCreateTheRetiredContinuation() throws Exception {
         String counter = directCounter();
-        // 设备回“已打开”时还有一条别的指令在途：干扰接上了，但没发出去。
         String other = inFlightCommand();
+        jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?", eventId);
         deviceReplies(commandOf(counter), "SUCCEEDED");
-        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, counter);
-        assertThat(statusOf(jamming)).isEqualTo("APPROVED");
-        assertThat(commandOf(jamming)).isNull();
-        int busy = notes(jamming, "DEVICE_BUSY").size();
-
-        // 那条指令还在途：这一轮安静地等，不再记一条“设备忙”。
         timer.tick();
-        assertThat(statusOf(jamming)).isEqualTo("APPROVED");
-        assertThat(notes(jamming, "DEVICE_BUSY")).hasSize(busy);
-
-        // 设备空出来了：下一轮补发，和来源反制一起到时关闭。
+        assertThat(children(counter)).isEmpty();
         jdbc.update("update device_command set status='SUCCEEDED',completed_at=? where command_id=?", System.currentTimeMillis(), other);
+        jdbc.update("update uav_event set state_code='CONFIRMED' where event_id=?", eventId);
         timer.tick();
-        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
-        assertThat(mask(commandOf(jamming))).isEqualTo(13);
-        assertThat(notes(jamming, "EXECUTE")).containsExactly("反制设备打开后自动下发");
-        deviceReplies(commandOf(jamming), "SUCCEEDED");
-        assertThat(millis(run(jamming).get("off_due_at"))).isEqualTo(millis(run(counter).get("off_due_at")));
+        assertThat(children(counter)).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isEqualTo(2);
     }
 
     @Test
-    void jammingNotChainedWhenTheDeviceOpenedIsChainedByALaterRoundButNotAfterTheCounterIsOff() throws Exception {
+    void legacyRunningChildStillStopsTogetherWithItsParent() throws Exception {
         String counter = directCounter();
-        // 设备打开那一刻依据一时不满足（这里用事件暂回待核实来模拟）：没接上干扰。
-        jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?", eventId);
         deviceReplies(commandOf(counter), "SUCCEEDED");
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?",
-                Integer.class, counter)).isZero();
+        String child = legacyChild(counter, "SENT");
+        deviceReplies(commandOf(child), "SUCCEEDED");
+        assertThat(millis(run(child).get("off_due_at"))).isEqualTo(millis(run(counter).get("off_due_at")));
+        due(counter); due(child);
         timer.tick();
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?",
-                Integer.class, counter)).as("依据仍不满足时不接").isZero();
+        assertThat(allOffCommands()).hasSize(1);
+        assertThat(mask(commandOf(child))).isZero();
+        deviceReplies(commandOf(child), "SUCCEEDED");
+        assertThat(statusOf(child)).isEqualTo("COMPLETED");
+        assertThat(statusOf(counter)).isEqualTo("COMPLETED");
+        timer.tick();
+        assertThat(allOffCommands()).hasSize(1);
+        assertThat(children(counter)).containsExactly(child);
+    }
 
-        jdbc.update("update uav_event set state_code='CONFIRMED' where event_id=?", eventId);
+    @Test
+    void legacyRunningChildAndParentRemainEmergencyStoppable() throws Exception {
+        String counter = directCounter();
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        String child = legacyChild(counter, "SENT");
+        deviceReplies(commandOf(child), "SUCCEEDED");
+        request("/api/v1/uav-events/" + eventId + "/emergency-stop", operator, key(), Map.of()).andExpect(status().isOk());
+        assertThat(statusOf(counter)).isEqualTo("STOPPED");
+        assertThat(statusOf(child)).isEqualTo("STOPPED");
+        due(counter); due(child);
         timer.tick();
-        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, counter);
-        assertThat(statusOf(jamming)).isEqualTo("EXECUTING");
-        assertThat(mask(commandOf(jamming))).isEqualTo(13);
+        assertThat(allOffCommands()).hasSize(1);
+    }
+
+    @Test
+    void legacyUnstartedChildCannotBlockTheParentsDueStop() throws Exception {
+        String counter = directCounter();
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        String child = legacyChild(counter, "QUEUED");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_device_run where authorization_id=?", Integer.class, child)).isZero();
+        due(counter);
+        timer.tick();
+        assertThat(allOffCommands()).hasSize(1);
+        assertThat(mask(commandOf(counter))).isZero();
+        deviceReplies(commandOf(counter), "SUCCEEDED");
+        assertThat(statusOf(counter)).isEqualTo("COMPLETED");
+        assertThat(children(counter)).containsExactly(child);
     }
 
     @Test
     void counterAlreadyOffIsNeverChainedLater() throws Exception {
         String counter = directCounter();
-        jdbc.update("update uav_event set state_code='PENDING_VERIFICATION' where event_id=?", eventId);
         deviceReplies(commandOf(counter), "SUCCEEDED");
         due(counter);
         timer.tick();
         deviceReplies(commandOf(counter), "SUCCEEDED");
         assertThat(statusOf(counter)).isEqualTo("COMPLETED");
-
-        jdbc.update("update uav_event set state_code='CONFIRMED' where event_id=?", eventId);
         timer.tick();
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where chained_from_authorization_id=?",
-                Integer.class, counter)).isZero();
+        assertThat(children(counter)).isEmpty();
     }
 
     @Test
     void deviceStillOnForAnotherEventIsBusyForANewCounter() throws Exception {
         String counter = directCounter();
         deviceReplies(commandOf(counter), "SUCCEEDED");
-        String jamming = jdbc.queryForObject("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
-                String.class, counter);
-        deviceReplies(commandOf(jamming), "SUCCEEDED");
-
         eventId = event();
         JsonNode second = data(request("/api/v1/disposal-authorizations/direct-execute", actor, key(),
                 Map.of("subject_kind", "UAV_EVENT", "subject_id", eventId, "action_type", "COUNTERMEASURE",
-                        "channel", "COUNTERMEASURE_4CH", "device_id", device, "reason", "同一台设备的第二起事件"))
+                        "channel", "COUNTERMEASURE_4CH", "device_id", device, "reason", "independent event for occupied device"))
                 .andExpect(status().isCreated()));
         assertThat(second.path("status").asText()).isEqualTo("APPROVED");
         assertThat(second.path("execution_block_reason").asText()).isEqualTo("DEVICE_BUSY");
-        assertThat(notes(second.path("authorization_id").asText(), "DEVICE_BUSY"))
-                .anyMatch(note -> note.contains("正在执行另一条反制"));
+    }
+
+    /** Isolated historical fixture, never created by a production continuation or transport call. */
+    private String legacyChild(String parent, String commandStatus) {
+        String child = key(), command = key();
+        jdbc.update("insert into disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,"
+                + "target_id,device_id,channel,reason,requested_by,requested_at,valid_from,valid_until,status,policy_version,"
+                + "owner_org_id,district_id,source_mode,chained_from_authorization_id,authorization_mode,version,created_at,updated_at)"
+                + " select ?,?,'JAMMING',subject_kind,subject_id,target_id,device_id,channel,'isolated historical child',requested_by,"
+                + "requested_at,valid_from,valid_until,'APPROVED',policy_version,owner_org_id,district_id,source_mode,authorization_id,"
+                + "authorization_mode,0,created_at,updated_at from disposal_authorization where authorization_id=?",
+                child, "OLD-" + child.substring(0, 12), parent);
+        long now = System.currentTimeMillis();
+        jdbc.update("insert into device_command(command_id,command_no,device_id,command_type,reason,status,source_mode,simulated,"
+                + "authorization_id,created_at,updated_at) values (?,?,?,'COUNTERMEASURE_4CH','isolated historical command',?,'live',true,?,?,?)",
+                command, "OLD-CMD-" + command.substring(0, 12), device, commandStatus, child, now, now);
+        jdbc.update("insert into countermeasure_4ch_command(command_id,action,mask,authorization_id) values (?,'SET_MASK',13,?)", command, child);
+        jdbc.update("update disposal_authorization set status='EXECUTING',execution_command_id=? where authorization_id=?", command, child);
+        return child;
+    }
+
+    private List<String> children(String parent) {
+        return jdbc.queryForList("select authorization_id from disposal_authorization where chained_from_authorization_id=?",
+                String.class, parent);
     }
 
     private String directCounter() throws Exception {

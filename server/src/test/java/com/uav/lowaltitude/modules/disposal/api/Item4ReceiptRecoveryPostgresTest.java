@@ -23,7 +23,7 @@ import org.springframework.test.context.DynamicPropertySource;
 /** R05: real MQTT receipt committed in a JVM killed before authorization settlement. */
 @ActiveProfiles(value = {"test", "postgres-test"}, inheritProfiles = false)
 @EnabledIfEnvironmentVariable(named = "ITEM4_RESTART_TESTS", matches = "true")
-@EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = "jdbc:postgresql://127\\.0\\.0\\.1:25432/stage456_verify_item4_[a-z0-9_]+")
+@EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_URL", matches = "jdbc:postgresql://127\\.0\\.0\\.1:(?:25432|5432)/stage456_verify_item4_[a-z0-9_]+")
 class Item4ReceiptRecoveryPostgresTest extends DisposalMqttFlowTest {
     private static final DeviceMonitoringPostgresFixture DATABASE = new DeviceMonitoringPostgresFixture();
     @DynamicPropertySource static void database(DynamicPropertyRegistry registry) {
@@ -37,7 +37,7 @@ class Item4ReceiptRecoveryPostgresTest extends DisposalMqttFlowTest {
     @AfterAll static void closeDatabase() { DATABASE.close(); }
 
     @RepeatedTest(3)
-    void committedReceiptSettlesOnceAfterCrashAndCreatesOneOrdinaryJammingChild() throws Exception {
+    void committedReceiptSettlesOnceAfterCrashWithoutCreatingASuccessor() throws Exception {
         String applicant = user("disposal:read", "disposal:request", "disposal:execute", "devices");
         String id = data(request("/api/v1/disposal-authorizations", applicant, key(), body("模拟回执提交后进程中断"))
                 .andExpect(status().isCreated())).path("authorization_id").asText();
@@ -74,15 +74,13 @@ class Item4ReceiptRecoveryPostgresTest extends DisposalMqttFlowTest {
         long now = clock.nowMillis();
         jdbc.update("update ops_device_state set connectivity='ONLINE',health_code='GOOD',has_alarm=false,observed_at=?,received_at=?,last_heartbeat_at=? where device_id=?",
                 now, now, now, binding.opsDeviceId());
-        String jamming = null;
         for (int restart = 1; restart <= 2; restart++) {
             try (var recovered = Item4HttpProcess.start(url, output, "settlement-" + restart)) {
                 var read = recovered.request(applicant, "GET", "/api/v1/disposal-authorizations/" + id, null);
                 assertThat(read.statusCode()).isEqualTo(200);
                 assertThat(json.readTree(read.body()).path("data").path("status").asText()).isEqualTo("COMPLETED");
-                assertThat(children(id)).hasSize(1);
-                if (jamming == null) jamming = children(id).get(0);
-                assertThat(children(id)).containsExactly(jamming);
+                assertThat(children(id)).isEmpty();
+                assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?", Integer.class, eventId)).isEqualTo(1);
                 assertThat(jdbc.queryForObject("select count(*) from disposal_authorization_event where authorization_id=? and event_kind='COMPLETE'", Integer.class, id)).isEqualTo(1);
                 assertThat(jdbc.queryForObject("select count(*) from disposal_authorization_event where authorization_id=? and event_kind='RECEIPT'", Integer.class, id)).isEqualTo(1);
                 assertThat(frames).hasSize(1);
@@ -90,7 +88,7 @@ class Item4ReceiptRecoveryPostgresTest extends DisposalMqttFlowTest {
         }
         Files.writeString(output.resolve("evidence.json"), json.writeValueAsString(Map.of(
                 "authorization_id", id, "command_id", command, "command_status", "SUCCEEDED", "authorization_status", statusOf(id),
-                "jamming_child", jamming, "wire_count", frames.size(), "simulated", true)));
+                "jamming_children", children(id).size(), "wire_count", frames.size(), "simulated", true)));
     }
 
     private Process startCutProcess(String url, Path output, Path marker, String command) throws Exception {

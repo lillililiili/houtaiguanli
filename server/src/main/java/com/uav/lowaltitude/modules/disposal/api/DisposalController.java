@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.ActionResultDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.AuthorizationDto;
+import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.AuthorizationGroupDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.CreatedDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.EventDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.PageDto;
@@ -46,6 +47,15 @@ public class DisposalController {
             @RequestParam(required = false) String action_type,
             @RequestParam(required = false) Integer page, @RequestParam(required = false) Integer size) {
         return ApiResponse.ok(read.list(subject_kind, subject_id, status, exclude_status, action_type, page, size));
+    }
+
+    @GetMapping("/disposal-authorizations/grouped")
+    public ApiResponse<PageDto<AuthorizationGroupDto>> grouped(
+            @RequestParam(required = false) String subject_kind, @RequestParam(required = false) String subject_id,
+            @RequestParam(required = false) String status, @RequestParam(required = false) String exclude_status,
+            @RequestParam(required = false) String action_type,
+            @RequestParam(required = false) Integer page, @RequestParam(required = false) Integer size) {
+        return ApiResponse.ok(read.grouped(subject_kind, subject_id, status, exclude_status, action_type, page, size));
     }
 
     @GetMapping("/disposal-authorizations/{id}")

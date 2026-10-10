@@ -82,19 +82,13 @@ public class FlightDeviceCheckService {
         // 不用区县文本作地理范围。普通演示与真实模式仍严格隔离；本地外部接口模拟器
         // 的 mock 计划有明确来源 ID，才允许检查同一模拟器产生的 replay 设备。
         boolean replaySimulation="replay".equals(plan.sourceMode());
-        // Preserve the manual reader's original user scope and completeness limits.
-        var systemInputs=scheduled?devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),true):List.<PlanInspectionDevice>of();
-        List<DeviceSummary> candidates=new ArrayList<>();boolean complete=scheduled;int seen=0;
-        if(scheduled)candidates.addAll(systemInputs.stream().map(PlanInspectionDevice::device).toList());
-        else for(int page=1;page<=20;page++) {
-            var listed=devices.list(new DeviceFilter(null,null,null,null,null,null,null),page,100,"device_no_asc");
-            candidates.addAll(listed.items());seen+=listed.items().size();
-            if(seen>=listed.total()){complete=true;break;}
-            if(listed.items().isEmpty())break;
-        }
+        // The same tuple-bound fact projection serves both callers. Interactive reads additionally
+        // require devices.read and retain the current user's device scope, not backend monitoring access.
+        var inputs=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),scheduled);
+        boolean complete=true;
         List<DeviceRow> rows=new ArrayList<>();int unchecked=0;
-        var byId=systemInputs.stream().collect(java.util.stream.Collectors.toMap(d->d.device().deviceId(),java.util.function.Function.identity()));
-        for(var device:candidates) {
+        for(var detail:inputs) {
+                var device=detail.device();
                 boolean demoDevice="replay".equals(device.sourceMode())
                     && device.simulated() && device.deviceNo()!=null && device.deviceNo().startsWith("FP-CHECK-");
                 boolean simulatorDevice=simulatorPlan && "replay".equals(device.sourceMode()) && device.simulated();
@@ -104,27 +98,11 @@ public class FlightDeviceCheckService {
                 if(!sourceCompatible || device.deviceTypeCode()==null
                         || !SENSORS.contains(device.deviceTypeCode().toUpperCase(Locale.ROOT))
                         || ((replaySimulation || simulatorPlan) && !device.enabled()))continue;
-                var detail=byId.get(device.deviceId());
-                if(!scheduled){
-                    var original=devices.detail(device.deviceId());
-                    detail=new PlanInspectionDevice(device,original.longitude(),original.latitude(),original.coordinateSystem(),null,List.of());
-                }
                 if(!positionKnown(detail)){unchecked++;continue;}
                 var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());
                 if(distance.distanceM()==null){unchecked++;continue;}
                 if(distance.distanceM().compareTo(nearbyMeters)>0)continue;
-                boolean historyComplete=true;
-                if(!scheduled){
-                    var state=devices.state(device.deviceId());List<Incident> history=new ArrayList<>();int count=0;historyComplete=false;
-                    for(int page=1;page<=20;page++){
-                        var items=devices.incidents(device.deviceId(),null,null,page,100);
-                        history.addAll(items.items());count+=items.items().size();
-                        if(count>=items.total()){historyComplete=true;break;}
-                        if(items.items().isEmpty())break;
-                    }
-                    detail=new PlanInspectionDevice(device,detail.longitude(),detail.latitude(),detail.coordinateSystem(),state,history);
-                }
-                rows.add(inspect(detail,distance.distanceM(),from,to,preflight,historyComplete));
+                rows.add(inspect(detail,distance.distanceM(),from,to,preflight,true));
         }
         rows.sort((a,b)->Boolean.compare(b.abnormal() || !b.incidents().isEmpty(),a.abnormal() || !a.incidents().isEmpty()));
         complete=complete && unchecked==0 && !rows.isEmpty() && rows.stream().allMatch(DeviceRow::complete);

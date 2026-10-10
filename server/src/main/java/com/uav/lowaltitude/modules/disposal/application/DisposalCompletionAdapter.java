@@ -27,4 +27,15 @@ public class DisposalCompletionAdapter implements DisposalCompletionPort {
     public String completedJammingRequester(String eventId) {
         return repository.completedJammingRequester(eventId);
     }
+
+    @Override
+    public java.util.List<String> completedWithoutPunishment() {
+        return repository.completedWithoutPunishment();
+    }
+
+    @Override
+    public PunishmentCompletion punishmentCompletion(String eventId) {
+        var row = repository.punishmentCompletion(eventId);
+        return row == null ? null : new PunishmentCompletion(row.requestedBy(), row.triggerSource());
+    }
 }

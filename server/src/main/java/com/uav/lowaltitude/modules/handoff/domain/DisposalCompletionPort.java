@@ -16,4 +16,14 @@ public interface DisposalCompletionPort {
 
     /** 该事件最新一条已完成干扰的申请人，用作自动交接的提交人外键。 */
     String completedJammingRequester(String eventId);
+
+    /** 自动移送所需的完成事实；人工移送仍按既有事件规则办理。 */
+    record PunishmentCompletion(String requestedBy, String triggerSource) { }
+
+    default java.util.List<String> completedWithoutPunishment() { return jammingCompletedWithoutPunishment(); }
+
+    default PunishmentCompletion punishmentCompletion(String eventId) {
+        String requester = completedJammingRequester(eventId);
+        return requester == null ? null : new PunishmentCompletion(requester, "JAMMING_COMPLETED");
+    }
 }

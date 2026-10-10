@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.disposal.application;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.AuthorizationDto;
+import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.AuthorizationGroupDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.EventDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.PageDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.PolicyDto;
@@ -24,6 +26,7 @@ import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyReposit
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.AuthorizationRow;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.EventRow;
+import com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
@@ -41,14 +44,17 @@ public class DisposalReadService {
     private final DisposalPolicyRepository policies;
     private final DisposalReceiptSync receipts;
     private final ObjectMapper json;
+    private final EmergencyStopRepository stops;
     private final com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy deviceAccess;
 
     public DisposalReadService(AccessControlService access, DisposalRepository repository,
             DisposalPolicyRepository policies, DisposalReceiptSync receipts, ObjectMapper json,
-            com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy deviceAccess) {
+            com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy deviceAccess,
+            EmergencyStopRepository stops) {
         this.access = access; this.repository = repository; this.policies = policies;
         this.receipts = receipts; this.json = json;
         this.deviceAccess = deviceAccess;
+        this.stops = stops;
     }
 
     @Transactional(readOnly = true)
@@ -74,6 +80,34 @@ public class DisposalReadService {
             items.add(dto(row, kinds.getOrDefault(row.authorizationId(), List.of()), permissions, policy));
         }
         return new PageDto<>(items, p, s, total);
+    }
+
+    /** 分组仅影响读取与分页，不同步回执、不推进原授权状态。 */
+    @Transactional(readOnly = true)
+    public PageDto<AuthorizationGroupDto> grouped(String subjectKind, String subjectId, String status,
+            String excludeStatus, String actionType, Integer page, Integer size) {
+        AccessDecision decision = access.require(PermissionCode.DISPOSAL_READ);
+        int p = page == null ? 1 : page, s = size == null ? 20 : size;
+        if (p < 1 || s < 1 || s > MAX_SIZE)
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "分页参数无效");
+        String exclude = blankToNull(excludeStatus);
+        if (exclude != null && !DisposalRules.STATUSES.contains(exclude))
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "排除状态无效");
+        DisposalRepository.Query query = new DisposalRepository.Query(subjectKind, subjectId, blankToNull(status),
+                exclude, actionType);
+        long total = repository.countGroups(decision, query);
+        List<DisposalRepository.GroupedAuthorizationRow> rows = repository.listGroups(decision, query, (long) (p - 1) * s, s);
+        Map<String, List<String>> kinds = repository.eventKinds(rows.stream().map(r -> r.authorization().authorizationId()).toList());
+        Set<String> permissions = permissions();
+        DisposalPolicy policy = activeOrNull();
+        Map<String, List<AuthorizationDto>> groups = new LinkedHashMap<>();
+        for (DisposalRepository.GroupedAuthorizationRow grouped : rows) {
+            AuthorizationRow row = grouped.authorization();
+            groups.computeIfAbsent(grouped.disposalId(), ignored -> new ArrayList<>())
+                    .add(dto(row, kinds.getOrDefault(row.authorizationId(), List.of()), permissions, policy));
+        }
+        return new PageDto<>(groups.entrySet().stream()
+                .map(g -> new AuthorizationGroupDto(g.getKey(), List.copyOf(g.getValue()))).toList(), p, s, total);
     }
 
     @Transactional
@@ -123,13 +157,20 @@ public class DisposalReadService {
             }
         }
         if (!DisposalRules.MANUAL.equals(row.channel()) && !permissions.contains("devices.op")) actions.remove(DisposalRules.EXECUTE);
+        boolean retiredSuccessor = DisposalRules.JAMMING.equals(row.actionType()) && stops.parent(row.authorizationId()) != null;
+        if (retiredSuccessor) {
+            actions.remove(DisposalRules.EXECUTE);
+            actions.remove(DisposalRules.MANUAL_RESULT);
+        }
         return new AuthorizationDto(row.authorizationId(), row.authorizationNo(), row.actionType(), row.subjectKind(),
                 row.subjectId(), row.targetId(), row.deviceId(), row.channel(), row.reason(), row.requestedBy(),
                 row.requestedByName(), millis(row.requestedAt()), row.approvedBy(), row.approvedByName(),
                 millis(row.approvedAt()), row.decisionNote(),
                 millis(row.validFrom()), millis(row.validUntil()), row.status(), row.executionCommandId(),
                 row.resultCode(), row.resultDetail(), DisposalRules.deviceStopResult(row.channel(), eventKinds),
-                DisposalRules.executionBlockReason(row.status(), eventKinds), row.policyVersion(), policy == null ? null : policy.schemaStatus(), row.ownerOrgId(), row.districtId(),
+                retiredSuccessor && DisposalRules.APPROVED.equals(row.status()) ? "LEGACY_JAMMING_RETIRED"
+                        : DisposalRules.executionBlockReason(row.status(), eventKinds),
+                row.policyVersion(), policy == null ? null : policy.schemaStatus(), row.ownerOrgId(), row.districtId(),
                 row.sourceMode(), row.version(),
                 List.copyOf(actions), row.authorizationMode());
     }

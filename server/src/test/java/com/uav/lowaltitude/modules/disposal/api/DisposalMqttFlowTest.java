@@ -128,7 +128,7 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
     }
 
     @ParameterizedTest @ValueSource(strings = {"VALID", "DIRECT_REVOKED", "DEVICE_REVOKED", "SCOPE_REVOKED", "DEVICE_SCOPE_CHANGED", "EXPIRED"})
-    void realReceiptRechecksCurrentDirectEligibilityBeforeSecondWireCommand(String condition) throws Exception {
+    void realReceiptNeverCreatesASecondWireCommandEvenWhenStillEligible(String condition) throws Exception {
         String actor = user("disposal:direct", "disposal:read", "devices", "target:read");
         JsonNode parent = data(request("/api/v1/disposal-authorizations/direct-execute", actor, key(), body("续链间隙资格验证"))
                 .andExpect(status().isCreated()));
@@ -157,24 +157,12 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         if (!"VALID".equals(condition)) assertThat(directAccess.eligibleRequester(disposalRepository.findUnlocked(authorization), true)).isNull();
         reply(command, 0);
         Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(statusOf(authorization)).isEqualTo("COMPLETED"));
-        if ("VALID".equals(condition)) {
-            Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(children(authorization)).hasSize(1));
-            String child = children(authorization).get(0);
-            outbox.poll(); awaitWire(2);
-            assertThat(frames.get(1).path("data").path("operationCmd").asInt()).isEqualTo(60002);
-            var childRow = disposalRepository.findUnlocked(child);
-            assertThat(childRow.authorizationMode()).isEqualTo("DIRECT");
-            assertThat(childRow.requestedBy()).isEqualTo(actorId);
-            assertThat(childRow.approvedBy()).isNull();
-            assertThat(childRow.validUntil()).isEqualTo(disposalRepository.findUnlocked(authorization).validUntil());
-        } else {
-            outbox.poll();
-            assertThat(children(authorization)).isEmpty();
-            assertThat(frames).hasSize(1);
-            assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, binding.opsDeviceId())).isEqualTo(1);
-        }
+        outbox.poll();
+        assertThat(children(authorization)).isEmpty();
+        assertThat(frames).hasSize(1);
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, binding.opsDeviceId())).isEqualTo(1);
         chain.scheduleAfterComplete(authorization); outbox.poll();
-        assertThat(frames).hasSize("VALID".equals(condition) ? 2 : 1);
+        assertThat(frames).hasSize(1);
         saveEvidence("direct-" + condition, authorization);
     }
 
