@@ -147,6 +147,7 @@ public class ReportingService {
         availability.put("punish",metric(casesAllowed,0,"按立案时间统计案件，移送及通知不计作立案"));
         availability.put("discovery_hours",metric(targetsAllowed,0,"按北京时间首次发现小时汇总所选日期内新增目标；同一目标仅计一次，与新增目标总数同源"));
         availability.put("by_type",metric(targetsAllowed,0,"生成时目标类型"));
+        availability.put("airborne_types",metric(targetsAllowed,0,"按已识别空中目标计算占比；人员、车、船、遥控器不计入，未知及识别中单列待识别"));
         availability.put("by_risk",metric(risksAllowed,unknownRisk,"按目标附近空中异物这类风险的等级分档，不是告警等级；没有风险记录的目标归入未识别"));
         availability.put("by_duration",new MetricAvailability("UNAVAILABLE","尚无可靠的飞行时长汇总，不能用观测时间跨度代替",null));
         availability.put("by_track",new MetricAvailability("UNAVAILABLE","尚无完整实际飞行里程依据；已观测里程单独列示",null));
@@ -164,7 +165,7 @@ public class ReportingService {
             new Summary(value(targetsAllowed,targets.size()),value(legalityAllowed,illegal),value(casesAllowed,cases.size()),value(risksAllowed,highRisk),value(targetsAllowed,uav),value(legalityAllowed,abnormal)),devices,dayPoints,
             risksAllowed?counts(risks):List.of(),targetsAllowed?counts(types):List.of(),List.of(),List.of(),targetsAllowed?counts(altitudes):List.of(),value(targetsAllowed,altTotal),regionPoints,counts(penalties),partners,clock.now().toEpochMilli(),availability,ownerOrgId,
             observations, targetsAllowed ? java.util.stream.IntStream.range(0,24)
-                .mapToObj(hour -> new HourPoint(hour,discoveryHours[hour])).toList() : List.of());
+                .mapToObj(hour -> new HourPoint(hour,discoveryHours[hour])).toList() : List.of(), airborneTypes(targets, targetsAllowed));
     }
 
     /**
@@ -242,6 +243,22 @@ public class ReportingService {
     private static String typeLabel(String code) {
         if(code==null)return "未知";
         return switch(code.toUpperCase(java.util.Locale.ROOT)) { case "UAV" -> "无人机";case "BIRD" -> "鸟";case "BALLOON" -> "气球";case "KITE" -> "风筝";case "UNKNOWN" -> "未知";case "IDENTIFYING" -> "识别中";case "SHIP" -> "船";case "VEHICLE" -> "车";case "PERSON" -> "人员";case "REMOTE_CONTROLLER" -> "遥控器";default -> code; };
+    }
+
+    private static AirborneTypes airborneTypes(List<ReportingRepository.TargetFact> targets, boolean allowed) {
+        if (!allowed) return new AirborneTypes(List.of(), null, null);
+        Map<String,Integer> counts = new LinkedHashMap<>();
+        int unidentified = 0;
+        for (var target : targets) {
+            String type = target.type() == null ? "UNKNOWN" : target.type().toUpperCase(java.util.Locale.ROOT);
+            switch (type) {
+                // BALLOON/KITE support existing classified historical records, not new target enums.
+                case "UAV", "BIRD", "BALLOON", "KITE" -> increment(counts, typeLabel(type));
+                case "PERSON", "VEHICLE", "SHIP", "REMOTE_CONTROLLER" -> { }
+                default -> unidentified++;
+            }
+        }
+        return new AirborneTypes(counts(counts), counts.values().stream().mapToInt(Integer::intValue).sum(), unidentified);
     }
     private static String riskLabel(String code) { return code==null?"未识别":switch(code) { case "CRITICAL" -> "超高风险";case "HIGH" -> "高风险";case "MEDIUM" -> "中风险";case "LOW" -> "低风险";default -> "未识别"; }; }
     private static String penaltyLabel(String code) { return switch(code) { case "WARNING" -> "警告";case "FINE" -> "罚款";case "WARNING_AND_FINE" -> "警告并罚款";default -> code; }; }
@@ -346,6 +363,9 @@ public class ReportingService {
         for (NamedCount item : report.byRisk()) line(out, "异物风险等级", item.name(), "数量", item.value());
         for (HourPoint item : report.discoveryHours()) line(out, "目标发现时段（北京时间）", item.label(), "新增目标数", item.total());
         for (NamedCount item : report.byType()) line(out, "目标类型", item.name(), "数量", item.value());
+        for (NamedCount item : report.airborneTypes().items()) line(out, "空中目标类型", item.name(), "数量", item.value());
+        line(out, "空中目标类型", "合计", "数量", report.airborneTypes().total());
+        line(out, "待识别目标", "未计入空中目标占比", "数量", report.airborneTypes().unidentified());
         for (NamedCount item : report.byDuration()) line(out, "飞行时长(分钟)", item.name(), "次数", item.value());
         for (NamedCount item : report.byTrack()) line(out, "轨迹长度(公里)", item.name(), "次数", item.value());
         line(out, "飞行高度", "海拔高 AMSL", "参与统计目标数", report.altTotal());
@@ -415,7 +435,10 @@ public class ReportingService {
             List<NamedCount> byType, List<NamedCount> byDuration, List<NamedCount> byTrack,
             List<NamedCount> altBands, Integer altTotal, List<RegionPoint> regions, List<NamedCount> byPenalty,
             List<PartnerRank> partners, long generatedAt, Map<String,MetricAvailability> availability, String ownerOrgId,
-            com.uav.lowaltitude.modules.reporting.domain.ObservationMetrics.Result observationMetrics, List<HourPoint> discoveryHours) { }
+            com.uav.lowaltitude.modules.reporting.domain.ObservationMetrics.Result observationMetrics, List<HourPoint> discoveryHours,
+            AirborneTypes airborneTypes) { }
+
+    public record AirborneTypes(List<NamedCount> items, Integer total, Integer unidentified) { }
 
     public record MetricAvailability(String status, String reason, Integer missingCount) { }
 
