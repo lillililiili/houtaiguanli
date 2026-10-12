@@ -119,7 +119,7 @@ class NotificationMigrationMergePostgresTest {
         for (String location : new String[]{"migration", "postgresql"}) {
             for (var resource : resolver.getResources("classpath*:db/" + location + "/*.sql")) {
                 String name = resource.getFilename();
-                if (NEW_MAIN.contains(name) || RENAMED.equals(name)) continue;
+                if (NEW_MAIN.contains(name) || RENAMED.equals(name) || laterThanRename(name)) continue;
                 try (var input = resource.getInputStream()) { Files.copy(input, directory.resolve(name)); }
             }
         }
@@ -130,6 +130,14 @@ class NotificationMigrationMergePostgresTest {
                 .cleanDisabled(true).locations("filesystem:" + directory.toAbsolutePath())
                 .javaMigrations(originalJavaMigrations()).load().migrate();
         assertThat(history("202610110001").get("checksum")).isEqualTo(-1287981834);
+    }
+
+    /** The original notification database predates every migration numbered after the renamed one. */
+    private static boolean laterThanRename(String name) {
+        int end = name.indexOf("__");
+        if (!name.startsWith("V") || end < 2) return false;
+        try { return Long.parseLong(name.substring(1, end)) > 202610120001L; }
+        catch (NumberFormatException notVersioned) { return false; }
     }
 
     private void reconcile() throws Exception {
@@ -149,7 +157,7 @@ class NotificationMigrationMergePostgresTest {
         var resolver = new PathMatchingResourcePatternResolver();
         for (var resource : resolver.getResources("classpath*:db/migration/V*.class")) {
             String name = resource.getFilename();
-            if (name.contains("$")) continue;
+            if (name.contains("$") || laterThanRename(name)) continue;
             var type = Class.forName("db.migration." + name.substring(0, name.length() - 6));
             if (org.flywaydb.core.api.migration.JavaMigration.class.isAssignableFrom(type))
                 migrations.add((org.flywaydb.core.api.migration.JavaMigration) type.getDeclaredConstructor().newInstance());
