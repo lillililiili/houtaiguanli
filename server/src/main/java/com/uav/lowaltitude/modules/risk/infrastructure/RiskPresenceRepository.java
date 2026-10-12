@@ -26,10 +26,11 @@ public class RiskPresenceRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
     public List<String> pendingC04() {
+        // replay（含实时模拟）只参与当前影响读取，不生成解除事实，也不进入写锁队列。
         return jdbc.queryForList("""
                 select r.risk_id from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id
                 join rule_version v on v.rule_version_id=f.rule_version_id and v.rule_code='C04'
-                where r.risk_type='SPACE_OBJECT' and r.state_code<>'EXCLUDED'
+                where r.risk_type='SPACE_OBJECT' and r.state_code<>'EXCLUDED' and r.source_mode<>'replay'
                   and not exists(select 1 from risk_clearance_evidence e where e.risk_id=r.risk_id)
                 order by r.risk_id
                 """, String.class);
@@ -82,19 +83,20 @@ public class RiskPresenceRepository {
                         AND source_target.owner_org_id=t.owner_org_id AND source_target.district_id=t.district_id
                         AND source_target.source_mode=t.source_mode)) source_scope_valid,
                   (select count(*) from track_point other join track ot on ot.track_id=other.track_id
-                    where ot.target_id=t.target_id and ot.layer=tr.layer and other.observed_at=p.observed_at
+                    where ot.target_id=t.target_id and ot.layer='FUSED' and other.observed_at=p.observed_at
                       and (other.point_kind<>p.point_kind or not ST_Equals(other.location,p.location)
                         or other.position_accuracy_m IS DISTINCT FROM p.position_accuracy_m)) peers
                 from target t join target_latest_state ls on ls.target_id=t.target_id
-                join track tr on tr.target_id=t.target_id and tr.layer='FUSED' join track_point p on p.track_id=tr.track_id
+                join lateral (select candidate.* from track tr join track_point candidate on candidate.track_id=tr.track_id
+                  where tr.target_id=t.target_id and tr.layer='FUSED'
+                  order by candidate.observed_at desc nulls last,candidate.received_at desc,candidate.point_id
+                  fetch first 1 row only) p on true
                 left join source_observation so on so.observation_id=p.observation_id
                 left join integration_source s on s.source_id=p.position_source_id and s.enabled=TRUE
                 left join target_degradation d on d.target_id=t.target_id
                 join flight_plan plan on plan.plan_id=? join route_version rv on rv.route_version_id=?
                 join route rt on rt.route_id=rv.route_id
                 where t.target_id=?
-                order by p.observed_at desc nulls last,p.received_at desc,p.point_id
-                fetch first 1 row only
                 """, (rs, i) -> new Observation(rs.getString("point_id"),rs.getString("point_kind"),
                     rs.getObject("observed_at",OffsetDateTime.class),rs.getObject("received_at",OffsetDateTime.class),
                     rs.getObject("latest_at",OffsetDateTime.class),rs.getBigDecimal("distance_m"),rs.getBigDecimal("position_accuracy_m"),

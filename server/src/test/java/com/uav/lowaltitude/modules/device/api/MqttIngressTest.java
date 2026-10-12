@@ -190,7 +190,7 @@ class MqttIngressTest {
         return jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type=?", Long.class, b.opsDeviceId(), type);
     }
 
-    @Test void heartbeatOutageCreatesOneIncidentAndOnlyFreshHeartbeatCanRecoverIt() throws Exception {
+    @Test void heartbeatOutageRequiresFreshHeartbeatAndExplicitHealthForRecovery() throws Exception {
         Binding b = register("radar");
         MqttConnectivityIncidentJob job = new MqttConnectivityIncidentJob(deviceRepository, clock);
         Runnable reconcile = () -> new TransactionTemplate(transactions).executeWithoutResult(s -> job.reconcile());
@@ -207,9 +207,15 @@ class MqttIngressTest {
         assertThat(incidents.get(incident).allowedActions()).containsExactly("VERIFY_RECOVERY");
         assertThatThrownBy(() -> incidents.reboot(incident, key(), "测试重启能力"))
                 .hasMessageContaining("未定义重启指令");
-        assertThat(incidents.recoveryCheck(incident, key()).result()).isEqualTo("FAIL");
+        assertThat(incidents.recoveryCheck(incident, key()).result()).isEqualTo("UNKNOWN");
         Thread.sleep(5);
         receive(b, heartbeat("radar", 0, clock.nowMillis()), false, 2, false, false);
+        assertThat(incidents.recoveryCheck(incident,key()).result()).isEqualTo("UNKNOWN");
+        long healthAt=clock.nowMillis();
+        jdbc.update("UPDATE ops_device_state SET health_code='GOOD',has_alarm=FALSE,health_observed_at=?,alarm_observed_at=?,"
+                +"health_source_id=?,alarm_source_id=?,health_source_mode='replay',alarm_source_mode='replay',"
+                +"health_simulated=TRUE,alarm_simulated=TRUE WHERE device_id=?",
+                healthAt,healthAt,b.opsSourceId(),b.opsSourceId(),b.opsDeviceId());
         String recoveryKey = key();
         assertThat(incidents.recoveryCheck(incident, recoveryKey).result()).isEqualTo("PASS");
         assertThat(incidents.recoveryCheck(incident, recoveryKey).result()).isEqualTo("PASS");
@@ -241,7 +247,7 @@ class MqttIngressTest {
             else assertThat(current).isEqualTo(heartbeatId);
         }
         assertThat(eventCount(b,"INCIDENT_OPENED")).isOne();
-        assertThat(incidents.get(other).allowedActions()).contains("REBOOT");
+        assertThat(incidents.get(other).allowedActions()).doesNotContain("REBOOT");
         assertThat(incidents.get(heartbeatId).allowedActions()).containsExactly("VERIFY_RECOVERY");
     }
 

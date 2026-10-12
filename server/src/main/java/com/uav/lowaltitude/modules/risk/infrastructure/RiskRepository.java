@@ -240,6 +240,17 @@ public class RiskRepository {
         return value != null && value == 1;
     }
 
+    /** Same local simulator bridge as C04 input selection; never bridge to arbitrary mock/live geometry. */
+    public boolean localSimulatorGeometry(RiskRow row) {
+        Long value=jdbc.queryForObject("SELECT COUNT(*) FROM flight_plan p JOIN route_version rv ON rv.route_version_id=p.route_version_id"
+                +" JOIN route rt ON rt.route_id=rv.route_id WHERE p.plan_id=:plan AND rv.route_version_id=:route"
+                +" AND p.source_mode='mock' AND p.source_id='local-flight-plan-simulator'"
+                +" AND rt.source_mode='mock' AND (rt.source_id IS NULL OR rt.source_id='local-flight-plan-simulator')"
+                +" AND p.owner_org_id=:org AND p.district_id=:district AND rt.owner_org_id=:org AND rt.district_id=:district",
+                referenceParams(row),Long.class);
+        return value!=null&&value==1;
+    }
+
     public boolean planReferenceVisible(RiskRow row) {
         Long value=jdbc.queryForObject("SELECT COUNT(*) FROM flight_plan p WHERE p.plan_id=:plan AND p.route_version_id=:route"
                 +" AND p.owner_org_id=:org AND p.district_id=:district", referenceParams(row), Long.class);

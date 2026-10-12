@@ -18,7 +18,8 @@ import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Registration;
 
 @Repository
 public class EoEdgeRepository {
-    private static final String UNCERTAIN = """
+    // Shared by recovery checks: a failed task does not prove that an issued command stopped the device.
+    static final String UNCERTAIN = """
             t.status='FAILED' AND (ec.status IS NULL OR ec.status<>'SUCCEEDED') AND
             ((bc.status='TIMED_OUT' AND bc.issued_at IS NOT NULL)
              OR (ec.status IN ('FAILED','TIMED_OUT') AND ec.issued_at IS NOT NULL))
@@ -51,12 +52,19 @@ public class EoEdgeRepository {
     }
 
     public Binding binding(String opsDeviceId, boolean lock) {
-        if (lock) jdbc.queryForList("SELECT ops_device_id FROM eo_device_binding WHERE ops_device_id=? FOR UPDATE", opsDeviceId);
+        if (lock) {
+            jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE",opsDeviceId);
+            jdbc.queryForList("SELECT device_id FROM ops_device_state WHERE device_id=? FOR UPDATE",opsDeviceId);
+            jdbc.queryForList("SELECT ops_device_id FROM eo_device_binding WHERE ops_device_id=? FOR UPDATE", opsDeviceId);
+        }
         return jdbc.query(BINDING_SELECT + " WHERE m.ops_device_id=?", this::binding, opsDeviceId).stream().findFirst().orElse(null);
     }
     public Binding bindingByExternal(String edgeId, String externalDeviceId, boolean lock) {
-        if (lock) jdbc.queryForList("SELECT ops_device_id FROM eo_device_binding WHERE edge_id=? AND external_device_id=? FOR UPDATE",
-                edgeId, externalDeviceId);
+        if (lock) {
+            var ids=jdbc.queryForList("SELECT ops_device_id FROM eo_device_binding WHERE edge_id=? AND external_device_id=? ORDER BY ops_device_id",
+                    String.class,edgeId,externalDeviceId);
+            for(String id:ids)binding(id,true);
+        }
         return jdbc.query(BINDING_SELECT + " WHERE m.edge_id=? AND m.external_device_id=?", this::binding, edgeId, externalDeviceId)
                 .stream().findFirst().orElse(null);
     }
@@ -312,9 +320,14 @@ public class EoEdgeRepository {
         jdbc.update("UPDATE eo_tracking_task SET last_report_at=?,last_report_observed_at=? WHERE task_id=? "
                 + "AND (last_report_observed_at IS NULL OR last_report_observed_at<?)",received,observed,taskId,observed);
     }
+    public void trackingFailure(String taskId,long observed,long received) {
+        jdbc.update("UPDATE eo_tracking_task SET last_failure_observed_at=?,last_failure_received_at=? WHERE task_id=? "
+                + "AND (last_failure_observed_at IS NULL OR last_failure_observed_at<?)",observed,received,taskId,observed);
+    }
     public boolean freshTrackingReport(Map<String,Object> task,long cutoff,long now) {
         return task.get("last_report_at") instanceof Number received && received.longValue()>=cutoff && received.longValue()<=now
-                && task.get("last_report_observed_at") instanceof Number observed && observed.longValue()>=cutoff && observed.longValue()<=now;
+                && task.get("last_report_observed_at") instanceof Number observed && observed.longValue()>=cutoff && observed.longValue()<=now
+                && (!(task.get("last_failure_observed_at") instanceof Number failure) || observed.longValue()>failure.longValue());
     }
     public Binding idleDevice(String org, String district) {
         return jdbc.query(BINDING_SELECT + """

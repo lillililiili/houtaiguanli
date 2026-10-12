@@ -128,7 +128,7 @@ public class DashboardSnapshotService {
         boolean canAlarm = probe(PermissionCode.ALARM_READ);
         boolean canAssessment = probe(PermissionCode.ASSESSMENT_READ);
         boolean canHandoff = probe(PermissionCode.HANDOFF_READ);
-        boolean canDevice = probe(PermissionCode.DEVICE_READ) && menuReadable("monitoring.read");
+        boolean canDevice = probe(PermissionCode.DEVICE_READ) && menuReadable("devices.read");
         boolean canFlight = probe(PermissionCode.FLIGHT_READ);
         boolean canAirspace = probe(PermissionCode.AIRSPACE_READ);
         boolean canRisk = probe(PermissionCode.RISK_READ);
@@ -213,9 +213,9 @@ public class DashboardSnapshotService {
 
     /** 设备健康按统计口径（与运行统计的设备口径一致）；统计里的模拟设备台数 = 统计口径台数 - 正式接入台数。 */
     private DeviceCounts deviceCounts() {
-        DeviceOverview counted = devices.statisticsOverview();
+        DeviceOverview counted = devices.statisticsOverview(true);
         Double rate = counted.total() == 0 ? null : Math.round(counted.online() * 1000.0 / counted.total()) / 10.0;
-        long simulated = Math.max(counted.total() - devices.formalOverview().total(), 0);
+        long simulated = Math.max(counted.total() - devices.formalOverview(true).total(), 0);
         return new DeviceCounts(new DevicesDto(counted.total(), counted.online(), counted.offline(), counted.abnormal(),
                 counted.alarm(), rate, counted.sourceMode(), counted.simulated()), simulated);
     }

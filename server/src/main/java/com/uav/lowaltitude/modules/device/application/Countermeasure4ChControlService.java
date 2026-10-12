@@ -98,6 +98,7 @@ public class Countermeasure4ChControlService {
         }
         if (starts(normalizedAction,storedMask) && !disposalGuard.mayStart(authorizationId.trim()))
             throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止或当前现场核查不允许继续执行，请查看事件处置记录");
+        devices.lockForRecovery(deviceId);
         Map<String, Object> device = devices.find(deviceId);
         if (device == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
         if (!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(device, "protocol_code"))

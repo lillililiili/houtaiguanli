@@ -243,6 +243,7 @@ class DashboardSnapshotApiTest {
         String token = reader("ASSIGNED", org, district);
         grantModule(token, "dashboard");
         grantModule(token, "monitoring");
+        grantModule(token, "devices");
         grantAction(token, "device:read", "flight:read");
         device("live", "live", false);
         device("local-sim", "live", true);
@@ -271,14 +272,14 @@ class DashboardSnapshotApiTest {
                 .andExpect(jsonPath("$.data.simulated_included.flights_today").value(2));
 
         // 大屏页面直接调的设备概况接口，同一口径。
-        mvc.perform(get("/api/v1/device-monitor/overview?statistics_scope=true").header("Authorization", bearer(token)))
+        mvc.perform(get("/api/v1/devices/overview?statistics_scope=true&enabled=true").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(2))
                 .andExpect(jsonPath("$.data.source_mode").value("mixed"));
-        mvc.perform(get("/api/v1/device-monitor/overview?formal_only=true").header("Authorization", bearer(token)))
+        mvc.perform(get("/api/v1/devices/overview?formal_only=true&enabled=true").header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(1));
-        mvc.perform(get("/api/v1/device-monitor/overview?statistics_scope=true&formal_only=true").header("Authorization", bearer(token)))
+        mvc.perform(get("/api/v1/devices/overview?statistics_scope=true&formal_only=true").header("Authorization", bearer(token)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
     }

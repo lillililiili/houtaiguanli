@@ -34,9 +34,10 @@ class StatisticsScopeTest {
     }
 
     @Test
-    void localSimulatedLiveDevicesAreTreatedAsDemoSamplesLikeTheDeviceList() {
+    void localSimulatorsNeedExplicitPreparationAndMatchingSourceWhileProductionStillExcludesThem() {
         String sql = scope("test").deviceSql("d");
-        assertThat(sql).startsWith("((CASE WHEN d.simulated=TRUE AND d.source_mode='live' THEN 'mock' ELSE d.source_mode END) IN ('live','replay')");
+        assertThat(sql).contains("prepared.action='local_qa_device_prepare'", "prepared.result='SUCCESS'",
+                "qa_source.source_id=d.source_id", "qa_source.source_mode='live'", "qa_source.simulated=TRUE");
         assertThat(scope("prod").deviceSql("d"))
                 .isEqualTo("(CASE WHEN d.simulated=TRUE AND d.source_mode='live' THEN 'mock' ELSE d.source_mode END) IN ('live')");
     }

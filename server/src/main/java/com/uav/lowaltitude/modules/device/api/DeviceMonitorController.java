@@ -43,20 +43,32 @@ public class DeviceMonitorController {
     @GetMapping("/device-monitor/overview")
     public ApiResponse<DeviceService.DeviceOverview> overview(@RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
             @RequestParam(name = "statistics_scope", defaultValue = "false") boolean statisticsScope,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(name = "type_code", required = false) String typeCode,
+            @RequestParam(required = false) String channel,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) String vendor,
+            @RequestParam(required = false) String connectivity,
             @RequestParam(required = false) Boolean enabled) {
         if (formalOnly && statisticsScope)
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "formal_only 与 statistics_scope 只能选一个");
         // statistics_scope：大屏按统计口径数设备（StatisticsScope：真实设备和设备模拟器，不含系统自带的演示样例）。
-        return ApiResponse.ok(statisticsScope ? service.statisticsOverview(enabled)
-                : formalOnly ? service.formalOverview(enabled) : service.overview(enabled));
+        return ApiResponse.ok(service.filteredOverview(new DeviceFilter(keyword, typeCode, channel, region,
+                vendor, connectivity, enabled, formalOnly, statisticsScope)));
     }
 
     @GetMapping("/device-monitor/tree")
     public ApiResponse<DeviceService.DeviceTree> tree(
             @RequestParam(required = false) String keyword,
             @RequestParam(name = "type_code", required = false) String typeCode,
-            @RequestParam(required = false) String channel) {
-        return ApiResponse.ok(service.tree(new DeviceFilter(keyword, typeCode, channel, null, null, null, null)));
+            @RequestParam(required = false) String channel,
+            @RequestParam(required = false) Boolean enabled,
+            @RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
+            @RequestParam(name = "statistics_scope", defaultValue = "false") boolean statisticsScope,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "500") int size) {
+        return ApiResponse.ok(service.tree(new DeviceFilter(keyword, typeCode, channel, null, null, null,
+                enabled, formalOnly, statisticsScope), page, size));
     }
 
     @GetMapping("/devices/{deviceId}/state")

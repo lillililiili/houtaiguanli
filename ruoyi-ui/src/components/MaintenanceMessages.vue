@@ -5,22 +5,27 @@ import { useRouter } from 'vue-router';
 import { Bell } from '@element-plus/icons-vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
 import { useAuthStore } from '@/stores/auth.js';
-import { formatTime } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from '@/views/operations/maintenance/presentation.js';
 import { maintenanceLocation, maintenanceMeta } from '@/views/operations/maintenance/useMaintenanceWorkflow.js';
 
 const auth = useAuthStore(), router = useRouter();
 const visible = ref(false), loading = ref(false), error = ref(''), items = ref([]), unread = ref(null), page = ref(1), total = ref(0), opening = ref('');
-const canOpen = computed(() => auth.hasMenu('commission') && auth.hasPermission('commissioning.read') && auth.hasPermission('devices.read'));
+const canOpen = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
 let alive = true, generation = 0, timer;
 async function reload() {
   if (loading.value || opening.value) return;
   const current = ++generation; loading.value = true;
   try {
-    const data = await deviceMaintenanceApi.messages({ page: page.value, size: 6 });
-    if (!alive || current !== generation) return;
-    items.value = data.items || []; unread.value = data.unread_count; total.value = data.total; error.value = '';
+    while (alive && current === generation) {
+      const data = await deviceMaintenanceApi.messages({ page: page.value, size: 6, pending_only: true });
+      if (!alive || current !== generation) return;
+      items.value = data.items || []; unread.value = data.unread_count; total.value = data.total; error.value = '';
+      const lastPage = Math.max(1, Math.ceil(data.total / 6));
+      if (page.value <= lastPage) break;
+      page.value = lastPage;
+    }
   } catch (e) {
-    if (alive && current === generation) { error.value = e.message || '消息读取失败'; unread.value = null; items.value = []; }
+    if (alive && current === generation) { error.value = e.message || '消息读取失败'; unread.value = null; items.value = []; total.value = 0; }
   } finally { if (alive && current === generation) loading.value = false; }
 }
 async function open(item) {
@@ -58,16 +63,16 @@ onBeforeUnmount(() => { alive = false; generation++; window.clearInterval(timer)
     <template #reference><span><button class="maintenance-bell" type="button" :aria-expanded="visible" :aria-label="unread == null ? '运维消息，未读数未知' : `运维消息，${unread}条未读`" @click.stop="toggle"><el-badge :value="unread || 0" :max="99" :hidden="!unread"><el-icon :size="21"><Bell /></el-icon></el-badge></button></span></template>
     <div class="message-heading"><b>运维消息</b><el-button link type="primary" :loading="loading" @click="reload">刷新</el-button></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <p v-if="!canOpen" class="muted">查看设备调测需要设备读取和接入调测页面权限。</p>
+    <p v-if="!canOpen" class="muted">查看处置单需要设备异常处理菜单及设备监测读取权限。</p>
     <div v-loading="loading" class="maintenance-message-list">
       <article v-for="item in items" :key="item.task_id" :class="{unread: !item.read_at}">
         <div class="message-title"><b>{{ item.device_name }}</b><el-tag :type="maintenanceMeta(item.workflow_state).tone" size="small">{{ maintenanceMeta(item.workflow_state).label }}</el-tag></div>
-        <p>{{ item.reason }}</p><div class="message-footer"><time>{{ formatTime(item.reported_at) }}</time><el-button link type="primary" :disabled="!canOpen || !!opening" :loading="opening===item.task_id" @click="open(item)">{{ item.workflow_state === 'COMPLETED' || item.workflow_state === 'LEGACY_HANDLED' ? '查看结果' : '去处理' }}</el-button></div>
+        <p>{{ item.reason }}</p><div class="message-footer"><time>{{ formatTime(item.reported_at) }}</time><el-button link type="primary" :disabled="!canOpen || !!opening" :loading="opening===item.task_id" @click="open(item)">去处理</el-button></div>
       </article>
-      <el-empty v-if="!loading && !items.length && !error" description="暂无运维消息" :image-size="50" />
+      <el-empty v-if="!loading && !items.length && !error" description="暂无待办运维消息" :image-size="50" />
     </div>
     <el-pagination v-if="total>6" :current-page="page" :page-size="6" :total="total" layout="prev, pager, next" @current-change="changePage" />
-    <p class="message-footnote">阅读消息不代表已处理，处理进度以待办为准。</p>
+    <p class="message-footnote">仅显示待办，处理中和已办结不显示。</p>
   </el-popover>
 </template>
 

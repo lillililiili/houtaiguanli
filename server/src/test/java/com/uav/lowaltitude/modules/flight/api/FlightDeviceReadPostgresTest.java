@@ -74,6 +74,8 @@ class FlightDeviceReadPostgresTest {
         double longitude="live".equals(mode)?118.005:"mock".equals(mode)?118.004:118.006;
         jdbc.update("UPDATE flight_plan SET source_mode=? WHERE plan_id=?",mode,plan);
         jdbc.update("UPDATE ops_device SET source_mode=?,simulated=?,longitude=? WHERE device_id=?",mode,!"live".equals(mode),longitude,device);
+        jdbc.update("UPDATE ops_device_state SET health_source_mode=?,alarm_source_mode=?,health_simulated=?,alarm_simulated=? WHERE device_id=?",
+            mode,mode,!"live".equals(mode),!"live".equals(mode),device);
         sensor(otherOrg,otherDistrict,mode,!"live".equals(mode),longitude,37.0);
         sensor(org,district,mode,!"live".equals(mode),119.0,37.0);
         sensor(org,district,"live".equals(mode)?"replay":"live",false,longitude,37.0);
@@ -89,6 +91,14 @@ class FlightDeviceReadPostgresTest {
         jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE role_code=?",role);
         sensor(otherOrg,otherDistrict,"live",false,118.005,37.0);
         assertThat(read().path("rows")).hasSize(1);
+    }
+    @Test void missingScanCoverageDoesNotPretendToCoverTheRoute() throws Exception {
+        jdbc.update("DELETE FROM device_sensing_profile WHERE device_id=?",device);
+        JsonNode result=read();
+        assertThat(result.path("rows")).isEmpty();
+        assertThat(result.path("unchecked_coverage").asInt()).isEqualTo(1);
+        assertThat(result.path("complete").asBoolean()).isFalse();
+        assertThat(result.path("conclusion").asText()).isEqualTo("CHECK_INCOMPLETE");
     }
     @ParameterizedTest @ValueSource(strings={"flight:read","route:read","devices"})
     void requiredBusinessPermissionsCannotBeBypassed(String permission) throws Exception {
@@ -154,7 +164,10 @@ class FlightDeviceReadPostgresTest {
         String id=id();
         jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_code,device_type_name,channel,enabled,source_mode,simulated,longitude,latitude,coordinate_system,version,created_at,updated_at) VALUES(?,?,?,'RADAR','雷达','只读测试',TRUE,?,?,?,?,'WGS-84',0,0,0)",id,id,"已有观测设备",mode,simulated,longitude,latitude);
         jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,current_timestamp,current_timestamp)",id,organization,area);
+        jdbc.update("INSERT INTO device_sensing_profile(device_id,coverage_kind,radius_m,source_label,version,updated_at) VALUES(?,'CIRCLE',1000,'隔离测试扫描配置',0,?)",id,now);
         jdbc.update("INSERT INTO ops_device_state(device_id,connectivity,health_code,has_alarm,observed_at,received_at,last_heartbeat_at,simulated,version) VALUES(?,'ONLINE','GOOD',FALSE,?,?,?,?,0)",id,now-1000,now-1000,now-1000,simulated);
+        jdbc.update("UPDATE ops_device_state SET health_observed_at=?,alarm_observed_at=?,health_source_mode=?,alarm_source_mode=?,health_simulated=?,alarm_simulated=? WHERE device_id=?",
+            now-1000,now-1000,mode,mode,simulated,simulated,id);
         return id;
     }
 }
