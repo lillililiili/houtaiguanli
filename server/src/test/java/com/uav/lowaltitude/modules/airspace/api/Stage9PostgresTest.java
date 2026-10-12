@@ -781,18 +781,24 @@ class Stage9PostgresTest {
     /**
      * 决策 9-24：PostGIS 可用时种子不再直插演示风险，而是播种后同步跑一次真实 C04。
      * 因此页面上看到的每一条空间风险都出自评估器，而不是"看起来像研判结论"的演示数据。
-     * 旧种子没有独立数量事实时不能冒充满足鸟群门槛；只有测试上下文显式接入的25只来源观测才产生风险。
+     * 确认书修订版 4-1、4-2：出不出鸟群风险不看数量。旧种子没有独立数量事实：风险照出并记"数量未采集"，等级不上调；
+     * 测试上下文显式接入的25只来源观测达到上调条件，升一级。
      * 种子与评估器均须留下运行记录，所有生成风险必须有事实快照。
      */
     @Test
     @Order(16)
     void seederOnPostgisProducesEvaluatedRisksInsteadOfDemoRows() {
         seedStage9SpaceRisk();
-        // 不修改 LocalStage*Seeder；旧鸟群仅凭目标类别和高度不足以证明数量达到20只。
+        // 不修改 LocalStage*Seeder；旧鸟群没有独立数量事实：风险照出，数量记为未采集，既不补造数量也不因此上调。
         List<Map<String, Object>> flockA = jdbc.queryForList("select r.risk_id,r.severity,r.reason_text,r.route_version_id,"
-                + "f.corridor_relation,f.altitude_band from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id"
+                + "f.corridor_relation,f.altitude_band,f.object_count,CAST(f.unknown_reasons AS VARCHAR) as unknown_reasons"
+                + " from flight_risk r join space_risk_fact f on f.risk_id=r.risk_id"
                 + " where r.target_id=? and r.risk_type='SPACE_OBJECT'", LocalStage9SpaceRiskSeeder.TARGET_FLOCK_A);
-        assertThat(flockA).as("没有独立数量事实的旧种子不得制造鸟群风险").isEmpty();
+        assertThat(flockA).as("没有数量事实的旧鸟群在走廊内、任务时段内，评估器照样出风险").isNotEmpty();
+        assertThat(flockA).allSatisfy(row -> {
+            assertThat(row.get("object_count")).as("评估器不得为旧种子补造数量").isNull();
+            assertThat((String) row.get("unknown_reasons")).contains("OBJECT_COUNT_UNAVAILABLE");
+        });
         OffsetDateTime countedAt = jdbc.queryForObject("select start_at from flight_plan where plan_id=?", OffsetDateTime.class,
                 LocalStage9SpaceRiskSeeder.PLAN).plusSeconds(1);
         String countedTarget = spaceTarget("counted-seed", "BIRD_FLOCK", 118.025, 37.025, new BigDecimal("100"), null, countedAt);
@@ -818,11 +824,16 @@ class Stage9PostgresTest {
                 + " group by r.plan_id,r.target_id having count(*)>1");
         assertThat(duplicated).as("同一任务下同一目标只能有一条空间风险，实际重复组：" + duplicated).isEmpty();
 
-        // 另一只旧鸟群同样没有独立数量，不因有AGL就补造数量或风险。
-        List<Map<String, Object>> flockB = jdbc.queryForList("select r.severity,f.corridor_relation,f.altitude_band from flight_risk r"
+        // 另一只旧鸟群同样没有独立数量：风险照出、数量未采集，不因有AGL就补造数量。
+        List<Map<String, Object>> flockB = jdbc.queryForList("select r.severity,f.corridor_relation,f.altitude_band,f.object_count,"
+                + "CAST(f.unknown_reasons AS VARCHAR) as unknown_reasons from flight_risk r"
                 + " join space_risk_fact f on f.risk_id=r.risk_id where r.target_id=? and r.risk_type='SPACE_OBJECT'",
                 LocalStage9SpaceRiskSeeder.TARGET_FLOCK_B);
-        assertThat(flockB).isEmpty();
+        assertThat(flockB).as(String.valueOf(flockB)).isNotEmpty();
+        assertThat(flockB).allSatisfy(row -> {
+            assertThat(row.get("object_count")).isNull();
+            assertThat((String) row.get("unknown_reasons")).contains("OBJECT_COUNT_UNAVAILABLE");
+        });
         // 气球超出 corridor_near_m：只被看到，不生成风险。
         assertThat(jdbc.queryForObject("select count(*) from flight_risk where target_id=? and risk_type='SPACE_OBJECT'",
                 Long.class, LocalStage9SpaceRiskSeeder.TARGET_BALLOON)).as("超出 corridor_near_m 的气球不生成风险").isZero();

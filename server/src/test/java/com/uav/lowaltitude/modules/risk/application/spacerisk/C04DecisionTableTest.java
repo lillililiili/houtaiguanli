@@ -114,16 +114,45 @@ class C04DecisionTableTest {
     }
 
     @Test
-    void confirmedFlockThresholdDoesNotApplyToBalloonsOrInventMissingCounts() {
+    void birdFlockRiskDoesNotDependOnCountAndCountOnlyLiftsTheLevel() {
+        // 确认书修订版 4-1、4-2：出不出风险不看鸟的数量，数量只在达到阈值时把等级上调一级。
+        // 数量没报（null）或报得少（10、19）照常出中风险，没报的另记 OBJECT_COUNT_UNAVAILABLE（页面显示"数量未采集"）。
         for (Integer count : new Integer[] {null, 10, 19}) {
-            assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.RISING, "BIRD_FLOCK"), params()).generate())
-                    .as("bird count %s", count).isFalse();
+            Decision decision = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.FLAT, "BIRD_FLOCK"), params());
+            assertThat(decision.generate()).as("bird count %s", count).isTrue();
+            assertThat(decision.severity()).as("bird count %s", count).isEqualTo("MEDIUM");
+            assertThat(decision.reasonCode()).as("bird count %s", count).isEqualTo(C04DecisionTable.REASON_NEAR_ROUTE);
+            assertThat(decision.escalated()).as("bird count %s", count).isFalse();
+            assertThat(decision.unknownReasons().contains(C04DecisionTable.UNKNOWN_OBJECT_COUNT)).as("bird count %s", count).isEqualTo(count == null);
         }
         for (int count : new int[] {20, 25, 70}) {
-            assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.FLAT, "BIRD_FLOCK"), params()).generate())
-                    .as("bird count %s", count).isTrue();
+            Decision decision = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.FLAT, "BIRD_FLOCK"), params());
+            assertThat(decision.generate()).as("bird count %s", count).isTrue();
+            assertThat(decision.severity()).as("bird count %s", count).isEqualTo("HIGH");
+            assertThat(decision.escalated()).as("bird count %s", count).isTrue();
         }
-        assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, null, Trend.UNKNOWN, "BALLOON"), params()).generate()).isTrue();
+        // 数量没报、趋势在涨：照样只上调一级；数量缺失不挡趋势，也不让趋势变成"必须有数量才出"。
+        Decision rising = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, null, Trend.RISING, "BIRD_FLOCK"), params());
+        assertThat(rising.severity()).isEqualTo("HIGH");
+        assertThat(rising.unknownReasons()).containsExactly(C04DecisionTable.UNKNOWN_OBJECT_COUNT);
+        // 走廊内 + 爬升带：数量没报也是完整的"同一空间"证据，等级是高，而不是"没有结论"。
+        Decision inside = table.decide(new Observation(CorridorRelation.INSIDE, AltitudeBand.CLIMB, true, null, Trend.FLAT, "BIRD_FLOCK"), params());
+        assertThat(inside.generate()).isTrue();
+        assertThat(inside.severity()).isEqualTo("HIGH");
+        assertThat(inside.escalated()).isFalse();
+        // 距离、高度带、活动计划这三道门不因数量放宽：超过邻近距离、巡航带、没有活动计划都不出，数量再多也一样。
+        assertThat(table.decide(new Observation(CorridorRelation.OUTSIDE, AltitudeBand.CLIMB, true, 70, Trend.RISING, "BIRD_FLOCK"), params()).generate()).isFalse();
+        assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CRUISE, true, 70, Trend.RISING, "BIRD_FLOCK"), params()).generate()).isFalse();
+        assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, false, 70, Trend.RISING, "BIRD_FLOCK"), params()).generate()).isFalse();
+        // 鸟群与气球等其他异物走同一张表，同样的输入得同样的结果。
+        for (Integer count : new Integer[] {null, 10, 25}) {
+            Decision bird = table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.UNKNOWN, "BIRD_FLOCK"), params());
+            assertThat(bird.generate()).as("bird count %s", count).isTrue();
+            assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.UNKNOWN, "BALLOON"), params()))
+                    .as("balloon count %s", count).isEqualTo(bird);
+            assertThat(table.decide(new Observation(CorridorRelation.NEAR, AltitudeBand.CLIMB, true, count, Trend.UNKNOWN), params()))
+                    .as("unlabeled count %s", count).isEqualTo(bird);
+        }
     }
 
     @Test
