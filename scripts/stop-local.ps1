@@ -3,6 +3,7 @@ param([switch]$WithInfrastructure)
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'local-service-state.ps1')
+. (Join-Path $PSScriptRoot 'local-simulator-state.ps1')
 $runtimeDir = Get-LocalRuntimeDirectory -RepositoryRoot (Split-Path -Parent $PSScriptRoot)
 $stateFile = Join-Path $runtimeDir 'services.json'
 if (-not (Test-Path -LiteralPath $stateFile)) {
@@ -22,12 +23,15 @@ try {
         (Get-NetTCPConnection -State Listen -LocalPort $services.simulator.port -ErrorAction SilentlyContinue)) {
         $origin = ([Uri]$services.simulator.probe).GetLeftPart([UriPartial]::Authority)
         try {
-            $stopped = Invoke-RestMethod -Method Post -Uri "$origin/api/realtime/control" `
-                -ContentType 'application/json' -Body '{"action":"stop_all"}' -TimeoutSec 30
-            $simStatus = Invoke-RestMethod -Uri "$origin/api/status" -TimeoutSec 10
-            if ($stopped.state -ne 'STOPPED' -or $simStatus.phase -ne 'STOPPED') { throw '模拟器收发尚未停止。' }
+            # The response shape differs with realtime receivers enabled/disabled, and a stop can be asynchronous.
+            Invoke-RestMethod -Method Post -Uri "$origin/api/realtime/control" `
+                -ContentType 'application/json' -Body '{"action":"stop_all"}' -TimeoutSec 30 | Out-Null
+            $simStatus = Wait-LocalSimulatorStopped -Origin $origin
+            $diagnostics = @(@((Get-SimulatorField $simStatus 'error'),
+                (Get-SimulatorField (Get-SimulatorField $simStatus 'realtime') 'error')) | Where-Object { $_ })
+            if ($diagnostics.Count -gt 0) { Write-Warning ("模拟器已停止；保留原诊断：" + ($diagnostics -join '；')) }
         } catch {
-            throw '模拟器未确认停止收发；为保留当前运行状态，本次关闭已中止。请查看模拟器状态后重试。'
+            throw ("模拟器未确认停止收发；为保留当前运行状态，本次关闭已中止。" + $_.Exception.Message)
         }
     }
     foreach ($name in @('simulator', 'admin', 'business', 'api')) {
@@ -39,7 +43,7 @@ try {
         }
         Write-Host "[停止] $name（校验 PID 与创建时间后停止整个服务进程树）"
         Stop-OwnedService $service
-        if ($service.port -and (Get-NetTCPConnection -State Listen -LocalPort $service.port -ErrorAction SilentlyContinue)) {
+        if ($service.port -and -not (Wait-LocalPortReleased -Port $service.port)) {
             throw "$name 端口 $($service.port) 仍有监听，未关闭数据库/MQTT，请检查进程归属。"
         }
         $services.Remove($name)

@@ -413,11 +413,12 @@ class LocalInterfaceSimulatorApiTest {
   jdbc.update("UPDATE app_user SET role_code='ROLE-EXT-READ' WHERE account='admin1'");
   send("/plans",plan("no-permission"),403);
  }
- @Test void contextDoesNotRequireUnrelatedBusinessPermissions() throws Exception {
+ @Test void frontendRoleCannotReadBackendContextEvenWithLegacyInterfacePermission() throws Exception {
   jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-EXT-ONLY','接口操作','',FALSE,TRUE,0,0,0,FALSE)");
   jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-EXT-ONLY','interfaces','OP',TRUE)");
   jdbc.update("UPDATE app_user SET role_code='ROLE-EXT-ONLY' WHERE account='admin1'");
-  mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.routes").isEmpty()).andExpect(jsonPath("$.data.unavailable_sections").isNotEmpty());
+  mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isForbidden())
+   .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
  }
  @Test void contextExposesExpiredRouteSeparatelyForMapPlanDiagnostics() throws Exception {
   String route=UUID.randomUUID().toString(),version=UUID.randomUUID().toString(),template=jdbc.queryForObject("select v.route_version_id from route_version v join route r on r.route_id=v.route_id where r.source_mode='mock' and r.enabled=true and r.owner_org_id is not null fetch first 1 rows only",String.class);

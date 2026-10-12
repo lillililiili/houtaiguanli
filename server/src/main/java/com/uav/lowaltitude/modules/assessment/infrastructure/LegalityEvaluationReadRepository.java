@@ -44,7 +44,7 @@ public class LegalityEvaluationReadRepository {
 
     public long count(EvaluationQuery query, AccessDecision access) {
         Where where = where(query, access);
-        Long total = jdbc.queryForObject("SELECT COUNT(*)" + from() + where.sql, where.parameters, Long.class);
+        Long total = jdbc.queryForObject("SELECT COUNT(*)" + from(query) + where.sql, where.parameters, Long.class);
         return total == null ? 0 : total;
     }
 
@@ -60,7 +60,7 @@ public class LegalityEvaluationReadRepository {
                 + " COALESCE(SUM(CASE WHEN " + effectiveStatus + "='UNDETERMINED' THEN 1 ELSE 0 END),0) AS undetermined,"
                 + " COALESCE(SUM(CASE WHEN " + effectiveStatus + "='NOT_APPLICABLE' THEN 1 ELSE 0 END),0) AS not_applicable"
                 + ", COALESCE(SUM(CASE WHEN " + effectiveStatus + "='REJECTED' THEN 1 ELSE 0 END),0) AS rejected"
-                + from() + where.sql, where.parameters,
+                + from(query) + where.sql, where.parameters,
                 (rs, i) -> new EvaluationCounts(rs.getLong("total"), rs.getLong("legal"), rs.getLong("abnormal"),
                         rs.getLong("illegal"), rs.getLong("undetermined"), rs.getLong("not_applicable"), rs.getLong("rejected")));
     }
@@ -79,7 +79,7 @@ public class LegalityEvaluationReadRepository {
         Where where = where(PAGE_LATEST_UAV, access);
         where.sql.append(" AND e.target_id IN (:page_target_ids)");
         where.parameters.put("page_target_ids", targetIds);
-        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status" + from() + where.sql, where.parameters,
+        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status" + from(PAGE_LATEST_UAV) + where.sql, where.parameters,
                 rs -> { result.put(rs.getString("target_id"), new LatestLegality(rs.getString("evaluation_id"), rs.getString("legal_status"))); });
         return result;
     }
@@ -96,7 +96,7 @@ public class LegalityEvaluationReadRepository {
         // 当前目标队列在分页前按目标入库时间排序；重新研判只替换结果，不移动目标所在页。
         String order = stableTargetOrder ? "tg.created_at DESC,tg.target_id DESC,e.evaluated_at DESC,e.evaluation_id DESC"
                 : "e.evaluated_at DESC,e.evaluation_id DESC";
-        return jdbc.query(select(false) + from() + where.sql + " ORDER BY " + order + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",
+        return jdbc.query(select(false) + from(query) + where.sql + " ORDER BY " + order + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",
                 where.parameters, (rs, i) -> row(rs, false));
     }
 
@@ -220,8 +220,30 @@ public class LegalityEvaluationReadRepository {
         return count != null && count > 0;
     }
 
-    private static String from() {
-        return " FROM rule_evaluation e JOIN rule_set_version v ON v.rule_set_version_id=e.rule_set_version_id JOIN rule_set rs ON rs.rule_set_id=v.rule_set_id"
+    private static String from() { return from(EvaluationQuery.empty()); }
+
+    private static String from(EvaluationQuery query) {
+        String source = "rule_evaluation";
+        if (query.latestOnly()) {
+            // Reduce history before recognition/review/reference joins. OFFSET 0 is an intentional
+            // optimizer boundary: otherwise PostgreSQL can join every historical row first.
+            // These outer-row restrictions never restrict successor rows: latest remains global
+            // per mode and subject, including when its date/status/source/scope is not visible.
+            StringBuilder latest = new StringBuilder("(SELECT e.* FROM rule_evaluation e WHERE 1=1");
+            if (query.mode() != null) latest.append(" AND e.mode=:mode");
+            if (query.subjectKind() != null) latest.append(" AND e.subject_kind=:subject_kind");
+            if (query.targetId() != null) latest.append(" AND e.target_id=:target_id");
+            if (query.planId() != null) latest.append(" AND e.plan_id=:plan_id");
+            if (query.from() != null) latest.append(" AND e.evaluated_at>=:from AND e.evaluated_at<:to");
+            latest.append(" AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='TARGET' AND n.subject_kind='TARGET'"
+                    + " AND n.mode=e.mode AND n.target_id=e.target_id"
+                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))"
+                    + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='PLAN' AND n.subject_kind='PLAN'"
+                    + " AND n.mode=e.mode AND n.plan_id=e.plan_id"
+                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))");
+            source = latest.append(" OFFSET 0 ROWS)").toString();
+        }
+        return " FROM " + source + " e JOIN rule_set_version v ON v.rule_set_version_id=e.rule_set_version_id JOIN rule_set rs ON rs.rule_set_id=v.rule_set_id"
                 + " JOIN rule_run run ON run.run_id=e.run_id LEFT JOIN legality_review r ON r.evaluation_id=e.evaluation_id"
                 + " LEFT JOIN alarm_merge_member m ON m.evaluation_id=e.evaluation_id LEFT JOIN target tg ON tg.target_id=e.target_id"
                 + " LEFT JOIN target_attribute_selection recognition ON recognition.target_id=tg.target_id"
@@ -303,17 +325,6 @@ public class LegalityEvaluationReadRepository {
         if (query.from() != null) {
             where.sql.append(" AND e.evaluated_at>=:from AND e.evaluated_at<:to");
             where.parameters.put("from", query.from()); where.parameters.put("to", query.to());
-        }
-        if (query.latestOnly()) {
-            // 最新判定先于外层状态、时间、来源及权限筛选；不能把不匹配筛选条件的最新行换成旧行。
-            // TARGET / PLAN 分开反连接，使数据库按目标/计划等值匹配，避免 OR 把所有同类主体混在一起比较。
-            // 保留 evaluated_at + evaluation_id 尾键，以及主体引用为空时不相互覆盖的既有语义。
-            where.sql.append(" AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='TARGET' AND n.subject_kind='TARGET'"
-                    + " AND n.mode=e.mode AND n.target_id=e.target_id"
-                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))"
-                    + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='PLAN' AND n.subject_kind='PLAN'"
-                    + " AND n.mode=e.mode AND n.plan_id=e.plan_id"
-                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))");
         }
         return where;
     }

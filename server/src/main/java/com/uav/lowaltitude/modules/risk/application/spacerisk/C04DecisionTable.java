@@ -51,12 +51,9 @@ public final class C04DecisionTable {
         // flight_risk.plan_id 非空，没有计划的"异物"没有可挂靠的业务对象，硬造一条会污染风险队列。
         if (!observation.activePlan()) return Decision.none(unknown);
         if (observation.altitudeBand() == AltitudeBand.CRUISE) return Decision.none(unknown);
-        // 2026-10-11 新版本：数量仅参与分级，不阻断空间风险判定。
-        // 缺少该开关的历史版本仍执行原数量门槛，回滚不能悄悄改变旧版本含义。
-        boolean requireFlockCount = !params.has(RULE_CODE, "flock_count_required")
-                || params.bool(RULE_CODE, "flock_count_required");
-        if (requireFlockCount && "BIRD_FLOCK".equals(observation.subtypeCode())
-                && (observation.objectCount() == null || observation.objectCount() < flockThreshold)) return Decision.none(unknown);
+        // 确认书修订版 4-1、4-2：出不出风险只看走廊关系、高度带和有无活动计划，不看鸟的数量。
+        // 数量只能把等级上调一级（见 escalates）；数量没报时照常出风险，并在 unknownReasons 里记 OBJECT_COUNT_UNAVAILABLE，
+        // 不能因为"数量未知"就不出——现在雷达、光电都报不出只数，那样鸟群风险永远出不来。
         String base = baseSeverity(observation);
         if (base == null) return Decision.none(unknown);
         boolean escalate = escalates(observation, flockThreshold);

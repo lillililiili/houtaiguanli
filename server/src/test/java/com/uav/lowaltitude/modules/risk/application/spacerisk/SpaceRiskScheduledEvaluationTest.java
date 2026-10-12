@@ -218,6 +218,39 @@ class SpaceRiskScheduledEvaluationTest {
                 + " where r.target_id=?", Long.class, far)).isZero();
     }
 
+    /**
+     * 确认书修订版 4-1、4-2：鸟群出不出风险不看数量。设备报不出数量（没有 object_count）或只报很少，照样出中风险；
+     * 数量没报的另记"数量未采集"，数量达到阈值才把等级上调一级。
+     */
+    @Test
+    void aFlockCreatesARiskWhateverCountTheSourceReportedAndCountOnlyLiftsTheLevel() {
+        String unreported = target("unreported"), few = target("few"), many = target("many");
+        refreshed(observation(unreported, plan, "120.00", 0, null), observation(few, plan, "120.00", 0, 10), observation(many, plan, "120.00", 0, 25));
+        RunRow run = scheduled(0);
+        assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
+        assertThat(run.risksCreated()).isEqualTo(3);
+        for (String flock : List.of(unreported, few, many)) assertThat(risks(flock)).as(flock).hasSize(1);
+        assertThat(severityOf(risks(unreported).get(0))).as("没报数量：照出，不上调").isEqualTo("MEDIUM");
+        assertThat(severityOf(risks(few).get(0))).as("只报 10 只：照出，不上调").isEqualTo("MEDIUM");
+        assertThat(severityOf(risks(many).get(0))).as("报 25 只：上调一级").isEqualTo("HIGH");
+        assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?", String.class, risks(unreported).get(0)))
+                .isEqualTo("PENDING_VERIFICATION");
+        // 修订版 4-2：依据（reason_text）里写“数量未知”；报了数量的写“规模约 N”，不写数量未知。
+        assertThat(reasonOf(risks(unreported).get(0))).as("没报数量").contains("数量未知").doesNotContain("规模约");
+        assertThat(reasonOf(risks(few).get(0))).as("报 10 只").contains("规模约 10").doesNotContain("数量未知");
+        assertThat(reasonOf(risks(many).get(0))).as("报 25 只").contains("规模约 25").doesNotContain("数量未知");
+        assertThat(jdbc.queryForObject("select object_count from space_risk_fact where risk_id=?", Integer.class, risks(unreported).get(0))).isNull();
+        assertThat(jdbc.queryForObject("select CAST(unknown_reasons AS VARCHAR) from space_risk_fact where risk_id=?", String.class, risks(unreported).get(0)))
+                .contains(C04DecisionTable.UNKNOWN_OBJECT_COUNT);
+        assertThat(jdbc.queryForObject("select CAST(unknown_reasons AS VARCHAR) from space_risk_fact where risk_id=?", String.class, risks(few).get(0)))
+                .doesNotContain(C04DecisionTable.UNKNOWN_OBJECT_COUNT);
+        // 高度带、距离这两道门不因数量放宽：同样没报数量，离航线 800 米（超过邻近距离）不出。
+        String away = target("away");
+        refreshed(observation(away, plan, "800.00", 60, null));
+        assertThat(scheduled(1).risksCreated()).isZero();
+        assertThat(risks(away)).isEmpty();
+    }
+
     /** 第 n 轮定时评估：窗口按处理时间推进、与上一轮回叠 30 秒，观测下限为 30 分钟前。 */
     private RunRow scheduled(int tick) {
         OffsetDateTime to = now.plusMinutes(tick);
@@ -238,9 +271,22 @@ class SpaceRiskScheduledEvaluationTest {
 
     /** 同一航线上离中心线 distance 米、离地 60 米的鸟群，观测时刻比首轮晚 observedAfterSeconds 秒。 */
     private SpaceObservation observation(String targetId, String planId, String distance, int observedAfterSeconds) {
+        return observation(targetId, planId, distance, observedAfterSeconds, 25);
+    }
+
+    /** 同上；objectCount 为 null 表示来源没有报只数（雷达、光电、MQTT 设备协议现在都是这样）。 */
+    private SpaceObservation observation(String targetId, String planId, String distance, int observedAfterSeconds, Integer objectCount) {
         return new SpaceObservation(targetId, "TGT-" + targetId, "BIRD_FLOCK", planId, routeVersionOf(planId),
-                new BigDecimal(distance), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", 25, "UNKNOWN",
+                new BigDecimal(distance), new BigDecimal("50.00"), new BigDecimal("60.00"), "AGL", "AGL", objectCount, "UNKNOWN",
                 org, district, new BigDecimal("118.025"), new BigDecimal("37.025"), now.minusSeconds(20).plusSeconds(observedAfterSeconds));
+    }
+
+    private String severityOf(String riskId) {
+        return jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId);
+    }
+
+    private String reasonOf(String riskId) {
+        return jdbc.queryForObject("select reason_text from flight_risk where risk_id=?", String.class, riskId);
     }
 
     private List<Map<String, Object>> segments(String riskId) {

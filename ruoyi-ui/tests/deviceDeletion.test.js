@@ -7,7 +7,7 @@ import { deviceApi, integrationApi } from '@/api/devices.js';
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
 
 const permission = vi.hoisted(() => ({ allowed: true }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => permission.allowed }) }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: () => permission.allowed }) }));
 vi.mock('@/api/devices.js', () => ({
   deviceApi: { list: vi.fn(), options: vi.fn(), overview: vi.fn(), detail: vi.fn(), protocolStatus: vi.fn(), remove: vi.fn() },
   integrationApi: { protocols: vi.fn() }, mqttApi: {}
@@ -25,7 +25,7 @@ async function settle() {
 }
 async function mount() {
   host = document.createElement('div'); document.body.append(host);
-  app = createApp(DevicesView); app.use(ElementPlus); app.mount(host);
+  app = createApp(DevicesView); app.component('router-link',{template:'<a><slot /></a>'}); app.use(ElementPlus); app.mount(host);
   await settle();
 }
 function deleteButton() { return [...host.querySelectorAll('button')].find(button => button.textContent.trim() === '删除'); }

@@ -67,6 +67,8 @@ public class CommissionService {
     @Transactional
     public Task create(String deviceId, String previousTaskId) {
         AuthUser user = access.requireCommissionOperate();
+        if(!repository.deviceInScope(deviceId,user))throw notFound("DEVICE_NOT_FOUND","设备不存在或不在授权范围内");
+        devices.lockForRecovery(deviceId);
         Map<String, Object> device = devices.find(deviceId);
         if (device == null || !repository.deviceInScope(deviceId, user)) throw notFound("DEVICE_NOT_FOUND", "设备不存在或不在授权范围内");
         if (!asBoolean(device.get("enabled")))

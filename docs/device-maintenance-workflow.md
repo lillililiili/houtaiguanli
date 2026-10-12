@@ -1,47 +1,108 @@
-# 设备运维流程与站内提醒
+# 设备异常处置闭环与站内提醒
 
-接口沿用 `/api/v1`、Bearer 会话、snake_case 和 `{ok,data,error}`。状态变更均由服务端裁决，不调用设备重启、调测启动或修改设备状态。
+更新：2026-10-10。本文为当前 v2 契约；2026-09-27 的人工分步核验流程仅保留历史兼容。
 
-## 任务与状态
+## 值班员如何操作
 
-既有列表字段保留。`status=PENDING` 表示未完成任务（包括处理中、待核验），`status=HANDLED` 包括本流程完成及历史反馈。新增 `workflow_state` 精确区分 `PENDING / PROCESSING / PENDING_VERIFICATION / COMPLETED / LEGACY_HANDLED`。迁移只把既有 HANDLED 标记为历史已反馈，不生成恢复通过记录，不修改通知快照。
+### 融合感知设备上报
 
-`GET /device-maintenance-tasks` 的 status 增加 `ACTIVE / NOT_STARTED / PROCESSING / PENDING_VERIFICATION / COMPLETED`，原 `ALL / PENDING / HANDLED` 保留；ACTIVE 与原 PENDING 均覆盖全部未完成任务。NOT_STARTED 仅匹配 workflow_state=PENDING，供“待处理”筛选使用；任务开始处理后从 NOT_STARTED 移出，但仍出现在 ACTIVE 和兼容的 PENDING 中。列表与 total 计数使用相同条件。
+融合感知的设备详情卡片提供“上报设备异常”和办理进度。没有飞行任务也可上报；同设备及冻结来源已有未办结 v2 单据时关联原单，并明确提示后台不会新增待办。正常或仅状态未知、没有明确异常事实时不伪造故障。
 
-`GET /device-maintenance-tasks/{taskId}/workflow` 返回：
+- `GET /api/v1/devices/{deviceId}/maintenance-report`：设备读取权限及范围校验；返回 `device_id/can_report/blocked_reason/abnormal_reason/checked_at/task/reused`。`task` 是可选的当前来源处置摘要，只有 `task_id/device_name/workflow_state/reported_at/my_reported_at/simulated`，不暴露其他任务的资料、通知收件人或后台操作。
+- 同路径 `POST`：复用 `handoff:create` 和设备读取范围，要求 `Idempotency-Key`；不需要虚构关联计划或增加后台权限。设备锁内再次核对当前来源、明确异常和原提交，复用现有主单、原始上报、站内通知及审计。`reused=true` 表示原单关联或请求重放；前端对不确定重试仅提示“上报已保存”，不据此猜测原来是否已有单。
+- 资格使用与系统发现同源的异常事实，包括当前来源的有效故障/告警及未关闭异常。页面每 5 秒只读更新，失败显示最后成功更新时间；未知 POST 结果保留原幂等键重试，普通 GET 不替代提交结果确认。
 
-- `task`：既有平铺任务 DTO，追加 workflow_state。
-- `state, version, assigned_to_name`：当前阶段、乐观锁版本、最初开始操作的处理人。未开始时处理人省略。
-- `events`：按任务版本升序排列的 event_id、action、note、actor_name、occurred_at。核验事件保留 PASS/FAIL/UNKNOWN 与原因。
-- `commission_tasks`：已关联调测的 commission_id、status、simulated。
-- `recovery`：最近有效轮次的 result、reason、checked_at；未核验或恢复处理后省略。历史核验仍在 events 中。
-- `allowed_actions, blocked_reason`：当前动作与阻断原因。无阻断时原因省略。
-- `open_incidents`：当前设备未恢复事件的 incident_id、reason、stage、allowed_actions；只从当前可见运维任务关联设备中读取。前端可显式调用既有事件核验接口，流程本身不自动关闭事件。
+后台进入 **运维管理 → 设备异常处理**（`/operations/maintenance`）。右上角运维消息、设备监测告警和设备详情的“查看异常处置”均进入这个工作台。
 
-`POST /device-maintenance-tasks/{taskId}/workflow/actions` 必须携带 Idempotency-Key（8–128 字符）。请求为 `{action,expected_version,note?,commission_id?}`；成功返回 Workflow。相同用户、键、任务和请求返回按当前权限重新投影的最新 Workflow，重复不追加事件、不重复执行，不让延迟重试把界面退回旧阶段。键复用不同请求、版本过期返回 409。权限和数据范围在重放前仍检查。
+1. 选择一份处置单，首屏查看“发生了什么”“现在什么状态”和底部“下一步”。
+2. 尚未恢复时点击 **接手处理**，按页面提示检查供电、网络或联系设备维护人员。处理说明选填，不需要创建调测任务。
+3. 系统持续自动核验。仍离线、仍有告警、缺少新健康上报等原因直接显示；无需手动提交或执行核验。
+4. 显示 **待确认办结** 后点击 **确认办结**。接手前已经恢复的可直接办结。提交时服务端再次核验，期间再次异常会阻止办结并保留备注。
 
-| action | 阶段及约束 |
-| --- | --- |
-| START | 待处理 → 处理中，保存真实处理人 |
-| SAVE_PROGRESS | 处理中追加 2–1000 字说明 |
-| LINK_COMMISSION | 处理中关联已存在、同设备且同来源的可见调测任务；另需 commissioning.read，不启动调测 |
-| SUBMIT_VERIFICATION | 处理中 → 待核验；2–1000 字说明；设备不得有执行中的指令、调测或跟踪任务 |
-| VERIFY_RECOVERY | 待核验阶段记录 PASS/FAIL/UNKNOWN，仍停留待核验 |
-| COMPLETE | 待核验 → 完成；2–1000 字说明；既有 PASS 不超过 300 秒，且本次重新核验仍 PASS |
-| RESUME | 待核验 → 处理中，清除当前轮核验摘要、保留全部事件 |
+工作台页首明确说明“未接手也会自动核验恢复；接手只登记办理人，不会自动维修或重启设备”。待处理、处理中和历史待核验阶段的固定操作区分别展示“你需要做”（排查供电、网络及故障，必要时联系维护）和“系统正在检查”（在线心跳、健康、告警及操作状态）；等待标签为“等待设备恢复”。办理状态、恢复结论和动作资格仍使用后端返回值。
 
-恢复要求当前来源与报修时设备来源一致，模拟标识一致；设备启用；状态与心跳均为报修后、非未来且 300 秒内；在线、GOOD、明确无告警；不存在未恢复异常及执行中任务。未知健康不能被在线心跳替代。模拟来源通过明确标记不代表真实设备恢复。任一未恢复事件均阻断办结，须先通过既有设备异常流程核验；本接口不改设备和异常状态。
+列表默认“未办结”，可筛选待处理、处理中、待确认办结、已办结及全部。后端分页前统一按“未办结新流程处置单、历史未办结上报单、已办结记录”排序，每组按上报时间新到旧并使用处置编号稳定排序；按设备进入时默认选中第一页首项，显式指定的处置单保持原选择。计划入口使用相同排序，历史记录保留且不强行合并。页面可见时每 5 秒补读，实时信号也会触发读取；统一“刷新”同时更新列表、设备现状和工作流。读取均不写业务状态。更新失败显示最后成功读取时间并禁止操作；范围撤销时清除旧详情。备注、选中处置单及筛选不会因自动刷新丢失。时间统一为北京时间。
 
-旧 `POST /device-maintenance-tasks/{taskId}/handling` 现返回 409 `MAINTENANCE_WORKFLOW_REQUIRED`，避免旧“一次反馈”绕过处理和恢复核验。此为有意的行为兼容性变更，调用方必须使用新流程。LEGACY_HANDLED 与 COMPLETED 均不可重新开始。
+“高级诊断”提供监测、接入调测及协议明确支持的重启操作。重启需要明确事由及确认，结果未知时保持原请求重试；指令回执成功不代表设备恢复。调测页不再承载日常接手、恢复核验或办结流程，诊断后返回同一处置单。
 
-## 站内消息
+## 一次异常对应一份处置单
 
-`GET /device-maintenance-messages?page=1&size=8&unread_only=false` 需要 monitoring.read + monitoring.op，返回 `{items,total,page,size,unread_count}`。每条包含 task_id、device_id、device_name、reason、reported_at、read_at（未读时省略）、workflow_state。消息直接派生于当前可见任务，不另广播、不复制通知、不发生 GET 写入；总数与未读数均只覆盖当前授权范围。分页最大 100。
+新记录 `workflow_version=2`，主记录仍为既有设备运维待办。设备与冻结来源身份相同的未办结异常共用一份处置单，关联所有可见计划、原始上报及设备异常事件；没有计划的设备异常可独立办理。
 
-`POST /device-maintenance-messages/{taskId}/read` 接受空请求体，返回 `{task_id,read_at}`，同用户重复读取保留第一次时间。已读不改变任务状态、版本或通知回执。
+| workflow_state | 页面状态 | 人工操作 |
+| --- | --- | --- |
+| PENDING | 待处理 | START：接手处理 |
+| PROCESSING | 处理中 | 按需 SAVE_PROGRESS；后台自动核验 |
+| READY_TO_COMPLETE | 待确认办结 | CONFIRM_COMPLETE：确认办结 |
+| COMPLETED | 已办结 | 只读 |
+| PENDING_VERIFICATION | 历史流程自动核验中 | 由系统接续检查，不再要求页面分步提交 |
+| LEGACY_HANDLED | 历史已反馈 | 只读，不视为设备恢复 |
 
-## 验证
+后台核验未接手的单据同样有效。核验通过进入 READY_TO_COMPLETE，不自动接手、不自动人工办结。办结前再次异常沿用原单，撤销可办结状态，回到已接手的 PROCESSING 或未接手的 PENDING，保留恢复与再次异常记录。只有人工办结才释放当前处置关系；之后再次异常创建新单。
 
-H2 专项：`./mvnw.cmd -Dtest=DeviceMaintenanceWorkflowApiTest,DeviceMaintenanceNoticeApiTest test`。
+已完成记录和原始通知快照不回写。旧进行中记录标记“历史上报单”，不根据名称或时间接近猜测合并，仍可通过新工作台读取、自动核验及确认办结。处置数量按主记录统计；原上报、异常事件、指令及通知次数各自保留含义。
 
-PostgreSQL/PostGIS 专项：隔离库名必须为 `maintenance_flow_verify_*`，通过 POSTGRES_TEST_URL / POSTGRES_TEST_USER / POSTGRES_TEST_PASSWORD 注入连接，再执行 `./mvnw.cmd -Dtest=DeviceMaintenanceWorkflowPostgresTest test`。该类覆盖迁移历史保留、只读 GET、并发 START/已读及继承的端到端测试；未配置时跳过，不连接业务库。
+## 查询与动作接口
+
+沿用 `/api/v1`、Bearer 数据库会话、snake_case、字符串 ID、epoch 毫秒和 `{ok,data,error}`。后台身份及设备数据范围由服务端校验。工作台 menu key 为 `maintenance`，读取复用 `monitoring.read`，操作复用 `monitoring.op`；日常办理不要求 `commissioning.read`。高级诊断仍要求既有对应权限。
+
+`GET /device-maintenance-tasks` 返回 `items,total,page,size`，新增可选 `device_id`。状态筛选：`ACTIVE` 为全部未办结、`NOT_STARTED` 仅 PENDING、`PROCESSING`、`READY_TO_COMPLETE`、`COMPLETED`；兼容 `ALL/PENDING/HANDLED/PENDING_VERIFICATION`。旧 `status=PENDING` 继续表示全部未完成，不用于新页面“待处理”筛选。列表与 total 使用相同范围。
+
+`GET /device-maintenance-tasks/{taskId}/workflow` 保留原字段，并提供：
+
+- `task`：原始上报快照及现有通知历史，包含 `workflow_state`、`workflow_version`、当前状态摘要和下一步；原快照字段不改写为当前状态。
+- `state,version,assigned_to_name,workflow_version`：当前办理阶段、乐观锁版本、接手人和流程版本。
+- `current_device_state`：当前连接、健康、告警、启用状态、来源，以及心跳、健康、告警分别对应的上报时间和来源。
+- `recovery`：`result` 为 PASS/FAIL/UNKNOWN，含 `reason,reason_codes,checked_at,rule_version,evidence`。`evidence` 保存核验采用的设备事实；已办结记录从保存快照读取，不能因当前设备再次异常而改写办结依据。
+- `primary_action,next_step,allowed_actions,blocked_reason`：由后端统一提供主要动作、指引和可用资格。
+- `events`：按版本升序的办理历史，含动作、说明、操作者和发生时间；自动核验使用系统身份，仅关键状态或原因变化追加事件。
+- `related_plans,related_incidents,related_reports`：按当前权限返回关联任务、历史异常与原始上报。上报记录含 `report_id,plan_id,actor_name,reason,reported_at`，不可见计划不泄漏记录或数量。
+- `open_incidents`：当前未恢复异常及协议/权限允许的动作，用于按需重启；历史关联异常不用于推断当前可执行动作。
+- `commission_tasks`：关联调测记录，调测结果不替代恢复核验。
+
+`POST /device-maintenance-tasks/{taskId}/workflow/actions` 携带 `Idempotency-Key`（8–128 字符），请求 `{action,expected_version,note?,commission_id?}`，成功返回当前 Workflow。说明选填，最长 1000 字；记录处理仅在服务端允许时执行。
+
+- `START`：PENDING → PROCESSING，记录真实接手人。
+- `SAVE_PROGRESS`：追加处理说明，不改变恢复结论或结束处置。
+- `CONFIRM_COMPLETE`：READY_TO_COMPLETE → COMPLETED，锁定设备与处置单后重新核验，成功保存办结依据；失败返回 409 与当前阻断原因。
+- `LINK_COMMISSION`：按既有权限关联同设备、同来源调测任务，不自动启动调测。
+
+同用户、同幂等键、同请求重放返回按当前权限重新投影的 Workflow，不重复追加事件。键复用不同请求、版本冲突或当前恢复条件不再满足均明确拒绝。网络结果未知时客户端保留原动作、版本、事由与键重试，不重新创建动作。
+
+旧 `SUBMIT_VERIFICATION/VERIFY_RECOVERY/COMPLETE/RESUME` 仅用于旧记录兼容，新 v2 拒绝这些动作。旧 `/handling` 仍返回 `409 MAINTENANCE_WORKFLOW_REQUIRED`，不能绕过新流程办结。
+
+## 自动恢复核验与设备事实
+
+后台每 5 秒分页处理待核验设备，逐设备独立事务，不依赖页面打开。设备启用、来源一致、连接在线、明确健康 GOOD、明确无告警，且各项证据晚于本次异常或最近再次异常、未过期、非未来，才能通过。沿用既有 300 秒核验新鲜度与协议心跳超时门槛，不因整改放宽。
+
+心跳、健康、告警分别保存时间与来源；新心跳不续期旧健康信息，连接成功推导出的 GOOD 不作为明确健康上报。历史缺失时间保持未知，迟到信息不能覆盖较新的异常事实。
+
+执行中指令、调测、反制实际运行/停止待确认等事实阻断恢复确认。2026-10-11 用户确认：正常自动光电追踪不阻断设备异常恢复，核验不再要求设备完全空闲。该例外仅适用于 AUTO、OPEN、启动指令成功、没有停止请求、设备绑定及指令来源一致，且有效追踪回报的发生与接收时间均在既有 `app.eo-edge.position-max-age-millis` 窗口内（默认 15 秒）的任务。人工追踪、启动结果未知或失败、回报缺失/过期、异常追踪、停止失败/超时/待确认仍阻断；较新的明确追踪失败须由更晚的成功追踪回报消除，心跳和迟到成功回报不能消除。其他健康、告警、来源及证据时效要求不变。
+
+核验规则版本为 `ops-device-recovery-v2-auto-track`；快照保留 `active_work` 表示实际占用，并追加 `recovery_blocking_work` 表示占用是否阻碍恢复。正常自动追踪期间二者可以分别为 true/false，删除、重启、调测等设备空闲检查保持原约束。核验通过后可关闭已满足条件的设备异常事件；人工办结仍须最终检查。多入口操作采用一致加锁和版本/幂等约束，防止核验期间出现停止请求却错误办结。新增迁移只保存此后收到的追踪失败时间，不回填旧历史。
+
+模拟器状态变化立即上报，持续正常时每 30 秒发送明确模拟健康上报。暂停、离线或停止期间不发送虚假健康数据。桌面短时场景约 30 秒异常、约 3 分钟恢复；“恢复上报”之后仍以本处置单的核验原因和结果为准。
+
+光电模拟设备使用登记的 `eo_device_binding`、边缘节点及设备来源，通过同一受控 QA 状态入口补充明确健康和告警事实。模拟器先确认当前场景配置正常、未处于离线窗口，再随身份匹配的光电心跳上报；不把光电 `workState`、相机状态或在线心跳解释成健康正常。该入口仍只接受已启用、同来源的 replay 模拟设备，真实设备须由真实协议接入健康依据。上报失败会记录失败并重试，不需要值班员手工填写“健康正常”。健康补齐后仍检查上述阻碍恢复的操作，不能以补齐字段代替停止回执。
+
+模拟器会话复核使用 `GET /api/v1/local-interface-simulator/session`，通知收取使用 `GET /api/v1/local-interface-simulator/receiver-context`；周期检查不聚合航线、计划和历史材料。前者保留后台身份、接口读取及数据范围门禁，后者另校验既有通知通道权限和全局范围，仅返回当前接收账号租约下的待收消息。检查失败仍停止收发，场景记录实际停止原因；连接失败、超时和无效响应分别显示，不把自动中断显示成正常结束。
+
+## 消息、兼容入口与验收
+
+飞行任务设备检查将当前状态与任务时段告警记录分开。当前异常、正常、待核查数量只依据本次设备事实；告警记录（含已关闭记录）继续单独展示，不将过去异常计作当前异常。正常还要求健康、告警各自的明确上报时间及来源有效，沿用恢复核验的有效期和 MQTT 心跳窗口；新心跳、已办结恢复快照不能补足旧健康证据。
+
+当前全部正常但任务时段内曾有告警时，检查仍保留告警记录，显示“覆盖航线的设备当前正常；任务时段内有设备告警记录，是否起飞仍待确认”。此时 `complete=true` 只说明当前设备检查依据完整，`conclusion=CHECK_INCOMPLETE` 仍表示缺少足够的历史依据判断是否起飞，不从当前恢复反推当时未起飞。预飞检查仍只说明当前设备状态。处置单与计划的关联范围、上报资格和历史快照不变。
+
+`GET /device-maintenance-messages` 与 `POST /device-maintenance-messages/{taskId}/read` 保留现有资格和个人已读语义。已读不代表处理、恢复或办结。通知快照为当时的记录，未保存信息不使用当前联系人补写。
+
+2026-10-11：顶部运维消息仅显示待办，请求 `pending_only=true`。服务端在分页前按 `status=PENDING` 且 `workflow_state<>PROCESSING` 筛选，包含待接手、旧待恢复核验及待确认办结；按用户补充要求排除处理中。列表、`total` 和 `unread_count` 使用同一待办范围。已读待办仍显示，处理中、已办结和旧已反馈不显示；接手或办结导致当前页超出末页时回到有效页。参数默认 false，保留原接口全量读取兼容；历史及个人已读记录不改写。
+
+旧 `/operations/commission?maintenance_task_id=...&device_id=...` 与 `?view=maintenance` 转到新工作台。高级诊断使用 `/operations/commission?maintenance_context_id=...&device_id=...`，避免与旧深链含义混淆。监测支持 `device_id` 定位；指定设备不存在或不可见时不能回退到第一台其他设备。
+
+验证需覆盖：两次主操作的正常闭环、接手前恢复、多个任务关联同一单、办结前再次异常、办结后新异常、来源/权限隔离、缺失或过期健康、重复乱序上报、并发与幂等、后台重启恢复和已办结证据不变。迁移与事务在隔离 PostgreSQL/PostGIS 验证；页面覆盖 1280×720、1366×768、1440×900、1920×1080。实际测试与模拟操作结果单独记录，不把本文当作现场联调通过证明。
+
+验收服务保持 `app.dev-seed.enabled=false`，模拟演示不补造现场恢复事实，不回填历史记录。
+
+2026-10-11 上报反馈补充：业务前台只在本次首次提交的 POST 明确返回 `reused=true` 时展示“已关联原处置单”提示块，保留原单编号、首次建单时间及后台查看位置。新建成功使用新建提示，不显示原单提示块；普通 GET、缺少明确提交结果和幂等重试均不推断已有原单，不再展示上报前的泛化关联提示。重试的 `reused=true` 可能仅表示请求重放，使用“上报已保存”。轮询不能用 GET 的 `reused=false` 覆盖已确认的本次提交结果；办理状态独立更新。后台详情首屏展示相同处置单编号，多个可见任务统一在本单办理，关联范围保持。
+
+2026-10-11 列表排序补充：在原有“当前 v2 未办结、历史未办结、已结束”分组内，以当前读者可见的最近人工上报时间倒序；无人工上报时使用原单首次发现／上报时间。在数据库分页前完成排序，与卡片 `report_summary.latest_manual_report` 的权限和时间口径一致。自动核验、设备心跳和系统重复检查不改变排序；同一上报请求重试不更新时间。时间相同时用原单时间、办结时间和 ID 确定稳定顺序，不修改历史或原单首次上报时间。排序修改需重新加载后端后生效。

@@ -4,7 +4,7 @@ import ElementPlus from 'element-plus';
 import CommissionView from '@/views/operations/CommissionView.vue';
 import DeviceCatalogPreview from '@/views/operations/DeviceCatalogPreview.vue';
 import { commissionApi, deviceApi } from '@/api/devices.js';
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: () => true }) }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn() }, commissionApi: Object.fromEntries(['information','list','report','get','events','create','connect','configure','start'].map(key => [key,vi.fn()])) }));
 let app, host;
 async function settle() { for (let i=0; i<16; i++) { await Promise.resolve(); await nextTick(); } }

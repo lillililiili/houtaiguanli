@@ -9,11 +9,17 @@ import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.JsonNode;
 
 class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
+    // The old endpoints remain solely for stored v1 records. New v2 behavior has its own suite.
+    @Override JsonNode create() throws Exception {
+        JsonNode task=super.create();
+        jdbc.update("UPDATE ops_device_maintenance_task SET workflow_version=1 WHERE task_id=?",taskId);
+        return task;
+    }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"-1,0", "-300001,0", "1,0", "0,-1", "0,-300001", "0,1"})
     void recoveryRejectsPreReportStaleAndFutureEvidence(long observedOffset,long heartbeatOffset) throws Exception {
         create();action("START",1,null);action("SUBMIT_VERIFICATION",2,null);healthy();
-        jdbc.update("UPDATE ops_device_state SET observed_at=?,last_heartbeat_at=? WHERE device_id=?",now+observedOffset,now+heartbeatOffset,device);
+        jdbc.update("UPDATE ops_device_state SET health_observed_at=?,last_heartbeat_at=? WHERE device_id=?",now+observedOffset,now+heartbeatOffset,device);
         JsonNode checked=action("VERIFY_RECOVERY",3,null);
         assertThat(checked.path("recovery").path("result").asText()).isEqualTo("UNKNOWN");
         assertThat(checked.path("allowed_actions").toString()).doesNotContain("COMPLETE");
@@ -105,22 +111,21 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
     }
     @Test void staleUnknownAndActiveIncidentsCannotCloseAndResumeRetainsHistory() throws Exception {
         create();action("START",1,null);action("SUBMIT_VERIFICATION",2,"处理后检查");healthy();
-        jdbc.update("UPDATE ops_device_state SET observed_at=? WHERE device_id=?",now-301000,device);
+        jdbc.update("UPDATE ops_device_state SET health_observed_at=? WHERE device_id=?",now-301000,device);
         assertThat(action("VERIFY_RECOVERY",3,null).path("recovery").path("result").asText()).isEqualTo("UNKNOWN");
         mvc.perform(write(post(path()),Map.of("action","COMPLETE","expected_version",4,"note","尝试完成"),UUID.randomUUID().toString())).andExpect(status().isConflict());
         assertThat(action("RESUME",4,"继续处理").path("state").asText()).isEqualTo("PROCESSING");
     }
-    @Test void replayOldStartReturnsLatestStateAndCurrentFieldPermissions() throws Exception {
+    @Test void replayOldStartCannotBypassCurrentBackendIdentity() throws Exception {
         create();String key=UUID.randomUUID().toString();var body=Map.of("action","START","expected_version",1);
         data(write(post(path()),body,key));action("SUBMIT_VERIFICATION",2,"提交恢复核验");
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-MAINT-OP','运维操作测试','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-MAINT-OP','monitoring','OP',TRUE)");
         jdbc.update("UPDATE app_user SET role_code='ROLE-MAINT-OP' WHERE account='admin1'");sqlSession.clearCache();
-        JsonNode replay=data(write(post(path()),body,key));
-        assertThat(replay.path("state").asText()).isEqualTo("PENDING_VERIFICATION");
-        assertThat(replay.path("version").asLong()).isEqualTo(3);
-        assertThat(replay.path("events")).hasSize(2);
-        assertThat(replay.path("task").has("plan_id")).isFalse();
+        mvc.perform(write(post(path()),body,key)).andExpect(status().isForbidden());
+        mvc.perform(auth(get("/api/v1/device-maintenance-tasks/"+taskId+"/workflow"))).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT workflow_state FROM ops_device_maintenance_task WHERE task_id=?",String.class,taskId)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_maintenance_workflow_event WHERE task_id=?",Long.class,taskId)).isEqualTo(2L);
     }
     @Test void inboxReadReceiptIsSeparateAndLegacyHandlingCannotBypassWorkflow() throws Exception {
         create();JsonNode before=data(auth(get("/api/v1/device-maintenance-messages")));
@@ -131,6 +136,65 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
         assertThat(workflow().path("version").asLong()).isEqualTo(version);
         assertThat(data(auth(get("/api/v1/device-maintenance-messages"))).path("unread_count").asLong()).isEqualTo(before.path("unread_count").asLong()-1);
         mvc.perform(write(post("/api/v1/device-maintenance-tasks/"+taskId+"/handling"),Map.of("expected_version",1,"note","已处理"),UUID.randomUUID().toString())).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("MAINTENANCE_WORKFLOW_REQUIRED"));
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"mock,true,1", "live,false,2"})
+    void pendingInboxFiltersBeforePaginationAndExcludesProcessingFromCounts(String mode,boolean simulated,int workflowVersion) throws Exception {
+        create();
+        jdbc.update("UPDATE ops_device SET source_mode=?,simulated=? WHERE device_id=?",mode,simulated,device);
+        jdbc.update("UPDATE ops_device_maintenance_task SET workflow_source_mode=?,simulated=?,workflow_version=? WHERE task_id=?",mode,simulated,workflowVersion,taskId);
+        var pendingIds=new java.util.ArrayList<String>();pendingIds.add(taskId);
+        int offset=0;
+        for(String state:java.util.List.of("PROCESSING","PENDING_VERIFICATION","READY_TO_COMPLETE","COMPLETED","LEGACY_HANDLED")){
+            String id=UUID.randomUUID().toString();boolean handled=state.equals("COMPLETED")||state.equals("LEGACY_HANDLED");
+            jdbc.update("""
+                INSERT INTO ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,
+                  device_name,reason,simulated,status,active_key,reported_by,reported_by_name,reported_at,
+                  handled_by,handled_at,handling_note,workflow_state,workflow_source_mode,workflow_version)
+                SELECT ?,plan_id,device_id,owner_org_id,district_id,device_name,reason,simulated,?,?,
+                  reported_by,reported_by_name,?,CASE WHEN ? THEN reported_by ELSE NULL END,?,?,?,workflow_source_mode,workflow_version
+                FROM ops_device_maintenance_task WHERE task_id=?
+                """,id,handled?"HANDLED":"PENDING",handled?null:id,now+(++offset),handled,handled?now+offset:null,
+                    handled?"历史办结记录":null,state,taskId);
+            if(!handled&&!state.equals("PROCESSING"))pendingIds.add(id);
+        }
+        data(auth(post("/api/v1/device-maintenance-messages/"+taskId+"/read")));
+        var received=new java.util.ArrayList<String>();
+        for(int page=1;page<=2;page++){
+            JsonNode result=data(auth(get("/api/v1/device-maintenance-messages").param("pending_only","true").param("size","2").param("page",String.valueOf(page))));
+            assertThat(result.path("total").asLong()).isEqualTo(3);
+            assertThat(result.path("unread_count").asLong()).isEqualTo(2);
+            assertThat(result.path("items")).hasSize(page==1?2:1);
+            assertThat(result.path("items").toString()).doesNotContain("PROCESSING","COMPLETED","LEGACY_HANDLED");
+            result.path("items").forEach(item->received.add(item.path("task_id").asText()));
+        }
+        java.util.Collections.reverse(pendingIds);
+        assertThat(received).containsExactlyElementsOf(pendingIds);
+        JsonNode unread=data(auth(get("/api/v1/device-maintenance-messages").param("pending_only","true").param("unread_only","true")));
+        assertThat(unread.path("total").asLong()).isEqualTo(2);
+        assertThat(unread.path("unread_count").asLong()).isEqualTo(2);
+        assertThat(unread.path("items").toString()).doesNotContain(taskId);
+        JsonNode history=data(auth(get("/api/v1/device-maintenance-messages")));
+        assertThat(history.path("total").asLong()).isEqualTo(6);
+        assertThat(history.path("unread_count").asLong()).isEqualTo(5);
+        assertThat(history.path("items").toString()).contains("PROCESSING","COMPLETED","LEGACY_HANDLED");
+    }
+    @Test void pendingInboxHidesStartedTasksAndShowsTasksAwaitingVerification() throws Exception {
+        create();
+        String route="/api/v1/device-maintenance-messages";
+        JsonNode before=data(auth(get(route).param("pending_only","true")));
+        assertThat(before.path("total").asLong()).isEqualTo(1);
+        assertThat(before.path("unread_count").asLong()).isEqualTo(1);
+        action("START",1,null);
+        JsonNode processing=data(auth(get(route).param("pending_only","true")));
+        assertThat(processing.path("items")).isEmpty();
+        assertThat(processing.path("total").asLong()).isZero();
+        assertThat(processing.path("unread_count").asLong()).isZero();
+        action("SUBMIT_VERIFICATION",2,null);
+        JsonNode waiting=data(auth(get(route).param("pending_only","true")));
+        assertThat(waiting.path("total").asLong()).isEqualTo(1);
+        assertThat(waiting.path("unread_count").asLong()).isEqualTo(1);
+        assertThat(waiting.path("items").get(0).path("workflow_state").asText()).isEqualTo("PENDING_VERIFICATION");
     }
     @Test void completionRechecksCurrentHealthAfterPassingVerification() throws Exception {
         create();action("START",1,null);action("SUBMIT_VERIFICATION",2,"等待恢复核验");healthy();
@@ -155,7 +219,7 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
         create();action("START",1,null);action("SUBMIT_VERIFICATION",2,"等待核验");healthy();
         String incident=UUID.randomUUID().toString();
         jdbc.update("INSERT INTO device_incident(incident_id,device_id,incident_no,incident_type,severity,stage,detected_at,reason,simulated) VALUES(?,?,?,'OTHER','LOW','PENDING',?,'异常尚未核验',TRUE)",incident,device,"INC-"+incident,now);
-        assertThat(action("VERIFY_RECOVERY",3,null).path("recovery").path("result").asText()).isEqualTo("FAIL");
+        assertThat(action("VERIFY_RECOVERY",3,null).path("recovery").path("result").asText()).isEqualTo("UNKNOWN");
         jdbc.update("UPDATE ops_device_state SET health_code='UNKNOWN' WHERE device_id=?",device);
         assertThat(action("VERIFY_RECOVERY",4,null).path("recovery").path("result").asText()).isEqualTo("UNKNOWN");
         assertThat(jdbc.queryForObject("SELECT stage FROM device_incident WHERE incident_id=?",String.class,incident)).isEqualTo("PENDING");
@@ -170,12 +234,12 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
         mvc.perform(auth(post("/api/v1/device-maintenance-messages/"+taskId+"/read"))).andExpect(status().isNotFound());
         assertThat(data(auth(get("/api/v1/device-maintenance-messages"))).path("items").toString()).doesNotContain(taskId);
     }
-    @Test void monitoringReadAloneCannotMutateOrReceiveOperatorInbox() throws Exception {
+    @Test void frontendMonitoringReadCannotReadMutateOrReceiveBackendInbox() throws Exception {
         create();
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-MAINT-READ','运维只读测试','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-MAINT-READ','monitoring','READ',TRUE)");
         jdbc.update("UPDATE app_user SET role_code='ROLE-MAINT-READ' WHERE account='admin1'");sqlSession.clearCache();
-        assertThat(workflow().path("allowed_actions")).isEmpty();
+        mvc.perform(auth(get("/api/v1/device-maintenance-tasks/"+taskId+"/workflow"))).andExpect(status().isForbidden());
         mvc.perform(auth(get("/api/v1/device-maintenance-messages"))).andExpect(status().isForbidden());
         mvc.perform(write(post(path()),Map.of("action","START","expected_version",1),UUID.randomUUID().toString())).andExpect(status().isForbidden());
     }
@@ -183,5 +247,5 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
     JsonNode workflow() throws Exception{return data(auth(get("/api/v1/device-maintenance-tasks/"+taskId+"/workflow")));}
     String path(){return "/api/v1/device-maintenance-tasks/"+taskId+"/workflow/actions";}
     JsonNode action(String action,long version,String note)throws Exception {var body=new java.util.HashMap<String,Object>();body.put("action",action);body.put("expected_version",version);if(note!=null)body.put("note",note);return data(write(post(path()),body,UUID.randomUUID().toString()));}
-    void healthy(){jdbc.update("UPDATE ops_device SET enabled=TRUE,source_mode='mock',simulated=TRUE WHERE device_id=?",device);jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',health_code='GOOD',has_alarm=FALSE,observed_at=?,last_heartbeat_at=? WHERE device_id=?",now,now,device);jdbc.update("UPDATE device_incident SET stage='RECOVERED',closed_at=? WHERE device_id=?",now,device);}
+    void healthy(){now++;clock.setNow(java.time.Instant.ofEpochMilli(now));jdbc.update("UPDATE ops_device SET enabled=TRUE,source_mode='mock',simulated=TRUE WHERE device_id=?",device);jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',health_code='GOOD',has_alarm=FALSE,observed_at=?,last_heartbeat_at=? WHERE device_id=?",now,now,device);jdbc.update("UPDATE ops_device_state SET health_observed_at=?,alarm_observed_at=?,health_source_id=(SELECT source_id FROM ops_device WHERE device_id=?),alarm_source_id=(SELECT source_id FROM ops_device WHERE device_id=?),health_source_mode='mock',alarm_source_mode='mock',health_simulated=TRUE,alarm_simulated=TRUE WHERE device_id=?",now,now,device,device,device);jdbc.update("UPDATE device_incident SET stage='RECOVERED',closed_at=? WHERE device_id=?",now,device);}
 }

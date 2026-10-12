@@ -7,7 +7,7 @@ import { weatherSensorsApi } from '@/api/externalInterfaces.js';
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
 const permissions = vi.hoisted(() => ({ operate: true, connections: true }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: code => code.startsWith('interfaces.') ? permissions.connections : code !== 'devices.op' || permissions.operate }) }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: code => code.startsWith('interfaces.') ? permissions.connections : code !== 'devices.op' || permissions.operate }) }));
 vi.mock('@/api/devices.js', () => ({
   deviceApi: { list: vi.fn(), options: vi.fn(), overview: vi.fn(), detail: vi.fn(), protocolStatus: vi.fn(), onboard: vi.fn(), update: vi.fn() },
   integrationApi: { protocols: vi.fn() },
@@ -30,7 +30,7 @@ async function choose(label, value) {
   const option = [...document.querySelectorAll('.el-select-dropdown__item')].find(el => el.textContent === value);
   expect(option).toBeTruthy(); option.click(); await settle();
 }
-async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp(DevicesView); app.use(ElementPlus); app.mount(host); await settle(); }
+async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp(DevicesView); app.component('router-link',{template:'<a><slot /></a>'}); app.use(ElementPlus); app.mount(host); await settle(); }
 beforeEach(() => {
   vi.clearAllMocks(); permissions.operate = true; permissions.connections = true;
   deviceApi.list.mockResolvedValue({ items: [], total: 0, page: 1, size: 10 });
@@ -46,7 +46,12 @@ beforeEach(() => {
   mqttApi.list.mockResolvedValue([]);
   weatherSensorsApi.create.mockResolvedValue({ device_id: 'weather-1' });
 });
-afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = ''; });
+afterEach(async () => {
+  app?.unmount();
+  // Element Plus releases the dialog scroll lock 200 ms after unmount.
+  await new Promise(resolve => setTimeout(resolve, 220));
+  host?.remove(); document.body.innerHTML = '';
+});
 
 it('台账类型筛选提交后端返回的代码，不能把中文名称当作代码', async () => {
   deviceApi.options.mockResolvedValue({ types: ['反制', '光电'], type_options: [

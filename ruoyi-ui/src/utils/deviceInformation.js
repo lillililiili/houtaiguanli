@@ -1,4 +1,5 @@
-import { formatDeviceNo, formatTime } from '@/utils/format.js';
+import { formatDeviceNo } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from '@/views/operations/maintenance/presentation.js';
 
 export const informationStates = {
   RECEIVED: ['已获取', 'success'], CONFIGURED: ['已登记', 'info'], STALE: ['已过期', 'warning'],

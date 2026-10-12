@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { accessibleItems, canAccessMenu, firstAccessiblePath } from '@/config/navigation'
 
 describe('后台菜单权限', () => {
+  it('设备异常处理复用监测读取权限，不要求接入调测权限', () => {
+    const allowed = { menu_keys: ['maintenance'], permission_codes: ['monitoring.read'] }
+    expect(accessibleItems(allowed).map(item => item.path)).toEqual(['/operations/maintenance'])
+    expect(canAccessMenu({ ...allowed, permission_codes: ['commissioning.read'] }, 'maintenance')).toBe(false)
+  })
   it('规则管理沿用原预案权限和地址，不新增执行授权', () => {
     const user = { menu_keys: ['responsePlans'], permission_codes: ['responsePlans.read'] }
     expect(accessibleItems(user).map(item => [item.title, item.path])).toEqual([['规则管理', '/system/response-plans']])

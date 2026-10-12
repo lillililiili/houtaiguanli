@@ -57,7 +57,7 @@ public class EoTrackingPolicy {
         long observed=millis(target.get("observed_at")), now=clock.nowMillis();
         if(observed<now-positionAge || observed>now || Set.of("SHORT_LOST","TERMINATED","MERGE","SPLIT").contains(text(target,"track_status")))
             return "TARGET_POSITION_STALE";
-        if(!Set.of("UAV","BIRD").contains(text(target,"object_type_code"))) return "EO_CLASS_UNSUPPORTED";
+        if(!supportsClass(target)) return "EO_CLASS_UNSUPPORTED";
         if(mode(target)==null || target.get("owner_org_id")==null || target.get("district_id")==null) return "EO_DEVICE_UNAVAILABLE";
         return null;
     }
@@ -72,6 +72,9 @@ public class EoTrackingPolicy {
         String guidanceBlock=block(target);
         if (!"TARGET_POSITION_STALE".equals(guidanceBlock) && !"TARGET_POSITION_UNAVAILABLE".equals(guidanceBlock)) return guidanceBlock;
         return trackingBlock(target,task,device);
+    }
+    public static boolean supportsClass(Map<String,Object> target) {
+        return target!=null && Set.of("UAV","BIRD").contains(text(target,"object_type_code"));
     }
     public List<DemandReason> demand(String target) {
         long now=clock.nowMillis(), cutoff=now-demandAge;

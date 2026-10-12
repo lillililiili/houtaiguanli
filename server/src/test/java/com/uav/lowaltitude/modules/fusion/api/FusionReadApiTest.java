@@ -237,6 +237,8 @@ class FusionReadApiTest {
 
     @Test
     void fusionStatusReportsSourcesAndDataInterruption() throws Exception {
+        // 接收先后不能替代观测时间；有来源但没观测仍保留未知。
+        fixture.observation(radar, "RADAR", "older-" + suffix, "older-radar", FusionFixture.T0.plusSeconds(2), "replay", org, district);
         JsonNode status = data("/api/v1/fusion/status", reader);
         assertThat(status.path("as_of").asLong()).isPositive();
         // 观测时间是固定的 2026-09-05，早于 short_lost_after_ms：所有来源离线即数据中断。
@@ -248,6 +250,10 @@ class FusionReadApiTest {
         assertThat(mine.path("schema_status").asText()).isEqualTo("CONFIRMED");
         assertThat(mine.path("online").asBoolean()).isFalse();
         assertThat(mine.path("last_observed_at").asLong()).isEqualTo(FusionFixture.T0.plusSeconds(5).toInstant().toEpochMilli());
+        JsonNode empty = null;
+        for (JsonNode source : status.path("available_sources")) if (("SRC-EO-" + suffix).equals(source.path("source_code").asText())) empty = source;
+        assertThat(empty).isNotNull();
+        assertThat(empty.has("last_observed_at")).isFalse();
     }
 
     @Test

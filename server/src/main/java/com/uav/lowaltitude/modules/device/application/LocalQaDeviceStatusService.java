@@ -59,7 +59,7 @@ public class LocalQaDeviceStatusService {
         repository.save(input,source,hash,raw,now);
         monitoring.accepted(before,"STATUS",now);
         audit.record(actor.userId(),actor.account(),"local_qa_device_status","device",input.deviceId(),
-                "独立模拟状态；非协议A健康推断；message_id="+input.messageId()+"; source_id="+input.sourceId()+"; health="+input.healthCode(),null);
+                "独立模拟状态；非协议心跳健康推断；message_id="+input.messageId()+"; source_id="+input.sourceId()+"; health="+input.healthCode(),null);
         return new Receipt(input.messageId(),input.deviceId(),input.observedAt(),now,"LOCAL_QA_STATUS",true);
     }
     private static ApiException conflict(String text){return new ApiException(HttpStatus.CONFLICT,"QA_STATUS_CONFLICT",text);}

@@ -12,8 +12,8 @@ vi.mock('@/api/deviceMaintenance.js', () => ({ deviceMaintenanceApi: { workflow:
 let app, host, router;
 const flow = (id = 'todo-b', device = 'b') => ({ task:{task_id:id,device_id:device,device_name:'乙设备',reason:'连接异常',reported_at:1000},state:'PENDING',version:1,allowed_actions:['START'],events:[],commission_tasks:[] });
 async function settle() { for(let i=0;i<24;i++){await Promise.resolve(); await nextTick();} }
-async function mount(query = 'maintenance_task_id=todo-b&device_id=b') {
-  router = createRouter({ history:createMemoryHistory(),routes:[{path:'/operations/commission',component:CommissionView},{path:'/operations/monitor',component:{template:'<p>待办列表</p>'}}] });
+async function mount(query = 'maintenance_context_id=todo-b&device_id=b') {
+  router = createRouter({ history:createMemoryHistory(),routes:[{path:'/operations/commission',component:CommissionView},{path:'/operations/maintenance',component:{template:'<p>设备异常处理工作台</p>'}}] });
   await router.push(`/operations/commission?${query}`); await router.isReady();
   host=document.createElement('div');document.body.append(host);app=createApp({template:'<router-view />'});app.use(router);app.use(ElementPlus);app.mount(host);await settle();
 }
@@ -28,36 +28,22 @@ beforeEach(()=>{
 });
 afterEach(()=>{app?.unmount();host?.remove();document.querySelectorAll('.el-overlay,.el-message').forEach(el=>el.remove());vi.useRealTimers();});
 describe('运维待办深链到既有调测页',()=>{
-  it('返回运维待办进入可查询列表，不跳到无待办组件的监测页',async()=>{
+  it('从处置进入调测时最近心跳与工作台统一为北京时间',async()=>{
+    const at=Date.UTC(2026,0,2,7,46,11);
+    commissionApi.information.mockResolvedValue({device_id:'b',task_supported:false,sections:[{code:'link',fields:[{key:'last_heartbeat_at',value:at,unit:'epoch_ms',status:'RECEIVED'}]}],sample_sections:[]});
     await mount();
-    [...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='返回运维待办').click();await settle();
-    expect(router.currentRoute.value.path).toBe('/operations/commission');
-    expect(router.currentRoute.value.query.view).toBe('maintenance');
-    expect(deviceMaintenanceApi.list).toHaveBeenCalledWith({status:'ACTIVE',page:1,size:10});
-    expect(host.textContent).toContain('当前没有这类运维待办');
+    expect(host.querySelector('.connection-fields').textContent).toContain('最近心跳');
+    expect(host.querySelector('.connection-fields').textContent).toContain('15:46:11');
     expect(commissionApi.create).not.toHaveBeenCalled();
   });
-  it('直接打开待办列表会加载列表但不选取其他设备',async()=>{
-    await mount('view=maintenance');
-    expect(deviceMaintenanceApi.list).toHaveBeenCalledTimes(1);
-    expect(commissionApi.information).not.toHaveBeenCalled();
-    expect(host.textContent).toContain('运维待办');
-  });
-  it.each(['cancel','poll'])('调测结束后重新读取维护守卫，不保留已消失的活动阻断 %s',async mode=>{
-    vi.useFakeTimers();
-    let task={commission_id:'ct-b',device_id:'b',source_mode:'live',simulated:false,status:'CREATED',version:0};
-    deviceApi.list.mockResolvedValue({items:[{device_id:'b',name:'乙设备',device_no:'B',source_mode:'live',simulated:false}],total:1});
-    commissionApi.list.mockImplementation(async()=>({items:[task],total:1}));
-    commissionApi.get.mockImplementation(async()=>task);commissionApi.events.mockResolvedValue({items:[],next_seq:0});
-    commissionApi.cancel.mockImplementation(async()=>task={...task,status:'CANCELLED',version:1});
-    deviceMaintenanceApi.workflow.mockImplementation(async()=>({...flow(),state:'PROCESSING',version:2,allowed_actions:task.status==='CREATED'?['SAVE_PROGRESS']:['SAVE_PROGRESS','SUBMIT_VERIFICATION'],blocked_reason:task.status==='CREATED'?'设备仍有执行中的调测':null}));
+  it('高级诊断返回同一处置单，不混入主办理流程',async()=>{
     await mount();
-    const submit=()=>[...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='提交恢复核验');
-    expect(submit().disabled).toBe(true);
-    if(mode==='cancel'){[...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='取消任务').click();await settle();}
-    else{task={...task,status:'CANCELLED',version:1};await vi.advanceTimersByTimeAsync(2100);await settle();}
-    expect(submit().disabled).toBe(false);expect(host.textContent).not.toContain('设备仍有执行中的调测');
-    expect(deviceMaintenanceApi.act).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('提交恢复核验');
+    expect(host.textContent).not.toContain('开始处理');
+    [...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='返回本次设备异常处理').click();await settle();
+    expect(router.currentRoute.value.path).toBe('/operations/maintenance');
+    expect(router.currentRoute.value.query.task_id).toBe('todo-b');
+    expect(commissionApi.create).not.toHaveBeenCalled();
   });
   it.each([true, false])('模拟任务关联遵循当前设备明确许可 %s，关联不启动调测',async allowed=>{
     const task={commission_id:'ct-b',device_id:'b',source_mode:'mock',simulated:true,status:'CREATED',version:0};
@@ -84,33 +70,20 @@ describe('运维待办深链到既有调测页',()=>{
     expect([...host.querySelectorAll('button')].find(el=>el.textContent.includes('创建新任务')).disabled).toBe(true);
   });
   it('伪造不匹配的设备链接不会退回第一台设备或启用调测',async()=>{
-    await mount('maintenance_task_id=todo-b&device_id=a');
+    await mount('maintenance_context_id=todo-b&device_id=a');
     expect(host.textContent).toContain('链接中的设备与运维待办不匹配');
     expect(commissionApi.information).not.toHaveBeenCalled();
     expect(deviceApi.detail).not.toHaveBeenCalled();
   });
   it('无权读取待办时不显示其他设备作为处理目标',async()=>{
-    deviceMaintenanceApi.workflow.mockRejectedValue(new Error('无权查看待办')); await mount();
+    deviceMaintenanceApi.workflow.mockRejectedValue(Object.assign(new Error('无权查看待办'),{status:403})); await mount();
     expect(host.textContent).toContain('无权查看待办'); expect(commissionApi.information).not.toHaveBeenCalled();
   });
-  it('已打开待办失去范围后清除缓存设备树，重新授权后恢复同一目标',async()=>{
-    await mount();
-    expect(host.textContent).toContain('乙设备');
-    deviceMaintenanceApi.workflow.mockRejectedValue(Object.assign(new Error('运维任务不存在或不可见'),{status:404}));
-    [...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='刷新待办').click();await settle();
-    expect(host.textContent).toContain('运维任务不存在或不可见');
-    expect(host.textContent).not.toContain('乙设备');expect(host.textContent).not.toContain('甲设备');
-    expect(commissionApi.create).not.toHaveBeenCalled();
-    deviceMaintenanceApi.workflow.mockResolvedValue(flow());
-    [...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='重新加载').click();await settle();
-    expect(host.textContent).toContain('乙设备');expect(host.textContent).not.toContain('甲设备');
-    expect(commissionApi.information).not.toHaveBeenCalledWith('a');
-  });
-  it('接手成功后才启用调测，MQTT 不支持调测时继续显示诊断信息',async()=>{
+  it('主动上报设备显示诊断信息，不要求创建调测任务',async()=>{
     commissionApi.information.mockImplementation(async id=>({device_id:id,task_supported:false,sections:[],sample_sections:[]}));
-    deviceMaintenanceApi.act.mockResolvedValue({...flow(),state:'PROCESSING',version:2,allowed_actions:['SAVE_PROGRESS','SUBMIT_VERIFICATION']});
-    await mount();[...host.querySelectorAll('button')].find(el=>el.textContent.trim()==='开始处理').click();await settle();
-    expect(deviceMaintenanceApi.act).toHaveBeenCalledWith('todo-b',expect.objectContaining({action:'START',expected_version:1}),expect.any(String));
-    expect(host.textContent).toContain('连接状态');expect(host.textContent).not.toContain('创建新任务');expect(host.textContent).toContain('保存进展');
+    deviceMaintenanceApi.workflow.mockResolvedValue({...flow(),state:'PROCESSING',version:2,allowed_actions:['SAVE_PROGRESS','LINK_COMMISSION']});
+    await mount();
+    expect(host.textContent).toContain('连接状态');expect(host.textContent).not.toContain('创建新任务');
+    expect(host.textContent).not.toContain('保存进展');expect(deviceMaintenanceApi.act).not.toHaveBeenCalled();
   });
 });

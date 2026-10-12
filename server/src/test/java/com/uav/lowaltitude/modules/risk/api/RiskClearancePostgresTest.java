@@ -51,6 +51,9 @@ class RiskClearancePostgresTest {
     @Autowired ObjectMapper json;
     @Autowired RiskPresenceService presence;
     @Autowired RiskRepository risks;
+    @Autowired com.uav.lowaltitude.modules.risk.infrastructure.RiskPresenceRepository currentEvidence;
+    @Autowired com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository spaceRepository;
+    @Autowired com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weatherRepository;
     @Autowired SpaceRiskEvaluationService evaluation;
     @Autowired SpaceRiskSpatialPort spatial;
     @Autowired FusedLayerWriter writer;
@@ -80,6 +83,72 @@ class RiskClearancePostgresTest {
         jdbc.update("insert into app_session(session_id,user_id,expire_at,ip,permission_version) select ?,user_id,?,'127.0.0.1',permission_version from app_user where account='admin1'",session,now+3600000);
     }
     @AfterEach void restoreClock(){reset(clock);reset(parameters);}
+
+    @ParameterizedTest
+    @ValueSource(strings={"current","notified","acknowledged","same-mode","unattributed-route","outside","expired","prediction","future","file-replay",
+            "wrong-source","wrong-plan","wrong-route","no-bridge","production"})
+    void realtimeSimulatorHasCurrentPresenceOnlyWithValidScopedMeasurement(String condition) {
+        position(37.0001);
+        jdbc.update("insert into integration_source(source_id,source_code,name,protocol_code,protocol_version,enabled,source_mode,created_at,updated_at,version)"
+                +" values('local-flight-plan-simulator','QA-LOCAL-FLIGHT-SIM','QA plan source','SIM_NORMALIZED','1',true,'mock',?,?,0) ON CONFLICT(source_id) DO NOTHING",ts(now),ts(now));
+        jdbc.update("update integration_source set source_mode='replay',protocol_code='SIM_NORMALIZED' where source_id='seed-stage3-source'");
+        jdbc.update("update target set source_mode='replay' where target_id=?",target);
+        sourceObservation=insertSourceObservation(now-1000,now-500,37.0001,ORG,"replay");
+        jdbc.update("update track_point set observation_id=? where point_id=?",sourceObservation,point);
+        jdbc.update("update target_source_link set created_at=? where target_id=?",ts(now-700000),target);
+        jdbc.update("update flight_risk set source_mode='replay',source_id='rule-engine-space-risk-replay',state_code='PENDING_VERIFICATION' where risk_id=?",risk);
+        jdbc.update("update flight_plan set source_id='local-flight-plan-simulator' where plan_id=?",plan);
+        jdbc.update("update route set source_id='local-flight-plan-simulator' where route_id=(select route_id from route_version where route_version_id=?)",routeVersion);
+        var env=new org.springframework.mock.env.MockEnvironment().withProperty("app.flight-device-check.simulator-device-bridge-enabled","true");
+        env.setActiveProfiles("local","qa");
+        switch(condition) {
+            case "same-mode" -> {
+                jdbc.update("update flight_plan set source_mode='replay' where plan_id=?",plan);
+                jdbc.update("update route set source_mode='replay' where route_id=(select route_id from route_version where route_version_id=?)",routeVersion);
+            }
+            case "unattributed-route" -> jdbc.update("update route set source_id=null where route_id=(select route_id from route_version where route_version_id=?)",routeVersion);
+            case "notified" -> jdbc.update("update flight_risk set state_code='NOTIFIED' where risk_id=?",risk);
+            case "acknowledged" -> jdbc.update("update flight_risk set state_code='ACKNOWLEDGED' where risk_id=?",risk);
+            case "outside" -> {
+                jdbc.update("update track_point set location=ST_SetSRID(ST_MakePoint(118.05,37.02),4326) where point_id=?",point);
+                jdbc.update("update target_latest_state set location=ST_SetSRID(ST_MakePoint(118.05,37.02),4326) where target_id=?",target);
+            }
+            case "expired" -> now+=300000;
+            case "prediction" -> jdbc.update("update track_point set point_kind='PRED' where point_id=?",point);
+            case "future" -> now-=2000;
+            case "file-replay" -> jdbc.update("update integration_source set protocol_code='REPLAY_FILE' where source_id='seed-stage3-source'");
+            case "wrong-source" -> {
+                sourceObservation=insertSourceObservation(now-1000,now-500,37.0001,ORG,"live");
+                jdbc.update("update track_point set observation_id=? where point_id=?",sourceObservation,point);
+            }
+            case "wrong-plan" -> jdbc.update("update flight_plan set source_id='seed-stage3-source' where plan_id=?",plan);
+            case "wrong-route" -> jdbc.update("update route set source_id='seed-stage3-source' where route_id=(select route_id from route_version where route_version_id=?)",routeVersion);
+            case "no-bridge" -> env.setProperty("app.flight-device-check.simulator-device-bridge-enabled","false");
+            case "production" -> env.setActiveProfiles("local","qa","production");
+        }
+        var service=new RiskPresenceService(currentEvidence,risks,spaceRepository,weatherRepository,parameters,json,clock,
+                new com.uav.lowaltitude.platform.config.SimulationPolicy(env),env);
+        var row=risks.find(risk,new AccessDecision("qa",ScopeMode.ALL));
+        var before=jdbc.queryForMap("select * from flight_risk where risk_id=?",risk);
+        boolean current=List.of("current","notified","acknowledged","same-mode","unattributed-route").contains(condition);
+        assertThat(service.read(row,now).status()).as(condition).isEqualTo(current?"CURRENT":"UNKNOWN");
+        if(current)assertThat(service.read(row,now).reason()).contains("模拟");
+        assertThat(currentEvidence.pendingC04()).as("模拟风险不进入解除写锁队列").doesNotContain(risk);
+        service.recordC04Clearances();
+        assertThat(count()).isZero();
+        assertThat(jdbc.queryForMap("select * from flight_risk where risk_id=?",risk)).isEqualTo(before);
+    }
+
+    @Test void firstMeasuredRiskFrameCanBeCurrentButCannotProveClearance() {
+        position(37.0001);
+        String freshRisk=id();originalRisk(freshRisk,now-1000);
+        var row=risks.find(freshRisk,new AccessDecision("qa",ScopeMode.ALL));
+        assertThat(presence.read(row,now).status()).isEqualTo("CURRENT");
+        position(37.02);
+        assertThat(presence.read(row,now).status()).isEqualTo("UNKNOWN");
+        presence.recordC04Clearances();
+        assertThat(jdbc.queryForObject("select count(*) from risk_clearance_evidence where risk_id=?",Integer.class,freshRisk)).isZero();
+    }
 
     @ParameterizedTest
     @CsvSource({"mock,PRED", "replay,PRED", "live,PRED", "mock,BRIDGE", "replay,BRIDGE", "live,BRIDGE"})
@@ -264,10 +333,13 @@ class RiskClearancePostgresTest {
         return insertSourceObservation(observed,received,latitude,ORG);
     }
     String insertSourceObservation(long observed,long received,double latitude,String owner) {
+        return insertSourceObservation(observed,received,latitude,owner,"mock");
+    }
+    String insertSourceObservation(long observed,long received,double latitude,String owner,String mode) {
         String observation=id(),sourceSession=id();sourceLink=id();
         // Observations are append-only. A separate source session also preserves the identity/time unique key.
         jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) values(?,?,'seed-stage3-source',?,?,?)",sourceLink,target,sourceSession,target,ts(received));
-        jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,quality,source_mode,owner_org_id,district_id,created_at) values(?,'seed-stage3-source',?,?,?,?,ST_SetSRID(ST_MakePoint(118.05,?),4326),5,CAST('{\"object_count\":25}' AS JSON),'mock',?,?,?)",observation,sourceSession,target,ts(observed),ts(received),latitude,owner,DISTRICT,ts(received));
+        jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,quality,source_mode,owner_org_id,district_id,created_at) values(?,'seed-stage3-source',?,?,?,?,ST_SetSRID(ST_MakePoint(118.05,?),4326),5,CAST('{\"object_count\":25}' AS JSON),?,?,?,?)",observation,sourceSession,target,ts(observed),ts(received),latitude,mode,owner,DISTRICT,ts(received));
         return observation;
     }
     void replaceSourceObservation(long observed,long received,double latitude,String owner) {

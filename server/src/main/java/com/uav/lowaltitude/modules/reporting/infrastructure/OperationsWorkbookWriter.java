@@ -125,6 +125,9 @@ public class OperationsWorkbookWriter {
         int rowIndex = 3;
         rowIndex = distributionRows(sheet, styles, rowIndex, "异物风险等级", report.byRisk(), report.summary().total(), "目标");
         rowIndex = distributionRows(sheet, styles, rowIndex, "目标类型", report.byType(), report.summary().total(), "目标");
+        rowIndex = distributionRows(sheet, styles, rowIndex, "空中目标类型", report.airborneTypes().items(), report.airborneTypes().total(), "目标");
+        if (report.airborneTypes().unidentified() != null) rowIndex = distributionRows(sheet, styles, rowIndex,
+                "待识别（未计入空中占比）", List.of(new NamedCount("待识别目标", report.airborneTypes().unidentified())), null, "目标");
         rowIndex = distributionRows(sheet, styles, rowIndex, "目标发现时段（北京时间）",
                 report.discoveryHours().stream().map(hour -> new NamedCount(hour.label(), hour.total())).toList(), report.summary().total(), "目标");
         rowIndex = distributionRows(sheet, styles, rowIndex, "飞行时长（分钟）", report.byDuration(), report.summary().total(), "次");

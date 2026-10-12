@@ -1,5 +1,9 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { useAuthStore } from '@/stores/auth.js';
+import { maintenanceLocation } from './maintenance/useMaintenanceWorkflow.js';
+import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { useRealtimeRefresh } from '@/services/realtime.js';
 import PageHeader from '@/components/PageHeader.vue';
 import OperationMetrics from './OperationMetrics.vue';
@@ -8,9 +12,13 @@ import ErrorAlert from '@/components/ErrorAlert.vue';
 import DeviceTrendPanel from '@/components/DeviceTrendPanel.vue';
 import EoTaskPanel from './EoTaskPanel.vue';
 import { deviceApi } from '@/api/devices.js';
-import { display, formatDeviceNo, formatTime, statusText, statusType } from '@/utils/format.js';
+import { deviceCatalogParams, readDevicePages } from '@/utils/deviceCatalog.js';
+import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.js';
 
-const filters = reactive({ keyword: '', channel: '', type_code: '' });
+const route = useRoute(), router = useRouter(), auth = useAuthStore();
+const requestedDevice = computed(() => typeof route?.query?.device_id === 'string' ? route.query.device_id : '');
+const canOpenMaintenance = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
+const filters = reactive({ keyword: '', channel: '', type_code: '', statistics_scope: true });
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0 });
 const tree = ref([]);
 const incidents = ref([]);
@@ -47,7 +55,7 @@ const groups = computed(() => Object.entries(tree.value.reduce((result, item) =>
 }, {})));
 const rate = value => overview.value.total ? `${((value || 0) / overview.value.total * 100).toFixed(1)}%` : '—';
 const metrics = computed(() => [
-  { label: '设备总数', value: overview.value.total, icon: 'total', note: '当前权限范围内设备' },
+  { label: '设备总数', value: overview.value.total, icon: 'total', note: '当前筛选范围内启用设备' },
   { label: '在线设备', value: overview.value.online, tone: 'green', icon: 'online', note: `在线率 ${rate(overview.value.online)}` },
   { label: '离线设备', value: overview.value.offline, tone: 'red', icon: 'offline', note: `离线率 ${rate(overview.value.offline)}` },
   { label: '异常设备', value: overview.value.abnormal, tone: 'amber', icon: 'abnormal', note: `异常率 ${rate(overview.value.abnormal)}` },
@@ -88,10 +96,12 @@ async function loadAggregate(showBusy = false) {
   aggregateInFlight = true; if (showBusy) loading.value = true;
   let failure = null;
   try {
-    const [summary, deviceTree, incidentPage] = await Promise.all([deviceApi.overview(), deviceApi.tree(filters), deviceApi.incidents({ page: 1, size: 20, stage: 'PENDING' })]);
+    const params = deviceCatalogParams(filters);
+    const [summary, deviceTree, incidentPage] = await Promise.all([deviceApi.overview(params), readDevicePages(deviceApi.tree, params), deviceApi.incidents({ page: 1, size: 20, stage: 'PENDING' })]);
     if (!alive) return null;
     overview.value = summary; tree.value = deviceTree.items || []; treeTotal.value = deviceTree.total ?? tree.value.length; treeTruncated.value = Boolean(deviceTree.truncated); incidents.value = incidentPage.items || []; incidentTotal.value = incidentPage.total ?? incidents.value.length;
-    if (!tree.value.some(item => item.device_id === selectedId.value)) selectedId.value = tree.value[0]?.device_id || '';
+    if (requestedDevice.value) selectedId.value = requestedDevice.value;
+    else if (!tree.value.some(item => item.device_id === selectedId.value)) selectedId.value = tree.value[0]?.device_id || '';
     error.value = '';
   } catch (e) { error.value = e.message || '实时监测数据加载失败'; failure = e; }
   finally {
@@ -166,7 +176,10 @@ async function loadEvents(manual = false) {
 
 function selectDevice(item) {
   selectedId.value = item.device_id;
+  if (requestedDevice.value && requestedDevice.value !== item.device_id) void router.replace({ path: '/operations/monitor', query: { device_id: item.device_id } });
 }
+function openMaintenance(item) { if (canOpenMaintenance.value) void router.push(maintenanceLocation({ task_id: item?.maintenance_task_id, device_id: item?.device_id || selectedId.value })); }
+watch(requestedDevice, id => { if (id) selectedId.value = id; });
 async function applyFilters() {
   paused.value = false;
   const previousId = selectedId.value;
@@ -195,6 +208,8 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
 <template>
   <section class="page-stack operation-page monitor-reference">
     <PageHeader title="设备实时监测" description="设备状态、总览和告警随实时推送更新，推送暂不可用时每 15 秒补读一次。暂停读数刷新只停住当前设备的指标读数、雷达航迹、运行趋势和事件记录，设备上线离线、健康状态和告警照常更新。">
+      <el-button v-if="route?.query?.maintenance_context_id && canOpenMaintenance" @click="router.push(maintenanceLocation({task_id:route.query.maintenance_context_id}))">返回本次设备异常处理</el-button>
+      <el-button v-else-if="canOpenMaintenance" @click="openMaintenance()">设备异常处理</el-button>
       <el-tag :type="paused?'warning':'success'" effect="plain">{{ paused?'读数已暂停，状态和告警仍实时更新':'实时更新中' }}</el-tag>
       <el-button @click="togglePause">{{ paused?'继续读数刷新':'暂停读数刷新' }}</el-button>
     </PageHeader>
@@ -204,6 +219,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
     <div class="monitor-layout">
       <el-card v-loading="loading" class="monitor-devices">
         <template #header><div class="table-toolbar"><b>设备分类与状态</b><span class="muted">{{ tree.length }} 台</span></div></template>
+        <el-select v-model="filters.statistics_scope" aria-label="设备范围" @change="applyFilters"><el-option label="业务设备" :value="true" /><el-option label="全部台账（含测试样例）" :value="false" /></el-select>
         <el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="applyFilters"><template #append><el-button @click="applyFilters">筛选</el-button></template></el-input>
         <div class="device-tree-list">
           <details v-for="[name,items] in groups" :key="name" open class="device-tree-group"><summary>{{ name }}<span>{{ items.length }}</span></summary>
@@ -242,7 +258,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
 
       <div class="monitor-column monitor-activity">
         <el-card><template #header><div class="table-toolbar"><b>实时告警</b><span class="muted">共 {{ incidentTotal }} 条</span><el-select v-model="severity" clearable placeholder="全部级别" style="width:110px" aria-label="告警级别"><el-option v-for="(label,value) in SEVERITY_LABELS" :key="value" :label="label" :value="value" /></el-select></div></template>
-          <div v-if="filteredIncidents.length" class="event-feed monitor-alarms"><button v-for="item in filteredIncidents" :key="item.incident_id" type="button" class="device-tree-item" @click="selectedId=item.device_id"><span class="device-tree-copy"><b>{{ item.device_name }}</b><small class="alarm-reason">{{ item.reason }}</small><small class="mono">{{ formatTime(item.detected_at) }}</small></span><el-tag class="device-tree-status" :type="['HIGH','CRITICAL'].includes(item.severity)?'danger':'warning'" effect="plain">{{ SEVERITY_LABELS[item.severity] || item.severity }}</el-tag></button></div><el-empty v-else :image-size="64" :description="severity ? '当前列表中没有此级别告警' : '当前没有活动告警'" /><p v-if="incidentTotal > incidents.length" class="tree-note">当前显示最近 {{ incidents.length }} 条待处理告警。</p>
+          <div v-if="filteredIncidents.length" class="event-feed monitor-alarms"><article v-for="item in filteredIncidents" :key="item.incident_id"><button type="button" class="device-tree-item" @click="selectDevice(item)"><span class="device-tree-copy"><b>{{ item.device_name }}</b><small class="alarm-reason">{{ item.reason }}</small><small>{{ formatTime(item.detected_at) }}</small></span><el-tag class="device-tree-status" :type="['HIGH','CRITICAL'].includes(item.severity)?'danger':'warning'" effect="plain">{{ SEVERITY_LABELS[item.severity] || item.severity }}</el-tag></button><el-button v-if="canOpenMaintenance" link type="primary" @click="openMaintenance(item)">查看异常处置</el-button></article></div><el-empty v-else :image-size="64" :description="severity ? '当前列表中没有此级别告警' : '当前没有活动告警'" /><p v-if="incidentTotal > incidents.length" class="tree-note">当前显示最近 {{ incidents.length }} 条待处理告警。</p>
         </el-card>
         <el-card class="table-card monitor-events"><template #header><div class="table-toolbar"><b>设备事件记录</b><span class="muted">当前设备 · 按序号增量更新</span></div></template>
           <p class="tree-note">关键事件即时记录，正常上报每 30 秒汇总；显示最近 100 条。</p>

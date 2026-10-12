@@ -42,7 +42,10 @@ public class DeviceAccessPolicy {
     }
 
     public boolean canOperateMonitoring(AuthUser user) {
-        return user != null && accessService.permissionCodes(user.roleCode()).contains("monitoring.op");
+        return user != null
+                && com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.roleCode())
+                    == com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND
+                && accessService.permissionCodes(user.roleCode()).contains("monitoring.op");
     }
 
     private AuthUser require(String permissionCode) {

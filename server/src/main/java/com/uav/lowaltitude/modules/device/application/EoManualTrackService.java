@@ -58,8 +58,9 @@ public class EoManualTrackService {
         LocationDto location = state == null ? null : state.location();
         if (location == null || location.longitude() == null || location.latitude() == null)
             throw unprocessable("TARGET_POSITION_UNAVAILABLE", "目标没有可用经纬度，无法引导光电跟踪");
-        String block=trackingPolicy.block(trackingRepository.snapshot(id));
-        if(block!=null) throw unprocessable(block,EoTrackingStatusService.blockMessage(block));
+        var snapshot=trackingRepository.snapshot(id);
+        String block=trackingPolicy.block(snapshot);
+        if(block!=null) throw unprocessable(block,EoTrackingStatusService.blockMessage(block,snapshot));
         if (edges.targetHasOpenTask(id))
             throw new ApiException(HttpStatus.CONFLICT, "TRACK_ALREADY_OPEN", "该目标已有进行中的光电跟踪任务");
         if (target.ownerOrgId() == null || target.districtId() == null)

@@ -93,6 +93,7 @@ public class EoEdgeIngressService {
         if (task.get("created_at") instanceof Number created && (m.timestamp()<created.longValue() || m.timestamp()>receivedAt))
             throw new EoEdgeEnvelope.Rejected("TRACK_REPORT_TIME_INVALID");
         if (m.codeStatus() != null && m.codeStatus() != 200) {
+            edges.trackingFailure(m.taskId(), m.timestamp(), receivedAt);
             completeBegin(binding, task, m, receivedAt, false, null);
             return new TrackingResult("ACCEPTED", "COMMAND_FAILED", null);
         }

@@ -179,6 +179,10 @@ class ReportingApiTest {
         assertThat(result.path("observation_metrics").path("status").asText()).isEqualTo("UNAVAILABLE");
         assertThat(result.path("observation_metrics").hasNonNull("duration_seconds")).isFalse();
         assertThat(result.path("by_type").isEmpty()).isTrue();
+        assertThat(result.path("airborne_types").path("items").isEmpty()).isTrue();
+        assertThat(result.path("airborne_types").hasNonNull("total")).isFalse();
+        assertThat(result.path("airborne_types").hasNonNull("unidentified")).isFalse();
+        assertThat(result.path("availability").path("airborne_types").path("status").asText()).isEqualTo("UNAVAILABLE");
         assertThat(result.path("discovery_hours").isEmpty()).isTrue();
         assertThat(result.path("availability").path("discovery_hours").path("status").asText()).isEqualTo("UNAVAILABLE");
     }
@@ -430,6 +434,45 @@ class ReportingApiTest {
                 .param("owner_org_id", org).header("Authorization", bearer(token))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
         assertThat(empty.path("discovery_hours").size()).isEqualTo(24);
         assertThat(sum(empty.path("discovery_hours"), "total")).isZero();
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void airborneDistributionSeparatesGroundObjectsAndUnidentifiedAcrossDatesAndSources() throws Exception {
+        String token = login("admin1", "changeme");
+        String org = UUID.randomUUID().toString();
+        jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)", org, org, "空中分类隔离测试");
+        var start = java.time.OffsetDateTime.parse("2006-03-11T12:00:00+08:00");
+        for (int day = 0; day < 2; day++) {
+            var at = start.plusDays(day);
+            for (String source : java.util.List.of("live", "replay", "mock")) {
+                for (String type : java.util.List.of("UAV", "BIRD", "PERSON", "VEHICLE", "SHIP", "REMOTE_CONTROLLER", "UNKNOWN", "IDENTIFYING")) {
+                    String id = UUID.randomUUID().toString();
+                    jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,?,?,?,'seed-stage3-district',?,?)",
+                            id, id, at, at, type, source, org, at, at);
+                }
+            }
+            String date = at.toLocalDate().toString();
+            JsonNode report = data(mvc.perform(get("/api/v1/stats/operations").param("from", date).param("to", date)
+                    .param("owner_org_id", org).header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            assertThat(report.path("summary").path("total").asInt()).isEqualTo(16);
+            JsonNode airborne = report.path("airborne_types");
+            assertThat(airborne.path("total").asInt()).isEqualTo(4);
+            assertThat(airborne.path("unidentified").asInt()).isEqualTo(4);
+            assertThat(sum(airborne.path("items"), "value")).isEqualTo(4);
+            assertThat(airborne.path("items").toString()).contains("无人机", "鸟").doesNotContain("人员", "车", "船", "遥控器", "未知", "识别中");
+            String csv = mvc.perform(get("/api/v1/stats/operations/export.csv").param("from", date).param("to", date)
+                    .param("owner_org_id", org).header("Authorization", bearer(token)))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+            assertThat(csv).contains("\"空中目标类型\",\"无人机\",\"数量\",\"2\"", "\"待识别目标\",\"未计入空中目标占比\",\"数量\",\"4\"");
+        }
+        JsonNode empty = data(mvc.perform(get("/api/v1/stats/operations").param("from", "2006-03-13").param("to", "2006-03-13")
+                .param("owner_org_id", org).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+        assertThat(empty.path("airborne_types").path("total").asInt()).isZero();
+        assertThat(empty.path("airborne_types").path("unidentified").asInt()).isZero();
+        assertThat(empty.path("airborne_types").path("items").isEmpty()).isTrue();
     }
 
     @Test
