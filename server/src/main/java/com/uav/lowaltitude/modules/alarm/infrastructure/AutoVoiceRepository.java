@@ -17,7 +17,7 @@ public class AutoVoiceRepository {
     }
     /** 只跟已送达的飞手短信；尚未外呼的暂停任务重新核对当前条件，已尝试任务不自动补呼。 */
     public List<String> candidates() {
-        return jdbc.queryForList("SELECT e.event_id FROM uav_event e JOIN uav_auto_sms_task s ON s.event_id=e.event_id AND s.status='SIMULATED_DELIVERED' LEFT JOIN uav_auto_voice_task t ON t.event_id=e.event_id WHERE t.status='CALLING' OR t.event_id IS NULL OR t.status IN ('WAITING','UNAVAILABLE') OR (t.status='BLOCKED' AND t.attempt_count=0) ORDER BY CASE WHEN t.status='CALLING' THEN 0 ELSE 1 END,COALESCE(t.updated_at,s.updated_at),e.event_id FETCH FIRST 200 ROWS ONLY",String.class);
+        return jdbc.queryForList("SELECT e.event_id FROM uav_event e JOIN uav_auto_sms_task s ON s.event_id=e.event_id AND s.status='SIMULATED_DELIVERED' LEFT JOIN uav_auto_voice_task t ON t.event_id=e.event_id WHERE t.departure_evaluated_at IS NULL AND (t.status='CALLING' OR t.event_id IS NULL OR t.status IN ('WAITING','UNAVAILABLE') OR (t.status='BLOCKED' AND t.attempt_count=0)) ORDER BY CASE WHEN t.status='CALLING' THEN 0 ELSE 1 END,COALESCE(t.updated_at,s.updated_at),e.event_id FETCH FIRST 200 ROWS ONLY",String.class);
     }
     public Task find(String id) {
         var rows=jdbc.query("SELECT * FROM uav_auto_voice_task WHERE event_id=?",(r,n)->new Task(r.getString("event_id"),r.getString("status"),r.getString("reason"),r.getString("trigger_source"),number(r,"evaluated_at"),number(r,"data_updated_at"),number(r,"triggered_at"),r.getLong("updated_at"),r.getInt("attempt_count"),number(r,"lease_until"),r.getString("claim_token"),r.getString("provider_key"),r.getString("recording_id"),r.getString("recording_name"),r.getString("recording_sha256"),r.getString("recording_transcript"),number(r,"answered_at"),number(r,"playback_completed_at")),id);
@@ -26,6 +26,23 @@ public class AutoVoiceRepository {
     public void initialize(String id,long now,String policy) {
         if(find(id)!=null)return;
         jdbc.update("INSERT INTO uav_auto_voice_task(event_id,status,policy_code,reason,updated_at,provider_key) VALUES(?,'WAITING',?,'等待后台检查电话通知条件',?,?)",id,policy,now,"auto-advisory-voice:"+id);
+    }
+    public com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation departure(String id) {
+        var rows=jdbc.query("SELECT * FROM uav_auto_voice_task WHERE event_id=? AND departure_evaluated_at IS NOT NULL",(r,n)->
+            new com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation(id,r.getString("departure_channel"),"RECORDED","LEFT",
+                r.getLong("departure_started_at"),r.getLong("departure_deadline_at"),r.getLong("departure_evaluated_at"),
+                new com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Position(r.getLong("departure_observed_at"),r.getBigDecimal("departure_longitude"),r.getBigDecimal("departure_latitude")),r.getString("departure_basis")),id);
+        return rows.isEmpty()?null:rows.get(0);
+    }
+    public boolean recordDeparture(com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation value) {
+        return jdbc.update("UPDATE uav_auto_voice_task SET departure_channel=?,departure_started_at=?,departure_deadline_at=?,departure_evaluated_at=?,departure_observed_at=?,departure_longitude=?,departure_latitude=?,departure_basis=? WHERE event_id=? AND departure_evaluated_at IS NULL",
+                value.channel(),value.startedAt(),value.deadlineAt(),value.evaluatedAt(),value.position().observedAt(),value.position().longitude(),value.position().latitude(),value.basis(),value.eventId())==1;
+    }
+    public List<String> departureCandidates() {
+        return jdbc.queryForList("SELECT event_id FROM uav_auto_voice_task WHERE status='SIMULATED_PLAYED' AND departure_evaluated_at IS NULL ORDER BY COALESCE(departure_checked_at,updated_at),event_id FETCH FIRST 200 ROWS ONLY",String.class);
+    }
+    public void checkedDeparture(String id,long now) {
+        jdbc.update("UPDATE uav_auto_voice_task SET departure_checked_at=? WHERE event_id=?",now,id);
     }
     public void block(String id,Eligibility e,long now) {
         jdbc.update("UPDATE uav_auto_voice_task SET status=?,reason=?,trigger_source=?,evaluation_id=?,evaluated_at=?,data_updated_at=?,updated_at=?,claim_token=NULL,lease_until=NULL WHERE event_id=?",e.status(),e.reason(),e.source(),e.evaluation()==null?null:e.evaluation().id(),e.evaluation()==null?null:e.evaluation().evaluatedAt(),e.observedAt(),now,id);

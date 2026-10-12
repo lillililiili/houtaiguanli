@@ -45,7 +45,7 @@ final class SpaceRiskObservationEvidence {
             String trend = trendMinutes <= 0 || row.routeVersionId() == null ? Trend.UNKNOWN.name() : trend(row, trendMinutes).name();
             result.add(new SpaceObservation(row.targetId(), row.targetNo(), row.subtypeCode(), row.planId(), row.routeVersionId(),
                     row.distanceToRouteM(), row.corridorHalfWidthM(), row.altitudeM(), row.altitudeDatum(), row.routeAltitudeDatum(),
-                    counts.get(Anchor.of(row)), trend, row.ownerOrgId(), row.districtId(), row.longitude(), row.latitude(), row.observedAt(), row.receivedAt()));
+                    counts.get(Anchor.of(row)), trend, row.ownerOrgId(), row.districtId(), row.longitude(), row.latitude(), row.observedAt(), row.receivedAt(), row.altitudeAmslM()));
         }
         return result;
     }

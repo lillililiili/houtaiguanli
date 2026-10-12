@@ -8,6 +8,11 @@ export function display(value, fallback = '—') {
   return value === null || value === undefined || value === '' ? fallback : value;
 }
 
+// 页面业务编号去掉类型前缀，原始数据仍用于关联、查询和导出。
+export function formatBusinessNo(value) {
+  return String(value ?? '').trim().replace(/^(?:告警|目标|风险)-/, '');
+}
+
 const simulatorDeviceKinds = {
   '5ga': '5G-A',
   tdoa: 'TDOA',

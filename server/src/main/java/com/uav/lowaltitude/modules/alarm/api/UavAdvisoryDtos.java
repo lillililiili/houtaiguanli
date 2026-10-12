@@ -14,12 +14,17 @@ public final class UavAdvisoryDtos {
             this(recordId,kind,createdAt,actorName,recipientName,contactBasis,content,outcome,danger,note,urgent,simulated,deliveryStatus,"MANUAL",null);
         }
     }
-    public record DepartureObservation(String eventId, String channel, String status, String presence, Long startedAt, Long deadlineAt, long evaluatedAt) { }
+    public record DepartureObservation(String eventId, String channel, String status, String presence, Long startedAt, Long deadlineAt, long evaluatedAt,
+            com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Position position, String basis) {
+        public DepartureObservation(String eventId, String channel, String status, String presence, Long startedAt, Long deadlineAt, long evaluatedAt) {
+            this(eventId,channel,status,presence,startedAt,deadlineAt,evaluatedAt,null,null);
+        }
+    }
     public record Recipient(String name, String contactHint, String basis) { }
     public record Overview(String eventId, long eventVersion, String smsMode, boolean canWrite,
             boolean canRequestCounter, boolean canDirectCounter, boolean canHandoff, String counterBlockReason, List<Record> records, Recipient recipient, AutoSms autoSms, String voiceMode, AutoVoice autoVoice, boolean counterLaunchVisible, String notifyPhase, AutoHandoff autoHandoff, NoCounterDtos.Status noCounter,
             /* BLOCK-03：事件精确关联的计划没有执行飞手或飞手电话时为 true，页面写明“缺飞手联系方式”。 */
-            boolean pilotContactMissing) { }
+            boolean pilotContactMissing, DepartureObservation departureObservation) { }
     /**
      * 处罚移送进度。status：WAITING 等待干扰完成或后台自动移送；MANUAL_REQUIRED 启用了多个处罚接收单位，需有权限的人选定后移送；
      * BLOCKED 没有可用接收单位；PENDING 交接已建立但还没发出；SUBMITTED 已发出；FAILED 发送失败；NOT_REQUIRED 不需要移送（误报、已决定不反制）。

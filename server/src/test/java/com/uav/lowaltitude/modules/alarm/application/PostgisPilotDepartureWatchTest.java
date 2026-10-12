@@ -16,6 +16,13 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_USER", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TEST_PASSWORD", matches = ".+")
 class PostgisPilotDepartureWatchTest {
+    private static PostgisPilotDepartureWatch watch(JdbcTemplate jdbc, DataSource dataSource) {
+        var fusion = org.mockito.Mockito.mock(com.uav.lowaltitude.modules.fusion.application.FusionConfigService.class);
+        var params = org.mockito.Mockito.mock(com.uav.lowaltitude.modules.fusion.FusionContracts.FusionParams.class);
+        org.mockito.Mockito.when(fusion.params(null)).thenReturn(params);
+        org.mockito.Mockito.when(params.integer("identity", "terminate_after_ms")).thenReturn(120000);
+        return new PostgisPilotDepartureWatch(jdbc, dataSource, fusion);
+    }
     @Test
     void liveAndUnknownEventsIgnoreSimulationWhileSimulationCanUseLiveAirspace() {
         String schema = "pilot_departure_source_" + UUID.randomUUID().toString().replace("-", "");
@@ -42,7 +49,7 @@ class PostgisPilotDepartureWatchTest {
             jdbc.update("insert into track_point(track_id,observed_at,location) values ('track','2026-09-27T00:00:00Z',ST_SetSRID(ST_MakePoint(118.5,37.5),4326)),('track','2026-09-27T00:00:10Z',ST_SetSRID(ST_MakePoint(118.6,37.6),4326))");
             jdbc.update("insert into airspace values ('area','org','district','mock')");
             jdbc.update("insert into airspace_version values ('area',ST_Multi(ST_GeomFromText('POLYGON((118 37,119 37,119 38,118 38,118 37))',4326)),'2026-09-26T00:00:00Z',null)");
-            PostgisPilotDepartureWatch watch = new PostgisPilotDepartureWatch(jdbc, scoped);
+            PostgisPilotDepartureWatch watch = watch(jdbc, scoped);
             long accepted = Instant.parse("2026-09-27T00:00:01Z").toEpochMilli();
             long now = Instant.parse("2026-09-27T00:00:11Z").toEpochMilli();
             for (String areaMode : Arrays.asList("live", "mock", "replay")) {
@@ -62,6 +69,10 @@ class PostgisPilotDepartureWatchTest {
             assertThat(watch.assess("event", accepted, now)).isEqualTo(PilotDepartureWatch.Presence.UNKNOWN);
             jdbc.update("update alarm set source_mode='mock'");
             assertThat(watch.assess("event", accepted, now)).isEqualTo(PilotDepartureWatch.Presence.LEFT);
+            var basis = watch.assessment("event", accepted, accepted, now);
+            assertThat(basis.position().observedAt()).isEqualTo(Instant.parse("2026-09-27T00:00:10Z").toEpochMilli());
+            assertThat(basis.position().longitude()).isEqualByComparingTo("120");
+            assertThat(watch.assess("event", accepted, now + 120000)).isEqualTo(PilotDepartureWatch.Presence.UNKNOWN);
             // A newer prediction or bridge is not a fresh measured observation, inside or outside.
             for (String kind : new String[] { "PRED", "BRIDGE", "UNKNOWN" }) {
                 jdbc.update("insert into track_point values ('track','2026-09-27T00:00:11Z',ST_SetSRID(ST_MakePoint(118.6,37.6),4326),?)", kind);
@@ -103,7 +114,7 @@ class PostgisPilotDepartureWatchTest {
             // 短信发出时在空域内；电话期间已经飞出；录音播完后的新位置也在外面。
             jdbc.update("insert into track_point(track_id,observed_at,location) values ('track','2026-09-27T00:00:00Z',ST_SetSRID(ST_MakePoint(118.5,37.5),4326)),"
                     + "('track','2026-09-27T00:00:05Z',ST_SetSRID(ST_MakePoint(120,39),4326)),('track','2026-09-27T00:00:10Z',ST_SetSRID(ST_MakePoint(120,39),4326))");
-            PostgisPilotDepartureWatch watch = new PostgisPilotDepartureWatch(jdbc, scoped);
+            PostgisPilotDepartureWatch watch = watch(jdbc, scoped);
             long sms = Instant.parse("2026-09-27T00:00:01Z").toEpochMilli();
             long played = Instant.parse("2026-09-27T00:00:06Z").toEpochMilli();
             long now = Instant.parse("2026-09-27T00:00:16Z").toEpochMilli();
@@ -148,7 +159,7 @@ class PostgisPilotDepartureWatchTest {
             // 短信发出时已偏离航线、不在任何空域；之后飞进禁飞区。
             jdbc.update("insert into track_point(track_id,observed_at,location) values ('track','2026-09-27T00:00:00Z',ST_SetSRID(ST_MakePoint(120,39),4326)),"
                     + "('track','2026-09-27T00:00:10Z',ST_SetSRID(ST_MakePoint(118.5,37.5),4326))");
-            PostgisPilotDepartureWatch watch = new PostgisPilotDepartureWatch(jdbc, scoped);
+            PostgisPilotDepartureWatch watch = watch(jdbc, scoped);
             long sms = Instant.parse("2026-09-27T00:00:01Z").toEpochMilli();
             long now = Instant.parse("2026-09-27T00:00:11Z").toEpochMilli();
             assertThat(watch.inAreaAtSms("event", sms)).isFalse();

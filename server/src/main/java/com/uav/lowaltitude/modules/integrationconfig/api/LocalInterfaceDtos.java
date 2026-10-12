@@ -20,7 +20,9 @@ public final class LocalInterfaceDtos {
   @NotBlank(message="航线归属单位不能为空") @Size(max=36) String ownerOrgId,@NotBlank(message="航线所在区县不能为空") @Size(max=36) String districtId){}
  public record WeatherInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
-  @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods){}
+  @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods,@Size(max=36) String districtId){
+  public WeatherInput(String messageId,String planId,String areaName,Long publishedAt,List<Period> periods){this(messageId,planId,areaName,publishedAt,periods,null);}
+ }
  public record Period(@NotNull @Positive Long from,@NotNull @Positive Long to,@NotBlank @Size(max=128) String summary,
   @NotNull @DecimalMin("-90") @DecimalMax("60") Double temperatureC,
   @NotNull @DecimalMin("0") @DecimalMax("150") Double windSpeedMs,

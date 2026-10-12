@@ -74,4 +74,7 @@ public final class LocalObservationSimulatorDtos {
     public record RegisteredDevice(String sourceId, String deviceId, String messageId) { }
 
     public record AcceptedInput(String messageId, String sourceId, String deviceId, int acceptedCount) { }
+
+    public record WeatherReadback(String sourceId, String deviceId, String sourceMode, boolean simulated,
+            long total, WeatherObservationInput latest) { }
 }

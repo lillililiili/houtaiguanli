@@ -22,8 +22,10 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
     static final long CURRENT_EVALUATION_MILLIS = 30_000L;
     private final JdbcTemplate jdbc;
     private final boolean postgis;
-    public PostgisPilotDepartureWatch(JdbcTemplate jdbc, DataSource dataSource) {
+    private final com.uav.lowaltitude.modules.fusion.application.FusionConfigService fusion;
+    public PostgisPilotDepartureWatch(JdbcTemplate jdbc, DataSource dataSource, com.uav.lowaltitude.modules.fusion.application.FusionConfigService fusion) {
         this.jdbc = jdbc;
+        this.fusion = fusion;
         this.postgis = postgres(dataSource);
     }
     @Override
@@ -33,12 +35,19 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
     /** 区域取短信发出时目标所在的空域；只认 since 之后的新位置（电话后传录音播完时刻）。 */
     @Override
     public Presence assess(String eventId, long smsAcceptedAt, long since, long now) {
-        if (!postgis || since < smsAcceptedAt) return Presence.UNKNOWN;
+        return assessment(eventId, smsAcceptedAt, since, now).presence();
+    }
+    @Override
+    public Assessment assessment(String eventId, long smsAcceptedAt, long since, long now) {
+        if (!postgis || since < smsAcceptedAt) return new Assessment(Presence.UNKNOWN, null, null);
         Point before = point(eventId, null, smsAcceptedAt);
         Point after = point(eventId, since, now);
-        if (before == null || after == null || before.lon == null || after.lon == null) return Presence.UNKNOWN;
+        long lifetime = fusion.params(null).integer("identity", "terminate_after_ms");
+        if (before == null || after == null || before.lon == null || after.lon == null || lifetime <= 0 || after.observedAt <= now - lifetime)
+            return new Assessment(Presence.UNKNOWN, null, "NO_CURRENT_POSITION");
+        var position = new Position(after.observedAt, after.lon, after.lat);
         Set<String> area = covered(eventId, before, smsAcceptedAt);
-        if (area.isEmpty()) return byEvaluation(eventId, since, after, now);
+        if (area.isEmpty()) return new Assessment(byEvaluation(eventId, since, after, now), position, "LATEST_LEGALITY");
         List<Hit> later = hits(eventId, after, after.observedAt);
         boolean still = false;
         boolean boundary = false;
@@ -47,9 +56,9 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
             if ("COVERS".equals(hit.relation)) still = true;
             else boundary = true;
         }
-        if (still) return Presence.STILL_PRESENT;
-        if (boundary) return Presence.UNKNOWN;
-        return Presence.LEFT;
+        if (still) return new Assessment(Presence.STILL_PRESENT, position, "SMS_AIRSPACE");
+        if (boundary) return new Assessment(Presence.UNKNOWN, position, "AIRSPACE_BOUNDARY");
+        return new Assessment(Presence.LEFT, position, "SMS_AIRSPACE");
     }
     @Override
     public boolean inAreaAtSms(String eventId, long smsAcceptedAt) {

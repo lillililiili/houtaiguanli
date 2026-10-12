@@ -15,7 +15,7 @@ class UavDepartureObservationTest {
  final AppClock clock=mock(AppClock.class);
  final AutoSmsService sms=mock(AutoSmsService.class);
  final AutoVoiceService voice=mock(AutoVoiceService.class);
- final PilotDepartureWatch watch=mock(PilotDepartureWatch.class);
+ final PilotDepartureWatch watch=mock(PilotDepartureWatch.class,CALLS_REAL_METHODS);
  final EventRow event=mock(EventRow.class);
  final AccessDecision scope=mock(AccessDecision.class);
  final UavAdvisoryService service=new UavAdvisoryService(events,null,access,null,null,clock,null,sms,voice,watch,null,null,null);

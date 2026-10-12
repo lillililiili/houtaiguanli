@@ -90,7 +90,7 @@ class AlarmRuleVerificationTest {
         var restartedWorker = new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeWorker(
                 policy, runtime, facts,
                 context.getBean(com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeService.class),
-                verification, context.getBean(AlarmRuleCounter.class),
+                verification,
                 context.getBean(com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService.class), clock);
         restartedWorker.poll();
         assertThat(records()).isEqualTo(originalRecords + 1);

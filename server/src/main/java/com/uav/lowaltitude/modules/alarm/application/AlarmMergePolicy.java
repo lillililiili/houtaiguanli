@@ -122,7 +122,7 @@ public class AlarmMergePolicy {
     }
 
     /**
-     * 人工转告警：没有规则参数也能执行（人工动作不依赖 C06 参数）。等级取研判 grade 的默认映射，缺失时 UNKNOWN。
+     * 人工转告警：不依赖 C06 参数；明确非法且进入禁飞/管制空域固定高风险，其余沿用研判等级，缺失为 UNKNOWN。
      * 同一目标的 OPEN 组还在去重窗内、当前告警未被判误报时，并入并升级这条告警，升级记录写明操作人与说明，
      * 不再另起一条待核实告警（BUG-16）；否则新建告警：有 OPEN 组则挂入，没有就开一个零长度窗口的组以保留链路。
      */
@@ -130,7 +130,9 @@ public class AlarmMergePolicy {
     public MergeOutcome escalateManually(MergeInput in, String actorId, String note) {
         MemberRow existing = repository.memberOfEvaluation(in.evaluationId());
         if (existing != null && existing.alarmId() != null) return replay(existing);
-        String severity = defaultSeverity(in.grade());
+        String severity = "ILLEGAL".equals(in.legalStatus())
+                && in.violationReasons() != null && in.violationReasons().contains("INSIDE_RESTRICTED_AIRSPACE")
+                ? "HIGH" : defaultSeverity(in.grade());
         if (!repository.lockTarget(in.targetId())) throw new ApiException(org.springframework.http.HttpStatus.BAD_REQUEST, "INVALID_ALARM_FACT", "目标不存在");
         OffsetDateTime at = in.mergedAt();
         GroupRow group = repository.lockOpenGroup(in.targetId(), AlarmIngestionService.ALARM_TYPE_RULE_LEGALITY);

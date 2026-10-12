@@ -30,7 +30,7 @@ import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.DeliveryOut
 class HandoffNotificationApiTest {
  @Autowired MockMvc mvc; @Autowired JdbcTemplate jdbc; @Autowired ObjectMapper json;
  @MockBean HandoffChannelPort channel; @SpyBean NotificationDirectoryService directory;
- String session,id,event,recipient,alarm;
+ String session,id,event,recipient,alarm,risk;
  @BeforeEach void setup() throws Exception {
   session=json.readTree(mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText();
   String suffix=UUID.randomUUID().toString().substring(0,8);id="hn-h-"+suffix;event="hn-e-"+suffix;alarm="hn-a-"+suffix;recipient="hn-r-"+suffix;
@@ -51,6 +51,48 @@ class HandoffNotificationApiTest {
  @AfterEach void cleanup(){
   if(id==null)return;
   jdbc.update("DELETE FROM handoff_delivery WHERE handoff_id=?",id);jdbc.update("DELETE FROM handoff_material_snapshot WHERE handoff_id=?",id);jdbc.update("DELETE FROM handoff WHERE handoff_id=?",id);jdbc.update("DELETE FROM handoff_recipient WHERE recipient_id=?",recipient);jdbc.update("DELETE FROM uav_event WHERE event_id=?",event);jdbc.update("DELETE FROM alarm WHERE alarm_id=?",alarm);
+  if(risk!=null)jdbc.update("DELETE FROM flight_risk WHERE risk_id=?",risk);
+ }
+ void riskNotice() {
+  risk=UUID.randomUUID().toString();var at=Timestamp.from(Instant.now().minusSeconds(90));
+  jdbc.update("INSERT INTO flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version) VALUES(?,'seed-stage3-source',?,'seed-stage3-plan-legal','seed-stage3-rv-legal','ROUTE_DEVIATION','HIGH','NOTIFIED','ROUTE_DEVIATION','isolated retry risk',?,?,'UNKNOWN','mock','seed-stage3-org','seed-stage3-district',?,?,1)",risk,risk,at,at,at,at);
+  String superior=NotificationDirectoryService.SUPERIOR_RECIPIENT;
+  jdbc.update("UPDATE handoff SET source_kind='RISK',source_id=?,risk_id=?,event_id=NULL,handoff_type='RISK_NOTICE',recipient_id=? WHERE handoff_id=?",risk,risk,superior,id);
+  jdbc.update("UPDATE handoff_material_snapshot SET snapshot=CAST(? AS JSON) WHERE handoff_id=?","{\"schema_version\":2,\"risk\":{\"risk_id\":\""+risk+"\",\"reason_text\":\"frozen original evidence\"}}",id);
+  doReturn(new RecipientSnapshot(superior,"上级",null,null,null,null,null,"MOCK",null,null,1L,true,null,System.currentTimeMillis())).when(directory).forHandoff("RISK_NOTICE",superior);
+ }
+ @Test void riskFailureRetriesOriginalMaterialAndRetainsAttempts() throws Exception {
+  riskNotice();String before=jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,id);
+  jdbc.update("UPDATE handoff_delivery SET delivery_status='FAILED',blocked_reason='SIMULATOR_REJECTED' WHERE handoff_id=?",id);
+  mvc.perform(get(url()).header("Authorization","Bearer "+session)).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_notify").value(true));
+  String key=UUID.randomUUID().toString();send(1,key).andExpect(status().isOk()).andExpect(jsonPath("$.data.delivery_status").value("DELIVERED"));
+  send(1,key).andExpect(status().isConflict());send(2,UUID.randomUUID().toString()).andExpect(status().isConflict());
+  verify(channel,times(1)).deliver(argThat(dispatch->dispatch.sourceId().equals(risk)&&dispatch.snapshot().contains("frozen original evidence")));
+  assertThat(jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,id)).isEqualTo(before);
+  assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM handoff_delivery WHERE handoff_id=?",Long.class,id)).isEqualTo(2);
+ }
+ @Test void riskRetryRejectsRevokedSourceUnknownOutcomeAndLiveSource() throws Exception {
+  riskNotice();
+  for(String state:List.of("PENDING_VERIFICATION","EXCLUDED")){
+   jdbc.update("UPDATE flight_risk SET state_code=? WHERE risk_id=?",state,risk);send(1,UUID.randomUUID().toString()).andExpect(status().isConflict());
+  }
+  jdbc.update("UPDATE flight_risk SET state_code='NOTIFIED' WHERE risk_id=?",risk);
+  jdbc.update("UPDATE handoff_delivery SET delivery_status='SUBMITTED',receipt_status='PENDING',blocked_reason='DELIVERY_OUTCOME_UNKNOWN' WHERE handoff_id=?",id);send(1,UUID.randomUUID().toString()).andExpect(status().isConflict());
+  jdbc.update("UPDATE handoff_delivery SET delivery_status='FAILED',receipt_status='NOT_EXPECTED',blocked_reason='SIMULATOR_REJECTED' WHERE handoff_id=?",id);
+  jdbc.update("UPDATE handoff SET source_mode='live' WHERE handoff_id=?",id);send(1,UUID.randomUUID().toString()).andExpect(status().isConflict());verify(channel,never()).deliver(any());
+ }
+ @Test void riskRetryRequiresRiskReadPermissionAndSourceScope() throws Exception {
+  riskNotice();String restricted=limitedSession(false);
+  String role=jdbc.queryForObject("SELECT u.role_code FROM app_user u JOIN app_session s ON s.user_id=u.user_id WHERE s.session_id=?",String.class,restricted);
+  jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) VALUES(?,'handoff:create','OP',false,current_timestamp)",role);
+  mvc.perform(get(url()).header("Authorization","Bearer "+restricted)).andExpect(status().isOk()).andExpect(jsonPath("$.data.can_notify").value(false));
+  mvc.perform(post(url()).header("Authorization","Bearer "+restricted).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_attempt_no\":1}")).andExpect(status().isForbidden());
+  jdbc.update("UPDATE flight_risk SET owner_org_id='seed-stage3-other-org',district_id='seed-stage3-other-district' WHERE risk_id=?",risk);
+  jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) VALUES(?,'risk:read','READ',false,current_timestamp)",role);
+  jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED' WHERE role_code=?",role);
+  jdbc.update("INSERT INTO app_user_data_scope(user_id,org_id,district_id) SELECT user_id,'seed-stage3-org','seed-stage3-district' FROM app_user WHERE role_code=?",role);
+  mvc.perform(post(url()).header("Authorization","Bearer "+restricted).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_attempt_no\":1}")).andExpect(status().isNotFound());
+  verify(channel,never()).deliver(any());
  }
  @Test void missingChannelSettingStillNotifiesTheOriginalRecipient() throws Exception {
   doCallRealMethod().when(directory).forHandoff("UAV_PUNISHMENT",recipient);

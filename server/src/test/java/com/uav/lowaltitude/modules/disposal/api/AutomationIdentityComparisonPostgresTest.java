@@ -37,22 +37,15 @@ class AutomationIdentityComparisonPostgresTest extends AutomationMqttFixture {
     @Autowired AutomationRuntimeWorker automatic;
     @Autowired AutomationRuntimeRepository runtime;
 
-    @Test void r03SystemAndHumanKeepDistinctRequestersNoApproversAndExplicitHumanDirectPermission() throws Exception {
+    @Test void r03RulesNeverImpersonateHumanDirectAuthorization() throws Exception {
         prepareAutomaticRules();
         replayEvidence();
         String automaticEvent=eventId;
         automatic.poll();
         assertThat(runtime.state("counter",eventId).status()).isEqualTo("PASS");
-        String automaticId=jdbc.queryForObject("select authorization_id from disposal_authorization where subject_id=? and requested_by=?",String.class,eventId,AutomationPrincipal.USER_ID);
-        awaitWire(1);
-        assertThat(frames.get(0).path("data").path("operationCmd").asInt()).isEqualTo(60003);
-        var systemIdentity=identity(automaticId,AutomationPrincipal.USER_ID);
-        assertThat(jdbc.queryForObject("select status from app_user where user_id=?",String.class,AutomationPrincipal.USER_ID)).isEqualTo("DISABLED");
-        assertThat(jdbc.queryForObject("select count(*) from app_role_permission where role_code=? and permission_code='disposal:direct' and permission_level='OP'",Integer.class,AutomationPrincipal.ROLE)).isZero();
-        // A local protocol refusal terminates this command, freeing the isolated device for the second batch.
-        reply(commandOf(automaticId),1);
-        Awaitility.await().atMost(Duration.ofSeconds(8)).untilAsserted(()->assertThat(statusOf(automaticId)).isEqualTo("FAILED"));
-        assertThat(children(automaticId)).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,eventId)).isZero();
+        assertThat(frames).isEmpty();
+        var systemIdentity=Map.of("authorization_created",false,"device_command_sent",false);
 
         eventId=event();replayEvidence();
         String humanEvent=eventId;
@@ -62,20 +55,20 @@ class AutomationIdentityComparisonPostgresTest extends AutomationMqttFixture {
         String role=jdbc.queryForObject("select role_code from app_user where user_id=?",String.class,humanId);
         request("/api/v1/disposal-authorizations/direct-execute",human,key(),body("R03 no direct must reject")).andExpect(status().isForbidden());
         assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,humanEvent)).isZero();
-        assertThat(frames).hasSize(1);
+        assertThat(frames).isEmpty();
         var denialAudit=jdbc.queryForList("select user_id,account,role_code,action,object_id,result,detail from audit_log where user_id=? and result<>'SUCCESS' order by occurred_at,audit_id",humanId);
         assertThat(denialAudit).isNotEmpty();
         // Explicit OP grant in this disposable QA role; the same person's API call now has the required permission.
         jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,'disposal:direct','OP',false,current_timestamp)",role);
         String humanAuthorization=data(request("/api/v1/disposal-authorizations/direct-execute",human,key(),body("R03 explicit human direct"))
                 .andExpect(status().isCreated())).path("authorization_id").asText();
-        awaitWire(2);
-        assertThat(frames.get(1).path("data").path("operationCmd").asInt()).isEqualTo(60003);
+        awaitWire(1);
+        assertThat(frames.get(0).path("data").path("operationCmd").asInt()).isEqualTo(60003);
         var humanIdentity=identity(humanAuthorization,humanId);
         assertThat(humanId).isNotEqualTo(AutomationPrincipal.USER_ID);
         var out=new LinkedHashMap<String,Object>();
         out.put("scope","R03 技术身份对照；合成业务事实、实际自动规则、人工认证API及本机MQTT；无真实设备动作");
-        out.put("authorization_source_boundary","系统审计主体非已确认业务授权；R01待确认");
+        out.put("authorization_source_boundary","自动规则不能发起反制；人工必须显式直接授权");
         out.put("automatic_event_id",automaticEvent);out.put("human_event_id",humanEvent);
         out.put("automatic",systemIdentity);out.put("human",humanIdentity);out.put("human_without_direct_denial_audit",denialAudit);
         out.put("automatic_runtime",runtime.run(runtime.state("counter",automaticEvent).runId()));

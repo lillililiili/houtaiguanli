@@ -49,6 +49,12 @@ public class HandoffController {
         return ApiResponse.ok(submission.create(request, idempotencyKey));
     }
 
+    @GetMapping("/risks/{riskId}/handoff-preview")
+    public ApiResponse<HandoffDtos.RiskPreviewDto> preview(@PathVariable String riskId,
+            @RequestParam("expected_version") long expectedVersion) {
+        return ApiResponse.ok(submission.previewRisk(riskId, expectedVersion));
+    }
+
     @GetMapping("/handoffs")
     public ApiResponse<PageDto<HandoffDto>> list(@RequestParam MultiValueMap<String, String> parameters) {
         return ApiResponse.ok(read.list(parameters));

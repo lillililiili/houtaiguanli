@@ -19,6 +19,7 @@ import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.*;
 import com.uav.lowaltitude.modules.handoff.domain.HandoffRules;
 import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository;
 import com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository.*;
+import com.uav.lowaltitude.modules.risk.infrastructure.RiskRepository;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
@@ -27,11 +28,12 @@ import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.security.AuthContext;
 import com.uav.lowaltitude.platform.time.AppClock;
 
-/** 已入库处罚交接的发送入口。先持久化占位，事务外投递，再保存结果；中断后保持待核对，不盲目重发。 */
+/** 已冻结交接材料的发送入口。先持久化占位，事务外投递，再保存结果；中断后保持待核对，不盲目重发。 */
 @Service
 public class HandoffNotificationService {
  private final HandoffRepository repository;
  private final UavEventRepository events;
+ private final RiskRepository risks;
  private final AccessControlService access;
  private final IdempotencyGuard idempotency;
  private final NotificationDirectoryService directory;
@@ -41,10 +43,10 @@ public class HandoffNotificationService {
  private final ObjectMapper json;
  private final Environment environment;
  private final TransactionTemplate transaction;
- public HandoffNotificationService(HandoffRepository repository,UavEventRepository events,AccessControlService access,
+ public HandoffNotificationService(HandoffRepository repository,UavEventRepository events,RiskRepository risks,AccessControlService access,
    IdempotencyGuard idempotency,NotificationDirectoryService directory,HandoffChannelPort channel,AppClock clock,
    AuditService audit,ObjectMapper json,Environment environment,PlatformTransactionManager manager){
-  this.repository=repository;this.events=events;this.access=access;this.idempotency=idempotency;this.directory=directory;
+  this.repository=repository;this.events=events;this.risks=risks;this.access=access;this.idempotency=idempotency;this.directory=directory;
   this.channel=channel;this.clock=clock;this.audit=audit;this.json=json;this.environment=environment;this.transaction=new TransactionTemplate(manager);
  }
  public record StatusDto(String handoffId,boolean canNotify,String blockedReason,int expectedAttemptNo,
@@ -59,19 +61,19 @@ public class HandoffNotificationService {
   if(target==null)target=directory.handoffSnapshot(row.handoffId());
   // 已投递记录只查事实，不因当前配置失效覆盖原来的送达或回执。
   if(reason==null){
-   try{access.require(PermissionCode.HANDOFF_CREATE);var decision=access.require(PermissionCode.ALARM_READ);
-    var event=events.find(row.sourceId(),decision);
-    if(event==null)reason="来源事件不存在或不在当前权限范围内";
-    else if(!"CONFIRMED".equals(event.state()))reason="当前事件不再属于已核实属实的事件，请核对原交接";
-    else{target=notifyTarget(row);reason=channelBlocker(row,target);}
-   }catch(ApiException error){reason=error.getStatus()==HttpStatus.FORBIDDEN?"当前账号没有通知处罚部门所需权限":error.getMessage();}
+   try{access.require(PermissionCode.HANDOFF_CREATE);
+    reason=sourceBlocker(row,false);
+    if(reason==null){target=notifyTarget(row);reason=channelBlocker(row,target);}
+   }catch(ApiException error){reason=error.getStatus()==HttpStatus.FORBIDDEN?"当前账号没有发送本通知所需权限":error.getMessage();}
   }
   return new StatusDto(row.handoffId(),reason==null,reason,latest==null?0:latest.attemptNo(),row.deliveryStatus(),row.receiptStatus(),
     latest==null?null:HandoffReadService.dto(latest),target, target!=null&&("MOCK".equals(target.channelType())||simulatorTarget(target)));
  }
  public DeliveryDto notify(String id,String raw,String key){
   // 鉴权先于解析，避免无权用户通过校验差异探测对象。
-  access.require(PermissionCode.HANDOFF_CREATE);access.require(PermissionCode.HANDOFF_READ);access.require(PermissionCode.ALARM_READ);
+  access.require(PermissionCode.HANDOFF_CREATE);access.require(PermissionCode.HANDOFF_READ);
+  var visible=visible(id,false);
+  access.require(riskNotice(visible)?PermissionCode.RISK_READ:PermissionCode.ALARM_READ);
   int expected=parse(raw);
   Prepared prepared=transaction.execute(ignored->prepare(id,expected,key));
   DeliveryOutcome result;
@@ -92,14 +94,13 @@ public class HandoffNotificationService {
  }
  private Prepared prepare(String id,int expected,String key){
   HandoffRow row=visible(id,true);
-  var source=events.lock(row.sourceId(),access.require(PermissionCode.ALARM_READ));
-  if(source==null)throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","来源事件不存在或不在当前权限范围内");
+  String sourceReason=sourceBlocker(row,true);
   idempotency.claim(key,"handoff-notify:"+row.handoffId()+":"+expected);
   var latest=repository.latestDelivery(row.handoffId());
   if(latest==null||latest.attemptNo()!=expected)throw conflict("HANDOFF_NOTICE_CHANGED","通知记录已变化，请先查询最新结果");
   String reason=stateBlocker(row,latest);
   if(reason!=null)throw conflict("HANDOFF_NOTIFY_BLOCKED",reason);
-  if(!"CONFIRMED".equals(source.state()))throw conflict("HANDOFF_NOTIFY_BLOCKED","当前事件不再属于已核实属实的事件");
+  if(sourceReason!=null)throw conflict("HANDOFF_NOTIFY_BLOCKED",sourceReason);
   var target=notifyTarget(row);
   reason=channelBlocker(row,target);if(reason!=null)throw conflict("HANDOFF_CHANNEL_UNAVAILABLE",reason);
   var snapshot=repository.snapshot(row.handoffId());
@@ -117,8 +118,21 @@ public class HandoffNotificationService {
   var decision=access.require(PermissionCode.HANDOFF_READ);String id=HandoffReadService.id(value);
   var row=lock?repository.lockNotification(id,decision):repository.find(id,decision);
   if(row==null)throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","交接记录不存在或不在当前权限范围内");
-  if(!"UAV_EVENT".equals(row.sourceKind())||!"UAV_PUNISHMENT".equals(row.handoffType()))throw conflict("HANDOFF_NOTIFY_UNSUPPORTED","此入口仅用于通知处罚部门");
+  if(!riskNotice(row)&&!("UAV_EVENT".equals(row.sourceKind())&&"UAV_PUNISHMENT".equals(row.handoffType())))throw conflict("HANDOFF_NOTIFY_UNSUPPORTED","此交接类型不支持通知重试");
   return row;
+ }
+ private boolean riskNotice(HandoffRow row){return "RISK".equals(row.sourceKind())&&"RISK_NOTICE".equals(row.handoffType());}
+ private String sourceBlocker(HandoffRow row,boolean lock){
+  if(riskNotice(row)){
+   var scope=access.require(PermissionCode.RISK_READ);
+   var risk=lock?risks.lock(row.sourceId(),scope):risks.find(row.sourceId(),scope);
+   if(risk==null)throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","来源风险不存在或不在当前权限范围内");
+   return "NOTIFIED".equals(risk.state())?null:"当前风险不再属于已核验并提交通知的风险，请核对原通知";
+  }
+  var scope=access.require(PermissionCode.ALARM_READ);
+  var event=lock?events.lock(row.sourceId(),scope):events.find(row.sourceId(),scope);
+  if(event==null)throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","来源事件不存在或不在当前权限范围内");
+  return "CONFIRMED".equals(event.state())?null:"当前事件不再属于已核实属实的事件，请核对原交接";
  }
  private String stateBlocker(HandoffRow row,DeliveryRow latest){
   if(latest==null)return "投递记录缺失，请核对交接历史";
@@ -133,7 +147,7 @@ public class HandoffNotificationService {
  private RecipientSnapshot notifyTarget(HandoffRow row){
   RecipientSnapshot target=directory.forHandoff(row.handoffType(),row.recipientId());
   if(target!=null&&target.configured())return target;
-  if(target==null||!"接收单位尚未配置通知渠道".equals(target.blockedReason())||!localMock(row))return target;
+  if(riskNotice(row)||target==null||!"接收单位尚未配置通知渠道".equals(target.blockedReason())||!localMock(row))return target;
   String name=row.recipientName()==null||row.recipientName().isBlank()?"处罚接收方":row.recipientName();
   return new RecipientSnapshot(row.recipientId(),name,null,null,null,null,null,"MOCK",null,null,null,true,null,clock.nowMillis());
  }
@@ -142,7 +156,7 @@ public class HandoffNotificationService {
     &&!environment.acceptsProfiles(Profiles.of("prod","production"))&&Set.of("mock","replay").contains(row.sourceMode());
  }
  private String channelBlocker(HandoffRow row,RecipientSnapshot target){
-  if(repository.findEnabledRecipient(row.recipientId(),row.handoffType())==null)return "原处罚接收方已停用";
+  if(!riskNotice(row)&&repository.findEnabledRecipient(row.recipientId(),row.handoffType())==null)return "原处罚接收方已停用";
   if(target==null||!target.configured())return target==null||target.blockedReason()==null?"接收方通知配置不可用":target.blockedReason();
   if(!Objects.equals(target.recipientId(),row.recipientId()))return "通知接收方与原交接不一致";
   if((!"MOCK".equals(target.channelType())&&!simulatorTarget(target))||!environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))

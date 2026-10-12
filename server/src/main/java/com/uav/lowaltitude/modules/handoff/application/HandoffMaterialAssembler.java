@@ -50,14 +50,15 @@ public class HandoffMaterialAssembler {
     private final com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
     private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets;
     private final EvidenceLedgerRepository ledger;
+    private final HandoffEvidenceFreezer freezer;
     private final ObjectMapper json;
     private final AppClock clock;
 
     public HandoffMaterialAssembler(HandoffRepository repository, com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory,
             com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets, EvidenceLedgerRepository ledger,
-            ObjectMapper json, AppClock clock) {
+            ObjectMapper json, AppClock clock, HandoffEvidenceFreezer freezer) {
         this.repository = repository; this.advisory = advisory; this.targets = targets;
-        this.ledger = ledger; this.json = json; this.clock = clock;
+        this.ledger = ledger; this.json = json; this.clock = clock; this.freezer = freezer;
     }
 
     /**
@@ -159,20 +160,35 @@ public class HandoffMaterialAssembler {
      * 查到零条时保留空数组：那是“查过了，本案没有关联证据”这个事实。
      */
     private List<EvidenceChainItemDto> evidenceChain(String eventId, EvidenceScope scope) {
+        return evidenceChain("EVENT", eventId, scope, null);
+    }
+
+    public List<EvidenceChainItemDto> evidenceChain(String kind, String id, EvidenceScope scope, Long capturedFrom) {
+        if (scope == null) return null;
+        if (id == null) return List.of();
         long now = clock.nowMillis();
         List<EvidenceLedgerRepository.LedgerRow> rows = new ArrayList<>();
         for (String category : EVIDENCE_CATEGORIES) {
-            var query = new EvidenceLedgerRepository.Query(category, null, null, "EVENT", eventId, null, null, null);
-            rows.addAll(ledger.list(ledger.relation(query, scope.decision(), false, scope.tracks(), scope.commands(), now), 0, EVIDENCE_PER_CATEGORY));
+            var query = new EvidenceLedgerRepository.Query(category, null, null, kind, id, null, null, null);
+            var relation = ledger.relation(query, scope.decision(), false, scope.tracks(), scope.commands(), now);
+            if (ledger.count(relation) > EVIDENCE_PER_CATEGORY) throw new com.uav.lowaltitude.platform.api.ApiException(
+                    org.springframework.http.HttpStatus.UNPROCESSABLE_ENTITY,"HANDOFF_EVIDENCE_TOO_LARGE","关联证据超过材料容量，未提交；请先整理归档后重试");
+            rows.addAll(ledger.list(relation, 0, EVIDENCE_PER_CATEGORY));
         }
+        if (capturedFrom != null) rows.removeIf(row -> "FILE".equals(row.sourceKind())
+                && (row.capturedAt() == null || row.capturedAt() < capturedFrom || row.capturedAt() > now));
         Map<String, String> digests = repository.evidenceDigests(rows.stream()
                 .filter(row -> "FILE".equals(row.sourceKind())).map(EvidenceLedgerRepository.LedgerRow::sourceId).toList());
         return rows.stream()
                 .sorted(Comparator.comparing((EvidenceLedgerRepository.LedgerRow row) -> occurredAt(row), Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(EvidenceLedgerRepository.LedgerRow::sourceKind).thenComparing(EvidenceLedgerRepository.LedgerRow::sourceId))
-                .map(row -> new EvidenceChainItemDto(row.category(), row.sourceKind(), row.sourceId(), row.evidenceNo(), row.originalName(),
-                        row.kindCode(), row.status(), row.capturedAt(), row.startedAt(), row.endedAt(), row.pointCount(), row.sizeBytes(),
-                        "FILE".equals(row.sourceKind()) ? digests.get(row.sourceId()) : null, row.layer()))
+                .map(row -> {
+                    var content = freezer.content(row, scope, now);
+                    Long count = "TRACK".equals(row.sourceKind()) ? Long.valueOf(content.path("points").size()) : row.pointCount();
+                    return new EvidenceChainItemDto(row.category(), row.sourceKind(), row.sourceId(), row.evidenceNo(), row.originalName(),
+                        row.kindCode(), row.status(), row.capturedAt(), row.startedAt(), row.endedAt(), count, row.sizeBytes(),
+                        "FILE".equals(row.sourceKind()) ? digests.get(row.sourceId()) : null, row.layer(), content);
+                })
                 .toList();
     }
 

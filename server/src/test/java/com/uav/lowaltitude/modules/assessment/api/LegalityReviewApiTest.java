@@ -953,22 +953,19 @@ class LegalityReviewApiTest {
         assertThat(jdbc.queryForObject("select count(*) from uav_event_verification v join uav_event e on e.event_id=v.event_id where e.alarm_id=?", Long.class, alarm)).isEqualTo(1);
     }
 
-    @Test
-    void illegalReviewRequiresVerificationPermissionAndSupportsAuthorizedFollowUp() throws Exception {
-        String noVerify = user("ASSIGNED", "assessment:read", "assessment:revise", "assessment:escalate", "alarm:read");
-        revise(noVerify, evaluation, "OVERRIDE", "ILLEGAL", "缺核实权限", 0).andExpect(status().isForbidden());
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"assessment:escalate", "alarm:verify", "alarm:read"})
+    void illegalReviewRequiresWholeChainPermissionBeforeAnyWrite(String missingPermission) throws Exception {
+        String restricted = user("ASSIGNED", java.util.stream.Stream.of("assessment:read", "assessment:revise",
+                "assessment:escalate", "alarm:read", "alarm:verify", "target:read")
+                .filter(permission -> !permission.equals(missingPermission)).toArray(String[]::new));
+        revise(restricted, evaluation, "OVERRIDE", "ILLEGAL", "缺少衔接权限", 0).andExpect(status().isForbidden());
         assertThat(jdbc.queryForObject("select review_state||'/'||version from legality_review where evaluation_id=?", String.class, evaluation)).isEqualTo("PENDING_REVIEW/0");
         assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
-        String reviewer = user("ASSIGNED", "assessment:read", "assessment:revise", "target:read");
-        revise(reviewer, evaluation, "OVERRIDE", "ILLEGAL", "仅保存复核结论", 0).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.alarm_id").doesNotExist());
-        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
-        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(noVerify)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.allowed_actions").value(org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("ESCALATE"))));
-        escalate(noVerify, evaluation, "缺权限转告警也回滚", 1).andExpect(status().isForbidden());
-        assertThat(jdbc.queryForObject("select count(*) from alarm where target_id=?", Long.class, target)).isZero();
-        escalate(session, evaluation, "承接此前复核", 1).andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.evaluation.alarm_verification.conclusion").value("CONFIRMED"));
+        assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=?", Long.class, evaluation)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where object_id=? and result='SUCCESS'", Long.class, evaluation)).isZero();
+        revise(session, evaluation, "OVERRIDE", "ILLEGAL", "有完整权限后整笔提交", 0).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.alarm_verification.conclusion").value("CONFIRMED"));
         assertThat(jdbc.queryForObject("select count(*) from legality_review_history where evaluation_id=? and conclusion='OVERRIDE'", Long.class, evaluation)).isEqualTo(1);
     }
 

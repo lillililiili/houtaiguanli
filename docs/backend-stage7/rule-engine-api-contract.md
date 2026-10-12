@@ -341,8 +341,8 @@ GET  /api/v1/rule-effects/summary?mode&from&to&timezone&source_mode&owner_org_id
 
 用户确认：人工复核认定非法（OVERRIDE ILLEGAL，或 CONFIRM 采纳系统 ILLEGAL）后自动生成或关联告警，承接同一次人工判断直接记为 CONFIRMED，不再要求到告警页重复核实。短信、电话及反制继续使用既有调度、回执、观察时长、证据和授权条件；改判不等于发送成功或获得反制授权。
 
-- 复核仍要求 assessment:read + assessment:revise；联动保持 assessment:escalate，且提交时一并校验 alarm:read + alarm:verify。缺核实权限整次提交拒绝并回滚；没有转告警权限时仅保存复核，由具备权限的人员承接。
+- 复核仍要求 assessment:read + assessment:revise；ACTIVE 目标的人工非法结论提交时一并校验 assessment:escalate + alarm:read + alarm:verify。任一缺失均拒绝整次提交，复核状态、告警、历史和成功审计均不写入，不再允许缺转告警权限时只保存非法结论。
 - 复核、告警合并/创建、事件确认、历史及审计在同一事务提交。一次复核只增加一条复核历史，通过 related_alarm_id 关联告警；事件确认记录真实操作人。事件已确认或处于后续状态时不再次确认、不重置已有通知；已判误报的事件不覆盖。
-- 无告警时调用既有人工转告警合并策略；同目标符合合并条件时复用告警及事件。缺风险等级保持 UNKNOWN，不从人工非法标签推算等级。原始 rule_evaluation 事实及来源模式不回写。
+- 无告警时调用既有人工转告警合并策略；同目标符合合并条件时复用告警及事件。生效非法结论包含 INSIDE_RESTRICTED_AIRSPACE 时，按新-22 固定为 HIGH；其他原因仍沿用原等级，缺失保持 UNKNOWN，不从人工非法标签推算分数。原始 rule_evaluation 事实及来源模式不回写，既有历史不批量重写。
 - 转告警入口、接口守卫及告警摘要使用 effective_legal_status；人工合法、系统误判、不适用不可转告警。人工非法从原始 LEGAL 改判也可进入。历史已改判非法但无告警的记录，可用既有 /alarms 写接口承接并确认；读取页面不批量补写历史告警。
 - 承接核实必须核对同一目标、组织、区域、来源及研判—告警关联，并验证持久化的有效人工 ILLEGAL 结论。该人工结论是此次事件确认依据，不将过期观测伪装为新观测；后续电话/反制仍受有效位置、事件关联和证据条件约束。

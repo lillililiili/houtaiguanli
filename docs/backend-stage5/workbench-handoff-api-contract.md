@@ -1,11 +1,12 @@
 # 阶段 5 工作台与业务交接接口契约
 
-## 处罚部门通知入口（2026-09-17）
+## 原交接通知入口（2026-10-12 补测修订，兼容 2026-09-17 处罚入口）
 
 处置与处罚 → 交接与处罚 → 交接详情：“通知处罚部门”调用后端发送原交接材料；明确失败时可“重试通知”。“查询送达与回执”只读取记录，不发送、不催办，不代表处罚决定或案件办结。发送已提交、结果未知、已送达或已签收时禁止重复发送。权限不足、接收方停用、通道未接通均展示原因。
 
-- `GET /api/v1/handoffs/{id}/notifications`：需 `handoff:read` 及交接范围。返回 `can_notify`、`blocked_reason`、`expected_attempt_no`、送达/签收状态、最近尝试、接收快照和模拟标识。判断可发送还需 `handoff:create`、`alarm:read`、来源可见且仍属已核实事件。已送达历史不因当前配置变化而失效。
-- `POST /api/v1/handoffs/{id}/notifications`：同一处罚交接，需上述三项权限、来源范围、`Idempotency-Key` 与唯一正文 `{ "expected_attempt_no": 1 }`。只接受 UAV_EVENT/UAV_PUNISHMENT；拒绝客户端写送达、回执或处罚结果。
+- `GET /api/v1/handoffs/{id}/notifications`：需 `handoff:read` 及交接范围。返回 `can_notify`、`blocked_reason`、`expected_attempt_no`、送达/签收状态、最近尝试、接收快照和模拟标识。判断可发送还需 `handoff:create` 和对应来源读取权限：处罚交接为 `alarm:read`、来源可见且仍属 CONFIRMED 事件；风险通知为 `risk:read`、来源可见且仍属 NOTIFIED 风险。已送达历史不因当前配置变化而失效。
+- `POST /api/v1/handoffs/{id}/notifications`：同一已冻结交接，需上述权限、来源范围、`Idempotency-Key` 与唯一正文 `{ "expected_attempt_no": 1 }`。接受 UAV_EVENT/UAV_PUNISHMENT 和 RISK/RISK_NOTICE；拒绝客户端写送达、回执或处罚结果。
+- 风险通知在飞行任务、空域详情与空间风险的通知记录中重试，统一通知原上级，不重新选接收方、不新增交接或重建材料。明确失败或尚未发送可按资格重试；已提交、未知、回执超时、送达或签收禁止重发。追加尝试、当前渠道快照和审计，原失败与冻结证据保留；前台提供分页尝试记录。核验已排除、未核验或来源无权读取时阻断。通知或签收不代表风险解除，风险不进入处罚办理。
 - 服务端锁定交接、核对原尝试次数和幂等键，先提交本次尝试及审计，再在事务外调用通道，最后保存结果。两个并发请求只有一个获得发送资格。网络中断或服务停止后保持待核对，不自动重复通知；未知结果不作为失败后可重发。
 - 每次发送追加投递记录，保存该次接收资料与审计；原交接材料、原接收快照、此前投递时间和记录不回写。新增迁移 `V202609170012__handoff_notification_recipient.sql` 仅添加 nullable 的 `handoff_delivery.recipient_snapshot`，不补造历史快照。
 - 真实渠道当前仍未接通。仅 local/test 环境、明确 mock/replay 来源和 MOCK 配置可模拟投递；模拟送达/签收不冒充真实回执。当前没有新增外部回执接入接口或轮询外部系统的能力。

@@ -47,6 +47,19 @@ public class WeatherRiskRepository {
                 rs.getTimestamp("valid_to").getTime()), riskId).stream().findFirst().orElse(null);
     }
 
+    public record ForecastFact(String messageId, String areaName, long publishedAt, long validFrom, long validTo,
+            String summary, BigDecimal windSpeedMps, BigDecimal gustMps, Integer precipitationProbabilityPct,
+            String ruleCode, String ruleVersion, String sourceMode) { }
+
+    /** 风险生成时存下的预报事实；不读取后续预报代替原依据。调用方先完成风险范围鉴权。 */
+    public ForecastFact forecast(String riskId) {
+        return jdbc.query("SELECT f.* FROM weather_forecast_risk_fact f JOIN flight_risk r ON r.risk_id=f.risk_id WHERE f.risk_id=? AND r.risk_type='WEATHER'",
+            (rs,n) -> new ForecastFact(rs.getString("forecast_message_id"),rs.getString("area_name"),rs.getTimestamp("published_at").getTime(),
+                rs.getTimestamp("valid_from").getTime(),rs.getTimestamp("valid_to").getTime(),rs.getString("summary"),rs.getBigDecimal("wind_speed_mps"),
+                rs.getBigDecimal("gust_mps"),rs.getObject("precipitation_probability_pct",Integer.class),rs.getString("rule_code"),rs.getString("rule_version"),rs.getString("source_mode")),riskId)
+                .stream().findFirst().orElse(null);
+    }
+
     /** 只追加专属模拟源的范围快照，重启不改已有风险或历史范围。 */
     public void insertDemo(String riskId, FactRow fact) {
         try {

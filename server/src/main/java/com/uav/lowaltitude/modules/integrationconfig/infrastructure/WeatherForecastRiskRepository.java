@@ -25,6 +25,10 @@ public class WeatherForecastRiskRepository {
             long startAt, long endAt, String districtName) { }
 
     public List<PlanCandidate> plans(String areaName, AccessDecision access) {
+        return plans(areaName, null, access);
+    }
+
+    public List<PlanCandidate> plans(String areaName, String districtId, AccessDecision access) {
         Map<String, Object> params = new HashMap<>();
         params.put("area", normalize(areaName));
         StringBuilder sql = new StringBuilder("""
@@ -39,9 +43,11 @@ public class WeatherForecastRiskRepository {
                   JOIN app_district d ON d.district_id=p.district_id AND d.enabled=TRUE
                  WHERE p.source_mode IN ('mock','replay')
                    AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate duplicate WHERE duplicate.duplicate_plan_id=p.plan_id)
-                   AND (LOWER(REPLACE(d.name,' ','')) LIKE '%' || :area || '%'
-                        OR :area LIKE '%' || LOWER(REPLACE(d.name,' ','')) || '%')
                 """);
+        if (districtId != null) {
+            sql.append(" AND p.district_id=:district");
+            params.put("district", districtId);
+        } else sql.append(" AND LOWER(REPLACE(d.name,' ',''))=:area");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             sql.append("""
                    AND EXISTS (

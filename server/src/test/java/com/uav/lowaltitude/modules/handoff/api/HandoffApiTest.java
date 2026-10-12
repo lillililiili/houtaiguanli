@@ -77,6 +77,22 @@ class HandoffApiTest {
     }
 
     @Test
+    void previewReadsTheSameMaterialWithoutSubmittingOrChangingRisk() throws Exception {
+        var result = mvc.perform(get("/api/v1/risks/{id}/handoff-preview", riskId)
+                .param("expected_version", "1").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.source_id").value(riskId))
+                .andExpect(jsonPath("$.data.recipient.recipient_id").value(recipientId))
+                .andExpect(jsonPath("$.data.material.risk.risk_id").value(riskId));
+        assertThat(jdbc.queryForObject("select count(*) from handoff where source_id=?", Long.class, riskId)).isZero();
+        assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?", String.class, riskId)).isEqualTo("PENDING_NOTIFICATION");
+        mvc.perform(get("/api/v1/risks/{id}/handoff-preview", riskId).param("expected_version", "0")
+                .header("Authorization", bearer(session))).andExpect(status().isConflict());
+        String denied = user(true, true, false, false, false);
+        mvc.perform(get("/api/v1/risks/{id}/handoff-preview", riskId).param("expected_version", "1")
+                .header("Authorization", bearer(denied))).andExpect(status().isForbidden());
+    }
+
+    @Test
     void missingCreateOrSourceReadPermissionIsForbiddenBeforeAnyValidation() throws Exception {
         String noCreate = user(true, true, false, false, false);
         String noRiskRead = user(false, true, true, false, false);
@@ -561,6 +577,29 @@ class HandoffApiTest {
         mvc.perform(get("/api/v1/handoffs/stats?wat=1").header("Authorization", bearer(noHandoffRead))).andExpect(status().isForbidden());
     }
 
+    @Test
+    void weatherNotificationFreezesTheActualForecastAndKeepsMissingValuesUnknown() throws Exception {
+        String message=UUID.randomUUID().toString();
+        long at=System.currentTimeMillis()-60000;
+        String actor=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,session);
+        jdbc.update("update flight_risk set risk_type='WEATHER' where risk_id=?",riskId);
+        jdbc.update("insert into local_interface_message(message_id,external_id,kind,direction,subject_id,created_by,state,payload,result,created_at,updated_at) values (?,?,'WEATHER','IN',?,?,'RECEIVED','{}','{}',?,?)",message,message,riskId,actor,at,at);
+        jdbc.update("insert into weather_forecast_risk_fact(risk_id,forecast_message_id,area_name,published_at,valid_from,valid_to,summary,wind_speed_mps,gust_mps,precipitation_probability_pct,rule_code,rule_version,source_mode) values (?,?,?, ?,?,?,?,12,20,null,'WIND','v-dynamic','mock')",riskId,message,"测试预报地区-"+message.substring(0,4),Timestamp.from(Instant.ofEpochMilli(at)),Timestamp.from(Instant.ofEpochMilli(at)),Timestamp.from(Instant.ofEpochMilli(at+3600000)),"雷雨阵风");
+        try {
+            String id=created(session,body("RISK",riskId,"RISK_NOTICE",recipientId,1),UUID.randomUUID().toString());
+            mvc.perform(get("/api/v1/handoffs/{id}",id).header("Authorization",bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.material.weather_forecast.message_id").value(message))
+                .andExpect(jsonPath("$.data.material.weather_forecast.wind_speed_mps").value(12))
+                .andExpect(jsonPath("$.data.material.weather_forecast.precipitation_probability_pct").doesNotExist());
+            String denied=user(false,true,false,false,false);
+            mvc.perform(get("/api/v1/handoffs/{id}",id).header("Authorization",bearer(denied)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.material.weather_forecast").doesNotExist());
+        } finally {
+            jdbc.update("delete from weather_forecast_risk_fact where risk_id=?",riskId);
+            jdbc.update("delete from local_interface_message where message_id=?",message);
+        }
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"118.624321,37.478123,mock", "-73.985321,40.748123,replay", "0,0,mock"})
     void riskCoordinatesAreDispatchedFrozenAndAccessControlled(double longitude, double latitude, String mode) throws Exception {
@@ -575,6 +614,7 @@ class HandoffApiTest {
         var dispatch = org.mockito.ArgumentCaptor.forClass(com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.HandoffDispatch.class);
         org.mockito.Mockito.verify(channel).deliver(dispatch.capture());
         JsonNode sentLocation = objectMapper.readTree(dispatch.getValue().snapshot()).path("risk").path("location");
+        assertThat(objectMapper.readTree(dispatch.getValue().snapshot()).path("space_fact").path("object_count").asInt()).isEqualTo(12);
         assertThat(sentLocation.path("longitude").asDouble()).isEqualTo(longitude);
         assertThat(sentLocation.path("latitude").asDouble()).isEqualTo(latitude);
         assertThat(sentLocation.path("coordinate_system").asText()).isEqualTo("WGS84");

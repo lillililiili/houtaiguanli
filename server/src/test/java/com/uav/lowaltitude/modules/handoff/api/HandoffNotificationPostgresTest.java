@@ -26,4 +26,7 @@ class HandoffNotificationPostgresTest extends HandoffNotificationApiTest {
    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM handoff_delivery WHERE handoff_id=?",Long.class,id)).isEqualTo(2);verify(channel,times(1)).deliver(any());
   }finally{start.countDown();pool.shutdownNow();}
  }
+ @Test void concurrentRiskRetriesOnlyDispatchOnce() throws Exception {
+  riskNotice();concurrentSubmissionsOnlyDispatchOnce();
+ }
 }

@@ -37,6 +37,7 @@ class AutoVoiceApiTest {
     @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository voiceTasks;
     @SpyBean com.uav.lowaltitude.integration.mock.LocalAdvisoryVoiceAdapter voice;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoVoicePolicy voicePolicy;
+    @SpyBean com.uav.lowaltitude.platform.time.AppClock departureClock;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording recordings;
     @MockBean com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch departure;
     private static final java.nio.file.Path AUDIO=createAudio();
@@ -91,6 +92,38 @@ class AutoVoiceApiTest {
         jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=? AND status='SIMULATED_DELIVERED'",System.currentTimeMillis()-61_000L,eventId);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"SMS","VOICE"})
+    void confirmedDepartureIsFrozenAndDoesNotRestartAfterPositionExpires(String channel)throws Exception {
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,'target:read','READ',false,current_timestamp)",role);
+        if("VOICE".equals(channel)) {
+            voiceService.process(eventId);
+        }
+        long now=System.currentTimeMillis()+20_000;
+        doReturn(now).when(departureClock).nowMillis();
+        long observed=now-100;
+        var point=new com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Position(observed,new java.math.BigDecimal("119.125"),new java.math.BigDecimal("36.75"));
+        when(departure.assessment(eq(eventId),anyLong(),anyLong(),anyLong())).thenReturn(new com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Assessment(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.LEFT,point,"LATEST_LEGALITY"));
+        read();assertThat(voiceTasks.departure(eventId)).isNull(); // GET must not create the decision.
+        voiceService.process(eventId);
+        var saved=voiceTasks.departure(eventId);assertThat(saved).isNotNull();assertThat(saved.channel()).isEqualTo(channel);
+        assertThat(voiceTasks.candidates()).doesNotContain(eventId);
+        assertThat(voiceTasks.departureCandidates()).doesNotContain(eventId);
+        when(departure.assessment(eq(eventId),anyLong(),anyLong(),anyLong())).thenReturn(new com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Assessment(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.UNKNOWN,null,"NO_CURRENT_POSITION"));
+        doReturn(false).when(voice).simulationAvailable(anyString());
+        voiceService.process(eventId);
+        assertThat(voiceTasks.departure(eventId)).isEqualTo(saved);
+        read().andExpect(jsonPath("$.data.departure_observation.status").value("RECORDED"))
+              .andExpect(jsonPath("$.data.departure_observation.position.observed_at").value(observed))
+              .andExpect(jsonPath("$.data.counter_launch_visible").value(false))
+              .andExpect(jsonPath("$.data.auto_handoff.status").value("NOT_REQUIRED"));
+        assertThat(count("uav_event_voice_advisory")).isEqualTo("VOICE".equals(channel)?1:0);
+    }
+    @Test void departureWithoutObservedPositionCannotCreateFrozenDecision() {
+        when(departure.assessment(eq(eventId),anyLong(),anyLong(),anyLong())).thenReturn(new com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Assessment(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.LEFT,null,"LATEST_LEGALITY"));
+        voiceService.process(eventId);
+        assertThat(voiceTasks.departure(eventId)).isNull();
+    }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"mock,FULL", "replay,PARTIAL"})
     void unattemptedBlockedCallRecoversWhenLatestEvaluationMatches(String mode,String match)throws Exception {

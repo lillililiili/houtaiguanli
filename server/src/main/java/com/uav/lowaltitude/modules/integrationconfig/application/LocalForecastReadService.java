@@ -19,7 +19,9 @@ public class LocalForecastReadService {
   WeatherInput newest=null;
   for(var row:repository.weatherMessages())try{
    var p=json.readValue(row.payload(),WeatherInput.class);
-   boolean matchesPlan=(p.planId()!=null&&p.planId().equals(plan.planId()))||areaMatches(p.areaName(),plan.districtName());
+   boolean matchesPlan=p.districtId()!=null
+     ? p.districtId().equals(plan.districtId()) && (p.planId()==null || p.planId().equals(plan.planId()))
+     : (p.planId()!=null&&p.planId().equals(plan.planId()))||areaMatches(p.areaName(),plan.districtName());
    // Select a forecast by its valid periods, not its publication/receipt time.
    // Keep the forecast's other periods for history and partial-coverage display.
    boolean overlaps=p.periods()!=null&&p.periods().stream().anyMatch(x->valid(x)&&x.from()<plan.endAt()&&x.to()>plan.startAt());
@@ -40,7 +42,7 @@ public class LocalForecastReadService {
  }
  private static boolean valid(com.uav.lowaltitude.modules.integrationconfig.api.LocalInterfaceDtos.Period x){return x!=null&&x.from()!=null&&x.to()!=null&&x.from()<x.to();}
  private static boolean areaMatches(String area,String district){
-  String a=normalize(area),d=normalize(district);return !a.isEmpty()&&!d.isEmpty()&&(a.equals(d)||a.contains(d)||d.contains(a));
+  String a=normalize(area),d=normalize(district);return !a.isEmpty()&&a.equals(d);
  }
  private static String normalize(String value){return value==null?"":value.trim().replaceAll("\\s+","").toLowerCase(java.util.Locale.ROOT);}
 }

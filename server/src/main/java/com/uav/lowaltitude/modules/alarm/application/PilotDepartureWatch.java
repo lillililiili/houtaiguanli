@@ -3,6 +3,11 @@ package com.uav.lowaltitude.modules.alarm.application;
 /** 短信送达后的设备观察：只根据新位置和短信发出时所处空域判断是否仍在。 */
 public interface PilotDepartureWatch {
     enum Presence { STILL_PRESENT, LEFT, UNKNOWN }
+    record Position(long observedAt, java.math.BigDecimal longitude, java.math.BigDecimal latitude) { }
+    record Assessment(Presence presence, Position position, String basis) { }
+    default Assessment assessment(String eventId, long smsAt, long since, long now) {
+        return new Assessment(assess(eventId, smsAt, since, now), null, null);
+    }
     /** 短信后的观察：告警区域按短信发出时目标所在空域确定，只看短信之后上报的新位置。 */
     Presence assess(String eventId, long smsAcceptedAt, long now);
     /**

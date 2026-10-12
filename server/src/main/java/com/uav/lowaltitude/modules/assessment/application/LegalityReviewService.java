@@ -114,8 +114,9 @@ public class LegalityReviewService {
         String manualStatus = switch (conclusion) { case "CONFIRM" -> currentStatus; case "REJECT" -> null; default -> overrideStatus; };
         if ("OVERRIDE".equals(conclusion) && overrideStatus.equals(currentStatus)) throw validation("改判结论与系统结论相同，请使用确认");
         boolean advanceIllegal = "ACTIVE".equals(review.mode()) && "ILLEGAL".equals(manualStatus)
-                && review.targetId() != null && canEscalate();
+                && review.targetId() != null;
         if (advanceIllegal) {
+            access.require(PermissionCode.ASSESSMENT_ESCALATE);
             access.require(PermissionCode.ALARM_READ);
             access.require(PermissionCode.ALARM_VERIFY);
         }
@@ -174,14 +175,6 @@ public class LegalityReviewService {
         if ("ILLEGAL".equals(review.manualStatus()) && Set.of(STATE_CONFIRMED, STATE_OVERRIDDEN).contains(review.reviewState()))
             verification.confirmFromLegalityReview(id, outcome.alarmId(), note);
         return new EscalationResultDto(outcome.alarmId(), outcome.eventId(), read.detail(id, readAccess));
-    }
-
-    private boolean canEscalate() {
-        try { access.require(PermissionCode.ASSESSMENT_ESCALATE); return true; }
-        catch (ApiException error) {
-            if (error.getStatus() == HttpStatus.FORBIDDEN) return false;
-            throw error;
-        }
     }
 
     private MergeOutcome createAlarm(ReviewRow review, AuthUser actor, String note, long version) {
