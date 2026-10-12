@@ -7,7 +7,7 @@ import { commissionApi, deviceApi } from '@/api/devices.js';
 import { informationCoverage, informationValue } from '@/utils/deviceInformation.js';
 import { deviceReferenceModels } from '@/utils/deviceReferenceModels.js';
 
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: () => true }) }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn() }, commissionApi: { information: vi.fn(), list: vi.fn(), create: vi.fn() } }));
 let app, host;
 async function settle() { for (let i=0; i<12; i++) { await Promise.resolve(); await nextTick(); } }
@@ -22,6 +22,14 @@ const information = { device_id: 'one', device_no: 'D1', name: '雷达', model: 
       { key: 'missing', label: '缺失字段', value: null, required: true, status: 'NOT_REPORTED' }] }], sample_sections: [], notes: [] };
 
 describe('调测设备信息', () => {
+  it.each([[Date.UTC(2026, 0, 2, 7, 46, 11), '15:46:11'], [Date.UTC(2026, 5, 3, 18, 15, 29), '02:15:29']])('设备时间字段固定按北京时间展示：%s', async (at, expected) => {
+    const field = { key: 'last_heartbeat_at', label: '最近心跳', value: at, unit: 'epoch_ms', status: 'RECEIVED' };
+    expect(informationValue(field)).toContain(expected);
+    await mount(DeviceInformationPanel, { information: { ...information, generated_at: at, sections: [{ code: 'link', title: '连接', source: '设备状态', received_at: at, observed_at: at, fields: [field] }] } });
+    expect(host.textContent).toContain(`页面读取于 ${informationValue(field)}`);
+    expect(host.textContent).toContain(`接收 ${informationValue(field)}`);
+    expect(host.textContent).toContain(`上报 ${informationValue(field)}`);
+  });
   it('保留零值、关闭和缺失状态，覆盖率不把过期或缺失算作已获取', () => {
     expect(informationValue({ value: 0 })).toBe('0');
     expect(informationValue({ value: false })).toBe('否 / 关闭');

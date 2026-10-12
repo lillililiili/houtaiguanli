@@ -10,6 +10,10 @@ import java.util.UUID;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.integration.mqtt.LingyunEnvelope;
+import com.uav.lowaltitude.integration.mqtt.EoEdgeEnvelope;
+import com.uav.lowaltitude.modules.device.application.DeviceRecoveryService;
+import com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration;
+import com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository;
 import com.uav.lowaltitude.modules.device.application.MqttConfigurationService;
 import com.uav.lowaltitude.modules.device.domain.MqttConfiguration.*;
 import com.uav.lowaltitude.modules.device.infrastructure.MqttRepository;
@@ -38,6 +42,8 @@ class LocalQaDeviceStatusApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired MqttConfigurationService configuration;
     @Autowired MqttRepository mqtt;
+    @Autowired EoEdgeRepository edges;
+    @Autowired DeviceRecoveryService recovery;
     String token;
     Binding device;
 
@@ -68,6 +74,15 @@ class LocalQaDeviceStatusApiTest {
         assertThat(result.path("source_type").asText()).isEqualTo("LOCAL_QA_STATUS");
         assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,device.opsDeviceId())).isEqualTo("GOOD");
         assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?",Long.class,device.opsDeviceId())).isEqualTo(body.get("observed_at"));
+        var evidence=jdbc.queryForMap("SELECT health_observed_at,alarm_observed_at,health_source_id,alarm_source_id,health_source_mode,alarm_source_mode,health_simulated,alarm_simulated FROM ops_device_state WHERE device_id=?",device.opsDeviceId());
+        assertThat(evidence.get("health_observed_at")).isEqualTo(body.get("observed_at"));
+        assertThat(evidence.get("alarm_observed_at")).isEqualTo(body.get("observed_at"));
+        assertThat(evidence.get("health_source_id")).isEqualTo(device.opsSourceId());
+        assertThat(evidence.get("alarm_source_id")).isEqualTo(device.opsSourceId());
+        assertThat(evidence.get("health_source_mode")).isEqualTo("replay");
+        assertThat(evidence.get("alarm_source_mode")).isEqualTo("replay");
+        assertThat(evidence.get("health_simulated")).isEqualTo(true);
+        assertThat(evidence.get("alarm_simulated")).isEqualTo(true);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inbox_message WHERE source=?",Long.class,"local-qa-status:"+device.opsDeviceId())).isEqualTo(1);
         assertThat(count("device_incident")).isEqualTo(incidents);
         assertThat(count("disposal_authorization")).isEqualTo(authorizations);
@@ -85,6 +100,18 @@ class LocalQaDeviceStatusApiTest {
         body.put("observed_at",System.currentTimeMillis()+10000);send(body,409);
         body=input();send(body,200);
         body.put("message_id",UUID.randomUUID().toString());body.put("observed_at",((Long)body.get("observed_at"))-1);send(body,409);
+    }
+    @Test void newerHeartbeatDoesNotRejectHealthOrRenewItsEvidenceAndLateGoodCannotHealNewFault() throws Exception {
+        long at=System.currentTimeMillis();
+        var healthy=input();healthy.put("observed_at",at-5000);send(healthy,200);
+        jdbc.update("UPDATE ops_device_state SET observed_at=?,last_heartbeat_at=?,connectivity='ONLINE' WHERE device_id=?",at,at,device.opsDeviceId());
+        assertThat(jdbc.queryForObject("SELECT health_observed_at FROM ops_device_state WHERE device_id=?",Long.class,device.opsDeviceId())).isEqualTo(at-5000);
+        var bad=input();bad.put("observed_at",at-1000);bad.put("health_code","BAD");bad.put("has_alarm",true);send(bad,200);
+        assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,device.opsDeviceId())).isEqualTo("BAD");
+        assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?",Long.class,device.opsDeviceId())).isEqualTo(at);
+        var late=input();late.put("observed_at",at-2000);send(late,409);
+        assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,device.opsDeviceId())).isEqualTo("BAD");
+        assertThat(jdbc.queryForObject("SELECT alarm_observed_at FROM ops_device_state WHERE device_id=?",Long.class,device.opsDeviceId())).isEqualTo(at-1000);
     }
     @ParameterizedTest @ValueSource(strings={"live","mock","disabled","source-disabled","not-simulated","wrong-source","unbound"})
     void refusesNonQaOrMismatchedDevices(String mode) throws Exception {
@@ -119,6 +146,83 @@ class LocalQaDeviceStatusApiTest {
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-QA-STATUS-READ','QA status read','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("UPDATE app_user SET role_code='ROLE-QA-STATUS-READ' WHERE account='admin1'");
         send(input(),403);
+    }
+    @ParameterizedTest @ValueSource(longs={1000,5000})
+    void eoExplicitEvidenceSurvivesHeartbeatsButActiveTrackingStillBlocksRecovery(long age) throws Exception {
+        var eo=registerEo("replay");
+        long at=System.currentTimeMillis()-age;
+        var body=eoInput(eo);body.put("observed_at",at);
+        send(body,200);
+        long version=jdbc.queryForObject("SELECT version FROM ops_device_state WHERE device_id=?",Long.class,eo.opsDeviceId());
+        send(body,200);
+        assertThat(jdbc.queryForObject("SELECT version FROM ops_device_state WHERE device_id=?",Long.class,eo.opsDeviceId())).isEqualTo(version);
+        long heartbeat=System.currentTimeMillis()-1;
+        var envelope=EoEdgeEnvelope.decode(eo.reportingTopic(),EoEdgeEnvelope.encode("HeartBeat",eo.edgeId(),heartbeat,
+                Map.of("deviceId",eo.externalDeviceId(),"codeStatus",200,"workState",2,"cameraStatus",Map.of())));
+        edges.heartbeat(eo,envelope,"{}",heartbeat);
+        var evidence=jdbc.queryForMap("SELECT health_code,has_alarm,health_observed_at,alarm_observed_at,health_source_id,alarm_source_id,health_source_mode,health_simulated FROM ops_device_state WHERE device_id=?",eo.opsDeviceId());
+        assertThat(evidence).containsEntry("health_code","GOOD").containsEntry("has_alarm",false)
+                .containsEntry("health_observed_at",at).containsEntry("alarm_observed_at",at)
+                .containsEntry("health_source_id",eo.opsSourceId()).containsEntry("alarm_source_id",eo.opsSourceId())
+                .containsEntry("health_source_mode","replay").containsEntry("health_simulated",true);
+        assertThat(recovery.evaluate(eo.opsDeviceId(),"replay",eo.opsSourceId(),true,at-1).passed()).isTrue();
+        String command=UUID.randomUUID().toString(),task=UUID.randomUUID().toString();
+        edges.insertCommand(command,"EO-"+command.substring(0,6),eo.opsDeviceId(),null,"EO_BEGIN_TRACK","test","replay",true,heartbeat+10000,heartbeat);
+        jdbc.update("UPDATE device_command SET status='SUCCEEDED' WHERE command_id=?",command);
+        edges.insertTask(task,null,null,eo.opsDeviceId(),command,"test","{}",heartbeat);
+        // A successful start command does not mean an ongoing tracking task has finished.
+        assertThat(recovery.evaluate(eo.opsDeviceId(),"replay",eo.opsSourceId(),true,at-1).reasonCodes()).contains("ACTIVE_DEVICE_WORK");
+        var bad=eoInput(eo);bad.put("observed_at",at+1);bad.put("health_code","BAD");bad.put("has_alarm",true);send(bad,200);
+        var late=eoInput(eo);late.put("observed_at",at);send(late,409);
+        assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,eo.opsDeviceId())).isEqualTo("BAD");
+    }
+    @ParameterizedTest @ValueSource(strings={"live","disabled","source-disabled","wrong-source","not-simulated","unbound"})
+    void eoQaInputRetainsSourceAndEnvironmentRestrictions(String condition) throws Exception {
+        var eo=registerEo("replay");
+        var body=eoInput(eo);
+        switch(condition){
+            case "live" -> {
+                // Keep a valid live identity in the isolated fixture without opening a live connection.
+                var binding=jdbc.queryForMap("SELECT * FROM eo_device_binding WHERE ops_device_id=?",eo.opsDeviceId());
+                var edge=jdbc.queryForMap("SELECT * FROM eo_edge WHERE edge_id=?",eo.edgeId());
+                jdbc.update("DELETE FROM eo_device_binding WHERE ops_device_id=?",eo.opsDeviceId());
+                jdbc.update("DELETE FROM eo_edge WHERE edge_id=?",eo.edgeId());
+                jdbc.update("UPDATE mqtt_broker SET source_mode='live' WHERE broker_id=?",eo.brokerId());
+                jdbc.update("UPDATE ops_device SET source_mode='live' WHERE device_id=?",eo.opsDeviceId());
+                jdbc.update("UPDATE device SET source_mode='live' WHERE device_id=?",eo.deviceId());
+                edge.put("source_mode","live");binding.put("source_mode","live");
+                restoreFixtureRow("eo_edge",edge);restoreFixtureRow("eo_device_binding",binding);
+            }
+            case "disabled" -> jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?",eo.opsDeviceId());
+            case "source-disabled" -> jdbc.update("UPDATE ops_integration_source SET enabled=FALSE WHERE source_id=?",eo.opsSourceId());
+            case "wrong-source" -> body.put("source_id",device.opsSourceId());
+            case "not-simulated" -> jdbc.update("UPDATE ops_device SET simulated=FALSE WHERE device_id=?",eo.opsDeviceId());
+            case "unbound" -> jdbc.update("DELETE FROM eo_device_binding WHERE ops_device_id=?",eo.opsDeviceId());
+        }
+        send(body,409);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inbox_message WHERE source=?",Long.class,"local-qa-status:"+eo.opsDeviceId())).isZero();
+    }
+    private EoEdgeConfiguration.Binding registerEo(String mode){
+        String user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);
+        AuthContext.set(new AuthUser(user,"admin1","QA EO status test","ROLE-ADMIN",1,false,"ALL"));
+        try{
+            String suffix=UUID.randomUUID().toString().substring(0,8);
+            String broker=configuration.create(new BrokerInput("QA EO "+suffix,"127.0.0.1",1883,false,null,null,
+                    "127.0.0.1/32",mode,device.ownerOrgId(),device.districtId(),null),UUID.randomUUID().toString()).brokerId();
+            String id=configuration.register(new Registration(EoEdgeEnvelope.PROTOCOL,broker,null,"eo-"+suffix,null,
+                    mode,device.ownerOrgId(),device.districtId(),"EO-"+suffix,"模拟光电状态设备",null,null,null,"edge-"+suffix),UUID.randomUUID().toString());
+            var eo=edges.binding(id,false);
+            jdbc.update("UPDATE ops_device SET enabled=TRUE WHERE device_id=?",id);
+            jdbc.update("UPDATE ops_integration_source SET enabled=TRUE WHERE source_id=?",eo.opsSourceId());
+            return eo;
+        }finally{AuthContext.clear();}
+    }
+    private Map<String,Object> eoInput(EoEdgeConfiguration.Binding eo){
+        var body=input();body.put("device_id",eo.opsDeviceId());body.put("source_id",eo.opsSourceId());return body;
+    }
+    private void restoreFixtureRow(String table,Map<String,Object> row){
+        jdbc.update("INSERT INTO "+table+" ("+String.join(",",row.keySet())+") VALUES ("
+                +String.join(",",java.util.Collections.nCopies(row.size(),"?"))+")",row.values().toArray());
     }
     private long count(String table){return jdbc.queryForObject("SELECT count(*) FROM "+table,Long.class);}
     Map<String,Object> input(){

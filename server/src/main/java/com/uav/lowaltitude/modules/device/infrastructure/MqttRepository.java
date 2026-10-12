@@ -64,7 +64,11 @@ public class MqttRepository {
         return jdbc.query(BINDING_SELECT+" WHERE m.broker_id=? ORDER BY m.ops_device_id",this::binding,brokerId);
     }
     public Binding binding(String id, boolean lock) {
-        if (lock) jdbc.queryForList("SELECT ops_device_id FROM mqtt_device_binding WHERE ops_device_id=? FOR UPDATE", id);
+        if (lock) {
+            jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE",id);
+            jdbc.queryForList("SELECT device_id FROM ops_device_state WHERE device_id=? FOR UPDATE",id);
+            jdbc.queryForList("SELECT ops_device_id FROM mqtt_device_binding WHERE ops_device_id=? FOR UPDATE", id);
+        }
         return jdbc.query(BINDING_SELECT+" WHERE m.ops_device_id=?",this::binding,id).stream().findFirst().orElse(null);
     }
     private Binding binding(ResultSet r, int row) throws SQLException {

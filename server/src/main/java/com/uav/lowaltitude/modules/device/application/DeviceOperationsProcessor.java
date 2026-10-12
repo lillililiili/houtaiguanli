@@ -136,7 +136,7 @@ public class DeviceOperationsProcessor {
                 String inboxId = UUID.randomUUID().toString();
                 devices.addReceipt(UUID.randomUUID().toString(), commandId, inboxId, result.resultCode(), completed,
                         json(Map.of("simulated", bool(command, "simulated"), "detail", result.detail())));
-                if (bool(command, "simulated")) devices.markDeviceRecovered(text(command, "device_id"), completed);
+                // A restart receipt confirms the command only; explicit subsequent health reports prove recovery.
                 devices.addEvent(UUID.randomUUID().toString(), text(command, "device_id"), "REBOOT_SUCCEEDED", "INFO",
                         bool(command, "simulated") ? "模拟重启回执已接收，设备状态恢复在线" : "设备重启回执已接收",
                         completed, bool(command, "simulated"));

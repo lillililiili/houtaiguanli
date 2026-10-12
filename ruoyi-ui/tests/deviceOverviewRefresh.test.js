@@ -5,7 +5,7 @@ import DevicesView from '@/views/operations/DevicesView.vue';
 import { deviceApi, integrationApi } from '@/api/devices.js';
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: () => true }) }));
 vi.mock('@/api/devices.js', () => ({
   deviceApi: { list: vi.fn(), options: vi.fn(), overview: vi.fn(), detail: vi.fn() },
   integrationApi: { protocols: vi.fn() }, mqttApi: {}
@@ -15,7 +15,7 @@ let app, host;
 async function settle() { for (let i = 0; i < 8; i++) { await Promise.resolve(); await nextTick(); } }
 async function mount() {
   host = document.createElement('div'); document.body.append(host);
-  app = createApp(DevicesView); app.use(ElementPlus); app.mount(host); await settle();
+  app = createApp(DevicesView); app.component('router-link',{template:'<a><slot /></a>'}); app.use(ElementPlus); app.mount(host); await settle();
 }
 function search() { [...host.querySelectorAll('button')].find(b => b.textContent.trim() === '查询').click(); }
 function alarmCount() {
@@ -37,6 +37,10 @@ it('重新查询列表时同步更新告警汇总，而非保留进页时旧数'
   search(); await settle();
   expect(alarmCount()).toBe('3');
   expect(deviceApi.list).toHaveBeenCalledTimes(2);
+  const { page, size, ...filters } = deviceApi.list.mock.lastCall[0];
+  expect(page).toBe(1); expect(size).toBe(10);
+  expect(deviceApi.overview).toHaveBeenLastCalledWith(filters);
+  expect(filters).toMatchObject({ enabled: true, statistics_scope: true });
 });
 
 it('较慢的旧统计响应不能覆盖更新查询的结果', async () => {

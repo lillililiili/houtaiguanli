@@ -17,6 +17,7 @@ export const deviceApi = {
   history: (id, params) => request({ url: `/v1/devices/${encodeURIComponent(id)}/state-history${queryString(params)}` }),
   incidents: params => request({ url: `/v1/device-incidents${queryString(params)}` }),
   recoverIncident: (id, key) => mutation('post', `/v1/device-incidents/${encodeURIComponent(id)}/recovery-checks`, {}, { idempotencyKey: key }),
+  rebootIncident: (id, body, key) => mutation('post', `/v1/device-incidents/${encodeURIComponent(id)}/reboot`, body, { idempotencyKey: key }),
   events: params => request({ url: `/v1/device-events${queryString(params)}` }),
   command: id => request({ url: `/v1/device-commands/${encodeURIComponent(id)}` }),
   protocolStatus: id => request({ url: `/v1/devices/${encodeURIComponent(id)}/protocol-status` }),

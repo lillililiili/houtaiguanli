@@ -431,11 +431,11 @@ public class ProtocolDataRepository {
         try { json = metrics.isEmpty() ? null : mapper.writeValueAsString(metrics); }
         catch (Exception ex) { throw new IllegalStateException(ex); }
         int updated = jdbc.update("""
-                UPDATE ops_device_state SET connectivity=?,work_state_code=?,health_code=?,observed_at=?,received_at=?,
+                UPDATE ops_device_state SET connectivity=?,work_state_code=?,observed_at=?,received_at=?,
                     last_heartbeat_at=COALESCE(?,last_heartbeat_at),metrics_json=COALESCE(?,metrics_json),unknown_reason=?,simulated=?,
                     version=version+1 WHERE device_id=?
                 """, connectivity, "ONLINE".equals(connectivity) ? "REPORTING" : "NO_RESPONSE",
-                "ONLINE".equals(connectivity) ? "GOOD" : "UNKNOWN", now, now,
+                now, now,
                 "ONLINE".equals(connectivity) ? now : null, json,
                 "ONLINE".equals(connectivity) ? null : "协议会话未收到有效响应", simulated, deviceId);
         if (updated == 0) jdbc.update("""
@@ -443,7 +443,7 @@ public class ProtocolDataRepository {
                     observed_at,received_at,last_heartbeat_at,metrics_json,unknown_reason,simulated,version)
                 VALUES (?,?,?,FALSE,?,?,?,?,?,?,?,0)
                 """, deviceId, connectivity, "ONLINE".equals(connectivity) ? "REPORTING" : "NO_RESPONSE",
-                "ONLINE".equals(connectivity) ? "GOOD" : "UNKNOWN", now, now,
+                "UNKNOWN", now, now,
                 "ONLINE".equals(connectivity) ? now : null, json,
                 "ONLINE".equals(connectivity) ? null : "协议会话未收到有效响应", simulated);
         if ("ONLINE".equals(connectivity)) metrics.forEach((code, raw) -> {

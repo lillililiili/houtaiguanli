@@ -93,3 +93,27 @@ function Stop-OwnedService {
         }
     }
 }
+
+function Wait-LocalPortReleased {
+    param(
+        [Parameter(Mandatory=$true)][ValidateRange(1,65535)][int]$Port,
+        [ValidateRange(1,5000)][int]$TimeoutMilliseconds = 5000,
+        [scriptblock]$HasListener = {
+            param($Port)
+            # Query failure is not proof of release. Filtering the successful inventory avoids
+            # treating Get-NetTCPConnection's no-matching-port error as an infrastructure failure.
+            return @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+                Where-Object { $_.LocalPort -eq $Port }).Count -gt 0
+        }
+    )
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        try { $listening = & $HasListener $Port } catch { return $false }
+        if ($listening -isnot [bool]) { return $false }
+        if (-not $listening) { return $true }
+        $remaining = $TimeoutMilliseconds - $timer.ElapsedMilliseconds
+        if ($remaining -le 0) { return $false }
+        Start-Sleep -Milliseconds ([int][Math]::Min(100, $remaining))
+    } while ($timer.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+    return $false
+}

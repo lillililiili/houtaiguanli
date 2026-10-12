@@ -117,6 +117,8 @@ public class LocalInterfaceSimulatorService {
  // This endpoint aggregates several independently permission-scoped read models.
  // Do not wrap the aggregation in one transaction: a handled ApiException from
  // one optional section must not mark the whole request rollback-only.
+ /** Same mandatory identity, interface-read and data-scope gates as context, without business projections. */
+ public void checkSession(){interfaces.requireInterfacesRead();}
  public Context context(){
   var actor=interfaces.requireInterfacesRead();var params=new LinkedMultiValueMap<String,String>();params.add("size","100");
   List<String> unavailable=new ArrayList<>();
