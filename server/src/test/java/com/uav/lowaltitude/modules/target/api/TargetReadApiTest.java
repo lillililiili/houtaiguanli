@@ -5,12 +5,16 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.fusion.FusionContracts.PointKind;
+import com.uav.lowaltitude.modules.fusion.FusionContracts.SourceEstimate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -691,5 +695,30 @@ class TargetReadApiTest {
         jdbc.update("update target set version=3 where target_id=?", targetLatest);
         JsonNode detail = getJson("/api/v1/targets/" + targetLatest).path("data");
         assertThat(detail.path("version").asLong()).isEqualTo(3L);
+    }
+
+    /** 规范化模拟观测的权重不在 fusion_config，而在 simulator_fusion_parameters（迁移 V202610040002）；目标详情读各来源贡献时同样要补上，否则整个详情 500。 */
+    @Test
+    void simulatedNormalizedSourceWithCurrentObservationKeepsTargetDetailReadable() throws Exception {
+        String simSource = id(), simTarget = id(), simLink = id(), simTrack = id();
+        jdbc.update("""
+                insert into integration_source
+                    (source_id,source_code,name,protocol_code,protocol_version,enabled,source_mode,created_at,updated_at,version)
+                values (?,?,?,'SIM_NORMALIZED','1.0',true,'replay',?,?,0)
+                """, simSource, "SIM-NORM-" + suffix, "规范化模拟观测", T0, T0);
+        target(simTarget, "TGT-SIM-" + suffix, "UAV", null, null, T0, T0.plusSeconds(9), "replay", orgA, districtA);
+        link(simLink, simTarget, simSource, null, "sim-session-" + suffix, "sim-ext-" + suffix, null);
+        var estimate = new SourceEstimate(simSource, "SIM-NORM-" + suffix, "SIM_NORMALIZED", "CONFIRMED", simLink, simTrack, "obs-" + suffix,
+                Instant.now(), 120.125d, 30.25d, 60d, null, null, null, null, "UAV", 0.9d, null, null, PointKind.MEAS, Map.of());
+        jdbc.update("""
+                insert into track (track_id,target_id,link_id,external_track_id,started_at,created_at,layer,filter_state)
+                values (?,?,?,?,?,?,'RAW',? FORMAT JSON)
+                """, simTrack, simTarget, simLink, "sim-ext-" + suffix, T0, T0,
+                objectMapper.writeValueAsString(Map.of("source_estimate", estimate)));
+        JsonNode links = getJson("/api/v1/targets/" + simTarget).path("data").path("source_links");
+        assertThat(links).hasSize(1);
+        assertThat(links.get(0).path("link_id").asText()).isEqualTo(simLink);
+        assertThat(links.get(0).path("fusion_status").asText()).isEqualTo("CURRENT");
+        assertThat(links.get(0).path("contribution_attributes")).extracting(JsonNode::asText).containsExactly("position", "class");
     }
 }

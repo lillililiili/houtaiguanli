@@ -1,18 +1,25 @@
 package com.uav.lowaltitude.modules.target.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
+import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.jdbc.core.JdbcTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.*;
+import com.uav.lowaltitude.modules.fusion.application.FusionConfigLoader;
 import com.uav.lowaltitude.modules.fusion.application.FusionConfigService;
 import com.uav.lowaltitude.modules.fusion.application.EoFusionTaskContextPort;
 import com.uav.lowaltitude.modules.fusion.infrastructure.RawTrackRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.RawTrackRepository.TrackRow;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.SourceLinkRow;
+import com.uav.lowaltitude.platform.config.SimulationPolicy;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 class SourceContributionReaderTest {
@@ -21,14 +28,35 @@ class SourceContributionReaderTest {
     private final RawTrackRepository tracks = mock(RawTrackRepository.class);
     private final FusionConfigService config = mock(FusionConfigService.class);
     private final EoFusionTaskContextPort tasks = mock(EoFusionTaskContextPort.class);
-    private final SourceContributionReader reader = new SourceContributionReader(tracks, json, config, new AppClock(Clock.fixed(now, ZoneOffset.UTC)), tasks);
+    private final JdbcTemplate jdbc = mock(JdbcTemplate.class);
+    private final SourceContributionReader reader = reader("local", "qa");
     private final SourceLinkRow link = new SourceLinkRow("link-z", "source-z", "RADAR-Z", "replay", "batch-z", "target-z", "device-z", null, "Radar", "RADAR", "CONFIRMED");
 
-    private void snapshot(Instant at, Map<String,Object> quality) throws Exception {
+    private SourceContributionReader reader(String... profiles) {
+        var environment = new StandardEnvironment();
+        environment.setActiveProfiles(profiles);
+        return new SourceContributionReader(tracks, json, config, new FusionConfigLoader(jdbc, new SimulationPolicy(environment)),
+                new AppClock(Clock.fixed(now, ZoneOffset.UTC)), tasks);
+    }
+    /** demo-v1 的权重表：没有 SIM_NORMALIZED（它的权重在 simulator_fusion_parameters，由 V202610040002 迁移写入）。 */
+    private FusionParams demoParams() {
         FusionParams params = mock(FusionParams.class);
         when(config.params(null)).thenReturn(params);
         when(params.integer("identity", "short_lost_after_ms")).thenReturn(5000);
         when(params.weights()).thenReturn(Map.of("RADAR", Map.of("position",1d,"class",1d,"identity",0d,"motion",1d)));
+        return params;
+    }
+    private void simulatorWeights() {
+        when(jdbc.queryForMap(anyString())).thenReturn(Map.of("source_type", "SIM_NORMALIZED", "accuracy_m", new BigDecimal("60.0000"),
+                "position_weight", new BigDecimal("0.25"), "motion_weight", new BigDecimal("0.20"),
+                "class_weight", new BigDecimal("0.15"), "identity_weight", new BigDecimal("0.40")));
+    }
+    private TrackRow track(SourceEstimate estimate) throws Exception {
+        return new TrackRow("track-" + estimate.linkId(), "target-z", estimate.linkId(), "external-" + estimate.linkId(), estimate.observedAt(),
+                json.writeValueAsString(Map.of("source_estimate", estimate)));
+    }
+    private void snapshot(Instant at, Map<String,Object> quality) throws Exception {
+        demoParams();
         var estimate = new SourceEstimate("source-z", "RADAR-Z", "RADAR", "CONFIRMED", "link-z", "track-z", "observation-z", at,
                 118d, 37d, 10d, null,null,null,null,"UAV",null,null,null,PointKind.MEAS,quality);
         when(tracks.findOpenRawTracks(any())).thenReturn(Map.of("link-z",new TrackRow("track-z","target-z","link-z","external-z",at,json.writeValueAsString(Map.of("source_estimate",estimate)))));
@@ -87,5 +115,49 @@ class SourceContributionReaderTest {
         when(config.params(null)).thenReturn(params);
         when(tracks.findOpenRawTracks(any())).thenReturn(Map.of());
         assertThat(reader.read("target-z",List.of(link)).get(0).fusionStatus()).isEqualTo("HISTORICAL");
+    }
+
+    // 目标详情（GET /targets/{id}）曾因“缺少 SIM_NORMALIZED 权重”整体 500：规范化模拟观测的权重不在 fusion_config，而在 simulator_fusion_parameters。
+    @Test void simulatedNormalizedSourceReadsWithSimulatorWeightsInsteadOfFailingTheWholeRead() throws Exception {
+        demoParams();
+        simulatorWeights();
+        var simulated = new SourceEstimate("source-s","SIM-S","SIM_NORMALIZED","CONFIRMED","link-s","track-s","obs-s",now.minusMillis(100),
+                118d,37d,60d,null,null,null,null,"UAV",0.9d,null,null,PointKind.MEAS,Map.of());
+        when(tracks.findOpenRawTracks(any())).thenReturn(Map.of("link-s",track(simulated)));
+        var simLink = new SourceLinkRow("link-s","source-s","SIM-S","replay","batch-s","ext-s","device-s",null,"规范化模拟观测","SIM_NORMALIZED","CONFIRMED");
+        var result = reader.read("target-z",List.of(simLink)).get(0);
+        assertThat(result.fusionStatus()).isEqualTo("CURRENT");
+        assertThat(result.contributionAttributes()).containsExactly("position","class");
+    }
+    @Test void simulatedAndMeasuredSourcesOfDifferentTypesAreWeightedTogether() throws Exception {
+        demoParams();
+        simulatorWeights();
+        var radar = new SourceEstimate("source-r","RADAR-R","RADAR","CONFIRMED","link-r","track-r","obs-r",now.minusMillis(50),
+                118.0001d,37d,10d,null,null,null,null,"UAV",null,null,null,PointKind.MEAS,Map.of());
+        var simulated = new SourceEstimate("source-s","SIM-S","SIM_NORMALIZED","CONFIRMED","link-s","track-s","obs-s",now.minusMillis(100),
+                118d,37d,60d,null,null,null,null,"UAV",0.9d,null,null,PointKind.MEAS,Map.of());
+        when(tracks.findOpenRawTracks(any())).thenReturn(Map.of("link-r",track(radar),"link-s",track(simulated)));
+        var radarLink = new SourceLinkRow("link-r","source-r","RADAR-R","replay","batch-r","ext-r","device-r",null,"Radar","RADAR","CONFIRMED");
+        var simLink = new SourceLinkRow("link-s","source-s","SIM-S","replay","batch-s","ext-s","device-s",null,"规范化模拟观测","SIM_NORMALIZED","CONFIRMED");
+        var result = reader.read("target-z",List.of(radarLink,simLink));
+        assertThat(result.get(0).fusionStatus()).isEqualTo("CURRENT");
+        assertThat(result.get(0).contributionAttributes()).containsExactly("position","class");
+        assertThat(result.get(1).fusionStatus()).isEqualTo("CURRENT");
+        assertThat(result.get(1).contributionAttributes()).containsExactly("position");
+    }
+    @Test void measuredSourcesNeverTouchTheSimulatorWeightTable() throws Exception {
+        snapshot(now.minusMillis(100),Map.of());
+        assertThat(reader.read("target-z",List.of(link)).get(0).fusionStatus()).isEqualTo("CURRENT");
+        verifyNoInteractions(jdbc);
+    }
+    @Test void formalEnvironmentNeverBorrowsSimulatorWeights() throws Exception {
+        demoParams();
+        var simulated = new SourceEstimate("source-s","SIM-S","SIM_NORMALIZED","CONFIRMED","link-s","track-s","obs-s",now.minusMillis(100),
+                118d,37d,60d,null,null,null,null,"UAV",0.9d,null,null,PointKind.MEAS,Map.of());
+        when(tracks.findOpenRawTracks(any())).thenReturn(Map.of("link-s",track(simulated)));
+        var simLink = new SourceLinkRow("link-s","source-s","SIM-S","replay","batch-s","ext-s","device-s",null,"规范化模拟观测","SIM_NORMALIZED","CONFIRMED");
+        assertThatThrownBy(() -> reader("prod").read("target-z",List.of(simLink)))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("SIM_NORMALIZED");
+        verifyNoInteractions(jdbc);
     }
 }
