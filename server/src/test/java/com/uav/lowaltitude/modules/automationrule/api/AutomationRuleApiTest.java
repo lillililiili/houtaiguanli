@@ -106,15 +106,16 @@ class AutomationRuleApiTest {
         b=settings(g.path("version").asLong());b.put("actions",List.of("notify"));mvc.perform(write(put(BASE+"dispose/settings"),b)).andExpect(status().isBadRequest());
         b=settings(0);b.put("actions",List.of("notify"));mvc.perform(write(put(BASE+"counter/settings"),b)).andExpect(status().isBadRequest());
     }
-    @Test void anonymousReadOnlyAndScopedAccountsCannotMutateGlobalConfiguration() throws Exception {
+    @Test void anonymousFrontendAndScopedBackendCannotMutateGlobalConfiguration() throws Exception {
         mvc.perform(get(BASE+"verify")).andExpect(status().isUnauthorized());
         mvc.perform(get(BASE+"verify/runs")).andExpect(status().isUnauthorized());
-        limited("READ","ALL");
-        assertThat(ok(auth(get(BASE+"verify"))).path("can_manage").asBoolean()).isFalse();
-        assertThat(ok(auth(get(BASE+"verify/runs"))).path("items")).isEmpty();
         mvc.perform(auth(get(BASE+"verify/runs?size=101"))).andExpect(status().isBadRequest());
+        limited("READ","ALL");
+        mvc.perform(auth(get(BASE+"verify"))).andExpect(status().isForbidden());
+        mvc.perform(auth(get(BASE+"verify/runs"))).andExpect(status().isForbidden());
         mvc.perform(write(post(BASE+"verify/rules"),rule(0))).andExpect(status().isForbidden());
         limited("AUTH","ASSIGNED");mvc.perform(auth(get(BASE+"verify"))).andExpect(status().isForbidden());
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)",session);
         mvc.perform(auth(get(BASE+"verify/runs"))).andExpect(status().isForbidden());
         mvc.perform(write(post(BASE+"verify/rules"),rule(0))).andExpect(status().isForbidden());
     }

@@ -76,6 +76,7 @@ public class EoTrackingStatusService {
         var demand=policy.demand(target);
         boolean paused=repository.paused(target);
         String block=policy.block(snapshot);
+        boolean classUnsupported=snapshot!=null && !EoTrackingPolicy.supportsClass(snapshot);
         var task=edges.latestTaskByTarget(target);
         checkTaskScope(task);
         var actions=new ArrayList<String>();
@@ -112,14 +113,17 @@ public class EoTrackingStatusService {
                 case "LOST" -> "目标位置或执行结果未知，不代表飞离，不自动重试";
                 default -> "跟踪指令已提交，等待设备回执";
             };
-        } else if("EO_RESULT_UNKNOWN".equals(block)) {status="LOST";message=blockMessage(block);}
+        } else if("EO_RESULT_UNKNOWN".equals(block)) {status="LOST";message=blockMessage(block,snapshot);}
+        else if(classUnsupported) {status="BLOCKED";message=blockMessage("EO_CLASS_UNSUPPORTED",snapshot);}
         else if(paused) {status="PAUSED";message="此目标已暂停自动追踪";}
-        else if(block!=null) {status="EO_RESULT_UNKNOWN".equals(block)?"LOST":"BLOCKED";message=blockMessage(block);}
+        else if(block!=null) {status="BLOCKED";message=blockMessage(block,snapshot);}
         else if(task!=null && "FAILED".equals(text(task,"status"))) {status="FAILED";message="上次跟踪明确失败，需要人工决定是否重试";}
         else if(!policy.enabledFor(snapshot)) {status="DISABLED";message="当前来源模式的自动追踪未启用";}
         else if(!demand.isEmpty()) {status="WAITING_DEVICE";message="存在观察需求，等待后台调度可用设备";}
         else {status=task==null?"IDLE":"ENDED";message="当前没有自动观察需求";}
-        if(operate) {
+        // An unsupported idle target has no automatic tracking to pause. Keep
+        // stop controls when an existing task still occupies the device.
+        if(operate && (!classUnsupported || open || "EO_RESULT_UNKNOWN".equals(block))) {
             if(paused) actions.add("RESUME"); else actions.add("PAUSE");
             if(paused && open && "OPEN".equals(text(task,"status"))) actions.add("PAUSE");
             if(paused && !open && "EO_RESULT_UNKNOWN".equals(block)) actions.add("PAUSE");
@@ -133,10 +137,15 @@ public class EoTrackingStatusService {
         return new TrackingStatus(target,status,message,policy.enabledFor(snapshot),paused,demand,dto,List.copyOf(actions));
     }
     public static String blockMessage(String block) {
+        return blockMessage(block,Map.of());
+    }
+    public static String blockMessage(String block,Map<String,Object> snapshot) {
         return switch(block) {
             case "TARGET_POSITION_UNAVAILABLE" -> "当前没有可用位置，不能引导光电";
             case "TARGET_POSITION_STALE" -> "目标位置已过期或轨迹不可用，不能以失联推断飞离";
-            case "EO_CLASS_UNSUPPORTED" -> "当前目标类别缺少光电引导协议，不能猜测为无人机";
+            case "EO_CLASS_UNSUPPORTED" -> "BALLOON".equals(text(snapshot,"subtype")) || "BALLOON".equals(text(snapshot,"object_type_code"))
+                    ? "暂未接入气球自动追踪，暂无该目标的跟踪画面。"
+                    : "暂未接入此类目标的自动追踪，暂无该目标的跟踪画面。";
             case "EO_RESULT_UNKNOWN" -> "历史指令曾下发但结果未知，保留设备占用；请暂停并核查停止回执";
             default -> "目标数据模式或范围不可用";
         };

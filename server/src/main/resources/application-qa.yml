@@ -14,9 +14,9 @@ app:
     rolling-enabled: true
   notifications:
     transport: simulator
-  # QA 视频只在显式设置 APP_VIDEO_QA_ENABLED=true 时开放；播放仍经平台鉴权代理。
+  # 本地 QA 视频默认开放，可显式关闭；播放仍经平台鉴权代理。
   video:
-    qa-enabled: ${APP_VIDEO_QA_ENABLED:false}
+    qa-enabled: ${APP_VIDEO_QA_ENABLED:true}
     media-api-origin: ${APP_VIDEO_MEDIA_API_ORIGIN:http://127.0.0.1:9997}
     media-hls-origin: ${APP_VIDEO_MEDIA_HLS_ORIGIN:http://127.0.0.1:8888}
     media-username: ${APP_VIDEO_MEDIA_USERNAME:qa-platform}

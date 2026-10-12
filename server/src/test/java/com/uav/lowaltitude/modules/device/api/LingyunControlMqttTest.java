@@ -128,7 +128,10 @@ class LingyunControlMqttTest {
     }
 
     @Test void decoyCommandSucceedsOnMatchingDeviceAndDoesNotWriteFusionInbox() {
-        Binding decoy = register("dec");
+        // Existing decoy protocol history remains supported; new registration is retired.
+        Binding decoy = mqtt.binding(mqtt.register(new Registration(LingyunEnvelope.PROTOCOL, brokerId,
+                "fixture-provider", "ext-dec", "dec", "replay", org, district,
+                "P5-DEC-" + key(), "Historical decoy", null, null, null), clock.nowMillis()), false);
         online(decoy);
         String ok = control.enqueue(decoy.opsDeviceId(), key(), "AUTH-DEC", 1, 50002, Map.of("direction", 0), "开启诱骗方向驱离");
         swallowOutbox(ok);
@@ -236,7 +239,7 @@ class LingyunControlMqttTest {
                 brokerId, radar.providerCode() + "-other", radar.externalDeviceId(), "radar", "replay", org, district,
                 "P5-OTHER-" + key(), "同编号不同厂商设备", null, null, null), key()), false);
         Binding otherType = mqtt.binding(configuration.register(new Registration(LingyunEnvelope.PROTOCOL,
-                brokerId, radar.providerCode(), radar.externalDeviceId(), "ifr", "replay", org, district,
+                brokerId, radar.providerCode(), radar.externalDeviceId(), "tdoa", "replay", org, district,
                 "P5-TYPE-" + key(), "同编号不同类型设备", null, null, null), key()), false);
         AtomicInteger seen = new AtomicInteger();
         AtomicReference<String> msgNo = new AtomicReference<>();

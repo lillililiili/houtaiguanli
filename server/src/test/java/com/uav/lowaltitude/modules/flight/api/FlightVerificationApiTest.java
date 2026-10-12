@@ -206,7 +206,7 @@ class FlightVerificationApiTest {
     private void mockScheduledDevice(String device,boolean abnormal,java.util.List<com.uav.lowaltitude.modules.device.application.DeviceService.Incident> incidents){
         long now=System.currentTimeMillis();
         var row=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(device,"隔离测试设备",true,java.math.BigDecimal.ONE,"ONLINE",abnormal?"BAD":"GOOD",now,now,abnormal,true,incidents);
-        var result=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(planId,abnormal?"AUTO_DEVICE_ABNORMAL":"SUSPECTED_NOT_TAKEN_OFF","隔离设备事实",now,java.math.BigDecimal.TEN,true,0,java.util.List.of(row),false);
+        var result=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(planId,abnormal?"AUTO_DEVICE_ABNORMAL":"SUSPECTED_NOT_TAKEN_OFF","隔离设备事实",now,"DEVICE_SCAN_COVERAGE",true,0,0,java.util.List.of(row),false);
         org.mockito.Mockito.doReturn(result).when(checks).scheduled(org.mockito.ArgumentMatchers.argThat(p->p!=null&&planId.equals(p.planId())));
     }
     @Test void executionFactsAreIdempotentVersionedAndModeIsolated() throws Exception {

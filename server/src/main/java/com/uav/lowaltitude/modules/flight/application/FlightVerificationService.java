@@ -84,7 +84,7 @@ public class FlightVerificationService {
         var check=deviceChecks.read(planId);
         var actor=AuthContext.require();
         StringBuilder evidence=new StringBuilder("系统检查时间：").append(displayTime(check.checkedAt()))
-            .append("；航线周边 ").append(check.nearbyMeters()).append(" 米；检查 ").append(check.rows().size()).append(" 台设备。");
+            .append("；按设备扫描范围与航线相交检查 ").append(check.rows().size()).append(" 台设备。");
         if(check.mqttSimulation())evidence.append("\n数据来源：本地 MQTT 模拟设备，不是现场监测结果。");
         for(var row:check.rows()) {
             evidence.append("\n").append(row.name()).append(row.simulated()?"（演示设备）":"")
@@ -96,6 +96,7 @@ public class FlightVerificationService {
         }
         if(!check.complete())evidence.append("\n检查信息不完整，不能据此排除设备异常。");
         if(check.uncheckedLocations()>0)evidence.append("\n另有 ").append(check.uncheckedLocations()).append(" 台设备的位置无法判断。");
+        if(check.uncheckedCoverage()>0)evidence.append("\n另有 ").append(check.uncheckedCoverage()).append(" 台设备的扫描覆盖关系无法判断。");
         Verification record=new Verification(UUID.randomUUID().toString(),plan.planId(),previous+1,check.conclusion(),
             "UNKNOWN",evidence.toString(),check.message(),actor.userId(),actor.name(),clock.nowMillis());
         records.insert(record);audit("plan_device_checked",record.verificationId(),"plan_id="+plan.planId()+"; conclusion="+record.conclusion());

@@ -51,7 +51,7 @@ public class DeviceCommandController {
         if (request == null) request = new ControlRequest(null, null, null, null, null);
         String id = control.enqueue(deviceId, idempotencyKey, request.authorizationId(), request.operationType(),
                 request.operationCmd(), request.operationParams(), request.reason());
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.ok(service.command(id)));
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.ok(service.submittedCommand(id)));
     }
 
     @PostMapping("/devices/{deviceId}/commands/countermeasure-4ch")
@@ -62,7 +62,7 @@ public class DeviceCommandController {
         if (request == null) request = new FourChRequest(null, null, null, null, null);
         String id = countermeasure.enqueue(deviceId, idempotencyKey, request.authorizationId(), request.action(),
                 request.channel(), request.mask(), request.reason());
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.ok(service.command(id)));
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.ok(service.submittedCommand(id)));
     }
 
     @PostMapping("/devices/{deviceId}/commands/emergency-stop")

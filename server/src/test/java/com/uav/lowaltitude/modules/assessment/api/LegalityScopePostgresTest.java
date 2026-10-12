@@ -39,6 +39,9 @@ class LegalityScopePostgresTest {
     @Test void objectTypeFilterKeepsOnlyConfirmedUavTargetsAndCountsSameScope() throws Exception {
         fixture.objectTypeFilterKeepsOnlyConfirmedUavTargetsAndCountsSameScope();
     }
+    @Test void latestSelectionKeepsTieBreakAndDoesNotFallBackAcrossFilters() throws Exception {
+        fixture.latestSelectionKeepsTieBreakAndDoesNotFallBackAcrossFilters();
+    }
     @Test void stableTargetOrderKeepsPagesAcrossReevaluationAndPreservesLatestFacts() throws Exception {
         fixture.stableTargetOrderKeepsPagesAcrossReevaluationAndPreservesLatestFacts();
     }

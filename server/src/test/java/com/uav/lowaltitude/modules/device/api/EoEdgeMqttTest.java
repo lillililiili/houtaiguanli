@@ -226,6 +226,25 @@ class EoEdgeMqttTest {
                 Long.class, taskId)).isOne();
     }
 
+    @Test void failureAfterSuccessfulStartNeedsANewerSuccessfulTrackingReport() {
+        String task=openTask("SENT");
+        long first=1731731306000L;
+        receive(beginReport(binding,task,200,first,"drone"),191,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isTrue();
+        receive(beginReport(binding,task,400,first+2000,"drone"),192,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isFalse();
+        assertThat(edges.command(String.valueOf(edges.task(task).get("begin_command_id"))).get("status")).isEqualTo("SUCCEEDED");
+        // Delayed success and a normal heartbeat do not erase a newer tracking failure.
+        receive(beginReport(binding,task,200,first+1000,"drone"),193,false);
+        receive(heartbeat(binding,1,task),194,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isFalse();
+        receive(beginReport(binding,task,200,first+3000,"drone"),195,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isTrue();
+        receive(beginReport(binding,task,400,first+2000,"drone"),196,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isTrue();
+        assertThat(((Number)edges.task(task).get("last_failure_observed_at")).longValue()).isEqualTo(first+2000);
+    }
+
     @Test void lateBeginReceiptReconcilesTimeoutWithoutCreatingAnotherTask() {
         String taskId=openTask("SENT");
         String command=String.valueOf(edges.task(taskId).get("begin_command_id"));

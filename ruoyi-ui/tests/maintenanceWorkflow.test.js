@@ -41,4 +41,10 @@ describe('运维状态由后端驱动', () => {
     deviceMaintenanceApi.workflow.mockResolvedValue(data('A')); await mount(); await model.act('COMPLETE', { note: '完成' });
     expect(deviceMaintenanceApi.act).not.toHaveBeenCalled();
   });
+  it('范围撤销清空旧事实；临时网络故障保留快照但禁止操作', async () => {
+    deviceMaintenanceApi.workflow.mockResolvedValueOnce(data('A')).mockRejectedValueOnce(new Error('连接中断')).mockRejectedValueOnce(Object.assign(new Error('无权查看'), { status: 403 }));
+    await mount(); await model.load();
+    expect(model.workflow.value.task.task_id).toBe('A'); expect(model.can('START')).toBe(false);
+    await model.load(); expect(model.workflow.value).toBeNull();
+  });
 });

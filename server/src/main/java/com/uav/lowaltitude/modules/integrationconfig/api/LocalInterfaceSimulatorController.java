@@ -16,6 +16,8 @@ public class LocalInterfaceSimulatorController {
  @org.springframework.beans.factory.annotation.Autowired private com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport transport;
  public LocalInterfaceSimulatorController(LocalInterfaceSimulatorService service,LocalObservationSimulatorService observations,LocalInterfaceReceiptService receipts,LocalRouteInputService routes){this.service=service;this.observations=observations;this.receipts=receipts;this.routes=routes;}
  @GetMapping("/context") public ApiResponse<Context> context(){return ApiResponse.ok(service.context().withReceiverMessages(transport.pending()));}
+ @GetMapping("/session") public ApiResponse<java.util.Map<String,Boolean>> session(){service.checkSession();return ApiResponse.ok(java.util.Map.of("available",true));}
+ @GetMapping("/receiver-context") public ApiResponse<java.util.Map<String,java.util.List<Message>>> receiverContext(){service.checkSession();return ApiResponse.ok(java.util.Map.of("receiver_messages",transport.receiverPending()));}
  @PostMapping("/plans") public ApiResponse<Message> plan(@Valid @RequestBody PlanInput input){return ApiResponse.ok(service.plan(input));}
  @PostMapping("/routes") public ApiResponse<Message> route(@RequestBody(required=false) String input,@RequestHeader(name="Idempotency-Key",required=false) String key){return ApiResponse.ok(routes.create(input,key));}
  @GetMapping("/plan-options") public ApiResponse<com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Options> planOptions(){return ApiResponse.ok(service.planOptions());}

@@ -112,15 +112,7 @@ public class DeviceService {
     }
 
     public DeviceOverview overview(Boolean enabled) {
-        access.requireOverviewRead();
-        Map<String, Object> row = repository.overview(null, false, enabled);
-        int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
-        String mode = live == 0 ? "mock" : live == total ? "live" : "mixed";
-        return new DeviceOverview(number(row, "total"), number(row, "online"), number(row, "offline"),
-                number(row, "abnormal"), number(row, "unknown_count"), number(row, "alarm"),
-                number(row, "vendor_count"), number(row, "model_count"),
-                groups(repository.overviewGroups("channel", false, enabled)), groups(repository.overviewGroups("type", false, enabled)),
-                mode, simulated == total);
+        return filteredOverview(new DeviceFilter(null, null, null, null, null, null, enabled, false));
     }
 
     public DeviceOverview formalOverview() {
@@ -133,12 +125,7 @@ public class DeviceService {
      * （总数 0）会被标成"模拟数据"（ZT-17）。大屏统计里的模拟设备台数 = statisticsOverview() 台数减去这里的台数。
      */
     public DeviceOverview formalOverview(Boolean enabled) {
-        access.requireOverviewRead();
-        Map<String, Object> row = repository.overview(null, true, enabled);
-        return new DeviceOverview(number(row, "total"), number(row, "online"), number(row, "offline"), number(row, "abnormal"),
-                number(row, "unknown_count"), number(row, "alarm"), number(row, "vendor_count"), number(row, "model_count"),
-                groups(repository.overviewGroups("channel", true, enabled)), groups(repository.overviewGroups("type", true, enabled)),
-                "live", false);
+        return filteredOverview(new DeviceFilter(null, null, null, null, null, null, enabled, true));
     }
 
     public DeviceOverview statisticsOverview() {
@@ -147,27 +134,31 @@ public class DeviceService {
 
     /**
      * 统计口径的设备台数（大屏、运行统计，见 StatisticsScope）：正式接入设备加设备模拟器的设备，
-     * 不含系统自带的演示样例设备和后台自带的本机模拟设备；正式环境与 formalOverview() 相同。
+     * 包含明确登记且已上报的本机 QA 协议模拟设备，不含系统自带的演示样例；正式环境与 formalOverview() 相同。
      * 一台都没有时来源记 live，免得空库被标成“模拟数据”；其中设备模拟器的台数由调用方与 formalOverview() 相减得出。
      */
     public DeviceOverview statisticsOverview(Boolean enabled) {
+        return filteredOverview(new DeviceFilter(null, null, null, null, null, null, enabled, false, true));
+    }
+
+    /** Lists and aggregates share every filter, including source eligibility and current connectivity. */
+    public DeviceOverview filteredOverview(DeviceFilter filter) {
         access.requireOverviewRead();
-        Map<String, Object> row = repository.overview(null, DeviceRepository.CountScope.STATISTICS, enabled);
+        DeviceQuery query = query(filter);
+        Map<String, Object> row = repository.overview(null, query);
         int total = number(row, "total"), live = number(row, "live_count"), simulated = number(row, "simulated_count");
-        String mode = total == 0 || live == total ? "live" : live == 0 ? "replay" : "mixed";
+        String mode = total == 0 || live == total ? "live" : live == 0 ? (query.statisticsScope() ? "replay" : "mock") : "mixed";
         return new DeviceOverview(total, number(row, "online"), number(row, "offline"), number(row, "abnormal"),
                 number(row, "unknown_count"), number(row, "alarm"), number(row, "vendor_count"), number(row, "model_count"),
-                groups(repository.overviewGroups("channel", DeviceRepository.CountScope.STATISTICS, enabled)),
-                groups(repository.overviewGroups("type", DeviceRepository.CountScope.STATISTICS, enabled)),
+                groups(repository.overviewGroups("channel", query)), groups(repository.overviewGroups("type", query)),
                 mode, total > 0 && simulated == total);
     }
 
-    /** 大屏地图点：只返回有经纬度的启用设备；非 WGS-84 仍带回坐标系，由调用方决定是否绘制。 */
-    public List<DeviceMapMarker> mapMarkers(int limit) {
-        access.requireMonitoringRead();
-        int safe = Math.min(Math.max(limit, 1), 100);
+    /** 大屏地图点：返回授权范围内全部有经纬度的启用设备；非 WGS-84 由调用方决定是否绘制。 */
+    public List<DeviceMapMarker> mapMarkers() {
+        access.requireDevicesRead();
         List<DeviceMapMarker> markers = new ArrayList<>();
-        for (Map<String, Object> row : repository.listForTree(query(new DeviceFilter(null, null, null, null, null, null, true, false)), safe)) {
+        for (Map<String, Object> row : repository.listForMap(query(new DeviceFilter(null, null, null, null, null, null, true, false, true)))) {
             DeviceMapMarker marker = marker(row);
             if (marker != null) markers.add(marker);
         }
@@ -175,11 +166,17 @@ public class DeviceService {
     }
 
     public DeviceTree tree(DeviceFilter filter) {
+        return tree(filter, 1, 500);
+    }
+
+    public DeviceTree tree(DeviceFilter filter, int page, int size) {
         access.requireMonitoringRead();
         DeviceQuery query = query(filter);
+        int safeSize = Math.min(Math.max(size, 1), 500);
+        int offset = (Math.max(page, 1) - 1) * safeSize;
         long total = repository.count(query);
-        List<DeviceSummary> items = repository.listForTree(query, 500).stream().map(this::summary).toList();
-        return new DeviceTree(items, total, total > items.size());
+        List<DeviceSummary> items = repository.listForTree(query, offset, safeSize).stream().map(this::summary).toList();
+        return new DeviceTree(items, total, total > offset + items.size());
     }
 
     public DeviceDetail detail(String id) {
@@ -218,11 +215,21 @@ public class DeviceService {
                 metrics(text(row,"metrics_json")), bool(row,"simulated"));
             return new PlanInspectionDevice(summary(row), decimal(row,"longitude"), decimal(row,"latitude"),
                 text(row,"coordinate_system"), state,
-                repository.planInspectionIncidents(id,org,district).stream().map(this::incident).toList());
+                repository.planInspectionIncidents(id,org,district).stream().map(this::incident).toList(),
+                new PlanHealthEvidence(longValue(row,"health_observed_at"),longValue(row,"alarm_observed_at"),
+                    planEvidenceSourceMatches(row,"health"),planEvidenceSourceMatches(row,"alarm"),
+                    bool(row,"mqtt_heartbeat"),!Boolean.FALSE.equals(row.get("source_enabled"))));
         }).toList();
     }
+    private static boolean planEvidenceSourceMatches(Map<String,Object> row,String prefix) {
+        return java.util.Objects.equals(row.get("source_id"),row.get(prefix+"_source_id"))
+            && java.util.Objects.equals(row.get("source_mode"),row.get(prefix+"_source_mode"))
+            && java.util.Objects.equals(row.get("simulated"),row.get(prefix+"_simulated"));
+    }
     public record PlanInspectionDevice(DeviceSummary device, BigDecimal longitude, BigDecimal latitude,
-            String coordinateSystem, DeviceState state, List<Incident> incidents) { }
+            String coordinateSystem, DeviceState state, List<Incident> incidents,PlanHealthEvidence healthEvidence) { }
+    public record PlanHealthEvidence(Long healthObservedAt,Long alarmObservedAt,boolean healthSourceMatches,
+            boolean alarmSourceMatches,boolean mqttHeartbeat,boolean sourceEnabled) { }
 
     public StateHistory history(String id, String metricCode, Long from, Long to, int limit) {
         access.requireMonitoringRead();
@@ -350,6 +357,7 @@ public class DeviceService {
         Map<String, Object> device = requiredDevice(id);
         if (enabled && "weather_sensor".equals(text(device, "device_type_code")))
             throw bad("PROTOCOL_UNSUPPORTED", "天气传感器协议尚未接入，不能启用");
+        if (enabled) DeviceCatalogTypes.requireRegistrable(text(device, "device_type_code"));
         long now = clock.nowMillis();
         if (repository.setEnabled(id, version, enabled, now) != 1) throw conflict();
         tcpScopes.enabled(id,enabled,now);
@@ -434,6 +442,18 @@ public class DeviceService {
         return detail(id);
     }
 
+    /** Same adapter contract used by createReboot; a UI action must not invent protocol capability. */
+    boolean canRebootIncident(String deviceId) {
+        Map<String,Object> device=requiredDevice(deviceId);
+        if(!bool(device,"enabled")||!"ONLINE".equals(text(device,"connectivity"))||repository.hasActiveWork(deviceId))return false;
+        String mode=text(device,"source_mode");
+        if(mode==null)return false;
+        try {
+            return adapterRegistry.find(SourceMode.valueOf(mode),text(device,"protocol_code"))
+                    .map(DeviceAdapterPort::supportsReboot).orElse(false);
+        } catch(IllegalArgumentException ignored) { return false; }
+    }
+
     @Transactional
     public Command createReboot(String deviceId, String idempotencyKey, String reason) {
         AuthUser user = access.requireMonitoringOperate();
@@ -441,6 +461,8 @@ public class DeviceService {
             throw bad("VALIDATION_ERROR", "Idempotency-Key 必填且最长 96 个字符");
         if (reason == null || reason.trim().length() < 2 || reason.trim().length() > 500)
             throw bad("VALIDATION_ERROR", "重启原因长度必须为 2–500 个字符");
+        requiredDevice(deviceId);
+        repository.lockForRecovery(deviceId);
         Map<String, Object> device = requiredDevice(deviceId);
         if (!bool(device, "enabled") || !"ONLINE".equals(text(device, "connectivity")))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NOT_OPERABLE", "仅已启用且在线的设备可发起重启");
@@ -458,6 +480,8 @@ public class DeviceService {
                 throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "同一幂等键对应了不同请求");
             return requiredCommand(text(replay, "response_body"));
         }
+        if(repository.hasActiveWork(deviceId))
+            throw new ApiException(HttpStatus.CONFLICT,"DEVICE_BUSY","设备仍有未结束的操作或停止待确认，不能重启");
         long now = clock.nowMillis();
         String id = UUID.randomUUID().toString();
         Map<String, Object> values = new HashMap<>();
@@ -487,6 +511,15 @@ public class DeviceService {
         return requiredCommand(id);
     }
 
+    /** Return the submission result under the same shared device permission as enqueue. */
+    public Command submittedCommand(String id) {
+        var actor = access.requireDevicesOperate();
+        var row = repository.findCommand(id);
+        if (row == null || !actor.userId().equals(text(row, "requested_by")))
+            throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_COMMAND_NOT_FOUND", "设备指令不存在");
+        return requiredCommand(id);
+    }
+
     private Command requiredCommand(String id) {
         Map<String, Object> r = repository.findCommand(id);
         if (r == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_COMMAND_NOT_FOUND", "设备指令不存在");
@@ -502,13 +535,15 @@ public class DeviceService {
 
     private DeviceQuery query(DeviceFilter f) {
         if (f == null) return new DeviceQuery(null, null, null, null, null, null, null, false);
+        if (f.formalOnly() && f.statisticsScope())
+            throw bad("VALIDATION_ERROR", "formal_only 与 statistics_scope 只能选一个");
         String keyword = blankToNull(f.keyword());
         if (keyword != null && keyword.length() > 100) throw bad("VALIDATION_ERROR", "keyword 最长 100 个字符");
         String connectivity = blankToNull(f.connectivity());
         if (connectivity != null && !List.of("UNKNOWN", "ONLINE", "OFFLINE", "ABNORMAL").contains(connectivity))
             throw bad("VALIDATION_ERROR", "connectivity 不在允许范围内");
         return new DeviceQuery(keyword, blankToNull(f.typeCode()), blankToNull(f.channel()), blankToNull(f.region()),
-                blankToNull(f.vendor()), connectivity, f.enabled(), f.formalOnly());
+                blankToNull(f.vendor()), connectivity, f.enabled(), f.formalOnly(), f.statisticsScope());
     }
 
     private static void rejectWeatherMutation(DeviceMutation m) {
@@ -517,6 +552,7 @@ public class DeviceService {
     }
 
     private void validate(DeviceMutation m) {
+        DeviceCatalogTypes.requireRegistrable(m.deviceTypeCode());
         if (m == null || blankToNull(m.deviceNo()) == null || blankToNull(m.name()) == null
                 || blankToNull(m.deviceTypeName()) == null || blankToNull(m.channel()) == null)
             throw bad("VALIDATION_ERROR", "设备编号、名称、类型名称和接入通道必填");
@@ -662,7 +698,8 @@ public class DeviceService {
                 text(r, "protocol_code"), text(r, "protocol_version"),
                 decimal(r, "longitude"), decimal(r, "latitude"), text(r, "coordinate_system"),
                 text(r, "fusion_device_id"), coverage(r),text(r,"owner_org_id"),text(r,"district_id"),
-                reportLag, timeUntrusted(reportLag, fusionProperties.getTimeUntrustedLagMillis()));
+                reportLag, timeUntrusted(reportLag, fusionProperties.getTimeUntrustedLagMillis()),
+                longValue(r, "observed_at"), longValue(r, "received_at"), longValue(r, "state_version"));
     }
 
     /**
@@ -816,7 +853,11 @@ public class DeviceService {
     private static BigDecimal decimal(Map<String, Object> r, String key) { Object v = r.get(key); return v instanceof BigDecimal b ? b : v instanceof Number n ? BigDecimal.valueOf(n.doubleValue()) : null; }
 
     public record DeviceFilter(String keyword, String typeCode, String channel, String region,
-                               String vendor, String connectivity, Boolean enabled, boolean formalOnly) {
+                               String vendor, String connectivity, Boolean enabled, boolean formalOnly, boolean statisticsScope) {
+        public DeviceFilter(String keyword, String typeCode, String channel, String region,
+                            String vendor, String connectivity, Boolean enabled, boolean formalOnly) {
+            this(keyword, typeCode, channel, region, vendor, connectivity, enabled, formalOnly, false);
+        }
         public DeviceFilter(String keyword, String typeCode, String channel, String region,
                             String vendor, String connectivity, Boolean enabled) {
             this(keyword, typeCode, channel, region, vendor, connectivity, enabled, false);
@@ -842,7 +883,7 @@ public class DeviceService {
                                 String protocolCode, String protocolVersion,
                                 BigDecimal longitude, BigDecimal latitude, String coordinateSystem,
                                 String fusionDeviceId, Coverage coverage, String ownerOrgId, String districtId,
-                                Long reportLagMs, boolean timeUntrusted) { }
+                                Long reportLagMs, boolean timeUntrusted, Long observedAt, Long receivedAt, Long stateVersion) { }
     public record Coverage(String kind, String status, BigDecimal radiusM, BigDecimal rangeM,
                            BigDecimal azimuthDeg, BigDecimal fovDeg, String availabilityReason,
                            String sourceLabel, Long updatedAt, Long version) { }

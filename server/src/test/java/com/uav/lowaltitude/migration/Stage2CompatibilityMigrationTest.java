@@ -96,7 +96,7 @@ class Stage2CompatibilityMigrationTest {
     }
 
     @Test
-    void addsActionPermissionCatalogRowsWithoutGrantingThem() {
+    void actionCatalogReadGrantsBelongOnlyToFixedBackendIdentity() {
         assertThat(jdbc.queryForList("""
                 select permission_code from app_permission
                 where permission_code in ('device:read', 'target:read', 'alarm:read')
@@ -105,7 +105,9 @@ class Stage2CompatibilityMigrationTest {
         assertThat(jdbc.queryForObject("""
                 select count(*) from app_role_permission
                 where permission_code in ('device:read', 'target:read', 'alarm:read')
+                  and role_code <> 'ROLE-BACKEND'
                 """, Integer.class)).isZero();
+        com.uav.lowaltitude.testfixture.BackendPermissionAssertions.assertFixedGrants(jdbc);
     }
 
     @Test

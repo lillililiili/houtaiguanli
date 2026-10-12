@@ -43,6 +43,8 @@ public class DeviceRepository {
     private static final String DEVICE_SELECT = """
             SELECT d.*, %s AS connectivity, s.work_state_code, s.has_alarm, s.health_code,
                    s.observed_at, s.received_at, s.last_heartbeat_at, s.metrics_json,
+                   s.health_observed_at,s.health_source_id,s.health_source_mode,s.health_simulated,
+                   s.alarm_observed_at,s.alarm_source_id,s.alarm_source_mode,s.alarm_simulated,
                    s.unknown_reason, s.version AS state_version,
                    src.source_code, src.name AS source_name, src.protocol_code, src.protocol_version,
                    src.allowed_cidrs, src.credential_ref AS source_credential_ref,
@@ -53,7 +55,8 @@ public class DeviceRepository {
                    sensing.version AS coverage_version, sensing.updated_at AS coverage_updated_at,
                    COALESCE(mqtt_binding.device_id, eo_binding.device_id, tcp_device.device_id) AS fusion_device_id,
                    mqtt_binding.last_sense_at AS sense_received_at, mqtt_binding.last_pt_time AS sense_observed_at,
-                   business_scope.owner_org_id,business_scope.district_id
+                   business_scope.owner_org_id,business_scope.district_id,
+                   (mqtt_binding.ops_device_id IS NOT NULL OR eo_binding.ops_device_id IS NOT NULL) AS mqtt_heartbeat
             FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id = d.device_id
             LEFT JOIN ops_integration_source src ON src.source_id=d.source_id
             LEFT JOIN device_sensing_profile sensing ON sensing.device_id=d.device_id
@@ -108,10 +111,21 @@ public class DeviceRepository {
     }
 
     public List<Map<String, Object>> listForTree(DeviceQuery query, int limit) {
+        return listForTree(query, 0, limit);
+    }
+
+    public List<Map<String, Object>> listForTree(DeviceQuery query, int offset, int limit) {
         SqlWhere where = where(query);
+        where.params.put("offset", offset);
         where.params.put("limit", limit);
         return named.queryForList(DEVICE_SELECT + where.sql
-                + " ORDER BY d.channel, d.device_type_name, d.device_no OFFSET 0 ROWS FETCH NEXT :limit ROWS ONLY", where.params);
+                + " ORDER BY d.channel, d.device_type_name, d.device_no, d.device_id OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY", where.params);
+    }
+
+    public List<Map<String, Object>> listForMap(DeviceQuery query) {
+        SqlWhere where = where(query);
+        return named.queryForList(DEVICE_SELECT + where.sql
+                + " AND d.longitude IS NOT NULL AND d.latitude IS NOT NULL ORDER BY d.device_id", where.params);
     }
 
     public Map<String, Object> find(String deviceId) {
@@ -120,6 +134,54 @@ public class DeviceRepository {
         List<Map<String, Object>> rows = named.queryForList(
                 DEVICE_SELECT + " WHERE d.device_id=:device_id AND d.deleted_at IS NULL" + deviceScope(params), params);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** Internal evaluator checks the frozen source tuple; public reads must keep using find. */
+    public Map<String,Object> findForRecovery(String deviceId) {
+        Map<String,Object> params=readParameters();
+        params.put("device_id",deviceId);
+        var rows=named.queryForList(DEVICE_SELECT+" WHERE d.device_id=:device_id AND d.deleted_at IS NULL",params);
+        return rows.isEmpty()?null:rows.get(0);
+    }
+
+    /** Shared order with ingestion and device work creation: catalog, state, then domain rows. */
+    public void lockForRecovery(String deviceId) {
+        jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE",deviceId);
+        jdbc.queryForList("SELECT device_id FROM ops_device_state WHERE device_id=? FOR UPDATE",deviceId);
+    }
+
+    /** Scheduled work skips a busy device; user actions retain the blocking, version-checked path above. */
+    public boolean tryLockForRecovery(String deviceId) {
+        if(jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE SKIP LOCKED",deviceId).isEmpty())return false;
+        var state=jdbc.queryForList("SELECT device_id FROM ops_device_state WHERE device_id=? FOR UPDATE SKIP LOCKED",deviceId);
+        return !state.isEmpty()||jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_state WHERE device_id=?",Long.class,deviceId)==0;
+    }
+
+    public List<Map<String,Object>> openIncidentsForRecovery(String deviceId,boolean lock) {
+        return jdbc.queryForList("SELECT * FROM device_incident WHERE device_id=? AND stage<>'RECOVERED'"
+                +" ORDER BY incident_id"+(lock?" FOR UPDATE":""),deviceId);
+    }
+
+    /** A v2 case freezes an incident's source; current device edits cannot rewrite that lineage. */
+    public boolean hasIncidentSourceConflict(String deviceId,String sourceMode,String sourceId,boolean simulated) {
+        return jdbc.queryForObject("""
+            SELECT COUNT(*) FROM device_incident i
+            JOIN ops_maintenance_incident l ON l.incident_id=i.incident_id
+            JOIN ops_device_maintenance_task t ON t.task_id=l.task_id
+            WHERE i.device_id=? AND i.stage<>'RECOVERED' AND t.workflow_version=2
+              AND (t.workflow_source_id IS DISTINCT FROM ? OR t.workflow_source_mode IS DISTINCT FROM ?
+                   OR t.simulated<>?)
+            """,Long.class,deviceId,sourceId,sourceMode,simulated)>0;
+    }
+
+    /** Read once under the device lock when several historical cases share the same device. */
+    public List<Map<String,Object>> incidentRecoverySources(String deviceId) {
+        return jdbc.queryForList("""
+            SELECT DISTINCT t.workflow_source_id AS source_id,t.workflow_source_mode AS source_mode,t.simulated
+            FROM device_incident i JOIN ops_maintenance_incident l ON l.incident_id=i.incident_id
+            JOIN ops_device_maintenance_task t ON t.task_id=l.task_id
+            WHERE i.device_id=? AND i.stage<>'RECOVERED' AND t.workflow_version=2
+            """,deviceId);
     }
 
     /** Internal plan inspection always has an explicit business tuple; never an unscoped device scan. */
@@ -263,14 +325,18 @@ public class DeviceRepository {
     }
 
     public Map<String, Object> overview(String ownerOrgId, CountScope scope, Boolean enabled) {
-        Map<String,Object> params=readParameters();
+        return overview(ownerOrgId, new DeviceQuery(null, null, null, null, null, null, enabled,
+                scope == CountScope.FORMAL, scope == CountScope.STATISTICS));
+    }
+
+    public Map<String, Object> overview(String ownerOrgId, DeviceQuery query) {
+        SqlWhere where = where(query);
+        Map<String,Object> params=where.params;
         String ownerFilter = "";
         if (ownerOrgId != null) {
             params.put("overview_org_id", ownerOrgId);
             ownerFilter = " AND EXISTS (SELECT 1 FROM device_business_scope selected_scope WHERE selected_scope.ops_device_id=d.device_id AND selected_scope.owner_org_id=:overview_org_id)";
         }
-        if (enabled != null) params.put("overview_enabled", enabled);
-        String enabledFilter = enabled == null ? "" : " AND d.enabled=:overview_enabled";
         return named.queryForMap("""
                 SELECT COUNT(*) AS total, %s,
                        SUM(CASE WHEN s.has_alarm=TRUE THEN 1 ELSE 0 END) AS alarm,
@@ -279,8 +345,7 @@ public class DeviceRepository {
                        ,SUM(CASE WHEN d.source_mode='live' THEN 1 ELSE 0 END) AS live_count
                        ,SUM(CASE WHEN d.simulated=TRUE THEN 1 ELSE 0 END) AS simulated_count
                 FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id
-                """.formatted(CONNECTIVITY_COUNTS) + " WHERE d.deleted_at IS NULL" + deviceScope(params) + ownerFilter
-                + filter(scope) + enabledFilter,params);
+                """.formatted(CONNECTIVITY_COUNTS) + where.sql + ownerFilter,params);
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn) {
@@ -301,15 +366,16 @@ public class DeviceRepository {
     }
 
     public List<Map<String, Object>> overviewGroups(String groupColumn, CountScope scope, Boolean enabled) {
-        Map<String,Object> params=readParameters();
+        return overviewGroups(groupColumn, new DeviceQuery(null, null, null, null, null, null, enabled,
+                scope == CountScope.FORMAL, scope == CountScope.STATISTICS));
+    }
+
+    public List<Map<String, Object>> overviewGroups(String groupColumn, DeviceQuery query) {
+        SqlWhere where = where(query);
         String safe = "channel".equals(groupColumn) ? "d.channel" : "d.device_type_name";
-        if (enabled != null) params.put("overview_group_enabled", enabled);
-        StringBuilder where = new StringBuilder(" WHERE d.deleted_at IS NULL");
-        where.append(filter(scope));
-        if (enabled != null) where.append(" AND d.enabled=:overview_group_enabled");
         return named.queryForList("SELECT " + safe + " AS group_name, COUNT(*) AS total, " + CONNECTIVITY_COUNTS
-                + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id" + where + deviceScope(params)
-                + " GROUP BY " + safe + " ORDER BY " + safe,params);
+                + "FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id" + where.sql
+                + " GROUP BY " + safe + " ORDER BY " + safe,where.params);
     }
 
     public void insertDevice(Map<String, Object> values) {
@@ -414,6 +480,7 @@ public class DeviceRepository {
     public List<Map<String, Object>> incidents(String deviceId, String severity, String stage, int offset, int size) {
         Map<String, Object> p = new HashMap<>();
         StringBuilder sql = new StringBuilder("SELECT i.*, d.device_no, d.name AS device_name FROM device_incident i JOIN ops_device d ON d.device_id=i.device_id WHERE d.deleted_at IS NULL");
+        sql.append(deviceScope(p));
         add(sql, p, "i.device_id", "device_id", deviceId);
         add(sql, p, "i.severity", "severity", severity);
         add(sql, p, "i.stage", "stage", stage);
@@ -425,6 +492,7 @@ public class DeviceRepository {
     public long countIncidents(String deviceId, String severity, String stage) {
         Map<String, Object> p = new HashMap<>();
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM device_incident i JOIN ops_device d ON d.device_id=i.device_id WHERE d.deleted_at IS NULL");
+        sql.append(deviceScope(p));
         add(sql, p, "i.device_id", "device_id", deviceId);
         add(sql, p, "i.severity", "severity", severity);
         add(sql, p, "i.stage", "stage", stage);
@@ -565,14 +633,6 @@ public class DeviceRepository {
                 receiptId, commandId, inboxId, "COMPLETED", resultCode, now, now, payload);
     }
 
-    public void markDeviceRecovered(String deviceId, long now) {
-        jdbc.update("""
-                UPDATE ops_device_state SET connectivity='ONLINE', has_alarm=FALSE, health_code='GOOD',
-                    observed_at=?, received_at=?, last_heartbeat_at=?, unknown_reason=NULL, version=version+1
-                WHERE device_id=?
-                """, now, now, now, deviceId);
-    }
-
     public Map<String, Object> findIncident(String incidentId) {
         List<Map<String, Object>> rows = jdbc.queryForList("""
                 SELECT i.*, d.device_no, d.name AS device_name
@@ -582,9 +642,9 @@ public class DeviceRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    /** 锁状态行串行化建单与心跳更新；从未收到心跳、停用设备都不视作离线异常。 */
+    /** Catalog before state, consistent with recovery and ingress. Never-seen or disabled devices are not offline incidents. */
     public List<Map<String, Object>> lockMqttConnectivity() {
-        return jdbc.queryForList("""
+        var candidates=jdbc.queryForList("""
                 SELECT s.device_id,s.connectivity,s.last_heartbeat_at,d.source_mode
                 FROM ops_device_state s JOIN ops_device d ON d.device_id=s.device_id
                 WHERE d.enabled=TRUE AND s.last_heartbeat_at IS NOT NULL
@@ -592,8 +652,17 @@ public class DeviceRepository {
                                WHERE b.ops_device_id=d.device_id AND m.enabled=TRUE)
                     OR EXISTS (SELECT 1 FROM eo_device_binding b JOIN mqtt_broker m ON m.broker_id=b.broker_id
                                WHERE b.ops_device_id=d.device_id AND m.enabled=TRUE))
-                ORDER BY s.device_id FOR UPDATE
+                ORDER BY s.device_id
                 """);
+        var locked=new java.util.ArrayList<Map<String,Object>>();
+        for(var row:candidates) {
+            String id=String.valueOf(row.get("device_id"));
+            lockForRecovery(id);
+            var current=findForRecovery(id);
+            if(current!=null&&Boolean.TRUE.equals(current.get("enabled"))&&current.get("last_heartbeat_at")!=null)
+                locked.add(current);
+        }
+        return locked;
     }
 
     public boolean openMqttIncident(String deviceId, long now, boolean simulated) {
@@ -631,6 +700,14 @@ public class DeviceRepository {
                 INSERT INTO device_recovery_check (check_id,incident_id,checked_by,checked_at,result,rule_version,state_snapshot,reason)
                 VALUES (?,?,?,?,?,?,?,?)
                 """, checkId, incidentId, checkedBy, checkedAt, result, ruleVersion, snapshot, reason);
+    }
+
+    public void insertSystemRecoveryCheck(String checkId,String incidentId,long checkedAt,String ruleVersion,
+                                          String snapshot,String reason) {
+        jdbc.update("""
+                INSERT INTO device_recovery_check(check_id,incident_id,checked_by,checked_at,result,rule_version,
+                    state_snapshot,reason,actor_type) VALUES (?,?,NULL,?,'PASS',?,?,?,'SYSTEM')
+                """,checkId,incidentId,checkedAt,ruleVersion,snapshot,reason);
     }
 
     public Map<String, Object> latestRecoveryCheck(String incidentId) {
@@ -688,13 +765,51 @@ public class DeviceRepository {
                 SELECT (SELECT COUNT(*) FROM device_command WHERE device_id=? AND status IN ('QUEUED','SENT','ACCEPTED'))
                      + (SELECT COUNT(*) FROM commission_task WHERE device_id=? AND status IN ('CREATED','CONNECTING','CONNECTED','READY','RUNNING'))
                      + (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING'))
-                """, Long.class, id, id, id) > 0;
+                     + (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
+                        ON a.authorization_id=r.authorization_id WHERE r.device_id=? AND a.status='EXECUTING')
+                     + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING')
+                     + (SELECT COUNT(*) FROM disposal_emergency_stop_device WHERE device_id=?
+                        AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED')
+                """, Long.class, id, id, id, id, id, id) > 0;
+    }
+
+    /** Recovery is not an idle-device check. Only confirmed, fresh AUTO tracking may continue during recovery. */
+    public boolean hasRecoveryBlockingWork(String id,long reportCutoff,long now) {
+        return Boolean.TRUE.equals(named.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM device_command WHERE device_id=:device
+                    AND status IN ('QUEUED','SENT','ACCEPTED'))
+                OR EXISTS (SELECT 1 FROM commission_task WHERE device_id=:device
+                    AND status IN ('CREATED','CONNECTING','CONNECTED','READY','RUNNING'))
+                OR EXISTS (SELECT 1 FROM disposal_device_run r JOIN disposal_authorization a
+                    ON a.authorization_id=r.authorization_id WHERE r.device_id=:device AND a.status='EXECUTING')
+                OR EXISTS (SELECT 1 FROM disposal_authorization WHERE device_id=:device AND status='EXECUTING')
+                OR EXISTS (SELECT 1 FROM disposal_emergency_stop_device WHERE device_id=:device
+                    AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED')
+                OR EXISTS (
+                    SELECT 1 FROM eo_tracking_task t JOIN ops_device d ON d.device_id=t.ops_device_id
+                    LEFT JOIN eo_device_binding b ON b.ops_device_id=d.device_id
+                    LEFT JOIN device_command bc ON bc.command_id=t.begin_command_id
+                    LEFT JOIN device_command ec ON ec.command_id=t.end_command_id
+                    WHERE t.ops_device_id=:device AND (
+                        (t.status IN ('OPEN','ENDING') AND NOT COALESCE(
+                            t.status='OPEN' AND t.origin='AUTO' AND t.end_command_id IS NULL AND t.ended_at IS NULL
+                            AND bc.status='SUCCEEDED' AND bc.command_type='EO_BEGIN_TRACK'
+                            AND bc.device_id=d.device_id AND bc.source_mode=d.source_mode AND bc.simulated=d.simulated
+                            AND b.ops_source_id=d.source_id AND b.source_mode=d.source_mode
+                            AND b.external_device_id=d.external_device_id
+                            AND t.last_report_at BETWEEN :cutoff AND :now
+                            AND t.last_report_observed_at BETWEEN :cutoff AND :now
+                            AND (t.last_failure_observed_at IS NULL OR t.last_report_observed_at>t.last_failure_observed_at)
+                            AND t.last_report_at>=t.created_at AND t.last_report_observed_at>=t.created_at,
+                            FALSE)) OR (
+                """ + EoEdgeRepository.UNCERTAIN + ")))",
+                Map.of("device",id,"cutoff",reportCutoff,"now",now),Boolean.class));
     }
 
     private SqlWhere where(DeviceQuery q) {
         Map<String, Object> p = readParameters();
         StringBuilder sql = new StringBuilder(" WHERE d.deleted_at IS NULL");
-        if (q.formalOnly()) sql.append(" AND d.source_mode='live' AND d.simulated=FALSE");
+        sql.append(filter(q.statisticsScope() ? CountScope.STATISTICS : CountScope.of(q.formalOnly())));
         sql.append(deviceScope(p));
         if (q.keyword != null && !q.keyword.isBlank()) {
             sql.append(" AND (LOWER(d.device_no) LIKE :keyword OR LOWER(d.name) LIKE :keyword)");
@@ -778,7 +893,11 @@ public class DeviceRepository {
     }
 
     public record DeviceQuery(String keyword, String typeCode, String channel, String region,
-                              String vendor, String connectivity, Boolean enabled, boolean formalOnly) {
+                              String vendor, String connectivity, Boolean enabled, boolean formalOnly, boolean statisticsScope) {
+        public DeviceQuery(String keyword, String typeCode, String channel, String region,
+                           String vendor, String connectivity, Boolean enabled, boolean formalOnly) {
+            this(keyword, typeCode, channel, region, vendor, connectivity, enabled, formalOnly, false);
+        }
     }
 
     private record SqlWhere(String sql, Map<String, Object> params) {

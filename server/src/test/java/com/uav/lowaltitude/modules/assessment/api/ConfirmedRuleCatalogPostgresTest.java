@@ -48,6 +48,8 @@ class ConfirmedRuleCatalogPostgresTest {
     private static final String LEGALITY = "legality-confirmed-20261008";
     private static final String REVISION = "legality-confirmed-20261008-r2";
     private static final String SPACE = "space-risk-confirmed-20261008";
+    private static final String CURRENT_LEGALITY = "legality-current-20261009";
+    private static final String CURRENT_SPACE = "space-current-20261009";
     private static final String HASH = "b6e07da1a820843ea2b3634fa64fe2cc08a043c3f4d9c7f8274c685506877566";
 
     @Autowired JdbcTemplate jdbc;
@@ -61,6 +63,28 @@ class ConfirmedRuleCatalogPostgresTest {
 
     @AfterAll static void closeDatabase() { DATABASE.close(); }
 
+    @Test void currentParametersAreConfirmedWithoutChangingValuesOrPublishedHistory() {
+        new LocalQaRuleCatalog(jdbc).run(new DefaultApplicationArguments(new String[0]));
+        for (var pair : Map.of("seed-stage7-rsv-1", "legality-current-20261009",
+                "space-risk-demo-v1", "space-current-20261009").entrySet()) {
+            String fields = "rule_code,param_key,value_text,value_type,unit";
+            var original = jdbc.queryForList("SELECT " + fields + " FROM rule_param WHERE rule_set_version_id=? ORDER BY rule_code,param_key", pair.getKey());
+            var confirmed = jdbc.queryForList("SELECT " + fields + " FROM rule_param WHERE rule_set_version_id=? ORDER BY rule_code,param_key", pair.getValue());
+            assertThat(original).isNotEmpty();
+            assertThat(confirmed).isEqualTo(original);
+            assertThat(jdbc.queryForObject("SELECT param_status FROM rule_set_version WHERE rule_set_version_id=?", String.class, pair.getKey())).isEqualTo("DEMO");
+            assertThat(jdbc.queryForObject("SELECT param_status FROM rule_set_version WHERE rule_set_version_id=?", String.class, pair.getValue())).isEqualTo("CONFIRMED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM rule_param WHERE rule_set_version_id=? AND param_status<>'CONFIRMED'", Long.class, pair.getValue())).isZero();
+            assertThat(jdbc.queryForList("SELECT v.rule_code,m.priority,m.enabled FROM rule_set_member m JOIN rule_version v USING(rule_version_id) WHERE m.rule_set_version_id=? ORDER BY v.rule_code", pair.getValue()))
+                    .isEqualTo(jdbc.queryForList("SELECT v.rule_code,m.priority,m.enabled FROM rule_set_member m JOIN rule_version v USING(rule_version_id) WHERE m.rule_set_version_id=? ORDER BY v.rule_code", pair.getKey()));
+            assertThat(jdbc.queryForObject("SELECT description FROM rule_set_version WHERE rule_set_version_id=?", String.class, pair.getValue()))
+                    .contains("2026-10-09", "4cec49368ba934683290bef91686d6227b6a4d94444f3e4aa194f653a34c5dd5", "不改变");
+            assertThatThrownBy(() -> jdbc.update("UPDATE rule_param SET value_text='999' WHERE rule_set_version_id=?", pair.getValue()))
+                    .isInstanceOf(DataIntegrityViolationException.class);
+        }
+        assertThat(jdbc.queryForObject("SELECT value_text FROM rule_param WHERE rule_set_version_id='legality-current-20261009' AND rule_code='C03' AND param_key='no_plan_status'", String.class)).isEqualTo("ILLEGAL");
+    }
+
     @Test void cleanInstallationPublishesOnlyConfigurationAndActivatesThroughExistingApi() throws Exception {
         for (String table : new String[]{"target", "flight_plan", "alarm", "flight_risk"}) {
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Long.class)).isZero();
@@ -71,15 +95,15 @@ class ConfirmedRuleCatalogPostgresTest {
         String actor = UUID.randomUUID().toString();
         String token = manager(actor);
         mvc.perform(get("/api/v1/rule-sets/LEGALITY-DEMO/versions").header("Authorization", "Bearer " + token))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[1].rule_set_version_id").value(LEGALITY))
-                .andExpect(jsonPath("$.data.items[1].activation_allowed").value(false))
-                .andExpect(jsonPath("$.data.items[1].activation_block_reason").value("版本已撤回，不能启用"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.rule_set_version_id=='" + LEGALITY + "')].activation_allowed").value(org.hamcrest.Matchers.contains(false)))
+                .andExpect(jsonPath("$.data.items[?(@.rule_set_version_id=='" + LEGALITY + "')].activation_block_reason").value(org.hamcrest.Matchers.contains("版本已撤回，不能启用")));
         mvc.perform(post("/api/v1/rule-sets/LEGALITY-DEMO/activate")
                         .header("Authorization", "Bearer " + token).header("Idempotency-Key", UUID.randomUUID().toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"rule_set_version_id\":\"" + LEGALITY + "\",\"note\":\"已撤回版本应阻断\",\"expected_version\":0}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("RULE_VERSION_NOT_PUBLISHED"));
-        for (var version : Map.of("LEGALITY-DEMO", REVISION, "SPACE-RISK-DEMO", SPACE).entrySet()) {
+        for (var version : Map.of("LEGALITY-DEMO", CURRENT_LEGALITY, "SPACE-RISK-DEMO", CURRENT_SPACE).entrySet()) {
             mvc.perform(get("/api/v1/rule-set-versions/" + version.getValue()).header("Authorization", "Bearer " + token))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.data.param_status").value("CONFIRMED"))
                     .andExpect(jsonPath("$.data.is_active").value(false));
@@ -131,9 +155,9 @@ class ConfirmedRuleCatalogPostgresTest {
             assertPublishedCatalog(old);
             if (previousName.equals("合法性研判演示规则集")) beforeHead.put("name", "合法性研判规则集");
             assertThat(old.queryForMap("SELECT * FROM rule_set WHERE rule_set_id=?", set)).isEqualTo(beforeHead);
-            assertThat(old.queryForList("SELECT * FROM rule_set_version WHERE rule_set_version_id NOT IN (?,?,?) ORDER BY rule_set_version_id", LEGALITY, REVISION, SPACE)).isEqualTo(oldVersions);
-            assertThat(old.queryForList("SELECT * FROM rule_param WHERE rule_set_version_id NOT IN (?,?,?) ORDER BY rule_param_id", LEGALITY, REVISION, SPACE)).isEqualTo(oldParams);
-            assertThat(old.queryForList("SELECT * FROM rule_set_member WHERE rule_set_version_id NOT IN (?,?,?) ORDER BY rule_set_version_id,rule_version_id", LEGALITY, REVISION, SPACE)).isEqualTo(oldMembers);
+            assertThat(old.queryForList("SELECT * FROM rule_set_version WHERE rule_set_version_id NOT IN (?,?,?,?,?) ORDER BY rule_set_version_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE)).isEqualTo(oldVersions);
+            assertThat(old.queryForList("SELECT * FROM rule_param WHERE rule_set_version_id NOT IN (?,?,?,?,?) ORDER BY rule_param_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE)).isEqualTo(oldParams);
+            assertThat(old.queryForList("SELECT * FROM rule_set_member WHERE rule_set_version_id NOT IN (?,?,?,?,?) ORDER BY rule_set_version_id,rule_version_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE)).isEqualTo(oldMembers);
             assertThat(old.queryForList("SELECT * FROM rule_version WHERE rule_version_id NOT LIKE 'confirmed-20261008-%' ORDER BY rule_version_id")).isEqualTo(oldDefinitions);
             assertThat(old.queryForObject("SELECT version_no FROM rule_set_version WHERE rule_set_version_id=?", Integer.class, LEGALITY)).isEqualTo(4);
             assertThat(old.queryForObject("SELECT COUNT(*) FROM rule_set_activation", Long.class)).isZero();

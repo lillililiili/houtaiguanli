@@ -322,6 +322,10 @@ public class SpaceRiskRepository {
             where.sql.append(" AND r.received_at>=:from AND r.received_at<:to");
             where.params.put("from", query.from()); where.params.put("to", query.to());
         }
+        if (query.occurredFrom() != null) {
+            where.sql.append(" AND r.occurred_at>=:occurred_from AND r.occurred_at<:occurred_to");
+            where.params.put("occurred_from", query.occurredFrom()); where.params.put("occurred_to", query.occurredTo());
+        }
         if (query.ownerOrgId() != null) { where.sql.append(" AND r.owner_org_id=:owner"); where.params.put("owner", query.ownerOrgId()); }
         if (query.districtId() != null) { where.sql.append(" AND r.district_id=:district"); where.params.put("district", query.districtId()); }
         return where;
@@ -410,7 +414,11 @@ public class SpaceRiskRepository {
     public record EvaluationSummaryRow(long segments, long evaluations, OffsetDateTime firstEvaluatedAt, OffsetDateTime lastEvaluatedAt,
             boolean fromDetection) { }
     public record CountRow(String bucket, long total) { }
-    public record SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, boolean excludeDemoSamples) {
+    public record SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, boolean excludeDemoSamples,
+            OffsetDateTime occurredFrom, OffsetDateTime occurredTo) {
+        public SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, boolean excludeDemoSamples) {
+            this(from, to, ownerOrgId, districtId, excludeDemoSamples, null, null);
+        }
         public SummaryQuery(OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId) {
             this(from, to, ownerOrgId, districtId, false);
         }

@@ -10,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.mock.env.MockEnvironment;
 import com.uav.lowaltitude.modules.device.application.DeviceService;
 import com.uav.lowaltitude.modules.device.application.DeviceService.*;
@@ -28,13 +29,14 @@ class FlightDevicePreflightTest {
     DeviceSummary device;
     DeviceDetail detail;
     DeviceState observedState;
+    PlanHealthEvidence healthEvidence;
     List<Incident> incidents=List.of();
     FlightDeviceCheckService service;
     @BeforeEach void setup() {
         var environment=new MockEnvironment().withProperty("app.flight-device-check.simulator-device-bridge-enabled","true");
         environment.setActiveProfiles("local");
         service=new FlightDeviceCheckService(devices,plans,mock(AccessControlService.class),spatial,
-            new AppClock(Clock.fixed(now,ZoneOffset.UTC)),BigDecimal.valueOf(5000),environment);
+            new AppClock(Clock.fixed(now,ZoneOffset.UTC)),environment);
         when(plans.findPlan(eq("future-plan"),any())).thenReturn(plan);
         when(plan.sourceMode()).thenReturn("mock");when(plan.statusCode()).thenReturn("PENDING");
         when(plan.routeVersionId()).thenReturn("route");
@@ -44,16 +46,18 @@ class FlightDevicePreflightTest {
         device=mock(DeviceSummary.class);when(device.deviceId()).thenReturn("sensor");
         when(device.sourceMode()).thenReturn("mock");when(device.deviceTypeCode()).thenReturn("radar");
         when(device.enabled()).thenReturn(true);
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(1000),null,null,null,null,"测试配置",null,1L));
         detail=mock(DeviceDetail.class);when(detail.coordinateSystem()).thenReturn("WGS-84");
         when(detail.longitude()).thenReturn(BigDecimal.valueOf(118));when(detail.latitude()).thenReturn(BigDecimal.valueOf(37));
         when(devices.inspectPlanDevices(any(),any(),eq(false))).thenAnswer(call -> List.of(
-            new PlanInspectionDevice(device,detail.longitude(),detail.latitude(),detail.coordinateSystem(),observedState,incidents)));
+            new PlanInspectionDevice(device,detail.longitude(),detail.latitude(),detail.coordinateSystem(),observedState,incidents,healthEvidence)));
         when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.TEN,BigDecimal.TEN,null));
         state("ONLINE","GOOD");
     }
     void state(String connectivity,String health) {
         long at=now.minusSeconds(5).toEpochMilli();
         observedState=new DeviceState("sensor",connectivity,"1",false,health,at,at,at,null,List.of(),true);
+        healthEvidence=new PlanHealthEvidence(at,at,true,true,false,true);
     }
     @Test void futurePlanChecksCurrentNormalDeviceWithoutTakeoffConclusion() {
         var result=service.read("future-plan");
@@ -121,6 +125,70 @@ class FlightDevicePreflightTest {
         when(plan.startAt()).thenReturn(now.minusSeconds(3600).atOffset(ZoneOffset.UTC));
         assertThat(service.read("future-plan").conclusion()).isEqualTo("SUSPECTED_NOT_TAKEN_OFF");
     }
+
+    @ParameterizedTest
+    @CsvSource({"ONLINE,GOOD,false", "ONLINE,GOOD,true", "ONLINE,BAD,false", "ONLINE,BAD,true",
+        "OFFLINE,UNKNOWN,false", "ONLINE,UNKNOWN,true"})
+    void currentDeviceStateIsIndependentOfHistoricalIncident(String connectivity,String health,boolean closed) {
+        when(plan.startAt()).thenReturn(now.minusSeconds(3600).atOffset(ZoneOffset.UTC));
+        state(connectivity,health);
+        String incidentId="incident-"+java.util.UUID.randomUUID();
+        incidents=List.of(new Incident(incidentId,"past-report","sensor","sensor","雷达","FAULT","HIGH",
+            closed?"CLOSED":"WAITING",now.minusSeconds(600).toEpochMilli(),"任务时段内故障",
+            closed?now.minusSeconds(90).toEpochMilli():null,null,true,null));
+        var result=service.read("future-plan");
+        var row=result.rows().get(0);
+        boolean abnormal="OFFLINE".equals(connectivity) || "BAD".equals(health);
+        assertThat(row.abnormal()).isEqualTo(abnormal);
+        assertThat(row.incidents()).extracting(Incident::incidentId).containsExactly(incidentId);
+        assertThat(result.conclusion()).isEqualTo(abnormal?"AUTO_DEVICE_ABNORMAL":"CHECK_INCOMPLETE");
+        assertThat(result.message()).doesNotContain("疑似未按任务起飞");
+        if("GOOD".equals(health)) {
+            assertThat(result.complete()).isTrue();
+            assertThat(result.message()).contains("当前正常","任务时段内有设备告警记录","是否起飞仍待确认");
+        } else if(!abnormal) {
+            assertThat(result.complete()).isFalse();
+            assertThat(result.message()).doesNotContain("当前正常");
+        }
+    }
+
+    @Test void pastIncidentOutsideTaskWindowDoesNotAffectCurrentCheck() {
+        when(plan.startAt()).thenReturn(now.minusSeconds(100).atOffset(ZoneOffset.UTC));
+        incidents=List.of(new Incident("past","past","sensor","sensor","雷达","FAULT","HIGH","CLOSED",
+            now.minusSeconds(600).toEpochMilli(),"任务开始前已关闭",now.minusSeconds(200).toEpochMilli(),null,true,null));
+        var result=service.read("future-plan");
+        assertThat(result.rows().get(0).incidents()).isEmpty();
+        assertThat(result.conclusion()).isEqualTo("SUSPECTED_NOT_TAKEN_OFF");
+    }
+
+    @Test void preflightNormalDeviceKeepsOutstandingIncidentSeparate() {
+        incidents=List.of(new Incident("outstanding","outstanding","sensor","sensor","雷达","FAULT","HIGH",
+            "WAITING",now.minusSeconds(600).toEpochMilli(),"历史异常未关闭",null,null,true,null));
+        var result=service.read("future-plan");
+        assertThat(result.complete()).isTrue();
+        assertThat(result.rows().get(0).abnormal()).isFalse();
+        assertThat(result.rows().get(0).incidents()).hasSize(1);
+        assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_NORMAL");
+        assertThat(result.message()).contains("当前正常","未关闭的告警记录").doesNotContain("未按任务起飞");
+    }
+
+    @ParameterizedTest @ValueSource(strings={"health_missing","alarm_missing","health_stale","alarm_stale",
+        "health_future","health_source","alarm_source","source_disabled","mqtt_heartbeat_stale"})
+    void freshHeartbeatNeverSubstitutesForExplicitCurrentHealthyEvidence(String missing) {
+        long at=now.minusSeconds(5).toEpochMilli(),stale=now.minusSeconds(301).toEpochMilli();
+        healthEvidence=new PlanHealthEvidence("health_missing".equals(missing)?null:"health_stale".equals(missing)?stale:
+            "health_future".equals(missing)?now.plusSeconds(1).toEpochMilli():at,
+            "alarm_missing".equals(missing)?null:"alarm_stale".equals(missing)?stale:at,
+            !"health_source".equals(missing),!"alarm_source".equals(missing),
+            "mqtt_heartbeat_stale".equals(missing),!"source_disabled".equals(missing));
+        if("mqtt_heartbeat_stale".equals(missing))
+            observedState=new DeviceState("sensor","ONLINE","1",false,"GOOD",at,at,now.minusSeconds(31).toEpochMilli(),null,List.of(),true);
+        var result=service.read("future-plan");
+        assertThat(result.rows().get(0).abnormal()).isFalse();
+        assertThat(result.rows().get(0).complete()).isFalse();
+        assertThat(result.conclusion()).isEqualTo("CHECK_INCOMPLETE");
+        assertThat(result.message()).doesNotContain("当前正常");
+    }
     @Test void replayPlanIgnoresDisabledHistoricalReplayDevices() {
         when(plan.sourceMode()).thenReturn("replay");
         var sensor=device;
@@ -135,12 +203,72 @@ class FlightDevicePreflightTest {
     }
 
     @ParameterizedTest
-    @ValueSource(ints={3000,5000,8000})
-    void confirmedRangeUsesFiveKilometresFromRoute(int distance) {
+    @ValueSource(ints={200,1000,1001,3000,8000})
+    void usesDeviceRadiusInsteadOfFixedNearbyDistance(int distance) {
         when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(distance),BigDecimal.TEN,null));
+        assertThat(service.read("future-plan").rows()).hasSize(distance<=1000?1:0);
+    }
+
+    @Test void longRangeDeviceBeyondFiveKilometresStillCoversRoute() {
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(10000),null,null,null,null,"测试配置",null,1L));
+        when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(8000),BigDecimal.TEN,null));
+        assertThat(service.read("future-plan").rows()).hasSize(1);
+    }
+
+    @Test void missingCoverageDoesNotFallBackToFiveKilometres() {
+        when(device.coverage()).thenReturn(null);
         var result=service.read("future-plan");
-        assertThat(result.nearbyMeters()).isEqualByComparingTo("5000");
-        assertThat(result.rows()).hasSize(distance<=5000?1:0);
+        assertThat(result.rows()).isEmpty();
+        assertThat(result.complete()).isFalse();
+    }
+
+    @Test void offlineDeviceStillBelongsToConfiguredCoverage() {
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","UNAVAILABLE",BigDecimal.valueOf(1000),null,null,null,"设备非在线","测试配置",null,1L));
+        state("OFFLINE","UNKNOWN");
+        var result=service.read("future-plan");
+        assertThat(result.rows()).hasSize(1);
+        assertThat(result.rows().get(0).abnormal()).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans={false,true})
+    void sectorUsesWholeRouteIntersection(boolean intersects) {
+        when(device.coverage()).thenReturn(new Coverage("SECTOR","AVAILABLE",null,BigDecimal.valueOf(1000),BigDecimal.ZERO,BigDecimal.valueOf(60),null,"测试配置",null,1L));
+        when(plans.routeIntersectsScanSector(eq("route"),any(),any(),any(),any(),any())).thenReturn(intersects);
+        assertThat(service.read("future-plan").rows()).hasSize(intersects?1:0);
+        verify(plans).routeIntersectsScanSector("route",BigDecimal.valueOf(118),BigDecimal.valueOf(37),
+            BigDecimal.valueOf(1000),BigDecimal.ZERO,BigDecimal.valueOf(60));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints={0,-1})
+    void invalidRadiusIsUnknownInsteadOfUnlimitedCoverage(int radius) {
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(radius),null,null,null,null,"测试配置",null,1L));
+        var result=service.read("future-plan");
+        assertThat(result.rows()).isEmpty();
+        assertThat(result.uncheckedCoverage()).isEqualTo(1);
+        assertThat(result.selectionBasis()).isEqualTo("DEVICE_SCAN_COVERAGE");
+    }
+
+    @Test void incompleteSectorIsUnknown() {
+        when(device.coverage()).thenReturn(new Coverage("SECTOR","AVAILABLE",null,BigDecimal.valueOf(1000),null,BigDecimal.valueOf(60),null,"测试配置",null,1L));
+        assertThat(service.read("future-plan").uncheckedCoverage()).isEqualTo(1);
+    }
+
+    @Test void scheduledAndManualChecksShareCoverageSelection() {
+        var current=observedState;
+        when(devices.inspectPlanDevices(any(),any(),eq(true))).thenReturn(List.of(
+            new PlanInspectionDevice(device,BigDecimal.valueOf(118),BigDecimal.valueOf(37),"WGS-84",current,List.of(),healthEvidence)));
+        assertThat(service.scheduled(plan).rows()).hasSize(1);
+        when(spatial.distanceToRoute(any(),eq("route"))).thenReturn(new RouteDistance("route",BigDecimal.valueOf(1500),BigDecimal.TEN,null));
+        assertThat(service.scheduled(plan).rows()).isEmpty();
+        assertThat(service.read("future-plan").rows()).isEmpty();
+    }
+
+    @Test void livePlanCannotUseMockCoverage() {
+        when(plan.sourceMode()).thenReturn("live");
+        assertThat(service.read("future-plan").rows()).isEmpty();
+        verify(devices,never()).detail(anyString());
     }
 
     @ParameterizedTest

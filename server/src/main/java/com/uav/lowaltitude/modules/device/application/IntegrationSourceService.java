@@ -160,7 +160,10 @@ public class IntegrationSourceService {
         Source source = required(sourceId);
         if (source.enabled() == enabled) return;
         if (enabled) validateEnable(source);
-        if (repository.setEnabled(sourceId, source.version(), enabled, clock.nowMillis()) != 1) throw versionConflict();
+        int updated = !enabled && source.simulated() && ("mock".equals(source.sourceMode()) || "replay".equals(source.sourceMode()))
+                ? repository.disableSimulated(sourceId, source.version(), clock.nowMillis())
+                : repository.setEnabled(sourceId, source.version(), enabled, clock.nowMillis());
+        if (updated != 1) throw versionConflict();
         syncStandardRadar(source, enabled, clock.nowMillis());
         audit.record(AuthContext.require().userId(), AuthContext.require().account(),
                 enabled ? "integration_source_enable" : "integration_source_disable",

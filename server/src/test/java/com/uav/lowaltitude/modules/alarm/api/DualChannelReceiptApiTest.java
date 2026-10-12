@@ -11,17 +11,13 @@ import java.util.Map;
 import java.util.concurrent.*;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.mock.mockito.SpyBean;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence;
 import com.uav.lowaltitude.modules.alarm.domain.NotifyFlow;
-import com.uav.lowaltitude.platform.time.AppClock;
 
 /** Notification matrix uses only local simulated channels; no real SMS or phone acceptance is claimed. */
 class DualChannelReceiptApiTest extends AutoVoiceApiTest {
-    @SpyBean AppClock clock;
-
-    @AfterEach void resetMatrixClock() { reset(clock); }
+    @AfterEach void resetMatrixClock() { reset(departureClock); }
 
     @Test void matrixSmsOutOfOrderAcrossEventsCannotAdvanceTheOtherEvent() throws Exception {
         String older = eventId;
@@ -192,8 +188,8 @@ class DualChannelReceiptApiTest extends AutoVoiceApiTest {
     }
 
     private void at(long millis) {
-        doReturn(millis).when(clock).nowMillis();
-        doReturn(Instant.ofEpochMilli(millis)).when(clock).now();
+        doReturn(millis).when(departureClock).nowMillis();
+        doReturn(Instant.ofEpochMilli(millis)).when(departureClock).now();
     }
     private void clearSms(String id) {
         jdbc.update("delete from uav_auto_sms_task where event_id=?", id);

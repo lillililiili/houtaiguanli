@@ -52,7 +52,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Service
 public class SpaceRiskReadService {
     static final String MODULE = "risk";
-    private static final Set<String> SUMMARY_FILTERS = Set.of("from", "to", "owner_org_id", "district_id", "exclude_demo_samples");
+    private static final Set<String> SUMMARY_FILTERS = Set.of("from", "to", "occurred_from", "occurred_to", "owner_org_id", "district_id", "exclude_demo_samples");
     private static final Set<String> RUN_FILTERS = Set.of("rule_code", "page", "size");
     private static final Set<String> HISTORY_FILTERS = Set.of("page", "size");
     private static final Set<String> EVALUATION_FIELDS = Set.of("rule_code", "window_from", "window_to");
@@ -124,8 +124,9 @@ public class SpaceRiskReadService {
         AccessDecision decision = access.require(PermissionCode.RISK_READ);
         checkKeys(parameters, SUMMARY_FILTERS);
         OffsetDateTime[] range = timeRange(parameters, "from", "to");
+        OffsetDateTime[] occurred = timeRange(parameters, "occurred_from", "occurred_to");
         SummaryQuery query = new SummaryQuery(range[0], range[1], optional(parameters, "owner_org_id", ID_MAX),
-                optional(parameters, "district_id", ID_MAX), "true".equals(enumerated(parameters, "exclude_demo_samples", Set.of("true", "false"))));
+                optional(parameters, "district_id", ID_MAX), "true".equals(enumerated(parameters, "exclude_demo_samples", Set.of("true", "false"))), occurred[0], occurred[1]);
         long total = repository.countRisks(query, decision);
         List<CountRow> bySubtype = repository.countBy("subtype", query, decision);
         List<CountRow> bySeverity = repository.countBy("severity", query, decision);

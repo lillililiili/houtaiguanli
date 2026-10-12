@@ -104,6 +104,48 @@ class EoManualTrackApiTest {
                 .andExpect(jsonPath("$.data.auto_paused").value(false));
     }
 
+    @Test void unsupportedTargetsHaveNoIdleTrackingActionsAndExplainTheirCategory() throws Exception {
+        for(String source:java.util.List.of("live","replay")) {
+            for(boolean balloon:java.util.List.of(true,false)) {
+                String target=insertTarget(true);
+                jdbc.update("UPDATE target SET object_type_code='UNKNOWN',subtype=?,source_mode=? WHERE target_id=?",
+                        balloon?"BALLOON":null,source,target);
+                String expected=balloon?"暂未接入气球自动追踪，暂无该目标的跟踪画面。":"暂未接入此类目标的自动追踪，暂无该目标的跟踪画面。";
+                long before=jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class);
+                for(boolean paused:java.util.List.of(false,true)) {
+                    trackingRepository.pause(target,paused,jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class),clock.nowMillis());
+                    mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target).header("Authorization",bearer()))
+                            .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("BLOCKED"))
+                            .andExpect(jsonPath("$.data.message").value(expected))
+                            .andExpect(jsonPath("$.data.allowed_actions").isEmpty());
+                    jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?",new java.sql.Timestamp(clock.nowMillis()-60000),target);
+                    mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target).header("Authorization",bearer()))
+                            .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("BLOCKED"))
+                            .andExpect(jsonPath("$.data.message").value(expected))
+                            .andExpect(jsonPath("$.data.allowed_actions").isEmpty());
+                    jdbc.update("UPDATE target_latest_state SET observed_at=? WHERE target_id=?",new java.sql.Timestamp(clock.nowMillis()-1),target);
+                }
+                mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target)
+                        .header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                        .andExpect(status().isUnprocessableEntity())
+                        .andExpect(jsonPath("$.error.code").value("EO_CLASS_UNSUPPORTED"))
+                        .andExpect(jsonPath("$.error.message").value(expected));
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class)).isEqualTo(before);
+            }
+        }
+    }
+
+    @Test void categoryChangeDoesNotHideStopForExistingTrackingTask() throws Exception {
+        String target=insertTarget(true);
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target).header("Authorization",bearer())
+                .header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted());
+        jdbc.update("UPDATE target SET object_type_code='UNKNOWN',subtype='BALLOON' WHERE target_id=?",target);
+        mvc.perform(get("/api/v1/targets/{id}/eo-tracking-status",target).header("Authorization",bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("STARTING"))
+                .andExpect(jsonPath("$.data.allowed_actions").value(hasItem("PAUSE")));
+    }
+
     @Test void unknownClassAndExpiredPositionCannotSteerCamera() throws Exception {
         String target = insertTarget(true);
         jdbc.update("UPDATE target SET object_type_code='UNKNOWN' WHERE target_id=?", target);

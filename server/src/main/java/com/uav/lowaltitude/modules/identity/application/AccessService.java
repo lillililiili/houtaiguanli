@@ -80,9 +80,10 @@ public class AccessService {
 
     public List<String> menuKeys(String roleCode) {
         if (UserType.BACKEND_ROLE.equals(roleCode)) {
-            return List.of("devices", "monitor", "commission", "interfaces", "maps", "stats", "users", "responsePlans", "roles", "archive");
+            return List.of("devices", "monitor", "maintenance", "commission", "interfaces", "maps", "stats", "users", "responsePlans", "roles", "archive");
         }
         Set<String> keys = new LinkedHashSet<>();
+        if("ROLE-ADMIN".equals(roleCode))keys.add("maintenance");
         List<PermissionRow> permissions = "ROLE-ADMIN".equals(roleCode)
                 ? mapper.listPermissionCatalog() : mapper.listPermissionsForRole(roleCode);
         for (PermissionRow permission : permissions) {

@@ -4,6 +4,7 @@ import AdminLayout from '@/layout/AdminLayout.vue';
 import { canAccessMenu, firstAccessiblePath } from '@/config/navigation.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { isBackendUser } from '@/utils/userType.js';
+import { legacyMaintenanceTarget } from '@/utils/maintenanceNavigation.js';
 
 const routes = [
   { path: '/login', name: 'Login', component: () => import('@/views/auth/LoginView.vue'), meta: { public: true, title: '登录' } },
@@ -18,6 +19,7 @@ const routes = [
       { path: 'profile', name: 'Profile', component: () => import('@/views/profile/ProfileView.vue'), meta: { title: '个人资料' } },
       { path: 'operations/devices', name: 'Devices', component: () => import('@/views/operations/DevicesView.vue'), meta: { title: '设备管理', menuKey: 'devices', permission: 'devices.read' } },
       { path: 'operations/monitor', name: 'Monitor', component: () => import('@/views/operations/MonitorView.vue'), meta: { title: '设备实时监测', menuKey: 'monitor', permission: 'monitoring.read' } },
+      { path: 'operations/maintenance', name: 'Maintenance', component: () => import('@/views/operations/MaintenanceView.vue'), meta: { title: '设备异常处理', menuKey: 'maintenance', permission: 'monitoring.read' } },
       { path: 'operations/commission', name: 'Commission', component: () => import('@/views/operations/CommissionView.vue'), meta: { title: '设备接入调测', menuKey: 'commission', permission: 'commissioning.read' } },
       { path: 'operations/interfaces', name: 'Interfaces', component: () => import('@/views/operations/InterfacesView.vue'), meta: { title: '接口配置', menuKey: 'interfaces', permission: 'interfaces.read' } },
       { path: 'operations/maps', name: 'Maps', component: () => import('@/views/operations/MapsView.vue'), meta: { title: '地图管理', menuKey: 'maps', permission: 'maps.read' } },
@@ -38,6 +40,8 @@ const router = createRouter({ history: createWebHistory(import.meta.env.BASE_URL
 function safeRedirect(value, user) {
   if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return firstAccessiblePath(user);
   const resolved = router.resolve(value);
+  const maintenanceTarget = legacyMaintenanceTarget(resolved);
+  if (maintenanceTarget) return canAccessMenu(user, 'maintenance') ? router.resolve(maintenanceTarget).fullPath : firstAccessiblePath(user);
   if (!resolved.matched.length || resolved.meta.public || (resolved.meta.menuKey && !canAccessMenu(user, resolved.meta.menuKey))) return firstAccessiblePath(user);
   return value;
 }
@@ -71,6 +75,8 @@ router.beforeEach(async to => {
   // 主动改密在个人资料里，旧地址转过去。
   if (!auth.mustChangePassword && to.path === '/change-password') return { path: '/profile', query: { section: 'password' } };
   if (to.name === 'AdminHome') return firstAccessiblePath(auth.user);
+  const maintenanceTarget = legacyMaintenanceTarget(to);
+  if (maintenanceTarget) return maintenanceTarget;
   if (to.meta.menuKey && !canAccessMenu(auth.user, to.meta.menuKey)) return { path: '/forbidden', query: { page: to.meta.title } };
   return true;
 });

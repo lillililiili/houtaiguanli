@@ -70,10 +70,27 @@ public class DeviceController {
             @RequestParam(required = false) String connectivity,
             @RequestParam(required = false) Boolean enabled,
             @RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
+            @RequestParam(name = "statistics_scope", defaultValue = "false") boolean statisticsScope,
             @RequestParam(defaultValue = "priority") String sort) {
         return ApiResponse.ok(service.list(
-                new DeviceFilter(keyword, typeCode, channel, region, vendor, connectivity, enabled, formalOnly),
+                new DeviceFilter(keyword, typeCode, channel, region, vendor, connectivity, enabled, formalOnly, statisticsScope),
                 page, size, sort));
+    }
+
+    /** Shared read-only device counts; backend management endpoints remain backend-only. */
+    @GetMapping("/overview")
+    public ApiResponse<DeviceService.DeviceOverview> overview(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(name = "type_code", required = false) String typeCode,
+            @RequestParam(required = false) String channel,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) String vendor,
+            @RequestParam(required = false) String connectivity,
+            @RequestParam(required = false) Boolean enabled,
+            @RequestParam(name = "formal_only", defaultValue = "false") boolean formalOnly,
+            @RequestParam(name = "statistics_scope", defaultValue = "false") boolean statisticsScope) {
+        return ApiResponse.ok(service.filteredOverview(new DeviceFilter(keyword, typeCode, channel, region,
+                vendor, connectivity, enabled, formalOnly, statisticsScope)));
     }
 
     @GetMapping("/options")

@@ -173,6 +173,7 @@ public class MqttConfigurationService {
             record(enabled?"mqtt_device_enable":"mqtt_device_disable",id); return;
         }
         Binding b=binding(id);
+        if(enabled) DeviceCatalogTypes.requireRegistrable(b.deviceTypeAbbr());
         Broker broker=requiredBroker(b.brokerId(),true); repository.binding(id,true);
         if(enabled) validateConnection(broker);
         idempotency.claim(key,"mqtt.device.enable:"+id+":"+version+":"+enabled);
@@ -243,6 +244,7 @@ public class MqttConfigurationService {
             throw bad("凭据只能填写 env:环境变量名");
     }
     private void validate(Registration p) {
+        DeviceCatalogTypes.requireRegistrable(p.deviceTypeAbbr());
         required(p.deviceNo(),64); required(p.name(),128); required(p.brokerId(),36);
         required(p.ownerOrgId(),36); required(p.districtId(),36); mode(p.sourceMode());
         if((p.vendor()!=null && p.vendor().length()>128) || (p.model()!=null && p.model().length()>128)) throw bad("厂家或型号过长");
@@ -255,7 +257,7 @@ public class MqttConfigurationService {
         boolean simulatorOnly = "replay".equals(p.sourceMode()) && SIMULATOR_ONLY_TYPES.contains(p.deviceTypeAbbr());
         if(!LingyunEnvelope.PROTOCOL.equals(p.protocolCode())
                 || !(LingyunControlEnvelope.registrable(p.deviceTypeAbbr()) || simulatorOnly))
-            throw bad("支持雷达、5G-A、TDOA、AOA、协议破解、RemoteID、诱骗、干扰、驱鸟炮、光电或光电边端");
+            throw bad("支持雷达、5G-A、TDOA、光电或光电边端");
         segment(p.providerCode(),64); segment(p.externalDeviceId(),128);
     }
     private static boolean eo(Registration p) { return EoEdgeEnvelope.PROTOCOL.equals(p.protocolCode()); }

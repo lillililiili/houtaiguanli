@@ -1,6 +1,16 @@
 # low-altitude-server
 
+2026-10-12：合法性研判的最新记录查询先收敛历史记录，再关联识别、复核、告警与展示资料，避免先关联全部历史导致列表和汇总长时间等待。保留同一主体/模式下 `evaluated_at + evaluation_id` 最新语义、北京时间日期边界、数据范围与原始历史；接口字段与前后台调用方式不变。验证见[合法性研判加载优化](../docs/acceptance/legality-loading-2026-10-12.md)。
+
+2026-10-12 融合感知实时航线风险补充：实时模拟上报不能因传输模式为 replay 而一律视作历史回放。在既有 local+qa 模拟权限和任务桥接开关内，后端按已关联协议来源、同范围任务航线、可追溯的最新 MEAS 观测、时效、精度与距离判断当前影响，并明确标注模拟；普通文件回放、生产、过期、预测、来源不匹配仍不能确认为当前。首次发现风险的有效观测可证明当前存在，但解除仍需要原评估之后的新依据；本次不新增模拟解除事实。前台继续按任务时段与目标有效期过滤，并在连续目标推送期间每 5 秒重读已有风险的当前影响，不修改核验、通知或历史。
+
 2026-10-09：运行统计页可使用 `include_observations=false` 跳过已隐藏的轨迹指标计算；默认接口、后台报表和导出仍返回完整统计，权限、日期和可见指标口径不变。见[运行统计接口契约](../docs/运行统计接口契约.md)。
+
+2026-10-09：飞行任务设备检查统一按已配置扫描范围与航线相交选择设备。圆形使用半径，扇形使用射程、朝向及张角，离线状态不排除几何覆盖；缺位置或范围依据单列无法确认。`GET /verifications/device-check` 使用 `selection_basis=DEVICE_SCAN_COVERAGE` 和 `unchecked_coverage`，不再返回或使用统一 5 公里距离。历史检查与通知记录保留。
+
+2026-10-09：大屏 `map.devices` 读取当前授权范围内全部有坐标的启用设备，取消原先 46 台截取及地图服务内部 100 台上限。继续排除已删除设备和非 WGS-84 坐标；不改变统计来源范围及实时目标的观测时效规则。接口结构保持不变。
+
+同日修复历史模拟设备停用：最后一台设备停用时，可同步关闭明确标记 `simulated=true` 的 mock/replay 来源，避免被仅允许 live 的来源编辑 SQL 误报版本冲突。来源的普通编辑和启用校验保持；设备删除仍要求先停用、无未完成任务，并保留版本校验和审计。
 
 2026-10-08：`countermeasure-device` 可带 `longitude`、`latitude`（WGS-84，两个一起给或都不给）。新登记的 `QA-LOCAL-CM4` 用这个位置；已登记但没有位置的补上，已有位置的（例如在设备管理里填过）不改。位置只用于业务前台在地图上画“作用范围”示意，不参与研判、风险或反制授权。
 
@@ -364,9 +374,11 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 ### 验收清理与测试视频（2026-09-28）
 
+2026-10-09 后续确认：local+qa 光电测试视频接入默认开启（`APP_VIDEO_QA_ENABLED=false` 可关闭），替代本节早期默认关闭的约定。模拟器连接系统时默认准备本机推流；有效任务、回执、媒体就绪与鉴权仍为播放前提。生产环境不开放测试登记，现场视频仍须另行接入。
+
 正式配置默认 live，禁用种子/回放/模拟适配；模拟环境必须显式 local+qa 或 test，且不能同时启用 prod/production。此限制替代上文仅 local 的旧启动说明。短信和录音电话不在本轮变更范围内。
 
-可选媒体服务、两组独立凭据、HLS 授权转发与临时流登记见 [视频接入说明](../docs/designs/acceptance-cleanup/video-integration.md)。媒体二进制须提前放在内网，不依赖 CDN；默认关闭，测试视频不可作为现场证据。本轮后端与两端页面行为、实际验证及部署限制见 [实施记录](../docs/designs/acceptance-cleanup/implementation-progress.md)。
+可选媒体服务、两组独立凭据、HLS 授权转发与临时流登记见 [视频接入说明](../docs/designs/acceptance-cleanup/video-integration.md)。媒体二进制须提前放在内网，不依赖 CDN；local+qa 默认开启，测试视频不可作为现场证据。本轮后端与两端页面行为、实际验证及部署限制见 [实施记录](../docs/designs/acceptance-cleanup/implementation-progress.md)。
 
 ### 本地计划回放输入（2026-09-28）
 
@@ -491,3 +503,6 @@ GET/POST `/api/v1/uav-events/{eventId}/no-counter-decision` 使用数据库 Bear
 ### 第三条验收报表（2026-10-07）
 
 五类业务报表默认维持 `source_mode=live`。仅在 `local,qa`（或隔离测试）且 `APP_QA_REPORTING_ENABLED=true` 时，现有报表页面可选择“模拟验收口径”，统一查询已有 mock/replay 业务记录；预览、明细及 Excel/PDF 均带模拟标识。`prod/production` profile 始终禁止该口径。此开关不创建数据，不改变业务规则、对象权限或 `/stats/operations` 统计，不能开启开发种子。参数见[运行统计接口契约](../docs/运行统计接口契约.md)，操作与实际测试结果见[第三条实施报告](../docs/acceptance/item3-2026-10-07/README.md)。
+# 2026-10-09 现用参数确认版本
+
+追加迁移 `V202610090001` 仅发布 `legality-current-20261009`、`space-current-20261009`，不自动切换指针、不修改旧参数或历史。当前本机已通过管理后台启用合法性第6版与空间风险第3版，45项数值与确认前现用版本相同；不采用旧r2的无计划LEGAL策略。新库须通过原有管理入口启用，版本号以该库为准。详细依据及验证边界见[本轮记录](../docs/acceptance/current-parameters-2026-10-09.md)。

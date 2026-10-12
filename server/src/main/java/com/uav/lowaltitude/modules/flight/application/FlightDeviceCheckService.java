@@ -5,7 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
@@ -31,25 +30,24 @@ public class FlightDeviceCheckService {
     private final AccessControlService access;
     private final SpatialFactPort spatial;
     private final AppClock clock;
-    private final BigDecimal nearbyMeters;
     private final boolean localMqttDemo;
     private final boolean localSimulatorDeviceBridge;
+    private final long healthFreshnessMillis;
     public FlightDeviceCheckService(DeviceService devices, FlightReadRepository plans, AccessControlService access,
-            SpatialFactPort spatial, AppClock clock, @Value("${app.flight-device-check.nearby-meters:5000}") BigDecimal nearbyMeters,
+            SpatialFactPort spatial, AppClock clock,
             Environment environment) {
         this.devices=devices;this.plans=plans;this.access=access;this.spatial=spatial;this.clock=clock;
-        if(nearbyMeters.signum()<=0)throw new IllegalArgumentException("设备附近范围必须大于零");
-        this.nearbyMeters=nearbyMeters;
         this.localMqttDemo=environment.acceptsProfiles(Profiles.of("!production & local"))
             && environment.getProperty("app.dev-seed.enabled",Boolean.class,false)
             && environment.getProperty("app.flight-device-check.mqtt-demo-enabled",Boolean.class,false);
         this.localSimulatorDeviceBridge=environment.acceptsProfiles(Profiles.of("!production & local"))
             && environment.getProperty("app.flight-device-check.simulator-device-bridge-enabled",Boolean.class,false);
+        this.healthFreshnessMillis=environment.getProperty("app.device-maintenance.recovery-max-age-seconds",Long.class,300L)*1000;
     }
     public record DeviceRow(String deviceId,String name,boolean simulated,BigDecimal distanceM,String connectivity,
             String healthCode,Long lastHeartbeatAt,Long observedAt,boolean abnormal,boolean complete,List<Incident> incidents) { }
-    public record Check(String planId,String conclusion,String message,long checkedAt,BigDecimal nearbyMeters,
-            boolean complete,int uncheckedLocations,List<DeviceRow> rows,boolean mqttSimulation) { }
+    public record Check(String planId,String conclusion,String message,long checkedAt,String selectionBasis,
+            boolean complete,int uncheckedLocations,int uncheckedCoverage,List<DeviceRow> rows,boolean mqttSimulation) { }
 
     @Transactional(readOnly=true)
     public Check read(String planId) {
@@ -86,7 +84,7 @@ public class FlightDeviceCheckService {
         // require devices.read and retain the current user's device scope, not backend monitoring access.
         var inputs=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),scheduled);
         boolean complete=true;
-        List<DeviceRow> rows=new ArrayList<>();int unchecked=0;
+        List<DeviceRow> rows=new ArrayList<>();int unchecked=0,uncheckedCoverage=0;
         for(var detail:inputs) {
                 var device=detail.device();
                 boolean demoDevice="replay".equals(device.sourceMode())
@@ -100,23 +98,50 @@ public class FlightDeviceCheckService {
                         || ((replaySimulation || simulatorPlan) && !device.enabled()))continue;
                 if(!positionKnown(detail)){unchecked++;continue;}
                 var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());
-                if(distance.distanceM()==null){unchecked++;continue;}
-                if(distance.distanceM().compareTo(nearbyMeters)>0)continue;
+                if(distance.distanceM()==null){uncheckedCoverage++;continue;}
+                Boolean covered=coversRoute(detail,plan.routeVersionId(),distance.distanceM());
+                if(covered==null){uncheckedCoverage++;continue;}
+                if(!covered)continue;
                 rows.add(inspect(detail,distance.distanceM(),from,to,preflight,true));
         }
-        rows.sort((a,b)->Boolean.compare(b.abnormal() || !b.incidents().isEmpty(),a.abnormal() || !a.incidents().isEmpty()));
-        complete=complete && unchecked==0 && !rows.isEmpty() && rows.stream().allMatch(DeviceRow::complete);
-        boolean abnormal=rows.stream().anyMatch(r->r.abnormal() || !r.incidents().isEmpty());
-        String conclusion=abnormal?"AUTO_DEVICE_ABNORMAL":complete?"SUSPECTED_NOT_TAKEN_OFF":"CHECK_INCOMPLETE";
-        String message=abnormal?"附近设备有异常，是否起飞待报送单位确认。":complete?"附近无异常设备，疑似未按任务起飞，待报送单位确认。"
-            :rows.isEmpty()?"附近没有查到可检查的设备，暂不能判断是否起飞。":"设备信息不完整，暂不能排除设备异常，是否起飞待确认。";
+        rows.sort(java.util.Comparator.comparingInt(row -> row.abnormal()?0:row.complete()?2:1));
+        complete=complete && unchecked==0 && uncheckedCoverage==0 && !rows.isEmpty() && rows.stream().allMatch(DeviceRow::complete);
+        // 当前设备事实和任务时段内告警分开：历史记录不把已恢复设备重新判异常，
+        // 当前恢复也不能证明过去整段监测正常，更不能据此推断当时未起飞。
+        boolean abnormal=rows.stream().anyMatch(DeviceRow::abnormal);
+        boolean historicalIncidents=rows.stream().anyMatch(row->!row.incidents().isEmpty());
+        String conclusion=abnormal?"AUTO_DEVICE_ABNORMAL":complete && !historicalIncidents?"SUSPECTED_NOT_TAKEN_OFF":"CHECK_INCOMPLETE";
+        String message=abnormal?"覆盖航线的设备当前有异常，是否起飞待报送单位确认。":complete?
+            historicalIncidents?"覆盖航线的设备当前正常；任务时段内有设备告警记录，是否起飞仍待确认。"
+                :"覆盖航线的设备当前正常，疑似未按任务起飞，待报送单位确认。"
+            :rows.isEmpty()?"未查到扫描范围覆盖航线的设备，暂不能判断是否起飞。":"设备信息不完整，暂不能排除设备异常，是否起飞待确认。";
         if(preflight) {
             conclusion=abnormal?"PREFLIGHT_DEVICE_ABNORMAL":complete?"PREFLIGHT_DEVICE_NORMAL":"CHECK_INCOMPLETE";
-            message=abnormal?"附近设备有异常，请在起飞前检查并处理。":complete?"本次检查的附近设备当前正常，起飞前请再次检查。"
-                :rows.isEmpty()?"附近没有查到可检查的设备，请确认监测设备是否已接入。":"设备信息不完整，起飞前仍需核查。";
+            message=abnormal?"覆盖航线的设备当前有异常，请在起飞前检查并处理。":complete?
+                historicalIncidents?"覆盖航线的设备当前正常，另有未关闭的告警记录需核对；起飞前请再次检查。"
+                    :"覆盖航线的设备当前正常，起飞前请再次检查。"
+                :rows.isEmpty()?"未查到扫描范围覆盖航线的设备，请确认监测设备是否已接入。":"设备信息不完整，起飞前仍需核查。";
         }
-        return new Check(planId,conclusion,message,now,nearbyMeters,complete,unchecked,List.copyOf(rows),mqttSimulation);
+        return new Check(planId,conclusion,message,now,"DEVICE_SCAN_COVERAGE",complete,unchecked,uncheckedCoverage,List.copyOf(rows),mqttSimulation);
     }
+    /** 配置范围决定是否应监测航线；离线或故障只影响检查结果，不抹除配置范围。 */
+    private Boolean coversRoute(PlanInspectionDevice input,String routeVersionId,BigDecimal distance) {
+        Coverage coverage=input.device().coverage();
+        if(coverage==null)return null;
+        if("CIRCLE".equals(coverage.kind())) {
+            return positive(coverage.radiusM()) ? distance.compareTo(coverage.radiusM())<=0 : null;
+        }
+        if(!"SECTOR".equals(coverage.kind()) || !positive(coverage.rangeM())
+                || coverage.azimuthDeg()==null || coverage.azimuthDeg().signum()<0
+                || coverage.azimuthDeg().compareTo(BigDecimal.valueOf(360))>=0
+                || !positive(coverage.fovDeg()) || coverage.fovDeg().compareTo(BigDecimal.valueOf(360))>0)return null;
+        if(distance.compareTo(coverage.rangeM())>0)return false;
+        if(coverage.fovDeg().compareTo(BigDecimal.valueOf(360))==0)return true;
+        return plans.routeIntersectsScanSector(routeVersionId,input.longitude(),input.latitude(),
+            coverage.rangeM(),coverage.azimuthDeg(),coverage.fovDeg());
+    }
+    private static boolean positive(BigDecimal value){return value!=null && value.signum()>0;}
+
     private DeviceRow inspect(PlanInspectionDevice input,BigDecimal distance,long from,long to,boolean preflight,boolean historyComplete) {
         var device=input.device();var state=input.state();
         // 协议 A 的 2 明确表示异常；1 仅表示工作中，不能补足缺失的健康指标。
@@ -128,9 +153,13 @@ public class FlightDeviceCheckService {
             || Set.of("BAD","DEGRADED").contains(health) || state.hasAlarm();
         List<Incident> incidents=input.incidents().stream()
             .filter(item->item.detectedAt()<=to && (item.closedAt()==null || item.closedAt()>=from)).toList();
+        var evidence=input.healthEvidence();
+        boolean explicitNormal=evidence!=null && evidence.sourceEnabled() && evidence.healthSourceMatches() && evidence.alarmSourceMatches()
+            && fresh(evidence.healthObservedAt(),healthFreshnessMillis) && fresh(evidence.alarmObservedAt(),healthFreshnessMillis)
+            && fresh(state.lastHeartbeatAt(),evidence.mqttHeartbeat()?Math.min(30_000,healthFreshnessMillis):healthFreshnessMillis);
         boolean known=historyComplete && state.observedAt()!=null && (preflight || state.observedAt()>=from)
             && state.observedAt()<=clock.nowMillis() && state.lastHeartbeatAt()!=null
-            && (abnormal || ("ONLINE".equals(state.connectivity()) && "GOOD".equals(health)));
+            && (abnormal || (explicitNormal && "ONLINE".equals(state.connectivity()) && "GOOD".equals(health)));
         return new DeviceRow(device.deviceId(),device.name(),device.simulated(),distance,
             device.enabled()?state.connectivity():"DISABLED",health,state.lastHeartbeatAt(),state.observedAt(),abnormal,known,List.copyOf(incidents));
     }
@@ -138,5 +167,6 @@ public class FlightDeviceCheckService {
         return "WGS-84".equals(d.coordinateSystem()) && d.longitude()!=null && d.latitude()!=null
             && d.longitude().abs().compareTo(BigDecimal.valueOf(180))<=0 && d.latitude().abs().compareTo(BigDecimal.valueOf(90))<=0;
     }
-    private Check unknown(String id,long now,String message,boolean mqttSimulation){return new Check(id,"CHECK_INCOMPLETE",message,now,nearbyMeters,false,0,List.of(),mqttSimulation);}
+    private boolean fresh(Long at,long window) { return at!=null && at<=clock.nowMillis() && clock.nowMillis()-at<=window; }
+    private Check unknown(String id,long now,String message,boolean mqttSimulation){return new Check(id,"CHECK_INCOMPLETE",message,now,"DEVICE_SCAN_COVERAGE",false,0,0,List.of(),mqttSimulation);}
 }

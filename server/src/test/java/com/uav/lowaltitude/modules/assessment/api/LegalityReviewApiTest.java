@@ -425,6 +425,35 @@ class LegalityReviewApiTest {
     }
 
     @Test
+    void latestSelectionKeepsTieBreakAndDoesNotFallBackAcrossFilters() throws Exception {
+        OffsetDateTime at = now().plusSeconds(20);
+        String older = "s7r-a-latest-" + suffix;
+        String latest = "s7r-z-latest-" + suffix;
+        insertEvaluation(older, run, "LEGAL", "[]", null, null, "SUFFICIENT", at, null, "mock");
+        insertEvaluation(latest, run, "ILLEGAL", "[\"ROUTE_DEVIATION\"]", "MEDIUM", new BigDecimal("40"),
+                "SUFFICIENT", at, null, "replay");
+        String filters = "?mode=ACTIVE&subject_kind=TARGET&latest_only=true&target_id=" + target;
+        mvc.perform(get("/api/v1/legality-evaluations" + filters).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(latest));
+        for (String excluded : List.of("&legal_status=LEGAL", "&source_mode=mock",
+                "&from=" + at.minusDays(1).toInstant().toEpochMilli() + "&to=" + at.toInstant().toEpochMilli())) {
+            mvc.perform(get("/api/v1/legality-evaluations" + filters + excluded).header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+            mvc.perform(get("/api/v1/legality-evaluations/summary" + filters + excluded).header("Authorization", bearer(session)))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        }
+        String included = "&from=" + at.toInstant().toEpochMilli() + "&to=" + at.plusSeconds(1).toInstant().toEpochMilli();
+        mvc.perform(get("/api/v1/legality-evaluations" + filters + included).header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].evaluation_id").value(latest));
+        assertSummaryMatchesLists(filters + included);
+        mvc.perform(get("/api/v1/legality-evaluations" + filters.replace("latest_only=true", "latest_only=false")
+                + included + "&legal_status=LEGAL").header("Authorization", bearer(session)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].evaluation_id").value(older));
+    }
+
+    @Test
     void stableTargetOrderKeepsPagesAcrossReevaluationAndPreservesLatestFacts() throws Exception {
         String originalTarget = target;
         OffsetDateTime created = now().minusMinutes(20);

@@ -1,33 +1,32 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRealtimeRefresh } from '@/services/realtime.js';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router';
 import PageHeader from '@/components/PageHeader.vue';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import CommissionDeviceStatus from './CommissionDeviceStatus.vue';
-import DeviceMaintenancePanel from './DeviceMaintenancePanel.vue';
-import MaintenanceWorkflowPanel from './maintenance/MaintenanceWorkflowPanel.vue';
 import { useMaintenanceWorkflow } from './maintenance/useMaintenanceWorkflow.js';
 import { commissionApi, deviceApi } from '@/api/devices.js';
 import { useAuthStore } from '@/stores/auth.js';
-import { newIdempotencyKey } from '@/services/apiClient.js';
 import './operations-reference.css';
-import { display, formatDeviceNo, formatTime, statusType } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from './maintenance/presentation.js';
+import { display, formatDeviceNo, statusType } from '@/utils/format.js';
+import { deviceCatalogParams, readDevicePages } from '@/utils/deviceCatalog.js';
 
 const auth = useAuthStore();
 const route = useRoute(), router = useRouter();
-const maintenanceId = computed(() => typeof route?.query?.maintenance_task_id === 'string' ? route.query.maintenance_task_id : '');
-const maintenanceListVisible = computed(() => !maintenanceId.value && route?.query?.view === 'maintenance');
+const maintenanceId = computed(() => typeof route?.query?.maintenance_context_id === 'string' ? route.query.maintenance_context_id : '');
 const maintenance = useMaintenanceWorkflow(maintenanceId);
 const workflow = maintenance.workflow;
 const maintenanceBusy = maintenance.busy, maintenancePending = maintenance.pending;
-const incidentBusy = ref(false), incidentPending = ref(null), incidentError = ref('');
-const workflowLocked = computed(() => actionBusy.value || incidentBusy.value || !!incidentPending.value);
+const workflowLocked = computed(() => actionBusy.value);
 const canOperate = computed(() => auth.hasPermission('commissioning.op') && (!maintenanceId.value || (
   workflow.value?.state === 'PROCESSING' && workflow.value?.task?.device_id === selectedDeviceId.value
-  && !maintenance.error.value && !maintenance.loading.value && !maintenanceBusy.value && !maintenancePending.value && !incidentBusy.value && !incidentPending.value)));
+  && !maintenance.error.value && !maintenance.loading.value && !maintenanceBusy.value && !maintenancePending.value)));
 const devices = ref([]);
+const statisticsScope = ref(true);
+let devicesRequest = 0;
 const filters = reactive({ keyword: '', region: '', type: '' });
 const filtersExpanded = ref(true);
 const records = reactive({ items: [], page: 1, size: 10, total: 0 });
@@ -154,17 +153,18 @@ async function applyConnection(deviceId) {
 }
 
 async function loadDevices() {
-  const items = [];
-  let page = 1;
-  let hasMore = true;
-  while (hasMore) {
-    const data = await deviceApi.list({ page, size: 100, enabled: maintenanceId.value ? undefined : true, sort: 'device_no_asc' });
-    items.push(...(data.items || []));
-    hasMore = Boolean(data.items?.length) && items.length < (data.total ?? items.length);
-    page++;
-  }
+  const request = ++devicesRequest;
+  const { items } = await readDevicePages(deviceApi.list, maintenanceId.value ? {} : deviceCatalogParams({ statistics_scope: statisticsScope.value }));
+  if (!alive || request !== devicesRequest) return;
   devices.value = items;
   if (maintenanceId.value) { selectMaintenanceDevice(); return; }
+  if (commissionInProgress.value) return;
+  const requestedDevice = typeof route?.query?.device_id === 'string' ? route.query.device_id : '';
+  if (requestedDevice) {
+    selectedDeviceId.value = devices.value.some(item => item.device_id === requestedDevice) ? requestedDevice : '';
+    if (!selectedDeviceId.value) error.value = '指定设备当前不可见或已删除，请核对设备访问权限。';
+    return;
+  }
   if (!devices.value.some(item => item.device_id === selectedDeviceId.value)) selectedDeviceId.value = devices.value[0]?.device_id || '';
 }
 function selectMaintenanceDevice() {
@@ -181,50 +181,12 @@ function selectMaintenanceDevice() {
   error.value = '';
 }
 async function refreshMaintenance() { await maintenance.load(); selectMaintenanceDevice(); }
-async function maintenanceAction(action, fields = {}, done) {
-  if (maintenanceBusy.value || maintenancePending.value || workflowLocked.value) return;
-  if (action === 'SUBMIT_VERIFICATION' && commissionInProgress.value) { ElMessage.warning('请先完成或取消当前调测任务。'); return; }
-  const taskId = maintenanceId.value;
-  if (['SUBMIT_VERIFICATION','COMPLETE'].includes(action)) {
-    try {
-      const { value } = await ElMessageBox.prompt(action === 'COMPLETE' ? '可补充处理措施及恢复结果。完成时会再次核对当前设备状态。' : '可补充处理措施和核验说明。提交后待办仍继续跟踪。', action === 'COMPLETE' ? '完成运维待办' : '提交恢复核验', {
-        inputType: 'textarea', inputPlaceholder: '处理说明（选填，最多 1000 字）', inputValidator: value => (value?.trim().length || 0) <= 1000 || '说明不能超过 1000 字', confirmButtonText: action === 'COMPLETE' ? '确认完成' : '提交核验', cancelButtonText: '取消'
-      });
-      if (taskId !== maintenanceId.value) return;
-      fields = { note: (value || '').trim() };
-    } catch { return; }
-  }
-  const result = await maintenance.act(action, fields);
-  if (result) { done?.(); ElMessage.success(action === 'VERIFY_RECOVERY' ? '核验结果已记录，请查看恢复结论。' : '运维待办已更新。'); }
-}
 async function linkCommission(task = active.value) {
   if (!task || !taskSourceAllowed.value || !maintenance.can('LINK_COMMISSION')) return;
   const result = await maintenance.act('LINK_COMMISSION', { commission_id: task.commission_id });
   if (result) ElMessage.success('调测任务已关联到运维待办。');
 }
-function leaveMaintenance() { void router?.push({ path: '/operations/commission', query: { view: 'maintenance' } }); }
-async function recoverIncident(incident) {
-  if (incidentBusy.value || maintenanceBusy.value || maintenancePending.value || actionBusy.value) return;
-  if (!incidentPending.value) {
-    if (!workflow.value?.open_incidents?.some(item => item.incident_id === incident?.incident_id && item.allowed_actions?.includes('VERIFY_RECOVERY'))) return;
-    incidentPending.value = { id: incident.incident_id, key: newIdempotencyKey('incident-recovery') };
-  }
-  const request = incidentPending.value;
-  incidentBusy.value = true; incidentError.value = '';
-  try {
-    const result = await deviceApi.recoverIncident(request.id, request.key);
-    if (!alive) return;
-    incidentPending.value = null;
-    if (result.result === 'PASS') ElMessage.success(result.reason || '该异常事件恢复核验通过');
-    else ElMessage.warning(result.reason || '该异常事件尚未恢复');
-    await refreshMaintenance(); await loadInformation();
-  } catch (e) {
-    if (!alive) return;
-    incidentError.value = e.message || '事件核验结果未确认';
-    if (e.status && e.status < 500) { incidentPending.value = null; await refreshMaintenance(); }
-    else incidentError.value += '；请使用原请求重试确认后再继续。';
-  } finally { if (alive) incidentBusy.value = false; }
-}
+function leaveMaintenance() { void router?.push({ path: '/operations/maintenance', query: maintenanceId.value ? { task_id: maintenanceId.value } : {} }); }
 async function bootstrap() {
   loading.value = true; error.value = '';
   try {
@@ -344,7 +306,7 @@ watch(selectedDeviceId, id => {
 });
 watch(() => workflow.value?.task?.device_id, selectMaintenanceDevice);
 watch(maintenanceId, () => { selectedDeviceId.value = ''; error.value = ''; });
-watch(maintenanceListVisible, visible => { if (!visible) void bootstrap(); });
+watch(() => route?.query?.device_id, () => { if (!maintenanceId.value && !commissionInProgress.value) void loadDevices(); });
 onBeforeRouteUpdate(to => {
   if (workflowLocked.value || maintenanceBusy.value || maintenancePending.value) { ElMessage.warning('请先确认当前操作结果，再切换待办。'); return false; }
   if (commissionInProgress.value && to.query.device_id !== selectedDeviceId.value) { ElMessage.warning('当前调测尚未结束，请先完成或取消再切换设备。'); return false; }
@@ -353,23 +315,24 @@ onBeforeRouteLeave(() => {
   if (workflowLocked.value || maintenanceBusy.value || maintenancePending.value) { ElMessage.warning('当前操作结果尚未确认，请先重试确认。'); return false; }
 });
 onMounted(async () => {
-  if (!maintenanceListVisible.value) await bootstrap();
+  await bootstrap();
   if (!alive) return;
-  pollTimer = window.setInterval(() => { if (!maintenanceListVisible.value) void pollActive(); }, 2000);
-  informationTimer = window.setInterval(() => { if (!maintenanceListVisible.value && !informationLoading.value) void loadInformation(); }, 10000);
+  pollTimer = window.setInterval(() => { void pollActive(); }, 2000);
+  informationTimer = window.setInterval(() => { if (!informationLoading.value) void loadInformation(); }, 10000);
 });
 onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterval(pollTimer); window.clearInterval(informationTimer); });
 // 设备资料或调测任务变化后重读设备列表与当前调测，设备在线状态变化后重读设备信息；
-// 调测进行中不重排设备列表。定时器保留为推送不可用时的兜底。
+// 调测进行中保留选择，同时刷新台账事实。定时器保留为推送不可用时的兜底。
 useRealtimeRefresh(['device', 'device_state'], topics => {
-  if (maintenanceListVisible.value) return undefined;
   const all = topics.includes('*');
   const tasks = [];
   if (all || topics.includes('device')) {
     tasks.push(pollActive());
-    if (!commissionInProgress.value) tasks.push(loadDevices().catch(() => {}));
   }
-  if ((all || topics.includes('device_state')) && !informationLoading.value) tasks.push(loadInformation());
+  if (all || topics.includes('device') || topics.includes('device_state')) {
+    tasks.push(loadDevices());
+    if (!informationLoading.value) tasks.push(loadInformation());
+  }
   return Promise.all(tasks);
 }, { minIntervalMs: 2_000 });
 </script>
@@ -377,25 +340,24 @@ useRealtimeRefresh(['device', 'device_state'], topics => {
 <template>
   <section class="page-stack operation-page commission-reference">
     <PageHeader title="设备接入调测" description="选择设备、配置连接，查看调测结果和历史记录。">
-      <el-button v-if="maintenanceId" @click="leaveMaintenance">返回运维待办</el-button>
-      <el-button v-else-if="!maintenanceListVisible && auth.hasPermission('monitoring.read')" @click="leaveMaintenance">运维待办</el-button>
-      <el-button v-if="maintenanceListVisible" @click="router.push('/operations/commission')">返回设备调测</el-button>
-      <el-tag v-if="active && !maintenanceListVisible" :type="tagType(active.status,isTestSource(active))" effect="plain">{{ statusText(active.status, isTestSource(active)) }}</el-tag>
+      <el-button v-if="maintenanceId" @click="leaveMaintenance">返回本次设备异常处理</el-button>
+      <el-button v-else-if="auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read')" @click="leaveMaintenance">设备异常处理</el-button>
+      <el-tag v-if="active" :type="tagType(active.status,isTestSource(active))" effect="plain">{{ statusText(active.status, isTestSource(active)) }}</el-tag>
     </PageHeader>
-    <DeviceMaintenancePanel v-if="maintenanceListVisible" />
-    <template v-else>
     <ErrorAlert :message="error" @retry="bootstrap" />
     <ErrorAlert v-if="maintenanceId" :message="maintenance.error.value" @retry="refreshMaintenance" />
     <p v-if="maintenanceId && maintenance.loading.value" class="muted">正在定位运维待办及设备…</p>
-    <MaintenanceWorkflowPanel v-if="workflow" :workflow="workflow" :busy="maintenanceBusy" :pending="!!maintenancePending" :locked="workflowLocked" :action-error="maintenance.actionError.value" @action="maintenanceAction" @retry="maintenance.retry" @refresh="refreshMaintenance" @recover-incident="recoverIncident" />
-    <el-alert v-if="incidentError" :title="incidentError" type="error" :closable="false" show-icon /><el-button v-if="incidentPending && !incidentBusy" :loading="incidentBusy" @click="recoverIncident()">重试确认事件核验</el-button>
+    <el-alert v-if="workflow" :title="`正在诊断：${workflow.task.device_name}`" description="此处按需进行专业调测。恢复核验和确认办结请返回设备异常处理；调测通过不等于异常已恢复。" type="info" :closable="false" show-icon />
+    <el-alert v-if="maintenance.actionError.value" :title="maintenance.actionError.value" type="error" :closable="false" />
+    <el-button v-if="maintenancePending" :loading="maintenanceBusy" @click="maintenance.retry">按原请求重试关联</el-button>
     <el-card class="commission-steps"><el-steps :active="stepIndex" :process-status="active?.status==='FAILED'?'error':'process'" :finish-status="isSimulation || active?.status==='CANCELLED' ? 'wait' : 'success'" align-center><el-step v-for="(item,index) in steps" :key="item" :title="item" :description="['选择设备并创建任务','建立设备通信链路','保存本次调测参数','协议响应与数据校验','查看结果与调测报告'][index]" /></el-steps></el-card>
     <div v-loading="loading" class="commission-workspace">
       <div class="commission-column">
         <el-card class="commission-selection" :class="{ 'filters-collapsed': !filtersExpanded }"><template #header><div class="table-toolbar"><b>设备选择</b><div class="commission-selection-actions"><span class="muted">{{ visibleDevices.length }} 台</span><el-button link type="primary" size="small" :aria-expanded="filtersExpanded" aria-controls="commission-device-filters" @click="filtersExpanded = !filtersExpanded">{{ filtersExpanded ? '收起筛选' : '展开筛选' }}</el-button></div></div></template>
+          <el-select v-if="!maintenanceId" v-model="statisticsScope" aria-label="设备范围" :disabled="selectionLocked" @change="bootstrap"><el-option label="业务设备" :value="true" /><el-option label="全部台账（含测试样例）" :value="false" /></el-select>
           <div id="commission-device-filters" v-show="filtersExpanded" class="tree-filters"><el-select v-model="filters.region" clearable placeholder="全部区域" aria-label="所属区域"><el-option v-for="item in regions" :key="item" :label="item" :value="item" /></el-select><el-select v-model="filters.type" clearable placeholder="全部类型" aria-label="设备类型"><el-option v-for="item in types" :key="item" :label="item" :value="item" /></el-select><el-input v-model="filters.keyword" clearable placeholder="搜索设备名称 / 编号" /></div>
           <div class="commission-device-list"><details v-for="[region,items] in deviceGroups" :key="region" open class="device-tree-group"><summary>{{ region }}<span>{{ items.length }}</span></summary><button v-for="item in items" :key="item.device_id" type="button" class="device-tree-item" :class="{active: item.device_id===selectedDeviceId}" :disabled="selectionLocked" @click="selectedDeviceId=item.device_id"><span class="device-tree-copy"><b>{{ item.name }}</b><small :title="item.device_no">{{ formatDeviceNo(item.device_no) }}</small></span></button></details><el-empty v-if="!deviceGroups.length" description="暂无匹配设备" :image-size="56" /></div>
-          <p v-if="maintenanceId && selectedDeviceId" class="tree-note">已定位运维待办设备；返回待办列表可选择其他待办。</p><p v-else-if="!maintenanceId && selectionLocked" class="tree-note">当前任务结束或取消后可切换设备。</p>
+          <p v-if="maintenanceId && selectedDeviceId" class="tree-note">已定位本次异常设备；日常办理请返回设备异常处理。</p><p v-else-if="!maintenanceId && selectionLocked" class="tree-note">当前任务结束或取消后可切换设备。</p>
         </el-card>
         <el-card><template #header><b>设备信息</b></template><el-empty v-if="!currentDevice" description="暂无可调测设备" :image-size="56" /><dl v-else class="commission-details"><dt>设备名称</dt><dd>{{ currentDevice.name }}</dd><dt>设备类型</dt><dd>{{ display(currentDevice.device_type_name) }}</dd><dt>设备编号</dt><dd :title="currentDevice.device_no">{{ formatDeviceNo(currentDevice.device_no) }}</dd><dt>设备型号</dt><dd>{{ display(currentDevice.model) }}</dd><dt>所属区域</dt><dd>{{ display(currentDevice.region_name) }}</dd><dt>供应商</dt><dd>{{ display(currentDevice.vendor) }}</dd><dt>数据来源</dt><dd>{{ currentDevice.simulated?'模拟数据':({live:'真实链路',replay:'回放数据'})[currentDevice.source_mode] || '未登记' }}</dd></dl></el-card>
       </div>
@@ -436,27 +398,27 @@ useRealtimeRefresh(['device', 'device_state'], topics => {
         <h3 class="config-section-title">接口响应结果</h3><template v-if="report"><el-tag :type="tagType(report.status,isTestSource(report))" effect="plain">{{ statusText(report.status,isTestSource(report)) }}</el-tag><p class="tree-note">{{ report.warning }}</p><el-button link type="primary" @click="viewReport()">查看详细报告</el-button></template><p v-else class="tree-note">等待实际设备回执；超时或结果未知不会自动视为通过。</p>
       </el-card>
     </div>
-    <MaintenanceWorkflowPanel v-if="workflow" section="progress" :workflow="workflow" :busy="maintenanceBusy" :pending="!!maintenancePending" :locked="workflowLocked" @action="maintenanceAction" @report="viewReport" />
     <el-card><template #header><div class="table-toolbar"><b>联调记录</b><el-button link type="primary" :loading="recordsLoading" @click="loadRecords">刷新记录</el-button></div></template>
       <ErrorAlert :message="recordsError" @retry="loadRecords" />
       <el-table v-loading="recordsLoading" :data="records.items" empty-text="当前设备暂无联调记录"><el-table-column prop="commission_no" label="任务编号" min-width="170" /><el-table-column prop="device_name" label="设备名称" min-width="150" /><el-table-column prop="device_type_name" label="设备类型" width="100" /><el-table-column label="开始时间" min-width="175"><template #default="{row}">{{ formatTime(row.started_at) }}</template></el-table-column><el-table-column label="结束时间" min-width="175"><template #default="{row}">{{ formatTime(row.finished_at) }}</template></el-table-column><el-table-column label="耗时" width="90"><template #default="{row}">{{ duration(row) }}</template></el-table-column><el-table-column label="调测结果" width="110"><template #default="{row}"><el-tag :type="tagType(row.status,isTestSource(row))" effect="plain">{{ statusText(row.status,isTestSource(row)) }}</el-tag></template></el-table-column><el-table-column label="操作" width="100" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!['PASSED','FAILED','UNTESTABLE'].includes(row.status)" @click="viewReport(row)">查看报告</el-button></template></el-table-column></el-table>
       <div class="pagination-row"><span>共 {{ records.total }} 条</span><el-pagination v-model:current-page="records.page" :page-size="records.size" :total="records.total" layout="prev, pager, next" @current-change="loadRecords" /></div>
     </el-card>
     <el-dialog v-model="reportDialog" :title="`调测报告 · ${displayedReport?.commission_no||''}`" width="min(820px, 94vw)"><el-alert :title="displayedReport?.warning||'报告仅供在线查看。'" type="warning" show-icon :closable="false" /><pre class="json-block" style="margin-top:14px">{{ JSON.stringify(displayedReport, null, 2) }}</pre><template #footer><el-button type="primary" @click="reportDialog=false">关闭</el-button></template></el-dialog>
-    </template>
   </section>
 </template>
 
 <style scoped>
 .commission-workspace { display: grid; grid-template-columns: 253px minmax(360px, 1fr) 320px; gap: 12px; align-items: stretch; }
-.commission-column { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; min-width: 0; }
+.commission-column { display: grid; grid-template-rows: auto auto; align-content: start; gap: 12px; min-width: 0; }
 .commission-workspace > .el-card { min-width: 0; }
 .commission-steps :deep(.el-step__title) { font-size: 14px; }
 .commission-steps :deep(.el-step__description) { font-size: 12px; }
-.commission-device-list { max-height: 150px; overflow: auto; }
+.commission-device-list { max-height: 360px; overflow: auto; }
 .commission-selection-actions { display: flex; align-items: center; gap: 8px; }
 .commission-selection-actions .muted { font-size: 12px; white-space: nowrap; }
-.commission-selection.filters-collapsed .commission-device-list { max-height: 234px; }
+.commission-selection.filters-collapsed .commission-device-list { max-height: 444px; }
+.commission-selection .device-tree-copy { overflow: visible; }
+.commission-selection .device-tree-copy b, .commission-selection .device-tree-copy small { overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
 .commission-selection .tree-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .commission-selection .tree-filters > .el-input { grid-column: 1 / -1; }
 .commission-details { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px 12px; font-size: 12px; line-height: 1.6; margin: 0; }

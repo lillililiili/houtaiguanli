@@ -53,6 +53,25 @@ class AlarmReadApiTest {
     }
 
     @Test
+    void historicalAirspacesRequireSeparatePermissionsAndNeverInventOldEvidence() throws Exception {
+        String org = UUID.randomUUID().toString(), district = UUID.randomUUID().toString();
+        String source = UUID.randomUUID().toString(), alarm = UUID.randomUUID().toString();
+        scope(org, district, "H-" + alarm.substring(0, 8));
+        jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values (?,?,?,true,'mock',current_timestamp,current_timestamp,0)", source, source, "历史空域测试");
+        jdbc.update("insert into alarm (alarm_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) values (?,?,?,'UAV','LOW',current_timestamp,'mock',?,?,current_timestamp)", alarm, source, alarm, org, district);
+        String url = "/api/v1/alarms/" + alarm + "/airspace-hits";
+        mvc.perform(get(url).header("Authorization", "Bearer " + sessionId)).andExpect(status().isForbidden());
+        for (String permission : java.util.List.of("target:read", "assessment:read", "airspace:read")) {
+            jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,?,'READ',false,current_timestamp)", role, permission);
+        }
+        mvc.perform(get(url).header("Authorization", "Bearer " + sessionId)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("UNKNOWN"))
+                .andExpect(jsonPath("$.data.items").isEmpty());
+        mvc.perform(get("/api/v1/alarms/" + UUID.randomUUID() + "/airspace-hits").header("Authorization", "Bearer " + sessionId))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void alarmReadPermissionPrecedesInvalidAndRepeatedQueryParsing() throws Exception {
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='alarm:read'", role);
         mvc.perform(get("/api/v1/alarms?page=bad&page=2&unknown=value").header("Authorization", "Bearer " + sessionId))

@@ -34,7 +34,7 @@ class DeviceMaintenanceNoticePostgresTest extends DeviceMaintenanceNoticeApiTest
   observe(true,now);create();String second=taskId;advance();
   var rows=java.util.List.of(new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(firstDevice,"测试设备一",true,java.math.BigDecimal.ONE,"OFFLINE","BAD",now,now,true,true,java.util.List.of()),
       new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(device,"测试设备二",true,java.math.BigDecimal.ONE,"OFFLINE","BAD",now,now,true,true,java.util.List.of()));
-  doReturn(new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","当前设备检查",now,java.math.BigDecimal.TEN,true,0,rows,false)).when(checks).read(plan);
+  doReturn(new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","当前设备检查",now,"DEVICE_SCAN_COVERAGE",true,0,0,rows,false)).when(checks).read(plan);
   String key=java.util.UUID.randomUUID().toString();var outcomes=concurrent(first,second,key,key);
   assertThat(outcomes).containsExactlyInAnyOrder(200,409);
   assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_notice_attempt WHERE task_id IN (?,?)",Long.class,first,second)).isEqualTo(3);

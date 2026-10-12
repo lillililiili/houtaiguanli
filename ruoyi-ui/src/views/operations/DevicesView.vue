@@ -13,7 +13,9 @@ import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
 import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useAuthStore } from '@/stores/auth.js';
-import { display, formatDeviceNo, formatTime, statusText, statusType } from '@/utils/format.js';
+import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from './maintenance/presentation.js';
+import { deviceCatalogParams } from '@/utils/deviceCatalog.js';
 
 const MQTT_PROTOCOL = 'LINGYUN_MQTT_V8_6';
 const EO_PROTOCOL = 'EO_EDGE_MQTT_20250826';
@@ -32,7 +34,7 @@ const auth = useAuthStore();
 const canOperate = computed(() => auth.hasPermission('devices.op'));
 const canReadBrokers = computed(() => auth.hasPermission('interfaces.read'));
 const canEditBrokers = computed(() => auth.hasPermission('interfaces.op'));
-const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' });
+const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', statistics_scope: true, sort: 'priority' });
 const options = ref({ types: [], channels: [], regions: [], vendors: [] });
 const filterTypes = computed(() => {
   const items = options.value.type_options || [];
@@ -57,7 +59,7 @@ let overviewSequence = 0;
 const rate = value => overview.value.total ? `${((value || 0) / overview.value.total * 100).toFixed(1)}%` : '—';
 const healthText = value => ({ GOOD: '良好', DEGRADED: '一般', BAD: '异常', UNKNOWN: '未知' })[value] || '未知';
 const metrics = computed(() => [
-  { label: '设备总数', value: overview.value.total, icon: 'total', note: '当前权限范围内设备' },
+  { label: '设备总数', value: overview.value.total, icon: 'total', note: '当前筛选范围内设备' },
   { label: '在线设备', value: overview.value.online, tone: 'green', icon: 'online', note: `在线率 ${rate(overview.value.online)}` },
   { label: '离线设备', value: overview.value.offline, tone: 'amber', icon: 'offline', note: `离线率 ${rate(overview.value.offline)}` },
   { label: '异常设备', value: overview.value.abnormal, tone: 'red', icon: 'abnormal', note: `另有 ${overview.value.unknown || 0} 台状态未知` },
@@ -95,13 +97,17 @@ const brokerFormRef = ref();
 const brokerForm = reactive({ name: '', host: '', port: 8883, tls: true, source_mode: 'live', scope_key: '', username: '', credential_ref: '', allowed_cidrs: '' });
 
 function listParams() {
-  return { ...filters, enabled: filters.enabled === '' ? '' : filters.enabled === 'true', page: table.page, size: table.size };
+  return { ...overviewParams(), page: table.page, size: table.size };
+}
+
+function overviewParams() {
+  return deviceCatalogParams({ ...filters, enabled: filters.enabled === '' ? '' : filters.enabled === 'true' });
 }
 
 async function loadOverview() {
   const sequence = ++overviewSequence;
   try {
-    const summary = await deviceApi.overview({ enabled: true });
+    const summary = await deviceApi.overview(overviewParams());
     if (alive && sequence === overviewSequence) overview.value = summary;
   } catch (e) { if (alive && sequence === overviewSequence && !error.value) error.value = e.message; }
 }
@@ -156,6 +162,10 @@ async function realtimeRefresh() {
   try {
     const data = await deviceApi.list(listParams());
     if (!alive || sequence !== listSequence) return;
+    if (!data.items.length && table.page > 1 || selectedId.value && !data.items.some(item => item.device_id === selectedId.value)) {
+      await loadList(true, false);
+      return;
+    }
     Object.assign(table, data);
     const after = JSON.stringify(data.items.find(item => item.device_id === selectedId.value) || null);
     if (selectedId.value && after !== before && after !== 'null' && !detailLoading.value) await loadDetail(selectedId.value);
@@ -173,7 +183,7 @@ async function bootstrap() {
   loading.value = true; error.value = '';
   const sequence = ++overviewSequence;
   try {
-    const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), deviceApi.overview({ enabled: true }), integrationApi.protocols()]);
+    const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), deviceApi.overview(overviewParams()), integrationApi.protocols()]);
     if (!alive) return;
     options.value = filterOptions; protocols.value = protocolList;
     if (sequence === overviewSequence) overview.value = summary;
@@ -182,7 +192,7 @@ async function bootstrap() {
 }
 
 function search() { table.page = 1; void loadList(false); }
-function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' }); search(); }
+function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', statistics_scope: true, sort: 'priority' }); search(); }
 function selectRow(row) { selectedId.value = row.device_id; loadDetail(row.device_id); }
 
 function resetDeviceForm() {
@@ -436,6 +446,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
       <template #header><div class="table-toolbar"><b>设备管理</b><span class="muted">共 {{ table.total }} 台 · 点击设备查看详情</span></div></template>
       <div class="device-filters">
       <el-form inline @submit.prevent="search">
+        <el-form-item label="设备范围"><el-select v-model="filters.statistics_scope" aria-label="设备范围"><el-option label="业务设备" :value="true" /><el-option label="全部台账（含测试样例）" :value="false" /></el-select></el-form-item>
         <el-form-item label="关键词"><el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="search" /></el-form-item>
         <el-form-item label="设备类型"><el-select v-model="filters.type_code" clearable placeholder="全部"><el-option v-for="item in filterTypes" :key="item.code" :label="item.name || item.code" :value="item.code" /></el-select></el-form-item>
         <el-form-item label="所属区域"><el-select v-model="filters.region" clearable placeholder="全部"><el-option v-for="item in options.regions" :key="item" :label="item" :value="item" /></el-select></el-form-item>
@@ -461,7 +472,7 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
 
-      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)" />
+      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)"><template #actions><router-link v-if="selectedId && auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read')" :to="{path:'/operations/maintenance',query:{device_id:selectedId}}" class="el-button el-button--primary is-link">查看异常处置</router-link></template></DeviceCatalogPreview>
     </div>
 
     <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing ? `编辑设备 · ${formatDeviceNo(deviceForm.device_no)}` : '接入设备'" width="min(990px, 94vw)" top="5vh" class="device-access-dialog" destroy-on-close :close-on-click-modal="!deviceDialog.saving" :close-on-press-escape="!deviceDialog.saving" :show-close="!deviceDialog.saving">

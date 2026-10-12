@@ -128,24 +128,28 @@ class LocalDemoRolesSeederTest {
         }
     }
 
-    /** BUG-02：运维待办的开始、提交核验与完成要 monitoring.op；接入调测、设备参数要 commissioning.op 与 devices.op。 */
+    /** Legacy module grants must not promote a custom business role to backend identity. */
     @Test
-    void theOpsRoleCanWorkMaintenanceTodos() throws Exception {
+    void legacyOpsRoleCannotEnterBackendMaintenance() throws Exception {
         JsonNode me = me("zhaopeng");
         assertThat(codes(me)).contains("monitoring.op", "commissioning.op", "devices.op");
-        assertThat(menus(me)).contains("devices", "commission", "monitor");
+        assertThat(me.path("user_type").asText()).isEqualTo("FRONTEND");
+        assertThat(menus(me)).doesNotContain("devices", "commission", "monitor", "maintenance");
+        mvc.perform(get("/api/v1/device-monitor/tree").header("Authorization", "Bearer " + login("zhaopeng")))
+                .andExpect(status().isForbidden());
     }
 
-    /** OBS-03（用户确认）：值班员看得到态势页的设备事件、光电画面和证据，但不因此多出菜单或设备操作。 */
+    /** Shared device reads survive identity separation; backend monitoring does not. */
     @Test
-    void theDutyOfficerCanViewDeviceEventsEoVideoAndEvidence() throws Exception {
+    void theDutyOfficerCanReadSharedDevicesButNotBackendEvents() throws Exception {
         String token = login("zhangwei");
         JsonNode me = json.readTree(mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
         assertThat(codes(me)).contains("monitoring.read", "devices.read", "target:read", "evidence:read", "evidence:preview");
         assertThat(menus(me)).as("只给数据权限，不多出菜单").doesNotContain("monitor", "devices", "evidence");
         mvc.perform(get("/api/v1/device-events").param("after_seq", "0").param("limit", "5").param("latest", "true")
-                .header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+                .header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/devices").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
     }
 
     /**
@@ -195,29 +199,21 @@ class LocalDemoRolesSeederTest {
                 + " and permission_code=?", Boolean.class, role, permission));
     }
 
-    /**
-     * 决策 18-11：审计员的本职就是"只读 + 审计日志导出"。没有审计日志这一页，这个角色在演示里什么也证明不了。
-     *
-     * 审计日志没有动作码：列表要模块级 `audit.read`、导出要 `audit.op`。
-     */
+    /** 2026-10-08：旧审计授权数据不提升自定义业务角色的前后台身份。 */
     @Test
-    void theAuditorCanActuallyReachAndExportTheAuditLog() throws Exception {
+    void legacyAuditGrantDoesNotAllowBackendAuditAccess() throws Exception {
         JsonNode me = me("wugang");
-        assertThat(menus(me)).as("审计员要进得去审计日志").contains("archive");
+        assertThat(me.path("user_type").asText()).isEqualTo("FRONTEND");
+        assertThat(menus(me)).doesNotContain("archive");
         assertThat(codes(me)).as("审计日志列表").contains("audit.read");
         assertThat(codes(me)).as("审计日志导出").contains("audit.op");
+        mvc.perform(get("/api/v1/audit-logs").header("Authorization", "Bearer " + login("wugang")))
+                .andExpect(status().isForbidden());
     }
 
-    /**
-     * 审计员的权限必须**撑得过下一次重启**。
-     *
-     * 单个 Spring 上下文里两个 runner 各跑一遍、且初始化器(@Order 30) 在种子(@Order 130) 之前，
-     * 所以上面那条用例是绿的——但那只证明了"第一次启动"。15-25 就是这么漏过去的：
-     * 初始化器每次启动都把非超管角色的 users/roles/audit/countermeasure 抹成 NONE，
-     * 第二次启动才现形。这里手动再跑一次初始化器，把"第二次启动"补出来。
-     */
+    /** 重跑初始化器仍保留旧授权行，并继续按前台身份拒绝后台入口。 */
     @Test
-    void theAuditorKeepsTheAuditLogAfterTheNextRestart() {
+    void retainedAuditRowsDoNotPromoteFrontendIdentityAfterRestart() throws Exception {
         superAdminInitializer.run(new DefaultApplicationArguments());
         // 决策 18-13：审计从"只有超管可持"的清单里拿掉了，但**用户、角色、反制仍然只归超管**——
         // 放宽的是审计这一项，不是整条规则。这条反面断言和上面那条是一对：只断"审计保住了"，
@@ -229,10 +225,11 @@ class LocalDemoRolesSeederTest {
                 """, Integer.class)).as("用户、角色、反制仍只归超管").isZero();
         assertThat(jdbc.queryForObject("select permission_level from app_role_permission"
                 + " where role_code='ROLE-DEMO-AUDIT' and permission_code='audit'", String.class))
-                .as("重启后审计员仍要能读审计日志").isEqualTo("OP");
+                .as("旧授权数据保留").isEqualTo("OP");
         assertThat(jdbc.queryForObject("select menu_enabled from app_role_permission"
                 + " where role_code='ROLE-DEMO-AUDIT' and permission_code='audit'", Boolean.class))
-                .as("重启后审计日志菜单仍要在").isTrue();
+                .as("旧菜单配置保留但不授予后台身份").isTrue();
+        legacyAuditGrantDoesNotAllowBackendAuditAccess();
     }
 
     @Test

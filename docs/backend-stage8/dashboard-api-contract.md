@@ -6,7 +6,7 @@
 
 `GET /api/v1/dashboard/snapshot` 给 `#/bigscreen` 一次读取 KPI、趋势、设备健康、飞行计划计数、告警列表和地图叠加。天气、统一检索、证据文件、真实光电流、处罚案件、联动反制完成事实均不在本接口。
 
-趋势图与运行统计页同源，读取 `GET /stats/operations` 的样本事实表 `days`，带 `simulated`/`source_mode`；不得把它解释成目标/告警领域表的官方运行指标。
+趋势图与运行统计页同源，读取 `GET /stats/operations` 的样本事实表 `days`，带 `simulated`/`source_mode`；不得把它解释成目标/告警领域表的官方运行指标。2026-10-09（新-35）：大屏只画按日数字，趋势改走不带轨迹观测指标的精简查询（`ReportingService.operationsWithoutObservations`，事务口径与 `operations(from,to)` 相同），`days` 与完整运行统计逐日一致；`simulated`/`source_mode` 因此只描述被统计的目标与案件，不含仅在轨迹分区出现的历史目标来源。原先每次快照都把 7 天内每个融合点逐点算一遍监测时长和里程，大屏用不上，却要好几秒。大屏页面自己再取的运行统计同样带 `include_observations=false`。
 
 统计口径（ZT-17；2026-10-07 用户决定设备模拟器的数据也计入，取代 10-06 的“只计 live”）：大屏上所有计数——`kpis.*`、`closure.pending_verification`/`closure.confirmed_blocked`、`target_risk`、`flights.*`、`devices.*`——与运行统计同一口径，**计 `source_mode` 为 `live`（真实设备）或 `replay`（设备模拟器）的数据**，不计建库时系统自带的演示样例（`mock`）。只有允许模拟的环境（local+qa、test）把 `replay` 算进来，正式环境只计 `live`，库里留有历史模拟记录也不进统计。口径定义在 `platform/query/StatisticsScope`，改口径只改那里。其中来自设备模拟器的条数放在 `simulated_included` 里，页面必须写明，免得被当成现场真实数据。`alarms.items`/`alarms.total` 和 `map.*` 不是计数，仍按**全部来源**给。业务报表默认正式口径仍只计 live；验收环境显式开启的模拟报表口径仅计 mock/replay，见[运行统计接口契约](../运行统计接口契约.md)，不与本节计数口径混用。
 
@@ -45,7 +45,7 @@
 | --- | --- | --- |
 | `kpis.sensed_today` | 运行统计选今天时的“新增目标数”：`first_seen_at` 在今日、统计口径（live + replay）、不含被合并的目标（`track_status=MERGE`）、有单位与区域、在用户数据范围内 | `null` |
 | `kpis.alarms_today` | 今日 `occurred` 窗口内、统计口径的告警总数 | `null` |
-| `kpis.pending_assessment` | `latest_only=true` 且 `review_state=PENDING_REVIEW`、统计口径的研判总数 | `null` |
+| `kpis.pending_assessment` | 北京时间当天 `evaluated_at`（含 00:00、不含次日 00:00），`latest_only=true` 且 `review_state=PENDING_REVIEW`，按既有权限与来源口径计数；页面显示“今日待研判目标”（2026-10-09） | `null` |
 | `kpis.pending_handoffs` | `delivery_status=PENDING_DELIVERY`、统计口径的交接总数 | `null` |
 | `trend` | 近 7 日（含今日）`days[{date,md,total,illegal}]`，以及 `simulated`/`source_mode`；运行统计不给的数（缺 `target:read` 或 `assessment:read`）为 `null` | 整块 `null` |
 | `statistics_source_modes` | 计数计入的来源：允许模拟的环境为 `["live","replay"]`，正式环境为 `["live"]`；页面据此写口径说明 | 同左（与权限无关） |
@@ -59,7 +59,7 @@
 | `flights.today` / `flights.executing` / `flights.completed` | 今日窗口内统计口径的计划总数、其中 `status_code=EXECUTING` 数、`status_code=COMPLETED` 数 | 整块 `null` |
 | `alarms.items` / `alarms.total` | 今日告警最多 8 条（全部来源，按 `received_at DESC`）与同口径总数 | `[]` / `null` |
 | `map.targets` | 有 WGS-84 位置的目标（最多 100，按 `last_seen` 倒序，不按今日窗口过滤） | `[]` |
-| `map.devices` | 有经纬度的启用设备（最多 46）；非 WGS-84 不画 | `[]` |
+| `map.devices` | 当前授权范围内全部有经纬度的启用设备，不按固定台数截断；非 WGS-84 不画 | `[]` |
 | `map.airspaces` | 当前有效版本且含边界的空域（最多 40） | `[]` |
 | `map.alarms` | 今日告警中能关联到已返回目标位置的点（最多 8） | `[]` |
 

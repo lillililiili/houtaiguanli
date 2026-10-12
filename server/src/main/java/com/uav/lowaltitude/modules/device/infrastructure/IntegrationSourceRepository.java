@@ -70,6 +70,14 @@ public class IntegrationSourceRepository {
                 """, enabled, now, id, version);
     }
 
+    /** 设备停用时允许同步关闭历史模拟来源；管理端来源编辑仍只允许 live。 */
+    public int disableSimulated(String id, long version, long now) {
+        return jdbc.update("""
+                UPDATE ops_integration_source SET enabled=FALSE,version=version+1,updated_at=?
+                WHERE source_id=? AND version=? AND simulated=TRUE AND source_mode IN ('mock','replay')
+                """, now, id, version);
+    }
+
     public void ensureStandardLiveRadar(String sourceCode, String name, String protocolVersion, boolean enabled, long now) {
         java.sql.Timestamp time = new java.sql.Timestamp(now);
         String version = protocolVersion == null || protocolVersion.isBlank() ? "3.0.0" : protocolVersion.trim();

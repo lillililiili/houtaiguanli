@@ -674,6 +674,23 @@ class EmergencyStopApiTest {
                 .andExpect(status().isAccepted())).path("command_id").asText();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints={0,15})
+    void sharedFrontendDeviceOperationReturnsItsOwnReceiptWithoutBackendAccess(int mask) throws Exception {
+        String device=fourChannel(), authorization=authorization("COUNTERMEASURE",true), requestKey=key();
+        var body=Map.of("authorization_id",authorization,"action","SET_MASK","mask",mask,"reason","共享设备提交回执");
+        String command=data(request("/api/v1/devices/"+device+"/commands/countermeasure-4ch",operator,requestKey,body)
+                .andExpect(status().isAccepted())).path("command_id").asText();
+        assertThat(command).isNotBlank();
+        assertThat(data(request("/api/v1/devices/"+device+"/commands/countermeasure-4ch",operator,requestKey,body)
+                .andExpect(status().isAccepted())).path("command_id").asText()).isEqualTo(command);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?",Integer.class,device)).isEqualTo(1);
+        mvc.perform(get("/api/v1/device-commands/"+command).header("Authorization","Bearer "+operator))
+                .andExpect(status().isForbidden());
+        request("/api/v1/devices/"+device+"/commands/countermeasure-4ch",requester,key(),body).andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?",Integer.class,device)).isEqualTo(1);
+    }
+
     @Test
     void failedFourChannelStopAllowsExplicitRetryAndPreservesHistory() throws Exception {
         String device = fourChannel();

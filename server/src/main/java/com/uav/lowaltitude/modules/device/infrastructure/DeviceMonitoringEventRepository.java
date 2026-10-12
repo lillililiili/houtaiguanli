@@ -9,7 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-/** Shared event persistence. Callers hold a transaction; lock order is state row, then window rows. */
+/** Shared event persistence. Lock order is catalog, state, then window/domain rows. */
 @Repository
 public class DeviceMonitoringEventRepository {
     public static final long WINDOW_MILLIS = 30_000;
@@ -34,6 +34,7 @@ public class DeviceMonitoringEventRepository {
 
     public Snapshot lock(String deviceId) {
         requireTransaction();
+        jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE",deviceId);
         var states=jdbc.queryForList("SELECT connectivity,work_state_code FROM ops_device_state WHERE device_id=? FOR UPDATE",deviceId);
         if(states.isEmpty()) throw new IllegalStateException("DEVICE_STATE_MISSING");
         var device=jdbc.queryForMap("SELECT source_mode,simulated FROM ops_device WHERE device_id=?",deviceId);
