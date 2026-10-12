@@ -337,12 +337,15 @@ public class SpaceRiskEvaluationService {
     }
 
     private static String reasonText(SpaceObservation observation, Decision decision) {
-        StringBuilder text = new StringBuilder("空中异物");
+        boolean bird = "BIRD_FLOCK".equals(observation.subtypeCode());
+        StringBuilder text = new StringBuilder(bird ? "鸟类目标" : "空中异物");
         if (observation.targetNo() != null) text.append("（").append(observation.targetNo()).append("）");
         if (observation.distanceToRouteM() != null) {
             text.append("距航线中心线 ").append(observation.distanceToRouteM().setScale(0, java.math.RoundingMode.HALF_UP)).append(" 米");
         }
         if (observation.objectCount() != null) text.append("，规模约 ").append(observation.objectCount());
+        else if (bird) text.append("；鸟类数量未知");
+        if (observation.altitudeM() == null || !"AGL".equals(observation.altitudeDatum())) text.append("；离地高度未知");
         if (decision.escalated()) text.append("；因数量或趋势上调一级");
         return text.toString();
     }

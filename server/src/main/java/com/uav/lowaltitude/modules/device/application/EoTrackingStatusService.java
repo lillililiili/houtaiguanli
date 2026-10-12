@@ -14,6 +14,8 @@ import static com.uav.lowaltitude.modules.device.application.EoTrackingPolicy.te
 
 @Service
 public class EoTrackingStatusService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private EoFusionObservationSummaryService fusionObservations;
     private final DeviceAccessPolicy access;
     private final TargetReadService targets;
     private final EoEdgeRepository edges;
@@ -93,10 +95,7 @@ public class EoTrackingStatusService {
                 if(Set.of("TIMED_OUT","UNKNOWN").contains(commandStatus)) state="LOST";
                 else if("SUCCEEDED".equals(commandStatus)) {
                     var binding=edges.binding(text(task,"ops_device_id"),false);
-                    boolean current=binding!=null && binding.enabled() && binding.lastHeartbeatAt()!=null
-                            && binding.lastHeartbeatAt()>=policy.heartbeatCutoff() && binding.lastHeartbeatAt()<=policy.now()
-                            && binding.sourceMode().equals(EoTrackingPolicy.mode(snapshot));
-                    state=block==null && current && edges.freshTrackingReport(task,policy.cutoff(),policy.now())?"TRACKING":"LOST";
+                    state=policy.trackingBlock(snapshot,task,binding)==null?"TRACKING":"LOST";
                 }
                 else state="STARTING";
             }
@@ -106,10 +105,10 @@ public class EoTrackingStatusService {
         if(open) {
             status=dto.status();
             message=switch(status) {
-                case "TRACKING" -> "已收到跟踪回执；视频可用性独立显示";
+                case "TRACKING" -> block==null?"已收到跟踪回执；视频可用性独立显示":"光电持续回报，融合位置暂不可用；视频可用性独立显示";
                 case "ENDING" -> "停止指令处理中，设备继续保留占用";
                 case "END_UNCONFIRMED" -> commands.unconfirmedStopMessage(task);
-                case "LOST" -> "目标位置或执行结果未知，不代表飞离，不自动重试";
+                case "LOST" -> "光电跟踪回报或设备状态待确认，不代表目标飞离，不自动重试";
                 default -> "跟踪指令已提交，等待设备回执";
             };
         } else if("EO_RESULT_UNKNOWN".equals(block)) {status="LOST";message=blockMessage(block);}
@@ -130,7 +129,8 @@ public class EoTrackingStatusService {
                 else message=message+"；当前范围没有可用空闲光电设备";
             }
         }
-        return new TrackingStatus(target,status,message,policy.enabledFor(snapshot),paused,demand,dto,List.copyOf(actions));
+        return new TrackingStatus(target,status,message,policy.enabledFor(snapshot),paused,demand,dto,List.copyOf(actions),
+                fusionObservations.current(task));
     }
     public static String blockMessage(String block) {
         return switch(block) {
@@ -148,6 +148,7 @@ public class EoTrackingStatusService {
             throw new ApiException(HttpStatus.FORBIDDEN,"DEVICE_SCOPE_FORBIDDEN","当前账号无权查看或操作关联光电设备");
     }
     public record TrackingStatus(String targetId,String status,String message,boolean autoEnabled,boolean autoPaused,
-            List<EoTrackingPolicy.DemandReason> demandReasons,Task task,List<String> allowedActions) { }
+            List<EoTrackingPolicy.DemandReason> demandReasons,Task task,List<String> allowedActions,
+            EoFusionObservationSummaryService.Summary eoFusionObservation) { }
     public record Task(String taskId,String status,String origin,String deviceId,String deviceName,String commandStatus) { }
 }

@@ -67,7 +67,7 @@ public interface IdentityAdminMapper {
             """)
     List<String> listActionCodesForRole(@Param("roleCode") String roleCode);
 
-    /** 超级管理员隐式继承的动作目录；直接反制必须显式授权，因此排除。 */
+    /** 超级管理员的普通动作目录；直接反制从完整性初始化写入的显式 OP 行读取。 */
     @Select("SELECT permission_code FROM app_permission WHERE permission_kind = 'ACTION'"
             + " AND permission_code <> 'disposal:direct' ORDER BY permission_code")
     List<String> listActionCodeCatalog();

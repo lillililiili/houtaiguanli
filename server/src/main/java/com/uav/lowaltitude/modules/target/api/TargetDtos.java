@@ -119,7 +119,11 @@ public final class TargetDtos {
             String sourceName,
             /* 阶段 8 追加：来源类型与其字段口径状态（DEMO/CONFIRMED），未登记类型的来源保持 null。 */
             String sourceType,
-            String schemaStatus) {
+            String schemaStatus,
+            String fusionStatus,
+            List<String> contributionAttributes,
+            Long observationAt,
+            String fusionReason) {
     }
 
     /** 阶段 8 追加：轨迹状态机快照，可空（引擎未接管的目标没有该行）。 */

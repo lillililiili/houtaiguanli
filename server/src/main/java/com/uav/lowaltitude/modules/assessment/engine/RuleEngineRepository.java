@@ -339,6 +339,7 @@ public class RuleEngineRepository {
                 + " WHERE p.owner_org_id=:org AND p.district_id=:district AND p.status_code<>'" + PLAN_STATUS_CANCELLED + "'"
                 + " AND (p.source_mode=:source_mode" + (bridge ? " OR (p.source_mode='mock' AND p.source_id='" + LOCAL_PLAN_SIMULATOR + "')" : "") + ")"
                 + " AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)"
+                + " AND " + com.uav.lowaltitude.modules.flight.infrastructure.SimulationPlanBatchRepository.eligibleSql("p")
                 + " AND (" + bySn + "(p.start_at IS NOT NULL AND p.end_at IS NOT NULL AND p.start_at<=:latest_start AND :earliest_end<=p.end_at))"
                 + " ORDER BY p.start_at ASC,p.plan_id ASC", p,
                 (rs, i) -> new PlanFact(rs.getString("plan_id"), rs.getString("route_version_id"), rs.getString("uav_sn"), time(rs, "start_at"), time(rs, "end_at"),

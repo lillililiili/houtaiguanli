@@ -32,13 +32,15 @@ public class EoEdgeCommandService {
     private final com.uav.lowaltitude.modules.identity.infrastructure.UserMapper users;
     private final com.uav.lowaltitude.modules.identity.application.AccessService access;
     private final org.springframework.transaction.support.TransactionTemplate transactions;
+    private final com.uav.lowaltitude.modules.device.infrastructure.EoDispatchRepository dispatchQueue;
 
     public EoEdgeCommandService(EoEdgeRepository edges, ObjectProvider<MqttSessionSupervisor> sessions, AppClock clock,
                                 ObjectMapper json, org.springframework.core.env.Environment environment,
                                 EoTrackingPolicy policy, com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository tracking,
                                 com.uav.lowaltitude.modules.identity.infrastructure.UserMapper users,
                                 com.uav.lowaltitude.modules.identity.application.AccessService access,
-                                org.springframework.transaction.PlatformTransactionManager transactionManager) {
+                                org.springframework.transaction.PlatformTransactionManager transactionManager,
+                                com.uav.lowaltitude.modules.device.infrastructure.EoDispatchRepository dispatchQueue) {
         this.edges = edges; this.sessions = sessions; this.clock = clock; this.json = json;
         this.commandTimeoutMillis = Long.parseLong(environment.getProperty("app.eo-edge.command-timeout-millis", "10000"));
         this.stopRetryEnabled = environment.getProperty("app.eo-edge.stop-retry.enabled", Boolean.class, true);
@@ -48,6 +50,7 @@ public class EoEdgeCommandService {
             throw new IllegalArgumentException("Invalid EO stop recovery limits");
         this.policy=policy;this.tracking=tracking;
         this.users=users;this.access=access;
+        this.dispatchQueue=dispatchQueue;
         this.transactions=new org.springframework.transaction.support.TransactionTemplate(transactionManager);
         this.transactions.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
@@ -191,6 +194,9 @@ public class EoEdgeCommandService {
                     edges.updateCommand(commandId,"SENT","CANCELLED",clock.nowMillis(),"TRACK_NOT_CURRENT","原停止任务已非当前任务");
                     return;
                 }
+                if (!switchStillAllowed(current,task,binding)) {
+                    cancelUnsentSwitch(current,task,"SENT");return;
+                }
                 if (binding == null || !binding.enabled() || !binding.brokerId().equals(prepared.binding().brokerId())
                         || !binding.edgeId().equals(prepared.binding().edgeId())
                         || !binding.externalDeviceId().equals(prepared.binding().externalDeviceId())
@@ -221,6 +227,9 @@ public class EoEdgeCommandService {
             if(current==null || !"ENDING".equals(text(current,"status")) || !commandId.equals(text(current,"end_command_id"))) {
                 edges.updateCommand(commandId,"QUEUED","CANCELLED",now,"TRACK_NOT_CURRENT","原停止任务已非当前任务");
                 return null;
+            }
+            if (!switchStillAllowed(command,current,binding)) {
+                cancelUnsentSwitch(command,current,"QUEUED");return null;
             }
             if ("AUTO_STOP_RECOVERY".equals(text(command, "reason"))
                     && (!matchingSimulatedCommand(command, binding, END) || !stopRecoveryContext(current, binding)
@@ -297,8 +306,28 @@ public class EoEdgeCommandService {
         String id=text(command,"requested_by");
         if(id==null) return false;
         var user=users.findById(id);
-        return user!=null && "ACTIVE".equals(user.getStatus()) && tracking.roleEnabled(user.getRoleCode()) && access.permissionCodes(user.getRoleCode()).contains("devices.op")
+        return user!=null && !user.isMustChangePassword() && "ACTIVE".equals(user.getStatus()) && tracking.roleEnabled(user.getRoleCode()) && access.permissionCodes(user.getRoleCode()).contains("devices.op")
                 && tracking.deviceScope(binding.opsDeviceId(),id,user.getScopeMode());
+    }
+    /** Recheck immediately before publication: a newly protected task cannot be preempted. */
+    private boolean switchStillAllowed(Map<String,Object> command,Map<String,Object> task,Binding binding) {
+        if(!"EO_DISPATCH_SWITCH".equals(text(command,"reason"))) return true;
+        var req=dispatchQueue.reservation(text(task,"task_id"));
+        if(req==null || binding==null || dispatchQueue.protectedTarget(text(task,"target_id"))) return false;
+        var incoming=tracking.snapshot(text(req,"target_id"));
+        if(policy.block(incoming)!=null || !binding.sourceMode().equals(EoTrackingPolicy.mode(incoming))
+                || !binding.ownerOrgId().equals(text(incoming,"owner_org_id")) || !binding.districtId().equals(text(incoming,"district_id"))) return false;
+        if("MANUAL".equals(text(req,"origin"))) return operatorAllowed(command,binding);
+        long now=clock.nowMillis();
+        return policy.enabledFor(incoming) && !tracking.paused(text(req,"target_id")) && !policy.demand(text(req,"target_id")).isEmpty()
+                && ("AUTO".equals(text(task,"origin")) || dispatchQueue.protectedTarget(text(req,"target_id")))
+                && dispatchQueue.priority(text(req,"target_id"),now-policy.demandMaxAge(),now)
+                    >dispatchQueue.priority(text(task,"target_id"),now-policy.demandMaxAge(),now);
+    }
+    private void cancelUnsentSwitch(Map<String,Object> command,Map<String,Object> task,String from) {
+        long now=clock.nowMillis();
+        edges.updateCommand(text(command,"command_id"),from,"CANCELLED",now,"EO_SWITCH_ELIGIBILITY_CHANGED","切换资格已变化，未发送停止指令");
+        edges.updateTask(text(task,"task_id"),"ENDING","OPEN",null,now);
     }
     private Map<String, Object> read(String value) {
         try { return json.readValue(value, new com.fasterxml.jackson.core.type.TypeReference<>() { }); }

@@ -16,7 +16,7 @@ public final class C04DecisionTable {
     public static final String REASON_CORRIDOR_INTRUSION = "SPACE_OBJECT_IN_CORRIDOR";
     public static final String REASON_ALTITUDE_UNKNOWN = "SPACE_OBJECT_ALTITUDE_UNKNOWN";
     public static final String REASON_NEAR_ROUTE = "SPACE_OBJECT_NEAR_ROUTE";
-    /** 决策 9-18：数量与趋势当前没有数据源；缺失时不上调等级，并如实记录"这项事实没有"。 */
+    /** 数量只接受可信观测事实；缺失时不按数量上调等级，并保留未知原因。 */
     public static final String UNKNOWN_OBJECT_COUNT = "OBJECT_COUNT_UNAVAILABLE";
     public static final String UNKNOWN_TREND = "TREND_UNAVAILABLE";
     /** 等级阶梯：上调一级即在本表内右移一位，最高到 CRITICAL。 */
@@ -51,9 +51,11 @@ public final class C04DecisionTable {
         // flight_risk.plan_id 非空，没有计划的"异物"没有可挂靠的业务对象，硬造一条会污染风险队列。
         if (!observation.activePlan()) return Decision.none(unknown);
         if (observation.altitudeBand() == AltitudeBand.CRUISE) return Decision.none(unknown);
-        // 客户确认 4-2：鸟群达到数量门槛才进入风险判定，未知数量不能冒充满足门槛。
-        // 气球等异物不受鸟群数量条件约束。
-        if ("BIRD_FLOCK".equals(observation.subtypeCode())
+        // 2026-10-11 新版本：数量仅参与分级，不阻断空间风险判定。
+        // 缺少该开关的历史版本仍执行原数量门槛，回滚不能悄悄改变旧版本含义。
+        boolean requireFlockCount = !params.has(RULE_CODE, "flock_count_required")
+                || params.bool(RULE_CODE, "flock_count_required");
+        if (requireFlockCount && "BIRD_FLOCK".equals(observation.subtypeCode())
                 && (observation.objectCount() == null || observation.objectCount() < flockThreshold)) return Decision.none(unknown);
         String base = baseSeverity(observation);
         if (base == null) return Decision.none(unknown);

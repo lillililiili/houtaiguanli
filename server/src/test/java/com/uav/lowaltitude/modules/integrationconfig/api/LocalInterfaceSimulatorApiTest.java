@@ -23,6 +23,35 @@ class LocalInterfaceSimulatorApiTest {
  String token;
  static final String BASE="/api/v1/local-interface-simulator";
  @BeforeEach void login() throws Exception { token="Bearer "+json.readTree(mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText(); }
+ @Autowired com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository rules;
+ @Test void currentBatchAloneParticipatesAndOldTasksStayReadable() throws Exception {
+  String sn="BATCH-"+UUID.randomUUID();
+  var body=plan("batch-old-"+UUID.randomUUID());body.put("uav_sn",sn);body.put("source_mode","replay");
+  String old=send("/plans",body,200).path("subject_id").asText();
+  body.put("message_id","batch-new-"+UUID.randomUUID());body.put("end_at",((Number)body.get("end_at")).longValue()+60000);
+  String current=send("/plans",body,200).path("subject_id").asText();
+  body.put("message_id","unmanaged-"+UUID.randomUUID());body.put("end_at",((Number)body.get("end_at")).longValue()+60000);
+  String unmanaged=send("/plans",body,200).path("subject_id").asText();
+  var row=jdbc.queryForMap("select owner_org_id,district_id from flight_plan where plan_id=?",old);
+  var before=jdbc.queryForList("select * from flight_plan where uav_sn=? order by plan_id",sn);
+  long now=System.currentTimeMillis();
+  var batch=new LinkedHashMap<String,Object>();batch.put("batch_id","batch-"+UUID.randomUUID());batch.put("started_at",now-1000);
+  batch.put("owner_org_id",row.get("owner_org_id"));batch.put("district_id",row.get("district_id"));
+  batch.put("plan_ids",List.of(current));batch.put("historical_plan_ids",List.of(old));
+  var result=send("/plan-batches/activate",batch,200);assertThat(result.path("batch_id").asText()).isEqualTo(batch.get("batch_id"));
+  assertThat(send("/plan-batches/activate",batch,200)).isEqualTo(result);
+  var at=java.time.Instant.ofEpochMilli(now).atOffset(java.time.ZoneOffset.UTC);
+  assertThat(rules.candidatePlans(row.get("owner_org_id").toString(),row.get("district_id").toString(),sn,at,10,"replay"))
+   .extracting(com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanFact::planId).contains(current,unmanaged).doesNotContain(old);
+  mvc.perform(get("/api/v1/flight-plans/"+old).header("Authorization",token)).andExpect(status().isOk());
+  assertThat(jdbc.queryForList("select * from flight_plan where uav_sn=? order by plan_id",sn)).isEqualTo(before);
+  var changed=new LinkedHashMap<>(batch);changed.put("plan_ids",List.of(old));send("/plan-batches/activate",changed,409);
+  var next=new LinkedHashMap<>(batch);next.put("batch_id","batch-"+UUID.randomUUID());next.put("started_at",now);next.put("plan_ids",List.of(old));next.put("historical_plan_ids",List.of());
+  send("/plan-batches/activate",next,200);send("/plan-batches/activate",batch,409);
+  assertThat(rules.candidatePlans(row.get("owner_org_id").toString(),row.get("district_id").toString(),sn,at,10,"replay"))
+   .extracting(com.uav.lowaltitude.modules.assessment.engine.RuleContracts.PlanFact::planId).contains(old,unmanaged).doesNotContain(current);
+  assertThat(jdbc.queryForList("select * from flight_plan where uav_sn=? order by plan_id",sn)).isEqualTo(before);
+ }
  @Test void planInputPersistsAndReplaysButConflictingMessageCannotOverwrite() throws Exception {
   var body=plan("input-plan-one");
   var first=send("/plans",body,200);String id=first.path("subject_id").asText();

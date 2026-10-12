@@ -589,7 +589,9 @@ class EoManualTrackApiTest {
         edges.trackingReport(task,now,now);
         video(target, "TRACKING", "NONE");
         mvc.perform(get("/api/v1/targets/{id}/video", target).header("Authorization", bearer()))
-                .andExpect(jsonPath("$.data.reason").value("设备已确认跟踪，等待模拟器光电设备推送视频流。"));
+                .andExpect(jsonPath("$.data.reason").value("设备已确认跟踪，等待模拟器光电设备推送视频流。"))
+                .andExpect(jsonPath("$.data.eo_fusion_observation.status").value("NONE"))
+                .andExpect(jsonPath("$.data.eo_fusion_observation.message").value("尚无可用识别观测"));
         jdbc.update("UPDATE command_receipt SET payload=? WHERE command_id=?", payload.replace(task, UUID.randomUUID().toString()), command);
         video(target, "RECEIPT_UNAVAILABLE", "NONE");
         jdbc.update("UPDATE command_receipt SET payload=? WHERE command_id=?", payload, command);

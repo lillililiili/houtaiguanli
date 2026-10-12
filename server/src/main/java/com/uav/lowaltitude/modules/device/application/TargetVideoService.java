@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import com.uav.lowaltitude.modules.device.api.TargetVideoController.TargetVideoDto;
 import com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration.Binding;
+import com.uav.lowaltitude.modules.device.domain.EoTrackingContinuity;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository;
 import com.uav.lowaltitude.modules.target.application.TargetReadService;
@@ -28,31 +29,40 @@ public class TargetVideoService {
     private final VideoMediaClient media;
     private final long reportMaxAge;
     private final long heartbeatMaxAge;
+    private final EoFusionObservationSummaryService fusionObservations;
 
     public TargetVideoService(DeviceAccessPolicy access, TargetReadService targets, EoEdgeRepository edges,
                               DeviceRepository devices, ObjectMapper mapper, AppClock clock,
                               VideoStreamRegistry streams, VideoMediaClient media,
                               @org.springframework.beans.factory.annotation.Value("${app.eo-edge.position-max-age-millis:15000}") long reportMaxAge,
-                              @org.springframework.beans.factory.annotation.Value("${app.eo-edge.heartbeat-timeout-millis:30000}") long heartbeatMaxAge) {
+                              @org.springframework.beans.factory.annotation.Value("${app.eo-edge.heartbeat-timeout-millis:30000}") long heartbeatMaxAge,
+                              EoFusionObservationSummaryService fusionObservations) {
         this.access = access; this.targets = targets; this.edges = edges;
         this.devices = devices; this.mapper = mapper; this.clock = clock;
         this.streams = streams; this.media = media;
         this.reportMaxAge=reportMaxAge;
         this.heartbeatMaxAge=heartbeatMaxAge;
+        this.fusionObservations=fusionObservations;
     }
 
     public TargetVideoDto video(String targetId) {
         TargetVideoDto tracking = tracking(targetId);
-        if (!"TRACKING".equals(tracking.status())) return tracking;
+        if (!"TRACKING".equals(tracking.status())) return withObservationSummary(tracking);
         var stream = streams.find(tracking.taskId());
-        if (stream == null) return tracking;
+        if (stream == null) return withObservationSummary(tracking);
         boolean ready = media.ready(stream.streamPath());
         if (ready) streams.observedReady(tracking.taskId());
-        return new TargetVideoDto(targetId, tracking.taskId(), tracking.deviceId(), tracking.commandId(),
+        return withObservationSummary(new TargetVideoDto(targetId, tracking.taskId(), tracking.deviceId(), tracking.commandId(),
                 clock.nowMillis(), tracking.status(), ready ? "HLS" : "NONE", true,
                 ready ? "测试视频已接入，不代表现场画面。" : "等待测试视频推流，或视频流已中断。",
                 ready ? "AVAILABLE" : stream.observedReady() ? "INTERRUPTED" : "WAITING", stream.sourceMode(), stream.streamId(),
-                ready ? "/api/v1/targets/" + targetId + "/video/streams/" + stream.streamId() + "/index.m3u8" : null);
+                ready ? "/api/v1/targets/" + targetId + "/video/streams/" + stream.streamId() + "/index.m3u8" : null));
+    }
+
+    /** Summary is attached only to the already authorized JSON read, never to media segments. */
+    private TargetVideoDto withObservationSummary(TargetVideoDto video) {
+        var task = video.taskId() == null ? null : edges.task(video.taskId());
+        return video.withEoFusionObservation(fusionObservations.current(task));
     }
 
     public byte[] resource(String targetId, String streamId, String resource) {
@@ -106,7 +116,7 @@ public class TargetVideoService {
         if (!"OPEN".equals(taskStatus)) return switch (taskStatus == null ? "" : taskStatus) {
             case "ENDING" -> result(targetId, task, "ENDING", "正在结束光电跟踪。");
             case "FAILED" -> result(targetId, task, "FAILED", "光电跟踪执行失败。");
-            default -> result(targetId, task, "ENDED", "光电跟踪已结束，暂无当前画面。");
+            default -> result(targetId, task, "ENDED", endedReason(task));
         };
         Map<String, Object> command = devices.findCommand(text(task, "begin_command_id"));
         if (command == null || !deviceId.equals(text(command, "device_id"))
@@ -128,13 +138,49 @@ public class TargetVideoService {
             return result(targetId, task, "NOT_INTEGRATED", "当前目标、任务与设备来源不匹配，视频不可用。");
         boolean receipt = devices.commandReceipts(text(command, "command_id")).stream()
                 .anyMatch(row -> validReceipt(row, task, binding));
-        if(receipt && (!edges.freshTrackingReport(task,clock.nowMillis()-reportMaxAge,clock.nowMillis())
-                || binding.lastHeartbeatAt()==null || binding.lastHeartbeatAt()<clock.nowMillis()-heartbeatMaxAge
-                || target.latestState()==null || target.latestState().observedAt()<clock.nowMillis()-reportMaxAge))
-            return result(targetId,task,"LOST","光电实时跟踪回报已过期，不代表目标飞离。");
+        if(receipt) {
+            String block=EoTrackingContinuity.block(new EoTrackingContinuity.Target(target.targetId(),target.sourceMode(),
+                    target.ownerOrgId(),target.districtId(),target.objectTypeCode(),target.trackStatus()==null?null:target.trackStatus().status()),
+                    task,binding,command,clock.nowMillis(),reportMaxAge,heartbeatMaxAge);
+            if(block!=null) return result(targetId,task,"LOST",trackingBlockReason(block));
+        }
         return receipt
                 ? result(targetId, task, "TRACKING", pendingVideoReason(binding))
                 : result(targetId, task, "RECEIPT_UNAVAILABLE", "尚未取得当前跟踪任务的有效设备回执。");
+    }
+
+    private static String trackingBlockReason(String code) {
+        return switch(code) {
+            case "EO_REPORT_STALE" -> "当前光电任务的跟踪回报已过期，画面暂不可用；不代表目标飞离。";
+            case "EO_HEARTBEAT_STALE" -> "光电设备心跳已过期或设备异常，跟踪状态待确认。";
+            case "EO_TARGET_CHANGED", "EO_CLASS_UNSUPPORTED" -> "目标关联或类别已变化，原跟踪任务的画面不可继续使用。";
+            default -> "当前光电任务、设备或成功回执无法确认，画面暂不可用。";
+        };
+    }
+
+    private String endedReason(Map<String,Object> task) {
+        var stop=edges.command(text(task,"end_command_id"));
+        boolean matched=stop!=null && "EO_END_TRACK".equals(text(stop,"command_type"))
+                && Objects.equals(text(task,"ops_device_id"),text(stop,"device_id"));
+        String code=matched?Objects.toString(stop.get("reason"),""):"";
+        String cause=switch(code) {
+            case "OPERATOR_PAUSE_AUTO_TRACK", "AUTO_TRACK_STOP:OPERATOR_PAUSE_AUTO_TRACK" -> "操作员暂停自动追踪";
+            case "AUTO_OBSERVATION_DEMAND_CLEARED" -> "已无自动观察需求";
+            case "EO_DISPATCH_SWITCH" -> "光电已调度至其他目标";
+            case "AUTO_TRACK_STOP:EO_REPORT_STALE" -> "融合位置不可用，且当前光电跟踪回报已过期";
+            case "AUTO_TRACK_STOP:EO_HEARTBEAT_STALE" -> "融合位置不可用，且光电设备心跳过期或异常";
+            case "AUTO_TRACK_STOP:EO_TARGET_CHANGED" -> "目标已合并或分裂，原任务不再适用";
+            case "AUTO_TRACK_STOP:EO_CLASS_UNSUPPORTED" -> "当前目标类别不支持继续光电跟踪";
+            case "AUTO_TRACK_STOP:EO_DEVICE_UNAVAILABLE" -> "目标与光电设备的来源或所属范围不可用";
+            case "AUTO_TRACK_STOP:EO_RECEIPT_UNAVAILABLE", "AUTO_TRACK_STOP:EO_RESULT_UNKNOWN" -> "当前跟踪任务缺少可确认的成功回执";
+            case "AUTO_OBSERVATION_CLEARED" -> "当时自动跟踪条件不满足，旧记录未细分具体原因";
+            case "AUTO_STOP_RECOVERY" -> "停止指令重试后已确认结束";
+            default -> matched && stop.get("requested_by")!=null?"操作员结束跟踪":"未记录具体结束原因";
+        };
+        String time=task.get("ended_at") instanceof Number n
+                ?java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(java.time.ZoneId.of("Asia/Shanghai"))
+                    .format(java.time.Instant.ofEpochMilli(n.longValue())):null;
+        return "光电跟踪已结束"+(time==null?"":"（北京时间 "+time+"）")+"："+cause+"。暂无当前画面。";
     }
 
     /** 没有跟踪任务时把光电本身的状况一起说清：没有光电、光电都不在线，还是光电在线只是没在跟这个目标（ZT-18）。 */

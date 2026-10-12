@@ -331,6 +331,9 @@ public class EoEdgeRepository {
         return idleDeviceForMode(org,district,deviceId,mode,Long.MIN_VALUE,Long.MAX_VALUE);
     }
     public Binding idleDeviceForMode(String org, String district, String deviceId, String mode,long cutoff,long now) {
+        return idleDeviceForDispatch(org,district,deviceId,mode,cutoff,now,"");
+    }
+    public Binding idleDeviceForDispatch(String org,String district,String deviceId,String mode,long cutoff,long now,String reservation) {
         return jdbc.query(BINDING_SELECT + """
                 WHERE s.owner_org_id=? AND s.district_id=? AND d.enabled=TRUE
                 AND m.source_mode=?
@@ -338,12 +341,13 @@ public class EoEdgeRepository {
                 AND EXISTS (SELECT 1 FROM mqtt_broker b WHERE b.broker_id=m.broker_id AND b.enabled=TRUE)
                 AND EXISTS (SELECT 1 FROM ops_device_state ds WHERE ds.device_id=m.ops_device_id AND ds.connectivity='ONLINE')
                 AND m.work_state=0 AND m.last_heartbeat_at>=? AND m.last_heartbeat_at<=?
+                AND NOT EXISTS (SELECT 1 FROM eo_dispatch_request q WHERE q.device_id=m.ops_device_id AND q.status='STOPPING' AND q.request_id<>?)
                 AND NOT EXISTS (SELECT 1 FROM eo_tracking_task t WHERE t.ops_device_id=m.ops_device_id AND t.status IN ('OPEN','ENDING'))
                 AND NOT EXISTS (SELECT 1 FROM eo_tracking_task t JOIN device_command bc ON bc.command_id=t.begin_command_id
                     LEFT JOIN device_command ec ON ec.command_id=t.end_command_id WHERE t.ops_device_id=m.ops_device_id AND
                 """ + UNCERTAIN + ") " + """
                 ORDER BY m.ops_device_id FETCH FIRST 1 ROWS ONLY
-                """, this::binding, org, district, mode, deviceId, deviceId,cutoff,now).stream().findFirst().orElse(null);
+                """, this::binding, org, district, mode, deviceId, deviceId,cutoff,now,reservation).stream().findFirst().orElse(null);
     }
 
     public boolean targetHasOpenTask(String targetId) {

@@ -120,7 +120,7 @@ public class AccessService {
         // 没有 read/op/auth 三级之分，套后缀反而要前端再拆一次。此前不下发，前端只能硬编码或等 403——
         // 用户点下去才知道没权限。模块码与 menu_keys 一概不动。
         if (superAdmin) codes.addAll(mapper.listActionCodeCatalog());
-        // 直接反制从不随 ROLE-ADMIN 的全动作目录继承；任何角色都必须存在显式 OP 授权行。
+        // 直接反制读取显式 OP；超级管理员由完整性初始化按最高权限策略持久化该授权。
         // mapper 同时保证 READ/AUTH 行不会被当成直接执行资格。
         for (String actionCode : mapper.listActionCodesForRole(roleCode)) {
             if (!superAdmin || PermissionCode.DISPOSAL_DIRECT.value().equals(actionCode)) codes.add(actionCode);

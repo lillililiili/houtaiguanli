@@ -62,6 +62,12 @@ class EoTrackingReportMapperTest {
     }
 
     @Test
+    void failedTrackingReceiptCannotGenerateAnObservation() {
+        assertThat(mapper.map(inbox(report("BeginTracking",1,AI_STATUS)
+                .replace("\"codeStatus\":200","\"codeStatus\":500"))).items()).isEmpty();
+    }
+
+    @Test
     void bootstrapSourceIsRecordedButNeverIngestedAsAnObservation() {
         Frame frame = mapper.map(inbox(report("BeginTracking", 1, AI_STATUS)));
         assertThat(frame.items()).hasSize(1);
@@ -81,6 +87,17 @@ class EoTrackingReportMapperTest {
         // className 的完整取值表还没拿到，猜一个映射比留空更危险。
         assertThat(item.classCode()).isNull();
         assertThat(item.quality()).containsEntry("class_name_raw", "balloon");
+    }
+
+    @Test
+    void invalidNumericFieldsRemainUnknownWithoutBorrowingBootstrapPosition() {
+        Item item = mapper.map(inbox(report("BeginTracking", 1,
+                "{\"className\":\"drone\",\"latitude\":91,\"longitude\":181,\"detectConfidence\":1.2,\"trackConfidence\":-0.1}"))).items().get(0);
+        assertThat(item.longitude()).isNull();
+        assertThat(item.latitude()).isNull();
+        assertThat(item.classConfidence()).isNull();
+        assertThat(item.quality()).doesNotContainKey("track_confidence");
+        assertThat(item.quality()).containsEntry("eo_fusion_exclusion", "EO_POSITION_UNKNOWN");
     }
 
     @Test
