@@ -100,9 +100,10 @@ class ProductionStage15SeedIsolationTest {
                     .as("这些动作域的 module_name 还是英文或为空（决策 15-24）").isEmpty();
             assertThat(jdbc.queryForObject(
                     "select count(*) from app_role_permission p join app_permission c on c.permission_code=p.permission_code"
-                            + " where c.permission_kind='ACTION' and p.role_code<>'ROLE-ADMIN'", Integer.class))
-                    .as("除内置超级管理员外不得预先授予动作权限——授权矩阵是部署时的决定，迁移不该替部署做主")
+                            + " where c.permission_kind='ACTION' and p.role_code NOT IN ('ROLE-ADMIN','ROLE-BACKEND')", Integer.class))
+                    .as("普通业务角色不得预授动作权限")
                     .isZero();
+            com.uav.lowaltitude.testfixture.BackendPermissionAssertions.assertFixedGrants(jdbc);
         }
     }
 

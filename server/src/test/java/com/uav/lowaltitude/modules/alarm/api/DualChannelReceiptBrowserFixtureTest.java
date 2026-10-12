@@ -52,12 +52,12 @@ class DualChannelReceiptBrowserFixtureTest extends DualChannelReceiptApiTest {
     }
 
     private void capture(String label, List<Map<String, Object>> scenarios, Scenario action) throws Exception {
-        reset(clock);
+        reset(departureClock);
         clearSpy();
         var existing = new HashSet<>(jdbc.queryForList("select event_id from uav_event", String.class));
         fixture();
         action.run();
-        reset(clock);
+        reset(departureClock);
         var ids = jdbc.queryForList("select event_id from uav_event", String.class).stream()
                 .filter(id -> !existing.contains(id)).toList();
         for (String id : ids) {

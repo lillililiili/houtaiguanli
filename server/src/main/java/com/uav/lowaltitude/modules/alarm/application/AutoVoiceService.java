@@ -54,6 +54,31 @@ public class AutoVoiceService {
         for(String id:candidates) {
             try {process(id);} catch(RuntimeException failed) {org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic voice cycle failed for event {}; pending work requires reconciliation",id);}
         }
+        for(String id:tasks.departureCandidates()) {
+            try { tx.executeWithoutResult(s->{var event=events.lock(id,SYSTEM_SCOPE);if(event!=null)captureDeparture(event,tasks.find(id),clock.nowMillis());}); }
+            catch(RuntimeException unavailable) { org.slf4j.LoggerFactory.getLogger(getClass()).warn("departure observation unavailable for event {}",id); }
+        }
+    }
+    public com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation departureSnapshot(String id) { return tasks.departure(id); }
+    /** A recorded decision ends this notification cycle; it is not a claim of a currently fresh position. */
+    private boolean captureDeparture(EventRow event,Task task,long now) {
+        if(tasks.departure(event.eventId())!=null)return true;
+        if(!"CONFIRMED".equals(event.state())||(task!=null&&"CALLING".equals(task.status())))return false;
+        Long smsAt=smsTasks.deliveredAt(event.eventId());
+        if(smsAt==null)return false;
+        boolean played=task!=null&&"SIMULATED_PLAYED".equals(task.status())&&task.playbackCompletedAt()!=null;
+        if(task!=null&&task.attempts()>0&&!played)return false;
+        long since=played?task.playbackCompletedAt():smsAt;
+        long deadline=since+(played?com.uav.lowaltitude.modules.alarm.domain.NotifyFlow.CALL_WATCH_MILLIS:WATCH_MILLIS);
+        if(now<deadline)return false;
+        if(task!=null)tasks.checkedDeparture(event.eventId(),now);
+        var assessment=departure.assessment(event.eventId(),smsAt,since,now);
+        if(assessment==null||assessment.presence()!=PilotDepartureWatch.Presence.LEFT||assessment.position()==null
+                ||assessment.position().observedAt()<since||assessment.position().observedAt()>now)return false;
+        tasks.initialize(event.eventId(),now,AutoVoicePolicy.CODE);
+        var value=new com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation(event.eventId(),played?"VOICE":"SMS","RECORDED","LEFT",since,deadline,now,assessment.position(),assessment.basis());
+        if(tasks.recordDeparture(value))audit.record(null,"DEPARTURE_WATCH","SYSTEM","alarm","notification_departure_recorded","uav_event",event.eventId(),"channel="+value.channel()+"; observed_at="+value.position().observedAt()+"; basis="+value.basis(),"SUCCESS","","");
+        return true;
     }
     public void process(String id) {
         Claim claim=tx.execute(s->claim(id));if(claim==null)return;
@@ -88,6 +113,7 @@ public class AutoVoiceService {
     private Claim claim(String id) {
         EventRow event=events.lock(id,SYSTEM_SCOPE);if(event==null)return null;
         long now=clock.nowMillis();Task task=tasks.find(id);
+        if(captureDeparture(event,task,now))return null;
         if(task!=null&&"CALLING".equals(task.status())) {
             if(task.leaseUntil()!=null&&task.leaseUntil()<now) {
                 tasks.finish(id,task.token(),"UNKNOWN","上次外呼未取得明确结果，须先向通道对账，禁止盲目补呼",null,null,null,null,now);
@@ -135,6 +161,8 @@ public class AutoVoiceService {
     /** 纯读取；即使查询多次或页面关闭，都不会创建或触发电话任务。 */
     public AutoVoice overview(EventRow event,boolean mayRetry) {
         Task task=tasks.find(event.eventId());boolean enabled=policy.enabled();
+        if(tasks.departure(event.eventId())!=null&&(task==null||task.attempts()==0))
+            return view(event,enabled,"BLOCKED","有效位置已离开告警区域，已停止后续电话；判断依据已留存",false,task,null,null);
         // 误报不会再打电话：没有拨打过的，直接写明不需要，不显示成“等待拨打”。
         if("FALSE_POSITIVE".equals(event.state())&&(task==null||task.attempts()==0))
             return view(event,enabled,"NOT_REQUIRED","已核实为误报，不需要拨打飞手电话",false,task,null,null);

@@ -378,7 +378,9 @@ class DeviceMaintenanceCasePostgresTest extends DeviceMaintenanceDiscoveryApiTes
             }
             String expected=run==0?"PENDING":"READY_TO_COMPLETE";
             var marker=output.resolve("run-"+run+".done");var log=output.resolve("run-"+run+".log");
-            var builder=new ProcessBuilder(javaExe,"-Dspring.devtools.restart.enabled=false","-Dfile.encoding=UTF-8","-cp",classpathJar.toString(),
+            var builder=new ProcessBuilder(javaExe,"-Dspring.devtools.restart.enabled=false","-Dfile.encoding=UTF-8",
+                    "-Djdk.net.unixdomain.tmpdir="+System.getProperty("jdk.net.unixdomain.tmpdir",System.getProperty("java.io.tmpdir")),
+                    "-cp",classpathJar.toString(),
                     DeviceMaintenanceRestartWorker.class.getName(),marker.toString(),task,expected,restartAdmin)
                     .redirectErrorStream(true).redirectOutput(log.toFile());
             builder.environment().put("MAINTENANCE_RESTART_DB_URL",System.getenv("POSTGRES_TEST_URL")+"?currentSchema="+SCHEMA+",public");

@@ -355,6 +355,15 @@ class AlarmMergePolicyTest {
         assertThat(alarmCount()).isEqualTo(2L);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"ILLEGAL,,INSIDE_RESTRICTED_AIRSPACE,HIGH", "ILLEGAL,LOW,INSIDE_RESTRICTED_AIRSPACE,HIGH", "UNDETERMINED,,INSIDE_RESTRICTED_AIRSPACE,UNKNOWN", "ILLEGAL,LOW,NIGHT_FLIGHT,LOW"})
+    void manualIllegalRestrictedAirspaceAlwaysUsesHighRisk(String status, String grade, String reason, String expected) {
+        String id = evaluation(status, grade, T0);
+        MergeOutcome result = policy.escalateManually(input(id, status, grade, T0, List.of(reason)), actor, "人工核对独立违规事实");
+        assertThat(jdbc.queryForObject("select severity from alarm where alarm_id=?", String.class, result.alarmId())).isEqualTo(expected);
+        assertThat(jdbc.queryForObject("select grade from rule_evaluation where evaluation_id=?", String.class, id)).isEqualTo(grade);
+    }
+
     private MergeInput input(String evaluationId, String legalStatus, String grade, OffsetDateTime at) { return input(evaluationId, legalStatus, grade, at, at); }
 
     private MergeInput input(String evaluationId, String legalStatus, String grade, OffsetDateTime at, List<String> reasons) {

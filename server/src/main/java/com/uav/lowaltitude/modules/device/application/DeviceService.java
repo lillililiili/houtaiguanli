@@ -511,6 +511,15 @@ public class DeviceService {
         return requiredCommand(id);
     }
 
+    /** Return the submission result under the same shared device permission as enqueue. */
+    public Command submittedCommand(String id) {
+        var actor = access.requireDevicesOperate();
+        var row = repository.findCommand(id);
+        if (row == null || !actor.userId().equals(text(row, "requested_by")))
+            throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_COMMAND_NOT_FOUND", "设备指令不存在");
+        return requiredCommand(id);
+    }
+
     private Command requiredCommand(String id) {
         Map<String, Object> r = repository.findCommand(id);
         if (r == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_COMMAND_NOT_FOUND", "设备指令不存在");

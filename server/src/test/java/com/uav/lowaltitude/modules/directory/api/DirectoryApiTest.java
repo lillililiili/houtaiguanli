@@ -111,6 +111,9 @@ class DirectoryApiTest {
  @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
  void maintenanceTodoUsesBackendInboxIndependentlyOfLegacyNotificationSetting(boolean withLegacySetting) throws Exception {
   String plan="seed-stage3-plan-legal",device=jdbc.queryForObject("select device_id from ops_device where deleted_at is null order by device_id fetch first 1 row only",String.class);
+  var tuple=jdbc.queryForMap("SELECT owner_org_id,district_id FROM flight_plan WHERE plan_id=?",plan);
+  int scoped=jdbc.update("UPDATE device_business_scope SET owner_org_id=?,district_id=? WHERE ops_device_id=?",tuple.get("owner_org_id"),tuple.get("district_id"),device);
+  if(scoped==0)jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,current_timestamp,current_timestamp)",device,tuple.get("owner_org_id"),tuple.get("district_id"));
   var row=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.DeviceRow(device,"隔离测试异常设备",true,java.math.BigDecimal.ONE,"OFFLINE","ERROR",1L,1L,true,true,List.of());
   var check=new com.uav.lowaltitude.modules.flight.application.FlightDeviceCheckService.Check(plan,"AUTO_DEVICE_ABNORMAL","隔离测试",System.currentTimeMillis(),"DEVICE_SCAN_COVERAGE",true,0,0,List.of(row),false);
   doReturn(check).when(checks).read(plan);

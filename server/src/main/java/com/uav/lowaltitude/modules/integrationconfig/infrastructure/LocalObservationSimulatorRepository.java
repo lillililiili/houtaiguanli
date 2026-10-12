@@ -121,6 +121,15 @@ public class LocalObservationSimulatorRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public String latestWeatherPayload(String deviceId) {
+        var rows = jdbc.queryForList("SELECT CAST(payload AS VARCHAR) FROM simulator_weather_observation WHERE device_id=? ORDER BY observed_at DESC,created_at DESC,message_id DESC FETCH FIRST 1 ROWS ONLY", String.class, deviceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public long weatherObservationCount(String deviceId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM simulator_weather_observation WHERE device_id=?", Long.class, deviceId);
+    }
+
     public void insertWeatherObservation(String messageId, String deviceId, String ownerOrgId, String districtId,
             long observedAt, String location, String payload, String requestHash, long now) {
         jdbc.update("""

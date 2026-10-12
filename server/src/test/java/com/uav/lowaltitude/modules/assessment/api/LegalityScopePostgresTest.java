@@ -76,8 +76,10 @@ class LegalityScopePostgresTest {
     void illegalReviewMergesWithoutRepeatingVerification(String previousState) throws Exception {
         fixture.illegalReviewMergesWithoutRepeatingVerification(previousState);
     }
-    @Test void illegalReviewRequiresVerificationPermissionAndSupportsAuthorizedFollowUp() throws Exception {
-        fixture.illegalReviewRequiresVerificationPermissionAndSupportsAuthorizedFollowUp();
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"assessment:escalate", "alarm:verify", "alarm:read"})
+    void illegalReviewRequiresWholeChainPermissionBeforeAnyWrite(String missingPermission) throws Exception {
+        fixture.illegalReviewRequiresWholeChainPermissionBeforeAnyWrite(missingPermission);
     }
     @ParameterizedTest
     @CsvSource({"OVERRIDE,LEGAL", "REJECT,", "CONFIRM,"})

@@ -77,6 +77,13 @@ class MqttIngressTest {
                 "MQ-"+UUID.randomUUID(),"MQTT fixture",null,null,null);
     }
     private Binding register(String type) { return repository.binding(configuration.register(registration(type),key()),false); }
+    private Binding historicalBinding(String type) {
+        // Keep legacy decoding coverage while asserting the current registration gate.
+        assertThatThrownBy(() -> configuration.register(registration(type), key()))
+                .isInstanceOf(com.uav.lowaltitude.platform.api.ApiException.class)
+                .hasMessageContaining("该设备类型已停用");
+        return repository.binding(repository.register(registration(type), clock.nowMillis()), false);
+    }
     private void receive(Binding b,String body,boolean sense,int packet,boolean retained,boolean dup) {
         ingress.receive(brokerId,owner,b.topic(sense),body.getBytes(StandardCharsets.UTF_8),packet,1,retained,dup,clock.nowMillis());
     }
@@ -253,7 +260,7 @@ class MqttIngressTest {
 
     @Test void threeTypesCreateBothIdentitiesAndReceiveOnlyTargetsIntoInbox() {
         for(String type:List.of("radar","5ga","tdoa","aoa","dcd","rid")) {
-            Binding b=register(type);
+            Binding b=List.of("aoa","dcd","rid").contains(type)?historicalBinding(type):register(type);
             assertThat(b.deviceId()).isNotEqualTo(b.opsDeviceId());
             String expectedType = switch (type) {
                 case "radar" -> "RADAR"; case "5ga" -> "FIVE_G_A"; case "tdoa" -> "TDOA";
@@ -275,7 +282,7 @@ class MqttIngressTest {
     }
     @Test void controlStaticGoesOnlineWithoutInboxAndSenseDataIsRejected() {
         for (String type : List.of("dec", "ifr", "bsc")) {
-            Binding b = register(type);
+            Binding b = historicalBinding(type);
             assertThat(jdbc.queryForObject("SELECT source_type FROM integration_source WHERE source_id=?",
                     String.class, b.sourceId())).isNull();
             receive(b, heartbeat(type, 0, null), false, 1, false, false);
@@ -306,7 +313,7 @@ class MqttIngressTest {
         assertThat(repository.binding(b.opsDeviceId(),false).lastPtTime()).isEqualTo(3000);
     }
     @Test void staticLocationFillsEmptyLedgerThenLeavesExistingCoordinates() {
-        Binding b = register("dcd");
+        Binding b = historicalBinding("dcd");
         receive(b, heartbeat("dcd", 1, 2000L), false, 1, false, false);
         assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", Double.class, b.opsDeviceId())).isNull();
         receive(b, heartbeat("dcd", 1, 3000L, 118.62, 37.42, 12.5), false, 2, false, false);

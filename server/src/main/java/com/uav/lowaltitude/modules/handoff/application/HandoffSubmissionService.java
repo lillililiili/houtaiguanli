@@ -67,6 +67,7 @@ public class HandoffSubmissionService {
     public static final int MATERIAL_SCHEMA_V2 = HandoffMaterialAssembler.SCHEMA_V2;
     private final AccessControlService access;
     private final HandoffRepository repository;
+    private final com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather;
     private final RiskRepository risks;
     private final RiskReadService riskRead;
     private final IdempotencyGuard idempotency;
@@ -99,7 +100,9 @@ public class HandoffSubmissionService {
             DisposalCompletionPort disposals, UavEventRepository events, HandoffMaterialAssembler materials, HandoffChannelPort channel,
             RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
             AutomationRuntimePolicy rulePolicy, AutomationRuntimeRepository ruleRuns, AutomationRuntimeEligibility ruleEligibility,
-            com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess) {
+            com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess,
+            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather) {
+        this.weather = weather;
         this.commandAccess = commandAccess;
         this.rulePolicy = rulePolicy;
         this.ruleRuns = ruleRuns;
@@ -275,6 +278,21 @@ public class HandoffSubmissionService {
     }
 
     /** 白名单快照：风险安全字段、核实历史、提交者当时可见的关联引用。没有文件就没有任何文件字段。 */
+    /** 与正式提交共用材料组装；预览只读，不建立交接、核验、投递或幂等记录。 */
+    @Transactional(readOnly = true)
+    public com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RiskPreviewDto previewRisk(String id, long expectedVersion) {
+        access.require(PermissionCode.HANDOFF_CREATE);
+        var scope = access.require(PermissionCode.RISK_READ);
+        var risk = risks.find(HandoffReadService.id(id), scope);
+        if (risk == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "源对象不存在或不可见");
+        if (risk.version() != expectedVersion) throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "风险已被其他操作更新，请重新查看材料");
+        if (!"PENDING_VERIFICATION".equals(risk.state())) HandoffRules.requireNotifiable(risk.state());
+        var recipient = resolveRecipient(null, HandoffRules.TYPE_RISK_NOTICE);
+        var visible = riskRead.dto(risk);
+        return new com.uav.lowaltitude.modules.handoff.api.HandoffDtos.RiskPreviewDto(id, risk.version(), clock.nowMillis(),
+                directory.forHandoff(HandoffRules.TYPE_RISK_NOTICE, recipient.recipientId()), visible.planNo(), visible.targetNo(), material(risk, scope));
+    }
+
     private MaterialDto material(RiskRow risk, AccessDecision riskDecision) {
         RiskDto visible = riskRead.dto(risk);
         List<VerificationMaterialDto> history = risks.verifications(risk.riskId(), riskDecision, 0, HISTORY_LIMIT).stream()
@@ -284,7 +302,13 @@ public class HandoffSubmissionService {
         RiskMaterialDto material = new RiskMaterialDto(risk.riskId(), risk.sourceRiskId(), risk.riskType(), risk.severity(), risk.state(),
                 risk.reasonCode(), risk.reasonText(), risk.occurredAt() == null ? null : risk.occurredAt().toInstant().toEpochMilli(),
                 risk.receivedAt().toInstant().toEpochMilli(), risk.version(), riskLocation(visible));
-        return new MaterialDto(HandoffRules.SNAPSHOT_SCHEMA_VERSION, material, history, empty(references) ? null : references);
+        HandoffMaterialAssembler.EvidenceScope scope = null;
+        try { scope = new HandoffMaterialAssembler.EvidenceScope(access.require(PermissionCode.EVIDENCE_READ), allowed(PermissionCode.TARGET_READ), commandAccess.visibility()); }
+        catch (ApiException denied) { if (denied.getStatus() != HttpStatus.FORBIDDEN) throw denied; }
+        var chain = materials.evidenceChain("TARGET", visible.targetId(), scope,
+                visible.spaceFact() == null ? visible.occurredAt() : Long.valueOf(visible.spaceFact().windowFrom()));
+        return new MaterialDto(HandoffRules.SNAPSHOT_SCHEMA_VERSION, material, history, empty(references) ? null : references,
+                chain, scope == null ? Boolean.TRUE : null, visible.spaceFact(), weather.forecast(risk.riskId()), weather.find(risk.riskId()));
     }
 
     private static RiskLocationDto riskLocation(RiskDto risk) {

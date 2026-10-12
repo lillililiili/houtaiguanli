@@ -206,7 +206,8 @@ class EvidenceChainApiTest {
         assertThat(data.get("coverage").get("ALARM").get("status").asText()).isEqualTo("PRESENT");
         assertThat(data.get("coverage").get("JUDGMENT").get("status").asText()).isEqualTo("PRESENT");
         assertThat(data.get("coverage").get("AUTHORIZATION").get("status").asText()).isEqualTo("ABSENT");
-        assertThat(data.get("coverage").get("OPERATION").get("status").asText()).isEqualTo("PRESENT");
+        assertThat(data.get("coverage").get("OPERATION").get("status").asText()).isEqualTo("FORBIDDEN");
+        assertThat(data.get("records").findValuesAsText("record_type")).doesNotContain("OPERATION");
         assertThat(data.get("integrity").get("algorithm").asText()).isEqualTo("SHA-256");
         assertThat(data.get("lineage").get("availability").asText()).isEqualTo("PRESENT");
         boolean sawPreMerge = false;
@@ -265,6 +266,14 @@ class EvidenceChainApiTest {
         for (JsonNode record : data.get("records")) {
             assertThat(record.get("record_type").asText()).isNotEqualTo("ALARM");
         }
+    }
+
+    @Test void fixedBackendCanReadOperationEvidenceWithinItsScope() throws Exception {
+        String token=fullReader();
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)",token);
+        var data=chain(token,"EVENT",eventId);
+        assertThat(data.path("coverage").path("OPERATION").path("status").asText()).isEqualTo("PRESENT");
+        assertThat(data.path("records").findValuesAsText("record_type")).contains("OPERATION");
     }
 
     private String fullReader() {

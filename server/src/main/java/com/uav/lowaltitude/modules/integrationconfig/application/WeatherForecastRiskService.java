@@ -68,13 +68,13 @@ public class WeatherForecastRiskService {
         List<PlanCandidate> plans;
         if (input.planId() != null && !input.planId().isBlank()) {
             FlightPlanDto plan = flights.flightPlan(input.planId());
-            plans = areaMatches(input.areaName(), plan.districtName())
+            plans = (input.districtId() != null ? input.districtId().equals(plan.districtId()) : areaMatches(input.areaName(), plan.districtName()))
                     ? List.of(new PlanCandidate(plan.planId(), plan.route().routeVersionId(), plan.sourceMode(),
                             plan.startAt(), plan.endAt(), plan.districtName()))
                     : List.of();
         } else {
             AccessDecision decision = access.require(PermissionCode.FLIGHT_READ);
-            plans = repository.plans(input.areaName(), decision);
+            plans = repository.plans(input.areaName(), input.districtId(), decision);
         }
 
         int created = 0;
@@ -135,7 +135,7 @@ public class WeatherForecastRiskService {
     private static String reason(WeatherInput input, PlanCandidate plan, RuleHit hit) {
         return "天气预报：" + hit.triggerText() + "；区域 " + input.areaName() + "；时段 "
                 + window(hit.period().from(), hit.period().to()) + "（北京时间）"
-                + "。当前状态为待核验，人工确认前不发送通知、不执行处置。";
+                + "。";
     }
 
     /** 例如“10月7日 16:30–17:00”；跨天时结束时间也写日期。 */
@@ -157,7 +157,7 @@ public class WeatherForecastRiskService {
 
     private static boolean areaMatches(String area, String district) {
         String a = normalize(area), d = normalize(district);
-        return !a.isEmpty() && !d.isEmpty() && (a.equals(d) || a.contains(d) || d.contains(a));
+        return !a.isEmpty() && a.equals(d);
     }
 
     private static String normalize(String value) {

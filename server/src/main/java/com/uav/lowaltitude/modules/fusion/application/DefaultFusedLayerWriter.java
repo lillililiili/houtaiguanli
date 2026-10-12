@@ -245,8 +245,16 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
             LastPoint keep = tracks.lastPoint(track.trackId());
             double[] lonLat = keep == null || keep.locationText() == null ? null : parse(keep.locationText());
             if (lonLat != null) unknown.removeIf(u -> "location".equals(u.field()));
-            LatestState kept = new LatestState(frame.targetId(), lonLat == null ? null : lonLat[0], lonLat == null ? null : lonLat[1], decimal(fused.altitudeAmslM(), METRIC_SCALE),
-                    decimal(fused.heightAglM(), METRIC_SCALE), decimal(fused.speedMps(), SPEED_SCALE), decimal(fused.headingDeg(), METRIC_SCALE), classConfidence,
+            // A loss sweep carries no new measurements. Retain the last measured
+            // height at the existing observation time, just as we retain location.
+            // A real incoming frame with unknown height must still clear that field.
+            boolean noMeasurements = frame.estimates().isEmpty() && keep != null;
+            BigDecimal amsl = noMeasurements ? keep.altitudeAmslM() : decimal(fused.altitudeAmslM(), METRIC_SCALE);
+            BigDecimal agl = noMeasurements ? keep.heightAglM() : decimal(fused.heightAglM(), METRIC_SCALE);
+            if (amsl != null) unknown.removeIf(u -> "altitude_amsl_m".equals(u.field()));
+            if (agl != null) unknown.removeIf(u -> "height_agl_m".equals(u.field()));
+            LatestState kept = new LatestState(frame.targetId(), lonLat == null ? null : lonLat[0], lonLat == null ? null : lonLat[1], amsl,
+                    agl, decimal(fused.speedMps(), SPEED_SCALE), decimal(fused.headingDeg(), METRIC_SCALE), classConfidence,
                     decimal(degradation.fusionConfidence(), CONF_SCALE), observedAt, now, write(unknownList(unknown)), now,
                     pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], pilot == null ? null : observedAt, pilotDecided);
             batch.latest.add(kept);

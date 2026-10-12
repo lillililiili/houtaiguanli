@@ -534,6 +534,7 @@ $backendVideoEnvironment = if ($WithQaVideo) {
     "`$env:APP_VIDEO_MEDIA_API_ORIGIN = 'http://127.0.0.1:$QaVideoApiPort'`n" +
     "`$env:APP_VIDEO_MEDIA_HLS_ORIGIN = 'http://127.0.0.1:$QaVideoHlsPort'`n"
 } else { '' }
+$backendVideoArguments = if ($WithQaVideo) { ' --app.video.qa-enabled=true' } else { '' }
 $backendCommand = @"
 ${backendVideoEnvironment}
 `$env:DB_URL = 'jdbc:postgresql://127.0.0.1:5432/houtaiguanli'
@@ -541,14 +542,16 @@ ${backendVideoEnvironment}
 `$env:APP_WEATHER_RISK_QA_ENABLED = 'false'
 `$env:SPRING_PROFILES_ACTIVE = '$springProfiles'
 `$env:SERVER_PORT = '$ApiPort'
-& '.\mvnw.cmd' 'spring-boot:run' '-Dspring-boot.run.profiles=$springProfiles' '-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=$javaTempDirJvm -Djdk.net.unixdomain.tmpdir=$javaTempDirJvm' '-Dspring-boot.run.arguments=--app.dev-seed.enabled=false --app.weather-risk.qa.enabled=false'
+& '.\mvnw.cmd' 'spring-boot:run' '-Dspring-boot.run.profiles=$springProfiles' '-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=$javaTempDirJvm -Djdk.net.unixdomain.tmpdir=$javaTempDirJvm' '-Dspring-boot.run.arguments=--app.dev-seed.enabled=false --app.weather-risk.qa.enabled=false$backendVideoArguments'
 "@
 $apiReady = Test-Endpoint -Uri "http://127.0.0.1:$ApiPort/actuator/health/readiness"
 $apiNeedsSimulatorRoute = $false
 $apiNeedsQaVideoRoute = $false
 if ($apiReady) {
     $apiNeedsSimulatorRoute = $WithSimulator -and -not (Test-ApiRoute -Port $ApiPort -Path '/api/v1/local-interface-simulator/context')
-    $apiNeedsQaVideoRoute = $WithQaVideo -and -not (Test-ApiRoute -Port $ApiPort -Path '/api/v1/local-interface-simulator/video-streams/not-a-task')
+    # 未登录的 401 不能证明受保护路由存在，更不能证明视频开关已打开。
+    # 本脚本用显式启动参数记录 QA 开关；无法确认的旧进程必须先重启，不能当作视频就绪复用。
+    $apiNeedsQaVideoRoute = $WithQaVideo -and ((Get-ListenerCommandLine -Port $ApiPort) -notmatch '--app\.video\.qa-enabled=true(?:\s|$)')
 }
 if ($apiNeedsSimulatorRoute -or $apiNeedsQaVideoRoute) {
     throw '现有后端没有所需模拟接口，请先使用关闭脚本停止本项目服务，再启动。'

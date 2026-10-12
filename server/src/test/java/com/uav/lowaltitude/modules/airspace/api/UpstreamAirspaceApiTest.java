@@ -41,6 +41,10 @@ class UpstreamAirspaceApiTest {
         jdbc.update("insert into app_user(user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values(?,?,?,?,'ACTIVE','unused',0,'ASSIGNED',0,0,0,0)",user,"up-"+suffix,"接收账号",role);
         jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,?,?)",user,org,district);
         jdbc.update("insert into app_session(session_id,user_id,expire_at,ip,permission_version) values(?,?,?,'127.0.0.1',0)",token,user,System.currentTimeMillis()+3600000);
+        // The upstream configuration is a backend endpoint; its business write grant remains explicit.
+        role="ROLE-BACKEND";
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled) select ?,'airspace:manage','OP',false where not exists(select 1 from app_role_permission where role_code=? and permission_code='airspace:manage')",role,role);
+        jdbc.update("update app_user set role_code=? where user_id=?",role,user);
     }
 
     ObjectNode input(int revision) throws Exception {

@@ -19,7 +19,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 人工转告警：把一条已锁定的研判交给 C06 的人工升级路径（{@link AlarmMergePolicy#escalateManually}）。
  * 这里只负责把研判事实翻译成 MergeInput；鉴权、幂等、版本与历史仍由 {@link LegalityReviewService} 在同一事务内完成。
- * 告警等级取研判 grade 的默认映射，缺失即 UNKNOWN——人工动作不依赖 C06 的规则参数。
+ * 等级由人工合并策略按有效非法结论与违规原因计算，其余沿用 grade；不改写原研判，也不依赖 C06 参数。
  * 告警 occurred_at 取研判 as_of（业务时刻），received_at 与合并时刻取时钟 now（操作时刻）：观测时刻不能冒充接收时刻。
  * 操作人与说明随行传入：并入同一目标的现有告警时，升级记录要写明谁、为什么转告警。
  */

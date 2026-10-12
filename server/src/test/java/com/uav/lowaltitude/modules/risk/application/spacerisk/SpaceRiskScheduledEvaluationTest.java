@@ -36,6 +36,7 @@ import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository.RunRo
 class SpaceRiskScheduledEvaluationTest {
     @Autowired SpaceRiskEvaluationService evaluation;
     @Autowired JdbcTemplate jdbc;
+    @Autowired com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository repository;
     @MockitoBean SpaceRiskSpatialPort spatial;
 
     private OffsetDateTime now;
@@ -127,6 +128,9 @@ class SpaceRiskScheduledEvaluationTest {
         String risk = risks(balloon).get(0);
         assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, risk)).isEqualTo("MEDIUM");
         assertThat(jdbc.queryForObject("select state_code from flight_risk where risk_id=?", String.class, risk)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(repository.findFact(risk).longitude()).isEqualByComparingTo("118.15");
+        assertThat(repository.findFact(risk).latitude()).isEqualByComparingTo("37.25");
+        assertThat(repository.findFact(risk).distanceToRouteM()).isEqualByComparingTo("1200");
         assertThat(evaluation.evaluateScheduledAirport(now, now.plusMinutes(1), now.minusMinutes(29)).risksDeduplicated()).isEqualTo(1);
         when(spatial.airportProximity(any(), any(), anyInt())).thenReturn(List.of(fact));
         assertThat(evaluation.evaluate("C05", now.minusMinutes(2), now.plusMinutes(2), "MANUAL", null).risksDeduplicated()).isEqualTo(1);
@@ -150,7 +154,7 @@ class SpaceRiskScheduledEvaluationTest {
     private AirportProximity airport(String target, String planId, String procedureDistance, String protectedDistance) {
         return new AirportProximity(target, "BALLOON", "airport-" + suffix, "测试机场", planId,
                 planId == null ? null : routeVersionOf(planId), new BigDecimal(procedureDistance), new BigDecimal(protectedDistance),
-                new BigDecimal("80"), "AGL", null, now.minusSeconds(20));
+                new BigDecimal("80"), "AGL", null, now.minusSeconds(20), new BigDecimal("118.15"), new BigDecimal("37.25"), new BigDecimal("1200"));
     }
 
     /**

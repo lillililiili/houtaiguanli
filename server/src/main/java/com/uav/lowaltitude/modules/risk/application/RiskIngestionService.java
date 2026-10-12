@@ -38,7 +38,7 @@ public class RiskIngestionService {
         String id=UUID.randomUUID().toString();
         RiskRow existing=repository.findBySource(fact.sourceId().trim(),fact.sourceRiskId().trim());
         if(existing!=null)return existing.riskId();
-            // AGL/AMSL 缺少可信换算时只能保存 UNKNOWN；入库绝不能凭数值推导“安全”。
+            // 仅同一高度基准且航线高度带完整时比较；不同基准不推算换算，也不据此推导风险已解除。
             repository.insert(new IngestRow(id,fact.sourceId().trim(),fact.sourceRiskId().trim(),fact.planId().trim(),fact.routeVersionId().trim(),
                     nullable(fact.assessmentId()),nullable(fact.targetId()),nullable(fact.trackId()),fact.riskType().trim(),fact.severity().trim(),
                     fact.reasonCode().trim(),fact.reasonText().trim(),fact.occurredAt(),fact.receivedAt(),fact.observedAltitudeM(),

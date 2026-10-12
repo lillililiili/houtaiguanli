@@ -172,6 +172,12 @@ public class RiskReadService {
         RiskRow row = repository.find(id(riskId), decision);
         if (row == null) throw notFound();
         var fact = "WEATHER".equals(row.riskType()) ? weather.find(row.riskId()) : null;
+        if (fact == null && "WEATHER".equals(row.riskType())) {
+            var forecast = weather.forecast(row.riskId());
+            if (forecast != null) return new com.uav.lowaltitude.modules.risk.api.WeatherRiskDto(null, forecast.publishedAt(),
+                    forecast.validFrom(), forecast.validTo(), forecast.windSpeedMps(), null, null, forecast.sourceMode(),
+                    "REGION", forecast.areaName(), dto(row).districtName(), forecast.messageId());
+        }
         return fact == null ? null : new com.uav.lowaltitude.modules.risk.api.WeatherRiskDto(fact.polygon(), fact.publishedAt(),
             fact.validFrom(), fact.validTo(), fact.windSpeedMps(), fact.windFromDegrees(), fact.visibilityM(), fact.sourceMode());
     }

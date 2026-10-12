@@ -306,12 +306,12 @@ public class SpaceRiskEvaluationService {
         String sourceRiskId = "C05:" + version.ruleSetVersionId() + ":" + proximity.planId() + ":" + proximity.targetId() + ":" + from.toInstant().toEpochMilli();
         String riskId = ingestAirport(proximity, sourceRiskId, from);
         if (repository.factExists(riskId)) return false;
-        // C05 目前没有目标坐标查询（只算到程序/保护目标的距离），位置快照留空，页面不画点。
+        // Freeze the measured point from the same spatial query; procedure distance is not route distance.
         repository.insertFact(new SpaceFactRow(riskId, proximity.subtypeCode(), null, ruleVersionId(version, C05_RULE_CODE), version.ruleSetVersionId(),
-                version.versionNo(), proximity.distanceToProcedureM(), CorridorRelation.UNKNOWN.name(), AltitudeBand.UNKNOWN.name(),
+                version.versionNo(), proximity.distanceToRouteM(), CorridorRelation.UNKNOWN.name(), AltitudeBand.UNKNOWN.name(),
                 proximity.altitudeDatum(), proximity.objectCount(),
                 Trend.UNKNOWN.name(), write(List.of(C04DecisionTable.UNKNOWN_OBJECT_COUNT, C04DecisionTable.UNKNOWN_TREND)),
-                null, null, proximity.altitudeM(), from, to, clock.now().atOffset(ZoneOffset.UTC)));
+                proximity.longitude(), proximity.latitude(), proximity.altitudeM(), from, to, clock.now().atOffset(ZoneOffset.UTC)));
         return true;
     }
 
@@ -322,7 +322,7 @@ public class SpaceRiskEvaluationService {
                 null, observation.targetId(), null, RISK_TYPE, decision.severity(), decision.reasonCode(),
                 reasonText(observation, decision), observation.observedAt(), now,
                 // 高度与基准必须成对：只有数值没有基准时两者都不写，绝不猜基准。
-                observation.altitudeDatum() == null ? null : observation.altitudeM(), observation.altitudeDatum(), mode));
+                observation.comparisonAltitudeDatum() == null ? null : observation.comparisonAltitudeM(), observation.comparisonAltitudeDatum(), mode));
     }
 
     private String ingestAirport(AirportProximity proximity, String sourceRiskId, OffsetDateTime from) {

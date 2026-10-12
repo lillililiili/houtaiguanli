@@ -2,6 +2,7 @@
 import { computed, ref, watch, onBeforeUnmount } from 'vue';
 import { businessReportApi, createLatestRequestGuard, reportRowMatchesScope } from '@/api/reports.js';
 import ErrorAlert from '@/components/ErrorAlert.vue';
+import { formatBusinessNo } from '@/utils/format.js';
 const props = defineProps({
   params: { type: Object, required: true }, section: { type: Object, required: true },
   columns: { type: Array, required: true }, labels: { type: Object, required: true }, refresh: { type: Number, default: 0 }
@@ -11,6 +12,7 @@ const guard = createLatestRequestGuard();
 const queryKey = computed(() => JSON.stringify([props.params, props.section.key, props.refresh]));
 function cell(row, field) {
   const value = row[field];
+  if (field === 'label' && ['targets', 'alarms', 'risks', 'events'].includes(props.section.key)) return formatBusinessNo(value) || row.id;
   if (field === 'occurred_at') return value == null ? '—' : new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium', hour12: false
   }).format(new Date(value));

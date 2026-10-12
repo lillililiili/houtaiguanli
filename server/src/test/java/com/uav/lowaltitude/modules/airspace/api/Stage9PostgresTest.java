@@ -559,11 +559,12 @@ class Stage9PostgresTest {
     @Order(25)
     void scheduledAirportZoneEvaluationFlagsObjectsNearTheApproachOnceAndIgnoresFarOnes() {
         seedStage9SpaceRisk();
-        OffsetDateTime planFrom = jdbc.queryForObject("select start_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
-        OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
-        assertThat(jdbc.queryForObject("select status_code from flight_plan where plan_id=?", String.class, LocalStage9SpaceRiskSeeder.PLAN))
-                .as("任务必须是待执行或执行中").isEqualTo("PENDING");
-        OffsetDateTime observedAt = planFrom.plus(java.time.Duration.between(planFrom, planTo).dividedBy(2));
+        // Scheduled evaluation rejects future observations, so use a current plan instead of a future demo plan.
+        OffsetDateTime observedAt = OffsetDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(2);
+        String currentPlan=id();
+        jdbc.update("insert into flight_plan(plan_id,plan_no,status_code,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version)"
+                + " select ?,?,'PENDING',source_mode,?,?,route_version_id,owner_org_id,district_id,?,?,0 from flight_plan where plan_id=?",
+                currentPlan,"C05-"+suffix,observedAt.minusMinutes(30),observedAt.plusMinutes(30),observedAt,observedAt,LocalStage9SpaceRiskSeeder.PLAN);
         // 种子机场“18 号进近”的中心线是经线 118.788（北纬 37.560–37.575）；同一纬度向东 300 米、1 公里各放一个气球。
         double metresPerDegree = 111320 * Math.cos(Math.toRadians(37.5675));
         String near = spaceTarget("airport-near", "BALLOON", 118.788 + 300 / metresPerDegree, 37.5675, null, new BigDecimal("80.00"), observedAt);
@@ -572,7 +573,7 @@ class Stage9PostgresTest {
         double procedureBuffer = Double.parseDouble(jdbc.queryForObject("select p.value_text from rule_param p"
                 + " join rule_set_version v on v.rule_set_version_id=p.rule_set_version_id"
                 + " join rule_set s on s.rule_set_id=v.rule_set_id"
-                + " where s.rule_set_code='SPACE-RISK-DEMO' and p.rule_code='C05' and p.param_key='procedure_buffer_m'", String.class));
+                + " where s.rule_set_code='SPACE-RISK-DEMO' and v.rule_set_version_id=s.active_version_id and p.rule_code='C05' and p.param_key='procedure_buffer_m'", String.class));
         assertThat(distanceToApproach(near)).as("夹具气球应在进近航线缓冲内").isBetween(290.0, procedureBuffer);
         assertThat(distanceToApproach(far)).as("夹具气球应在缓冲外").isGreaterThan(procedureBuffer);
 
@@ -581,7 +582,7 @@ class Stage9PostgresTest {
         assertThat(run.status()).as("定时 C05 必须真正评估：" + run.message()).isEqualTo("SUCCESS");
         assertThat(run.ruleCode()).isEqualTo("C05");
         assertThat(run.triggerKind()).isEqualTo("SCHEDULED");
-        assertThat(airportRisks(near)).filteredOn(r -> LocalStage9SpaceRiskSeeder.PLAN.equals(r.get("plan_id"))).singleElement()
+        assertThat(airportRisks(near)).filteredOn(r -> currentPlan.equals(r.get("plan_id"))).singleElement()
                 .satisfies(risk -> {
                     assertThat(risk).containsEntry("severity", "MEDIUM").containsEntry("reason_code", "SPACE_OBJECT_IN_AIRPORT_ZONE");
                     assertThat((String) risk.get("reason_text")).contains("机场区域异物").contains("距进离场程序");
@@ -591,6 +592,8 @@ class Stage9PostgresTest {
         // 下一分钟气球还在原处：窗口不同，但同一任务同一目标已有未解除的机场区域风险，不再新建。
         OffsetDateTime later = observedAt.plusMinutes(1);
         jdbc.update("update target_latest_state set observed_at=?,received_at=?,updated_at=? where target_id in (?,?)", later, later, later, near, far);
+        spaceMeasurement(near,118.788+300/metresPerDegree,37.5675,later);
+        spaceMeasurement(far,118.788+1000/metresPerDegree,37.5675,later);
         int before = airportRisks(near).size();
         SpaceRiskRepository.RunRow again = evaluationService.evaluateScheduledAirport(later.minusSeconds(30), later.plusMinutes(1),
                 later.minusMinutes(30));
@@ -602,7 +605,7 @@ class Stage9PostgresTest {
     }
 
     /**
-     * P03：鸟群风险每轮评估都记进它的“评估历史”。发现那一轮是第一段（走廊内、构成高风险）；鸟群飞到约 660 米外后，
+     * P03：鸟群风险每轮评估都记进它的“评估历史”。发现那一轮是第一段（走廊内、数量升级为严重风险）；鸟群飞到约 660 米外后，
      * 那一轮另起一段（走廊外、不构成风险）；风险本身的等级不跟着改。读接口在 PG 上按时间顺序给出这两段。
      */
     @Test
@@ -610,18 +613,20 @@ class Stage9PostgresTest {
     void flockRiskKeepsEachEvaluationAsHistoryWithoutChangingItsLevel() throws Exception {
         seedStage9SpaceRisk();
         OffsetDateTime planTo = jdbc.queryForObject("select end_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
-        // 观测放在其他用例都不用的时刻，手动评估的窗口只圈到这一个目标。
-        OffsetDateTime observedAt = planTo.plusHours(20);
-        String flock = spaceTarget("history", "BIRD_FLOCK", 118.025, 37.025, null, new BigDecimal("100.00"), observedAt);
+        OffsetDateTime planFrom = jdbc.queryForObject("select start_at from flight_plan where plan_id=?", OffsetDateTime.class, LocalStage9SpaceRiskSeeder.PLAN);
+        // A current risk needs a plan active at observation time and measured AGL for the climb band.
+        OffsetDateTime observedAt = planFrom.plus(java.time.Duration.between(planFrom,planTo).dividedBy(2));
+        String flock = spaceTarget("history", "BIRD_FLOCK", 118.025, 37.025, new BigDecimal("100.00"), null, observedAt);
         SpaceRiskRepository.RunRow run = evaluationService.evaluate("C04", observedAt.minusMinutes(1), observedAt.plusMinutes(1), "MANUAL", null);
         assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
-        String riskId = jdbc.queryForObject("select risk_id from flight_risk where target_id=? and route_version_id=? and risk_type='SPACE_OBJECT'",
-                String.class, flock, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
-        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId)).isEqualTo("HIGH");
+        String riskId = jdbc.queryForObject("select risk_id from flight_risk where target_id=? and plan_id=? and route_version_id=? and risk_type='SPACE_OBJECT'",
+                String.class, flock, LocalStage9SpaceRiskSeeder.PLAN, LocalStage9SpaceRiskSeeder.ROUTE_VERSION);
+        assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId)).isEqualTo("CRITICAL");
 
         OffsetDateTime later = observedAt.plusMinutes(1);
         jdbc.update("update target_latest_state set location=ST_GeomFromEWKT('SRID=4326;POINT (118.025 37.031)'),observed_at=?,received_at=?,updated_at=?"
                 + " where target_id=?", later, later, later, flock);
+        spaceMeasurement(flock,118.025,37.031,later);
         double away = distanceToRoute(flock);
         SpaceRiskRepository.RunRow again = evaluationService.evaluate("C04", later.minusMinutes(1), later.plusMinutes(1), "MANUAL", null);
         assertThat(again.status()).as(again.message()).isEqualTo("SUCCESS");
@@ -630,13 +635,13 @@ class Stage9PostgresTest {
                 + "risk_present,severity,from_detection from space_risk_evaluation_segment where risk_id=? order by segment_no", riskId);
         assertThat(segments).hasSize(2);
         assertThat(segments.get(0)).containsEntry("segment_no", 1).containsEntry("evaluation_count", 1).containsEntry("corridor_relation", "INSIDE")
-                .containsEntry("altitude_band", "CLIMB").containsEntry("risk_present", true).containsEntry("severity", "HIGH")
+                .containsEntry("altitude_band", "CLIMB").containsEntry("risk_present", true).containsEntry("severity", "CRITICAL")
                 .containsEntry("from_detection", true);
         assertThat(segments.get(1)).containsEntry("segment_no", 2).containsEntry("corridor_relation", "OUTSIDE").containsEntry("risk_present", false)
                 .containsEntry("from_detection", false).containsEntry("distance_band_m", (int) (away / 50) * 50);
         assertThat(segments.get(1).get("severity")).isNull();
         assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?", String.class, riskId))
-                .as("评估只记事实，不改风险等级").isEqualTo("HIGH");
+                .as("评估只记事实，不改风险等级").isEqualTo("CRITICAL");
 
         String reader = session(readerRole());
         mvc.perform(get("/api/v1/risks/{id}/evaluation-history", riskId).header("Authorization", "Bearer " + reader))
@@ -646,7 +651,7 @@ class Stage9PostgresTest {
                 .andExpect(jsonPath("$.data.from_detection").value(true))
                 .andExpect(jsonPath("$.data.total").value(2))
                 .andExpect(jsonPath("$.data.items[0].corridor_relation").value("INSIDE"))
-                .andExpect(jsonPath("$.data.items[0].severity").value("HIGH"))
+                .andExpect(jsonPath("$.data.items[0].severity").value("CRITICAL"))
                 .andExpect(jsonPath("$.data.items[1].corridor_relation").value("OUTSIDE"))
                 .andExpect(jsonPath("$.data.items[1].risk_present").value(false));
     }
@@ -1143,15 +1148,22 @@ class Stage9PostgresTest {
         jdbc.update("insert into target_latest_state (target_id,location,height_agl_m,altitude_amsl_m,observed_at,received_at,unknown_fields,created_at,updated_at,version)"
                 + " values (?,ST_GeomFromEWKT(?),?,?,?,?,cast('[]' as jsonb),?,?,0)", targetId,
                 "SRID=4326;POINT (" + lon + " " + lat + ")", aglM, amslM, observedAt, observedAt, observedAt, observedAt);
-        String observationId = UUID.randomUUID().toString(), trackId = UUID.randomUUID().toString();
+        spaceMeasurement(targetId,lon,lat,observedAt);
+        return targetId;
+    }
+
+    private void spaceMeasurement(String targetId,double lon,double lat,OffsetDateTime observedAt) {
+        String observationId = UUID.randomUUID().toString();
+        var tracks=jdbc.queryForList("select track_id from track where target_id=? and layer='FUSED'",String.class,targetId);
+        String trackId=tracks.isEmpty()?UUID.randomUUID().toString():tracks.get(0);
         jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,quality,source_mode,owner_org_id,district_id,created_at)"
                 + " values(?,'seed-stage3-source',?,?,?, ?,CAST('{\"object_count\":25}' AS JSON),'mock',?,?,?)", observationId, observationId, targetId, observedAt, observedAt,
                 LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT, observedAt);
-        jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)", trackId, targetId, trackId, observedAt, observedAt);
+        if(tracks.isEmpty())jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)", trackId, targetId, trackId, observedAt, observedAt);
+        int sequence=jdbc.queryForObject("select COALESCE(MAX(point_seq),0)+1 from track_point where track_id=?",Integer.class,trackId);
         jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,observation_id,point_kind,created_at)"
-                + " values(?,?,1,?,?,ST_GeomFromEWKT(?),?,'MEAS',?)", UUID.randomUUID().toString(), trackId, observedAt, observedAt,
+                + " values(?,?,?,?,?,ST_GeomFromEWKT(?),?,'MEAS',?)", UUID.randomUUID().toString(), trackId, sequence, observedAt, observedAt,
                 "SRID=4326;POINT (" + lon + " " + lat + ")", observationId, observedAt);
-        return targetId;
     }
 
     private double distanceToRoute(String targetId) {

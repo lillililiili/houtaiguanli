@@ -102,9 +102,10 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         brokerId = configuration.create(new BrokerInput("QA disposal loopback", "127.0.0.1", mqttPort, false,
                 null, null, "127.0.0.1/32", "replay", "seed-stage3-org", "seed-stage3-district", null), key()).brokerId();
         configuration.enable(brokerId, 0, true, key());
-        String registered = configuration.register(new Registration(LingyunEnvelope.PROTOCOL, brokerId, "qa-disposal",
+        // Model a historical binding: retired IFR devices cannot be newly registered through the API.
+        String registered = mqtt.register(new Registration(LingyunEnvelope.PROTOCOL, brokerId, "qa-disposal",
                 "ifr-" + key(), "ifr", "replay", "seed-stage3-org", "seed-stage3-district",
-                "QA-IFR-" + key(), "隔离反制协议设备", null, null, null), key());
+                "QA-IFR-" + key(), "隔离反制协议设备", null, null, null), clock.nowMillis());
         binding = mqtt.binding(registered, false);
         jdbc.update("update ops_device set enabled=true where device_id=?", binding.opsDeviceId());
         jdbc.update("update ops_device_state set connectivity='ONLINE',health_code='GOOD',has_alarm=false,observed_at=?,received_at=? where device_id=?",

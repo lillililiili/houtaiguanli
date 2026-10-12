@@ -204,3 +204,12 @@ GET /api/v1/alarms/{alarm_id}/escalations?page&size     alarm:read
 告警列表、详情和 CSV 的 `violation_reasons` 不再包含 `NO_AUTHORIZATION`。告警原始明细或最新升级累计原因中有此码时，读取新增可选 `task_match_note`，说明旧规则曾因未匹配报备任务触发，此项现仅作提示、不作为违规原因；其他原因照常保留。CSV 末尾追加“任务匹配提示”，既有列顺序保持。`violation_reason=NO_AUTHORIZATION` 与其他无效原因一样返回 400，不再作为违规原因筛选项。
 
 这是只读展示口径调整，不改写告警、研判、升级历史或事件核实状态，不自动删除或解除旧告警。当前正式规则 `C03.no_plan_status=LEGAL` 继续生效，缺计划本身不判非法，其他独立违规照常判断。
+
+### 2026-10-11 流程复验补充契约
+
+- `GET /api/v1/risks/{riskId}/handoff-preview?expected_version=N`：先校验 `handoff:create` 和 `risk:read` 及对象范围。返回 `source_id/source_version/generated_at`、统一上级 `recipient` 配置快照、可见计划/目标编号和与提交同源的 `material`。预览可用于待核验/待通知风险；不会核验、创建交接、投递或占用幂等键。提交仍重新检查状态、版本、权限和配置，材料以实际提交快照为准。
+- 无精确多边形的天气预报风险，`weather-fact` 可返回 `coverage_basis=REGION`、`area_name/district_name/forecast_message_id` 与原发布时间及有效期，`polygon` 缺省。只表达既有区域级关联，不生成或推断几何覆盖；有多边形为 `POLYGON`。
+- 告警 advisory 追加 `departure_observation`，与 `/observation` 同源。满短信3秒/电话播放10秒后核对；`position.observed_at/longitude/latitude` 为本次实际采用观测（坐标WGS84），`evaluated_at` 只表示本次读取判断时间，不是观测时间。坐标还须目标读取权限和范围；未知、边界、过期不判飞离，时效取当前融合配置。确已飞离且无活动或已完成反制的本分支无需自动处罚移送，不覆盖既有交接历史。
+# 通知终止依据持久化（2026-10-11 复验修复）
+
+`departure_observation.status=RECORDED` 表示后台在实际短信 3 秒／电话播完 10 秒观察窗后，以当时有效实测位置确认飞离，并冻结首次判断的渠道、窗口、位置、观测时间、判断时间和依据。只读查询不产生该记录。后续停报或通道关闭不恢复本轮电话任务，不覆盖已留存依据；当前观测是否过期仍独立显示。只有结论为 LEFT 且有有效实测位置才留存，旧数据不回填推测结果；位置读取继续受目标权限和范围约束。

@@ -271,7 +271,7 @@ class LocalInterfaceSimulatorApiTest {
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and state_code='PENDING_VERIFICATION'",Long.class,planId)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select count(*) from weather_forecast_risk_fact where risk_id in (select risk_id from flight_risk where plan_id=?)",Long.class,planId)).isEqualTo(1);
   assertThat(jdbc.queryForObject("select reason_text from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",String.class,planId))
-   .startsWith("天气预报：雷雨、大风；区域 "+area+"；时段 ").contains("（北京时间）").doesNotContain("WEATHER_");
+   .startsWith("天气预报：雷雨、大风；区域 "+area+"；时段 ").contains("（北京时间）").doesNotContain("WEATHER_", "当前状态", "不发送通知");
   send("/weather",input,200);
   assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=? and source_id like 'weather-forecast-rule-%'",Long.class,planId)).isEqualTo(1);
  }
@@ -320,7 +320,7 @@ class LocalInterfaceSimulatorApiTest {
   assertThat((String)risk.get("source_risk_id")).startsWith("forecast:");
   assertThat((String)risk.get("risk_no")).matches("风险-\\d{4}-\\d{3}");
   assertThat((String)risk.get("reason_text")).matches("天气预报：雷雨、大风；区域 "+java.util.regex.Pattern.quote(area)
-    +"；时段 \\d{1,2}月\\d{1,2}日 \\d{2}:\\d{2}–(\\d{1,2}月\\d{1,2}日 )?\\d{2}:\\d{2}（北京时间）。当前状态为待核验，人工确认前不发送通知、不执行处置。");
+    +"；时段 \\d{1,2}月\\d{1,2}日 \\d{2}:\\d{2}–(\\d{1,2}月\\d{1,2}日 )?\\d{2}:\\d{2}（北京时间）。");
   mvc.perform(get("/api/v1/risks/"+riskId).header("Authorization",token)).andExpect(status().isOk())
    .andExpect(jsonPath("$.data.risk_no").value(risk.get("risk_no")))
    .andExpect(jsonPath("$.data.current_status").value("NOT_STARTED"));
@@ -413,12 +413,29 @@ class LocalInterfaceSimulatorApiTest {
   jdbc.update("UPDATE app_user SET role_code='ROLE-EXT-READ' WHERE account='admin1'");
   send("/plans",plan("no-permission"),403);
  }
- @Test void frontendRoleCannotReadBackendContextEvenWithLegacyInterfacePermission() throws Exception {
-  jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-EXT-ONLY','接口操作','',FALSE,TRUE,0,0,0,FALSE)");
-  jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-EXT-ONLY','interfaces','OP',TRUE)");
-  jdbc.update("UPDATE app_user SET role_code='ROLE-EXT-ONLY' WHERE account='admin1'");
+ @Test void frontendCannotReadContextWithLegacyInterfaceOperatePermission() throws Exception {
+  String role="ROLE-EXT-"+UUID.randomUUID().toString().substring(0,8);
+  jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES(?,'接口操作','',FALSE,TRUE,0,0,0,FALSE)",role);
+  jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES(?,'interfaces','OP',TRUE)",role);
+  jdbc.update("UPDATE app_user SET role_code=? WHERE account='admin1'",role);
   mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isForbidden())
-   .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
+   .andExpect(jsonPath("$.ok").value(false)).andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"))
+   .andExpect(jsonPath("$.data").doesNotExist());
+ }
+ @Test void backendCanReadContextWithDefaultManagementIdentity() throws Exception {
+  jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE account='admin1'");
+  mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.routes").isNotEmpty()).andExpect(jsonPath("$.data.sources").isNotEmpty())
+   .andExpect(jsonPath("$.data.unavailable_sections").isEmpty());
+ }
+ @Test void backendContextDoesNotRequireUnrelatedBusinessPermissions() throws Exception {
+  jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE account='admin1'");
+  // 隔离测试中撤回各业务读取动作，后台接口入口仍可用，缺少的分区须显式标记。
+  jdbc.update("UPDATE app_role_permission SET permission_level='NONE' WHERE role_code='ROLE-BACKEND' AND permission_code IN ('route:read','flight:read','risk:read','alarm:read')");
+  mvc.perform(get(BASE+"/context").header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.ok").value(true)).andExpect(jsonPath("$.data.routes").isEmpty())
+   .andExpect(jsonPath("$.data.plans").isEmpty()).andExpect(jsonPath("$.data.sources").isEmpty())
+   .andExpect(jsonPath("$.data.unavailable_sections").value(org.hamcrest.Matchers.hasItems("航线：无读取权限","飞行任务：无读取权限","风险通知：无读取权限","告警事件：无读取权限")));
  }
  @Test void contextExposesExpiredRouteSeparatelyForMapPlanDiagnostics() throws Exception {
   String route=UUID.randomUUID().toString(),version=UUID.randomUUID().toString(),template=jdbc.queryForObject("select v.route_version_id from route_version v join route r on r.route_id=v.route_id where r.source_mode='mock' and r.enabled=true and r.owner_org_id is not null fetch first 1 rows only",String.class);
@@ -449,6 +466,34 @@ class LocalInterfaceSimulatorApiTest {
    .andReturn().getResponse().getContentAsString()).path("data").path("items");
   var ids=new ArrayList<String>();items.forEach(item->ids.add(item.path("risk").path("risk_id").asText()));return ids;
  }
+ @Test void weatherDistrictIdTakesPriorityOverDisplayLabelAndRejectsWrongDistrict() throws Exception {
+  String planId=send("/plans",plan("district-"+UUID.randomUUID()),200).path("subject_id").asText();
+  String district=jdbc.queryForObject("select district_id from flight_plan where plan_id=?",String.class,planId);
+  long now=System.currentTimeMillis();
+  var input=forecast("forecast-"+UUID.randomUUID(),"自定义预报展示名称",now,period(now+300000,now+1200000,"雷雨",12));
+  input.put("plan_id",planId);input.put("district_id",UUID.randomUUID().toString());
+  send("/weather",input,200);
+  assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=?",Long.class,planId)).isZero();
+  input.put("message_id","forecast-"+UUID.randomUUID());input.put("district_id",district);
+  send("/weather",input,200);
+  assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=?",Long.class,planId)).isEqualTo(1);
+  mvc.perform(get("/api/v1/flight-plans/"+planId+"/weather-forecast").header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.status").value("READY"));
+ }
+
+ @Test void weatherReadbackUsesRegisteredDeviceAndLatestObservationTime() throws Exception {
+  var scope=jdbc.queryForMap("select owner_org_id,district_id from flight_plan where owner_org_id is not null fetch first 1 rows only");
+  String id=send("/weather-devices",Map.of("message_id","station-"+UUID.randomUUID(),"device_no","S-"+UUID.randomUUID(),"name","测试气象站",
+    "longitude",118.61,"latitude",37.46,"owner_org_id",scope.get("owner_org_id"),"district_id",scope.get("district_id")),200).path("device_id").asText();
+  long now=System.currentTimeMillis();
+  for(long at:List.of(now,now-1000)) send("/weather-observations",Map.of("message_id","weather-"+UUID.randomUUID(),"device_id",id,"observed_at",at,"longitude",118.61,"latitude",37.46,"temperature_c",22),200);
+  mvc.perform(get(BASE+"/weather-devices/"+id+"/observations").header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.total").value(2)).andExpect(jsonPath("$.data.latest.observed_at").value(now))
+   .andExpect(jsonPath("$.data.source_mode").value("replay")).andExpect(jsonPath("$.data.simulated").value(true));
+  mvc.perform(get(BASE+"/weather-devices/"+UUID.randomUUID()+"/observations").header("Authorization",token)).andExpect(status().isNotFound());
+  mvc.perform(get(BASE+"/weather-devices/"+id+"/observations")).andExpect(status().isUnauthorized());
+ }
+
  static Map<String,Object> forecast(String message,String area,long published,Map<String,Object> period) {
   var input=new HashMap<String,Object>();input.put("message_id",message);input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));return input;
  }

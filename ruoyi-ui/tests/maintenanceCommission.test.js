@@ -18,6 +18,7 @@ async function mount(query = 'maintenance_context_id=todo-b&device_id=b') {
   host=document.createElement('div');document.body.append(host);app=createApp({template:'<router-view />'});app.use(router);app.use(ElementPlus);app.mount(host);await settle();
 }
 beforeEach(()=>{
+  vi.useFakeTimers();
   vi.clearAllMocks();
   deviceApi.list.mockResolvedValue({items:[{device_id:'a',name:'甲设备',device_no:'A'},{device_id:'b',name:'乙设备',device_no:'B'}],total:2});
   deviceApi.detail.mockResolvedValue({connection:{}});
@@ -26,7 +27,14 @@ beforeEach(()=>{
   deviceMaintenanceApi.workflow.mockResolvedValue(flow());
   deviceMaintenanceApi.list.mockResolvedValue({items:[],total:0});
 });
-afterEach(()=>{app?.unmount();host?.remove();document.querySelectorAll('.el-overlay,.el-message').forEach(el=>el.remove());vi.useRealTimers();});
+afterEach(async()=>{
+  app?.unmount();
+  // Element Plus releases the dialog scroll lock on a delayed timer.
+  await vi.runOnlyPendingTimersAsync();
+  host?.remove();
+  document.querySelectorAll('.el-overlay,.el-message').forEach(el=>el.remove());
+  vi.useRealTimers();
+});
 describe('运维待办深链到既有调测页',()=>{
   it('从处置进入调测时最近心跳与工作台统一为北京时间',async()=>{
     const at=Date.UTC(2026,0,2,7,46,11);

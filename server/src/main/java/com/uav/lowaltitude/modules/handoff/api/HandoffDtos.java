@@ -16,6 +16,9 @@ public final class HandoffDtos {
     public record RecipientDto(String recipientId, String displayName, String handoffType) { }
     public record RecipientListDto(List<RecipientDto> items) { }
     public record CreateRequest(String sourceKind, String sourceId, String handoffType, String recipientId, long expectedVersion) { }
+    public record RiskPreviewDto(String sourceId, long sourceVersion, long generatedAt,
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,
+            String planNo, String targetNo, MaterialDto material) { }
     /** POST 成功保证材料入库；投递状态以通道返回事实为准，不代表处罚办结。 */
     public record CreatedDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
             long sourceVersion, String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
@@ -52,7 +55,14 @@ public final class HandoffDtos {
 
     /* 材料快照 schema_version=1：只冻结白名单结构化字段。没有文件就没有文件名、哈希或下载链接字段。 */
     public record MaterialDto(int schemaVersion, RiskMaterialDto risk, List<VerificationMaterialDto> verifications,
-            ReferenceMaterialDto references) { }
+            ReferenceMaterialDto references, List<EvidenceChainItemDto> evidenceChain, Boolean evidenceOmitted,
+            com.uav.lowaltitude.modules.risk.api.SpaceRiskDtos.SpaceFactDto spaceFact,
+            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository.ForecastFact weatherForecast,
+            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository.FactRow weatherArea) {
+        public MaterialDto(int version, RiskMaterialDto risk, List<VerificationMaterialDto> verifications, ReferenceMaterialDto references) {
+            this(version,risk,verifications,references,null,null,null,null,null);
+        }
+    }
     public record RiskMaterialDto(String riskId, String sourceRiskId, String riskType, String severity, String state,
             String reasonCode, String reasonText, Long occurredAt, long receivedAt, long version, RiskLocationDto location) {
         public RiskMaterialDto(String riskId, String sourceRiskId, String riskType, String severity, String state,
@@ -87,10 +97,15 @@ public final class HandoffDtos {
      */
     public record EvidenceChainItemDto(String category, String sourceKind, String sourceId, String evidenceNo, String name,
             String kindCode, String status, Long capturedAt, Long startedAt, Long endedAt, Long pointCount, Long sizeBytes,
-            String sha256, String layer) {
+            String sha256, String layer, com.fasterxml.jackson.databind.JsonNode content) {
+        public EvidenceChainItemDto(String category, String sourceKind, String sourceId, String evidenceNo, String name,
+                String kindCode, String status, Long capturedAt, Long startedAt, Long endedAt, Long pointCount, Long sizeBytes,
+                String sha256, String layer) {
+            this(category,sourceKind,sourceId,evidenceNo,name,kindCode,status,capturedAt,startedAt,endedAt,pointCount,sizeBytes,sha256,layer,null);
+        }
         public EvidenceChainItemDto withLayer(String value) {
             return new EvidenceChainItemDto(category, sourceKind, sourceId, evidenceNo, name, kindCode, status,
-                    capturedAt, startedAt, endedAt, pointCount, sizeBytes, sha256, value);
+                    capturedAt, startedAt, endedAt, pointCount, sizeBytes, sha256, value, content);
         }
     }
     /**

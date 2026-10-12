@@ -40,7 +40,7 @@ class DefaultFusedLayerWriterTerminalFrameTest {
         FusionDomainKey domain = new FusionDomainKey("mock", null, null);
         Instant t0 = Instant.parse("2026-09-06T00:00:00Z");
         SourceEstimate radar = new SourceEstimate(sourceId, "seed-stage2-source-mock", "RADAR", "CONFIRMED", linkId, null, null, t0,
-                118.5, 37.4, 15.0, 120.0, null, 8.0, 90.0, "UAV", null, null, null, PointKind.MEAS, Map.of());
+                118.5, 37.4, 15.0, 120.0, 70.0, 8.0, 90.0, "UAV", null, null, null, PointKind.MEAS, Map.of());
         writer.write(new TargetFrameResult(targetId, domain, t0, List.of(radar), TrackStatus.STABLE, 0, "demo-v1"));
         Map<String, Object> after = jdbc.queryForMap("select cast(location as varchar) as loc, fusion_confidence from target_latest_state where target_id=?", targetId);
         assertThat(String.valueOf(after.get("loc"))).contains("118.5").contains("37.4");
@@ -50,6 +50,8 @@ class DefaultFusedLayerWriterTerminalFrameTest {
         writer.write(new TargetFrameResult(targetId, domain, t1, List.of(), TrackStatus.TERMINATED, 1, "demo-v1"));
         Map<String, Object> terminal = jdbc.queryForMap("select cast(location as varchar) as loc, fusion_confidence, unknown_fields from target_latest_state where target_id=?", targetId);
         assertThat(String.valueOf(terminal.get("loc"))).contains("118.5").contains("37.4");
+        assertThat(jdbc.queryForObject("select altitude_amsl_m from target_latest_state where target_id=?", java.math.BigDecimal.class, targetId)).isEqualByComparingTo("120");
+        assertThat(jdbc.queryForObject("select height_agl_m from target_latest_state where target_id=?", java.math.BigDecimal.class, targetId)).isEqualByComparingTo("70");
         Object rawUnknown = terminal.get("unknown_fields");
         String unknown = rawUnknown instanceof byte[] b ? new String(b, java.nio.charset.StandardCharsets.UTF_8) : String.valueOf(rawUnknown);
         // H2 的 JSON 列读出带转义引号，去掉反斜杠后按字段名断言：位置已保留，不得再标 location 未知。

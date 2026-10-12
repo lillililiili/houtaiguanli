@@ -45,6 +45,7 @@ class ConfirmedSpaceRiskPostgresTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired SpaceRiskSpatialPort spatial;
     @Autowired SpaceRiskEvaluationService evaluation;
+    @Autowired com.uav.lowaltitude.modules.risk.application.RiskIngestionService ingestion;
     @Autowired ObjectMapper json;
     @Autowired DataSource dataSource;
     String org, district, plan, route, target, track, point, source;
@@ -209,6 +210,9 @@ class ConfirmedSpaceRiskPostgresTest {
     void flockCountOnlyLiftsTheLevelAndConfirmedRuleMembershipReachTheStoredRisk(int count, String expectedSeverity) {
         String counted = observation(source, now, count);
         jdbc.update("update track_point set observation_id=? where point_id=?", counted, point);
+        jdbc.update("update target_latest_state set altitude_amsl_m=160 where target_id=?", target);
+        assertThat(observation().altitudeM()).isEqualByComparingTo("100");
+        assertThat(observation().altitudeAmslM()).isEqualByComparingTo("160");
         // 使用实际发布成员关系，不能从规则集版本号拼接 rule_version_id。
         String formal = jdbc.queryForObject("select rule_set_version_id from rule_set_version where rule_set_version_id='space-risk-confirmed-20261008'", String.class);
         jdbc.update("update rule_set set active_version_id=? where rule_set_code='SPACE-RISK-DEMO'", formal);
@@ -216,6 +220,8 @@ class ConfirmedSpaceRiskPostgresTest {
         assertThat(run.status()).as(run.message()).isEqualTo("SUCCESS");
         // 确认书修订版 4-1、4-2：出不出风险不看数量，20 只及以上只把等级上调一级。
         assertThat(riskCount()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select observed_altitude_m from flight_risk where target_id=?", BigDecimal.class, target)).isEqualByComparingTo("160");
+        assertThat(jdbc.queryForObject("select observed_altitude_datum from flight_risk where target_id=?", String.class, target)).isEqualTo("AMSL");
         assertThat(jdbc.queryForObject("select severity from flight_risk where target_id=?", String.class, target)).isEqualTo(expectedSeverity);
         assertThat(jdbc.queryForObject("select state_code from flight_risk where target_id=?", String.class, target)).isEqualTo("PENDING_VERIFICATION");
         assertThat(jdbc.queryForObject("select f.rule_version_id from space_risk_fact f join flight_risk r on r.risk_id=f.risk_id where r.target_id=?", String.class, target))
@@ -256,6 +262,16 @@ class ConfirmedSpaceRiskPostgresTest {
     }
 
     @ParameterizedTest
+    @CsvSource({"AMSL,0,WITHIN", "AMSL,173,WITHIN", "AMSL,300,WITHIN",
+            "AMSL,-1,OUTSIDE", "AMSL,301,OUTSIDE", "AGL,173,UNKNOWN", ",,UNKNOWN"})
+    void riskHeightRelationRequiresTheSameKnownDatum(String datum, BigDecimal altitude, String expected) {
+        String risk = ingestion.ingest(new com.uav.lowaltitude.modules.risk.application.RiskIngestionService.TrustedRiskFact(
+                source, id(), plan, route, null, target, null, "SPACE_OBJECT", "HIGH", "HEIGHT_FACT",
+                "模拟高度对照", now, now, altitude, datum, "mock"));
+        assertThat(jdbc.queryForObject("select height_relation from flight_risk where risk_id=?", String.class, risk)).isEqualTo(expected);
+    }
+
+    @ParameterizedTest
     @CsvSource({"1,3000", "7,5000"})
     void laterReceivedAccuracyCorrectionCannotChangeAnEarlierFrameTrend(int receiveDelaySeconds, int correctedAccuracy) {
         jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,position_accuracy_m,point_kind,created_at)"
@@ -286,6 +302,25 @@ class ConfirmedSpaceRiskPostgresTest {
     private SpaceObservation observation() { return observations().stream().filter(row -> plan.equals(row.planId())).findFirst().orElseThrow(); }
     private long riskCount() { return jdbc.queryForObject("select count(*) from flight_risk where target_id=?", Long.class, target); }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(doubles = {37.001, 37.003})
+    void scheduledLatestStateReadsIncludeUpdatesCommittedAfterTickStarted(double latitude) {
+        airport();
+        jdbc.update("update track_point set location=ST_SetSRID(ST_MakePoint(118,?),4326) where point_id=?", latitude, point);
+        jdbc.update("update target_latest_state set location=ST_SetSRID(ST_MakePoint(118,?),4326) where target_id=?", latitude, target);
+        OffsetDateTime tickStart = now.minusSeconds(5), from = now.minusMinutes(2), since = now.minusMinutes(30);
+        assertThat(spatial.refreshedObservations(from, tickStart, since, 15, 30).stream()
+                .anyMatch(row -> target.equals(row.targetId()) && plan.equals(row.planId()))).isTrue();
+        assertThat(spatial.refreshedAirportProximity(from, tickStart, since, 0).stream()
+                .anyMatch(row -> target.equals(row.targetId()) && plan.equals(row.planId()))).isTrue();
+        // Current snapshots cannot accept a corrupt future write timestamp either.
+        jdbc.update("update target_latest_state set updated_at=? where target_id=?", ts(now.plusDays(1)), target);
+        assertThat(spatial.refreshedObservations(from, tickStart, since, 15, 30).stream()
+                .anyMatch(row -> target.equals(row.targetId()))).isFalse();
+        assertThat(spatial.refreshedAirportProximity(from, tickStart, since, 0).stream()
+                .anyMatch(row -> target.equals(row.targetId()))).isFalse();
+    }
+
     private String source(String mode) {
         String id = id();
         jdbc.update("insert into integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) values(?,?,?,true,?,?,?,0)",
@@ -306,11 +341,31 @@ class ConfirmedSpaceRiskPostgresTest {
         jdbc.update("insert into target_latest_state(target_id,location,height_agl_m,observed_at,received_at,unknown_fields,created_at,updated_at,version)"
                 + " select ?,location,height_agl_m,observed_at,received_at,CAST('[]' AS JSON),created_at,created_at,0 from track_point where point_id=?", target, point);
     }
+    @ParameterizedTest
+    @CsvSource({"37.001", "37.003"})
+    void airportRiskRetainsMeasuredPositionAndDoesNotMislabelProcedureDistanceAsRouteDistance(double latitude) {
+        airportAt(37.01);
+        jdbc.update("update track_point set location=ST_SetSRID(ST_MakePoint(118,?),4326) where point_id=?", latitude, point);
+        jdbc.update("update target_latest_state set location=ST_SetSRID(ST_MakePoint(118,?),4326) where target_id=?", latitude, target);
+        var fact = spatial.airportProximity(now.minusSeconds(1), now.plusSeconds(1), 0).stream()
+                .filter(row -> target.equals(row.targetId()) && plan.equals(row.planId())).findFirst().orElseThrow();
+        assertThat(fact.longitude()).isEqualByComparingTo("118");
+        assertThat(fact.latitude()).isEqualByComparingTo(BigDecimal.valueOf(latitude));
+        BigDecimal expectedRouteDistance = jdbc.queryForObject("select ST_Distance(rv.centerline::geography,ls.location::geography)"
+                + " from route_version rv cross join target_latest_state ls where rv.route_version_id=? and ls.target_id=?",
+                BigDecimal.class, route, target);
+        assertThat(fact.distanceToRouteM()).isEqualByComparingTo(expectedRouteDistance);
+        assertThat(fact.distanceToRouteM()).isNotEqualByComparingTo(fact.distanceToProcedureM());
+    }
+
     private void airport() {
+        airportAt(37);
+    }
+    private void airportAt(double latitude) {
         String airport = id();
         jdbc.update("insert into airport(airport_id,icao_code,name,reference_point,owner_org_id,district_id,created_at) values(?,?,?,ST_SetSRID(ST_MakePoint(118,37),4326),?,?,?)",
                 airport, airport.substring(0, 8), "规则测试机场", org, district, ts(now));
-        jdbc.update("insert into airport_procedure_route(route_id,airport_id,kind,name,centerline,protect_width_m,created_at) values(?,?,'APPROACH','进近航线',ST_GeomFromText('LINESTRING(117.9 37,118.1 37)',4326),100,?)", id(), airport, ts(now));
+        jdbc.update("insert into airport_procedure_route(route_id,airport_id,kind,name,centerline,protect_width_m,created_at) values(?,?,'APPROACH','进近航线',ST_SetSRID(ST_MakeLine(ST_MakePoint(117.9,?),ST_MakePoint(118.1,?)),4326),100,?)", id(), airport, latitude, latitude, ts(now));
     }
     private static String id() { return UUID.randomUUID().toString(); }
     private static Timestamp ts(OffsetDateTime time) { return Timestamp.from(time.toInstant()); }

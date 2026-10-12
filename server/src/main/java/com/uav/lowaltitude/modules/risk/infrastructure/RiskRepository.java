@@ -300,8 +300,13 @@ public class RiskRepository {
         jdbc.update("INSERT INTO flight_risk (risk_id,source_id,source_risk_id,plan_id,route_version_id,assessment_id,target_id,track_id,"
                 + "risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,observed_altitude_m,"
                 + "observed_altitude_datum,height_relation,source_mode,owner_org_id,district_id,created_at,updated_at,version,risk_no)"
-                + " VALUES (:id,:source,:source_risk,:plan,:route,:assessment,:target,:track,:type,:severity,'PENDING_VERIFICATION',"
-                + ":reason,:text,:occurred,:received,:altitude,:datum,'UNKNOWN',:mode,:org,:district,:received,:received,0,:risk_no)", params);
+                + " SELECT :id,:source,:source_risk,:plan,:route,:assessment,:target,:track,:type,:severity,'PENDING_VERIFICATION',"
+                + ":reason,:text,:occurred,:received,:altitude,:datum,"
+                + "CASE WHEN CAST(:altitude AS NUMERIC) IS NOT NULL AND rv.altitude_datum=:datum"
+                + " AND rv.min_altitude_m IS NOT NULL AND rv.max_altitude_m IS NOT NULL"
+                + " THEN CASE WHEN :altitude BETWEEN rv.min_altitude_m AND rv.max_altitude_m THEN 'WITHIN' ELSE 'OUTSIDE' END"
+                + " ELSE 'UNKNOWN' END,:mode,:org,:district,:received,:received,0,:risk_no"
+                + " FROM route_version rv WHERE rv.route_version_id=:route", params);
     }
 
     private Where where(RiskQuery query, AccessDecision access) {

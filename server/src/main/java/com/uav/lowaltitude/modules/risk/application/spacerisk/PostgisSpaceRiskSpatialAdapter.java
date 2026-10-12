@@ -79,9 +79,12 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
         p.put("observed_since", observedSince);
         p.put("plan_pad_minutes", planWindowPadMinutes);
         p.put("local_simulator_bridge", localSimulatorPlanBridge);
-        // updated_at 是融合写最新状态时的服务器时刻；observed_since 挡住刚灌入、但观测时刻早已过去的历史回放报文。
-        return evidence.enrich(jdbc.query(OBSERVATION_SELECT + " AND ls.updated_at >= :refreshed_from AND ls.updated_at < :refreshed_to"
-                + " AND ls.observed_at >= :observed_since" + OBSERVATION_ORDER, p, PostgisSpaceRiskSpatialAdapter::observation), trendWindowMinutes);
+        // This table contains only the latest state. A busy target may be updated while an earlier
+        // rule is running, so the tick-start upper bound can permanently hide it. Read the current
+        // SQL statement's snapshot, keeping the lower watermark, recency and future-time guards.
+        return evidence.enrich(jdbc.query(OBSERVATION_SELECT + " AND ls.updated_at >= :refreshed_from AND ls.updated_at <= statement_timestamp()"
+                + " AND ls.observed_at >= :observed_since AND ls.observed_at <= statement_timestamp()" + OBSERVATION_ORDER,
+                p, PostgisSpaceRiskSpatialAdapter::observation), trendWindowMinutes);
     }
 
     // 目标经 target_current_alias 解析到存活目标：被并的历史目标不再单独产生风险。
@@ -95,6 +98,7 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                    ST_Distance(rv.centerline::geography, ls.location::geography) AS distance_m,
                    rv.corridor_width_m / 2 AS half_width_m,
                    COALESCE(ls.height_agl_m, ls.altitude_amsl_m) AS altitude_m,
+                   ls.altitude_amsl_m,
                    CASE WHEN ls.height_agl_m IS NOT NULL THEN 'AGL'
                         WHEN ls.altitude_amsl_m IS NOT NULL THEN 'AMSL' END AS altitude_datum,
                    rv.altitude_datum AS route_altitude_datum,
@@ -126,7 +130,7 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                 rs.getString("plan_id"), rs.getString("route_version_id"), rs.getBigDecimal("distance_m"), rs.getBigDecimal("half_width_m"),
                 rs.getBigDecimal("altitude_m"), rs.getString("altitude_datum"), rs.getString("route_altitude_datum"),
                 null, C04DecisionTable.Trend.UNKNOWN.name(), rs.getString("owner_org_id"), rs.getString("district_id"),
-                rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"), SpaceRiskRepository.time(rs, "observed_at"), SpaceRiskRepository.time(rs, "received_at"));
+                rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"), SpaceRiskRepository.time(rs, "observed_at"), SpaceRiskRepository.time(rs, "received_at"), rs.getBigDecimal("altitude_amsl_m"));
     }
 
     @Override
@@ -140,7 +144,8 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
     public List<AirportProximity> refreshedAirportProximity(OffsetDateTime from, OffsetDateTime to, OffsetDateTime observedSince, int planWindowPadMinutes) {
         if (!postgis) return List.of();
         return airportQuery(Map.of("refreshed_from", from, "refreshed_to", to, "observed_since", observedSince),
-                " AND ls.updated_at >= :refreshed_from AND ls.updated_at < :refreshed_to AND ls.observed_at >= :observed_since");
+                " AND ls.updated_at >= :refreshed_from AND ls.updated_at <= statement_timestamp()"
+                        + " AND ls.observed_at >= :observed_since AND ls.observed_at <= statement_timestamp()");
     }
 
     private List<AirportProximity> airportQuery(Map<String, Object> p, String windowCondition) {
@@ -154,7 +159,8 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                        COALESCE(ls.height_agl_m, ls.altitude_amsl_m) AS altitude_m,
                        CASE WHEN ls.height_agl_m IS NOT NULL THEN 'AGL'
                             WHEN ls.altitude_amsl_m IS NOT NULL THEN 'AMSL' END AS altitude_datum,
-                       ls.observed_at
+                       ls.observed_at, ST_X(ls.location) AS longitude, ST_Y(ls.location) AS latitude,
+                       ST_Distance(rv.centerline::geography, ls.location::geography) AS distance_to_route_m
                 FROM target t
                 LEFT JOIN target_current_alias alias ON alias.historical_target_id = t.target_id
                 JOIN target survivor ON survivor.target_id = COALESCE(alias.current_target_id, t.target_id)
@@ -173,15 +179,17 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                  AND p.status_code IN ('PENDING','EXECUTING','COMPLETED')
                  AND p.start_at <= ls.observed_at AND ls.observed_at < p.end_at
                  AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
+                LEFT JOIN route_version rv ON rv.route_version_id=p.route_version_id
                 WHERE ls.location IS NOT NULL
                 """ + windowCondition + MEASURED_FUSION_POSITION + """
                 GROUP BY survivor.target_id, sub.subtype_code, a.airport_id, a.name, p.plan_id, p.route_version_id,
-                         ls.height_agl_m, ls.altitude_amsl_m, ls.observed_at
+                         ls.height_agl_m, ls.altitude_amsl_m, ls.observed_at, ls.location, rv.centerline
                 ORDER BY survivor.target_id, a.airport_id
                 """, p, (rs, i) -> new AirportProximity(rs.getString("target_id"), rs.getString("subtype_code"), rs.getString("airport_id"),
                 rs.getString("airport_name"), rs.getString("plan_id"), rs.getString("route_version_id"),
                 rs.getBigDecimal("distance_procedure_m"), rs.getBigDecimal("distance_protected_m"), rs.getBigDecimal("altitude_m"),
-                rs.getString("altitude_datum"), null, SpaceRiskRepository.time(rs, "observed_at")));
+                rs.getString("altitude_datum"), null, SpaceRiskRepository.time(rs, "observed_at"),
+                rs.getBigDecimal("longitude"), rs.getBigDecimal("latitude"), rs.getBigDecimal("distance_to_route_m")));
     }
 
     private Map<String, Object> window(OffsetDateTime from, OffsetDateTime to, int padMinutes) {

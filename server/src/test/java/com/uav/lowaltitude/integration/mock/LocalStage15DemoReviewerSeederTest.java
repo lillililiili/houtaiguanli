@@ -60,7 +60,8 @@ class LocalStage15DemoReviewerSeederTest {
         List<String> menus = new ArrayList<>();
         me.path("menu_keys").forEach(node -> menus.add(node.asText()));
         // punish 是阶段 14 复核那一页；situation/flights 是简报要求的另外两个。
-        assertThat(menus).as("reviewer1 的菜单").contains("punish", "situation", "flights", "alarms", "monitor");
+        assertThat(menus).as("reviewer1 的菜单").contains("punish", "situation", "flights", "alarms")
+                .doesNotContain("monitor", "devices", "commission", "maintenance", "archive");
     }
 
     /**

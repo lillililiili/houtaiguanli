@@ -61,6 +61,11 @@ public class UavAdvisoryService {
         var current = event(id, false); // Same alarm permission and data scope as overview.
         long now = clock.nowMillis();
         if (!"CONFIRMED".equals(current.state())) return new DepartureObservation(id, null, "NOT_STARTED", "UNKNOWN", null, null, now);
+        var recorded=voice.departureSnapshot(id);
+        if(recorded!=null) {
+            boolean visible=allowed(PermissionCode.TARGET_READ)&&events.find(id,access.require(PermissionCode.TARGET_READ))!=null;
+            return new DepartureObservation(id,recorded.channel(),recorded.status(),recorded.presence(),recorded.startedAt(),recorded.deadlineAt(),recorded.evaluatedAt(),visible?recorded.position():null,recorded.basis());
+        }
         var sms = automatic.overview(current, false);
         var call = voice.overview(current, false);
         Long smsAt = automatic.deliveredAt(id);
@@ -75,8 +80,13 @@ public class UavAdvisoryService {
         if (since == null) return new DepartureObservation(id, channel, "NOT_STARTED", "UNKNOWN", null, null, now);
         long deadline = since + ("VOICE".equals(channel) ? NotifyFlow.CALL_WATCH_MILLIS : NotifyFlow.SMS_WATCH_MILLIS);
         if (now < deadline) return new DepartureObservation(id, channel, "WATCHING", "UNKNOWN", since, deadline, now);
-        var presence = "VOICE".equals(channel) ? presenceAfterCall(id, smsAt, since, now) : presence(id, since, now);
-        return new DepartureObservation(id, channel, "ASSESSED", presence.name(), since, deadline, now);
+        PilotDepartureWatch.Assessment assessment = null;
+        try { if (smsAt != null && smsAt <= since) assessment = departure.assessment(id, smsAt, since, now); }
+        catch (RuntimeException unavailable) { /* 不把读取失败当飞离 */ }
+        var presence = assessment == null ? PilotDepartureWatch.Presence.UNKNOWN : known(assessment.presence());
+        boolean showPosition = allowed(PermissionCode.TARGET_READ) && events.find(id, access.require(PermissionCode.TARGET_READ)) != null;
+        return new DepartureObservation(id, channel, "ASSESSED", presence.name(), since, deadline, now,
+                showPosition && assessment != null ? assessment.position() : null, assessment == null ? null : assessment.basis());
     }
     @Transactional
     public Overview retryAutomatic(String id,String raw,String key) {
@@ -211,15 +221,17 @@ public class UavAdvisoryService {
         var autoVoice=voice.overview(event,allowed(PermissionCode.ALARM_VERIFY)&&allowed(PermissionCode.HANDOFF_CREATE));
         var phase=notifyPhase(event,autoSms,autoVoice);
         var decision=noCounter.status(event);
+        var observation=observation(event.eventId());
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
                 !decision.decisionActive() && "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的任务执行飞手"),
-                autoSms,voice.mode(event),withoutSms(autoSms,autoVoice),!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event),decision,
-                automatic.pilotContactMissing(event));
+                autoSms,voice.mode(event),withoutSms(autoSms,autoVoice),!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event,observation),decision,
+                automatic.pilotContactMissing(event),observation);
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
     private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
+        if(this.voice.departureSnapshot(event.eventId())!=null)return null;
         long now = clock.nowMillis();
         Long smsAt = automatic.deliveredAt(event.eventId());
         Long playedAt = voice == null ? null : voice.playbackCompletedAt() != null ? voice.playbackCompletedAt() : voice.updatedAt();
@@ -244,7 +256,7 @@ public class UavAdvisoryService {
                 voice.policyCode(), voice.triggerSource(), voice.evaluatedAt(), voice.dataUpdatedAt(), voice.recordingId(), voice.recordingName(),
                 voice.answeredAt(), voice.playbackCompletedAt(), voice.recipientSnapshot());
     }
-    private AutoHandoff autoHandoff(EventRow event) {
+    private AutoHandoff autoHandoff(EventRow event, DepartureObservation observation) {
         String eventId = event.eventId();
         String handoffId = handoffs.existingPunishment(eventId);
         if (handoffId == null) {
@@ -252,6 +264,10 @@ public class UavAdvisoryService {
             if ("FALSE_POSITIVE".equals(event.state()))
                 return new AutoHandoff(false, "NOT_REQUIRED", "已核实为误报，不需要移送处罚", null, null, null, null, null);
             if(repository.noCounterActive(eventId))return new AutoHandoff(false,"NOT_REQUIRED","已决定不反制；是否移送按事件事实另行判断",null,null,null,null,null);
+            if ("LEFT".equals(observation.presence()) && disposals.punishmentCompletion(eventId) == null
+                    && disposals.activeCount("UAV_EVENT",eventId,"COUNTERMEASURE") == 0
+                    && disposals.activeCount("UAV_EVENT",eventId,"JAMMING") == 0)
+                return new AutoHandoff(false,"NOT_REQUIRED","通知后有效位置已确认离开；本次未执行反制，无需自动移送处罚",null,null,null,null,null);
             boolean inspect = canInspectHandoffRecipients(eventId);
             // Match the automatic submission gate, without selecting a recipient or starting any work.
             int recipients = inspect ? handoffs.enabledRecipients("UAV_PUNISHMENT").size() : -1;

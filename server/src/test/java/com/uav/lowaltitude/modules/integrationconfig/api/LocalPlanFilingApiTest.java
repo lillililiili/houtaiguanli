@@ -79,16 +79,16 @@ class LocalPlanFilingApiTest extends LocalInterfaceSimulatorApiTest {
   long version=read("/api/v1/flight-plans/"+id).path("version").asLong();data.remove("source_id");
   send("/plans/"+id+"/filing",Map.of("message_id","source-clear","expected_version",version,"filing",data),409);
  }
- @Test void interfaceOperatorWithoutDirectoryAuthorizationCannotAssociateArchives() throws Exception {
+ @Test void frontendWithLegacyInterfaceGrantCannotSubmitPlansOrAssociateArchives() throws Exception {
   var data=filing(true);var body=plan("directory-permission");body.put("filing",data);
   jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-FILING-OP','模拟录入','',FALSE,TRUE,0,0,0,FALSE)");
   jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-FILING-OP','interfaces','OP',TRUE),('ROLE-FILING-OP','flight:read','OP',FALSE),('ROLE-FILING-OP','route:read','OP',FALSE)");
   jdbc.update("UPDATE app_user SET role_code='ROLE-FILING-OP' WHERE account='admin1'");
-  send("/plans",plan("operator-basic-plan"),200);
+  send("/plans",plan("operator-basic-plan"),403);
   send("/plans",body,403);
-  // A task carrying its own pilot and reporting unit says which permission the archive step needs.
+  // Carrying archive data cannot bypass the backend identity boundary either.
   var carriedBody=plan("directory-permission-carried");carriedBody.put("filing",carried(filing(false),"13800000000"));
-  assertThat(error("/plans",carriedBody,403)).contains("单位管理权限");
+  assertThat(error("/plans",carriedBody,403)).contains("后台");
  }
  @org.springframework.beans.factory.annotation.Autowired com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService notifications;
  @Test void carriedPilotAndReportingUnitAreFoundOrCreatedAndLinked() throws Exception {

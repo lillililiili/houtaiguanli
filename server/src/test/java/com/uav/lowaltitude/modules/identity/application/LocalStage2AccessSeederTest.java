@@ -52,8 +52,9 @@ class LocalStage2AccessSeederTest {
         assertThat(jdbc.queryForList("select distinct role_code from app_role_permission where permission_code like '%:%'"
                 + " and role_code<>'ROLE-ADMIN' order by role_code", String.class))
                 .as("non-admin roles holding action codes")
-                .containsExactly("ROLE-DEMO-AUDIT", "ROLE-DEMO-AUTH", "ROLE-DEMO-DUTY",
+                .containsExactly("ROLE-BACKEND", "ROLE-DEMO-AUDIT", "ROLE-DEMO-AUTH", "ROLE-DEMO-DUTY",
                         "ROLE-DEMO-OPS", "ROLE-DEMO-REVIEWER");
+        com.uav.lowaltitude.testfixture.BackendPermissionAssertions.assertFixedGrants(jdbc);
         assertThat(jdbc.queryForObject(
                 "select scope_mode from app_user where account='admin1'", String.class))
                 .isEqualTo("ALL");

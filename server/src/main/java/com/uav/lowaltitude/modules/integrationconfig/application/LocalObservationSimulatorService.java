@@ -153,6 +153,21 @@ public class LocalObservationSimulatorService {
         return new AcceptedInput(input.messageId(), binding.sourceId(), input.deviceId(), 1);
     }
 
+    @Transactional(readOnly = true)
+    public WeatherReadback readWeather(String deviceId) {
+        interfaces.requireInterfacesRead();
+        WeatherBinding binding = repository.weatherBinding(deviceId);
+        if (binding == null || !access.canAccessTuple(binding.ownerOrgId(), binding.districtId()))
+            throw missing("气象设备不存在或不在当前权限范围内");
+        String payload = repository.latestWeatherPayload(deviceId);
+        try {
+            var node = payload == null ? null : json.readTree(payload);
+            if (node != null && node.isTextual()) node = json.readTree(node.textValue());
+            return new WeatherReadback(binding.sourceId(), deviceId, "replay", true,
+                    repository.weatherObservationCount(deviceId), node == null ? null : json.treeToValue(node, WeatherObservationInput.class));
+        } catch (JsonProcessingException e) { throw new IllegalStateException("气象观测无法读取", e); }
+    }
+
     private void validateTargetItems(TargetObservationsInput input) {
         for (TargetItem item : input.items()) {
             if (item.objectCount() != null && item.objectCount() <= 0) throw bad("object_count 必须为正整数");

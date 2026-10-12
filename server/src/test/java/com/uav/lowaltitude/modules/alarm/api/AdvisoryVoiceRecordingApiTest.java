@@ -396,7 +396,7 @@ class AdvisoryVoiceRecordingApiTest {
     }
 
     @Test
-    void managingNeedsInterfaceOperationNotificationAuthorityAndAllScope() throws Exception {
+    void managingNeedsBackendIdentityAndAllScope() throws Exception {
         String admin = login();
         String id = uploadId(admin, "权限测试-" + suffix(), wav(8000, 1, 3000 + ThreadLocalRandom.current().nextInt(3000)));
         String reader = session("ALL", "interfaces=READ");
@@ -404,12 +404,13 @@ class AdvisoryVoiceRecordingApiTest {
         String assignedManager = session("ASSIGNED", "interfaces=OP", "notificationSettings=AUTH");
         String manager = session("ALL", "interfaces=OP", "notificationSettings=AUTH");
         String outsider = session("ALL", "devices=READ");
+        for (String backend : new String[]{assignedManager, manager})
+            jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)", backend);
 
         mvc.perform(get(BASE).header("Authorization", bearer(reader)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.can_manage").value(false))
-                .andExpect(jsonPath("$.data.items.length()").value(1));
-        mvc.perform(get(BASE + "/{id}/content", id).header("Authorization", bearer(reader))).andExpect(status().isOk());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
+        mvc.perform(get(BASE + "/{id}/content", id).header("Authorization", bearer(reader))).andExpect(status().isForbidden());
         mvc.perform(get(BASE).header("Authorization", bearer(outsider))).andExpect(status().isForbidden());
         mvc.perform(get(BASE + "/{id}/content", id).header("Authorization", bearer(outsider))).andExpect(status().isForbidden());
 

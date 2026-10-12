@@ -73,10 +73,16 @@ public class HandoffReadService {
     private final UavEventRepository events;
     private final ObjectMapper objectMapper;
     private final AppClock clock;
+    private final com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets;
+    private final com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository ledger;
+    private final com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess;
 
     public HandoffReadService(AccessControlService access, HandoffRepository repository, RiskRepository risks,
             RiskReadService riskRead, UavEventRepository events, ObjectMapper objectMapper,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
-            AppClock clock) {
+            AppClock clock, com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets,
+            com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository ledger,
+            com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess) {
+        this.targets=targets;this.ledger=ledger;this.commandAccess=commandAccess;
         this.directory=directory; this.clock = clock;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
         this.events = events; this.objectMapper = objectMapper;
@@ -199,7 +205,8 @@ public class HandoffReadService {
         int schemaVersion = stored.schemaVersion() == 0 ? snapshot.schemaVersion() : stored.schemaVersion();
         if (source.current == null) return new MaterialDto(schemaVersion, null, null, null);
         ReferenceMaterialDto references = stored.references() == null ? null : visibleReferences(source.current, stored.references());
-        return new MaterialDto(schemaVersion, stored.risk(), stored.verifications(), references);
+        return new MaterialDto(schemaVersion, stored.risk(), stored.verifications(), references,
+                visibleEvidence(stored.evidenceChain()), stored.evidenceOmitted(), stored.spaceFact(), stored.weatherForecast(), stored.weatherArea());
     }
 
     /**
@@ -212,7 +219,7 @@ public class HandoffReadService {
         if (!"AVAILABLE".equals(source.availability))
             return new MaterialV2Dto(schemaVersion, null, null, null, null, null, null, null, null, null, null, null);
         List<EvidenceMaterialDto> evidence = stored.evidence();
-        var evidenceChain = stored.evidenceChain();
+        var evidenceChain = visibleEvidence(stored.evidenceChain());
         // 证据链清单与证据段同样按读者当前的 evidence:read 裁剪。
         if ((evidence != null || evidenceChain != null) && !mayReadEvidence()) { evidence = null; evidenceChain = null; }
         if (evidenceChain != null && stored.event() != null) {
@@ -235,13 +242,35 @@ public class HandoffReadService {
 
     /** 证据段的可用性：提交时就没冻结 > 读者没权限 > 可用。三者互斥，取最先成立的那个。 */
     private String evidenceAvailability(HandoffRow row, SnapshotRow snapshot, String materialAvailability) {
-        if (snapshot == null || snapshot.schemaVersion() < HandoffSubmissionService.MATERIAL_SCHEMA_V2) return null;
+        if (snapshot == null) return null;
+        if (snapshot.schemaVersion() < HandoffSubmissionService.MATERIAL_SCHEMA_V2) {
+            var stored = parse(snapshot.json());
+            if (stored.evidenceChain() == null && stored.evidenceOmitted() == null) return null;
+            if (!"AVAILABLE".equals(materialAvailability)) return materialAvailability;
+            if (Boolean.TRUE.equals(stored.evidenceOmitted())) return "OMITTED_AT_SUBMISSION";
+            return mayReadEvidence() ? "AVAILABLE" : "FORBIDDEN";
+        }
         // 材料整体不可用时，证据段跟着它（决策 14-25）：材料都看不到却说"证据可用"，
         // 等于告诉对方"这份材料里是有证据的"——那本身就是不该漏出去的信息。
         if (!"AVAILABLE".equals(materialAvailability)) return materialAvailability;
         MaterialV2Dto stored = parseV2(snapshot.json());
         if (Boolean.TRUE.equals(stored.evidenceOmitted())) return "OMITTED_AT_SUBMISSION";
         return mayReadEvidence() ? "AVAILABLE" : "FORBIDDEN";
+    }
+
+    private List<com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceChainItemDto> visibleEvidence(
+            List<com.uav.lowaltitude.modules.handoff.api.HandoffDtos.EvidenceChainItemDto> rows) {
+        if (rows == null || !mayReadEvidence()) return null;
+        var evidence = access.require(PermissionCode.EVIDENCE_READ);
+        return rows.stream().filter(row -> {
+            try {
+                if ("TRACK".equals(row.sourceKind())) return targets.accessibleValidTrack(row.sourceId(), access.require(PermissionCode.TARGET_READ));
+                if ("COMMAND".equals(row.sourceKind())) return ledger.count(ledger.relation(
+                    new com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository.Query(null,null,null,null,null,null,"COMMAND",row.sourceId()),
+                    evidence,false,false,commandAccess.visibility(),clock.nowMillis())) > 0;
+                return true;
+            } catch (ApiException denied) { if (denied.getStatus() != HttpStatus.FORBIDDEN) throw denied; return false; }
+        }).toList();
     }
 
     private boolean mayReadEvidence() {

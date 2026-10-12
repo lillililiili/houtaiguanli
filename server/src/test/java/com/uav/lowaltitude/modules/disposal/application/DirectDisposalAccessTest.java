@@ -38,14 +38,14 @@ class DirectDisposalAccessTest {
     @Mock com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows;
 
     @Test
-    void automationPrincipalStaysEligibleInsideTheDirectWindowWithoutAnApprover() {
+    void automationPrincipalCannotStartEvenWhenCurrentRulesPass() {
         AuthUser actor = new AuthUser(AutomationPrincipal.USER_ID, AutomationPrincipal.ACCOUNT, "自动规则",
                 AutomationPrincipal.ROLE, 0, false, "ALL");
-        when(authorizations.actor(AutomationPrincipal.USER_ID)).thenReturn(actor);
-        when(automation.check("counter", "event")).thenReturn(new Decision("PASS", "", java.util.List.of(), java.util.Map.of(), null));
+        org.mockito.Mockito.lenient().when(authorizations.actor(AutomationPrincipal.USER_ID)).thenReturn(actor);
+        org.mockito.Mockito.lenient().when(automation.check("counter", "event")).thenReturn(new Decision("PASS", "", java.util.List.of(), java.util.Map.of(), null));
         DirectDisposalAccess access = access();
 
-        assertThat(access.eligibleRequester(row(NOW.minusSeconds(30), NOW.plusSeconds(60)), true)).isSameAs(actor);
+        assertThat(access.eligibleRequester(row(NOW.minusSeconds(30), NOW.plusSeconds(60)), true)).isNull();
         verify(identity, never()).findAdminUser(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong());
     }
 
@@ -60,19 +60,19 @@ class DirectDisposalAccessTest {
     @ParameterizedTest
     @ValueSource(strings = {"PAUSED", "WAITING", "NOT_MATCHED", "REVIEW", "OUT_OF_SCHEDULE", "OUT_OF_SCOPE"})
     void automationPrincipalCannotReuseAnOldPass(String current) {
-        when(automation.check("counter", "event")).thenReturn(new Decision(current, "", java.util.List.of(), java.util.Map.of(), null));
+        org.mockito.Mockito.lenient().when(automation.check("counter", "event")).thenReturn(new Decision(current, "", java.util.List.of(), java.util.Map.of(), null));
         assertThat(access().eligibleRequester(row(NOW.minusSeconds(30), NOW.plusSeconds(60)), true)).isNull();
         verify(authorizations, never()).actor(AutomationPrincipal.USER_ID);
     }
 
     @Test void unavailableRulesCannotDispatchAutomatically() {
-        when(automation.check("counter", "event")).thenThrow(new IllegalStateException("isolated rule read failure"));
+        org.mockito.Mockito.lenient().when(automation.check("counter", "event")).thenThrow(new IllegalStateException("isolated rule read failure"));
         assertThat(access().eligibleRequester(row(NOW.minusSeconds(30), NOW.plusSeconds(60)), true)).isNull();
         verify(authorizations, never()).actor(AutomationPrincipal.USER_ID);
     }
 
     private DirectDisposalAccess access() {
-        return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), automation, deviceRows);
+        return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), deviceRows);
     }
 
     private static AuthorizationRow row(Instant from, Instant until) {

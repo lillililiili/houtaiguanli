@@ -114,6 +114,27 @@ class HandoffPunishmentMaterialsApiTest {
     }
 
     @Test
+    void freezesPlayableTrackPointsInsteadOfOnlyAnIdAndDoesNotRefreshThem() throws Exception {
+        String target = target(eventId, "SN-" + UUID.randomUUID().toString().substring(0,8));
+        String reader = user("FROZEN", List.of("handoff:create", "handoff:read", "alarm:read", "evidence:read", "target:read"));
+        String track = UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,current_timestamp,current_timestamp,'FUSED')",track,target,track);
+        try {
+            for (int n=0;n<2;n++) jdbc.update("INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at,point_kind) VALUES (?,?,?, ?,?,CAST(? AS GEOMETRY),current_timestamp,'MEAS')",
+                    UUID.randomUUID().toString(),track,n,Timestamp.from(Instant.now().minusSeconds(20-n)),Timestamp.from(Instant.now().minusSeconds(20-n)),"SRID=4326;POINT("+(118.5+n*.001)+" 37.5)");
+            String id = body(submit(reader,eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+            JsonNode chain = detail(id,reader).path("material").path("evidence_chain");
+            JsonNode frozen = java.util.stream.StreamSupport.stream(chain.spliterator(),false).filter(row -> track.equals(row.path("source_id").asText())).findFirst().orElseThrow();
+            assertThat(frozen.path("content").path("points")).hasSize(2);
+            assertThat(frozen.path("content").path("points").get(0).path("location").path("coordinate_system").asText()).isEqualTo("WGS84");
+            jdbc.update("UPDATE track_point SET location=CAST('SRID=4326;POINT(119 38)' AS GEOMETRY) WHERE track_id=?",track);
+            assertThat(detail(id,reader).path("material").path("evidence_chain")).isEqualTo(chain);
+            // 当前读者不再有目标权限时，不可经冻结材料旁路读取轨迹。
+            assertThat(detail(id,submitter).path("material").path("evidence_chain").toString()).doesNotContain(track);
+        } finally { jdbc.update("DELETE FROM track_point WHERE track_id=?",track); jdbc.update("DELETE FROM track WHERE track_id=?",track); }
+    }
+
+    @Test
     void snapshotFreezesAllFourSections() throws Exception {
         String handoffId = body(submit(submitter, eventId).andExpect(status().isCreated()))
                 .path("data").path("handoff_id").asText();

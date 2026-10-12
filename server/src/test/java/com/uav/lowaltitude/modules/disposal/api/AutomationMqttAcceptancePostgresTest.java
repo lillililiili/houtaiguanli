@@ -60,28 +60,31 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         assertThat(advisory.counterBlockReason(eventId)).isEmpty();
     }
 
-    private String queueAutomatic() {
-        automaticFixture(); automatic.poll();
-        assertThat(runtime.state("counter",eventId).status()).isEqualTo("PASS");
-        List<String> ids=jdbc.queryForList("select authorization_id from disposal_authorization where subject_id=? and requested_by=?",String.class,eventId,AutomationPrincipal.USER_ID);
-        assertThat(ids).hasSize(1);
-        String id=ids.get(0);
-        assertThat(statusOf(id)).isEqualTo("EXECUTING");
-        assertThat(jdbc.queryForObject("select status from device_command where command_id=?",String.class,commandOf(id))).isEqualTo("QUEUED");
+    /** 模拟升级前已经留下的自动主体授权，仅写隔离测试库；现行调度不能再产生它。 */
+    private String queueAutomatic() throws Exception {
+        String id=queueHuman();
+        jdbc.update("update disposal_authorization set requested_by=? where authorization_id=?",AutomationPrincipal.USER_ID,id);
         assertThat(frames).isEmpty();
         return id;
     }
 
-    @Test void currentAutomaticPassSendsOneRealMqttCommand() throws Exception {
-        String id=queueAutomatic();
-        automatic.poll(); awaitWire(1); automatic.poll(); outbox.poll();
-        assertThat(frames).hasSize(1);
-        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,binding.opsDeviceId())).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select approved_by from disposal_authorization where authorization_id=?",String.class,id)).isNull();
-        saveEvidence("automatic-current-pass",id);
+    private String queueHuman() throws Exception {
+        automaticFixture();
+        String actor=user("disposal:direct","disposal:read","devices","target:read");
+        return data(request("/api/v1/disposal-authorizations/direct-execute",actor,key(),body("人工授权恢复隔离夹具"))
+                .andExpect(status().isCreated())).path("authorization_id").asText();
     }
 
-    @ParameterizedTest @ValueSource(strings={"RULE_DISABLED","VERSION","SCHEDULE","AUTH_EXPIRED","AUTH_STOPPED","DEVICE_DISABLED","DEVICE_FAULT","POSITION_STALE","EVIDENCE_LEGAL","EMERGENCY"})
+    @Test void currentAutomaticPassNeverCreatesAuthorizationOrMqttCommand() {
+        automaticFixture();
+        automatic.poll(); automatic.poll(); outbox.poll();
+        assertThat(runtime.state("counter",eventId).status()).isEqualTo("PASS");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,eventId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,binding.opsDeviceId())).isZero();
+        assertThat(frames).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"PASS_UNCHANGED","RULE_DISABLED","VERSION","SCHEDULE","AUTH_EXPIRED","AUTH_STOPPED","DEVICE_DISABLED","DEVICE_FAULT","POSITION_STALE","EVIDENCE_LEGAL","EMERGENCY"})
     void automaticQueuedCommandRechecksEveryCurrentBoundary(String change) throws Exception {
         String id=queueAutomatic(),command=commandOf(id);
         long queuedAt=clock.nowMillis();
@@ -97,6 +100,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
             case "POSITION_STALE" -> jdbc.update("update target_latest_state set observed_at=? where target_id=?",Timestamp.from(clock.now().minusSeconds(90000)),target);
             case "EVIDENCE_LEGAL" -> appendEvaluation(target,"LEGAL");
             case "EMERGENCY" -> stop(operator,key()).andExpect(status().isOk());
+            case "PASS_UNCHANGED" -> { }
             default -> throw new IllegalArgumentException(change);
         }
         long configurationSavedAt=clock.nowMillis();
@@ -133,8 +137,13 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
 
     @ParameterizedTest @ValueSource(strings={"VALID","RULE_DISABLED","VERSION","SCHEDULE","AUTH_EXPIRED","POSITION_STALE","EVIDENCE_LEGAL"})
     void automaticReceiptNeverCreatesSuccessorUnderAnyCurrentBoundary(String change) throws Exception {
-        String id=queueAutomatic(), command=commandOf(id);
+        automaticFixture();
+        String actor=user("disposal:direct","disposal:read","devices","target:read");
+        String id=data(request("/api/v1/disposal-authorizations/direct-execute",actor,key(),body("在途历史授权隔离夹具"))
+                .andExpect(status().isCreated())).path("authorization_id").asText(), command=commandOf(id);
         awaitWire(1);
+        // 当前代码已真实发出人工指令，隔离库模拟升级时在途的旧自动授权；允许收尾，不准续发。
+        jdbc.update("update disposal_authorization set requested_by=? where authorization_id=?",AutomationPrincipal.USER_ID,id);
         String target=jdbc.queryForObject("select target_id from disposal_authorization where authorization_id=?",String.class,id);
         switch(change) {
             case "RULE_DISABLED" -> jdbc.update("update automation_rule_condition set enabled=false where category='counter'");
@@ -257,17 +266,16 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
         } finally { jdbc.execute("alter table qa_unavailable_latest_state rename to target_latest_state"); }
         awaitCrashedLeaseExpiry();
         runChild("RECOVER",output);
-        Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(()->assertThat(frames).hasSize(1));
+        assertThat(frames).isEmpty();
         assertThat(runtime.lastError()).isNull();
-        String id=jdbc.queryForObject("select authorization_id from disposal_authorization where subject_id=? and requested_by=?",String.class,eventId,AutomationPrincipal.USER_ID);
-        String command=commandOf(id);
+        assertThat(runtime.state("counter",eventId).status()).isEqualTo("PASS");
         awaitCrashedLeaseExpiry();
         runChild("REPLAY",output);
-        assertThat(frames).hasSize(1);
-        assertThat(commandOf(id)).isEqualTo(command);
-        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=? and requested_by=?",Integer.class,eventId,AutomationPrincipal.USER_ID)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,binding.opsDeviceId())).isEqualTo(1);
-        saveEvidence("automatic-independent-jvm-restart",id);
+        assertThat(frames).isEmpty();
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",Integer.class,eventId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?",Integer.class,binding.opsDeviceId())).isZero();
+        Files.writeString(output.resolve("result.json"),json.writeValueAsString(java.util.Map.of("rule_status",runtime.state("counter",eventId).status(),"authorizations",0,"wire_frames",frames)));
+
     }
 
     private void awaitCrashedLeaseExpiry() {
@@ -277,7 +285,7 @@ class AutomationMqttAcceptancePostgresTest extends AutomationMqttFixture {
 
     @ParameterizedTest @ValueSource(strings={"CRASH_BEFORE_PUBLISH","CRASH_PUBLISH","CRASH_COMPLETE"})
     void crashAfterRealPublishNeverBlindlyRepeatsCommand(String failpoint) throws Exception {
-        String id=queueAutomatic(),command=commandOf(id);
+        String id=queueHuman(),command=commandOf(id);
         jdbc.update("update mqtt_broker set enabled=false where broker_id=?",brokerId); supervisor.reconcile();
         jdbc.update("update mqtt_broker set enabled=true where broker_id=?",brokerId);
         Path output=Path.of("target","automation-restart-evidence",failpoint+"-"+java.util.UUID.randomUUID()).toAbsolutePath(); Files.createDirectories(output);
