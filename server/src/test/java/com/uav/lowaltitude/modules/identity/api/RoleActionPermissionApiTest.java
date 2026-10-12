@@ -150,9 +150,12 @@ class RoleActionPermissionApiTest {
      * 一个 Spring 测试上下文里两个 runner 只跑一遍，这个缺陷在 H2 上永远不会现形——真实库
      * `uav_stage10_verify` 上实测就是 42 行 AUTH 动作行。所以这条用例**手动再跑一次 initializer**，
      * 把"第二次启动"补出来；不这么做，测试再多也只覆盖第一次启动那一种形态。
+     *
+     * 2026-10-10 用户确认、2026-10-12 再次确认：唯一超级管理员固定拥有全部动作（含直接反制），
+     * 所以再跑一次时已有的动作行会被补成 OP，不再停在 READ；但动作行只到 OP，仍不能出现 AUTH。
      */
     @Test
-    void rerunningTheSuperAdminInitializerLeavesActionRowsAtReadOrOp() throws Exception {
+    void rerunningTheSuperAdminInitializerKeepsActionRowsAtOpNeverAuth() throws Exception {
         String probe = "disposal:read";
         boolean inserted = jdbc.update("insert into app_role_permission (role_code,permission_code,"
                 + "permission_level,menu_enabled,created_at) select 'ROLE-ADMIN',?,'READ',false,current_timestamp"
@@ -166,7 +169,10 @@ class RoleActionPermissionApiTest {
 
             assertThat(jdbc.queryForObject("select permission_level from app_role_permission"
                     + " where role_code='ROLE-ADMIN' and permission_code=?", String.class, probe))
-                    .as("再跑一次 initializer 之后 %s 的等级", probe).isEqualTo("READ");
+                    .as("再跑一次 initializer 之后 %s 的等级", probe).isEqualTo("OP");
+            assertThat(jdbc.queryForObject("select permission_level from app_role_permission"
+                    + " where role_code='ROLE-ADMIN' and permission_code='disposal:direct'", String.class))
+                    .as("再跑一次之后直接反制的显式授权等级").isEqualTo("OP");
             assertThat(jdbc.queryForObject("""
                     select count(*) from app_role_permission rp
                       join app_permission p on p.permission_code = rp.permission_code

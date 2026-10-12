@@ -298,7 +298,7 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 ## 2026-09-17 直接反制权限
 
-后台角色管理的“处置授权”增加“直接反制（免逐次审批）”，默认无。`disposal:direct` 仅显式 OP 有效，超级管理员不自动继承。前台告警详情按服务端能力显示直接反制/申请反制；DIRECT 记录明确操作人、有效期、执行状态和受阻原因，无审批人。追加迁移 `V202609170030`，需随后端重启应用；没有自动给真实账号授权或操作设备。接口和现有规则边界见[处置授权 API](../docs/backend-stage13/disposal-authorization-api-contract.md)。
+后台角色管理的“处置授权”增加“直接反制（免逐次审批）”，默认无。`disposal:direct` 仅显式 OP 有效，超级管理员不从目录自动继承（2026-10-10 起唯一超级管理员由启动完整性校验写成显式 OP，见文首）。前台告警详情按服务端能力显示直接反制/申请反制；DIRECT 记录明确操作人、有效期、执行状态和受阻原因，无审批人。追加迁移 `V202609170030`，需随后端重启应用；没有自动给真实账号授权或操作设备。接口和现有规则边界见[处置授权 API](../docs/backend-stage13/disposal-authorization-api-contract.md)。
 
 ## 规则配置管理（2026-09-17）
 
