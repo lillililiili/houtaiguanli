@@ -192,7 +192,8 @@ public class DashboardSnapshotService {
 
     private TrendDto trend(LocalDate today) {
         LocalDate from = today.minusDays(6);
-        OperationsReport report = reporting.operations(from.toString(), today.toString());
+        // 大屏只画按日的数字；轨迹观测指标（有效监测时长等）要对 7 天内每个融合点逐点计算，要好几秒，而大屏每次刷新都会重算。
+        OperationsReport report = reporting.operationsWithoutObservations(from.toString(), today.toString());
         List<TrendDayDto> days = new ArrayList<>();
         for (DayPoint day : report.days()) {
             days.add(new TrendDayDto(day.date(), day.md(), day.total(), day.illegal()));
