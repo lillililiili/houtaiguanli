@@ -21,10 +21,22 @@ public class DeviceMaintenanceController {
 
     @GetMapping("/device-maintenance-messages")
     public ApiResponse<MessagePage> messages(@RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="8") int size,
-            @RequestParam(value="unread_only",defaultValue="false") boolean unreadOnly){return ApiResponse.ok(workflows.messages(page,size,unreadOnly));}
+            @RequestParam(value="unread_only",defaultValue="false") boolean unreadOnly,
+            @RequestParam(value="pending_only",defaultValue="false") boolean pendingOnly){return ApiResponse.ok(workflows.messages(page,size,unreadOnly,pendingOnly));}
 
     @PostMapping("/device-maintenance-messages/{taskId}/read")
     public ApiResponse<ReadReceipt> read(@PathVariable String taskId){return ApiResponse.ok(workflows.markRead(taskId));}
+
+    @GetMapping("/devices/{deviceId}/maintenance-report")
+    public ApiResponse<DeviceReport> deviceReport(@PathVariable String deviceId) {
+        return ApiResponse.ok(service.forDevice(deviceId));
+    }
+
+    @PostMapping("/devices/{deviceId}/maintenance-report")
+    public ApiResponse<DeviceReport> reportDevice(@PathVariable String deviceId,
+            @RequestHeader(value="Idempotency-Key",required=false) String key) {
+        return ApiResponse.ok(service.reportDevice(deviceId,key));
+    }
 
     @PostMapping("/flight-plans/{planId}/device-maintenance-tasks")
     public ApiResponse<Task> create(@PathVariable String planId, @RequestBody CreateRequest body,
@@ -46,8 +58,9 @@ public class DeviceMaintenanceController {
 
     @GetMapping("/device-maintenance-tasks")
     public ApiResponse<Page> list(@RequestParam(defaultValue="PENDING") String status,
-            @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int size) {
-        return ApiResponse.ok(service.list(status, page, size));
+            @RequestParam(defaultValue="1") int page, @RequestParam(defaultValue="20") int size,
+            @RequestParam(value="device_id",required=false) String deviceId) {
+        return ApiResponse.ok(service.list(status, page, size,deviceId));
     }
 
     @PostMapping("/device-maintenance-tasks/{taskId}/handling")

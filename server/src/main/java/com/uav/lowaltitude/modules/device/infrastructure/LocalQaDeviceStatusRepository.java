@@ -19,8 +19,13 @@ public class LocalQaDeviceStatusRepository {
         List<Device> rows=jdbc.query("""
                 SELECT d.source_id,d.source_mode,d.simulated,d.enabled,s.enabled AS source_enabled,st.observed_at
                 FROM ops_device d JOIN ops_integration_source s ON s.source_id=d.source_id
-                JOIN mqtt_device_binding b ON b.ops_device_id=d.device_id AND b.ops_source_id=d.source_id
                 LEFT JOIN ops_device_state st ON st.device_id=d.device_id WHERE d.device_id=?
+                AND (EXISTS (SELECT 1 FROM mqtt_device_binding b WHERE b.ops_device_id=d.device_id
+                        AND b.ops_source_id=d.source_id AND b.source_mode=d.source_mode AND b.external_device_id=d.external_device_id)
+                    OR EXISTS (SELECT 1 FROM eo_device_binding b JOIN eo_edge e ON e.edge_id=b.edge_id
+                        AND e.broker_id=b.broker_id AND e.source_mode=b.source_mode
+                        WHERE b.ops_device_id=d.device_id AND b.ops_source_id=d.source_id
+                        AND b.source_mode=d.source_mode AND b.external_device_id=d.external_device_id))
                 """,(r,n)->new Device(r.getString("source_id"),r.getString("source_mode"),r.getBoolean("simulated"),
                     r.getBoolean("enabled"),r.getBoolean("source_enabled"),(Long)r.getObject("observed_at")),id);
         return rows.isEmpty()?null:rows.get(0);
@@ -30,7 +35,7 @@ public class LocalQaDeviceStatusRepository {
                 (r,n)->new Previous(r.getString(1),r.getLong(2)),source,message);
         return rows.isEmpty()?null:rows.get(0);
     }
-    public Long currentObserved(String id){return jdbc.queryForObject("SELECT observed_at FROM ops_device_state WHERE device_id=?",Long.class,id);}
+    public Long currentObserved(String id){return jdbc.queryForObject("SELECT GREATEST(health_observed_at,alarm_observed_at) FROM ops_device_state WHERE device_id=?",Long.class,id);}
     public void save(Input input,String source,String hash,byte[] raw,long receivedAt){
         jdbc.update("""
                 INSERT INTO inbox_message(inbox_id,source,source_msg_id,received_at,ops_source_id,
@@ -38,11 +43,15 @@ public class LocalQaDeviceStatusRepository {
                 VALUES(?,?,?,?,?,?,?,?,'PROCESSED',?)
                 """,UUID.randomUUID().toString(),source,input.messageId(),receivedAt,input.sourceId(),input.messageId(),hash,raw,receivedAt);
         jdbc.update("""
-                UPDATE ops_device_state SET connectivity=?,work_state_code='QA_STATUS',health_code=?,has_alarm=?,
-                    observed_at=?,received_at=?,last_heartbeat_at=?,simulated=TRUE,
-                    unknown_reason='LOCAL_QA_STATUS：独立模拟健康输入，非协议 A 工参',version=version+1
+                UPDATE ops_device_state SET connectivity=CASE WHEN observed_at IS NULL OR observed_at<=? THEN ? ELSE connectivity END,
+                    work_state_code='QA_STATUS',health_code=?,has_alarm=?,
+                    observed_at=GREATEST(observed_at,?),received_at=?,last_heartbeat_at=GREATEST(last_heartbeat_at,?),simulated=TRUE,
+                    health_observed_at=?,health_source_id=?,health_source_mode='replay',health_simulated=TRUE,
+                    alarm_observed_at=?,alarm_source_id=?,alarm_source_mode='replay',alarm_simulated=TRUE,
+                    unknown_reason='LOCAL_QA_STATUS：独立模拟健康输入，非协议心跳推断',version=version+1
                 WHERE device_id=?
-                """,input.connectivity(),input.healthCode(),input.hasAlarm(),input.observedAt(),receivedAt,
-                    "ONLINE".equals(input.connectivity())?input.observedAt():null,input.deviceId());
+                """,input.observedAt(),input.connectivity(),input.healthCode(),input.hasAlarm(),input.observedAt(),receivedAt,
+                    "ONLINE".equals(input.connectivity())?input.observedAt():null,
+                    input.observedAt(),input.sourceId(),input.observedAt(),input.sourceId(),input.deviceId());
     }
 }

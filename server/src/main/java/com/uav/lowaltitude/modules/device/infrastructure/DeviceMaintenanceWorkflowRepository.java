@@ -15,6 +15,7 @@ public class DeviceMaintenanceWorkflowRepository {
     private final NamedParameterJdbcTemplate named;
     public DeviceMaintenanceWorkflowRepository(JdbcTemplate jdbc){this.jdbc=jdbc;this.named=new NamedParameterJdbcTemplate(jdbc);}
     public void lock(String taskId){jdbc.queryForList("SELECT task_id FROM ops_device_maintenance_task WHERE task_id=? FOR UPDATE",taskId);}
+    public boolean tryLock(String taskId){return !jdbc.queryForList("SELECT task_id FROM ops_device_maintenance_task WHERE task_id=? FOR UPDATE SKIP LOCKED",taskId).isEmpty();}
     public void lockCurrentState(String deviceId){jdbc.queryForList("SELECT device_id FROM ops_device_state WHERE device_id=? FOR UPDATE",deviceId);}
     public Metadata metadata(String taskId){return jdbc.queryForObject("SELECT workflow_state,workflow_source_mode,assigned_to_name,recovery_result,recovery_reason,recovery_checked_at FROM ops_device_maintenance_task WHERE task_id=?",(r,i)->new Metadata(r.getString(1),r.getString(2),r.getString(3),r.getString(4)==null?null:new Recovery(r.getString(4),r.getString(5),r.getLong(6))),taskId);}
     public List<WorkflowEvent> events(String taskId){return jdbc.query("SELECT event_id,action,note,actor_name,occurred_at FROM ops_maintenance_workflow_event WHERE task_id=? ORDER BY task_version",(r,i)->new WorkflowEvent(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getLong(5)),taskId);}
@@ -34,16 +35,19 @@ public class DeviceMaintenanceWorkflowRepository {
               recovery_result=?,recovery_reason=?,recovery_checked_at=?
             WHERE task_id=? AND version=? AND status='PENDING'
             """,next,actor.userId(),actorName(actor),completed,completed,completed,actor.userId(),completed,actorName(actor),
-                completed,now,completed,note,recovery==null?null:recovery.result(),recovery==null?null:recovery.reason(),recovery==null?null:recovery.checkedAt(),taskId,version);
+                completed,now,completed,completed&&(note==null||note.isBlank())?"确认设备恢复并办结":note,recovery==null?null:recovery.result(),recovery==null?null:recovery.reason(),recovery==null?null:recovery.checkedAt(),taskId,version);
     }
+    public int automaticTransition(String taskId,long version,String next){return jdbc.update("UPDATE ops_device_maintenance_task SET workflow_state=?,version=version+1 WHERE task_id=? AND version=? AND status='PENDING'",next,taskId,version);}
+    public void systemEvent(String taskId,String action,String note,long now,long version){jdbc.update("INSERT INTO ops_maintenance_workflow_event(event_id,task_id,action,note,actor_name,occurred_at,task_version) VALUES(?,?,?,?,?,?,?)",java.util.UUID.randomUUID().toString(),taskId,action,note,"系统自动核验",now,version);}
     public void event(String eventId,String taskId,String action,String note,AuthUser actor,long now,long version){jdbc.update("INSERT INTO ops_maintenance_workflow_event(event_id,task_id,action,note,actor_id,actor_name,occurred_at,task_version) VALUES(?,?,?,?,?,?,?,?)",eventId,taskId,action,note,actor.userId(),actorName(actor),now,version);}
     public Replay replay(String actor,String key){var rows=jdbc.query("SELECT task_id,request_body,response_body FROM ops_maintenance_workflow_request WHERE actor_id=? AND request_key=?",(r,i)->new Replay(r.getString(1),r.getString(2),r.getString(3)),actor,key);return rows.isEmpty()?null:rows.get(0);}
     public void remember(String actor,String key,String taskId,String request,String response){jdbc.update("INSERT INTO ops_maintenance_workflow_request(actor_id,request_key,task_id,request_body,response_body) VALUES(?,?,?,?,?)",actor,key,taskId,request,response);}
     public boolean unresolvedIncidents(String device){return jdbc.queryForObject("SELECT COUNT(*) FROM device_incident WHERE device_id=? AND (closed_at IS NULL OR stage<>'RECOVERED')",Long.class,device)>0;}
     public List<String> unresolvedIncidentIds(String device){return jdbc.queryForList("SELECT incident_id FROM device_incident WHERE device_id=? AND (closed_at IS NULL OR stage<>'RECOVERED') ORDER BY detected_at,incident_id",String.class,device);}
-    public MessagePage messages(AuthUser actor,int page,int size,boolean unreadOnly){
+    public MessagePage messages(AuthUser actor,int page,int size,boolean unreadOnly,boolean pendingOnly){
         Map<String,Object> p=new HashMap<>();p.put("actor",actor.userId());p.put("offset",(page-1)*size);p.put("size",size);
         String from=" FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id LEFT JOIN ops_maintenance_message_read r ON r.task_id=t.task_id AND r.actor_id=:actor"+DeviceMaintenanceRepository.scope(actor,p);
+        if(pendingOnly)from+=" AND t.status='PENDING' AND t.workflow_state<>'PROCESSING'";
         String filter=unreadOnly?" AND r.read_at IS NULL":"";
         long total=named.queryForObject("SELECT COUNT(*)"+from+filter,p,Long.class);
         long unread=named.queryForObject("SELECT COUNT(*)"+from+" AND r.read_at IS NULL",p,Long.class);

@@ -47,7 +47,7 @@ class TcpMonitoringEventTest {
     }
     long events(String type) { return jdbc.queryForObject("SELECT COUNT(*) FROM device_event_log WHERE device_id=? AND event_type=?",Long.class,id,type); }
     @Test void tcpDisconnectPreservesLastValidHeartbeatWithoutInventingOne() {
-        jdbc.update("UPDATE ops_device_state SET last_heartbeat_at=NULL WHERE device_id=?",id);
+        jdbc.update("UPDATE ops_device_state SET last_heartbeat_at=NULL,health_code='BAD',health_observed_at=29000 WHERE device_id=?",id);
         protocol.markConnection(id,"RADAR_TCP_V3_0_0","OFFLINE",null,"timeout",30000,false);
         assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?",Long.class,id)).isNull();
         protocol.saveCountermeasureState(id,"LITTLE_ENDIAN",0,Map.of("2.4",false),31000);
@@ -55,9 +55,11 @@ class TcpMonitoringEventTest {
         protocol.markConnection(id,"COUNTERMEASURE_TCP_4CH_V2_0","OFFLINE",null,"timeout",34000,false);
         assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?",Long.class,id)).isEqualTo(31000);
         assertThat(jdbc.queryForObject("SELECT connectivity FROM ops_device_state WHERE device_id=?",String.class,id)).isEqualTo("OFFLINE");
-        assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,id)).isEqualTo("UNKNOWN");
+        assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,id)).isEqualTo("BAD");
         protocol.saveCountermeasureState(id,"LITTLE_ENDIAN",0,Map.of("2.4",false),35000);
         assertThat(jdbc.queryForObject("SELECT last_heartbeat_at FROM ops_device_state WHERE device_id=?",Long.class,id)).isEqualTo(35000);
+        assertThat(jdbc.queryForObject("SELECT health_code FROM ops_device_state WHERE device_id=?",String.class,id)).isEqualTo("BAD");
+        assertThat(jdbc.queryForObject("SELECT health_observed_at FROM ops_device_state WHERE device_id=?",Long.class,id)).isEqualTo(29000);
     }
     @Test void successiveRadarFramesUpdateOneTargetAndAppendDistinctPoints() {
         var item=new TrackItem("31",BigDecimal.valueOf(100),BigDecimal.valueOf(200),BigDecimal.valueOf(80),

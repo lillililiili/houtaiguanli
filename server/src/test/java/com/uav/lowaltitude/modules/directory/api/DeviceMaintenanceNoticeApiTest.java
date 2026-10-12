@@ -52,7 +52,7 @@ class DeviceMaintenanceNoticeApiTest {
     }
     @AfterEach void cleanCommittedFixture(){
         if(TransactionSynchronizationManager.isActualTransactionActive())return;
-        for(String id:createdTaskIds){jdbc.update("DELETE FROM ops_device_maintenance_notice_attempt WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_submission WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_task WHERE task_id=?",id);}
+        for(String id:createdTaskIds){jdbc.update("DELETE FROM ops_maintenance_report WHERE task_id=?",id);jdbc.update("DELETE FROM ops_maintenance_plan WHERE task_id=?",id);jdbc.update("DELETE FROM ops_maintenance_incident WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_notice_attempt WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_submission WHERE task_id=?",id);jdbc.update("DELETE FROM ops_device_maintenance_task WHERE task_id=?",id);}
         if(setting!=null)jdbc.update("DELETE FROM notification_setting WHERE setting_id=?",setting);
     }
     @Test void appendRetainsFirstBackendNoticeAndCreatesASeparateLatestRecord()throws Exception {

@@ -22,21 +22,21 @@ public class DeviceMaintenanceNoticeRepository {
                 (r,n)->view(r),taskId);
     }
     public Submission submission(String actor,String key){
-        var rows=jdbc.query("SELECT task_id,expected_attempt_no,reason FROM ops_device_maintenance_notice_attempt WHERE requested_by=? AND request_key=?",
-                (r,n)->new Submission(r.getString(1),r.getInt(2),r.getString(3)),actor,key);
+        var rows=jdbc.query("SELECT task_id,expected_attempt_no,reason,request_plan_id FROM ops_device_maintenance_notice_attempt WHERE requested_by=? AND request_key=?",
+                (r,n)->new Submission(r.getString(1),r.getInt(2),r.getString(3),r.getString(4)),actor,key);
         return rows.isEmpty()?null:rows.get(0);
     }
-    public void insert(String id,String taskId,int number,AuthUser actor,String key,Integer expected,long at,String reason,
+    public void insert(String id,String taskId,int number,AuthUser actor,String key,Integer expected,long at,String reason,String requestPlanId,
             RecipientSnapshot target,DeliveryOutcome result,String outcomeState){
         jdbc.update("""
             INSERT INTO ops_device_maintenance_notice_attempt(attempt_id,task_id,attempt_no,requested_by,
                 requested_by_name,request_key,expected_attempt_no,requested_at,reason,recipient_snapshot,
                 notification_setting_id,delivery_status,receipt_status,receipt_result,blocked_reason,
-                submitted_at,delivered_at,acknowledged_at,outcome_state,historical)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,FALSE)
+                submitted_at,delivered_at,acknowledged_at,outcome_state,request_plan_id,historical)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,FALSE)
             """,id,taskId,number,actor.userId(),actor.name()==null?actor.account():actor.name(),key,expected,at,reason,
                 encode(target),target.settingId(),result.deliveryStatus(),result.receiptStatus(),result.receiptResult(),
-                result.blockedReason(),epoch(result.submittedAt()),epoch(result.deliveredAt()),epoch(result.acknowledgedAt()),outcomeState);
+                result.blockedReason(),epoch(result.submittedAt()),epoch(result.deliveredAt()),epoch(result.acknowledgedAt()),outcomeState,requestPlanId);
     }
     private NoticeAttempt view(ResultSet r)throws SQLException{
         return new NoticeAttempt(r.getString("attempt_id"),r.getInt("attempt_no"),r.getLong("requested_at"),
@@ -64,5 +64,5 @@ public class DeviceMaintenanceNoticeRepository {
     private RecipientSnapshot decode(String value){if(value==null)return null;try{return json.readValue(value,RecipientSnapshot.class);}catch(JsonProcessingException e){throw new IllegalStateException("不能读取通知对象快照",e);}}
     private static Long number(ResultSet r,String key)throws SQLException{long v=r.getLong(key);return r.wasNull()?null:v;}
     private static Long epoch(java.time.OffsetDateTime time){return time==null?null:time.toInstant().toEpochMilli();}
-    public record Submission(String taskId,int expectedAttemptNo,String reason) { }
+    public record Submission(String taskId,int expectedAttemptNo,String reason,String requestPlanId) { }
 }

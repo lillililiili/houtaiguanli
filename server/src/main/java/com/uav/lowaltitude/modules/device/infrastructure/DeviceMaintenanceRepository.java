@@ -9,15 +9,22 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 import com.uav.lowaltitude.platform.security.AuthUser;
+import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
+import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 
 @Repository
 public class DeviceMaintenanceRepository {
+
+    // Rank before pagination so legacy processing reports cannot hide the active v2 case.
+    // Use stable business time within each group; automatic checks must not reshuffle the list.
+    private static final String CASE_PRIORITY_ORDER = "CASE WHEN t.status='PENDING' AND t.workflow_version=2 THEN 0"
+            + " WHEN t.status='PENDING' THEN 1 ELSE 2 END,";
 
     public com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset reportDataset(
             com.uav.lowaltitude.platform.report.BusinessReportSource.Range range, AuthUser actor) {
         Map<String,Object> params = new HashMap<>();
         String sql = "SELECT t.task_id AS id,t.device_name AS label,t.reported_at AS at_ms,"
-            + "t.status AS state,t.health_code AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,"
+            + "t.workflow_state AS state,t.health_code AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,"
             + "CASE WHEN t.simulated=TRUE THEN 'mock' ELSE d.source_mode END AS source_mode,"
             + "t.device_no AS related,t.handling_note AS result,t.reason AS note"
             + " FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"
@@ -25,7 +32,25 @@ public class DeviceMaintenanceRepository {
         return com.uav.lowaltitude.platform.report.ReportDatasetReader.window(sql, params, range, "t.reported_at");
     }
     private final NamedParameterJdbcTemplate jdbc;
-    public DeviceMaintenanceRepository(JdbcTemplate jdbc) { this.jdbc = new NamedParameterJdbcTemplate(jdbc); }
+    private final DeviceMaintenanceCaseRepository cases;
+    private final FlightReadRepository plans;
+    public DeviceMaintenanceRepository(JdbcTemplate jdbc,DeviceMaintenanceCaseRepository cases,FlightReadRepository plans) {
+        this.jdbc = new NamedParameterJdbcTemplate(jdbc);this.cases=cases;this.plans=plans;
+    }
+
+    private String caseOrder(AccessDecision planAccess,Map<String,Object> parameters) {
+        String visibleReport = "mr.plan_id IS NULL";
+        if(planAccess!=null) {
+            var visible=plans.visiblePlanIds(planAccess);
+            parameters.putAll(visible.parameters());
+            visibleReport+=" OR mr.plan_id IN ("+visible.sql()+")";
+        }
+        // Match report_summary.latest_manual_report before pagination. Polling, health reports and
+        // automatic plan checks are not operator reports and must never move a case to the top.
+        return CASE_PRIORITY_ORDER+"COALESCE((SELECT MAX(mr.reported_at) FROM ops_maintenance_report mr"
+            +" WHERE mr.task_id=t.task_id AND mr.actor_id IS NOT NULL AND ("+visibleReport+")),t.reported_at) DESC,"
+            +"t.reported_at DESC,t.handled_at DESC NULLS LAST,t.task_id DESC";
+    }
 
     public void lockDevice(String id) {
         jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=:id FOR UPDATE", Map.of("id", id));
@@ -37,12 +62,31 @@ public class DeviceMaintenanceRepository {
     }
 
     public Row pending(String planId, String deviceId) {
-        return one("SELECT * FROM ops_device_maintenance_task WHERE active_key=:key", Map.of("key", planId + ":" + deviceId));
+        return one("SELECT * FROM ops_device_maintenance_task WHERE active_key=:key", Map.of("key", cases.activeKey(deviceId)));
     }
 
-    public void recordSubmission(String actor, String key, String taskId) {
-        jdbc.update("INSERT INTO ops_device_maintenance_submission(actor_id,request_key,task_id) VALUES(:actor,:key,:task)",
-                Map.of("actor", actor, "key", key, "task", taskId));
+    public void recordSubmission(String actor, String key, String taskId,String planId) {
+        Map<String,Object> parameters=new HashMap<>();parameters.put("actor",actor);parameters.put("key",key);
+        parameters.put("task",taskId);parameters.put("plan",planId);
+        jdbc.update("INSERT INTO ops_device_maintenance_submission(actor_id,request_key,task_id,plan_id) VALUES(:actor,:key,:task,:plan)",
+                parameters);
+    }
+
+    /** Called only after device read authorization; never cross the device's frozen source identity. */
+    public Row currentSourceCase(String device) {
+        return one("""
+            SELECT t.* FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id
+            WHERE t.device_id=:device AND t.workflow_version=2
+              AND t.workflow_source_id IS NOT DISTINCT FROM d.source_id
+              AND t.workflow_source_mode=d.source_mode AND t.simulated=d.simulated
+            ORDER BY CASE WHEN t.status='PENDING' THEN 0 ELSE 1 END,t.reported_at DESC,t.task_id DESC
+            FETCH FIRST 1 ROW ONLY
+            """,Map.of("device",device));
+    }
+
+    public Long myDeviceReportAt(String task,String actor) {
+        return jdbc.queryForObject("SELECT MAX(reported_at) FROM ops_maintenance_report WHERE task_id=:task AND actor_id=:actor AND plan_id IS NULL",
+            Map.of("task",task,"actor",actor),Long.class);
     }
 
     public void insert(Row r) {
@@ -52,15 +96,17 @@ public class DeviceMaintenanceRepository {
         p.put("device_no",r.deviceNo); p.put("name",r.deviceName); p.put("reason",r.reason);
         p.put("connectivity",r.connectivity); p.put("health",r.healthCode); p.put("observed",r.observedAt);
         p.put("heartbeat",r.lastHeartbeatAt); p.put("simulated",r.simulated); p.put("actor",r.reportedBy);
-        p.put("actor_name",r.reportedByName); p.put("at",r.reportedAt); p.put("active",r.planId+":"+r.deviceId);
+        p.put("actor_name",r.reportedByName); p.put("at",r.reportedAt); p.put("active",cases.activeKey(r.deviceId));
         p.put("trigger",r.reportedBy==null?"SYSTEM":"USER");
         jdbc.update("""
                 INSERT INTO ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,plan_no,
                     device_no,device_name,reason,connectivity,health_code,observed_at,last_heartbeat_at,simulated,
-                    status,active_key,reported_by,reported_by_name,reported_at,version,workflow_source_mode,trigger_type)
+                    status,active_key,reported_by,reported_by_name,reported_at,version,workflow_source_mode,trigger_type,
+                    workflow_version,workflow_source_id,recovery_since_at)
                 VALUES(:id,:plan,:device,:org,:district,:plan_no,:device_no,:name,:reason,:connectivity,:health,
                     :observed,:heartbeat,:simulated,'PENDING',:active,:actor,:actor_name,:at,1,
-                    (SELECT source_mode FROM ops_device WHERE device_id=:device),:trigger)
+                    (SELECT source_mode FROM ops_device WHERE device_id=:device),:trigger,2,
+                    (SELECT source_id FROM ops_device WHERE device_id=:device),:at)
                 """,p);
     }
 
@@ -69,30 +115,37 @@ public class DeviceMaintenanceRepository {
         return one("SELECT t.* FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"
                 + scope(actor,p) + " AND t.task_id=:id",p);
     }
+    public Row findInternal(String id){return one("SELECT * FROM ops_device_maintenance_task WHERE task_id=:id",Map.of("id",id));}
 
     public long count(String status, AuthUser actor) {
+        return count(status,actor,null);
+    }
+    public long count(String status, AuthUser actor,String device) {
         Map<String,Object> p = new HashMap<>();
         Long total = jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"
-                + scope(actor,p) + status(status,p),p,Long.class);
+                + scope(actor,p) + status(status,p)+deviceFilter(device,p),p,Long.class);
         return total == null ? 0 : total;
     }
 
     public List<Row> list(String status, int page, int size, AuthUser actor) {
+        return list(status,page,size,actor,null,null);
+    }
+    public List<Row> list(String status, int page, int size, AuthUser actor,String device,AccessDecision planAccess) {
         Map<String,Object> p = new HashMap<>(); p.put("offset",(page-1)*size); p.put("size",size);
         return jdbc.query("SELECT t.* FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"
-                + scope(actor,p) + status(status,p)
-                + " ORDER BY t.reported_at DESC,t.task_id DESC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,DeviceMaintenanceRepository::row);
+                + scope(actor,p) + status(status,p)+deviceFilter(device,p)
+                + " ORDER BY " + caseOrder(planAccess,p) + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,DeviceMaintenanceRepository::row);
     }
 
-    public List<Row> forPlan(String planId,String deviceId,int page,int size,AuthUser actor) {
+    public List<Row> forPlan(String planId,String deviceId,int page,int size,AuthUser actor,AccessDecision planAccess) {
         Map<String,Object> p=new HashMap<>();p.put("plan",planId);p.put("device",deviceId);p.put("offset",(page-1)*size);p.put("size",size);
-        // The frontend reads the first task for a device; random UUID order is not workflow chronology.
-        return jdbc.query("SELECT t.* FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND t.plan_id=:plan"+(deviceId==null?"":" AND t.device_id=:device")
-                + " ORDER BY CASE WHEN t.status='PENDING' THEN 0 ELSE 1 END,t.reported_at DESC,COALESCE(t.handled_at,t.reported_at) DESC,t.task_id DESC OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,DeviceMaintenanceRepository::row);
+        // The plan entry and the workbench must choose the same current case for a device.
+        return jdbc.query("SELECT t.* FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND (t.plan_id=:plan OR EXISTS(SELECT 1 FROM ops_maintenance_plan l WHERE l.task_id=t.task_id AND l.plan_id=:plan))"+(deviceId==null?"":" AND t.device_id=:device")
+                + " ORDER BY " + caseOrder(planAccess,p) + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,DeviceMaintenanceRepository::row);
     }
     public long countForPlan(String planId,String deviceId,AuthUser actor) {
         Map<String,Object> p=new HashMap<>();p.put("plan",planId);p.put("device",deviceId);
-        return jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND t.plan_id=:plan"+(deviceId==null?"":" AND t.device_id=:device"),p,Long.class);
+        return jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND (t.plan_id=:plan OR EXISTS(SELECT 1 FROM ops_maintenance_plan l WHERE l.task_id=t.task_id AND l.plan_id=:plan))"+(deviceId==null?"":" AND t.device_id=:device"),p,Long.class);
     }
 
     public int handle(String id, long version, String note, AuthUser actor, long at) {
@@ -106,24 +159,25 @@ public class DeviceMaintenanceRepository {
         if ("ALL".equals(status)) return "";
         if ("ACTIVE".equals(status)) return " AND t.status='PENDING'";
         if ("NOT_STARTED".equals(status)) return " AND t.workflow_state='PENDING'";
-        if (java.util.Set.of("PROCESSING","PENDING_VERIFICATION","COMPLETED").contains(status)) {
+        if (java.util.Set.of("PROCESSING","PENDING_VERIFICATION","READY_TO_COMPLETE","COMPLETED").contains(status)) {
             p.put("status",status); return " AND t.workflow_state=:status";
         }
         p.put("status",status); return " AND t.status=:status";
     }
+    private static String deviceFilter(String device,Map<String,Object> p){if(device==null)return "";p.put("device_filter",device);return " AND t.device_id=:device_filter";}
 
     // 待办按通知所属计划的组织/区域限制；MQTT 设备同时受既有设备归属范围约束。
     static String scope(AuthUser actor, Map<String,Object> p) {
         String base = " WHERE d.deleted_at IS NULL"
-                + " AND EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=t.owner_org_id AND o.enabled=TRUE)"
-                + " AND EXISTS(SELECT 1 FROM app_district dd WHERE dd.district_id=t.district_id AND dd.enabled=TRUE)";
+                + " AND (t.workflow_version=2 OR (EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=t.owner_org_id AND o.enabled=TRUE)"
+                + " AND EXISTS(SELECT 1 FROM app_district dd WHERE dd.district_id=t.district_id AND dd.enabled=TRUE)))";
         if ("ALL".equals(actor.scopeMode())) return base;
         if (!"ASSIGNED".equals(actor.scopeMode())) return base+" AND 1=0";
         p.put("scope_actor",actor.userId());
         return base + """
-                 AND EXISTS(SELECT 1 FROM app_user_data_scope us
-                    WHERE us.user_id=:scope_actor AND us.org_id=t.owner_org_id AND us.district_id=t.district_id)
-                 AND (NOT EXISTS(SELECT 1 FROM mqtt_device_binding mb WHERE mb.ops_device_id=d.device_id)
+                 AND (t.workflow_version=2 OR EXISTS(SELECT 1 FROM app_user_data_scope us
+                    WHERE us.user_id=:scope_actor AND us.org_id=t.owner_org_id AND us.district_id=t.district_id))
+                 AND ((t.workflow_version=1 AND NOT EXISTS(SELECT 1 FROM mqtt_device_binding mb WHERE mb.ops_device_id=d.device_id))
                     OR EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_user_data_scope us
                         ON us.org_id=bs.owner_org_id AND us.district_id=bs.district_id
                         JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE

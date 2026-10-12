@@ -8,12 +8,12 @@ import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
 
 vi.mock('@/api/deviceMaintenance.js', () => ({ deviceMaintenanceApi: { list: vi.fn() } }));
 // 实时推送：记录页面订阅的重读函数，测试里按需模拟后端推来的变化信号。
-const realtime = vi.hoisted(() => ({ subscriptions: [] }));
+const realtime = vi.hoisted(() => ({ subscriptions: [], route: { query: {} } }));
 vi.mock('@/services/realtime.js', async importOriginal => ({
   refreshFailureText: (await importOriginal()).refreshFailureText,
   useRealtimeRefresh: (topics, reload) => { realtime.subscriptions.push({ topics, reload }); return { trigger: () => {} }; }
 }));
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('vue-router', () => ({ useRoute: () => realtime.route, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }));
 vi.mock('echarts', () => ({ init: vi.fn() }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: Object.fromEntries(
   ['overview', 'tree', 'incidents', 'state', 'history', 'events', 'protocolStatus', 'targets', 'information', 'trends'].map(key => [key, vi.fn()])
@@ -37,6 +37,7 @@ async function signal(topic = 'device_state') {
 }
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 beforeEach(() => {
+  realtime.route.query = {};
   deviceMaintenanceApi.list.mockResolvedValue({ items: [], total: 0 });
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   deviceApi.overview.mockResolvedValue({ total: 2 });
@@ -51,6 +52,17 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); vi.useRealTimers(); vi.resetAllMocks(); realtime.subscriptions.length = 0; });
 
 describe('实时监测设备状态', () => {
+  it('设备深链接只读取指定设备，不退回设备树第一项', async () => {
+    realtime.route.query = { device_id: 'B' }; await mount();
+    expect(deviceApi.state).toHaveBeenCalledWith('B'); expect(deviceApi.state).not.toHaveBeenCalledWith('A');
+    expect(host.textContent).toContain('B温度');
+  });
+  it('指定设备失去访问范围时显示失败，不能改查第一台设备', async () => {
+    realtime.route.query = { device_id: 'out-of-scope' };
+    deviceApi.state.mockRejectedValue(Object.assign(new Error('设备不存在或不可见'), { status: 404 }));
+    await mount(); expect(host.textContent).toContain('设备不存在或不可见');
+    expect(deviceApi.state).not.toHaveBeenCalledWith('A');
+  });
   it('移除当前运行信息及其请求，设备运行监控随实时推送刷新、不再定时轮询', async () => {
     await mount();
     expect(deviceApi.information).not.toHaveBeenCalled();

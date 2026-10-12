@@ -74,6 +74,13 @@ public class FlightReadRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /** Reuse the detail visibility predicate when another paged list orders by linked plan facts. */
+    public VisiblePlanQuery visiblePlanIds(AccessDecision access) {
+        Where where = planWhere(PlanQuery.empty(), access);
+        return new VisiblePlanQuery("SELECT p.plan_id" + planFrom() + where.sql, Map.copyOf(where.parameters));
+    }
+    public record VisiblePlanQuery(String sql, Map<String, Object> parameters) { }
+
     public Long latestPlanUpdatedAt(String sourceMode, AccessDecision access) {
         Where where = planWhere(PlanQuery.empty(), access);
         add(where, "p.source_mode", "source_mode", sourceMode);

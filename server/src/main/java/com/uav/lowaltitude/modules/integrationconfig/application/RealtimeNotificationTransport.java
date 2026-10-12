@@ -66,6 +66,8 @@ public class RealtimeNotificationTransport {
   jdbc.update("INSERT INTO simulator_notification_message(message_id,attempt_key,actor_id,kind,subject_id,payload,state,created_at,version) VALUES(?,?,?,?,?,?,'SUBMITTED',?,0)",id,attempt,receiver.get("actor_id"),kind,subject,payload.toString(),now);
   return view(require(id,false),false);
  }
+ /** Receiver polling must fail closed when its channel permission/scope is revoked. */
+ public List<Message> receiverPending(){authorize();return pending();}
  public List<Message> pending(){
   if(!enabled())return List.of();
   try{authorize();}catch(ApiException denied){if(denied.getStatus()==HttpStatus.FORBIDDEN)return List.of();throw denied;}

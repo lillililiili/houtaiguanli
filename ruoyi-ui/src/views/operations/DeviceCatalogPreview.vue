@@ -4,7 +4,8 @@ import DeviceLocationMap from '@/components/DeviceLocationMap.vue';
 import DeviceInformationPanel from '@/components/DeviceInformationPanel.vue';
 import WeatherObservationPanel from './WeatherObservationPanel.vue';
 import { catalogInformation } from '@/utils/deviceInformationPresentation.js';
-import { display, formatDeviceNo, formatTime, statusText, statusType } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from './maintenance/presentation.js';
+import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.js';
 const props = defineProps({ detail: { type: Object, default: null }, loading: Boolean, error: { type: String, default: '' } });
 defineEmits(['refresh']);
 const tab = ref('location');
@@ -22,7 +23,7 @@ const fields = computed(() => ({
 
 <template>
   <el-card v-loading="loading" class="catalog-preview">
-    <template #header><div class="table-toolbar"><b>设备详情预览</b><el-button link type="primary" :disabled="!detail" @click="$emit('refresh')">刷新信息</el-button></div></template>
+    <template #header><div class="table-toolbar"><b>设备详情预览</b><slot name="actions" /><el-button link type="primary" :disabled="!detail" @click="$emit('refresh')">刷新信息</el-button></div></template>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-empty v-else-if="!detail && !loading" description="请选择设备查看信息" />
     <template v-if="detail">

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue';
-import { formatDeviceNo, formatTime } from '@/utils/format.js';
+import { formatDeviceNo } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from '@/views/operations/maintenance/presentation.js';
 import { informationCoverage, informationStates, informationValue } from '@/utils/deviceInformation.js';
 import { deviceReferenceModels } from '@/utils/deviceReferenceModels.js';
 import { informationGroups } from '@/utils/deviceInformationPresentation.js';

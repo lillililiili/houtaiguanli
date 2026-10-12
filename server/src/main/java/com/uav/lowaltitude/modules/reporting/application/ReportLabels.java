@@ -20,7 +20,7 @@ public final class ReportLabels {
         entry("ONLINE","在线"), entry("OFFLINE","离线"), entry("GOOD","良好"), entry("BAD","异常"),
         entry("ABNORMAL","异常"), entry("DEGRADED","一般"), entry("UAV","无人机"), entry("BIRD","鸟类"),
         entry("HIGH","高"), entry("MEDIUM","中"), entry("LOW","低"), entry("CRITICAL","严重"),
-        entry("PENDING_VERIFICATION","待核验"), entry("PENDING_NOTIFICATION","待通知"),
+        entry("READY_TO_COMPLETE","待确认办结"), entry("LEGACY_HANDLED","历史已反馈"), entry("PENDING_VERIFICATION","待核验"), entry("PENDING_NOTIFICATION","待通知"),
         // NOTIFIED 一律说"通知已提交"：提交成功不等于对方收到，写"已通知"会让人以为对方已经知道了（ZT-48）。
         entry("NOTIFIED","通知已提交"), entry("EXCLUDED","已排除"), entry("CONFIRMED","已确认"),
         entry("PENDING_DISPOSAL","待处置"), entry("DISPOSING","处置中"), entry("DISPOSED","已处置"),

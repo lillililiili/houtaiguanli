@@ -91,14 +91,16 @@ class RealtimeSimulatorApiTest {
   for(int i=0;i<101;i++)transport.submit("RISK_NOTICE","queue-"+i,"queue-"+i,json.createObjectNode().put("handoff_id","queue-"+i));
   mvc.perform(get("/api/v1/local-interface-simulator/context").header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.receiver_messages.length()").value(101));
  }
- @Test void ordinaryInterfaceReaderKeepsContextButCannotReadTheReceiverQueue() throws Exception {
+ @Test void frontendInterfaceReaderCannotReadBackendContextOrReceiverQueue() throws Exception {
   String token=login();connect(token);
   transport.submit("RISK_NOTICE","private","private-queue",json.createObjectNode());
   jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-SIM-READ','接口只读','',FALSE,TRUE,0,0,0,FALSE)");
   jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-SIM-READ','interfaces','READ',TRUE)");
   jdbc.update("UPDATE app_user SET role_code='ROLE-SIM-READ' WHERE account='admin1'");
   token=login();
-  mvc.perform(get("/api/v1/local-interface-simulator/context").header("Authorization",token)).andExpect(status().isOk()).andExpect(jsonPath("$.data.receiver_messages.length()").value(0));
+  for(String path:new String[]{"/context","/session","/receiver-context"})
+   mvc.perform(get("/api/v1/local-interface-simulator"+path).header("Authorization",token)).andExpect(status().isForbidden())
+    .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
   mvc.perform(post("/api/v1/local-interface-simulator/bindings").header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content("{\"source_kind\":\"NOTIFICATION_CHANNEL\",\"source_id\":\"receiver\",\"enabled\":true}")).andExpect(status().isForbidden());
  }
  @Test void connectingReceiverWiresOnlyStillUnconfiguredGlobalChannelsToSimulator() throws Exception {

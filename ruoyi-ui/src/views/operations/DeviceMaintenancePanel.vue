@@ -5,12 +5,13 @@ import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useRouter } from 'vue-router';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
-import { formatDeviceNo, formatTime, statusText } from '@/utils/format.js';
+import { formatDeviceNo, statusText } from '@/utils/format.js';
+import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { maintenanceLocation, maintenanceMeta, maintenanceState } from './maintenance/useMaintenanceWorkflow.js';
 
 const router = useRouter(), auth = useAuthStore();
-const canOpen = computed(() => auth.hasMenu('commission') && auth.hasPermission('commissioning.read') && auth.hasPermission('devices.read'));
+const canOpen = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
 const items = ref([]), total = ref(0), page = ref(1), status = ref('ACTIVE');
 const loading = ref(false), error = ref(''), selected = ref(null), open = ref(false);
 const pages = computed(() => Math.max(1, Math.ceil(total.value / 10)));
@@ -134,9 +135,9 @@ defineExpose({ reload });
             </el-descriptions>
           </article>
         </details>
-        <p class="muted">上报状态为当时快照。请进入设备接入调测处理待办；历史已反馈不代表设备已恢复。</p>
+        <p class="muted">上报状态为当时快照。请进入设备异常处理查看当前状态并办理；历史已反馈不代表设备已恢复。</p>
       </template>
-      <template #footer><el-button @click="open=false">关闭</el-button><el-button v-if="selected && canOpen" type="primary" @click="go(selected)">进入设备接入调测</el-button></template>
+      <template #footer><el-button @click="open=false">关闭</el-button><el-button v-if="selected && canOpen" type="primary" @click="go(selected)">进入设备异常处理</el-button></template>
     </el-dialog>
   </el-card>
 </template>

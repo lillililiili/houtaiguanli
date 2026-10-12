@@ -48,13 +48,15 @@ public class ObservationReadRepository {
      * online 与 data_interrupted 由应用层按 short_lost_after_ms 判断，这里只给事实。
      */
     public List<SourceStatusRow> sourceStatuses() {
+        // 每个来源沿既有 source/time 索引取最近一条，避免聚合全部历史观测拖住实时地图刷新。
         return jdbc.query("""
-                SELECT s.source_code, s.source_type, c.schema_status, MAX(o.observed_at) AS last_observed_at
+                SELECT s.source_code, s.source_type, c.schema_status,
+                  (SELECT o.observed_at FROM source_observation o
+                   WHERE o.source_id=s.source_id AND o.observed_at IS NOT NULL
+                   ORDER BY o.observed_at DESC FETCH FIRST 1 ROW ONLY) AS last_observed_at
                 FROM integration_source s
                 JOIN source_type_catalog c ON c.source_type = s.source_type
-                LEFT JOIN source_observation o ON o.source_id = s.source_id
                 WHERE s.source_type IS NOT NULL AND s.enabled = TRUE
-                GROUP BY s.source_code, s.source_type, c.schema_status
                 ORDER BY s.source_code ASC
                 """, Map.of(), (rs, i) -> new SourceStatusRow(rs.getString("source_code"), rs.getString("source_type"),
                 rs.getString("schema_status"), FusionConfigRepository.time(rs, "last_observed_at")));

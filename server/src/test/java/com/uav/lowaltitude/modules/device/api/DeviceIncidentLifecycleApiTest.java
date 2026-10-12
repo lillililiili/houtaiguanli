@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.platform.worker.OutboxWorker;
+import com.uav.lowaltitude.platform.time.AppClock;
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -34,9 +35,10 @@ class DeviceIncidentLifecycleApiTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired OutboxWorker outboxWorker;
+    @Autowired AppClock clock;
 
     @Test
-    void mockIncidentRebootThenRecoveryPassClosesTheIncident() throws Exception {
+    void mockRebootReceiptRequiresSubsequentExplicitHealthBeforeRecovery() throws Exception {
         String ops = login("admin1");
         String deviceId = deviceId("DEV-MOCK-004", ops);
         String incidentId = pendingIncident(deviceId);
@@ -83,6 +85,13 @@ class DeviceIncidentLifecycleApiTest {
                 .andExpect(jsonPath("$.data.incident.closed_at").doesNotExist())
                 .andExpect(jsonPath("$.data.allowed_actions[0]").value("VERIFY_RECOVERY"));
 
+        mvc.perform(post("/api/v1/device-incidents/{id}/recovery-checks", incidentId)
+                        .header("Authorization", bearer(ops)).header("Idempotency-Key", "before-health-"+UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.incident.stage").value("PENDING_VERIFICATION"));
+        assertThat(jdbc.queryForObject("select closed_at from device_incident where incident_id=?",Long.class,incidentId)).isNull();
+        explicitHealthy(deviceId);
         String checkKey = "inc-check-" + UUID.randomUUID();
         mvc.perform(post("/api/v1/device-incidents/{id}/recovery-checks", incidentId)
                         .header("Authorization", bearer(ops)).header("Idempotency-Key", checkKey)
@@ -99,6 +108,21 @@ class DeviceIncidentLifecycleApiTest {
                 .isEqualTo("RECOVERED");
         assertThat(jdbc.queryForObject("select closed_at from device_incident where incident_id=?", Long.class, incidentId))
                 .isNotNull();
+    }
+
+    @Test
+    void pendingIncidentCanRecoverNaturallyWithoutAnyRebootCommand() throws Exception {
+        String ops=login("admin1");
+        String device=deviceId("DEV-MOCK-004",ops);
+        String incident=pendingIncident(device);
+        long before=jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?",Long.class,device);
+        explicitHealthy(device);
+        mvc.perform(post("/api/v1/device-incidents/{id}/recovery-checks",incident)
+                        .header("Authorization",bearer(ops)).header("Idempotency-Key","natural-"+UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.result").value("PASS"))
+                .andExpect(jsonPath("$.data.incident.stage").value("RECOVERED"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?",Long.class,device)).isEqualTo(before);
     }
 
     @Test
@@ -121,8 +145,8 @@ class DeviceIncidentLifecycleApiTest {
         mvc.perform(post("/api/v1/device-incidents/{id}/recovery-checks", incidentId)
                         .header("Authorization", bearer(ops)).header("Idempotency-Key", "inc-check-" + UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("INVALID_TRANSITION"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.incident.stage").value("PENDING"));
     }
 
     @Test
@@ -136,6 +160,7 @@ class DeviceIncidentLifecycleApiTest {
                 .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString();
         makeDeviceOutboxDue();
         outboxWorker.poll();
+        explicitHealthy(deviceId);
         jdbc.update("update ops_device_state set connectivity='ABNORMAL', has_alarm=TRUE, health_code='BAD' where device_id=?", deviceId);
         mvc.perform(post("/api/v1/device-incidents/{id}/recovery-checks", incidentId)
                         .header("Authorization", bearer(ops)).header("Idempotency-Key", "inc-fail-check-" + UUID.randomUUID())
@@ -184,17 +209,19 @@ class DeviceIncidentLifecycleApiTest {
     }
 
     @Test
-    void monitoringReadCannotRebootIncident() throws Exception {
+    void frontendRoleWithLegacyMonitoringReadCannotAccessBackendIncident() throws Exception {
         String ops = login("admin1");
         String incidentId = pendingIncident(deviceId("DEV-MOCK-004", ops));
         String reader = readerWithMonitoringRead();
         mvc.perform(get("/api/v1/device-incidents/{id}", incidentId).header("Authorization", bearer(reader)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.allowed_actions").isEmpty());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
         mvc.perform(post("/api/v1/device-incidents/{id}/reboot", incidentId)
                         .header("Authorization", bearer(reader)).header("Idempotency-Key", "inc-denied-" + UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON).content("{\"reason\":\"无操作权限\"}"))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
+        assertThat(jdbc.queryForObject("SELECT stage FROM device_incident WHERE incident_id=?",String.class,incidentId)).isEqualTo("PENDING");
     }
 
     @Test
@@ -244,6 +271,16 @@ class DeviceIncidentLifecycleApiTest {
         jdbc.update("INSERT INTO device_incident (incident_id,device_id,incident_no,incident_type,severity,stage,detected_at,reason,simulated) VALUES (?,?,?,'LINK_DEGRADED','MEDIUM','PENDING',1,'测试异常',true)",
                 id, deviceId, "INC-" + id.substring(0, 8));
         return id;
+    }
+
+    private void explicitHealthy(String deviceId) {
+        long at=clock.nowMillis();
+        jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',health_code='GOOD',has_alarm=FALSE,last_heartbeat_at=?,"
+                +"health_observed_at=?,alarm_observed_at=?,health_source_id=(SELECT source_id FROM ops_device WHERE device_id=?),"
+                +"alarm_source_id=(SELECT source_id FROM ops_device WHERE device_id=?),"
+                +"health_source_mode=(SELECT source_mode FROM ops_device WHERE device_id=?),"
+                +"alarm_source_mode=(SELECT source_mode FROM ops_device WHERE device_id=?),health_simulated=TRUE,alarm_simulated=TRUE WHERE device_id=?",
+                at,at,at,deviceId,deviceId,deviceId,deviceId,deviceId);
     }
 
     private String readerWithMonitoringRead() {

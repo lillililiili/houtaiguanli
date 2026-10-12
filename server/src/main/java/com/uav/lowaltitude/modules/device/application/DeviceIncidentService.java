@@ -3,7 +3,6 @@ package com.uav.lowaltitude.modules.device.application;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -22,7 +21,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class DeviceIncidentService {
-    static final String RULE_VERSION = "ops-incident-recovery-v1";
+    static final String RULE_VERSION = DeviceRecoveryService.RULE_VERSION;
 
     private final DeviceRepository repository;
     private final DeviceService devices;
@@ -30,15 +29,17 @@ public class DeviceIncidentService {
     private final AppClock clock;
     private final AuditService audit;
     private final ObjectMapper objectMapper;
+    private final DeviceRecoveryService recovery;
 
     public DeviceIncidentService(DeviceRepository repository, DeviceService devices, DeviceAccessPolicy access,
-                                 AppClock clock, AuditService audit, ObjectMapper objectMapper) {
+                                 AppClock clock, AuditService audit, ObjectMapper objectMapper, DeviceRecoveryService recovery) {
         this.repository = repository;
         this.devices = devices;
         this.access = access;
         this.clock = clock;
         this.audit = audit;
         this.objectMapper = objectMapper;
+        this.recovery = recovery;
     }
 
     public IncidentDetail get(String incidentId) {
@@ -54,6 +55,8 @@ public class DeviceIncidentService {
         if (reason == null || reason.trim().length() < 2 || reason.trim().length() > 500)
             throw bad("VALIDATION_ERROR", "重启原因长度必须为 2–500 个字符");
         Map<String, Object> incident = requiredIncident(incidentId);
+        repository.lockForRecovery(text(incident,"device_id"));
+        incident=requiredIncident(incidentId);
         String stage = text(incident, "stage");
         String deviceId = text(incident, "device_id");
         if ("MQTT_HEARTBEAT_TIMEOUT".equals(text(incident, "incident_type")))
@@ -77,6 +80,9 @@ public class DeviceIncidentService {
     @Transactional
     public RecoveryResult recoveryCheck(String incidentId, String idempotencyKey) {
         AuthUser user = access.requireMonitoringOperate();
+        Map<String, Object> incident = requiredIncident(incidentId);
+        repository.lockForRecovery(text(incident,"device_id"));
+        incident=requiredIncident(incidentId);
         String key = "incident-recovery:" + incidentId + ":" + requireIdempotencyKey(idempotencyKey);
         String hash = sha256(user.userId() + "|" + incidentId + "|VERIFY_RECOVERY");
         Map<String, Object> replay = repository.findIdempotency(key);
@@ -85,38 +91,17 @@ public class DeviceIncidentService {
                 throw new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT", "同一幂等键对应了不同请求");
             return recoveryFromRow(repository.findRecoveryCheck(text(replay, "response_body")));
         }
-        Map<String, Object> incident = requiredIncident(incidentId);
-        boolean heartbeatIncident = "MQTT_HEARTBEAT_TIMEOUT".equals(text(incident, "incident_type"));
         String expectedStage = text(incident, "stage");
-        if (!"PENDING_VERIFICATION".equals(expectedStage) && !(heartbeatIncident && "PENDING".equals(expectedStage)))
+        if (!List.of("PENDING","PROCESSING","PENDING_VERIFICATION").contains(expectedStage))
             throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "当前阶段不能做恢复校验");
         Map<String, Object> device = repository.find(text(incident, "device_id"));
         if (device == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
-        String connectivity = text(device, "connectivity");
-        boolean hasAlarm = bool(device, "has_alarm");
-        String health = text(device, "health_code");
-        String result;
-        String reason;
-        if (heartbeatIncident) {
-            Long heartbeat = longValue(device, "last_heartbeat_at");
-            boolean fresh = heartbeat != null && heartbeat > longNumber(incident, "detected_at")
-                    && heartbeat <= clock.nowMillis() && clock.nowMillis() - heartbeat <= 30_000;
-            result = "ONLINE".equals(connectivity) && fresh ? "PASS" : "FAIL";
-            reason = "PASS".equals(result) ? "离线事件恢复核验：事件发生后收到新心跳且设备在线；未推定其他健康指标"
-                    : "尚未取得事件发生后的新鲜在线心跳";
-        } else if (connectivity == null || "UNKNOWN".equals(connectivity)) {
-            result = "UNKNOWN";
-            reason = "设备连接状态未知，不能关闭异常";
-        } else if ("ONLINE".equals(connectivity) && !hasAlarm && "GOOD".equals(health)) {
-            result = "PASS";
-            reason = "平台状态快照：在线、无告警、健康良好";
-        } else {
-            result = "FAIL";
-            reason = "平台状态快照未恢复：connectivity=" + nullToDash(connectivity)
-                    + "，has_alarm=" + hasAlarm + "，health_code=" + nullToDash(health);
-        }
+        var evaluation=recovery.evaluate(text(incident,"device_id"),text(device,"source_mode"),text(device,"source_id"),
+                bool(incident,"simulated"),longNumber(incident,"detected_at"));
+        String result=evaluation.result();
+        String reason=evaluation.reason();
         long now = clock.nowMillis();
-        Map<String, Object> snapshot = snapshot(device);
+        Map<String, Object> snapshot = evaluation.currentState();
         String checkId = UUID.randomUUID().toString();
         repository.insertRecoveryCheck(checkId, incidentId, user.userId(), now, result, RULE_VERSION, json(snapshot), reason);
         repository.insertIdempotency(key, user.userId(), hash, checkId, now);
@@ -145,13 +130,15 @@ public class DeviceIncidentService {
         List<String> actions = "MQTT_HEARTBEAT_TIMEOUT".equals(incident.incidentType())
                 ? (operate && "PENDING".equals(incident.stage()) ? List.of("VERIFY_RECOVERY") : List.of())
                 : allowedActions(incident.stage(), operate);
+        if(actions.contains("REBOOT")&&!devices.canRebootIncident(incident.deviceId()))
+            actions=actions.stream().filter(action->!"REBOOT".equals(action)).toList();
         return new IncidentDetail(incident, check == null ? null : checkView(check), actions);
     }
 
     private RecoveryResult recoveryFromRow(Map<String, Object> check) {
         if (check == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_INCIDENT_NOT_FOUND", "恢复校验记录不存在");
         Map<String, Object> incident = requiredIncident(text(check, "incident_id"));
-        return new RecoveryResult(text(check, "result"), RULE_VERSION, text(check, "reason"),
+        return new RecoveryResult(text(check, "result"), text(check,"rule_version"), text(check, "reason"),
                 parseSnapshot(text(check, "state_snapshot")), toIncident(incident));
     }
 
@@ -169,18 +156,9 @@ public class DeviceIncidentService {
 
     static List<String> allowedActions(String stage, boolean operate) {
         if (!operate) return List.of();
-        if ("PENDING".equals(stage)) return List.of("REBOOT");
+        if ("PENDING".equals(stage)) return List.of("REBOOT","VERIFY_RECOVERY");
         if ("PENDING_VERIFICATION".equals(stage)) return List.of("VERIFY_RECOVERY");
         return List.of();
-    }
-
-    private Map<String, Object> snapshot(Map<String, Object> device) {
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-        snapshot.put("connectivity", text(device, "connectivity"));
-        snapshot.put("has_alarm", bool(device, "has_alarm"));
-        snapshot.put("health_code", text(device, "health_code"));
-        snapshot.put("last_heartbeat_at", longValue(device, "last_heartbeat_at"));
-        return snapshot;
     }
 
     private Map<String, Object> requiredIncident(String incidentId) {
@@ -189,6 +167,8 @@ public class DeviceIncidentService {
             throw bad("VALIDATION_ERROR", "ID 格式无效");
         Map<String, Object> row = repository.findIncident(id);
         if (row == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_INCIDENT_NOT_FOUND", "设备异常不存在");
+        if(repository.find(text(row,"device_id"))==null)
+            throw new ApiException(HttpStatus.NOT_FOUND,"DEVICE_INCIDENT_NOT_FOUND","设备异常不存在或不在授权范围内");
         return row;
     }
 
@@ -239,7 +219,6 @@ public class DeviceIncidentService {
     private static Long longValue(Map<String, Object> r, String key) {
         return r.get(key) == null ? null : longNumber(r, key);
     }
-    private static String nullToDash(String value) { return value == null || value.isBlank() ? "—" : value; }
 
     public record IncidentDetail(DeviceService.Incident incident, RecoveryCheckView latestCheck, List<String> allowedActions) { }
     public record RecoveryCheckView(String checkId, String result, String ruleVersion, long checkedAt, String reason,
