@@ -175,10 +175,11 @@ class Stage15PostgresTest {
         assertThat(jdbc.queryForObject(
                 "select count(*) from app_permission where permission_kind='ACTION' and route_key is not null", Long.class))
                 .as("动作权限不得带菜单键").isZero();
-        // 迁移只登记不授权：授权矩阵是部署时的决定。
+        // 固定后台身份仅持管理和读取动作；业务角色仍不预授权。
         assertThat(jdbc.queryForObject("select count(*) from app_role_permission p join app_permission c"
-                + " on c.permission_code=p.permission_code where c.permission_kind='ACTION' and p.role_code<>'ROLE-ADMIN'", Long.class))
-                .as("除内置超级管理员外，迁移不得预先授予任何动作权限").isZero();
+                + " on c.permission_code=p.permission_code where c.permission_kind='ACTION' and p.role_code not in ('ROLE-ADMIN','ROLE-BACKEND')", Long.class))
+                .as("迁移不得预先授予业务角色动作权限").isZero();
+        com.uav.lowaltitude.testsupport.BackendAccountFixture.assertBaselineActions(jdbc);
     }
 
     /**
@@ -192,7 +193,7 @@ class Stage15PostgresTest {
     @Test
     @Order(2)
     void concurrentActionUpdatesLeaveExactlyTheWinnersActionRows() throws Exception {
-        String admin = session("roles", "AUTH");
+        String admin = sessionFor("ROLE-BACKEND");
         String role = customRole();
         // permission_version 记在 **app_user** 行上，所以这个角色底下必须先有个人：
         // 没有人的角色前后都读到 0，断言看起来跑过了，其实什么也没验。
@@ -237,7 +238,7 @@ class Stage15PostgresTest {
     @Test
     @Order(3)
     void permissionChangeInvalidatesTheOldSessionImmediately() throws Exception {
-        String admin = session("roles", "AUTH");
+        String admin = sessionFor("ROLE-BACKEND");
         String role = customRole();
         String victim = sessionForRole(role, PermissionCode.ALARM_READ.value());
         mvc.perform(get("/api/v1/alarms?size=1").header("Authorization", "Bearer " + victim))

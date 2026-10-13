@@ -107,6 +107,8 @@ function handleEvent(block) {
     if (hadConnection || missed) emit(['*'], { recovery: true });
     hadConnection = true;
     missed = false;
+  } else if (name === 'status') {
+    try { setState(true, JSON.parse(data.join('\n')).listening === true); } catch { /* 忽略无效状态 */ }
   } else if (name === 'change') {
     if (!listening) setState(true, true);
     try {
@@ -147,11 +149,11 @@ async function connect() {
     for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
       if (controller !== current) return;
       armWatchdog(current);
-      buffer += chunk.value.replace(/\r\n/g, '\n');
-      let index;
-      while ((index = buffer.indexOf('\n\n')) >= 0) {
-        handleEvent(buffer.slice(0, index));
-        buffer = buffer.slice(index + 2);
+      buffer += chunk.value;
+      let boundary;
+      while ((boundary = /\r?\n\r?\n/.exec(buffer))) {
+        handleEvent(buffer.slice(0, boundary.index).replace(/\r\n/g, '\n'));
+        buffer = buffer.slice(boundary.index + boundary[0].length);
       }
     }
   } catch {
@@ -237,6 +239,7 @@ export function refreshFailureText(error, fallback = '读取失败') {
    读取失败时应抛出错误（页面自己负责显示）。断网、超时或 5xx 失败后按 2、4、8……最长 30 秒退避
    再读同一批变化；重连或网络恢复（recovery）时立即再读，不等退避结束。 */
 export function useRealtimeRefresh(topics, reload, { minIntervalMs = 1_000 } = {}) {
+  let active = true;
   let running = false;
   let lastAt = 0;
   let timer = null;
@@ -247,7 +250,7 @@ export function useRealtimeRefresh(topics, reload, { minIntervalMs = 1_000 } = {
 
   async function run() {
     timer = null;
-    if (document.hidden || running || !changed.size) return;
+    if (!active || document.hidden || running || !changed.size) return;
     const wait = Math.max(lastAt + minIntervalMs, retryAt) - Date.now();
     if (wait > 0) { timer = setTimeout(run, wait); return; }
     running = true;
@@ -267,11 +270,12 @@ export function useRealtimeRefresh(topics, reload, { minIntervalMs = 1_000 } = {
       }
     } finally {
       running = false;
-      if (changed.size && !timer) timer = setTimeout(run, 0);
+      if (active && changed.size && !timer) timer = setTimeout(run, 0);
     }
   }
 
   function trigger(received = ['*'], { recovery = false } = {}) {
+    if (!active) return;
     received.forEach(topic => changed.add(topic));
     if (recovery) {
       retryDelay = 0;
@@ -287,6 +291,8 @@ export function useRealtimeRefresh(topics, reload, { minIntervalMs = 1_000 } = {
     document.addEventListener('visibilitychange', onVisible);
   });
   onUnmounted(() => {
+    active = false;
+    changed.clear();
     stop?.();
     clearTimeout(timer);
     document.removeEventListener('visibilitychange', onVisible);

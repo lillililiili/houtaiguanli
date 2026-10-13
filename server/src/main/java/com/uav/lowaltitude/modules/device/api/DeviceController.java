@@ -103,6 +103,12 @@ public class DeviceController {
         return ApiResponse.ok(mqtt.options());
     }
 
+    @GetMapping("/onboarding-options")
+    @com.uav.lowaltitude.platform.security.BackendOnly
+    public ApiResponse<DeviceOnboardService.OnboardingOptions> onboardingOptions() {
+        return ApiResponse.ok(onboardService.options());
+    }
+
     @PostMapping("/onboard")
     @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> onboard(@RequestBody JsonNode body, @RequestHeader(value="Idempotency-Key",required=false) String key) {

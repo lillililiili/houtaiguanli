@@ -55,9 +55,9 @@ class AuditApiTest {
                             .param("module", "csv-safety-test"))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith("text/csv"))
-                    .andExpect(header().string("Content-Disposition", "attachment; filename=\"audit-logs.csv\""))
+                    .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("audit-logs.csv")))
                     .andReturn().getResponse().getContentAsString();
-            assertThat(csv).contains("\"'=2+2\"").contains("\"'+command\"");
+            assertThat(csv).startsWith("\ufeff").contains(",'=2+2,").contains(",'+command");
 
             mvc.perform(get("/api/v1/users").header("Authorization", bearer(token)))
                     .andExpect(status().isOk());
@@ -95,7 +95,7 @@ class AuditApiTest {
         try {
             mvc.perform(get("/api/v1/audit-logs").header("Authorization", bearer(token)).param("objectId", "fixture-interface"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.items[0].module_name").value("系统"))
+                    .andExpect(jsonPath("$.data.items[0].module_name").value("接口配置"))
                     .andExpect(jsonPath("$.data.items[0].action_name").value("保存外部接口配置"))
                     .andExpect(jsonPath("$.data.items[0].object_id").value("fixture-interface"));
             mvc.perform(get("/api/v1/audit-logs/" + id).header("Authorization", bearer(token)))

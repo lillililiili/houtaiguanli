@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.identity.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -10,6 +11,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
+import java.util.ArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +28,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.uav.lowaltitude.modules.identity.application.AccessControlService;
+import com.uav.lowaltitude.modules.identity.application.AccessService;
+import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
+import com.uav.lowaltitude.platform.api.ApiException;
+import com.uav.lowaltitude.platform.security.AuthContext;
+import com.uav.lowaltitude.platform.security.AuthUser;
 
 /**
  * 角色的**动作权限**（决策 15-1 / 15-2）。
@@ -37,13 +46,28 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 @ActiveProfiles("test")
 class RoleActionPermissionApiTest {
 
+    private static final List<String> FRONTEND_ACTIONS = List.of(
+            "device:read", "target:read", "alarm:read", "alarm:verify", "flight:read", "route:read", "airspace:read",
+            "assessment:read", "assessment:evaluate", "assessment:revise", "assessment:escalate",
+            "risk:read", "risk:verify", "handoff:read", "handoff:create", "rule:read", "fusion:read",
+            "evidence:read", "evidence:preview", "evidence:ingest", "evidence:download", "evidence:hold", "evidence:destroy",
+            "disposal:read", "disposal:request", "disposal:approve", "disposal:direct", "disposal:execute", "disposal:stop",
+            "punishment:read");
+    private static final List<String> UNAVAILABLE_ACTIONS = List.of(
+            "airport:read", "airport:manage", "flight:verify", "airspace:manage", "fusion:revise", "fusion:manage",
+            "risk:evaluate", "evidence:link", "punishment:file", "punishment:decide", "punishment:review", "punishment:close",
+            "map:read", "map:upload", "map:activate", "map:delete", "rule:manage");
+
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
+    @Autowired AccessService accessService;
+    @Autowired AccessControlService accessControl;
     @Autowired com.uav.lowaltitude.modules.identity.application.SuperAdminIntegrityInitializer superAdminInitializer;
 
     @AfterEach
     void cleanup() {
+        AuthContext.clear();
         // 严格按"先引用方、后被引用方"删。这里的外键都是 RESTRICT：
         // disposal_authorization_event.actor_id 与 disposal_authorization.requested_by/approved_by 指向 app_user，
         // disposal_authorization 又被事件引用，uav_event 引用 alarm。次序错了会在 @AfterEach 撞 23503——
@@ -117,8 +141,73 @@ class RoleActionPermissionApiTest {
         // 只断言"含中文"会被一句半中半英的描述蒙混过去，所以再钉死一对具体措辞。
         assertThat(disposalModuleName).isEqualTo("处置授权");
         assertThat(approveName).isEqualTo("审批处置");
-        // 目录动作数与 PermissionCode 枚举一致：撤除动作（如 F8 的 flight:authorize）时两边一起减，不再钉死数字。
-        assertThat(actions).as("目录里的动作数").isEqualTo(com.uav.lowaltitude.modules.identity.domain.PermissionCode.values().length);
+        // 角色配置目录仅覆盖当前前台入口；后台和历史接口的枚举不等于可配置动作。
+        assertThat(actions).as("前台目录动作数").isEqualTo(FRONTEND_ACTIONS.size());
+    }
+
+    @Test
+    void frontendCatalogKeepsReadDependenciesAndRemovesRetiredOperations() throws Exception {
+        String admin = login("admin1", "changeme");
+        JsonNode catalog = data(mvc.perform(get("/api/v1/permissions/actions").header("Authorization", bearer(admin)))
+                .andExpect(status().isOk()));
+        List<String> codes = new ArrayList<>();
+        for (JsonNode module : catalog) {
+            for (JsonNode action : module.path("actions")) codes.add(action.path("permission_code").asText());
+        }
+        assertThat(codes).containsExactlyInAnyOrderElementsOf(FRONTEND_ACTIONS);
+        String role = customRole();
+        for (String code : UNAVAILABLE_ACTIONS) {
+            expectGrantError(admin, role, "map:activate".equals(code)
+                    ? "SYSTEM_PERMISSION_PROTECTED" : "FRONTEND_ACTION_UNAVAILABLE", entry(code, "OP"));
+        }
+        assertThat(actionCount(role)).isZero();
+    }
+
+    @Test
+    void staleGrantsCannotBypassEitherAuthorizationPathAndSaveRemovesThemWithAudit() throws Exception {
+        String admin = login("admin1", "changeme");
+        for (String legacyLevel : List.of("READ", "OP")) {
+            String role = customRole();
+            String[] user = userInRole(role, "stale");
+            for (String code : UNAVAILABLE_ACTIONS) {
+                jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at)"
+                        + " values (?,?,?,false,current_timestamp)", role, code, legacyLevel);
+            }
+            for (String code : FRONTEND_ACTIONS) {
+                jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at)"
+                        + " values (?,?,'OP',false,current_timestamp)", role, code);
+            }
+            JsonNode me = data(mvc.perform(get("/api/v1/auth/me").header("Authorization", bearer(user[0])))
+                    .andExpect(status().isOk()));
+            List<String> effective = new ArrayList<>();
+            me.path("permission_codes").forEach(code -> effective.add(code.asText()));
+            assertThat(effective).containsExactlyInAnyOrderElementsOf(FRONTEND_ACTIONS);
+            AuthContext.set(new AuthUser(user[1], "stale", "旧授权", role, 0, false, "ASSIGNED"));
+            try {
+                for (PermissionCode permission : PermissionCode.values()) {
+                    if (UNAVAILABLE_ACTIONS.contains(permission.value())) {
+                        assertThatThrownBy(() -> accessService.require(permission.value())).isInstanceOf(ApiException.class);
+                        assertThatThrownBy(() -> accessControl.require(permission)).isInstanceOf(ApiException.class);
+                    } else {
+                        accessService.require(permission.value());
+                        accessControl.require(permission);
+                    }
+                }
+            } finally { AuthContext.clear(); }
+
+            // 正常编辑整组替换：后台/旧动作不再回填；当前读取动作仍可用，旧会话撤销。
+            grantActions(admin, role, entry("punishment:read", "OP"), entry("fusion:read", "OP"));
+            assertThat(jdbc.queryForList("select permission_code from app_role_permission where role_code=?"
+                    + " and permission_code like '%:%'", String.class, role))
+                    .containsExactlyInAnyOrder("punishment:read", "fusion:read");
+            mvc.perform(get("/api/v1/auth/me").header("Authorization", bearer(user[0])))
+                    .andExpect(status().isUnauthorized());
+            String audit = jdbc.queryForObject("select detail from audit_log where action='role_permissions_updated' and object_id=?",
+                    String.class, role);
+            JsonNode detail = json.readTree(audit);
+            assertThat(detail.path("actions_before")).hasSize(PermissionCode.values().length);
+            assertThat(detail.path("actions_granted")).hasSize(2);
+        }
     }
 
     /**

@@ -136,8 +136,13 @@ describe('角色菜单仅配置业务前台', () => {
     expect(systemApi.updateRolePermissions.mock.calls[0][1].permissions).toContainEqual({ permission_code: 'devices', level: 'NONE', menu_enabled: false })
   })
 
-  it('后台管理动作不在前台角色中展示，历史值随完整草稿保留', async () => {
-    role.actions = [{ permission_code: 'rule:manage', level: 'OP' }]
+  it('仅提交当前可配置动作，不把后台动作和已下线动作的历史授权带回', async () => {
+    role.actions = [
+      { permission_code: 'rule:read', level: 'READ' },
+      { permission_code: 'rule:manage', level: 'OP' },
+      { permission_code: 'airport:manage', level: 'OP' },
+      { permission_code: 'punishment:close', level: 'OP' }
+    ]
     systemApi.permissionActions.mockResolvedValue([{ module_code: 'rule', module_name: '规则', actions: [
       { permission_code: 'rule:read', name: '读取规则' }, { permission_code: 'rule:manage', name: '维护后台规则' }
     ] }])
@@ -149,6 +154,6 @@ describe('角色菜单仅配置业务前台', () => {
     host.querySelector('.permission-matrix input[type="checkbox"]').click()
     await settle()
     button('保存并立即生效', host).click(); await settle()
-    expect(systemApi.updateRolePermissions.mock.calls[0][1].actions).toContainEqual({ permission_code: 'rule:manage', level: 'OP' })
+    expect(systemApi.updateRolePermissions.mock.calls[0][1].actions).toEqual([{ permission_code: 'rule:read', level: 'OP' }])
   })
 })

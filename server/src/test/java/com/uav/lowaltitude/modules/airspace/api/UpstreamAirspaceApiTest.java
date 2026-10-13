@@ -31,13 +31,14 @@ class UpstreamAirspaceApiTest {
     @BeforeEach void fixture() {
         String suffix=UUID.randomUUID().toString().substring(0,8);
         org="up-org-"+suffix; district="up-dist-"+suffix; no="UP-"+suffix;
-        role="ROLE-UP-"+suffix; user=fixedUser==null?UUID.randomUUID().toString():fixedUser; token=UUID.randomUUID().toString();
+        role="ROLE-BACKEND"; user=fixedUser==null?UUID.randomUUID().toString():fixedUser; token=UUID.randomUUID().toString();
         from=System.currentTimeMillis()-3600000;
         jdbc.update("insert into app_org(org_id,org_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",org,org,"空域接收测试");
         jdbc.update("insert into app_district(district_id,district_code,name,enabled,created_at,updated_at,version) values(?,?,?,true,0,0,0)",district,district,"测试区域");
-        jdbc.update("insert into app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) values(?,?,'',false,true,0,0,0,false)",role,role);
-        for(String p:new String[]{"airspace:read","airspace:manage","interfaces"})
-            jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,?,?,false,current_timestamp)",role,p,p.endsWith("read")?"READ":"OP");
+        // The simulator is a backend entry point; airspace input is explicitly granted in this isolated fixture.
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at)"
+                + " select ?,'airspace:manage','OP',false,current_timestamp where not exists"
+                + " (select 1 from app_role_permission where role_code=? and permission_code='airspace:manage')",role,role);
         jdbc.update("insert into app_user(user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values(?,?,?,?,'ACTIVE','unused',0,'ASSIGNED',0,0,0,0)",user,"up-"+suffix,"接收账号",role);
         jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,?,?)",user,org,district);
         jdbc.update("insert into app_session(session_id,user_id,expire_at,ip,permission_version) values(?,?,?,'127.0.0.1',0)",token,user,System.currentTimeMillis()+3600000);

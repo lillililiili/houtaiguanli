@@ -26,14 +26,22 @@ public class DeviceOnboardService {
     private final DeviceService devices;
     private final IntegrationSourceService sources;
     private final TcpDeviceScopeService scopes;
+    private final ManualRadarSimulation simulation;
 
     public DeviceOnboardService(DeviceAccessPolicy access, DeviceService devices, IntegrationSourceService sources,
-                                TcpDeviceScopeService scopes) {
+                                TcpDeviceScopeService scopes, ManualRadarSimulation simulation) {
         this.access = access;
         this.devices = devices;
         this.sources = sources;
         this.scopes = scopes;
+        this.simulation = simulation;
     }
+
+    public OnboardingOptions options() {
+        return new OnboardingOptions(simulation.allowed(access.requireDevicesOperate()));
+    }
+
+    public record OnboardingOptions(boolean manualRadarSimulationAllowed) { }
 
     @Transactional
     public DeviceDetail onboard(OnboardRequest request) {
@@ -48,6 +56,8 @@ public class DeviceOnboardService {
         String org = required(request.ownerOrgId(), "所属单位");
         String district = required(request.districtId(), "所属区域");
         scopes.validateTuple(org,district);
+        boolean simulated = Boolean.TRUE.equals(request.simulated());
+        if (simulated) simulation.validate(user, request);
         Source source;
         try {
             source = sources.insertLive(new Mutation(deviceNo, name, request.protocolCode(), null,
@@ -57,6 +67,7 @@ public class DeviceOnboardService {
                 throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号或接入编码已存在");
             throw ex;
         }
+        if (simulated) simulation.markSource(source.sourceId());
         ConnectionProfile connection = new ConnectionProfile("TCP", host, request.port(), blank(request.path()),
                 blank(request.dataFormat()) == null ? "BINARY" : request.dataFormat().trim(), "UTF-8", "Token",
                 blank(request.credentialRef()), 30, 1000, null, false, true,
@@ -85,7 +96,8 @@ public class DeviceOnboardService {
                     : new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号或接入编码已存在");
         }
         sources.activate(source.sourceId(), source.version(), "接入设备 " + deviceNo + "，操作人 " + user.account());
-        return created;
+        if (simulated) simulation.record(user, created.device().deviceId());
+        return devices.detail(created.device().deviceId());
     }
 
     private static Catalog catalog(String protocolCode) {
@@ -115,5 +127,5 @@ public class DeviceOnboardService {
                                  String firmwareVersion, String loginRole, String recognitionCodeRef,
                                  Boolean rtkEnabled, Boolean coordinateTransformEnabled, Integer deviceAddress,
                                  String wireEncoding, Integer pollIntervalMillis,
-                                 String ownerOrgId, String districtId) { }
+                                 String ownerOrgId, String districtId, Boolean simulated) { }
 }

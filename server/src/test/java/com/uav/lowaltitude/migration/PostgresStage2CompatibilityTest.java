@@ -69,7 +69,9 @@ class PostgresStage2CompatibilityTest {
                 assertThat(jdbc.queryForObject("""
                         select count(*) from app_role_permission
                         where permission_code in ('device:read','target:read','alarm:read')
+                          and role_code<>'ROLE-BACKEND'
                         """, Integer.class)).isZero();
+                com.uav.lowaltitude.testsupport.BackendAccountFixture.assertBaselineActions(jdbc);
 
                 Map<String, String> indexes = indexDefinitions(jdbc, schema);
                 assertThat(indexes.get("idx_stage2_device_location_gist"))

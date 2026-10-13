@@ -9,7 +9,7 @@ vi.mock('echarts', () => ({ init: vi.fn(() => ({ setOption: vi.fn(), resize: vi.
 const realtime = vi.hoisted(() => ({ subscriptions: [] }));
 vi.mock('@/services/realtime.js', async importOriginal => ({
   refreshFailureText: (await importOriginal()).refreshFailureText,
-  useRealtimeRefresh: (topics, reload) => { realtime.subscriptions.push({ topics, reload }); return { trigger: () => {} }; }
+  useRealtimeRefresh: (topics, reload) => { realtime.subscriptions.push({ topics, reload }); return { trigger: reload }; }
 }));
 let app, host, props;
 const sample = value => ({ from: 0, to: 120000, bucket_ms: 60000, protocol_code: 'RADAR_TCP_V3_0_0', metrics: [{ code: 'active_track_count', at: 0, latest: value, average: value, minimum: value, maximum: value, samples: 1 }], reports: [{ code: 'report_static', at: 0, samples: value, interval_seconds: 1 }] });

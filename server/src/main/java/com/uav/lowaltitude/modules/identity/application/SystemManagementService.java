@@ -53,6 +53,7 @@ import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserResponse;
 import com.uav.lowaltitude.modules.identity.api.SystemDtos.UserStatusRequest;
 import com.uav.lowaltitude.modules.identity.domain.AppUser;
 import com.uav.lowaltitude.modules.identity.domain.DataScope;
+import com.uav.lowaltitude.modules.identity.domain.FrontendActionPolicy;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.ActionRow;
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.AccessChangeRow;
@@ -608,6 +609,9 @@ public class SystemManagementService {
             mapper.updateRolePermission(roleCode, permission.permissionCode(), permission.level(),
                     permission.menuEnabled());
         }
+        // 保留替换前的真实授权供审计追溯，包括已退出前台配置的旧动作。
+        List<RoleActionResponse> actionsBefore = mapper.listActionsForRole(roleCode).stream()
+                .map(a -> new RoleActionResponse(a.getPermissionCode(), a.getLevel())).toList();
         // actions 缺省表示不动动作行；给了就整组替换（决策 15-2）。
         List<ActionAssignment> actionsGranted = request.actions() == null ? null
                 : replaceRoleActions(roleCode, request.actions());
@@ -619,7 +623,10 @@ public class SystemManagementService {
         detail.put("after", permissions);
         detail.put("reason", reason);
         // 记下实际授出去的动作：只记"改过"而不记改成了什么，事后回答不了"这个人当时凭什么能批"。
-        if (actionsGranted != null) detail.put("actions_granted", actionsGranted);
+        if (actionsGranted != null) {
+            detail.put("actions_before", actionsBefore);
+            detail.put("actions_granted", actionsGranted);
+        }
         audit("roles", "role_permissions_updated", "role", roleCode, json(detail), meta);
         return toRole(requireRole(roleCode));
     }
@@ -923,6 +930,7 @@ public class SystemManagementService {
         accessService.require("roles.read");
         Map<String, List<ActionRow>> byModule = new LinkedHashMap<>();
         for (ActionRow row : mapper.listActionCatalog()) {
+            if (!FrontendActionPolicy.isAssignable(row.getPermissionCode())) continue;
             byModule.computeIfAbsent(row.getModuleCode(), code -> new ArrayList<>()).add(row);
         }
         List<ActionModuleResponse> modules = new ArrayList<>();
@@ -964,6 +972,10 @@ public class SystemManagementService {
             if (PermissionCode.DISPOSAL_DIRECT.value().equals(item.permissionCode())
                     && !Set.of("NONE", "OP").contains(item.level())) {
                 throw bad("INVALID_PERMISSION_LEVEL", "直接反制权限只允许无或允许");
+            }
+            if (!FrontendActionPolicy.isAssignable(item.permissionCode())
+                    && !"NONE".equals(item.level())) {
+                throw bad("FRONTEND_ACTION_UNAVAILABLE", "该动作不属于当前前台功能，不能授予业务角色");
             }
             if (!"NONE".equals(item.level())) granted.add(item);
         }

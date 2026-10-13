@@ -396,13 +396,14 @@ class AdvisoryVoiceRecordingApiTest {
     }
 
     @Test
-    void managingNeedsBackendIdentityAndAllScope() throws Exception {
+    void managingNeedsBackendIdentityAndAllScopeDespiteLegacyFrontendGrants() throws Exception {
         String admin = login();
         String id = uploadId(admin, "权限测试-" + suffix(), wav(8000, 1, 3000 + ThreadLocalRandom.current().nextInt(3000)));
         String reader = session("ALL", "interfaces=READ");
         String operatorWithoutAuthority = session("ALL", "interfaces=OP");
-        String assignedManager = session("ASSIGNED", "interfaces=OP", "notificationSettings=AUTH");
-        String manager = session("ALL", "interfaces=OP", "notificationSettings=AUTH");
+        String assignedManager = com.uav.lowaltitude.testsupport.BackendAccountFixture.session(jdbc, "ASSIGNED", ORG, DISTRICT);
+        String manager = com.uav.lowaltitude.testsupport.BackendAccountFixture.session(jdbc, "ALL", null, null);
+        String legacyManager = session("ALL", "interfaces=OP", "notificationSettings=AUTH");
         String outsider = session("ALL", "devices=READ");
         for (String backend : new String[]{assignedManager, manager})
             jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)", backend);
@@ -411,12 +412,16 @@ class AdvisoryVoiceRecordingApiTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("BACKEND_ACCESS_DENIED"));
         mvc.perform(get(BASE + "/{id}/content", id).header("Authorization", bearer(reader))).andExpect(status().isForbidden());
+        mvc.perform(get(BASE).header("Authorization", bearer(manager))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1));
+        mvc.perform(get(BASE + "/{id}/content", id).header("Authorization", bearer(manager))).andExpect(status().isOk());
         mvc.perform(get(BASE).header("Authorization", bearer(outsider))).andExpect(status().isForbidden());
         mvc.perform(get(BASE + "/{id}/content", id).header("Authorization", bearer(outsider))).andExpect(status().isForbidden());
 
         byte[] audio = wav(8000, 1, 2000 + ThreadLocalRandom.current().nextInt(2000));
         upload(reader, "r.wav", audio, "只读用户上传", "不允许", key()).andExpect(status().isForbidden());
         upload(operatorWithoutAuthority, "o.wav", audio, "缺通知授权", "不允许", key()).andExpect(status().isForbidden());
+        upload(legacyManager, "f.wav", audio, "旧前台管理权限", "不允许", key()).andExpect(status().isForbidden());
         upload(assignedManager, "s.wav", audio, "部分范围", "不允许", key())
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("VOICE_RECORDING_SCOPE_REQUIRED"));

@@ -103,7 +103,7 @@ function resetDraft(data) {
   permissions.value = (data?.permissions || []).map(item => ({ ...item }))
   Object.keys(actionDraft).forEach(key => delete actionDraft[key])
   const granted = Object.fromEntries((data?.actions || []).map(item => [item.permission_code, item.level]))
-  actionCatalog.value.forEach(group => group.actions.forEach(action => { actionDraft[action.permission_code] = granted[action.permission_code] || 'NONE' }))
+  businessActionCatalog.value.forEach(group => group.actions.forEach(action => { actionDraft[action.permission_code] = granted[action.permission_code] || 'NONE' }))
   actionBaseline.value = JSON.stringify(actionDraft)
 }
 async function loadRole(code = selectedCode.value) {

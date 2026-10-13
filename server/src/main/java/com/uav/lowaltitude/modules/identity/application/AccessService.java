@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.uav.lowaltitude.modules.identity.domain.IdentityRows.PermissionRow;
+import com.uav.lowaltitude.modules.identity.domain.FrontendActionPolicy;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.identity.domain.UserType;
 import com.uav.lowaltitude.modules.identity.infrastructure.IdentityAdminMapper;
@@ -124,7 +125,8 @@ public class AccessService {
         // 直接反制读取显式 OP；超级管理员由完整性初始化按最高权限策略持久化该授权。
         // mapper 同时保证 READ/AUTH 行不会被当成直接执行资格。
         for (String actionCode : mapper.listActionCodesForRole(roleCode)) {
-            if (!superAdmin || PermissionCode.DISPOSAL_DIRECT.value().equals(actionCode)) codes.add(actionCode);
+            if (FrontendActionPolicy.isAvailable(roleCode, actionCode)
+                    && (!superAdmin || PermissionCode.DISPOSAL_DIRECT.value().equals(actionCode))) codes.add(actionCode);
         }
         return List.copyOf(codes);
     }

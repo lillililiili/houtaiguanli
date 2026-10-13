@@ -54,7 +54,7 @@ class LocalStage2AccessSeederTest {
                 .as("non-admin roles holding action codes")
                 .containsExactly("ROLE-BACKEND", "ROLE-DEMO-AUDIT", "ROLE-DEMO-AUTH", "ROLE-DEMO-DUTY",
                         "ROLE-DEMO-OPS", "ROLE-DEMO-REVIEWER");
-        com.uav.lowaltitude.testfixture.BackendPermissionAssertions.assertFixedGrants(jdbc);
+        com.uav.lowaltitude.testsupport.BackendAccountFixture.assertBaselineActions(jdbc);
         assertThat(jdbc.queryForObject(
                 "select scope_mode from app_user where account='admin1'", String.class))
                 .isEqualTo("ALL");

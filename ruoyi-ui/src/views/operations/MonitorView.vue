@@ -18,7 +18,7 @@ import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.
 const route = useRoute(), router = useRouter(), auth = useAuthStore();
 const requestedDevice = computed(() => typeof route?.query?.device_id === 'string' ? route.query.device_id : '');
 const canOpenMaintenance = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
-const filters = reactive({ keyword: '', channel: '', type_code: '', statistics_scope: true });
+const filters = reactive({ keyword: '', channel: '', type_code: '' });
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0 });
 const tree = ref([]);
 const incidents = ref([]);
@@ -82,7 +82,6 @@ const EVENT_LEVELS = { INFO: '信息', WARN: '警告', WARNING: '警告', ERROR:
 function eventLevelType(level) { return ['ERROR', 'CRITICAL'].includes(level) ? 'danger' : ['WARN', 'WARNING'].includes(level) ? 'warning' : 'info'; }
 const eventEmptyText = computed(() => !selectedId.value ? '请选择设备查看事件' : eventsError.value ? '设备事件加载失败，请重试' : eventsLoading.value ? '正在加载设备事件' : '当前设备尚无事件');
 const SEVERITY_LABELS = { HIGH: '高', MEDIUM: '中', LOW: '低', CRITICAL: '严重' };
-const SOURCE_LABELS = { 'mock-adapter': '模拟适配器', 'device-report': '设备上报', 'radar-direct': '雷达直连', mqtt: '消息接入' };
 function metricLabel(item) { return item?.label || METRIC_LABELS[item?.code] || item?.code || '指标'; }
 function metricValue(value) { return value === 'ON' ? '开' : value === 'OFF' ? '关' : display(value); }
 function healthText(value) { return ({ GOOD: '良好', DEGRADED: '一般', BAD: '异常', UNKNOWN: '未知' })[value] || '未知'; }
@@ -138,7 +137,7 @@ async function loadSelected(showBusy = false, manual = false) {
     selectedError.value = '';
   } catch (e) {
     if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return null;
-    state.value = null; protocolStatus.value = null; radarTargets.value = [];
+    if ([401, 403, 404].includes(e.status)) { state.value = null; protocolStatus.value = null; radarTargets.value = []; }
     selectedError.value = e.message || '所选设备状态加载失败';
     failure = e;
   }
@@ -157,7 +156,7 @@ async function loadEvents(manual = false) {
   if (eventsRequest?.generation === generation) return;
   const request = { generation };
   eventsRequest = request;
-  eventsLoading.value = true;
+  if (manual || !eventsLoaded.value) eventsLoading.value = true;
   try {
     const eventPage = await deviceApi.events({ device_id: deviceId, limit: 100,
       ...(eventsLoaded.value ? { after_seq: eventSeq.value } : { latest: true }) });
@@ -219,7 +218,6 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
     <div class="monitor-layout">
       <el-card v-loading="loading" class="monitor-devices">
         <template #header><div class="table-toolbar"><b>设备分类与状态</b><span class="muted">{{ tree.length }} 台</span></div></template>
-        <el-select v-model="filters.statistics_scope" aria-label="设备范围" @change="applyFilters"><el-option label="业务设备" :value="true" /><el-option label="全部台账（含测试样例）" :value="false" /></el-select>
         <el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="applyFilters"><template #append><el-button @click="applyFilters">筛选</el-button></template></el-input>
         <div class="device-tree-list">
           <details v-for="[name,items] in groups" :key="name" open class="device-tree-group"><summary>{{ name }}<span>{{ items.length }}</span></summary>
@@ -240,7 +238,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
             <el-alert v-if="state.connectivity==='OFFLINE'" title="设备当前离线；曲线继续按实际接收的有效报文展示，缺失数据不补零。" type="warning" :closable="false" />
             <p v-if="paused && state.connectivity!=='OFFLINE'" class="tree-note">读数已暂停：指标停在暂停时刻；连接、健康和心跳仍实时更新。</p>
             <template v-if="state.connectivity!=='OFFLINE' && visibleMetrics.length">
-              <div v-if="visibleMetrics.length" class="metric-values"><article v-for="item in visibleMetrics" :key="item.code"><small>{{ metricLabel(item) }}</small><b>{{ metricValue(item.value) }} {{ item.unit||'' }}</b><span class="muted">{{ SOURCE_LABELS[item.source] || '来源未声明' }}</span></article></div>
+              <div v-if="visibleMetrics.length" class="metric-values"><article v-for="item in visibleMetrics" :key="item.code"><small>{{ metricLabel(item) }}</small><b>{{ metricValue(item.value) }} {{ item.unit||'' }}</b></article></div>
               <p v-else class="tree-note">设备协议尚未上报此类指标。</p>
             </template>
             <div v-if="protocolStatus?.protocol_code" class="detail-section"><h3>协议状态</h3><el-tag :type="statusType(protocolStatus.connection_state)" effect="plain">{{ statusText(protocolStatus.connection_state) }}</el-tag><p v-if="protocolStatus.blocking_reason" class="danger-text">{{ protocolStatus.blocking_reason }}</p></div>

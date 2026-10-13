@@ -22,6 +22,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: requestPath => requestPath.replace(/^\/dev-api/, '/api'),
           configure: proxy => proxy.on('proxyReq', (proxyReq, req) => {
+            // The edge proxy owns the client address; never append a browser-supplied chain.
+            proxyReq.setHeader('X-Forwarded-For', req.socket.remoteAddress || '');
+            proxyReq.setHeader('X-Forwarded-Proto', req.socket.encrypted ? 'https' : 'http');
+            proxyReq.removeHeader('Forwarded');
+            proxyReq.removeHeader('X-Real-IP');
             // Only normalize the explicitly configured public preview origin.
             // Other origins still reach the backend's normal CORS validation.
             if (process.env.ADMIN_PUBLIC_ORIGIN && req.headers.origin === process.env.ADMIN_PUBLIC_ORIGIN) {

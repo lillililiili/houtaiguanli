@@ -137,6 +137,8 @@ class LocalDemoRolesSeederTest {
         assertThat(menus(me)).doesNotContain("devices", "commission", "monitor", "maintenance");
         mvc.perform(get("/api/v1/device-monitor/tree").header("Authorization", "Bearer " + login("zhaopeng")))
                 .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/device-events").header("Authorization", "Bearer " + login("zhaopeng")))
+                .andExpect(status().isForbidden());
     }
 
     /** Shared device reads survive identity separation; backend monitoring does not. */

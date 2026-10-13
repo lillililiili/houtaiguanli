@@ -11,8 +11,11 @@ import org.springframework.stereotype.Repository;
 public class LiveDeviceRepository {
 
     private final JdbcTemplate jdbc;
+    private final com.uav.lowaltitude.platform.config.SimulationPolicy simulation;
 
-    public LiveDeviceRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    public LiveDeviceRepository(JdbcTemplate jdbc,com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
+        this.jdbc = jdbc; this.simulation=simulation;
+    }
 
     public List<Map<String, Object>> enabledDevices() {
         return jdbc.queryForList("""
@@ -25,15 +28,17 @@ public class LiveDeviceRepository {
                 LEFT JOIN radar_v3_profile r ON r.device_id=d.device_id
                 LEFT JOIN countermeasure_4ch_profile c ON c.device_id=d.device_id
                 WHERE d.enabled=TRUE AND d.source_mode='live' AND s.enabled=TRUE AND s.source_mode='live'
+                  AND (? OR (d.simulated=FALSE AND s.simulated=FALSE))
                   AND s.protocol_code IN ('RADAR_TCP_V3_0_0','COUNTERMEASURE_TCP_4CH_V2_0')
-                """);
+                """,simulation.allowed());
     }
 
     public boolean stillEnabled(String deviceId) {
         Integer count = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM ops_device d JOIN ops_integration_source s ON s.source_id=d.source_id
                 WHERE d.device_id=? AND d.enabled=TRUE AND s.enabled=TRUE AND d.source_mode='live'
-                """, Integer.class, deviceId);
+                  AND (? OR (d.simulated=FALSE AND s.simulated=FALSE))
+                """, Integer.class, deviceId,simulation.allowed());
         return count != null && count > 0;
     }
 

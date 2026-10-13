@@ -12,6 +12,10 @@ final class AuditLabels {
             Map.entry("roles", "角色管理"),
             Map.entry("audit", "审计日志"),
             Map.entry("devices", "设备管理"),
+            Map.entry("commissioning", "设备接入调测"),
+            Map.entry("monitoring", "设备实时监测"),
+            Map.entry("maintenance", "设备异常处理"),
+            Map.entry("profile", "个人资料"),
             Map.entry("integration", "接口接入"),
             Map.entry("alarms", "告警事件"),
             // 阶段 4/5：风险、交接、工作台是独立模块，失败审计与列表展示都按各自模块归档。
@@ -27,7 +31,7 @@ final class AuditLabels {
             Map.entry("rules", "规则引擎"),
             Map.entry("flights", "飞行任务"),
             Map.entry("airspace", "空域规则"),
-            Map.entry("statistics", "运行统计"),
+            Map.entry("statistics", "报表管理"),
             Map.entry("fusion", "融合感知"),
             Map.entry("disposal", "处置授权"),
             Map.entry("punishment", "处罚案件"),
@@ -39,7 +43,7 @@ final class AuditLabels {
             Map.entry("system", "系统"),
             Map.entry("organizations", "单位档案"),
             Map.entry("notificationSettings", "通知对象配置"),
-            Map.entry("responsePlans", "处置预案"),
+            Map.entry("responsePlans", "规则管理"),
             Map.entry("flight", "飞行任务"));
 
     private static final Map<String, String> ACTIONS = Map.ofEntries(
@@ -288,6 +292,7 @@ final class AuditLabels {
     static String role(String roleCode) {
         if (roleCode == null || roleCode.isBlank()) return "";
         if ("ROLE-ADMIN".equals(roleCode)) return "超级管理员";
+        if ("ROLE-BACKEND".equals(roleCode)) return "后台用户";
         return roleCode;
     }
 

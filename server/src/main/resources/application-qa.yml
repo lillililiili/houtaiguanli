@@ -48,8 +48,8 @@ app:
       enabled: true
   qa:
     reporting:
-      # Explicit opt-in; the service also rejects production/prod and non-QA profiles.
-      enabled: ${APP_QA_REPORTING_ENABLED:false}
+      # 用户确认本地验收开放模拟报表；可显式关闭，服务仍拒绝 production/prod 和非 QA 环境。
+      enabled: ${APP_QA_REPORTING_ENABLED:true}
     device-setup:
       enabled: true
   handoff:

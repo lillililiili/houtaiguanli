@@ -285,7 +285,7 @@ class DeviceProtocolApiTest {
         protocolData.expireTracks(System.currentTimeMillis() - 3000, System.currentTimeMillis());
         assertThat(jdbc.queryForObject("SELECT active FROM ops_track WHERE device_id=? AND external_track_id='88'", Boolean.class, deviceId)).isFalse();
 
-        for (int i = 0; i < 20; i++) protocolData.saveRtk(deviceId, "rtk-" + i,
+        for (int i = 0; i < 20; i++) protocolData.saveRtk(deviceId, "rtk-session:" + i, "rtk-" + i,
                 new Rtk(new BigDecimal("37.123456789"), new BigDecimal("118.987654321"),
                         new BigDecimal("12.500000000"), 18, 999999), received + i);
         assertThat(jdbc.queryForObject("SELECT sample_count FROM radar_site_reference WHERE device_id=?", Integer.class, deviceId)).isEqualTo(20);

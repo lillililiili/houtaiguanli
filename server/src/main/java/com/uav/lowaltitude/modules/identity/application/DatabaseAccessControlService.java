@@ -4,6 +4,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
+import com.uav.lowaltitude.modules.identity.domain.FrontendActionPolicy;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 import com.uav.lowaltitude.modules.identity.infrastructure.AccessControlMapper;
@@ -26,9 +27,7 @@ public class DatabaseAccessControlService implements AccessControlService {
         if (current.mustChangePassword()) {
             throw new ApiException(HttpStatus.FORBIDDEN, "PASSWORD_CHANGE_REQUIRED", "请先修改临时密码");
         }
-        if (permission == PermissionCode.RULE_MANAGE
-                && com.uav.lowaltitude.modules.identity.domain.UserType.forRole(current.roleCode())
-                != com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND) {
+        if (!FrontendActionPolicy.isAvailable(current.roleCode(), permission.value())) {
             throw forbidden();
         }
         String storedScopeMode = accessControlMapper.findGrantedScopeMode(

@@ -119,12 +119,12 @@ describe('实时监测设备状态', () => {
     expect(deviceApi.information).not.toHaveBeenCalled();
   });
 
-  it('状态获取失败清除旧读数并交给实时刷新重试，手动重试可恢复', async () => {
+  it('状态暂时获取失败保留旧读数并标明错误，交给实时刷新重试', async () => {
     await mount(); deviceApi.state.mockRejectedValueOnce(new Error('状态暂不可用'));
     const results = await signal('device_state');
     expect(results.some(result => result instanceof Error && result.message === '状态暂不可用')).toBe(true);
     expect(host.textContent).toContain('状态暂不可用');
-    expect(host.textContent).not.toContain('A温度');
+    expect(host.textContent).toContain('A温度');
     await click('重新加载');
     expect(host.textContent).toContain('A温度');
     expect(host.textContent).not.toContain('状态暂不可用');

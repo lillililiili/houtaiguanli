@@ -495,8 +495,23 @@ class Stage9PostgresTest {
                 .andExpect(jsonPath("$.data.longitude").isNumber())
                 .andExpect(jsonPath("$.data.latitude").isNumber());
 
-        // 机场读路径：参考点与保护目标坐标同样走 ST_X/ST_Y 分支。
+        // 前台已下线机场动作；旧 READ 授权仍不能越过当前动作目录。
         mvc.perform(get("/api/v1/airports/{id}", LocalStage9SpaceRiskSeeder.AIRPORT_ID).header("Authorization", "Bearer " + reader))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+
+        // 使用夹具已有的唯一超级管理员验证机场读路径，不给前台或普通后台角色补权。
+        // 本类在启动完成后才创建夹具账号，未经历启动完整性初始化；显式准备该读路径所需的 OP。
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at)"
+                + " select 'ROLE-ADMIN','airport:read','OP',false,current_timestamp"
+                + " where not exists(select 1 from app_role_permission where role_code='ROLE-ADMIN' and permission_code='airport:read')");
+        String airportReader = UUID.randomUUID().toString();
+        assertThat(jdbc.update("insert into app_session(session_id,user_id,expire_at,ip,permission_version)"
+                + " select ?,user_id,?,'127.0.0.1',permission_version from app_user"
+                + " where role_code='ROLE-ADMIN' and status='ACTIVE'",
+                airportReader, System.currentTimeMillis() + 3_600_000L)).isEqualTo(1);
+        // 参考点与保护目标坐标同样走 ST_X/ST_Y 分支。
+        mvc.perform(get("/api/v1/airports/{id}", LocalStage9SpaceRiskSeeder.AIRPORT_ID).header("Authorization", "Bearer " + airportReader))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.airport.icao_code").value(LocalStage9SpaceRiskSeeder.AIRPORT_ICAO))
                 .andExpect(jsonPath("$.data.airport.longitude").isNumber())
@@ -573,7 +588,8 @@ class Stage9PostgresTest {
         double procedureBuffer = Double.parseDouble(jdbc.queryForObject("select p.value_text from rule_param p"
                 + " join rule_set_version v on v.rule_set_version_id=p.rule_set_version_id"
                 + " join rule_set s on s.rule_set_id=v.rule_set_id"
-                + " where s.rule_set_code='SPACE-RISK-DEMO' and v.rule_set_version_id=s.active_version_id and p.rule_code='C05' and p.param_key='procedure_buffer_m'", String.class));
+                + " where s.rule_set_code='SPACE-RISK-DEMO' and v.rule_set_version_id=s.active_version_id"
+                + " and p.rule_code='C05' and p.param_key='procedure_buffer_m'", String.class));
         assertThat(distanceToApproach(near)).as("夹具气球应在进近航线缓冲内").isBetween(290.0, procedureBuffer);
         assertThat(distanceToApproach(far)).as("夹具气球应在缓冲外").isGreaterThan(procedureBuffer);
 
@@ -592,8 +608,8 @@ class Stage9PostgresTest {
         // 下一分钟气球还在原处：窗口不同，但同一任务同一目标已有未解除的机场区域风险，不再新建。
         OffsetDateTime later = observedAt.plusMinutes(1);
         jdbc.update("update target_latest_state set observed_at=?,received_at=?,updated_at=? where target_id in (?,?)", later, later, later, near, far);
-        spaceMeasurement(near,118.788+300/metresPerDegree,37.5675,later);
-        spaceMeasurement(far,118.788+1000/metresPerDegree,37.5675,later);
+        appendSpaceObservation(near, later);
+        appendSpaceObservation(far, later);
         int before = airportRisks(near).size();
         SpaceRiskRepository.RunRow again = evaluationService.evaluateScheduledAirport(later.minusSeconds(30), later.plusMinutes(1),
                 later.minusMinutes(30));
@@ -626,7 +642,7 @@ class Stage9PostgresTest {
         OffsetDateTime later = observedAt.plusMinutes(1);
         jdbc.update("update target_latest_state set location=ST_GeomFromEWKT('SRID=4326;POINT (118.025 37.031)'),observed_at=?,received_at=?,updated_at=?"
                 + " where target_id=?", later, later, later, flock);
-        spaceMeasurement(flock,118.025,37.031,later);
+        appendSpaceObservation(flock, later);
         double away = distanceToRoute(flock);
         SpaceRiskRepository.RunRow again = evaluationService.evaluate("C04", later.minusMinutes(1), later.plusMinutes(1), "MANUAL", null);
         assertThat(again.status()).as(again.message()).isEqualTo("SUCCESS");
@@ -1148,22 +1164,23 @@ class Stage9PostgresTest {
         jdbc.update("insert into target_latest_state (target_id,location,height_agl_m,altitude_amsl_m,observed_at,received_at,unknown_fields,created_at,updated_at,version)"
                 + " values (?,ST_GeomFromEWKT(?),?,?,?,?,cast('[]' as jsonb),?,?,0)", targetId,
                 "SRID=4326;POINT (" + lon + " " + lat + ")", aglM, amslM, observedAt, observedAt, observedAt, observedAt);
-        spaceMeasurement(targetId,lon,lat,observedAt);
+        String trackId = UUID.randomUUID().toString();
+        jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)", trackId, targetId, trackId, observedAt, observedAt);
+        appendSpaceObservation(targetId, observedAt);
         return targetId;
     }
 
-    private void spaceMeasurement(String targetId,double lon,double lat,OffsetDateTime observedAt) {
+    /** 每次状态更新都有新的可追溯 MEAS 观测，旧观测与历史轨迹保持原样。 */
+    private void appendSpaceObservation(String targetId, OffsetDateTime observedAt) {
         String observationId = UUID.randomUUID().toString();
-        var tracks=jdbc.queryForList("select track_id from track where target_id=? and layer='FUSED'",String.class,targetId);
-        String trackId=tracks.isEmpty()?UUID.randomUUID().toString():tracks.get(0);
+        String trackId = jdbc.queryForObject("select track_id from track where target_id=? and layer='FUSED'", String.class, targetId);
+        int sequence = jdbc.queryForObject("select coalesce(max(point_seq),0)+1 from track_point where track_id=?", Integer.class, trackId);
         jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,quality,source_mode,owner_org_id,district_id,created_at)"
-                + " values(?,'seed-stage3-source',?,?,?, ?,CAST('{\"object_count\":25}' AS JSON),'mock',?,?,?)", observationId, observationId, targetId, observedAt, observedAt,
-                LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT, observedAt);
-        if(tracks.isEmpty())jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)", trackId, targetId, trackId, observedAt, observedAt);
-        int sequence=jdbc.queryForObject("select COALESCE(MAX(point_seq),0)+1 from track_point where track_id=?",Integer.class,trackId);
+                + " select ?,'seed-stage3-source',?,target_id,?,?,CAST('{\"object_count\":25}' AS JSON),source_mode,owner_org_id,district_id,? from target where target_id=?",
+                observationId, observationId, observedAt, observedAt, observedAt, targetId);
         jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,observation_id,point_kind,created_at)"
-                + " values(?,?,?,?,?,ST_GeomFromEWKT(?),?,'MEAS',?)", UUID.randomUUID().toString(), trackId, sequence, observedAt, observedAt,
-                "SRID=4326;POINT (" + lon + " " + lat + ")", observationId, observedAt);
+                + " select ?,?,?,?,?,location,?,'MEAS',? from target_latest_state where target_id=?",
+                UUID.randomUUID().toString(), trackId, sequence, observedAt, observedAt, observationId, observedAt, targetId);
     }
 
     private double distanceToRoute(String targetId) {

@@ -106,7 +106,7 @@ class DeviceMaintenanceWorkflowApiTest extends DeviceMaintenanceNoticeApiTest {
         mvc.perform(write(post(path()),Map.of("action","SAVE_PROGRESS","expected_version",1,"note","延迟提交"),UUID.randomUUID().toString())).andExpect(status().isConflict());
         assertThat(workflow().path("events")).hasSize(1);
         assertThat(jdbc.queryForList("SELECT module_code FROM audit_log WHERE object_id=? AND action IN ('device_maintenance_start','device_maintenance_workflow_rejected')",String.class,taskId))
-                .hasSize(3).containsOnly("devices");
+                .hasSize(3).containsOnly("maintenance");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE object_id=? AND action='device_maintenance_workflow_rejected' AND result='FAILURE'",Long.class,taskId)).isEqualTo(2);
     }
     @Test void staleUnknownAndActiveIncidentsCannotCloseAndResumeRetainsHistory() throws Exception {

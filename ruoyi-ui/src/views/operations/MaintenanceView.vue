@@ -48,29 +48,30 @@ const relatedIncidents = computed(() => workflow.value?.related_incidents || wor
 const recoveryEvidence = computed(() => workflow.value?.recovery?.evidence);
 const latestManualReport = computed(() => task.value.report_summary?.latest_manual_report);
 const reportPlans = item => (item.report_summary?.related_plans || []).map(plan => plan.plan_no || plan.plan_id).join('、');
-let alive = true, listGeneration = 0, timer, refreshInFlight = false;
+let alive = true, listGeneration = 0, refreshInFlight = false;
 
-async function loadList({ selectFirst = false } = {}) {
+async function loadList({ selectFirst = false, quiet = false } = {}) {
   const generation = ++listGeneration;
-  listLoading.value = true;
+  if (!quiet) listLoading.value = true;
   try {
     const result = await deviceMaintenanceApi.list({ status: filter.value || undefined, device_id: deviceFilter.value || undefined, page: page.value, size: 20 });
     if (!alive || generation !== listGeneration) return;
     items.value = result.items || []; total.value = result.total ?? 0; listError.value = ''; listSuccessAt.value = Date.now();
     const lastPage = Math.max(1, Math.ceil(total.value / 20));
-    if (page.value > lastPage) { page.value = lastPage; return loadList(); }
+    if (page.value > lastPage) { page.value = lastPage; return loadList({ selectFirst, quiet }); }
     if (selectFirst && !taskId.value && items.value.length) await router.replace(maintenanceLocation({ task_id: items.value[0].task_id, ...(deviceFilter.value ? { device_id: deviceFilter.value } : {}) }));
   } catch (reason) {
     if (alive && generation === listGeneration) {
       listError.value = reason.message || '处置单列表更新失败';
       if ([401, 403, 404].includes(reason.status)) { items.value = []; total.value = 0; }
+      if (quiet) throw reason;
     }
   } finally { if (alive && generation === listGeneration) listLoading.value = false; }
 }
-async function refresh() {
+async function refresh({ quiet = false } = {}) {
   if (refreshInFlight || busy.value || pending.value || document.hidden) return;
   refreshInFlight = true;
-  try { await Promise.all([loadList(), model.load()]); } finally { refreshInFlight = false; }
+  try { await Promise.all([loadList({ quiet }), model.load({ quiet, rethrow: quiet })]); } finally { refreshInFlight = false; }
 }
 async function changeFilter() { page.value = 1; await loadList(); }
 function changePage(value) { page.value = value; void loadList(); }
@@ -108,14 +109,11 @@ onBeforeRouteLeave(canLeave);
 onBeforeRouteUpdate(canLeave);
 watch(taskId, () => { note.value = ''; relatedOpen.value = []; });
 watch(deviceFilter, () => { page.value = 1; void loadList({ selectFirst: true }); });
-function visibleAgain() { if (!document.hidden) void refresh(); }
-useRealtimeRefresh(['device', 'device_state'], refresh, { minIntervalMs: 2000 });
+useRealtimeRefresh(['device', 'device_state'], () => refresh({ quiet: true }), { minIntervalMs: 2000 });
 onMounted(() => {
   void loadList({ selectFirst: true });
-  timer = window.setInterval(() => { void refresh(); }, 5000);
-  document.addEventListener('visibilitychange', visibleAgain);
 });
-onBeforeUnmount(() => { alive = false; ++listGeneration; window.clearInterval(timer); document.removeEventListener('visibilitychange', visibleAgain); });
+onBeforeUnmount(() => { alive = false; ++listGeneration; });
 </script>
 
 <template>

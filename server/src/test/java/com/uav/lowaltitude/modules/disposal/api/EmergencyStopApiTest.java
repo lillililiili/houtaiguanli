@@ -38,12 +38,13 @@ class EmergencyStopApiTest {
     @Autowired com.uav.lowaltitude.modules.disposal.application.DisposalReceiptSync receiptSync;
     @Autowired com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository disposalRepository;
     @Autowired com.uav.lowaltitude.modules.device.application.Countermeasure4ChControlService fourChannelControl;
-    String requester, operator, eventId;
+    String requester, operator, backendOperator, eventId;
 
     @BeforeEach
     void fixture() {
         requester = user("disposal:read", "disposal:request");
         operator = user("disposal:read", "disposal:approve", "disposal:execute", "disposal:stop", "devices", "monitoring");
+        backendOperator = com.uav.lowaltitude.testsupport.BackendAccountFixture.session(jdbc, "ASSIGNED", ORG, DISTRICT);
         eventId = event();
     }
 
@@ -257,7 +258,7 @@ class EmergencyStopApiTest {
         assertThat(cancelled.get("status")).isEqualTo("CANCELLED");
         assertThat(cancelled.get("result_code")).isEqualTo("AUTHORIZATION_STOPPED");
         assertThat(cancelled.get("issued_at")).isNull();
-        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", waiting, "action", "SET_MASK", "mask", 15, "reason", "未核查前不得重新启动"))
                 .andExpect(status().isConflict());
 
@@ -297,7 +298,7 @@ class EmergencyStopApiTest {
     @Test
     void emergencyStopCancelsSentStartCommandSoLateDeliveryCannotRestartDevice() throws Exception {
         String device = fourChannel(), authorization = authorization("COUNTERMEASURE", true);
-        String command = data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        String command = data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", 15, "reason", "原始反制下发"))
                 .andExpect(status().isAccepted())).path("command_id").asText();
         jdbc.update("update device_command set status='SENT' where command_id=?", command);
@@ -369,7 +370,7 @@ class EmergencyStopApiTest {
     void knownDeviceFaultBlocksNewStartButRetainsAllOffPath() throws Exception {
         String device = fourChannel(), authorization = authorization("COUNTERMEASURE", true);
         jdbc.update("update ops_device_state set health_code='BAD',has_alarm=true where device_id=?", device);
-        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", 15, "reason", "故障设备不得启动"))
                 .andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isZero();
@@ -628,17 +629,17 @@ class EmergencyStopApiTest {
         jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?", device, authorization);
         stop(operator, key()).andExpect(status().isOk());
         long before = jdbc.queryForObject("select count(*) from device_command where device_id=?", Long.class, device);
-        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", 15, "reason", "急停后不应重新启动"))
                 .andExpect(status().isConflict());
         assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Long.class, device)).isEqualTo(before);
         jdbc.update("update disposal_authorization set status='COMPLETED' where authorization_id=?", authorization);
-        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", 15, "reason", "迟到完成状态也不能绕过急停"))
                 .andExpect(status().isConflict());
         String allOff = directFourChannel(device, authorization, 0);
         assertThat(jdbc.queryForObject("select status from device_command where command_id=?", String.class, allOff)).isEqualTo("QUEUED");
-        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", authorization, "action", "CHANNEL_OFF", "channel", "900M", "reason", "关闭单通道仍然合法"))
                 .andExpect(status().isAccepted());
     }
@@ -669,7 +670,7 @@ class EmergencyStopApiTest {
     }
 
     String directFourChannel(String device, String authorization, int mask) throws Exception {
-        return data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
+        return data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", mask, "reason", "直接设备命令回归测试"))
                 .andExpect(status().isAccepted())).path("command_id").asText();
     }

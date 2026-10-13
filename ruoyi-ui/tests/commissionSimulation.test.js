@@ -6,6 +6,8 @@ import CommissionView from '@/views/operations/CommissionView.vue';
 import { commissionApi, deviceApi } from '@/api/devices.js';
 
 const permissions = vi.hoisted(() => ({ operate: true, devices: true }));
+const realtime = vi.hoisted(() => ({ reload: null }));
+vi.mock('@/services/realtime.js', () => ({ useRealtimeRefresh: (topics, reload) => { realtime.reload = reload; return { trigger: reload }; } }));
 vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: key => (key !== 'commissioning.op' || permissions.operate) && (key !== 'devices.op' || permissions.devices), hasMenu: () => true }) }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn() }, commissionApi: Object.fromEntries(['information', 'list', 'report', 'get', 'events', 'create', 'connect', 'configure', 'start', 'cancel'].map(key => [key, vi.fn()])) }));
 let app, host, task;
@@ -33,6 +35,35 @@ beforeEach(() => {
 });
 afterEach(() => { app?.unmount(); host?.remove(); document.querySelectorAll('.el-overlay,.el-message').forEach(el => el.remove()); vi.useRealTimers(); });
 describe('调测模拟来源使用服务端明确许可', () => {
+  it.each([
+    ['RADAR_TCP_V3_0_0', false, '192.0.2.44', 5001],
+    ['COUNTERMEASURE_TCP_4CH_V2_0', false, '198.51.100.55', 6002],
+    ['RADAR_TCP_V3_0_0', true, '127.0.0.1', 10007],
+    ['COUNTERMEASURE_TCP_4CH_V2_0', true, '127.0.0.1', 10006]
+  ])('%s 完整 TCP 调测及报告流程不依赖 MQTT 配置（模拟 %s）', async (protocol, simulated, address, port) => {
+    const tcpDevice = { ...device, protocol_code: protocol, simulated };
+    deviceApi.list.mockResolvedValue({ items: [tcpDevice], total: 1 });
+    deviceApi.detail.mockResolvedValue({ connection: { transport: 'TCP', host: address, port, timeout_millis: 2000 } });
+    commissionApi.information.mockResolvedValue(info({ simulation_allowed: simulated }));
+    for (const [action, status] of [['create', 'CREATED'], ['connect', 'CONNECTED'], ['configure', 'READY'], ['start', 'RUNNING']]) {
+      commissionApi[action].mockImplementation(async () => (task = { ...tcpDevice, commission_id: 'tcp-task',
+        commission_no: `TCP-${port}`, status, version: (task?.version ?? -1) + 1 }));
+    }
+    await mount();
+    for (const label of ['创建新任务', '建立连接', '保存配置', '开始协议调测']) {
+      expect(button(label).disabled).toBe(false); button(label).click(); await settle();
+    }
+    expect(commissionApi.configure).toHaveBeenCalledWith('tcp-task', { version: 1, transport: 'TCP', host: address, port, timeout_millis: 2000 });
+    expect(commissionApi.start).toHaveBeenCalledWith('tcp-task', 2);
+    task = { ...task, status: 'PASSED', version: 4, finished_at: Date.now() };
+    commissionApi.report.mockResolvedValue({ ...task, warning: simulated ? '模拟验证报告' : '协议验证报告' });
+    await realtime.reload(['device']); await settle();
+    expect(commissionApi.report).toHaveBeenCalledWith('tcp-task');
+    expect(host.textContent).toContain(simulated ? '模拟通过（非正式）' : '协议验证报告');
+    button('查看完整报告').click(); await settle();
+    expect(host.querySelector('.json-block').textContent).toContain(`TCP-${port}`);
+    expect(host.querySelector('.json-block').textContent).toContain(protocol);
+  });
   it('只读账号能看到服务端能力说明，过滤空项并按纯文本展示', async () => {
     permissions.operate = false;
     const warning = '协议 C 对 CameraStatus 支持情况表述不一致，现场支持仍需确认';
@@ -139,12 +170,12 @@ describe('调测模拟来源使用服务端明确许可', () => {
     expect(host.querySelector('input[placeholder="建立连接后配置"]').value).toBe('127.0.0.1');
     expect([...host.querySelectorAll('input')].map(el => el.value)).toContain('1500');
   });
-  it('后台取消任务后轮询同步联调记录，不再保留旧的待连接状态', async () => {
+  it('后台取消任务后 SSE 同步联调记录，不再保留旧的待连接状态', async () => {
     vi.useFakeTimers();
     task = { ...device, commission_id: 'task', commission_no: 'CT-CANCEL', status: 'CREATED', version: 0 };
     await mount();
     task = { ...task, status: 'CANCELLED', version: 1, finished_at: Date.now() };
-    await vi.advanceTimersByTimeAsync(2100); await settle();
+    await realtime.reload(['device']); await settle();
     const record = [...host.querySelectorAll('.el-table__body tr')].find(row => row.textContent.includes('CT-CANCEL'));
     expect(record.textContent).toContain('已取消');
     expect(record.textContent).not.toContain('待连接');

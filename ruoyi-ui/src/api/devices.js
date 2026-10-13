@@ -4,6 +4,7 @@ export const deviceApi = {
   list: params => request({ url: `/v1/devices${queryString(params)}` }),
   options: (params = {}) => request({ url: `/v1/devices/options${queryString(params)}` }),
   mqttOptions: () => request({ url: '/v1/devices/mqtt-options' }),
+  onboardingOptions: () => request({ url: '/v1/devices/onboarding-options' }),
   detail: id => request({ url: `/v1/devices/${encodeURIComponent(id)}` }),
   onboard: (body, key = newIdempotencyKey('device-onboard')) => mutation('post', '/v1/devices/onboard', body, { idempotencyKey: key }),
   update: (id, body, key = newIdempotencyKey('device-update')) => mutation('put', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
@@ -30,13 +31,8 @@ export const integrationApi = {
 };
 
 export const mqttApi = {
-  list: () => request({ url: '/v1/mqtt-brokers' }),
   options: () => request({ url: '/v1/devices/mqtt-options' }),
-  scopes: () => request({ url: '/v1/mqtt-brokers/scopes' }),
-  capabilities: () => request({ url: '/v1/mqtt-brokers/capabilities' }),
-  create: (body, key = newIdempotencyKey('mqtt-create')) => mutation('post', '/v1/mqtt-brokers', body, { idempotencyKey: key }),
-  update: (id, body, key = newIdempotencyKey('mqtt-update')) => mutation('put', `/v1/mqtt-brokers/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
-  setEnabled: (id, body, key = newIdempotencyKey('mqtt-enabled')) => mutation('patch', `/v1/mqtt-brokers/${encodeURIComponent(id)}/enabled`, body, { idempotencyKey: key })
+  scopes: () => request({ url: '/v1/mqtt-brokers/scopes' })
 };
 
 export const commissionApi = {

@@ -42,7 +42,7 @@ class ExternalInterfaceApiTest {
         }
         assertThat(jdbc.queryForObject("SELECT version FROM external_interface_config WHERE kind='WEATHER_FORECAST'",Long.class)).isZero();
     }
-    @Test void frontendLegacyInterfaceGrantCannotAccessBackendAndForecastStillChecksPlanPermission() throws Exception {
+    @Test void legacyFrontendInterfaceGrantCannotReadOrSaveAndForecastStillChecksPlanPermission() throws Exception {
         String token=login();
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-WX-READ','天气配置只读','',FALSE,TRUE,0,0,0,FALSE)");
         jdbc.update("INSERT INTO app_role_permission(role_code,permission_code,permission_level,menu_enabled) VALUES('ROLE-WX-READ','interfaces','READ',TRUE)");

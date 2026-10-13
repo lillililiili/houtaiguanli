@@ -105,9 +105,9 @@ class Stage2CompatibilityMigrationTest {
         assertThat(jdbc.queryForObject("""
                 select count(*) from app_role_permission
                 where permission_code in ('device:read', 'target:read', 'alarm:read')
-                  and role_code <> 'ROLE-BACKEND'
+                  and role_code<>'ROLE-BACKEND'
                 """, Integer.class)).isZero();
-        com.uav.lowaltitude.testfixture.BackendPermissionAssertions.assertFixedGrants(jdbc);
+        com.uav.lowaltitude.testsupport.BackendAccountFixture.assertBaselineActions(jdbc);
     }
 
     @Test

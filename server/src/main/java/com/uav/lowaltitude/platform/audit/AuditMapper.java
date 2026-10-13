@@ -5,7 +5,7 @@ import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.SelectProvider;
 
 @Mapper
 public interface AuditMapper {
@@ -20,25 +20,7 @@ public interface AuditMapper {
             """)
     int insert(AuditLog log);
 
-    @Select("""
-            <script>
-            SELECT audit_id AS auditId, user_id AS userId, account, role_code AS roleCode,
-                   module_code AS moduleCode, action, object_type AS objectType, object_id AS objectId,
-                   detail, occurred_at AS occurredAt, ip, result, user_agent AS userAgent
-            FROM audit_log
-            WHERE 1 = 1
-            <if test='from != null'>AND occurred_at &gt;= #{from}</if>
-            <if test='to != null'>AND occurred_at &lt;= #{to}</if>
-            <if test='account != null and account != ""'>AND LOWER(account) LIKE #{account}</if>
-            <if test='module != null and module != ""'>AND module_code = #{module}</if>
-            <if test='action != null and action != ""'>AND action = #{action}</if>
-            <if test='result != null and result != ""'>AND result = #{result}</if>
-            <if test='objectType != null and objectType != ""'>AND object_type = #{objectType}</if>
-            <if test='objectId != null and objectId != ""'>AND object_id = #{objectId}</if>
-            ORDER BY occurred_at DESC, audit_id DESC
-            LIMIT #{limit} OFFSET #{offset}
-            </script>
-            """)
+    @SelectProvider(type = AuditSql.class, method = "query")
     List<AuditLog> query(
             @Param("from") Long from,
             @Param("to") Long to,
@@ -51,20 +33,7 @@ public interface AuditMapper {
             @Param("limit") int limit,
             @Param("offset") int offset);
 
-    @Select("""
-            <script>
-            SELECT COUNT(*) FROM audit_log
-            WHERE 1 = 1
-            <if test='from != null'>AND occurred_at &gt;= #{from}</if>
-            <if test='to != null'>AND occurred_at &lt;= #{to}</if>
-            <if test='account != null and account != ""'>AND LOWER(account) LIKE #{account}</if>
-            <if test='module != null and module != ""'>AND module_code = #{module}</if>
-            <if test='action != null and action != ""'>AND action = #{action}</if>
-            <if test='result != null and result != ""'>AND result = #{result}</if>
-            <if test='objectType != null and objectType != ""'>AND object_type = #{objectType}</if>
-            <if test='objectId != null and objectId != ""'>AND object_id = #{objectId}</if>
-            </script>
-            """)
+    @SelectProvider(type = AuditSql.class, method = "count")
     long count(
             @Param("from") Long from,
             @Param("to") Long to,
@@ -75,11 +44,6 @@ public interface AuditMapper {
             @Param("objectType") String objectType,
             @Param("objectId") String objectId);
 
-    @Select("""
-            SELECT audit_id AS auditId, user_id AS userId, account, role_code AS roleCode,
-                   module_code AS moduleCode, action, object_type AS objectType, object_id AS objectId,
-                   detail, occurred_at AS occurredAt, ip, result, user_agent AS userAgent
-            FROM audit_log WHERE audit_id = #{auditId}
-            """)
+    @SelectProvider(type = AuditSql.class, method = "detail")
     AuditLog findById(@Param("auditId") String auditId);
 }

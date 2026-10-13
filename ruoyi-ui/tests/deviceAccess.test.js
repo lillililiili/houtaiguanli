@@ -6,15 +6,15 @@ import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { weatherSensorsApi } from '@/api/externalInterfaces.js';
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
-const permissions = vi.hoisted(() => ({ operate: true, connections: true }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: code => code.startsWith('interfaces.') ? permissions.connections : code !== 'devices.op' || permissions.operate }) }));
+const permissions = vi.hoisted(() => ({ operate: true, connections: true, editConnections: true }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: code => code === 'interfaces.op' ? permissions.connections && permissions.editConnections : code === 'interfaces.read' ? permissions.connections : code !== 'devices.op' || permissions.operate }) }));
 vi.mock('@/api/devices.js', () => ({
-  deviceApi: { list: vi.fn(), options: vi.fn(), overview: vi.fn(), detail: vi.fn(), protocolStatus: vi.fn(), onboard: vi.fn(), update: vi.fn() },
+  deviceApi: { list: vi.fn(), options: vi.fn(), onboardingOptions: vi.fn(), overview: vi.fn(), detail: vi.fn(), protocolStatus: vi.fn(), onboard: vi.fn(), update: vi.fn() },
   integrationApi: { protocols: vi.fn() },
-  mqttApi: { options: vi.fn(), scopes: vi.fn(), list: vi.fn() }
+  mqttApi: { options: vi.fn(), scopes: vi.fn(), list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn() }
 }));
 vi.mock('@/api/externalInterfaces.js', () => ({ weatherSensorsApi: { get: vi.fn(), create: vi.fn(), update: vi.fn() } }));
-vi.mock('element-plus', async original => ({ ...await original(), ElMessage: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('element-plus', async original => ({ ...await original(), ElMessage: { success: vi.fn(), error: vi.fn() }, ElMessageBox: { confirm: vi.fn().mockResolvedValue('confirm') } }));
 let app, host;
 async function settle() { for (let i = 0; i < 25; i++) { await Promise.resolve(); await nextTick(); } }
 const button = text => [...document.querySelectorAll('button')].find(el => el.textContent.trim() === text);
@@ -32,10 +32,11 @@ async function choose(label, value) {
 }
 async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp(DevicesView); app.component('router-link',{template:'<a><slot /></a>'}); app.use(ElementPlus); app.mount(host); await settle(); }
 beforeEach(() => {
-  vi.clearAllMocks(); permissions.operate = true; permissions.connections = true;
+  vi.clearAllMocks(); permissions.operate = true; permissions.connections = true; permissions.editConnections = true;
   deviceApi.list.mockResolvedValue({ items: [], total: 0, page: 1, size: 10 });
   deviceApi.options.mockResolvedValue({ types: [], channels: [], regions: [], vendors: [] });
   deviceApi.overview.mockResolvedValue({ total: 0 });
+  deviceApi.onboardingOptions.mockResolvedValue({ manual_radar_simulation_allowed: true });
   deviceApi.detail.mockResolvedValue({ device: { device_id: 'new-1', version: 1 } });
   deviceApi.onboard.mockResolvedValue({ device: { device_id: 'new-1' } });
   integrationApi.protocols.mockResolvedValue([
@@ -75,7 +76,7 @@ it('统一入口，选择类型前不显示 TCP 参数，切换后只显示相�
   await click('接入设备'); expect(dialog().textContent).not.toContain('设备地址');
   await click('雷达'); expect(dialog().textContent).toContain('设备地址');
   await fill('设备名称', '保留名称'); await fill('设备地址', '192.0.2.20');
-  await click('光电设备'); expect(dialog().textContent).not.toContain('设备地址'); expect(dialog().textContent).toContain('边缘中心 ID');
+  await click('光电设备'); expect(dialog().textContent).not.toContain('设备地址'); expect(dialog().textContent).toContain('此类型沿用现有演示配置');
   await click('天气传感器'); expect(dialog().textContent).toContain('协议待确认'); expect(dialog().textContent).not.toContain('边缘中心 ID');
   expect([...dialog().querySelectorAll('input')].some(el => el.value === '保留名称')).toBe(true);
   await click('雷达'); expect([...dialog().querySelectorAll('input')].some(el => el.value === '192.0.2.20')).toBe(false);
@@ -96,47 +97,64 @@ it('天气传感器提交档案接口，不调用普通设备接入', async () =
   expect(weatherSensorsApi.create).toHaveBeenCalledWith(expect.objectContaining({ device_no: 'WX-002', name: '气象站', owner_org_id: 'org1', district_id: 'd1' }));
   expect(deviceApi.onboard).not.toHaveBeenCalled();
 });
-it('唯一真实通道自动匹配，普通表单不出现 MQTT 连接和管理入口', async () => {
-  await mount(); await click('接入设备'); await click('TDOA');
-  await fill('设备编号', 'TD-2'); await fill('设备名称', 'TDOA'); await fill('外部设备编号', 'external-2'); await fill('提供方编码', 'vendor');
-  expect(dialog().textContent).not.toContain('MQTT 连接'); expect(dialog().textContent).not.toContain('管理连接');
-  expect(dialog().textContent).toContain('已自动匹配');
-  expect([...dialog().querySelectorAll('.el-form-item')].find(el => el.querySelector('label')?.textContent === '接入通道')?.querySelector('.el-select')).toBeFalsy();
-  await click('保存接入配置');
-  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ device_type_abbr: 'tdoa', source_mode: 'live', owner_org_id: 'org1', district_id: 'd1', broker_id: 'b1' }), expect.any(String));
-  expect(deviceApi.onboard.mock.calls[0][0]).not.toHaveProperty('host');
-});
-it('普通设备操作员看不到管理员接入配置入口', async () => {
-  permissions.connections = false; await mount(); expect(button('接入配置')).toBeUndefined();
-  await click('接入设备'); await click('TDOA'); expect(button('管理连接')).toBeUndefined();
-});
-it('管理员也不显示独立的接入配置入口', async () => {
-  await mount(); expect(button('接入配置')).toBeUndefined(); expect(mqttApi.list).not.toHaveBeenCalled();
-});
-it('多个同范围通道需选择，其他范围、停用和模拟通道不混入', async () => {
-  const base = { source_mode: 'live', owner_org_id: 'org1', district_id: 'd1', enabled: true };
-  mqttApi.options.mockResolvedValue([
-    { ...base, broker_id: 'b1', name: '东区一号' }, { ...base, broker_id: 'b2', name: '东区二号' },
-    { ...base, broker_id: 'b3', name: '西区通道', district_id: 'd2' },
-    { ...base, broker_id: 'b4', name: '停用通道', enabled: false },
-    { ...base, broker_id: 'b5', name: '回放通道', source_mode: 'replay' }
-  ]);
-  await mount(); await click('接入设备'); await click('TDOA');
-  expect(dialog().textContent).toContain('接入通道');
-  await choose('接入通道', '东区二号');
-  const options = [...document.querySelectorAll('.el-select-dropdown__item')].map(el => el.textContent);
-  expect(options).not.toContain('西区通道'); expect(options).not.toContain('停用通道'); expect(options).not.toContain('回放通道');
-  await fill('设备编号', 'TD-MULTI'); await fill('设备名称', '多通道设备'); await fill('外部设备编号', 'external-multi'); await fill('提供方编码', 'vendor');
-  await click('保存接入配置'); expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ broker_id: 'b2' }), expect.any(String));
-});
-it('范围切换后清除旧通道，没有通道时阻止提交并提示联系管理员', async () => {
-  mqttApi.scopes.mockResolvedValue([{ org_id: 'org1', org_name: '单位', district_id: 'd1', district_name: '东区' }, { org_id: 'org1', org_name: '单位', district_id: 'd2', district_name: '西区' }]);
-  await mount(); await click('接入设备'); await click('TDOA');
-  expect(dialog().textContent).toContain('请先选择所属单位及区域');
-  await choose('所属单位 / 区域', '单位 / 东区'); expect(dialog().textContent).toContain('已自动匹配');
-  await choose('所属单位 / 区域', '单位 / 西区');
-  expect(dialog().textContent).toContain('暂无可用接入通道，请联系管理员配置'); expect(button('保存接入配置').disabled).toBe(true);
+it.each(['光电设备', '5G-A', 'TDOA'])('%s 沿用演示环境，不手动登记或新增 MQTT 连接', async type => {
+  await mount(); await click('接入设备'); await click(type);
+  expect(dialog().textContent).toContain('此类型沿用现有演示配置');
+  expect(dialog().textContent).toContain('若缺少模拟设备或上报，请检查演示环境');
+  expect(dialog().querySelectorAll('.el-form-item')).toHaveLength(0);
+  expect(button('保存接入配置').disabled).toBe(true);
+  for (const text of ['配置接入通道', '查看接入通道', '新增连接', '新增 MQTT 连接']) expect(button(text)).toBeUndefined();
+  expect(mqttApi.options).not.toHaveBeenCalled(); expect(mqttApi.list).not.toHaveBeenCalled();
+  expect(mqttApi.create).not.toHaveBeenCalled(); expect(mqttApi.setEnabled).not.toHaveBeenCalled();
   expect(deviceApi.onboard).not.toHaveBeenCalled();
+});
+it.each([
+  ['雷达', 'RADAR_TCP_V3_0_0', 'org-radar', 'district-north', '192.0.2.20', 5001],
+  ['四通道反制设备', 'COUNTERMEASURE_TCP_4CH_V2_0', 'org-counter', 'district-south', '198.51.100.30', 6002]
+])('%s 接入不依赖 MQTT 通道，使用所选范围及自己的 TCP 协议参数', async (type, protocol, org, district, ip, port) => {
+  permissions.connections = false;
+  mqttApi.options.mockRejectedValue(new Error('MQTT 通道不可用'));
+  mqttApi.scopes.mockResolvedValue([{ org_id: org, org_name: '接入单位', district_id: district, district_name: '接入区域' }]);
+  await mount(); await click('接入设备'); await click(type);
+  expect(dialog().textContent).not.toContain('MQTT 通道不可用');
+  await fill('设备编号', `${org}-new`); await fill('设备名称', type);
+  await fill('设备地址', ip); await fill('端口', String(port)); await fill('允许网段', `${ip}/32`);
+  await choose('所属单位 / 区域', '接入单位 / 接入区域');
+  if (type === '四通道反制设备') {
+    await fill('控制器地址', '9'); await choose('线缆编码', 'ASCII_HEX_COMPACT');
+  } else {
+    await fill('雷达识别码引用', 'env:RADAR_TEST_CODE');
+    expect([...document.querySelectorAll('.el-select-dropdown__item')].some(el => el.textContent.includes('凌云 MQTT'))).toBe(false);
+  }
+  await click('保存接入配置');
+  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: protocol, owner_org_id: org,
+    district_id: district, host: ip, port, allowed_cidrs: `${ip}/32`, ...(type === '雷达'
+      ? { recognition_code_ref: 'env:RADAR_TEST_CODE' } : { device_address: 9, wire_encoding: 'ASCII_HEX_COMPACT' }) }), expect.any(String));
+  expect(deviceApi.onboard.mock.calls[0][0]).not.toHaveProperty('broker_id');
+  expect(mqttApi.options).not.toHaveBeenCalled(); expect(mqttApi.create).not.toHaveBeenCalled();
+});
+it('本机模拟雷达由用户手动填写并明确提交模拟来源，切换类型清除该选择', async () => {
+  await mount(); await click('接入设备'); await click('雷达');
+  const radios = [...dialog().querySelectorAll('.el-radio')];
+  expect(radios.find(el => el.textContent === '真实设备').classList.contains('is-checked')).toBe(true);
+  radios.find(el => el.textContent === '本机模拟测试').click(); await settle();
+  await fill('设备编号', 'manual-test-27'); await fill('设备名称', '手工测试雷达');
+  await fill('设备地址', '127.0.0.1'); await fill('端口', '15002'); await fill('允许网段', '127.0.0.1/32');
+  await choose('所属单位 / 区域', '单位 / 东区');
+  await click('保存接入配置');
+  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ simulated: true, device_no: 'manual-test-27', port: 15002 }), expect.any(String));
+  await click('接入设备'); await click('雷达');
+  [...dialog().querySelectorAll('.el-radio')].find(el => el.textContent === '本机模拟测试').click(); await settle();
+  await click('四通道反制设备'); expect(dialog().textContent).not.toContain('本机模拟测试');
+  await click('雷达');
+  expect([...dialog().querySelectorAll('.el-radio')].find(el => el.textContent === '真实设备').classList.contains('is-checked')).toBe(true);
+});
+it.each([false, 'unavailable'])('未开放模拟能力（%s）时保持真实 TCP 接入可用', async state => {
+  if (state === false) deviceApi.onboardingOptions.mockResolvedValue({ manual_radar_simulation_allowed: false });
+  else deviceApi.onboardingOptions.mockRejectedValue(new Error('服务暂不可用'));
+  await mount(); await click('接入设备'); await click('雷达');
+  expect(dialog().textContent).not.toContain('本机模拟测试');
+  expect(button('保存接入配置').disabled).toBe(false);
 });
 it('无设备操作权限时也不显示接入配置入口', async () => {
   permissions.operate = false; await mount(); expect(button('接入设备').disabled).toBe(true);
@@ -155,21 +173,49 @@ it('天气档案编辑锁定编号、类型及范围，并携带原版本更新'
   expect(weatherSensorsApi.update).toHaveBeenCalledWith('w1', expect.objectContaining({ version: 4, device_no: 'WX-OLD', name: '更新气象站', model: 'M1', owner_org_id: 'org1', district_id: 'd1' }));
   expect(deviceApi.update).not.toHaveBeenCalled();
 });
-it('MQTT 编辑保留原协议身份及模拟来源，不改为真实来源', async () => {
-  const row = { device_id: 'm1', device_no: 'TD-OLD', name: '原设备', version: 3 };
+it.each([
+  ['LINGYUN_MQTT_V8_6', 'tdoa', 'replay', false],
+  ['EO_EDGE_MQTT_20250826', 'eo', 'replay', true],
+  ['LINGYUN_MQTT_V8_6', 'radar', 'live', true]
+])('%s 已有设备编辑保留原身份、来源 %s 和原通道', async (protocol, type, source, enabled) => {
+  const row = { device_id: `existing-${type}`, device_no: `${type}-OLD`, name: '原设备', version: 3 };
   deviceApi.list.mockResolvedValue({ items: [row], total: 1, page: 1, size: 10 });
-  deviceApi.detail.mockResolvedValue({ device: row, protocol_code: 'LINGYUN_MQTT_V8_6', model: 'T1' });
-  mqttApi.options.mockResolvedValue([{ broker_id: 'b1', name: '回放连接', source_mode: 'replay', owner_org_id: 'org1', district_id: 'd1', enabled: false }]);
-  deviceApi.protocolStatus.mockResolvedValue({ details: { broker_id: 'b1', source_mode: 'replay', device_type_abbr: 'tdoa', provider_code: 'original', external_device_id: 'external-old' } });
+  deviceApi.detail.mockResolvedValue({ device: row, protocol_code: protocol, model: 'T1' });
+  mqttApi.options.mockResolvedValue([{ broker_id: 'original-broker', name: '已有通道', source_mode: source, owner_org_id: 'org1', district_id: 'd1', enabled }]);
+  deviceApi.protocolStatus.mockResolvedValue({ details: { broker_id: 'original-broker', source_mode: source, device_type_abbr: type,
+    provider_code: 'original-provider', edge_id: 'original-edge', external_device_id: `external-${type}` } });
   deviceApi.update.mockResolvedValue({ device: row });
-  await mount(); await click('编辑'); await fill('设备名称', '修改名称'); await click('保存');
-  expect(deviceApi.update).toHaveBeenCalledWith('m1', expect.objectContaining({ version: 3, protocol_code: 'LINGYUN_MQTT_V8_6', device_type_abbr: 'tdoa', source_mode: 'replay', external_device_id: 'external-old', provider_code: 'original', model: 'T1' }), expect.any(String));
+  await mount(); await click('编辑'); await fill('设备名称', '修改名称');
+  expect(dialog().textContent).toContain('沿用已登记通道');
+  for (const label of ['外部设备编号', type === 'eo' ? '边缘中心 ID' : '提供方编码']) {
+    const item = [...dialog().querySelectorAll('.el-form-item')].find(el => el.querySelector('label')?.textContent === label);
+    expect(item.querySelector('input').disabled).toBe(true);
+  }
+  await click('保存');
+  expect(deviceApi.update).toHaveBeenCalledWith(row.device_id, expect.objectContaining({ version: 3, protocol_code: protocol,
+    broker_id: 'original-broker', source_mode: source, external_device_id: `external-${type}`, name: '修改名称', model: 'T1',
+    ...(type === 'eo' ? { edge_id: 'original-edge' } : { provider_code: 'original-provider', device_type_abbr: type }) }), expect.any(String));
+  expect(deviceApi.onboard).not.toHaveBeenCalled(); expect(mqttApi.create).not.toHaveBeenCalled(); expect(mqttApi.setEnabled).not.toHaveBeenCalled();
+});
+it('已有模拟设备通道读取失败时可重试，保留草稿且不能带缺失绑定保存', async () => {
+  const row = { device_id: 'sim-edit', device_no: 'SIM-EDIT', name: '模拟设备', version: 2, owner_org_id: 'org1', district_id: 'd1' };
+  deviceApi.list.mockResolvedValue({ items: [row], total: 1, page: 1, size: 10 });
+  deviceApi.detail.mockResolvedValue({ device: row, protocol_code: 'LINGYUN_MQTT_V8_6' });
+  deviceApi.protocolStatus.mockResolvedValue({ details: { broker_id: 'sim-broker', source_mode: 'replay', device_type_abbr: 'tdoa', provider_code: 'provider', external_device_id: 'external' } });
+  mqttApi.options.mockRejectedValueOnce(new Error('演示通道读取失败'));
+  await mount(); await click('编辑'); await fill('设备名称', '保留草稿');
+  expect(dialog().textContent).toContain('演示通道读取失败'); expect(button('保存').disabled).toBe(true);
+  mqttApi.options.mockResolvedValue([{ broker_id: 'sim-broker', name: '已恢复通道', source_mode: 'replay', owner_org_id: 'org1', district_id: 'd1', enabled: true }]);
+  await click('重新加载接入资料');
+  expect(dialog().textContent).toContain('已恢复通道'); expect(button('保存').disabled).toBe(false);
+  expect([...dialog().querySelectorAll('input')].some(el => el.value === '保留草稿')).toBe(true);
+  expect(deviceApi.update).not.toHaveBeenCalled();
 });
 it.each([['天气传感器', '保存档案'], ['雷达', '保存接入配置']])('接入范围加载失败时阻止 %s 提交，重试成功后恢复', async (type, save) => {
   mqttApi.scopes.mockRejectedValueOnce(new Error('范围读取失败'));
   await mount(); await click('接入设备'); await click(type);
   expect(dialog().textContent).toContain('范围读取失败'); expect(button(save).disabled).toBe(true);
-  await click('重新加载连接及范围'); expect(button(save).disabled).toBe(false);
+  await click('重新加载接入资料'); expect(button(save).disabled).toBe(false);
   expect(weatherSensorsApi.create).not.toHaveBeenCalled();
 });
 it('TCP 接入保存型号和安装位置，连续提交只调用一次', async () => {
