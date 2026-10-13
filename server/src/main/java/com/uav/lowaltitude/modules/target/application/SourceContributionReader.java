@@ -7,7 +7,9 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.fusion.FusionContracts.FusionParams;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.SourceEstimate;
+import com.uav.lowaltitude.modules.fusion.application.FusionConfigLoader;
 import com.uav.lowaltitude.modules.fusion.application.FusionConfigService;
 import com.uav.lowaltitude.modules.fusion.application.EoFusionTaskContextPort;
 import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser;
@@ -23,10 +25,11 @@ public class SourceContributionReader {
     private final RawTrackRepository tracks;
     private final ObjectMapper json;
     private final FusionConfigService config;
+    private final FusionConfigLoader simulation;
     private final AppClock clock;
     private final EoFusionTaskContextPort tasks;
-    public SourceContributionReader(RawTrackRepository tracks, ObjectMapper json, FusionConfigService config, AppClock clock, EoFusionTaskContextPort tasks) {
-        this.tracks = tracks; this.json = json; this.config = config; this.clock = clock; this.tasks = tasks;
+    public SourceContributionReader(RawTrackRepository tracks, ObjectMapper json, FusionConfigService config, FusionConfigLoader simulation, AppClock clock, EoFusionTaskContextPort tasks) {
+        this.tracks = tracks; this.json = json; this.config = config; this.simulation = simulation; this.clock = clock; this.tasks = tasks;
     }
     public List<TargetSourceLinkDto> read(String targetId, List<SourceLinkRow> links) {
         if (links.isEmpty()) return List.of();
@@ -63,7 +66,7 @@ public class SourceContributionReader {
             if (before == null || e.observedAt().isAfter(before.observedAt())) bySource.put(e.sourceId(), e);
         }
         List<SourceEstimate> current = List.copyOf(bySource.values());
-        var fused = current.isEmpty() ? null : new WeightedFuser().fuse(current, params, null);
+        var fused = current.isEmpty() ? null : new WeightedFuser().fuse(current, withSimulationWeights(current, params), null);
         List<TargetSourceLinkDto> out = new ArrayList<>();
         for (var link : links) {
             var e = saved.get(link.linkId());
@@ -93,6 +96,10 @@ public class SourceContributionReader {
                     status, List.copyOf(attrs), e == null || e.observedAt() == null ? null : e.observedAt().toEpochMilli(), reason));
         }
         return List.copyOf(out);
+    }
+    /** SIM_NORMALIZED has no row in fusion_config; the pipeline adds its simulator_fusion_parameters weights in memory, and the read must weigh it the same way. */
+    private FusionParams withSimulationWeights(List<SourceEstimate> current, FusionParams params) {
+        return current.stream().anyMatch(e -> "SIM_NORMALIZED".equals(e.sourceType())) ? simulation.simulationParameters(params) : params;
     }
     private static String text(Map<String,Object> values, String key) {
         Object value = values.get(key); return value == null ? null : value.toString();
