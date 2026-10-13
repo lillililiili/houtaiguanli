@@ -18,7 +18,7 @@ async function load(manual = false, { quiet = false } = {}) {
   if (!props.deviceId || (!manual && (props.paused || inFlight))) return;
   const current = ++generation, id = props.deviceId, period = range.value;
   let failure = null;
-  inFlight = true; loading.value = true;
+  inFlight = true; if (!quiet) loading.value = true;
   try {
     const result = await deviceApi.trends(id, { range: period });
     if (!alive || current !== generation) return;
@@ -34,7 +34,7 @@ async function load(manual = false, { quiet = false } = {}) {
   finally { if (alive && current === generation) { loading.value = false; inFlight = false; await paint(); } }
   if (failure && quiet) throw failure;
 }
-useRealtimeRefresh(['device_state'], () => load(false, { quiet: true }), { minIntervalMs: 10_000 });
+const realtime = useRealtimeRefresh(['device_state'], () => load(false, { quiet: true }), { minIntervalMs: 10_000 });
 async function paint() {
   await nextTick();
   if (!alive) return;
@@ -49,7 +49,7 @@ async function paint() {
 watch(() => [props.deviceId, range.value], () => { generation++; data.value = null; error.value = ''; reportCode.value = ''; void load(true); }, { immediate: true });
 watch(() => props.paused, paused => { if (!paused) void load(); });
 watch([tab, reportCode], paint);
-onMounted(() => { if (typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(paint); nodes.forEach(node => node && observer.observe(node)); } timer = window.setInterval(() => { load(false, { quiet: true }).catch(() => {}); }, SLOW_REFRESH_MS); });
+onMounted(() => { if (typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(paint); nodes.forEach(node => node && observer.observe(node)); } timer = window.setInterval(() => { if (!document.hidden && !props.paused) realtime.trigger(['device_state']); }, SLOW_REFRESH_MS); });
 onBeforeUnmount(() => { alive = false; generation++; clearInterval(timer); observer?.disconnect(); charts.forEach(chart => chart?.dispose()); });
 </script>
 

@@ -77,8 +77,18 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
     }
     static class FlowClock extends AppClock {
         volatile long offset;
-        @Override public Instant now() { return Instant.now().plusMillis(offset); }
+        volatile Instant fixed;
+        @Override public Instant now() {
+            Instant value = fixed;
+            return value == null ? Instant.now().plusMillis(offset) : value;
+        }
         @Override public long nowMillis() { return now().toEpochMilli(); }
+        void reset() { fixed = null; offset = 0; }
+        void freeze() { fixed = Instant.ofEpochMilli(System.currentTimeMillis()); }
+        void advanceTo(long millis) {
+            if (fixed == null) offset = millis - System.currentTimeMillis();
+            else fixed = Instant.ofEpochMilli(millis);
+        }
     }
 
     @org.springframework.test.context.DynamicPropertySource
@@ -88,8 +98,12 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         }
     }
 
-    @BeforeEach void connectIsolatedDevice() throws Exception {
-        clock.offset = 0;
+    @BeforeEach void connectIsolatedDevice(org.junit.jupiter.api.TestInfo testInfo) throws Exception {
+        clock.reset();
+        // 协议时序用例显式推进业务时间；继承的急停测试与可选浏览器验收仍使用实时钟。
+        if (testInfo.getTestMethod().orElseThrow().getDeclaringClass() == DisposalMqttFlowTest.class
+                && !Boolean.getBoolean("qa.disposal.mqtt.browser")
+                && !Boolean.getBoolean("qa.disposal.emergency.browser")) clock.freeze();
         int mqttPort;
         try (var socket = new java.net.ServerSocket(0)) { mqttPort = socket.getLocalPort(); }
         Properties properties = new Properties();
@@ -102,10 +116,10 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         brokerId = configuration.create(new BrokerInput("QA disposal loopback", "127.0.0.1", mqttPort, false,
                 null, null, "127.0.0.1/32", "replay", "seed-stage3-org", "seed-stage3-district", null), key()).brokerId();
         configuration.enable(brokerId, 0, true, key());
-        // Model a historical binding: retired IFR devices cannot be newly registered through the API.
-        String registered = mqtt.register(new Registration(LingyunEnvelope.PROTOCOL, brokerId, "qa-disposal",
+        // Exercise retained protocol/receipt compatibility with pre-retirement rows, not new registration.
+        String registered = com.uav.lowaltitude.testsupport.HistoricalMqttDeviceFixture.insert(mqtt, new Registration(LingyunEnvelope.PROTOCOL, brokerId, "qa-disposal",
                 "ifr-" + key(), "ifr", "replay", "seed-stage3-org", "seed-stage3-district",
-                "QA-IFR-" + key(), "隔离反制协议设备", null, null, null), clock.nowMillis());
+                "QA-IFR-" + key(), "隔离历史反制协议设备", null, null, null), clock.nowMillis());
         binding = mqtt.binding(registered, false);
         jdbc.update("update ops_device set enabled=true where device_id=?", binding.opsDeviceId());
         jdbc.update("update ops_device_state set connectivity='ONLINE',health_code='GOOD',has_alarm=false,observed_at=?,received_at=? where device_id=?",
@@ -119,7 +133,7 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
     }
 
     @AfterEach void closeIsolatedDevice() throws Exception {
-        clock.offset = 0;
+        clock.reset();
         if (brokerId != null) jdbc.update("update mqtt_broker set enabled=false where broker_id=?", brokerId);
         supervisor.reconcile();
         if (deviceClient != null) { if (deviceClient.isConnected()) deviceClient.disconnect(); deviceClient.close(); }
@@ -147,7 +161,7 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
             case "DEVICE_SCOPE_CHANGED" -> jdbc.update("update device_business_scope set owner_org_id='seed-stage3-other-org',district_id='seed-stage3-other-district' where ops_device_id=?", binding.opsDeviceId());
             case "EXPIRED" -> {
                 long until = jdbc.queryForObject("select valid_until from disposal_authorization where authorization_id=?", Timestamp.class, authorization).getTime();
-                clock.offset = until - System.currentTimeMillis() + 1;
+                clock.advanceTo(until + 1);
                 // Keep current observation independently valid so expiry, not stale evidence, blocks this branch.
                 CounterEvidenceFixture.seed(jdbc, eventId, clock.now());
                 supervisor.reconcile();
@@ -201,7 +215,7 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
             case "DEVICE_SCOPE_CHANGED" -> jdbc.update("update device_business_scope set owner_org_id='seed-stage3-other-org',district_id='seed-stage3-other-district' where ops_device_id=?", binding.opsDeviceId());
             case "EXPIRED" -> {
                 long until = jdbc.queryForObject("select valid_until from disposal_authorization where authorization_id=?", Timestamp.class, authorization).getTime();
-                clock.offset = until - System.currentTimeMillis() + 1;
+                clock.advanceTo(until + 1);
                 CounterEvidenceFixture.seed(jdbc, eventId, clock.now());
             }
             default -> throw new IllegalArgumentException(condition);
@@ -225,6 +239,11 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         request("/api/v1/disposal-authorizations/" + authorization + "/execute", operator, key(), Map.of("expected_version", 1)).andExpect(status().isOk());
         String command = commandOf(authorization);
         outbox.poll(); awaitWire(1);
+        long deadline = jdbc.queryForObject("select deadline_at from device_command where command_id=?", Long.class, command);
+        clock.advanceTo(deadline - 1);
+        processor.expireCommands(clock.nowMillis());
+        assertThat(statusOf(authorization)).isEqualTo("EXECUTING");
+        clock.advanceTo(deadline + 1);
         Awaitility.await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> {
             processor.expireCommands(clock.nowMillis());
             assertThat(statusOf(authorization)).isEqualTo("FAILED");
@@ -341,7 +360,8 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
     String commandOf(String id) { return jdbc.queryForObject("select execution_command_id from disposal_authorization where authorization_id=?", String.class, id); }
     List<String> children(String id) { return jdbc.queryForList("select authorization_id from disposal_authorization where chained_from_authorization_id=?", String.class, id); }
     void awaitWire(int count) {
-        Awaitility.await().atMost(Duration.ofSeconds(8)).untilAsserted(() -> {
+        // 网络/数据库等待预算与三秒业务有效期分开，慢机器不应在发送前耗尽业务窗口。
+        Awaitility.await().atMost(Duration.ofSeconds(30)).untilAsserted(() -> {
             // Scheduled jobs are disabled in this fixture; keep consuming bounded outbox
             // batches just as the running service does, including inherited-test backlog.
             supervisor.reconcile();

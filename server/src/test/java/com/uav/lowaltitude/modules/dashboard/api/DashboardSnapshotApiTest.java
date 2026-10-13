@@ -2,6 +2,8 @@ package com.uav.lowaltitude.modules.dashboard.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.nullValue;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -40,6 +42,9 @@ class DashboardSnapshotApiTest {
     JdbcTemplate jdbc;
     @Autowired
     ObjectMapper json;
+
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    com.uav.lowaltitude.modules.reporting.application.ObservationMetricsService observationMetrics;
 
     private String suffix;
     private String org;
@@ -115,6 +120,19 @@ class DashboardSnapshotApiTest {
                 id, "dash-today-" + name + "-" + suffix, ts(at), ts(at), org, district, sourceMode, ts(now()), run);
         jdbc.update("insert into legality_review(evaluation_id,review_state,version,owner_org_id,district_id,created_at,updated_at) values (?,?,0,?,?,?,?)",
                 id, reviewState, org, district, ts(now()), ts(now()));
+    }
+
+    @Test
+    void realtimeSnapshotDoesNotReadUnusedTrackMetrics() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantModule(token, "dashboard");
+        grantModule(token, "statistics");
+        grantAction(token, "target:read", "assessment:read");
+        clearInvocations(observationMetrics);
+        mvc.perform(get("/api/v1/dashboard/snapshot").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.trend.days.length()").value(7));
+        verifyNoInteractions(observationMetrics);
     }
 
     @Test

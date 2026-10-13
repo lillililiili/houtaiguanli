@@ -12,14 +12,13 @@ const loading = ref(false)
 const exporting = ref(false)
 const error = ref('')
 const rows = ref([])
-const roles = ref([])
 const total = ref(0)
 const detailDialog = reactive({ visible: false, loading: false, row: null })
 const filters = reactive({ range: [], account: '', module: '', action: '', result: '', page: 1, size: 20 })
 const moduleLabels = {
   responsePlans: '规则管理',
-  organizations: '单位档案', notificationSettings: '通知对象配置', authentication: '认证登录', users: '用户管理', roles: '角色管理', audit: '审计日志', devices: '设备管理',
-  mqtt: '设备接入', alarms: '告警事件', monitoring: '设备监测', commissioning: '设备调测', statistics: '运行统计',
+  notificationSettings: '通知对象配置', authentication: '认证登录', users: '用户管理', roles: '角色管理', audit: '审计日志', devices: '设备管理',
+  alarms: '告警事件', monitoring: '设备实时监测', commissioning: '设备接入调测', maintenance: '设备异常处理', statistics: '报表管理', profile: '个人资料',
   risk: '飞行风险', flights: '飞行任务', airspace: '空域规则', fusion: '融合感知', disposal: '处置授权',
   punishment: '处罚案件', evidence: '证据管理', airport: '机场基础数据', maps: '地图管理', interfaces: '接口配置', system: '系统'
 }
@@ -53,8 +52,6 @@ const actionLabels = {
 const moduleOptions = Object.entries(moduleLabels).map(([value, label]) => ({ value, label }))
 const actionOptions = Object.entries(actionLabels).map(([value, label]) => ({ value, label }))
 const canExport = computed(() => auth.hasPermission('audit.op'))
-const canReadRoles = computed(() => auth.hasPermission('roles.read'))
-const roleNames = computed(() => Object.fromEntries(roles.value.map(item => [item.role_code, item.name])))
 
 function params(paged = true) {
   const from = filters.range?.[0]
@@ -74,20 +71,16 @@ function actionText(value) {
   const method = { GET: '查询', POST: '提交', PUT: '更新', PATCH: '更新', DELETE: '删除' }[match[1].toUpperCase()]
   return `${method}接口`
 }
-function roleText(value) { return roleNames.value[value] || (value === 'ROLE-ADMIN' ? '超级管理员' : value ? '自定义角色' : '—') }
-function ipText(value) { return ['127.0.0.1', '::1', '0:0:0:0:0:0:0:1', 'localhost'].includes(value) ? '本机' : (value || '—') }
+function roleText(row) { return row.role_name || ({ 'ROLE-ADMIN': '超级管理员', 'ROLE-BACKEND': '后台用户' }[row.role_code]) || row.role_code || '未记录' }
+function ipText(value) { return value?.trim() || '未记录' }
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [data, roleRows] = await Promise.all([
-      systemApi.audits(params()),
-      roles.value.length || !canReadRoles.value ? Promise.resolve(roles.value) : systemApi.roles().catch(() => [])
-    ])
+    const data = await systemApi.audits(params())
     rows.value = data.items || []
     total.value = data.total || 0
-    if (!roles.value.length) roles.value = roleRows || []
   } catch (e) { error.value = e.message || '审计日志加载失败。' }
   finally { loading.value = false }
 }
@@ -119,15 +112,15 @@ onMounted(load)
       <el-form class="filter-bar" inline @submit.prevent="search">
         <el-form-item label="时间"><el-date-picker v-model="filters.range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" value-format="x" /></el-form-item>
         <el-form-item label="账号"><el-input v-model="filters.account" clearable placeholder="登录账号" @keyup.enter="search" /></el-form-item>
-        <el-form-item label="模块"><el-select v-model="filters.module" clearable filterable placeholder="全部模块"><el-option v-for="item in moduleOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
+        <el-form-item label="菜单"><el-select v-model="filters.module" clearable filterable placeholder="全部菜单"><el-option v-for="item in moduleOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
         <el-form-item label="动作"><el-select v-model="filters.action" clearable filterable placeholder="全部动作"><el-option v-for="item in actionOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
         <el-form-item label="结果"><el-select v-model="filters.result" clearable placeholder="全部结果"><el-option label="成功" value="SUCCESS" /><el-option label="失败" value="FAILURE" /></el-select></el-form-item>
         <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="reset">重置</el-button></el-form-item>
       </el-form>
       <div class="table-scroll"><el-table v-loading="loading" :data="rows" height="100%" empty-text="当前条件下暂无审计日志">
         <el-table-column label="时间" min-width="172"><template #default="{row}">{{ formatTime(row.occurred_at) }}</template></el-table-column>
-        <el-table-column prop="account" label="账号" min-width="120" show-overflow-tooltip /><el-table-column label="角色" min-width="120"><template #default="{row}"><span :title="row.role_code">{{ roleText(row.role_code) }}</span></template></el-table-column>
-        <el-table-column label="模块" min-width="120"><template #default="{row}">{{ row.module_name || moduleText(row.module_code) }}</template></el-table-column>
+        <el-table-column prop="account" label="账号" min-width="120" show-overflow-tooltip /><el-table-column label="角色" min-width="180" show-overflow-tooltip><template #default="{row}"><span :title="row.display_role_code || row.role_code">{{ roleText(row) }}</span></template></el-table-column>
+        <el-table-column label="菜单" min-width="140"><template #default="{row}">{{ row.module_name || moduleText(row.menu_code || row.module_code) }}</template></el-table-column>
         <el-table-column label="动作" min-width="160" show-overflow-tooltip><template #default="{row}">{{ row.action_name || actionText(row.action) }}</template></el-table-column>
         <el-table-column label="结果" width="82"><template #default="{row}"><el-tag :type="row.result==='SUCCESS'?'success':'danger'">{{ row.result==='SUCCESS'?'成功':'失败' }}</el-tag></template></el-table-column>
         <el-table-column label="IP" min-width="130"><template #default="{row}"><span :title="row.ip">{{ ipText(row.ip) }}</span></template></el-table-column>
@@ -139,8 +132,8 @@ onMounted(load)
     <el-dialog v-model="detailDialog.visible" title="审计日志详情" width="720px">
       <div v-loading="detailDialog.loading"><el-descriptions v-if="detailDialog.row" :column="2" border>
         <el-descriptions-item label="时间">{{ formatTime(detailDialog.row.occurred_at) }}</el-descriptions-item><el-descriptions-item label="结果">{{ detailDialog.row.result==='SUCCESS'?'成功':'失败' }}</el-descriptions-item>
-        <el-descriptions-item label="账号">{{ detailDialog.row.account || '—' }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row.role_code) }}</el-descriptions-item>
-        <el-descriptions-item label="模块">{{ detailDialog.row.module_name || moduleText(detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ detailDialog.row.action_name || actionText(detailDialog.row.action) }}</el-descriptions-item>
+        <el-descriptions-item label="账号">{{ detailDialog.row.account || '—' }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row) }}</el-descriptions-item>
+        <el-descriptions-item label="菜单">{{ detailDialog.row.module_name || moduleText(detailDialog.row.menu_code || detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ detailDialog.row.action_name || actionText(detailDialog.row.action) }}</el-descriptions-item>
         <el-descriptions-item label="对象类型">{{ detailDialog.row.object_type || '—' }}</el-descriptions-item><el-descriptions-item label="对象编号"><span class="audit-object-id">{{ detailDialog.row.object_id || '—' }}</span></el-descriptions-item>
         <el-descriptions-item label="IP">{{ ipText(detailDialog.row.ip) }}</el-descriptions-item><el-descriptions-item label="客户端">{{ detailDialog.row.user_agent || '—' }}</el-descriptions-item>
         <el-descriptions-item label="详情" :span="2"><span class="detail-text">{{ detailDialog.row.detail || '—' }}</span></el-descriptions-item>

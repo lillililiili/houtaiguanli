@@ -12,6 +12,9 @@ import org.springframework.stereotype.Repository;
 public class LocalQaDeviceRepository {
     private final JdbcTemplate jdbc;
     public LocalQaDeviceRepository(JdbcTemplate jdbc) { this.jdbc=jdbc; }
+    public void lockScope(String org) {
+        jdbc.queryForObject("SELECT org_id FROM app_org WHERE org_id=? FOR UPDATE",String.class,org);
+    }
     public List<Map<String,Object>> existing(String sourceCode) {
         return jdbc.queryForList("""
             SELECT s.source_id,s.protocol_code,s.source_mode,s.simulated AS source_simulated,

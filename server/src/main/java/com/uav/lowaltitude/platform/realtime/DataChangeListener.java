@@ -89,6 +89,7 @@ public class DataChangeListener implements SmartLifecycle {
                 }
                 Notifications pg = new Notifications(connection);
                 listening = true;
+                hub.setListening(true);
                 backoff = 1000;
                 log.info("realtime data change listener started");
                 // 重连后可能错过信号，通知前端全部重读一次。
@@ -98,6 +99,7 @@ public class DataChangeListener implements SmartLifecycle {
                 if (running) log.warn("realtime data change listener lost connection: {}", e.getMessage());
             } finally {
                 listening = false;
+                hub.setListening(false);
             }
             if (!running) break;
             try {

@@ -19,10 +19,10 @@ export function useMaintenanceWorkflow(taskId) {
   let alive = true, generation = 0, context = 0;
   const can = action => !error.value && !loading.value && !busy.value && !pending.value && Boolean(workflow.value?.allowed_actions?.includes(action));
   const editable = computed(() => workflow.value?.state === 'PROCESSING' && can('SAVE_PROGRESS'));
-  async function load() {
+  async function load({ quiet = false, rethrow = false } = {}) {
     const id = taskId.value, current = ++generation;
     if (!id) { workflow.value = null; error.value = ''; loading.value = false; return null; }
-    loading.value = true;
+    if (!quiet) loading.value = true;
     try {
       const result = await deviceMaintenanceApi.workflow(id);
       if (!alive || current !== generation || id !== taskId.value) return null;
@@ -33,6 +33,7 @@ export function useMaintenanceWorkflow(taskId) {
         // Keep the last snapshot only for transient failures; revoked scope must clear it.
         if ([401, 403, 404].includes(reason.status)) workflow.value = null;
         error.value = reason.message || '处置单读取失败';
+        if (rethrow) throw reason;
       }
       return null;
     } finally { if (alive && current === generation) loading.value = false; }

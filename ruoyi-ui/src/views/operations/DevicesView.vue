@@ -21,6 +21,7 @@ const MQTT_PROTOCOL = 'LINGYUN_MQTT_V8_6';
 const EO_PROTOCOL = 'EO_EDGE_MQTT_20250826';
 const RADAR_PROTOCOL = 'RADAR_TCP_V3_0_0';
 const COUNTER_PROTOCOL = 'COUNTERMEASURE_TCP_4CH_V2_0';
+const isMqttProtocol = code => [MQTT_PROTOCOL, EO_PROTOCOL].includes(code);
 const deviceTypes = [
   { code: 'radar', name: '雷达', protocols: [RADAR_PROTOCOL, MQTT_PROTOCOL] },
   { code: 'eo', name: '光电设备', protocols: [EO_PROTOCOL] },
@@ -32,9 +33,7 @@ const deviceTypes = [
 const selectedType = ref('');
 const auth = useAuthStore();
 const canOperate = computed(() => auth.hasPermission('devices.op'));
-const canReadBrokers = computed(() => auth.hasPermission('interfaces.read'));
-const canEditBrokers = computed(() => auth.hasPermission('interfaces.op'));
-const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', statistics_scope: true, sort: 'priority' });
+const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' });
 const options = ref({ types: [], channels: [], regions: [], vendors: [] });
 const filterTypes = computed(() => {
   const items = options.value.type_options || [];
@@ -67,34 +66,32 @@ const metrics = computed(() => [
   { label: '接入厂家数', value: overview.value.vendor_count, tone: 'purple', icon: 'vendor', note: `设备型号 ${overview.value.model_count ?? '—'} 种` }
 ]);
 
-const deviceDialog = reactive({ visible: false, saving: false, opening: false, editing: false, row: null, current: null, optionsError: '' });
+const deviceDialog = reactive({ visible: false, saving: false, opening: false, editing: false, row: null, current: null, optionsError: '', optionsLoading: false });
 const deviceFormRef = ref();
 const coordinatePickerOpen = ref(false);
+const manualRadarSimulationAllowed = ref(false);
 const deviceForm = reactive({
   protocol_code: '', device_no: '', name: '', vendor: '', region_name: '', host: '', port: null, allowed_cidrs: '',
   recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false, device_address: 1,
   wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live', scope_key: '',
   device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-  longitude: null, latitude: null, version: null
+  longitude: null, latitude: null, version: null, simulated: false
 });
 const isWeather = computed(() => selectedType.value === 'weather_sensor');
+const usesDemoConfiguration = computed(() => !deviceDialog.editing
+  && Boolean(deviceTypes.find(type => type.code === selectedType.value)?.protocols.length)
+  && deviceTypes.find(type => type.code === selectedType.value).protocols.every(isMqttProtocol));
 const availableProtocols = computed(() => (deviceTypes.find(type => type.code === selectedType.value)?.protocols || [])
+  .filter(code => deviceDialog.editing || !isMqttProtocol(code))
   .map(code => protocols.value.find(item => item.protocol_code === code)).filter(Boolean));
 const selectedBroker = computed(() => brokers.value.find(item => item.broker_id === deviceForm.broker_id));
 const brokers = ref([]);
 const scopes = ref([]);
-const availableChannels = computed(() => brokers.value.filter(item => item.enabled && item.source_mode === 'live'
-  && `${item.owner_org_id}/${item.district_id}` === deviceForm.scope_key));
 const isMqtt = computed(() => deviceForm.protocol_code === MQTT_PROTOCOL);
 const isEo = computed(() => deviceForm.protocol_code === EO_PROTOCOL);
 const isMqttTransport = computed(() => isMqtt.value || isEo.value);
 const isRadar = computed(() => deviceForm.protocol_code === 'RADAR_TCP_V3_0_0');
 const isCountermeasure = computed(() => deviceForm.protocol_code === 'COUNTERMEASURE_TCP_4CH_V2_0');
-
-const brokerDialog = reactive({ visible: false, loading: false, items: [] });
-const brokerEditor = reactive({ visible: false, saving: false, editing: null });
-const brokerFormRef = ref();
-const brokerForm = reactive({ name: '', host: '', port: 8883, tls: true, source_mode: 'live', scope_key: '', username: '', credential_ref: '', allowed_cidrs: '' });
 
 function listParams() {
   return { ...overviewParams(), page: table.page, size: table.size };
@@ -112,24 +109,25 @@ async function loadOverview() {
   } catch (e) { if (alive && sequence === overviewSequence && !error.value) error.value = e.message; }
 }
 
-async function loadDetail(id) {
+async function loadDetail(id, quiet = false) {
   const sequence = ++detailSequence;
   detailError.value = '';
   if (!id) { detail.value = null; detailLoading.value = false; return; }
   if (detail.value?.device?.device_id !== id) detail.value = null;
-  detailLoading.value = true;
+  if (!quiet) detailLoading.value = true;
   try {
     const record = await deviceApi.detail(id);
     if (!alive || sequence !== detailSequence) return;
     detail.value = record;
-  } catch (e) { if (alive && sequence === detailSequence) { detail.value = null; detailError.value = e.message || '设备档案加载失败'; } }
+  } catch (e) { if (alive && sequence === detailSequence) { if (!quiet || [401, 403, 404].includes(e.status)) detail.value = null; detailError.value = e.message || '设备档案加载失败'; if (quiet) throw e; } }
   finally { if (sequence === detailSequence) detailLoading.value = false; }
 }
 
 let listFailure = null;
-async function loadList(keepSelection = true, refreshOverview = true) {
+async function loadList(keepSelection = true, refreshOverview = true, quiet = false) {
   const sequence = ++listSequence;
-  loading.value = true; error.value = '';
+  if (!quiet) loading.value = true;
+  error.value = '';
   const summaryRequest = refreshOverview ? loadOverview() : Promise.resolve();
   try {
     let data = await deviceApi.list(listParams());
@@ -142,17 +140,17 @@ async function loadList(keepSelection = true, refreshOverview = true) {
     }
     Object.assign(table, data);
     if (!keepSelection || !data.items.some(item => item.device_id === selectedId.value)) selectedId.value = data.items[0]?.device_id || '';
-    await loadDetail(selectedId.value);
-  } catch (e) { if (alive && sequence === listSequence) { listFailure = e; error.value = e.message || '设备台账加载失败'; } }
+    await loadDetail(selectedId.value, quiet);
+  } catch (e) { if (alive && sequence === listSequence) { listFailure = e; error.value = e.message || '设备台账加载失败'; if (quiet) throw e; } }
   finally { await summaryRequest; if (sequence === listSequence) loading.value = false; }
 }
 
 /* 实时刷新：设备数据变化后静默重读当前筛选和分页下的台账与概况，保留选中设备；
    选中行本身有变化时才重读设备档案。读取失败抛给实时刷新按退避重试；台账上次就读取失败时按正常流程重读。 */
-async function realtimeRefresh() {
+async function realtimeRefresh(topics = []) {
   if (loading.value) return;
   if (error.value) {
-    await loadList(true);
+    await loadList(true, true, true);
     if (error.value) throw listFailure || new Error(error.value);
     return;
   }
@@ -163,12 +161,12 @@ async function realtimeRefresh() {
     const data = await deviceApi.list(listParams());
     if (!alive || sequence !== listSequence) return;
     if (!data.items.length && table.page > 1 || selectedId.value && !data.items.some(item => item.device_id === selectedId.value)) {
-      await loadList(true, false);
+      await loadList(true, false, true);
       return;
     }
     Object.assign(table, data);
     const after = JSON.stringify(data.items.find(item => item.device_id === selectedId.value) || null);
-    if (selectedId.value && after !== before && after !== 'null' && !detailLoading.value) await loadDetail(selectedId.value);
+    if (selectedId.value && (after !== before || detailError.value || topics.includes('device') || topics.includes('*')) && after !== 'null' && !detailLoading.value) await loadDetail(selectedId.value, true);
   } catch (e) {
     // 静默刷新失败保留当前台账，抛给实时刷新退避重试。
     if (alive && sequence === listSequence) throw e;
@@ -192,7 +190,7 @@ async function bootstrap() {
 }
 
 function search() { table.page = 1; void loadList(false); }
-function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', statistics_scope: true, sort: 'priority' }); search(); }
+function reset() { Object.assign(filters, { keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' }); search(); }
 function selectRow(row) { selectedId.value = row.device_id; loadDetail(row.device_id); }
 
 function resetDeviceForm() {
@@ -200,14 +198,14 @@ function resetDeviceForm() {
     allowed_cidrs: '', recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false,
     device_address: 1, wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live',
     scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-    longitude: null, latitude: null, version: null });
+    longitude: null, latitude: null, version: null, simulated: false });
   coordinatePickerOpen.value = false;
 }
 
 function clearProtocolFields() {
   Object.assign(deviceForm, { host: '', port: null, allowed_cidrs: '', recognition_code_ref: '', rtk_enabled: false,
     coordinate_transform_enabled: false, device_address: 1, wire_encoding: 'AUTO', poll_interval_millis: 5000,
-    broker_id: '', source_mode: 'live', provider_code: '', external_device_id: '', edge_id: '' });
+    broker_id: '', source_mode: 'live', provider_code: '', external_device_id: '', edge_id: '', simulated: false });
   nextTick(() => deviceFormRef.value?.clearValidate());
 }
 function selectDeviceType(type) {
@@ -216,26 +214,22 @@ function selectDeviceType(type) {
   deviceForm.device_type_abbr = type.code;
   deviceForm.protocol_code = availableProtocols.value[0]?.protocol_code || '';
 }
-function selectBroker() {
-  if (!selectedBroker.value || deviceDialog.editing) return;
-  deviceForm.source_mode = selectedBroker.value.source_mode;
-}
-function matchAccessChannel() {
-  if (!isMqttTransport.value || deviceDialog.editing) return;
-  if (!deviceForm.scope_key && scopes.value.length === 1) {
-    deviceForm.scope_key = `${scopes.value[0].org_id}/${scopes.value[0].district_id}`;
-  }
-  if (!availableChannels.value.some(item => item.broker_id === deviceForm.broker_id)) {
-    deviceForm.broker_id = availableChannels.value.length === 1 ? availableChannels.value[0].broker_id : '';
-  }
-  selectBroker();
-}
+let accessOptionsSequence = 0;
 async function refreshAccessOptions() {
+  const sequence = ++accessOptionsSequence;
   deviceDialog.optionsError = '';
+  deviceDialog.optionsLoading = true;
   try {
-    const [brokerOptions, scopeOptions] = await Promise.all([mqttApi.options(), mqttApi.scopes()]);
+    // 新增及 TCP 接入只需要单位范围；已有 MQTT 设备才读取原绑定，不能让模拟通道故障阻断 TCP。
+    const [brokerOptions, scopeOptions, onboardingOptions] = await Promise.all([
+      isMqttProtocol(deviceDialog.current?.protocol_code) ? mqttApi.options() : Promise.resolve([]), mqttApi.scopes(),
+      deviceDialog.editing ? Promise.resolve({}) : deviceApi.onboardingOptions().catch(() => ({}))
+    ]);
+    if (!alive || sequence !== accessOptionsSequence) return;
     brokers.value = brokerOptions; scopes.value = scopeOptions;
-  } catch (e) { deviceDialog.optionsError = e.message || '连接及单位范围读取失败，请重试'; }
+    manualRadarSimulationAllowed.value = onboardingOptions.manual_radar_simulation_allowed === true;
+  } catch (e) { if (alive && sequence === accessOptionsSequence) deviceDialog.optionsError = e.message || '接入资料读取失败，请重试'; }
+  finally { if (sequence === accessOptionsSequence) deviceDialog.optionsLoading = false; }
 }
 
 async function openDevice(row = null) {
@@ -243,10 +237,9 @@ async function openDevice(row = null) {
   deviceDialog.opening = true; selectedType.value = '';
   deviceDialog.editing = Boolean(row); deviceDialog.row = row; deviceDialog.current = null; resetDeviceForm();
   try {
-    const [, current] = await Promise.all([
-      refreshAccessOptions(), row ? (row.device_type_code === 'weather_sensor' ? weatherSensorsApi.get(row.device_id) : deviceApi.detail(row.device_id)) : Promise.resolve(null)
-    ]);
+    const current = row ? await (row.device_type_code === 'weather_sensor' ? weatherSensorsApi.get(row.device_id) : deviceApi.detail(row.device_id)) : null;
     deviceDialog.current = current;
+    await refreshAccessOptions();
     if (row?.device_type_code === 'weather_sensor') {
       selectedType.value = 'weather_sensor';
       Object.assign(deviceForm, current, { scope_key: `${current.owner_org_id}/${current.district_id}` });
@@ -266,7 +259,7 @@ async function openDevice(row = null) {
         const status = await deviceApi.protocolStatus(row.device_id);
         const mqtt = status?.details || {};
         const broker = brokers.value.find(item => item.broker_id === mqtt.broker_id);
-        Object.assign(deviceForm, mqtt, { model: current.model || '', scope_key: broker ? `${broker.owner_org_id}/${broker.district_id}` : '' });
+        Object.assign(deviceForm, mqtt, { model: current.model || '', scope_key: broker ? `${broker.owner_org_id}/${broker.district_id}` : deviceForm.scope_key });
       }
       selectedType.value = current.protocol_code === RADAR_PROTOCOL ? 'radar' : current.protocol_code === COUNTER_PROTOCOL ? 'counter'
         : current.protocol_code === EO_PROTOCOL ? 'eo' : deviceForm.device_type_abbr;
@@ -297,8 +290,7 @@ function locationValues() {
 function mqttPayload(values, version) {
   const broker = brokers.value.find(item => item.broker_id === values.broker_id);
   const [owner_org_id, district_id] = values.scope_key.split('/');
-  if (!broker || broker.source_mode !== values.source_mode || broker.owner_org_id !== owner_org_id || broker.district_id !== district_id) throw new Error('接入通道与设备的数据来源、所属单位及区域不一致，请重新选择。');
-  if (!deviceDialog.editing && !availableChannels.value.some(item => item.broker_id === broker.broker_id)) throw new Error('该设备暂无可用接入通道，请联系管理员配置。');
+  if (!broker || broker.source_mode !== values.source_mode || broker.owner_org_id !== owner_org_id || broker.district_id !== district_id) throw new Error('原接入通道与设备来源或所属范围不一致，请检查接入资料后重试。');
   const common = { protocol_code: values.protocol_code, broker_id: broker.broker_id, external_device_id: values.external_device_id.trim(),
     source_mode: values.source_mode, owner_org_id, district_id, device_no: values.device_no.trim(), name: values.name.trim(),
     vendor: values.vendor || null, model: values.model || null, longitude: values.longitude ?? null, latitude: values.latitude ?? null, version };
@@ -307,9 +299,10 @@ function mqttPayload(values, version) {
 }
 
 async function saveDevice() {
-  if (!canOperate.value || deviceDialog.saving || !selectedType.value) return;
+  if (!canOperate.value || deviceDialog.saving || !selectedType.value || usesDemoConfiguration.value) return;
+  if (isMqttTransport.value && !deviceDialog.editing) return;
   if (!isWeather.value && !availableProtocols.value.some(item => item.protocol_code === deviceForm.protocol_code)) return;
-  if (deviceDialog.optionsError) return;
+  if (deviceDialog.optionsError || deviceDialog.optionsLoading) return;
   if (!await deviceFormRef.value.validate().catch(() => false) || deviceDialog.saving) return;
   let location;
   try { location = locationValues(); }
@@ -328,7 +321,7 @@ async function saveDevice() {
       saved = { device: sensor };
     } else if (isMqttTransport.value) {
       const payload = mqttPayload(deviceForm, current?.device?.version);
-      saved = deviceDialog.editing ? await deviceApi.update(deviceDialog.row.device_id, payload, key) : await deviceApi.onboard(payload, key);
+      saved = await deviceApi.update(deviceDialog.row.device_id, payload, key);
     } else if (deviceDialog.editing) {
       saved = await deviceApi.update(deviceDialog.row.device_id, {
         version: current.device.version, owner_org_id: tcpOrg, district_id: tcpDistrict, source_id: current.source_id, external_device_id: current.external_device_id,
@@ -343,6 +336,7 @@ async function saveDevice() {
       }, key);
     } else {
       saved = await deviceApi.onboard({ owner_org_id: tcpOrg, district_id: tcpDistrict, protocol_code: deviceForm.protocol_code, device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(),
+        simulated: isRadar.value && manualRadarSimulationAllowed.value && deviceForm.simulated,
         host: deviceForm.host.trim(), port: deviceForm.port, allowed_cidrs: deviceForm.allowed_cidrs.trim(), vendor: deviceForm.vendor || null,
         region_name: deviceForm.region_name || null, model: deviceForm.model || null, address: deviceForm.address || null,
         longitude: location.longitude, latitude: location.latitude, recognition_code_ref: deviceForm.recognition_code_ref || null,
@@ -390,45 +384,6 @@ async function deleteDevice(row) {
   } finally { deletingId.value = ''; }
 }
 
-async function openBrokers() {
-  if (!canReadBrokers.value) return;
-  brokerDialog.visible = true; brokerDialog.loading = true;
-  try {
-    const [items, scopeRows] = await Promise.all([mqttApi.list(), scopes.value.length ? Promise.resolve(scopes.value) : mqttApi.scopes().catch(() => [])]);
-    brokerDialog.items = items; scopes.value = scopeRows;
-  }
-  catch (e) { ElMessage.error(e.message); }
-  finally { brokerDialog.loading = false; }
-}
-function openBrokerEditor(row = null) {
-  if (row && row.source_mode !== 'live') return;
-  brokerEditor.editing = row; Object.assign(brokerForm, row ? { ...row, scope_key: `${row.owner_org_id}/${row.district_id}` }
-    : { name: '', host: '', port: 8883, tls: true, source_mode: 'live', scope_key: '', username: '', credential_ref: '', allowed_cidrs: '' });
-  brokerEditor.visible = true;
-}
-async function saveBroker() {
-  if (brokerForm.source_mode !== 'live') return;
-  await brokerFormRef.value.validate(); brokerEditor.saving = true;
-  try {
-    const [owner_org_id, district_id] = brokerForm.scope_key.split('/');
-    const body = { name: brokerForm.name.trim(), host: brokerForm.host.trim(), port: brokerForm.port, tls: brokerForm.tls,
-      username: brokerForm.username?.trim() || null, credential_ref: brokerForm.credential_ref?.trim() || null,
-      allowed_cidrs: brokerForm.allowed_cidrs.trim(), source_mode: brokerForm.source_mode, owner_org_id, district_id, version: brokerEditor.editing?.version };
-    if (brokerEditor.editing) await mqttApi.update(brokerEditor.editing.broker_id, body); else await mqttApi.create(body);
-    brokerEditor.visible = false; ElMessage.success('MQTT 配置已保存，当前处于停用状态'); await openBrokers();
-    if (deviceDialog.visible) await refreshAccessOptions();
-  } catch (e) { ElMessage.error(e.message); }
-  finally { brokerEditor.saving = false; }
-}
-async function toggleBroker(row) {
-  if (!row.enabled && row.source_mode !== 'live') return;
-  try { await ElMessageBox.confirm(row.enabled ? '停用将停止该连接下所有设备的报文接收。' : '启用后后端会连接服务器并订阅已登记设备。', `${row.enabled ? '停用' : '启用'} MQTT 连接`, { type: 'warning' });
-    await mqttApi.setEnabled(row.broker_id, { enabled: !row.enabled, version: row.version }); await openBrokers();
-    if (deviceDialog.visible) await refreshAccessOptions(); }
-  catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || String(e)); }
-}
-
-watch(() => [selectedType.value, deviceForm.protocol_code, deviceForm.scope_key, brokers.value, scopes.value], matchAccessChannel);
 watch(() => [filters.type_code, filters.channel, filters.region, filters.vendor, filters.connectivity, filters.enabled, filters.sort], search);
 onMounted(bootstrap);
 onBeforeUnmount(() => { alive = false; detailSequence++; });
@@ -446,7 +401,6 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
       <template #header><div class="table-toolbar"><b>设备管理</b><span class="muted">共 {{ table.total }} 台 · 点击设备查看详情</span></div></template>
       <div class="device-filters">
       <el-form inline @submit.prevent="search">
-        <el-form-item label="设备范围"><el-select v-model="filters.statistics_scope" aria-label="设备范围"><el-option label="业务设备" :value="true" /><el-option label="全部台账（含测试样例）" :value="false" /></el-select></el-form-item>
         <el-form-item label="关键词"><el-input v-model="filters.keyword" clearable placeholder="设备编号或名称" @keyup.enter="search" /></el-form-item>
         <el-form-item label="设备类型"><el-select v-model="filters.type_code" clearable placeholder="全部"><el-option v-for="item in filterTypes" :key="item.code" :label="item.name || item.code" :value="item.code" /></el-select></el-form-item>
         <el-form-item label="所属区域"><el-select v-model="filters.region" clearable placeholder="全部"><el-option v-for="item in options.regions" :key="item" :label="item" :value="item" /></el-select></el-form-item>
@@ -472,20 +426,21 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
 
-      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)"><template #actions><router-link v-if="selectedId && auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read')" :to="{path:'/operations/maintenance',query:{device_id:selectedId}}" class="el-button el-button--primary is-link">查看异常处置</router-link></template></DeviceCatalogPreview>
+      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)" />
     </div>
 
     <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing ? `编辑设备 · ${formatDeviceNo(deviceForm.device_no)}` : '接入设备'" width="min(990px, 94vw)" top="5vh" class="device-access-dialog" destroy-on-close :close-on-click-modal="!deviceDialog.saving" :close-on-press-escape="!deviceDialog.saving" :show-close="!deviceDialog.saving">
       <el-form ref="deviceFormRef" :model="deviceForm" label-position="top" :disabled="deviceDialog.saving" class="access-form">
         <section class="access-section">
-          <div class="access-section-title"><span>1</span><h3>选择设备类型</h3><small>{{ deviceDialog.editing ? '接入身份创建后不可修改' : '不同类型展示对应配置' }}</small></div>
+          <div class="access-section-title"><span class="access-step-number">1</span><h3>选择设备类型</h3><small>{{ deviceDialog.editing ? '接入身份创建后不可修改' : '不同类型展示对应配置' }}</small></div>
           <div class="access-type-grid" role="group" aria-label="设备类型">
             <button v-for="item in deviceTypes" :key="item.code" type="button" class="access-type" :class="{ selected: selectedType === item.code }" :aria-pressed="selectedType === item.code" :disabled="deviceDialog.editing || deviceDialog.saving" @click="selectDeviceType(item)">{{ item.name }}</button>
           </div>
         </section>
-        <template v-if="selectedType">
+        <el-alert v-if="usesDemoConfiguration" class="demo-access-note" title="此类型沿用现有演示配置" description="请启动现有演示环境和模拟器，在设备列表中选择已登记设备进行资料编辑、实时监测及接入调测。若缺少模拟设备或上报，请检查演示环境；无需在此新增 MQTT 连接或重复登记设备。" type="info" :closable="false" show-icon />
+        <template v-else-if="selectedType">
           <section class="access-section">
-            <div class="access-section-title"><span>2</span><h3>设备基本资料</h3><small>* 为必填项</small></div>
+            <div class="access-section-title"><span class="access-step-number">2</span><h3>设备基本资料</h3><small>* 为必填项</small></div>
             <div class="access-basic-grid">
               <el-form-item label="设备编号" prop="device_no" :rules="[{required:true,whitespace:true,message:'请输入设备编号'}]"><el-input v-model="deviceForm.device_no" :disabled="deviceDialog.editing" maxlength="64" placeholder="请输入唯一设备编号" /></el-form-item>
               <el-form-item label="设备名称" prop="name" :rules="[{required:true,whitespace:true,message:'请输入设备名称'}]"><el-input v-model="deviceForm.name" maxlength="128" placeholder="请输入设备名称" /></el-form-item>
@@ -502,28 +457,28 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
                 <DeviceCoordinatePicker v-if="coordinatePickerOpen" v-model:longitude="deviceForm.longitude" v-model:latitude="deviceForm.latitude" :disabled="deviceDialog.saving" />
               </div>
             </div>
-            <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载连接及范围</el-button></el-alert>
+            <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载接入资料</el-button></el-alert>
           </section>
           <section class="access-section">
-            <div class="access-section-title"><span>3</span><h3>{{ isWeather ? '接入状态' : '接入配置' }}</h3><el-tag v-if="isWeather" type="warning" effect="plain">协议待确认</el-tag><el-tag v-else-if="deviceForm.protocol_code" effect="plain">{{ isMqttTransport ? '平台通道' : 'TCP 直连' }}</el-tag></div>
+            <div class="access-section-title"><span class="access-step-number">3</span><h3>{{ isWeather ? '接入状态' : '接入配置' }}</h3><el-tag v-if="isWeather" class="access-mode-tag" type="warning" effect="plain">协议待确认</el-tag><el-tag v-else-if="deviceForm.protocol_code" class="access-mode-tag" effect="plain">{{ isMqttTransport ? '沿用已有配置' : 'TCP 直连' }}</el-tag></div>
             <el-alert v-if="isWeather" title="厂家协议待确认，当前仅登记设备档案" description="天气传感器统一纳入设备台账。协议确认前无需填写设备地址、端口或 MQTT 连接，登记后保持停用与待接入。" type="warning" :closable="false" show-icon />
             <template v-else>
               <div class="access-protocol-row"><el-form-item label="接入协议" prop="protocol_code" :rules="[{required:true,message:'请选择接入协议'}]"><el-select v-model="deviceForm.protocol_code" :disabled="deviceDialog.editing || availableProtocols.length === 1" @change="clearProtocolFields"><el-option v-for="item in availableProtocols" :key="item.protocol_code" :label="`${item.name} · v${item.version}`" :value="item.protocol_code" /></el-select></el-form-item><span class="muted">仅展示当前设备类型已支持的协议</span></div>
               <el-alert v-if="!availableProtocols.length" title="当前没有可用的接入协议，请刷新后重试" type="warning" :closable="false" />
               <div v-else class="form-grid access-connection-grid">
                 <template v-if="isMqttTransport">
-                  <el-form-item label="接入通道" prop="broker_id" :rules="[{required:true,message:'请选择可用接入通道'}]">
-                    <template v-if="deviceDialog.editing"><span>{{ selectedBroker?.name || '原接入通道' }}</span><span class="access-field-note">接入通道创建后不可修改{{ selectedBroker && !selectedBroker.enabled ? '，当前已停用' : '' }}{{ deviceForm.source_mode === 'replay' ? '（历史模拟通道）' : '' }}</span></template>
-                    <el-select v-else-if="availableChannels.length > 1" v-model="deviceForm.broker_id" placeholder="请选择接入通道" @change="selectBroker"><el-option v-for="item in availableChannels" :key="item.broker_id" :label="item.name" :value="item.broker_id" /></el-select>
-                    <template v-else-if="availableChannels.length === 1"><span>{{ selectedBroker?.name }}</span><span class="access-field-note">已自动匹配所属单位及区域的接入通道</span></template>
-                    <el-alert v-else-if="deviceForm.scope_key" title="该设备暂无可用接入通道，请联系管理员配置" type="warning" :closable="false" />
-                    <span v-else class="access-field-note">请先选择所属单位及区域</span>
+                  <el-form-item label="接入通道" prop="broker_id" :rules="[{required:true,message:'原接入通道信息缺失，请重新加载'}]">
+                    <span v-if="deviceDialog.optionsLoading" class="access-field-note" role="status">正在读取接入通道…</span>
+                    <span v-else-if="deviceDialog.optionsError" class="access-field-note">接入通道读取失败，请先重新加载接入资料。</span>
+                    <template v-else-if="selectedBroker"><span>{{ selectedBroker.name }}</span><span class="access-field-note">沿用已登记通道{{ !selectedBroker.enabled ? '，当前已停用' : '' }}{{ deviceForm.source_mode === 'replay' ? '（模拟数据）' : '' }}，此处仅修改设备资料。</span></template>
+                    <span v-else class="access-field-note">原接入通道信息缺失，请检查演示环境或原接入配置后重新加载。</span>
                   </el-form-item>
                   <el-form-item label="外部设备编号" prop="external_device_id" :rules="[{required:true,whitespace:true,message:'请输入外部设备编号'}]"><el-input v-model="deviceForm.external_device_id" :disabled="deviceDialog.editing" placeholder="填写厂家设备 ID" /></el-form-item>
                   <el-form-item v-if="isMqtt" label="提供方编码" prop="provider_code" :rules="[{required:true,whitespace:true,message:'请输入提供方编码'}]"><el-input v-model="deviceForm.provider_code" :disabled="deviceDialog.editing" placeholder="填写厂家提供的编码" /></el-form-item>
                   <el-form-item v-if="isEo" label="边缘中心 ID" prop="edge_id" :rules="[{required:true,whitespace:true,message:'请输入边缘中心 ID'}]"><el-input v-model="deviceForm.edge_id" :disabled="deviceDialog.editing" placeholder="填写协议中的 edgeId" /></el-form-item>
                 </template>
                 <template v-else>
+                  <el-form-item v-if="isRadar && !deviceDialog.editing && manualRadarSimulationAllowed" label="数据来源" class="wide"><el-radio-group v-model="deviceForm.simulated"><el-radio :label="false">真实设备</el-radio><el-radio :label="true">本机模拟测试</el-radio></el-radio-group><span v-if="deviceForm.simulated" class="access-field-note">先启动 TCP 雷达模拟器的“后台手动接入测试”，按该页面填写参数。保存后保留模拟标识。</span></el-form-item>
                   <el-form-item label="设备地址" prop="host" :rules="[{required:true,whitespace:true,message:'请输入设备地址'}]"><el-input v-model="deviceForm.host" placeholder="例如：192.168.1.100" /></el-form-item>
                   <el-form-item label="端口" prop="port" :rules="[{required:true,message:'请输入端口'}]"><el-input-number v-model="deviceForm.port" :min="1" :max="65535" controls-position="right" /></el-form-item>
                   <el-form-item label="允许网段" prop="allowed_cidrs" :rules="[{required:true,whitespace:true,message:'请输入允许网段'}]"><el-input v-model="deviceForm.allowed_cidrs" placeholder="例如：192.168.1.0/24" /></el-form-item>
@@ -538,32 +493,9 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
         </template>
         <el-empty v-else description="请选择需要接入的设备类型" :image-size="65" />
       </el-form>
-      <template #footer><div class="access-footer"><span>{{ isWeather ? '仅保存设备档案，保持停用与待接入。' : '配置保存后，以实际连接与有效报文确认状态。' }}</span><div><el-button :disabled="deviceDialog.saving" @click="deviceDialog.visible=false">取消</el-button><el-button type="primary" :loading="deviceDialog.saving" :disabled="!selectedType || (!isWeather && !deviceForm.protocol_code) || Boolean(deviceDialog.optionsError) || (isMqttTransport && !deviceDialog.editing && !availableChannels.length)" @click="saveDevice">{{ isWeather ? '保存档案' : deviceDialog.editing ? '保存' : '保存接入配置' }}</el-button></div></div></template>
+      <template #footer><div class="access-footer"><span>{{ usesDemoConfiguration ? '模拟设备由现有演示环境提供。' : isWeather ? '仅保存设备档案，保持停用与待接入。' : '配置保存后，以实际连接与有效报文确认状态。' }}</span><div><el-button :disabled="deviceDialog.saving" @click="deviceDialog.visible=false">取消</el-button><el-button type="primary" :loading="deviceDialog.saving" :disabled="!selectedType || usesDemoConfiguration || (!isWeather && !deviceForm.protocol_code) || deviceDialog.optionsLoading || Boolean(deviceDialog.optionsError) || (isMqttTransport && !selectedBroker)" @click="saveDevice">{{ isWeather ? '保存档案' : deviceDialog.editing ? '保存' : '保存接入配置' }}</el-button></div></div></template>
     </el-dialog>
 
-    <el-dialog v-model="brokerDialog.visible" title="MQTT 连接管理" width="min(820px, 94vw)" append-to-body>
-      <p class="form-note">连接成功只表示报文通道可用；设备收到有效工参后才显示在线。修改配置前请先停用。</p>
-      <div class="table-toolbar"><span>共 {{ brokerDialog.items.length }} 条连接</span><el-button type="primary" :disabled="!canEditBrokers" @click="openBrokerEditor()">新增连接</el-button></div>
-      <div v-loading="brokerDialog.loading"><el-empty v-if="!brokerDialog.items.length" description="尚未配置 MQTT 连接" />
-        <div v-for="item in brokerDialog.items" :key="item.broker_id" class="connection-card"><b>{{ item.name }}</b><span>{{ item.source_mode==='replay'?'模拟回放':'真实来源' }} · {{ item.host }}:{{ item.port }}</span><el-tag :type="item.enabled?'success':'info'" effect="plain">{{ item.enabled?'启用':'停用' }} · {{ item.connection_state }}</el-tag><span class="inline-actions"><el-button link :disabled="!canEditBrokers||item.enabled||item.source_mode !== 'live'" @click="openBrokerEditor(item)">编辑</el-button><el-button link :disabled="!canEditBrokers || (!item.enabled && item.source_mode !== 'live')" @click="toggleBroker(item)">{{ item.enabled?'停用':'启用' }}</el-button></span></div>
-      </div>
-    </el-dialog>
-
-    <el-dialog v-model="brokerEditor.visible" :title="brokerEditor.editing?'编辑 MQTT 连接':'新增 MQTT 连接'" width="min(720px, 94vw)" append-to-body>
-      <p class="form-note">凭据填写 `env:环境变量名`，禁止填写密码本身；新增连接默认停用。</p>
-      <el-form ref="brokerFormRef" :model="brokerForm" label-position="top" class="form-grid">
-        <el-form-item label="连接名称" prop="name" :rules="[{required:true,message:'请输入名称'}]"><el-input v-model="brokerForm.name" /></el-form-item>
-        <el-form-item label="服务器地址" prop="host" :rules="[{required:true,message:'请输入地址'}]"><el-input v-model="brokerForm.host" /></el-form-item>
-        <el-form-item label="端口" prop="port" :rules="[{required:true,message:'请输入端口'}]"><el-input-number v-model="brokerForm.port" :min="1" :max="65535" /></el-form-item>
-        <el-form-item label="TLS"><el-switch v-model="brokerForm.tls" active-text="启用" inactive-text="关闭" /></el-form-item>
-        <el-form-item label="数据来源" prop="source_mode" :rules="[{required:true,message:'请选择来源'}]"><el-select v-model="brokerForm.source_mode" :disabled="Boolean(brokerEditor.editing)"><el-option v-if="brokerEditor.editing?.source_mode === 'replay'" label="历史模拟回放（只读）" value="replay" /><el-option label="真实来源，待联调" value="live" /></el-select></el-form-item>
-        <el-form-item label="单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择范围'}]"><el-select v-model="brokerForm.scope_key" :disabled="Boolean(brokerEditor.editing)"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
-        <el-form-item label="用户名"><el-input v-model="brokerForm.username" /></el-form-item>
-        <el-form-item label="密码凭据引用"><el-input v-model="brokerForm.credential_ref" placeholder="env:MQTT_PASSWORD" /></el-form-item>
-        <el-form-item class="wide" label="允许的服务器网段 CIDR" prop="allowed_cidrs" :rules="[{required:true,message:'请输入网段'}]"><el-input v-model="brokerForm.allowed_cidrs" /></el-form-item>
-      </el-form>
-      <template #footer><el-button @click="brokerEditor.visible=false">取消</el-button><el-button type="primary" :loading="brokerEditor.saving" @click="saveBroker">保存</el-button></template>
-    </el-dialog>
   </section>
 </template>
 
@@ -583,8 +515,9 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
 .access-section:first-child { padding-top: 0; }
 .access-section:last-child { border-bottom: 0; }
 .access-section-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
-.access-section-title > span { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; color: var(--admin-primary); background: var(--admin-primary-soft); font-weight: 700; font-size: 12px; }
-.access-section-title h3 { margin: 0; font-size: 15px; }
+.access-step-number { display: grid; place-items: center; flex: 0 0 24px; width: 24px; height: 24px; border-radius: 6px; color: var(--admin-primary); background: var(--admin-primary-soft); font-weight: 700; font-size: 12px; }
+.access-section-title h3 { flex: 0 0 auto; margin: 0; font-size: 15px; }
+.access-mode-tag { flex: 0 0 auto; height: 24px; padding: 0 10px; font-weight: 500; white-space: nowrap; }
 .access-section-title small { color: var(--admin-muted); font-size: 12px; }
 .access-type-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .access-type { position: relative; min-height: 40px; padding: 9px; color: var(--admin-muted); background: var(--admin-card); border: 1px solid var(--admin-border); border-radius: 7px; }
@@ -603,6 +536,8 @@ onBeforeUnmount(() => { alive = false; detailSequence++; });
 .coordinate-fields :deep(.el-form-item) { margin-bottom: 12px; }
 .access-protocol-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: center; }
 .access-field-note { display: block; width: 100%; font-size: 12px; color: var(--admin-muted); line-height: 1.6; }
+.demo-access-note { margin-top: 16px; }
+.demo-access-note :deep(.el-alert__description) { line-height: 1.8; }
 .access-connection-grid .wide { grid-column: 1 / -1; }
 .access-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
 .access-footer > span { font-size: 12px; color: var(--admin-muted); text-align: left; }

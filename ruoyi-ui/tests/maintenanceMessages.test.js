@@ -7,6 +7,7 @@ const mocks = vi.hoisted(()=>({push:vi.fn(),hasMenu:vi.fn(()=>true),hasPermissio
 vi.mock('vue-router',()=>({useRouter:()=>({push:mocks.push})}));
 vi.mock('@/stores/auth.js',()=>({useAuthStore:()=>mocks}));
 vi.mock('@/api/deviceMaintenance.js',()=>({deviceMaintenanceApi:{messages:vi.fn(),readMessage:vi.fn()}}));
+vi.mock('@/services/realtime.js',()=>({useRealtimeRefresh:(topics,reload)=>({trigger:reload})}));
 let app,host;
 async function settle(){for(let i=0;i<20;i++){await Promise.resolve();await nextTick();}}
 async function mount(){host=document.createElement('div');document.body.append(host);app=createApp(MaintenanceMessages);app.use(ElementPlus);app.mount(host);await settle();host.querySelector('button').click();await settle();}

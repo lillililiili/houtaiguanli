@@ -20,9 +20,13 @@ class LocalQaDeviceGateTest {
             context.getEnvironment().getPropertySources().addFirst(new MapPropertySource("qa-gate",Map.of("app.qa.device-setup.enabled",enabled)));
             context.register(LocalQaDeviceController.class,LocalQaDeviceService.class,
                 com.uav.lowaltitude.modules.device.api.LocalQaDeviceStatusController.class,
-                com.uav.lowaltitude.modules.device.application.LocalQaDeviceStatusService.class);context.refresh();
+                com.uav.lowaltitude.modules.device.application.LocalQaDeviceStatusService.class,
+                com.uav.lowaltitude.modules.device.application.LocalQaRadarService.class,
+                com.uav.lowaltitude.modules.device.api.LocalQaRadarController.class);context.refresh();
             assertThat(context.getBeansOfType(LocalQaDeviceController.class)).isEmpty();
             assertThat(context.getBeansOfType(LocalQaDeviceService.class)).isEmpty();
+            assertThat(context.getBeansOfType(com.uav.lowaltitude.modules.device.application.LocalQaRadarService.class)).isEmpty();
+            assertThat(context.getBeansOfType(com.uav.lowaltitude.modules.device.api.LocalQaRadarController.class)).isEmpty();
             assertThat(context.getBeansOfType(com.uav.lowaltitude.modules.device.api.LocalQaDeviceStatusController.class)).isEmpty();
             assertThat(context.getBeansOfType(com.uav.lowaltitude.modules.device.application.LocalQaDeviceStatusService.class)).isEmpty();
         }

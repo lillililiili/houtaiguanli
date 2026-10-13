@@ -1,7 +1,8 @@
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { loadDeviceMapEngine, loadDeviceMapStyle } from '@/services/deviceLocationMap.js';
+import { devicePosition, deviceMapOptions, positionInMapBounds, resizeDeviceMap,
+  loadDeviceMapEngine, loadDeviceMapStyle } from '@/services/deviceLocationMap.js';
 
 const props = defineProps({
   longitude: { type: [Number, String], default: null },
@@ -12,18 +13,16 @@ const emit = defineEmits(['update:longitude', 'update:latitude']);
 const container = ref();
 const loading = ref(false);
 const error = ref('');
+const outside = ref(false);
 let map;
 let marker;
 let observer;
 let controller;
+let resources;
+let markedPosition;
 
 function numericPosition() {
-  if ([props.longitude, props.latitude].some(value => value == null || String(value).trim() === '')) return null;
-  const longitude = Number(props.longitude);
-  const latitude = Number(props.latitude);
-  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)
-      || longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) return null;
-  return [longitude, latitude];
+  return devicePosition({ longitude: props.longitude, latitude: props.latitude, coordinate_system: 'WGS84' });
 }
 
 function dispose() {
@@ -35,19 +34,28 @@ function dispose() {
   observer = null;
   marker = null;
   map = null;
+  resources = null;
+  markedPosition = null;
 }
 
 function setMarker(position, move = false) {
-  if (!map || !position) return;
+  if (!map || !resources) return;
+  outside.value = Boolean(position && !positionInMapBounds(position, resources.bounds));
+  if (!position || outside.value) { marker?.remove(); marker = null; markedPosition = null; return; }
+  // 点击选点先更新标记，v-model 回传相同坐标时不再次跳转或放大底图。
+  if (markedPosition?.every((value, index) => value === position[index])) return;
   if (!marker) marker = new maplibre.Marker({ color: '#1677ff' }).setLngLat(position).addTo(map);
   else marker.setLngLat(position);
-  if (move) map.jumpTo({ center: position, zoom: Math.max(map.getZoom(), 14) });
+  markedPosition = [...position];
+  marker.getElement().setAttribute('aria-label', '设备安装点');
+  if (move) map.jumpTo({ center: position, zoom: Math.min(resources.maxZoom, Math.max(map.getZoom(), 14)) });
 }
 
 function clickPosition(event) {
   if (props.disabled) return;
   const longitude = Number(event.lngLat.lng.toFixed(7));
   const latitude = Number(event.lngLat.lat.toFixed(7));
+  if (!positionInMapBounds([longitude, latitude], resources?.bounds)) return;
   emit('update:longitude', longitude);
   emit('update:latitude', latitude);
   setMarker([longitude, latitude]);
@@ -57,34 +65,31 @@ let maplibre;
 async function renderMap() {
   dispose();
   error.value = '';
+  outside.value = false;
   if (!container.value) return;
   const current = new AbortController();
   controller = current;
   loading.value = true;
   try {
-    const [engine, resources] = await Promise.all([loadDeviceMapEngine(), loadDeviceMapStyle(current.signal)]);
+    const [engine, loadedResources] = await Promise.all([loadDeviceMapEngine(), loadDeviceMapStyle(current.signal)]);
     if (current.signal.aborted) return;
     maplibre = engine;
+    resources = loadedResources;
     const position = numericPosition();
-    const bounds = Array.isArray(resources.bounds) && resources.bounds.length === 4 ? resources.bounds : null;
-    const center = position || (bounds ? [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2] : [0, 0]);
-    map = new engine.Map({ container: container.value, style: resources.style, center,
-      zoom: position ? Math.min(14, resources.maxZoom) : Math.min(10, resources.maxZoom),
-      maxZoom: resources.maxZoom, attributionControl: { compact: true },
-      localIdeographFontFamily: 'Microsoft YaHei, sans-serif' });
+    map = new engine.Map(deviceMapOptions(container.value, resources, position));
     map.addControl(new engine.NavigationControl({ showCompass: false }), 'top-right');
-    map.scrollZoom.disable();
+    map.touchZoomRotate.disableRotation();
     map.on('click', clickPosition);
     if (position) setMarker(position);
     map.on('load', () => {
       if (current.signal.aborted) return;
-      if (!position && bounds) map.fitBounds([[bounds[0], bounds[1]], [bounds[2], bounds[3]]], { padding: 24, duration: 0 });
+      resizeDeviceMap(map, resources);
       loading.value = false;
     });
     map.on('error', () => {
       if (!current.signal.aborted) { loading.value = false; error.value = '底图加载失败，请重试。'; }
     });
-    observer = new ResizeObserver(() => map?.resize());
+    observer = new ResizeObserver(() => { if (map) resizeDeviceMap(map, resources); });
     observer.observe(container.value);
   } catch (reason) {
     if (!current.signal.aborted) { loading.value = false; error.value = reason.message || '地图加载失败，请重试'; }
@@ -93,8 +98,7 @@ async function renderMap() {
 
 watch(() => [props.longitude, props.latitude], () => {
   const position = numericPosition();
-  if (position) setMarker(position, true);
-  else { marker?.remove(); marker = null; }
+  setMarker(position, true);
 }, { flush: 'post' });
 watch(container, renderMap, { flush: 'post' });
 onBeforeUnmount(dispose);
@@ -107,6 +111,7 @@ onBeforeUnmount(dispose);
       <span class="coordinate-map-hint">点击地图设置设备安装点</span>
     </div>
     <div v-if="error" class="coordinate-map-error" role="alert">{{ error }}</div>
+    <div v-else-if="outside" class="coordinate-map-error" role="status">所填坐标在当前地图覆盖范围外，请核对；原坐标未改动。</div>
   </section>
 </template>
 

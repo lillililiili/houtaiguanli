@@ -18,6 +18,10 @@ spring:
     username: ${DB_USER:uav}
     password: ${DB_PASSWORD:uav}
     hikari:
+      # 交互式实时查询频繁执行；本地避免每次为复杂权限谓词付出 JIT 编译开销。
+      # 通过 PostgreSQL 驱动启动参数设置，避免 local 画像的隔离 H2 测试执行 PG 专用 SQL。
+      data-source-properties:
+        options: "-c jit=off"
       # 本地电脑休眠、Docker 重启后主动淘汰失效连接，避免后台线程长时间卡在旧连接上。
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:10000}
       validation-timeout: ${DB_VALIDATION_TIMEOUT_MS:5000}

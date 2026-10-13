@@ -128,6 +128,8 @@ class NotificationMigrationMergePostgresTest {
         }
         Flyway.configure().dataSource(rootSource).schemas(schema).defaultSchema(schema).createSchemas(false)
                 .cleanDisabled(true).locations("filesystem:" + directory.toAbsolutePath())
+                // Reproduce the historical branch only; later migrations belong to the upgrade below.
+                .target("202610110001")
                 .javaMigrations(originalJavaMigrations()).load().migrate();
         assertThat(history("202610110001").get("checksum")).isEqualTo(-1287981834);
     }

@@ -150,10 +150,12 @@ class SpatialVersionLifecyclePostgresTest extends SpatialBoundaryAcceptancePostg
     }
 
     private String operator() {
-        String role="QA-SP-"+UUID.randomUUID().toString().substring(0,8),user=UUID.randomUUID().toString(),token=UUID.randomUUID().toString();
-        jdbc.update("insert into app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) values(?,?,'',false,true,0,0,0,false)",role,role);
-        for(String permission:new String[]{"airspace:read","airspace:manage","interfaces","alarm:read","alarm:verify","handoff:create","handoff:read","evidence:read"})
-            jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,?,?,false,current_timestamp)",role,permission,permission.endsWith("read")?"READ":"OP");
+        String role="ROLE-BACKEND",user=UUID.randomUUID().toString(),token=UUID.randomUUID().toString();
+        // Backend identity does not implicitly grant business verification or handoff actions.
+        for(String permission:new String[]{"airspace:manage","alarm:verify","handoff:create"})
+            jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at)"
+                    + " select ?,?,'OP',false,current_timestamp where not exists"
+                    + " (select 1 from app_role_permission where role_code=? and permission_code=?)",role,permission,role,permission);
         jdbc.update("insert into app_user(user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values(?,?,?,?,'ACTIVE','unused',0,'ASSIGNED',0,0,0,0)",user,user,"隔离空间验收操作员",role);
         jdbc.update("insert into app_user_data_scope(user_id,org_id,district_id) values(?,?,?)",user,LocalStage7RuleEngineSeeder.ORG,LocalStage7RuleEngineSeeder.DISTRICT);
         jdbc.update("insert into app_session(session_id,user_id,expire_at,ip,permission_version) values(?,?,?,'127.0.0.1',0)",token,user,System.currentTimeMillis()+3600000);

@@ -292,10 +292,11 @@ class Stage7PostgresTest {
                 "select permission_code from app_permission where permission_code in ('rule:read','rule:manage','assessment:evaluate','assessment:revise','assessment:escalate') order by permission_code",
                 String.class);
         assertThat(permissions).containsExactly("assessment:escalate", "assessment:evaluate", "assessment:revise", "rule:manage", "rule:read");
-        // 迁移只登记引擎来源目录，不插入任何规则集或研判：本 schema 中的规则集只能来自各用例夹具。
+        // 迁移登记引擎来源和已确认规则目录，但不激活规则或插入研判业务数据。
         assertThat(jdbc.queryForObject("select count(*) from integration_source where source_id like 'rule-engine-legality-%' and enabled=true and credential_ref is null", Long.class)).isEqualTo(3L);
-        // 阶段 9 迁移 062 登记的 SPACE-RISK-DEMO（PUBLISHED+DEMO，未激活）属结构性目录（决策 9-30），不算阶段 7 的意外数据。
-        assertThat(jdbc.queryForObject("select count(*) from rule_set where rule_set_code not like 'LEGALITY-S7-%' and rule_set_code<>'SPACE-RISK-DEMO'", Long.class)).isZero();
+        // Both published catalogs are now installed by migration; neither may be activated implicitly.
+        assertThat(jdbc.queryForObject("select count(*) from rule_set where rule_set_code not like 'LEGALITY-S7-%' and rule_set_code not in ('SPACE-RISK-DEMO','LEGALITY-DEMO')", Long.class)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from rule_set where rule_set_code='LEGALITY-DEMO' and (active_version_id is not null or shadow_version_id is not null)", Long.class)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from rule_set where rule_set_code='SPACE-RISK-DEMO' and (active_version_id is not null or shadow_version_id is not null)", Long.class)).isZero();
         assertThat(jdbc.queryForObject("select count(*) from assessment_result", Long.class)).isZero();
     }

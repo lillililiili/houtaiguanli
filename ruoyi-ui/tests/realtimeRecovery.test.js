@@ -43,6 +43,32 @@ function subscribe(topics, calls) {
 }
 
 describe('实时推送连接恢复', () => {
+  it('同一页面多个订阅共享连接，数据库监听中断启用兜底，恢复后停止', async () => {
+    const calls = [], other = [];
+    subscribe(['device'], calls); subscribe(['plan_check'], other);
+    await flush(); ready(last()); await flush();
+    expect(streams).toHaveLength(1);
+    await withHeartbeat(60_000);
+    expect(calls).toEqual([]); expect(other).toEqual([]);
+    send(last(), 'event: status\ndata: {"listening":false}\n\n'); await flush();
+    await withHeartbeat(30_000);
+    expect(calls).toHaveLength(2); expect(other).toHaveLength(2);
+    send(last(), 'event: status\ndata: {"listening":true}\n\n'); change(last(), ['*']); await flush();
+    expect(calls.at(-1).recovery).toBe(true);
+    calls.length = 0; other.length = 0;
+    await withHeartbeat(60_000);
+    expect(calls).toEqual([]); expect(other).toEqual([]);
+  });
+
+  it('分块恰好切在 CRLF 中间仍能解析变化事件', async () => {
+    const calls = [];
+    subscribe(['device'], calls); await flush(); ready(last()); await flush();
+    send(last(), 'event: change\r'); await flush();
+    send(last(), '\ndata: {"topics":["device"]}\r\n\r'); await flush();
+    expect(calls).toEqual([]);
+    send(last(), '\n'); await flush();
+    expect(calls).toEqual([{ topics: ['device'], recovery: false }]);
+  });
   it('隐藏标签页不占连接，恢复可见后使用当前会话补读', async () => {
     let hidden = true;
     const visibility = vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
@@ -165,6 +191,20 @@ describe('页面实时重读', () => {
     return api;
   }
   const failure = status => Object.assign(new Error('读取失败'), { status });
+
+  it('请求中合并后续变化；卸载后迟到的失败不能重新安排重试', async () => {
+    let reject;
+    const reload = vi.fn(() => new Promise((resolve, fail) => { reject = fail; }));
+    const api = mountHook(reload);
+    api.trigger(['device_state']); await flush();
+    api.trigger(['device_state']); api.trigger(['*']); await flush();
+    expect(reload).toHaveBeenCalledTimes(1);
+    unsubscribes.splice(0).forEach(stop => stop());
+    reject(failure(503)); await flush();
+    api.trigger(['*']); await vi.advanceTimersByTimeAsync(60_000); await flush();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it('断网、超时、5xx 值得再读；没有权限、不存在不再读', () => {
     expect([{}, { status: 0 }, { status: 503 }, { status: 408 }, { status: 429 }].map(service.shouldRetryRefresh)).toEqual([true, true, true, true, true]);

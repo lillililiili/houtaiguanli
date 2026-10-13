@@ -59,7 +59,7 @@ public class LiveRadarFrameIngestService {
     @Transactional
     public boolean ingestRtk(String sourceId,String deviceId,String key,String frameId,Rtk rtk,byte[] raw,long receivedAt) {
         if (!protocolData.insertInbox(sourceId,deviceId,key,raw,receivedAt)) return false;
-        protocolData.saveRtk(deviceId,frameId,rtk,receivedAt);
+        protocolData.saveRtk(deviceId,key,frameId,rtk,receivedAt);
         protocolData.inboxProcessed(deviceId,key,receivedAt);
         return true;
     }

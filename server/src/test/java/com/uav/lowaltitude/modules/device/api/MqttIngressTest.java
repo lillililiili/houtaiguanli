@@ -258,9 +258,13 @@ class MqttIngressTest {
         assertThat(incidents.get(heartbeatId).allowedActions()).containsExactly("VERIFY_RECOVERY");
     }
 
-    @Test void threeTypesCreateBothIdentitiesAndReceiveOnlyTargetsIntoInbox() {
+    @Test void currentAndHistoricalSensingIdentitiesReceiveOnlyTargetsIntoInbox() {
         for(String type:List.of("radar","5ga","tdoa","aoa","dcd","rid")) {
-            Binding b=List.of("aoa","dcd","rid").contains(type)?historicalBinding(type):register(type);
+            boolean historical=List.of("aoa","dcd","rid").contains(type);
+            if(historical) assertThatThrownBy(()->configuration.register(registration(type),key()))
+                    .isInstanceOf(com.uav.lowaltitude.platform.api.ApiException.class).hasMessageContaining("已停用");
+            Binding b=historical ? repository.binding(com.uav.lowaltitude.testsupport.HistoricalMqttDeviceFixture.insert(
+                    repository,registration(type),clock.nowMillis()),false) : register(type);
             assertThat(b.deviceId()).isNotEqualTo(b.opsDeviceId());
             String expectedType = switch (type) {
                 case "radar" -> "RADAR"; case "5ga" -> "FIVE_G_A"; case "tdoa" -> "TDOA";
@@ -280,9 +284,10 @@ class MqttIngressTest {
         }
         assertThat(tcp.enabledDevices()).noneMatch(row -> LingyunEnvelope.PROTOCOL.equals(row.get("protocol_code")));
     }
-    @Test void controlStaticGoesOnlineWithoutInboxAndSenseDataIsRejected() {
+    @Test void historicalControlStaticDoesNotEnterFusionInboxAndSenseDataIsRejected() {
         for (String type : List.of("dec", "ifr", "bsc")) {
-            Binding b = historicalBinding(type);
+            Binding b = repository.binding(com.uav.lowaltitude.testsupport.HistoricalMqttDeviceFixture.insert(
+                    repository, registration(type), clock.nowMillis()), false);
             assertThat(jdbc.queryForObject("SELECT source_type FROM integration_source WHERE source_id=?",
                     String.class, b.sourceId())).isNull();
             receive(b, heartbeat(type, 0, null), false, 1, false, false);
@@ -313,10 +318,10 @@ class MqttIngressTest {
         assertThat(repository.binding(b.opsDeviceId(),false).lastPtTime()).isEqualTo(3000);
     }
     @Test void staticLocationFillsEmptyLedgerThenLeavesExistingCoordinates() {
-        Binding b = historicalBinding("dcd");
-        receive(b, heartbeat("dcd", 1, 2000L), false, 1, false, false);
+        Binding b = register("tdoa");
+        receive(b, heartbeat("tdoa", 1, 2000L), false, 1, false, false);
         assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", Double.class, b.opsDeviceId())).isNull();
-        receive(b, heartbeat("dcd", 1, 3000L, 118.62, 37.42, 12.5), false, 2, false, false);
+        receive(b, heartbeat("tdoa", 1, 3000L, 118.62, 37.42, 12.5), false, 2, false, false);
         assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", java.math.BigDecimal.class, b.opsDeviceId()))
                 .isEqualByComparingTo("118.62");
         assertThat(jdbc.queryForObject("SELECT latitude FROM ops_device WHERE device_id=?", java.math.BigDecimal.class, b.opsDeviceId()))
@@ -325,10 +330,10 @@ class MqttIngressTest {
                 .isEqualByComparingTo("12.5");
         assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_id=?", String.class, b.opsDeviceId()))
                 .isEqualTo("WGS-84");
-        receive(b, heartbeat("dcd", 1, 4000L, 119.0, 38.0, 99.0), false, 3, false, false);
+        receive(b, heartbeat("tdoa", 1, 4000L, 119.0, 38.0, 99.0), false, 3, false, false);
         assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", java.math.BigDecimal.class, b.opsDeviceId()))
                 .isEqualByComparingTo("118.62");
-        receive(b, heartbeat("dcd", 1, 5000L, 118.1, null, null), false, 4, false, false);
+        receive(b, heartbeat("tdoa", 1, 5000L, 118.1, null, null), false, 4, false, false);
         assertThat(jdbc.queryForObject(
                 "SELECT COUNT(*) FROM mqtt_receive_diagnostic WHERE broker_id=? AND outcome='REJECTED' AND reason='INVALID_ENVELOPE'",
                 Long.class, brokerId)).isEqualTo(1);

@@ -25,7 +25,6 @@ const canOperate = computed(() => auth.hasPermission('commissioning.op') && (!ma
   workflow.value?.state === 'PROCESSING' && workflow.value?.task?.device_id === selectedDeviceId.value
   && !maintenance.error.value && !maintenance.loading.value && !maintenanceBusy.value && !maintenancePending.value)));
 const devices = ref([]);
-const statisticsScope = ref(true);
 let devicesRequest = 0;
 const filters = reactive({ keyword: '', region: '', type: '' });
 const filtersExpanded = ref(true);
@@ -59,11 +58,9 @@ const information = ref(null);
 const informationLoading = ref(false);
 const informationError = ref('');
 let informationRequest = 0;
-let informationTimer;
 const reportDialog = ref(false);
 const terminal = new Set(['PASSED', 'FAILED', 'UNTESTABLE', 'CANCELLED']);
 const config = reactive({ transport: 'TCP', host: '', port: null, timeout_millis: 3000 });
-let pollTimer;
 let pollInFlight = false;
 let alive = true;
 let connectionRequest = 0;
@@ -125,17 +122,21 @@ function restoreTaskConfig() {
   Object.assign(config, { transport: saved.transport || 'TCP', host: saved.host || '', port: saved.port ?? null, timeout_millis: saved.timeout_millis ?? 3000 });
   return true;
 }
-async function loadInformation() {
+async function loadInformation({ quiet = false } = {}) {
   const id = selectedDeviceId.value;
   const request = ++informationRequest;
   if (!id) { information.value = null; informationLoading.value = false; informationError.value = ''; return; }
-  informationLoading.value = true;
+  if (!quiet) informationLoading.value = true;
   try {
     const data = await commissionApi.information(id);
     if (!alive || request !== informationRequest || selectedDeviceId.value !== id) return;
     information.value = data; informationError.value = '';
   } catch (e) {
-    if (alive && request === informationRequest) { information.value = null; informationError.value = e.message || '设备信息读取失败'; }
+    if (alive && request === informationRequest) {
+      if (!quiet || [401, 403, 404].includes(e.status)) information.value = null;
+      informationError.value = e.message || '设备信息读取失败';
+      if (quiet) throw e;
+    }
   } finally { if (request === informationRequest) informationLoading.value = false; }
 }
 async function applyConnection(deviceId) {
@@ -154,7 +155,7 @@ async function applyConnection(deviceId) {
 
 async function loadDevices() {
   const request = ++devicesRequest;
-  const { items } = await readDevicePages(deviceApi.list, maintenanceId.value ? {} : deviceCatalogParams({ statistics_scope: statisticsScope.value }));
+  const { items } = await readDevicePages(deviceApi.list, maintenanceId.value ? {} : deviceCatalogParams());
   if (!alive || request !== devicesRequest) return;
   devices.value = items;
   if (maintenanceId.value) { selectMaintenanceDevice(); return; }
@@ -206,7 +207,7 @@ async function loadEvents() {
   events.value = [...merged.values()].sort((a, b) => a.event_seq - b.event_seq).slice(-150);
   afterSeq.value = Math.max(afterSeq.value, data.next_seq || 0);
 }
-async function pollActive() {
+async function pollActive(quiet = false) {
   if (!active.value || pollInFlight) return;
   pollInFlight = true;
   const id = active.value.commission_id;
@@ -220,15 +221,15 @@ async function pollActive() {
       if (alive && active.value?.commission_id === id) report.value = result;
     }
     if (changed && alive && active.value?.commission_id === id) {
-      void loadRecords();
-      await refreshMaintenanceAfterCommission();
+      await loadRecords({ quiet });
+      await refreshMaintenanceAfterCommission(quiet);
     }
     error.value = '';
-  } catch (e) { error.value = e.message || '任务轮询失败'; }
+  } catch (e) { error.value = e.message || '任务状态读取失败'; if (quiet) throw e; }
   finally { pollInFlight = false; }
 }
-async function refreshMaintenanceAfterCommission() {
-  if (maintenanceId.value && !maintenanceBusy.value && !maintenancePending.value) await maintenance.load();
+async function refreshMaintenanceAfterCommission(quiet = false) {
+  if (maintenanceId.value && !maintenanceBusy.value && !maintenancePending.value) await maintenance.load({ quiet, rethrow: quiet });
 }
 async function runAction(action, success) {
   if (actionBusy.value) return;
@@ -258,16 +259,16 @@ function saveConfig() {
 }
 function startTask() { if (!canOperate.value || !taskSourceAllowed.value) return; runAction(() => commissionApi.start(active.value.commission_id, active.value.version), isSimulation.value ? '模拟调测已进入持久化队列' : '协议调测已进入持久化队列'); }
 function cancelTask() { runAction(() => commissionApi.cancel(active.value.commission_id, active.value.version), '任务已取消'); }
-async function loadRecords() {
+async function loadRecords({ quiet = false } = {}) {
   const request = ++recordsRequest;
   const id = selectedDeviceId.value;
   if (!id) { records.items = []; records.total = 0; recordsLoading.value = false; return; }
-  recordsLoading.value = true; recordsError.value = '';
+  if (!quiet) recordsLoading.value = true;
   try {
     const data = await commissionApi.list({ device_id: id, page: records.page, size: records.size });
     if (!alive || request !== recordsRequest || id !== selectedDeviceId.value) return;
-    records.items = data.items || []; records.total = data.total ?? records.items.length;
-  } catch (e) { if (alive && request === recordsRequest) recordsError.value = e.message || '联调记录加载失败'; }
+    records.items = data.items || []; records.total = data.total ?? records.items.length; recordsError.value = '';
+  } catch (e) { if (alive && request === recordsRequest) { recordsError.value = e.message || '联调记录加载失败'; if (quiet) throw e; } }
   finally { if (request === recordsRequest) recordsLoading.value = false; }
 }
 async function viewReport(task = active.value) {
@@ -295,7 +296,7 @@ async function loadExistingTask(deviceId) {
   } catch (e) { if (alive && request === existingRequest) error.value = e.message || '已有任务读取失败'; }
 }
 
-watch(active, restoreTaskConfig);
+watch(() => JSON.stringify([active.value?.commission_id, active.value?.configuration]), restoreTaskConfig);
 watch(selectedDeviceId, id => {
   information.value = null; informationError.value = '';
   ++recordsRequest; records.items = []; records.total = 0; records.page = 1; recordsError.value = ''; recordsLoading.value = false;
@@ -314,24 +315,20 @@ onBeforeRouteUpdate(to => {
 onBeforeRouteLeave(() => {
   if (workflowLocked.value || maintenanceBusy.value || maintenancePending.value) { ElMessage.warning('当前操作结果尚未确认，请先重试确认。'); return false; }
 });
-onMounted(async () => {
-  await bootstrap();
-  if (!alive) return;
-  pollTimer = window.setInterval(() => { void pollActive(); }, 2000);
-  informationTimer = window.setInterval(() => { if (!informationLoading.value) void loadInformation(); }, 10000);
-});
-onBeforeUnmount(() => { alive = false; ++informationRequest; window.clearInterval(pollTimer); window.clearInterval(informationTimer); });
+onMounted(bootstrap);
+onBeforeUnmount(() => { alive = false; ++informationRequest; });
 // 设备资料或调测任务变化后重读设备列表与当前调测，设备在线状态变化后重读设备信息；
-// 调测进行中保留选择，同时刷新台账事实。定时器保留为推送不可用时的兜底。
+// 调测进行中保留选择，同时静默更新台账；推送不可用时由公共服务兜底。
 useRealtimeRefresh(['device', 'device_state'], topics => {
   const all = topics.includes('*');
   const tasks = [];
   if (all || topics.includes('device')) {
-    tasks.push(pollActive());
+    tasks.push(pollActive(true));
+    if (maintenanceId.value && !maintenanceBusy.value && !maintenancePending.value) tasks.push(maintenance.load({ quiet: true, rethrow: true }));
   }
   if (all || topics.includes('device') || topics.includes('device_state')) {
     tasks.push(loadDevices());
-    if (!informationLoading.value) tasks.push(loadInformation());
+    if (!informationLoading.value) tasks.push(loadInformation({ quiet: true }));
   }
   return Promise.all(tasks);
 }, { minIntervalMs: 2_000 });
@@ -354,7 +351,6 @@ useRealtimeRefresh(['device', 'device_state'], topics => {
     <div v-loading="loading" class="commission-workspace">
       <div class="commission-column">
         <el-card class="commission-selection" :class="{ 'filters-collapsed': !filtersExpanded }"><template #header><div class="table-toolbar"><b>设备选择</b><div class="commission-selection-actions"><span class="muted">{{ visibleDevices.length }} 台</span><el-button link type="primary" size="small" :aria-expanded="filtersExpanded" aria-controls="commission-device-filters" @click="filtersExpanded = !filtersExpanded">{{ filtersExpanded ? '收起筛选' : '展开筛选' }}</el-button></div></div></template>
-          <el-select v-if="!maintenanceId" v-model="statisticsScope" aria-label="设备范围" :disabled="selectionLocked" @change="bootstrap"><el-option label="业务设备" :value="true" /><el-option label="全部台账（含测试样例）" :value="false" /></el-select>
           <div id="commission-device-filters" v-show="filtersExpanded" class="tree-filters"><el-select v-model="filters.region" clearable placeholder="全部区域" aria-label="所属区域"><el-option v-for="item in regions" :key="item" :label="item" :value="item" /></el-select><el-select v-model="filters.type" clearable placeholder="全部类型" aria-label="设备类型"><el-option v-for="item in types" :key="item" :label="item" :value="item" /></el-select><el-input v-model="filters.keyword" clearable placeholder="搜索设备名称 / 编号" /></div>
           <div class="commission-device-list"><details v-for="[region,items] in deviceGroups" :key="region" open class="device-tree-group"><summary>{{ region }}<span>{{ items.length }}</span></summary><button v-for="item in items" :key="item.device_id" type="button" class="device-tree-item" :class="{active: item.device_id===selectedDeviceId}" :disabled="selectionLocked" @click="selectedDeviceId=item.device_id"><span class="device-tree-copy"><b>{{ item.name }}</b><small :title="item.device_no">{{ formatDeviceNo(item.device_no) }}</small></span></button></details><el-empty v-if="!deviceGroups.length" description="暂无匹配设备" :image-size="56" /></div>
           <p v-if="maintenanceId && selectedDeviceId" class="tree-note">已定位本次异常设备；日常办理请返回设备异常处理。</p><p v-else-if="!maintenanceId && selectionLocked" class="tree-note">当前任务结束或取消后可切换设备。</p>

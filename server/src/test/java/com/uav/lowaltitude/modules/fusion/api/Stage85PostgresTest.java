@@ -160,7 +160,9 @@ class Stage85PostgresTest {
         assertThat(jdbc.queryForObject("select extversion from pg_extension where extname='postgis'", String.class)).isNotBlank();
         // 阶段 8 的只增触发器在 8.5 迁移之后仍在位：新迁移不得顺手放开历史证据的改写。
         for (String trigger : List.of("trg_stage8_lineage_append_only", "trg_stage7_rule_evaluation_append_only")) {
-            assertThat(jdbc.queryForObject("select count(*) from pg_trigger where tgname=? and not tgisinternal", Long.class, trigger))
+            assertThat(jdbc.queryForObject("select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid"
+                    + " join pg_namespace n on n.oid=c.relnamespace"
+                    + " where t.tgname=? and not t.tgisinternal and n.nspname=current_schema()", Long.class, trigger))
                     .as(trigger + " 必须仍然存在").isEqualTo(1L);
         }
     }

@@ -14,6 +14,19 @@ public class AuditLog {
     private String ip;
     private String result;
     private String userAgent;
+    private String displayRoleCode;
+    private String roleName;
+    private String roleSource;
+    private String menuCode;
+
+    public String getDisplayRoleCode() { return displayRoleCode; }
+    public void setDisplayRoleCode(String value) { displayRoleCode = value; }
+    public String getRoleName() { return roleName; }
+    public void setRoleName(String value) { roleName = value; }
+    public String getRoleSource() { return roleSource; }
+    public void setRoleSource(String value) { roleSource = value; }
+    public String getMenuCode() { return menuCode; }
+    public void setMenuCode(String value) { menuCode = value; }
 
     public String getAuditId() {
         return auditId;

@@ -127,11 +127,10 @@ class LingyunControlMqttTest {
                 .andExpect(status().isBadRequest());
     }
 
-    @Test void decoyCommandSucceedsOnMatchingDeviceAndDoesNotWriteFusionInbox() {
-        // Existing decoy protocol history remains supported; new registration is retired.
-        Binding decoy = mqtt.binding(mqtt.register(new Registration(LingyunEnvelope.PROTOCOL, brokerId,
-                "fixture-provider", "ext-dec", "dec", "replay", org, district,
-                "P5-DEC-" + key(), "Historical decoy", null, null, null), clock.nowMillis()), false);
+    @Test void historicalDecoyCommandReceiptDoesNotWriteFusionInbox() {
+        Binding decoy = mqtt.binding(com.uav.lowaltitude.testsupport.HistoricalMqttDeviceFixture.insert(mqtt,
+                new Registration(LingyunEnvelope.PROTOCOL, brokerId, "fixture-provider", "ext-dec", "dec", "replay",
+                        org, district, "P5-DEC-" + key(), "历史协议设备", null, null, null), clock.nowMillis()), false);
         online(decoy);
         String ok = control.enqueue(decoy.opsDeviceId(), key(), "AUTH-DEC", 1, 50002, Map.of("direction", 0), "开启诱骗方向驱离");
         swallowOutbox(ok);

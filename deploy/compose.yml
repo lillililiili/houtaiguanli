@@ -1,6 +1,8 @@
 services:
   db:
     image: postgis/postgis:16-3.5
+    # 并发统计查询使用 PostgreSQL 动态共享内存；Docker 默认 64 MB 会导致查询失败。
+    shm_size: ${DB_SHM_SIZE:-256mb}
     environment:
       POSTGRES_DB: ${DB_NAME:-houtaiguanli}
       POSTGRES_USER: ${DB_USER:-uav}
@@ -34,6 +36,8 @@ services:
       SPRING_PROFILES_ACTIVE: production
       APP_SOURCE_MODE: live
       APP_DEV_SEED_ENABLED: "false"
+      # Explicitly configure the reverse proxy address pattern; never trust arbitrary forwarded headers.
+      APP_TRUSTED_PROXY_PATTERN: ${APP_TRUSTED_PROXY_PATTERN:-127\.0\.0\.1}
       # 空库首次启动时一次性创建唯一超级管理员（首次登录须改密）；库里已有用户时不再创建。
       # 初始密码只写在 deploy/.env（见 .env.example，不提交）或运行环境里；空库未填写时 api 拒绝启动并提示该变量。
       # APP_SUPER_ADMIN_ACCOUNT 每次启动都用于校验唯一超级管理员，创建后不要再改。

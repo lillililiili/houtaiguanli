@@ -208,6 +208,9 @@ class EvidenceChainApiTest {
         assertThat(data.get("coverage").get("AUTHORIZATION").get("status").asText()).isEqualTo("ABSENT");
         assertThat(data.get("coverage").get("OPERATION").get("status").asText()).isEqualTo("FORBIDDEN");
         assertThat(data.get("records").findValuesAsText("record_type")).doesNotContain("OPERATION");
+        String backend = com.uav.lowaltitude.testsupport.BackendAccountFixture.session(jdbc, "ASSIGNED", org, district);
+        assertThat(chain(backend, "EVENT", eventId).get("coverage").get("OPERATION").get("status").asText())
+                .isEqualTo("PRESENT");
         assertThat(data.get("integrity").get("algorithm").asText()).isEqualTo("SHA-256");
         assertThat(data.get("lineage").get("availability").asText()).isEqualTo("PRESENT");
         boolean sawPreMerge = false;

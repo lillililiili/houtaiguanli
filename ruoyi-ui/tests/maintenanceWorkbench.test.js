@@ -10,7 +10,8 @@ import { maintenanceTime } from '@/views/operations/maintenance/presentation.js'
 const access = vi.hoisted(() => ({ hasPermission: vi.fn(() => true), hasMenu: vi.fn(() => true) }));
 vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => access }));
 vi.mock('@/api/deviceMaintenance.js', () => ({ deviceMaintenanceApi: { workflow: vi.fn(), act: vi.fn(), list: vi.fn() } }));
-vi.mock('@/services/realtime.js', () => ({ useRealtimeRefresh: vi.fn() }));
+const realtime = vi.hoisted(() => ({ reload: null }));
+vi.mock('@/services/realtime.js', () => ({ useRealtimeRefresh: (topics, reload) => { realtime.reload = reload; return { trigger: reload }; } }));
 let app, host, router, activeFlow;
 const makeFlow = (id = 'case-radar', state = 'PENDING') => ({
   workflow_version: 2, task: { task_id: id, device_id: `device-${id}`, device_name: `设备 ${id}`, device_no: id, reason: '设备上报故障', workflow_version: 2, reported_at: Date.UTC(2026, 0, 2, 0) },
@@ -46,6 +47,23 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = ''; vi.useRealTimers(); });
 
 describe('设备异常工作台的两步办理', () => {
+  it('没有变化不重复读取，SSE 更新保留备注且刷新按钮不转圈', async () => {
+    activeFlow = makeFlow('case-other', 'PROCESSING'); await mount('task_id=case-other');
+    await writeNote('待核对电源');
+    const reads = deviceMaintenanceApi.workflow.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000); await settle();
+    expect(deviceMaintenanceApi.workflow).toHaveBeenCalledTimes(reads);
+    let finish;
+    deviceMaintenanceApi.workflow.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const updating = realtime.reload(['device']); await settle();
+    expect(button('刷新').classList.contains('is-loading')).toBe(false);
+    expect(host.querySelector('#maintenance-note').value).toBe('待核对电源');
+    expect(host.textContent).toContain('设备 case-other');
+    finish(makeFlow('case-other', 'READY_TO_COMPLETE')); await updating; await settle();
+    expect(host.querySelector('#maintenance-note').value).toBe('待核对电源');
+    expect(button('确认办结').disabled).toBe(false);
+    expect(deviceMaintenanceApi.act).not.toHaveBeenCalled();
+  });
   it.each(['case-radar', 'case-sensor-other'])('首次读取只展示设备事实和接手入口，不自动写状态：%s', async id => {
     activeFlow = makeFlow(id); await mount(`task_id=${id}`);
     expect(host.textContent).toContain('发生了什么'); expect(host.textContent).toContain('现在什么状态');
@@ -61,7 +79,7 @@ describe('设备异常工作台的两步办理', () => {
     await mount(); button('接手处理').click(); await settle();
     expect(host.textContent).toContain('等待设备恢复'); expect(button('确认办结')).toBeUndefined();
     activeFlow = { ...makeFlow('case-radar', 'READY_TO_COMPLETE'), version: 3, recovery: { result: 'PASS', reason: '有效上报确认健康正常且无告警' } };
-    await vi.advanceTimersByTimeAsync(5100); await settle();
+    await realtime.reload(['device']); await settle();
     expect(button('确认办结').disabled).toBe(false);
     button('确认办结').click(); await settle();
     expect(deviceMaintenanceApi.act.mock.calls.map(call => call[1].action)).toEqual(['START', 'CONFIRM_COMPLETE']);
@@ -71,7 +89,7 @@ describe('设备异常工作台的两步办理', () => {
     activeFlow = makeFlow('case-radar', 'READY_TO_COMPLETE'); await mount();
     expect(button('接手处理')).toBeUndefined(); expect(button('确认办结').disabled).toBe(false);
     activeFlow = { ...makeFlow('case-radar', 'PENDING'), current_device_state: { connectivity: 'ONLINE' }, recovery: { result: 'UNKNOWN', reason: '缺少新的健康上报' } };
-    await vi.advanceTimersByTimeAsync(5100); await settle();
+    await realtime.reload(['device']); await settle();
     expect(button('确认办结')).toBeUndefined(); expect(host.textContent).toContain('缺少新的健康上报');
     expect(host.querySelectorAll('.current-device-state strong')[1].textContent).toBe('待确认');
   });
@@ -129,7 +147,7 @@ describe('设备异常工作台的两步办理', () => {
   });
   it('后台状态改变与刷新不会丢失未保存备注或替用户提交', async () => {
     activeFlow = makeFlow('case-radar', 'PROCESSING'); await mount(); await writeNote('检查过电源，正在核对网络。');
-    activeFlow = makeFlow('case-radar', 'READY_TO_COMPLETE'); await vi.advanceTimersByTimeAsync(5100); await settle();
+    activeFlow = makeFlow('case-radar', 'READY_TO_COMPLETE'); await realtime.reload(['device']); await settle();
     expect(host.querySelector('#maintenance-note').value).toBe('检查过电源，正在核对网络。');
     expect(router.currentRoute.value.query.task_id).toBe('case-radar'); expect(deviceMaintenanceApi.act).not.toHaveBeenCalled();
   });
@@ -182,11 +200,11 @@ describe('设备异常工作台的两步办理', () => {
     expect(host.querySelector('.case-reference').textContent).toContain(id);
     expect(host.querySelector('.shared-case-hint').textContent).toContain('不会重复新增待办');
     activeFlow.related_plans = [{ plan_id: `${id}-plan-a` }];
-    await vi.advanceTimersByTimeAsync(5100); await settle();
+    await realtime.reload(['device']); await settle();
     expect(host.querySelector('.shared-case-hint')).toBeNull();
     activeFlow.workflow_version = 1; activeFlow.task.workflow_version = 1;
     activeFlow.related_plans.push({ plan_id: `${id}-plan-b` });
-    await vi.advanceTimersByTimeAsync(5100); await settle();
+    await realtime.reload(['device']); await settle();
     expect(host.querySelector('.shared-case-hint')).toBeNull();
   });
   it.each(['case-radar', 'case-other-device'])('列表显示固定的人工上报时间和任务，自动核验不能改写：%s', async id => {
@@ -201,7 +219,7 @@ describe('设备异常工作台的两步办理', () => {
     expect(before).not.toContain('核验于'); expect(before).not.toContain('更新于');
     expect(host.querySelector('.latest-manual-report').textContent).toContain('本次上报已关联到系统发现的这份处置单');
     activeFlow.recovery.checked_at += 60000;
-    await vi.advanceTimersByTimeAsync(5100); await settle();
+    await realtime.reload(['device']); await settle();
     expect(host.querySelector('.case-item').textContent).toBe(before);
   });
   it('系统发现和旧接口都保留首次时间，不把读取或核验当成上报', async () => {
@@ -212,7 +230,7 @@ describe('设备异常工作台的两步办理', () => {
     expect(host.querySelector('.case-time').textContent).toContain('首次发现');
     expect(host.querySelector('.latest-manual-report')).toBeNull();
     delete activeFlow.task.report_summary;
-    await vi.advanceTimersByTimeAsync(5100); await settle();
+    await realtime.reload(['device']); await settle();
     expect(host.querySelector('.case-time').textContent).toBe(`首次上报 ${maintenanceTime(activeFlow.task.reported_at)}`);
   });
   it('已办结依据保持冻结，与设备当前再次故障分开展示', async () => {

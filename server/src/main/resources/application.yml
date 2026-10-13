@@ -1,5 +1,11 @@
 server:
   port: 8080
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      # Trust only local development proxies by default; deployments must explicitly list their proxy addresses.
+      internal-proxies: '${APP_TRUSTED_PROXY_PATTERN:127\.0\.0\.1|0:0:0:0:0:0:0:1|::1}'
+      remote-ip-header: X-Forwarded-For
 
 spring:
   application:

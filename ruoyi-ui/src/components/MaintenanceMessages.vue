@@ -11,10 +11,11 @@ import { maintenanceLocation, maintenanceMeta } from '@/views/operations/mainten
 const auth = useAuthStore(), router = useRouter();
 const visible = ref(false), loading = ref(false), error = ref(''), items = ref([]), unread = ref(null), page = ref(1), total = ref(0), opening = ref('');
 const canOpen = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
-let alive = true, generation = 0, timer;
-async function reload() {
-  if (loading.value || opening.value) return;
-  const current = ++generation; loading.value = true;
+let alive = true, generation = 0, reading = false;
+async function reload({ quiet = false } = {}) {
+  if (reading || opening.value) return;
+  const current = ++generation; reading = true;
+  if (!quiet) loading.value = true;
   try {
     while (alive && current === generation) {
       const data = await deviceMaintenanceApi.messages({ page: page.value, size: 6, pending_only: true });
@@ -25,8 +26,12 @@ async function reload() {
       page.value = lastPage;
     }
   } catch (e) {
-    if (alive && current === generation) { error.value = e.message || '消息读取失败'; unread.value = null; items.value = []; total.value = 0; }
-  } finally { if (alive && current === generation) loading.value = false; }
+    if (alive && current === generation) {
+      error.value = e.message || '消息读取失败'; unread.value = null;
+      if ([401, 403].includes(e.status)) { items.value = []; total.value = 0; }
+      if (quiet) throw e;
+    }
+  } finally { if (alive && current === generation) { loading.value = false; reading = false; } }
 }
 async function open(item) {
   if (!canOpen.value || opening.value) return;
@@ -39,23 +44,22 @@ async function open(item) {
   } catch (e) { if (alive) error.value = e.message || '消息打开失败，请重试'; }
   finally { opening.value = ''; if (alive) void reload(); }
 }
-function changed() { if (alive) void reload(); }
+function changed() { if (alive) realtime.trigger(['device']); }
 function changePage(value) { page.value = value; void reload(); }
 function toggle() { visible.value = !visible.value; if (visible.value) void reload(); }
 function dismiss(event) {
   if (event.type === 'keydown') { if (event.key === 'Escape') visible.value = false; return; }
   if (!event.target.closest?.('.maintenance-bell, .maintenance-message-popover')) visible.value = false;
 }
-// 设备异常、运维待办变化后立即更新消息数；30 秒定时器保留为推送不可用时的兜底。
-useRealtimeRefresh(['device'], () => reload(), { minIntervalMs: 2_000 });
+// 设备异常、运维待办变化后静默更新，断线兜底由公共 SSE 服务统一负责。
+const realtime = useRealtimeRefresh(['device'], () => reload({ quiet: true }), { minIntervalMs: 2_000 });
 onMounted(() => {
   void reload();
-  timer = window.setInterval(() => { if (!document.hidden) void reload(); }, 30000);
   window.addEventListener('admin:maintenance-changed', changed);
   document.addEventListener('pointerdown', dismiss);
   document.addEventListener('keydown', dismiss);
 });
-onBeforeUnmount(() => { alive = false; generation++; window.clearInterval(timer); window.removeEventListener('admin:maintenance-changed', changed); document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', dismiss); });
+onBeforeUnmount(() => { alive = false; generation++; window.removeEventListener('admin:maintenance-changed', changed); document.removeEventListener('pointerdown', dismiss); document.removeEventListener('keydown', dismiss); });
 </script>
 
 <template>

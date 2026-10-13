@@ -31,6 +31,7 @@ public class RealtimeHub {
     private final AppClock clock;
     private final int maxConnections;
     private final long timeoutMillis;
+    private volatile boolean listening;
 
     public RealtimeHub(AppClock clock,
             @Value("${app.realtime.max-connections:200}") int maxConnections,
@@ -40,7 +41,8 @@ public class RealtimeHub {
         this.timeoutMillis = timeoutMillis;
     }
 
-    public SseEmitter open(boolean listening) {
+    // 与监听状态切换串行，避免新连接先收到恢复状态、随后又收到过时的 ready=false。
+    public synchronized SseEmitter open() {
         if (emitters.size() >= maxConnections) {
             throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "REALTIME_BUSY", "实时连接已满，页面将按原方式刷新");
         }
@@ -63,6 +65,16 @@ public class RealtimeHub {
         change.put("at", clock.nowMillis());
         for (SseEmitter emitter : emitters) {
             send(emitter, SseEmitter.event().name("change").data(change));
+        }
+    }
+
+    /** SSE 连接仍在时，数据库监听中断也必须告知页面启用兜底读取。 */
+    public synchronized void setListening(boolean value) {
+        if (listening == value) return;
+        listening = value;
+        for (SseEmitter emitter : emitters) {
+            send(emitter, SseEmitter.event().name("status")
+                    .data(Map.of("listening", value, "at", clock.nowMillis())));
         }
     }
 

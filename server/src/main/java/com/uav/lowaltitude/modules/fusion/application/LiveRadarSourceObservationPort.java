@@ -94,6 +94,10 @@ public class LiveRadarSourceObservationPort implements SourceObservationPort {
      * 而 {@code source_type}/{@code schema_status} 只有注册流程知道该填什么。
      */
     private String resolveSourceId(String deviceId) {
+        // Native TCP is a transport, not proof of real equipment. QA counterparts keep raw ops tracks only.
+        // Until a simulated promotion contract exists, never promote their live transport as real observations.
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM ops_integration_source WHERE source_code=? AND simulated=TRUE",Long.class,deviceId)>0)
+            throw new IllegalArgumentException("模拟 TCP 来源仅保存协议航迹，不进入实测目标通道");
         try {
             return jdbc.queryForObject("SELECT source_id FROM integration_source WHERE source_code=? AND enabled=true", String.class, deviceId);
         } catch (EmptyResultDataAccessException notRegistered) {

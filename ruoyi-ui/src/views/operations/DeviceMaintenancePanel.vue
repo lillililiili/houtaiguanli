@@ -20,21 +20,21 @@ const latestNotification = computed(() => notificationAttempts.value[0]);
 const previousDeliveries = computed(() => notificationAttempts.value.slice(1).filter(attempt => attempt.delivery_status === 'DELIVERED').length);
 const latestNotificationText = computed(() => latestNotification.value ? attemptStatus(latestNotification.value)
   : selected.value?.notification_delivery_status ? notificationStatus(selected.value.notification_delivery_status) : '未保存通知资料，发送情况未知');
-let generation = 0, alive = true;
+let generation = 0, alive = true, reading = false;
 
-async function reload(force = false) {
-  if (loading.value && !force) return;
+async function reload(force = false, quiet = false) {
+  if (reading && !force) return;
   const current = ++generation;
-  loading.value = true;
+  reading = true; if (!quiet) loading.value = true;
   try {
     const result = await deviceMaintenanceApi.list({ status: status.value, page: page.value, size: 10 });
     if (!alive || current !== generation) return;
     items.value = result.items || []; total.value = result.total; error.value = '';
-    if (page.value > pages.value) { page.value = pages.value; void reload(true); }
+    if (page.value > pages.value) { page.value = pages.value; return reload(true, quiet); }
   } catch (reason) {
     if (alive && current === generation) { error.value = reason.message || '运维待办读取失败'; return reason; }
   }
-  finally { if (alive && current === generation) loading.value = false; }
+  finally { if (alive && current === generation) { loading.value = false; reading = false; } }
   return null;
 }
 function filterChanged() { page.value = 1; void reload(true); }
@@ -69,7 +69,7 @@ function notificationChannel(snapshot) {
 }
 onMounted(() => reload());
 // 运维待办变化后立即重读当前页；读取失败返回原因，实时刷新据此退避重试。
-useRealtimeRefresh(['device'], async () => { const failure = await reload(); if (failure) throw failure; }, { minIntervalMs: 2_000 });
+useRealtimeRefresh(['device'], async () => { const failure = await reload(false, true); if (failure) throw failure; }, { minIntervalMs: 2_000 });
 onBeforeUnmount(() => { alive = false; generation++; });
 defineExpose({ reload });
 </script>

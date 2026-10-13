@@ -125,15 +125,16 @@ public class ProtocolDataRepository {
     }
 
     @Transactional
-    public void saveRtk(String deviceId, String frameId, Rtk rtk, long now) {
+    public void saveRtk(String deviceId, String messageKey, String frameId, Rtk rtk, long now) {
         var before = monitoring.lockOrInitialize(deviceId,now);
-        try {
-            jdbc.update("""
-                    INSERT INTO radar_rtk_sample (sample_id,device_id,frame_id,latitude_deg,longitude_deg,
-                        heading_deg,satellite_count,received_at) VALUES (?,?,?,?,?,?,?,?)
-                    """, UUID.randomUUID().toString(), deviceId, frameId, rtk.latitudeDeg(), rtk.longitudeDeg(),
-                    rtk.headingDeg(), rtk.satelliteCount(), now);
-        } catch (DataIntegrityViolationException duplicate) { return; }
+        int inserted = jdbc.update("""
+                INSERT INTO radar_rtk_sample (sample_id,device_id,frame_id,latitude_deg,longitude_deg,
+                    heading_deg,satellite_count,received_at,protocol_message_key)
+                SELECT ?,?,?,?,?,?,?,?,?
+                WHERE NOT EXISTS (SELECT 1 FROM radar_rtk_sample WHERE device_id=? AND protocol_message_key=?)
+                """, UUID.randomUUID().toString(), deviceId, frameId, rtk.latitudeDeg(), rtk.longitudeDeg(),
+                rtk.headingDeg(), rtk.satelliteCount(), now, messageKey, deviceId, messageKey);
+        if (inserted == 0) return;
         Map<String, Object> aggregate = jdbc.queryForMap("""
                 SELECT COUNT(*) AS sample_count,AVG(latitude_deg) AS latitude_deg,
                        AVG(longitude_deg) AS longitude_deg,AVG(heading_deg) AS heading_deg

@@ -237,10 +237,12 @@ public class LegalityEvaluationReadRepository {
             if (query.from() != null) latest.append(" AND e.evaluated_at>=:from AND e.evaluated_at<:to");
             latest.append(" AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='TARGET' AND n.subject_kind='TARGET'"
                     + " AND n.mode=e.mode AND n.target_id=e.target_id"
-                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))"
+                    // Keep indexed successor probes correlated. A hash anti join can compare an
+                    // entire subject's history pairwise when one subject has many evaluations.
+                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)) OFFSET 0 ROWS)"
                     + " AND NOT EXISTS (SELECT 1 FROM rule_evaluation n WHERE e.subject_kind='PLAN' AND n.subject_kind='PLAN'"
                     + " AND n.mode=e.mode AND n.plan_id=e.plan_id"
-                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)))");
+                    + " AND (n.evaluated_at>e.evaluated_at OR (n.evaluated_at=e.evaluated_at AND n.evaluation_id>e.evaluation_id)) OFFSET 0 ROWS)");
             source = latest.append(" OFFSET 0 ROWS)").toString();
         }
         return " FROM " + source + " e JOIN rule_set_version v ON v.rule_set_version_id=e.rule_set_version_id JOIN rule_set rs ON rs.rule_set_id=v.rule_set_id"
