@@ -31,11 +31,18 @@ class DirectDisposalApiTest {
     private static final String DIRECT="disposal:direct", BASE="/api/v1/disposal-authorizations";
     private static final String ORG="seed-stage3-org", DISTRICT="seed-stage3-district";
 
-    @Test void permissionIsCataloguedButNotGrantedEvenToAdmin() {
+    @Test void permissionIsCataloguedAndGrantedToSuperAdminAsExplicitOp() {
         assertThat(jdbc.queryForList("select name from app_permission where permission_code=?", String.class,DIRECT))
                 .containsExactly("直接反制（免逐次审批）");
-        assertThat(jdbc.queryForObject("select count(*) from app_role_permission where permission_code=? and role_code='ROLE-ADMIN' and permission_level<>'NONE'",Integer.class,DIRECT)).isZero();
-        assertThat(access.permissionCodes("ROLE-ADMIN")).doesNotContain(DIRECT);
+        // 2026-10-10 用户确认、2026-10-12 再次确认：唯一超级管理员固定拥有直接反制。
+        // 它由完整性初始化写成显式 OP 行，鉴权照旧只认显式 OP，不是从动作目录隐式继承。
+        assertThat(jdbc.queryForObject("select count(*) from app_role_permission where permission_code=? and role_code='ROLE-ADMIN' and permission_level='OP'",Integer.class,DIRECT)).isEqualTo(1);
+        assertThat(access.permissionCodes("ROLE-ADMIN")).contains(DIRECT);
+        // 其余内置角色仍默认没有；直接反制只给超级管理员，别的角色必须逐个显式授予。
+        assertThat(jdbc.queryForObject("""
+                select count(*) from app_role_permission rp join app_role r on r.role_code=rp.role_code
+                where rp.permission_code=? and r.builtin=true and rp.role_code<>'ROLE-ADMIN' and rp.permission_level<>'NONE'
+                """,Integer.class,DIRECT)).isZero();
     }
     @Test void existingApproverCannotUseDirectEndpoint() throws Exception {
         Actor actor=actor(List.of("disposal:request","disposal:approve","disposal:execute"));

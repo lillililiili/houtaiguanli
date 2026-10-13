@@ -137,8 +137,9 @@ public class FusionInboxRepository {
                 + " WHERE inbox_id IN (:ids)"
                 + " AND (status='RECEIVED' OR (status='PROCESSING' AND lease_until<:now)) AND fusion_attempts<:max", p);
         if (claimed == 0) return List.of();
-        return jdbc.query("SELECT inbox_id,source,source_msg_id,source_id,received_at,CAST(payload AS VARCHAR) AS payload_text FROM inbox_message WHERE lease_token=:token ORDER BY received_at ASC, ingest_seq ASC",
-                Map.of("token", token), (rs, i) -> new InboxRow(rs.getString("inbox_id"), rs.getString("source"), rs.getString("source_msg_id"), rs.getString("source_id"),
+        // Reuse the locked primary keys: a token-only lookup scans the entire retained message history for every batch.
+        return jdbc.query("SELECT inbox_id,source,source_msg_id,source_id,received_at,CAST(payload AS VARCHAR) AS payload_text FROM inbox_message WHERE inbox_id IN (:ids) AND lease_token=:token ORDER BY received_at ASC, ingest_seq ASC",
+                p, (rs, i) -> new InboxRow(rs.getString("inbox_id"), rs.getString("source"), rs.getString("source_msg_id"), rs.getString("source_id"),
                         rs.getLong("received_at"), rs.getString("payload_text")));
     }
 

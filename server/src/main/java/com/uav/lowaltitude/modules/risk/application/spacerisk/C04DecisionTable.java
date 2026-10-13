@@ -16,7 +16,7 @@ public final class C04DecisionTable {
     public static final String REASON_CORRIDOR_INTRUSION = "SPACE_OBJECT_IN_CORRIDOR";
     public static final String REASON_ALTITUDE_UNKNOWN = "SPACE_OBJECT_ALTITUDE_UNKNOWN";
     public static final String REASON_NEAR_ROUTE = "SPACE_OBJECT_NEAR_ROUTE";
-    /** 决策 9-18：数量与趋势当前没有数据源；缺失时不上调等级，并如实记录"这项事实没有"。 */
+    /** 数量只接受可信观测事实；缺失时不按数量上调等级，并保留未知原因。 */
     public static final String UNKNOWN_OBJECT_COUNT = "OBJECT_COUNT_UNAVAILABLE";
     public static final String UNKNOWN_TREND = "TREND_UNAVAILABLE";
     /** 等级阶梯：上调一级即在本表内右移一位，最高到 CRITICAL。 */

@@ -50,6 +50,8 @@ class ConfirmedRuleCatalogPostgresTest {
     private static final String SPACE = "space-risk-confirmed-20261008";
     private static final String CURRENT_LEGALITY = "legality-current-20261009";
     private static final String CURRENT_SPACE = "space-current-20261009";
+    /** 10-11 追加发布、不启用的鸟类空间风险版本（迁移 V202610129102）。 */
+    private static final String BIRD = "space-bird-spatial-20261011";
     private static final String HASH = "b6e07da1a820843ea2b3634fa64fe2cc08a043c3f4d9c7f8274c685506877566";
 
     @Autowired JdbcTemplate jdbc;
@@ -153,12 +155,15 @@ class ConfirmedRuleCatalogPostgresTest {
             var migrate = migration(rootSource, schema, null);
             migrate.migrate();
             assertPublishedCatalog(old);
+            // 鸟类空间风险版本只追加发布，不改任何生效指针（指针由下面的 beforeHead 比对守住）。
+            assertThat(old.queryForObject("SELECT COUNT(*) FROM rule_set_version WHERE rule_set_version_id=? AND status_code='PUBLISHED'", Long.class, BIRD)).isEqualTo(1);
+            assertThat(old.queryForObject("SELECT COUNT(*) FROM rule_set WHERE active_version_id=? OR shadow_version_id=? OR previous_active_version_id=?", Long.class, BIRD, BIRD, BIRD)).isZero();
             if (previousName.equals("合法性研判演示规则集")) beforeHead.put("name", "合法性研判规则集");
             assertThat(old.queryForMap("SELECT * FROM rule_set WHERE rule_set_id=?", set)).isEqualTo(beforeHead);
-            assertThat(old.queryForList("SELECT * FROM rule_set_version WHERE rule_set_version_id NOT IN (?,?,?,?,?) ORDER BY rule_set_version_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE)).isEqualTo(oldVersions);
-            assertThat(old.queryForList("SELECT * FROM rule_param WHERE rule_set_version_id NOT IN (?,?,?,?,?) ORDER BY rule_param_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE)).isEqualTo(oldParams);
-            assertThat(old.queryForList("SELECT * FROM rule_set_member WHERE rule_set_version_id NOT IN (?,?,?,?,?) ORDER BY rule_set_version_id,rule_version_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE)).isEqualTo(oldMembers);
-            assertThat(old.queryForList("SELECT * FROM rule_version WHERE rule_version_id NOT LIKE 'confirmed-20261008-%' ORDER BY rule_version_id")).isEqualTo(oldDefinitions);
+            assertThat(old.queryForList("SELECT * FROM rule_set_version WHERE rule_set_version_id NOT IN (?,?,?,?,?,?) ORDER BY rule_set_version_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE, BIRD)).isEqualTo(oldVersions);
+            assertThat(old.queryForList("SELECT * FROM rule_param WHERE rule_set_version_id NOT IN (?,?,?,?,?,?) ORDER BY rule_param_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE, BIRD)).isEqualTo(oldParams);
+            assertThat(old.queryForList("SELECT * FROM rule_set_member WHERE rule_set_version_id NOT IN (?,?,?,?,?,?) ORDER BY rule_set_version_id,rule_version_id", LEGALITY, REVISION, SPACE, CURRENT_LEGALITY, CURRENT_SPACE, BIRD)).isEqualTo(oldMembers);
+            assertThat(old.queryForList("SELECT * FROM rule_version WHERE rule_version_id NOT LIKE 'confirmed-20261008-%' AND rule_version_id NOT LIKE 'confirmed-20261011-%' ORDER BY rule_version_id")).isEqualTo(oldDefinitions);
             assertThat(old.queryForObject("SELECT version_no FROM rule_set_version WHERE rule_set_version_id=?", Integer.class, LEGALITY)).isEqualTo(4);
             assertThat(old.queryForObject("SELECT COUNT(*) FROM rule_set_activation", Long.class)).isZero();
             assertThat(migrate.migrate().migrationsExecuted).isZero();

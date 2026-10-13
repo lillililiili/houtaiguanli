@@ -14,6 +14,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 import com.uav.lowaltitude.platform.config.AppProperties;
+import com.uav.lowaltitude.platform.audit.AuditService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Component
 @Order(30)
@@ -24,10 +27,14 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
 
     private final JdbcTemplate jdbcTemplate;
     private final AppProperties properties;
+    private final AuditService audit;
+    private final ObjectMapper json;
 
-    public SuperAdminIntegrityInitializer(JdbcTemplate jdbcTemplate, AppProperties properties) {
+    public SuperAdminIntegrityInitializer(JdbcTemplate jdbcTemplate, AppProperties properties, AuditService audit, ObjectMapper json) {
         this.jdbcTemplate = jdbcTemplate;
         this.properties = properties;
+        this.audit = audit;
+        this.json = json;
     }
 
     @Override
@@ -84,6 +91,15 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
                 DELETE FROM app_user_data_scope
                 WHERE user_id = (SELECT user_id FROM app_user WHERE account = ?)
                 """, account);
+        var beforePermissions = permissionGrants();
+        int modulesAdded = jdbcTemplate.update("""
+                INSERT INTO app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at)
+                SELECT 'ROLE-ADMIN',p.permission_code,'AUTH',
+                       CASE WHEN p.route_key IS NOT NULL THEN TRUE ELSE FALSE END,CURRENT_TIMESTAMP
+                FROM app_permission p WHERE p.permission_kind='MODULE'
+                  AND NOT EXISTS (SELECT 1 FROM app_role_permission rp
+                      WHERE rp.role_code='ROLE-ADMIN' AND rp.permission_code=p.permission_code)
+                """);
         // 只作用于**模块矩阵行**（决策 15-25 修订）。AUTH 是矩阵的第三级"可授权他人"，动作行只有 READ/OP，
         // 没有 AUTH 这一级——把动作行也置成 AUTH 会造出一种矩阵那边校验不到的等级。
         //
@@ -91,7 +107,7 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
         // 才现形的缺陷：首次启动时本类(@Order 30)先跑，动作行还不存在；种子随后按 PermissionCode 插入
         // 42 条 READ 动作行；下一次启动本类再跑，就把这 42 行一并抹成 AUTH。单个 Spring 测试上下文里
         // 两个 runner 只跑一遍，所以 H2 永远看不到——真实库一重启就有（uav_stage10_verify 上实测 42 行）。
-        jdbcTemplate.update("""
+        int modulesRestored = jdbcTemplate.update("""
                 UPDATE app_role_permission
                 SET permission_level = 'AUTH',
                     menu_enabled = CASE WHEN permission_code IN
@@ -100,27 +116,42 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
                 WHERE role_code = 'ROLE-ADMIN'
                   AND permission_code IN
                       (SELECT permission_code FROM app_permission WHERE permission_kind = 'MODULE')
+                  AND (permission_level <> 'AUTH' OR menu_enabled <>
+                      CASE WHEN permission_code IN (SELECT permission_code FROM app_permission WHERE route_key IS NOT NULL)
+                      THEN TRUE ELSE FALSE END)
                 """);
         // 超级管理员的动作行此前只由开发种子补齐，迁移从未写入；不开种子的新库里管理员菜单齐全、业务接口却全是 403。
-        // 内置角色的动作在角色管理里不可编辑，所以每次启动按目录补齐缺失行（READ 即授予，已有行不改）。
-        // disposal:direct 只认显式 OP，且默认不授予任何角色（2026-09-17），这里不补。
+        // 2026-10-10 用户确认：唯一超级管理员固定拥有全部动作，包括直接反制。
+        // 仍写显式 OP 授权供统一鉴权读取，不绕过业务状态、设备回执或普通角色的授权检查。
         int granted = jdbcTemplate.update("""
                 INSERT INTO app_role_permission (role_code, permission_code, permission_level, menu_enabled, created_at)
-                SELECT 'ROLE-ADMIN', p.permission_code, 'READ', FALSE, CURRENT_TIMESTAMP
+                SELECT 'ROLE-ADMIN', p.permission_code, 'OP', FALSE, CURRENT_TIMESTAMP
                 FROM app_permission p
                 WHERE p.permission_kind = 'ACTION'
-                  AND p.permission_code <> 'disposal:direct'
                   AND NOT EXISTS (
                       SELECT 1 FROM app_role_permission rp
                       WHERE rp.role_code = 'ROLE-ADMIN' AND rp.permission_code = p.permission_code
                   )
                 """);
-        if (granted > 0) {
+        int restored = jdbcTemplate.update("""
+                UPDATE app_role_permission SET permission_level='OP', menu_enabled=FALSE
+                WHERE role_code='ROLE-ADMIN' AND (permission_level<>'OP' OR menu_enabled=TRUE)
+                  AND permission_code IN (SELECT permission_code FROM app_permission WHERE permission_kind='ACTION')
+                """);
+        if (granted + restored + modulesAdded + modulesRestored > 0) {
             jdbcTemplate.update("""
                     UPDATE app_user SET permission_version = permission_version + 1
                     WHERE role_code = 'ROLE-ADMIN'
                     """);
-            log.info("granted {} missing action permission(s) to the super administrator role", granted);
+            try {
+                audit.record(null, "SYSTEM", null, "roles", "role_permissions_updated", "role", "ROLE-ADMIN",
+                        json.writeValueAsString(Map.of("before", beforePermissions, "after", permissionGrants(),
+                                "reason", "按已确认的超级管理员最高权限策略补齐全部菜单与动作授权")), "SUCCESS", null, "");
+            } catch (JsonProcessingException ex) {
+                throw new IllegalStateException("Cannot record super administrator permission changes", ex);
+            }
+            log.info("restored super administrator permissions: {} modules added, {} modules updated, {} actions added, {} actions updated",
+                    modulesAdded, modulesRestored, granted, restored);
         }
         // 用户、角色、反制这三个模块只归超级管理员——阶段 4 单一超管改造定的红线，每次启动重申一次。
         //
@@ -137,6 +168,16 @@ public class SuperAdminIntegrityInitializer implements ApplicationRunner {
                 """);
         int holders = count("SELECT COUNT(*) FROM app_user WHERE role_code = 'ROLE-ADMIN'");
         if (holders != 1) throw new IllegalStateException("the system must have exactly one ROLE-ADMIN account");
+    }
+
+    private List<Map<String, Object>> permissionGrants() {
+        return jdbcTemplate.queryForList("""
+                SELECT p.permission_code,p.permission_kind,COALESCE(rp.permission_level,'NONE') AS permission_level,
+                       COALESCE(rp.menu_enabled,FALSE) AS menu_enabled
+                FROM app_permission p LEFT JOIN app_role_permission rp
+                  ON rp.permission_code=p.permission_code AND rp.role_code='ROLE-ADMIN'
+                ORDER BY p.permission_code
+                """);
     }
 
     private void ensureMigrationRole() {

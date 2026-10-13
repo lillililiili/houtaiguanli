@@ -58,9 +58,11 @@ public class EoTrackingReportMapper implements FrameMapper {
         String sessionKey = taskId == null ? inbox.source() : taskId;
 
         Long workState = integer(metadata, "workState");
+        Long codeStatus = integer(metadata, "codeStatus");
         JsonNode aiStatus = metadata == null ? null : metadata.get("aiStatus");
         // 心跳与结束跟踪不是错误，只是没有观测；未映射的新事件同样放过，等契约明确再接。
-        if (!BEGIN_TRACKING.equals(event) || workState == null || workState != WORK_STATE_TRACKING
+        if (!BEGIN_TRACKING.equals(event) || codeStatus != null && codeStatus != 200
+                || workState == null || workState != WORK_STATE_TRACKING
                 || aiStatus == null || !aiStatus.isObject()) {
             return Frame.empty(sessionKey, timestamp, inbox.source(), observedAt);
         }
@@ -70,9 +72,12 @@ public class EoTrackingReportMapper implements FrameMapper {
         quality.put("event", event);
         String edgeId = text(root, "edgeId");
         if (edgeId != null) quality.put("edge_id", edgeId);
-        Double trackConfidence = number(aiStatus, "trackConfidence");
+        quality.put("eo_task_id", taskId);
+        String externalDevice = text(metadata, "deviceId");
+        if (externalDevice != null) quality.put("eo_external_device_id", externalDevice);
+        Double trackConfidence = validated(aiStatus, "trackConfidence", 0, 1, quality);
         if (trackConfidence != null) quality.put("track_confidence", trackConfidence);
-        Double altitude = number(aiStatus, "altitude");
+        Double altitude = validated(aiStatus, "altitude", -Double.MAX_VALUE, Double.MAX_VALUE, quality);
         if (altitude != null) {
             // 与协议 A 同一条规矩：基准未确认前高度不进合法性比较。
             quality.put("altitude_raw", altitude);
@@ -89,10 +94,20 @@ public class EoTrackingReportMapper implements FrameMapper {
         }
 
         // 一个跟踪任务就是光电眼里的一个目标：协议没有给目标号，taskId 既是会话键也是外部目标标识。
-        Item item = new Item(taskId, null, number(aiStatus, "longitude"), number(aiStatus, "latitude"), null,
-                null, null, null, null, classCode, number(aiStatus, "detectConfidence"), null, null,
+        Double longitude = validated(aiStatus, "longitude", -180, 180, quality);
+        Double latitude = validated(aiStatus, "latitude", -90, 90, quality);
+        if (longitude == null || latitude == null) quality.put("eo_fusion_exclusion", "EO_POSITION_UNKNOWN");
+        Item item = new Item(taskId, null, longitude, latitude, null,
+                null, null, null, null, classCode, validated(aiStatus, "detectConfidence", 0, 1, quality), null, null,
                 null, null, CLASS_SOURCE, quality);
         return new Frame(sessionKey, timestamp, inbox.source(), observedAt, List.of(item));
+    }
+
+    private static Double validated(JsonNode node, String field, double min, double max, Map<String, Object> quality) {
+        Double value = number(node, field);
+        if (value != null && Double.isFinite(value) && value >= min && value <= max) return value;
+        if (node.has(field) && !node.path(field).isNull()) quality.put("invalid_" + field, node.path(field).toString());
+        return null;
     }
 
     private static void putCamera(Map<String, Object> quality, JsonNode cameraStatus) {

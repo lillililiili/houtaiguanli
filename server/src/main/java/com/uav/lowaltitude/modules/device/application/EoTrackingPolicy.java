@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository;
 import com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration.Binding;
+import com.uav.lowaltitude.modules.device.domain.EoTrackingContinuity;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
@@ -40,6 +41,7 @@ public class EoTrackingPolicy {
         return enabled() && targetMode!=null && Arrays.stream(autoSourceModes.split(",")).map(String::trim).anyMatch(targetMode::equals);
     }
     public long cutoff() { return clock.nowMillis()-positionAge; }
+    public long demandMaxAge() { return demandAge; }
     public long heartbeatCutoff() {return clock.nowMillis()-heartbeatAge;}
     public long now() {return clock.nowMillis();}
     public boolean deviceReady(Binding b) {
@@ -58,6 +60,18 @@ public class EoTrackingPolicy {
         if(!supportsClass(target)) return "EO_CLASS_UNSUPPORTED";
         if(mode(target)==null || target.get("owner_org_id")==null || target.get("district_id")==null) return "EO_DEVICE_UNAVAILABLE";
         return null;
+    }
+    public String trackingBlock(Map<String,Object> target, Map<String,Object> task, Binding device) {
+        var identity=target==null?null:new EoTrackingContinuity.Target(text(target,"target_id"),text(target,"source_mode"),
+                text(target,"owner_org_id"),text(target,"district_id"),text(target,"object_type_code"),text(target,"track_status"));
+        return EoTrackingContinuity.block(identity,task,device,task==null?null:edges.command(text(task,"begin_command_id")),
+                now(),positionAge,heartbeatAge);
+    }
+    /** Fresh reports from this very EO task can sustain tracking when fused guidance is late. */
+    public String continuationBlock(Map<String,Object> target, Map<String,Object> task, Binding device) {
+        String guidanceBlock=block(target);
+        if (!"TARGET_POSITION_STALE".equals(guidanceBlock) && !"TARGET_POSITION_UNAVAILABLE".equals(guidanceBlock)) return guidanceBlock;
+        return trackingBlock(target,task,device);
     }
     public static boolean supportsClass(Map<String,Object> target) {
         return target!=null && Set.of("UAV","BIRD").contains(text(target,"object_type_code"));

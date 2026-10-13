@@ -23,7 +23,7 @@ class EoTrackingCommandSafetyTest {
     private final MqttSessionSupervisor mqtt=mock(MqttSessionSupervisor.class);
     private final long now=100000;
     private final Binding binding=new Binding("device","d","os","s","edge","broker","external","replay",true,now,0,"org","district");
-    private final EoEdgeCommandService service=new EoEdgeCommandService(edges,provider,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),new ObjectMapper(),new MockEnvironment(),policy,tracking,mock(UserMapper.class),mock(AccessService.class),mock(org.springframework.transaction.PlatformTransactionManager.class));
+    private final EoEdgeCommandService service=new EoEdgeCommandService(edges,provider,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),new ObjectMapper(),new MockEnvironment(),policy,tracking,mock(UserMapper.class),mock(AccessService.class),mock(org.springframework.transaction.PlatformTransactionManager.class),mock(com.uav.lowaltitude.modules.device.infrastructure.EoDispatchRepository.class));
     @Test void sentCommandIsNeverRepublishedEvenAfterRestart() {
         when(edges.command("c")).thenReturn(command("SENT","EO_BEGIN_TRACK"));
         service.dispatch(EoEdgeCommandService.TOPIC_BEGIN,"c");

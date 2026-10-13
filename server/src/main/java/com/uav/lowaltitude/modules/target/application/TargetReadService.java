@@ -54,7 +54,6 @@ import com.uav.lowaltitude.modules.target.api.TargetDtos.RecentTracksDto;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.Coordinate;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.PointRow;
-import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.SourceLinkRow;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetQuery;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.TargetSummariesRow;
 import com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository.RiskSummaryRow;
@@ -96,6 +95,7 @@ public class TargetReadService {
     private final FusedTrackRepository fusedTracks;
     private final ObjectMapper objectMapper;
     private final FusionConfigService fusionConfig;
+    private final SourceContributionReader sourceContributions;
 
     public TargetReadService(
             AccessControlService accessControl,
@@ -104,7 +104,7 @@ public class TargetReadService {
             DegradationRepository degradations,
             FusedTrackRepository fusedTracks,
             ObjectMapper objectMapper,
-            FusionConfigService fusionConfig) {
+            FusionConfigService fusionConfig, SourceContributionReader sourceContributions) {
         this.accessControl = accessControl;
         this.repository = repository;
         this.lineages = lineages;
@@ -112,6 +112,7 @@ public class TargetReadService {
         this.fusedTracks = fusedTracks;
         this.objectMapper = objectMapper;
         this.fusionConfig = fusionConfig;
+        this.sourceContributions = sourceContributions;
     }
 
     @Transactional(readOnly = true)
@@ -164,7 +165,7 @@ public class TargetReadService {
         String id = pathId(targetId);
         TargetRow row = repository.findTarget(id, access);
         if (row == null) throw notFound("TARGET_NOT_FOUND", "目标不存在");
-        List<TargetSourceLinkDto> links = repository.sourceLinks(id, access).stream().map(this::sourceLink).toList();
+        List<TargetSourceLinkDto> links = sourceContributions.read(id, repository.sourceLinks(id, access));
         // 阶段 8 追加字段：引擎未接管的目标这些行不存在，全部返回 null 而不是零值。
         TrackStatusRow status = lineages.findTrackStatus(id);
         DegradationRow degradation = degradations.findDegradation(id);
@@ -400,13 +401,6 @@ public class TargetReadService {
             case "fusion_confidence" -> row.fusionConfidence() == null;
             default -> false;
         };
-    }
-
-    private TargetSourceLinkDto sourceLink(SourceLinkRow row) {
-        return new TargetSourceLinkDto(
-                row.linkId(), row.sourceId(), row.sourceCode(), row.sourceMode(), row.sourceSessionKey(),
-                row.externalTargetId(), row.deviceId(), row.protocolVersion(), row.sourceName(),
-                row.sourceType(), row.schemaStatus());
     }
 
     private TrackSummaryDto track(TrackRow row) {

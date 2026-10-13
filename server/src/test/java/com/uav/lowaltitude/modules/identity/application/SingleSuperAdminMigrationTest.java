@@ -60,7 +60,10 @@ class SingleSuperAdminMigrationTest {
 
         AppProperties properties = new AppProperties();
         properties.getSuperAdmin().setAccount("admin1");
-        new SuperAdminIntegrityInitializer(jdbc, properties).run(null);
+        var initializer = new SuperAdminIntegrityInitializer(jdbc, properties,
+                org.mockito.Mockito.mock(com.uav.lowaltitude.platform.audit.AuditService.class),
+                new com.fasterxml.jackson.databind.ObjectMapper());
+        initializer.run(null);
         assertThat(jdbc.queryForObject("select count(*) from app_user where role_code='ROLE-ADMIN'", Integer.class))
                 .isEqualTo(1);
         assertThat(jdbc.queryForObject("select role_code from app_user where account='admin2'", String.class))
@@ -70,21 +73,21 @@ class SingleSuperAdminMigrationTest {
         assertThat(jdbc.queryForObject("select expire_at from app_session where session_id='old-session'", Long.class))
                 .isZero();
 
-        // 不开开发种子的库：超级管理员按目录补齐全部动作，唯独 disposal:direct 不自动授予。
+        // 不开开发种子的库：超级管理员按最高权限策略补齐全部动作，包括直接反制。
         String missingActions = """
                 select count(*) from app_permission p
-                where p.permission_kind='ACTION' and p.permission_code<>'disposal:direct'
+                where p.permission_kind='ACTION'
                   and not exists (select 1 from app_role_permission rp
                                   where rp.role_code='ROLE-ADMIN' and rp.permission_code=p.permission_code
-                                    and rp.permission_level in ('READ','OP','AUTH'))
+                                    and rp.permission_level='OP')
                 """;
         assertThat(jdbc.queryForObject(missingActions, Integer.class)).isZero();
         assertThat(jdbc.queryForObject("""
                 select count(*) from app_role_permission
-                where role_code='ROLE-ADMIN' and permission_code='disposal:direct'
-                """, Integer.class)).isZero();
+                where role_code='ROLE-ADMIN' and permission_code='disposal:direct' and permission_level='OP'
+                """, Integer.class)).isEqualTo(1);
         long version = jdbc.queryForObject("select permission_version from app_user where account='admin1'", Long.class);
-        new SuperAdminIntegrityInitializer(jdbc, properties).run(null);
+        initializer.run(null);
         assertThat(jdbc.queryForObject("select permission_version from app_user where account='admin1'", Long.class))
                 .isEqualTo(version);
         assertThat(jdbc.queryForObject("""

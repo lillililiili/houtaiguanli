@@ -90,6 +90,11 @@ public class FusionPipeline {
     static final int PENDING_KEY_MAX_LENGTH = 256;
     private static final Logger log = LoggerFactory.getLogger(FusionPipeline.class);
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private EoFusionTaskContextPort eoTasks;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.uav.lowaltitude.platform.time.AppClock eoClock;
+
     private final SimulationPolicy simulation;
     private final ObservationRepository observations;
     private final RawTrackRepository rawTracks;
@@ -199,6 +204,44 @@ public class FusionPipeline {
         List<Integer> unlinked = new ArrayList<>();
         for (int i = 0; i < parsed.size(); i++) {
             SourceObservation observation = parsed.get(i);
+            if (inbox.source().startsWith("eo-edge:")) {
+                String taskId = String.valueOf(observation.quality().get("eo_task_id"));
+                var context = eoTasks == null ? new EoFusionTaskContextPort.Context(null, "EO_TASK_CONTEXT_UNAVAILABLE")
+                        : eoTasks.lookupForFusion(taskId, observation.sourceId(), observation.deviceId(), observation.sourceMode(),
+                                observation.ownerOrgId(), observation.districtId(), observation.observedMillis(), receivedAt.toEpochMilli());
+                String reason = context.exclusionReason();
+                if (reason == null && (eoClock == null ? receivedAt.toEpochMilli() : eoClock.nowMillis()) - observation.observedMillis() > machine.terminateAfterMillis())
+                    reason = "EO_OBSERVATION_EXPIRED";
+                if (reason == null && !observation.hasPosition()) reason = "EO_POSITION_UNKNOWN";
+                ActiveTarget candidate = context.targetId() == null ? null : byTarget.get(context.targetId());
+                if (reason == null && candidate == null) reason = "EO_TASK_TARGET_UNAVAILABLE";
+                // Require a fresh actual position anchor, including the same task's prior accepted EO position.
+                LinkSnapshot anchor = context.targetId() == null ? null : snapshots.stream()
+                        .filter(v -> v.targetId().equals(context.targetId()))
+                        .filter(v -> validEoAnchor(v))
+                        .filter(v -> v.state().tMillis() <= observation.observedMillis()
+                                && observation.observedMillis() - v.state().tMillis() <= machine.shortLostAfterMillis())
+                        .max(java.util.Comparator.comparingLong(v -> v.state().tMillis())).orElse(null);
+                if (reason == null && anchor == null) reason = "EO_ASSOCIATION_POSITION_UNKNOWN";
+                if (reason == null) {
+                    State center = filter.predict(anchor.state(), observation.observedMillis());
+                    double distance = AlphaBetaFilter.distanceM(observation.longitude(), observation.latitude(), center.longitude(), center.latitude());
+                    double sigma = Math.hypot(accuracies.get(i), center.accuracyM());
+                    if (!Double.isFinite(distance) || distance > params.number("association", "gate_sigma") * sigma)
+                        reason = "EO_POSITION_CONFLICT";
+                }
+                if (reason != null) observation.quality().put("eo_fusion_exclusion", reason);
+                else {
+                    observation.quality().remove("eo_fusion_exclusion");
+                    observation.quality().put("eo_target_id", context.targetId());
+                    observation.quality().put("eo_device_id", observation.deviceId());
+                    observation.quality().put("eo_source_mode", observation.sourceMode());
+                    observation.quality().put("eo_owner_org_id", observation.ownerOrgId());
+                    observation.quality().put("eo_district_id", observation.districtId());
+                    assignedTarget[i] = context.targetId();
+                }
+                continue;
+            }
             LinkRow link = linkOf(links, observation);
             if (link != null) {
                 // 活跃目标不会是别名（被并目标的状态是 MERGE，不在活跃集里），只有不在活跃集里的才需要沿别名找幸存者。
@@ -262,6 +305,7 @@ public class FusionPipeline {
         for (int i = 0; i < parsed.size(); i++) {
             SourceObservation observation = parsed.get(i);
             String targetId = assignedTarget[i];
+            if (observation.quality().containsKey("eo_fusion_exclusion")) continue;
             if (targetId == null) {
                 // 决策 16-2：同一来源在同一帧里还有另一条回波、且那条落在一个**本帧之前就存在**的目标上，
                 // 那么这条新回波很可能是那个目标分裂出来的，而不是凭空冒出来的第三方。记下来交给 autoSplit 计帧。
@@ -307,6 +351,7 @@ public class FusionPipeline {
             missFrames.put(entry.getKey(), transition.state().missFrames());
         }
         for (ActiveTarget candidate : active) {
+            if (inbox.source().startsWith("eo-edge:")) continue;
             String targetId = candidate.target().targetId();
             if (estimatesByTarget.containsKey(targetId)) continue;
             long gap = sinceLastHit(candidate.status(), frame.observedAt(), receivedAt);
@@ -492,6 +537,21 @@ public class FusionPipeline {
         return out;
     }
 
+    /** Old EO snapshots must not become a spatial anchor after their task ends or changes. */
+    private boolean validEoAnchor(LinkSnapshot snapshot) {
+        if (snapshot.savedEstimate() == null) return true;
+        SourceEstimate estimate = json.convertValue(snapshot.savedEstimate(), SourceEstimate.class);
+        if (!"EO_TRACKING".equals(estimate.classSource())) return true;
+        if (eoTasks == null || estimate.quality() == null) return false;
+        Map<String,Object> quality = estimate.quality();
+        Object taskId = quality.get("eo_task_id");
+        if (taskId == null) return false;
+        var context = eoTasks.lookup(String.valueOf(taskId),estimate.sourceId(),(String)quality.get("eo_device_id"),
+                (String)quality.get("eo_source_mode"),(String)quality.get("eo_owner_org_id"),(String)quality.get("eo_district_id"),
+                estimate.observedAt().toEpochMilli(),estimate.observedAt().toEpochMilli());
+        return context.accepted() && snapshot.targetId().equals(context.targetId());
+    }
+
     private static Map<String, State> predictStates(AlphaBetaFilter filter, List<LinkSnapshot> snapshots, Instant at) {
         Map<String, State> out = new HashMap<>();
         for (LinkSnapshot link : snapshots) {
@@ -536,7 +596,15 @@ public class FusionPipeline {
             List<SourceEstimate> current = estimatesByTarget.get(link.targetId());
             // 未命中的失联帧不能用缓存伪造新的实测点，这些目标不需要解析。
             if (current == null || current.isEmpty()) continue;
-            out.computeIfAbsent(link.targetId(), k -> new ArrayList<>()).add(json.convertValue(link.savedEstimate(), SourceEstimate.class));
+            SourceEstimate saved = json.convertValue(link.savedEstimate(), SourceEstimate.class);
+            if ("EO_TRACKING".equals(saved.classSource())) {
+                if (saved.quality() == null) continue;
+                Object taskId = saved.quality().get("eo_task_id");
+                if (eoTasks == null || taskId == null || !eoTasks.lookup(String.valueOf(taskId), saved.sourceId(), (String) saved.quality().get("eo_device_id"),
+                        (String) saved.quality().get("eo_source_mode"), (String) saved.quality().get("eo_owner_org_id"), (String) saved.quality().get("eo_district_id"), saved.observedAt().toEpochMilli(),
+                        saved.observedAt().toEpochMilli()).accepted()) continue;
+            }
+            out.computeIfAbsent(link.targetId(), k -> new ArrayList<>()).add(saved);
         }
         return out;
     }

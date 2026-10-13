@@ -56,5 +56,18 @@ public class TargetVideoController {
 
     public record TargetVideoDto(String targetId, String taskId, String deviceId, String commandId,
             long checkedAt, String status, String playbackType, boolean simulated, String reason,
-            String videoStatus, String sourceMode, String streamId, String playbackUrl) { }
+            String videoStatus, String sourceMode, String streamId, String playbackUrl,
+            com.uav.lowaltitude.modules.device.application.EoFusionObservationSummaryService.Summary eoFusionObservation) {
+        public TargetVideoDto(String targetId,String taskId,String deviceId,String commandId,long checkedAt,
+                String status,String playbackType,boolean simulated,String reason,String videoStatus,
+                String sourceMode,String streamId,String playbackUrl) {
+            this(targetId,taskId,deviceId,commandId,checkedAt,status,playbackType,simulated,reason,
+                    videoStatus,sourceMode,streamId,playbackUrl,null);
+        }
+        public TargetVideoDto withEoFusionObservation(
+                com.uav.lowaltitude.modules.device.application.EoFusionObservationSummaryService.Summary summary) {
+            return new TargetVideoDto(targetId,taskId,deviceId,commandId,checkedAt,status,playbackType,simulated,
+                    reason,videoStatus,sourceMode,streamId,playbackUrl,summary);
+        }
+    }
 }

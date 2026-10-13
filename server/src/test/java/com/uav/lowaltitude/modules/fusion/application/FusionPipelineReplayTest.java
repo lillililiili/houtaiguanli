@@ -25,7 +25,7 @@ import com.uav.lowaltitude.modules.fusion.FusionContracts.TargetFrameResult;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository;
 
 /**
- * 六场景端到端（H2 + 记录型 FusedLayerWriter 桩）：三源同见、单源缺失、交叉、分裂合并、迟到乱序、精度差异。
+ * 六场景端到端（H2 + 记录型 FusedLayerWriter 桩）：雷达/TDOA同见、单源缺失、交叉、分裂合并、迟到乱序、精度差异；无保存任务的历史EO仅留证。
  * 空间事实全部来自 Java 侧 Haversine/ENU（域层不依赖 SQL 几何），因此 H2 与 PostGIS 得到同一套关联结果。
  */
 @SpringBootTest(properties = {
@@ -78,19 +78,20 @@ class FusionPipelineReplayTest {
     }
 
     @Test
-    void threeSourcesOnOneTargetProduceOneTargetThreeLinksAndThreeEstimates() {
+    void radarAndTdoaProduceTwoLinksWhileLegacyTasklessEoStaysEvidenceOnly() {
         String targetId = targetByExternal("R-T1");
         assertThat(targetId).isNotNull();
-        // 三路来源同见：一个目标、三条 link，同一时刻的一组帧里三个来源各出现一次。
-        assertThat(jdbc.queryForObject("select count(*) from target_source_link where target_id=?", Long.class, targetId)).isEqualTo(3L);
+        // 历史种子没有可验证光电任务：雷达/TDOA仍融合，EO不得冒充当前第三路。
+        // 有效三路由 EoFusionChainPostgresTest 经协议C+保存任务验证。
+        assertThat(jdbc.queryForObject("select count(*) from target_source_link where target_id=?", Long.class, targetId)).isEqualTo(2L);
         assertThat(targetByExternal("D-T1")).isEqualTo(targetId);
-        assertThat(targetByExternal("E-T1")).isEqualTo(targetId);
+        assertThat(targetByExternal("E-T1")).isNull();
         List<TargetFrameResult> frames = framesOf(targetId);
         assertThat(frames).isNotEmpty();
         assertThat(frames).anySatisfy(frame -> assertThat(frame.estimates()).hasSize(1));
         List<String> sourceTypes = new ArrayList<>();
         for (TargetFrameResult frame : frames) for (SourceEstimate estimate : frame.estimates()) sourceTypes.add(estimate.sourceType());
-        assertThat(sourceTypes).contains("RADAR", "TDOA", "EO");
+        assertThat(sourceTypes).contains("RADAR", "TDOA").doesNotContain("EO");
         // 每条估计都带滤波后的精度与 schema_status，缺精度时标 accuracy_defaulted。
         assertThat(frames.get(0).estimates().get(0).accuracyM()).isNotNull().isPositive();
         assertThat(frames.get(0).estimates().get(0).schemaStatus()).isIn("CONFIRMED", "DEMO");
@@ -112,7 +113,7 @@ class FusionPipelineReplayTest {
         String targetId = targetByExternal("R-T1");
         assertThat(framesOf(targetId)).anySatisfy(frame ->
                 assertThat(frame.estimates().stream().map(SourceEstimate::sourceType).distinct().toList())
-                        .contains("RADAR", "TDOA", "EO"));
+                        .contains("RADAR", "TDOA").doesNotContain("EO"));
     }
 
     @Test
@@ -125,7 +126,7 @@ class FusionPipelineReplayTest {
     @Test
     void missingSingleSourceKeepsTheSameTargetIdentity() {
         String targetId = targetByExternal("R-T1");
-        // single-missing 场景：TDOA 空窗 6 帧，雷达/光电继续；目标不得因此换 ID 或新建。
+        // single-missing 场景：TDOA 空窗 6 帧，雷达继续；无任务EO不参与，目标不得因此换ID。
         long radarLinks = jdbc.queryForObject("select count(*) from target_source_link l join integration_source s on s.source_id=l.source_id"
                 + " where l.target_id=? and s.source_code=?", Long.class, targetId, FusionReplayDatasetGenerator.RADAR);
         assertThat(radarLinks).isEqualTo(1L);
@@ -234,13 +235,14 @@ class FusionPipelineReplayTest {
     }
 
     @Test
-    void lateFrameIsStoredInRawLayerWithItsOwnObservedTime() {
-        String targetId = targetByExternal("E-L");
+    void tasklessLateEoIsStoredAsEvidenceWithItsOwnTimeWithoutLinking() {
+        String targetId = targetByExternal("R-L");
         assertThat(targetId).isNotNull();
+        assertThat(targetByExternal("E-L")).isNull();
         Long lateObservations = jdbc.queryForObject("select count(*) from source_observation o join integration_source s on s.source_id=o.source_id"
                 + " where s.source_code=? and o.external_target_id='E-L'", Long.class, FusionReplayDatasetGenerator.EO);
         assertThat(lateObservations).isPositive();
-        // 迟到帧照写原始层，其 observed_at 早于该目标当时的最新观测；是否回退融合结果由 E2 按 observedAt 决定。
+        // 无有效任务的迟到EO保留原始观测时间，不建raw轨迹、关联或回退目标状态。
         Long earlier = jdbc.queryForObject("select count(*) from source_observation o where o.external_target_id='E-L'"
                 + " and o.observed_at < (select max(o2.observed_at) from source_observation o2 where o2.external_target_id='R-L')", Long.class);
         assertThat(earlier).isPositive();
@@ -301,6 +303,12 @@ class FusionPipelineReplayTest {
                 .isEqualTo(5L);
         // 心跳帧照样处理完（DONE），不是失败。
         assertThat(jdbc.queryForObject("select count(*) from inbox_message where source like 'eo-edge:%' and status='FAILED'", Long.class)).isZero();
+    }
+
+    @Test
+    void legacyProtocolCReplayWithoutSavedTasksRetainsEvidenceButNeverCreatesOpticalTargets() {
+        assertThat(jdbc.queryForObject("select count(*) from source_observation where external_target_id='T-EO-TRACK' and quality is not null", Long.class)).isEqualTo(5L);
+        assertThat(jdbc.queryForObject("select count(*) from target_source_link where external_target_id='T-EO-TRACK'", Long.class)).isZero();
     }
 
     @Test
