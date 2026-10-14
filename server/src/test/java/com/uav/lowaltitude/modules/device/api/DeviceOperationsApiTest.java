@@ -223,6 +223,30 @@ class DeviceOperationsApiTest {
                 .andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
     }
 
+    /** 2026-10-14：手工建档遇到已退役的编号，如实说明是哪台设备、已退役，请换新编号。 */
+    @Test
+    void retiredNumberIsNamedWhenCreatedAgain() throws Exception {
+        String ops = login("admin1");
+        String no = "DEV-RETIRED-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        String body = deviceBody(no, "退役回归设备");
+        JsonNode created = objectMapper.readTree(mvc.perform(post("/api/v1/devices").header("Authorization", bearer(ops))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("device");
+        String id = created.path("device_id").asText();
+        jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?", id);
+        mvc.perform(delete("/api/v1/devices/{id}", id).header("Authorization", bearer(ops))
+                        .header("Idempotency-Key", "retire-" + no).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":" + created.path("version").asLong() + ",\"reason\":\"退出测试设备台账，保留历史\"}"))
+                .andExpect(status().isOk());
+
+        JsonNode refused = objectMapper.readTree(mvc.perform(post("/api/v1/devices").header("Authorization", bearer(ops))
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isConflict())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).path("error");
+        assertThat(refused.path("code").asText()).isEqualTo("DEVICE_RETIRED");
+        assertThat(refused.path("message").asText()).contains(no).contains("已退役").contains("新的设备编号");
+    }
+
     @Test
     void sensingProfileUsesIndependentVersionIdempotencyAndAvailability() throws Exception {
         String ops = login("admin1");

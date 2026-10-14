@@ -36,11 +36,13 @@ public class MqttConfigurationService {
     private final AppClock clock;
     private final MqttNetworkPolicy network;
     private final EnvironmentCredentialResolver credentials;
+    private final RetiredDeviceNumbers retiredNumbers;
 
     public MqttConfigurationService(MqttRepository repository, EoEdgeRepository edges, DeviceAccessPolicy permissions,
             AccessService access, IdempotencyGuard idempotency, AuditService audit, AppClock clock,
-            MqttNetworkPolicy network, EnvironmentCredentialResolver credentials, com.uav.lowaltitude.platform.config.SimulationPolicy simulation) {
-        this.simulation=simulation;
+            MqttNetworkPolicy network, EnvironmentCredentialResolver credentials, com.uav.lowaltitude.platform.config.SimulationPolicy simulation,
+            RetiredDeviceNumbers retiredNumbers) {
+        this.simulation=simulation; this.retiredNumbers=retiredNumbers;
         this.repository=repository; this.edges=edges; this.permissions=permissions; this.access=access;
         this.idempotency=idempotency; this.audit=audit; this.clock=clock; this.network=network; this.credentials=credentials;
     }
@@ -118,6 +120,8 @@ public class MqttConfigurationService {
         if(!broker.sourceMode().equals(p.sourceMode()) || !broker.ownerOrgId().equals(p.ownerOrgId()) || !broker.districtId().equals(p.districtId()))
             throw bad("设备来源模式、组织区域必须与所选连接一致");
         if(broker.sourceMode().equals("live")) validateConnection(broker);
+        // 先说清编号已退役，不让幂等键把这次登记当成重复提交。
+        retiredNumbers.reject(p.deviceNo());
         idempotency.claim(key,"mqtt.register:"+p);
         try {
             String id=eo(p)?edges.register(p,clock.nowMillis()):repository.register(p,clock.nowMillis());

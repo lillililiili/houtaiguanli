@@ -59,12 +59,14 @@ public class DeviceService {
     private final IdempotencyGuard idempotency;
     private final TcpDeviceScopeService tcpScopes;
     private final FusionProperties fusionProperties;
+    private final RetiredDeviceNumbers retiredNumbers;
 
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
                          DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
                          IdempotencyGuard idempotency, DeviceEventPublicationRepository publication,
-                         TcpDeviceScopeService tcpScopes, FusionProperties fusionProperties) {
+                         TcpDeviceScopeService tcpScopes, FusionProperties fusionProperties,
+                         RetiredDeviceNumbers retiredNumbers) {
         this.repository = repository;
         this.publication = publication;
         this.access = access;
@@ -77,6 +79,7 @@ public class DeviceService {
         this.idempotency = idempotency;
         this.tcpScopes = tcpScopes;
         this.fusionProperties = fusionProperties;
+        this.retiredNumbers = retiredNumbers;
     }
 
     public DevicePage list(DeviceFilter filter, int page, int size, String sort) {
@@ -291,6 +294,7 @@ public class DeviceService {
         AuthUser user = access.requireDevicesOperate();
         rejectWeatherMutation(mutation);
         validate(mutation);
+        retiredNumbers.reject(mutation.deviceNo());
         long now = clock.nowMillis();
         String id = UUID.randomUUID().toString();
         Map<String, Object> values = values(mutation, now);
@@ -388,8 +392,10 @@ public class DeviceService {
         long now = clock.nowMillis();
         if (repository.markDeleted(id, version, now) != 1) throw conflict();
         tcpScopes.enabled(id,false,now);
-        if (repository.hasCatalogBlockingWork(id))
-            throw new ApiException(HttpStatus.CONFLICT, "DEVICE_BUSY", "设备仍有关联的未完成指令或调测任务，请处理后重试");
+        List<String> busy = repository.catalogBlockingReasons(id);
+        if (!busy.isEmpty())
+            throw new ApiException(HttpStatus.CONFLICT, "DEVICE_BUSY", "设备 " + text(device, "device_no") + "（"
+                    + text(device, "name") + "）还有没结束的工作：" + String.join("、", busy) + "。请处理完再删除");
         repository.addEvent(UUID.randomUUID().toString(), id, "CATALOG_DELETED", "WARN",
                 "设备已删除：" + reason.trim(), now, bool(device, "simulated"));
         audit.record(user.userId(), user.account(), "device_delete", "device", id, reason.trim(), null);
@@ -397,6 +403,15 @@ public class DeviceService {
     }
 
     public record DeviceDeletion(String deviceId, long version, long deletedAt) { }
+
+    /** 退役（删除）前的只读检查：逐类列出还没结束的工作；为空表示现在可以停用并删除。 */
+    public CatalogBlockers catalogBlockers(String id) {
+        access.requireDevicesRead();
+        Map<String, Object> device = requiredDevice(id);
+        return new CatalogBlockers(id, text(device, "device_no"), text(device, "name"), repository.catalogBlockingReasons(id));
+    }
+
+    public record CatalogBlockers(String deviceId, String deviceNo, String name, List<String> reasons) { }
 
     @Transactional
     public DeviceDetail upsertSensingProfile(String id, SensingProfileMutation mutation, String idempotencyKey) {
