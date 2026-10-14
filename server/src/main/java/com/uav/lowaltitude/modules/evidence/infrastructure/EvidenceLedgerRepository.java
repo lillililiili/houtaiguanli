@@ -46,14 +46,14 @@ public class EvidenceLedgerRepository {
                 + "CAST(NULL AS BIGINT) AS started_at,CAST(NULL AS BIGINT) AS ended_at,f.size_bytes," + held + " AS held,"
                 + "CASE WHEN " + held + " THEN 'HELD' WHEN " + millis("f.retain_until") + "<=:now THEN 'DUE'"
                 + " WHEN " + millis("f.retain_until") + "<=:nearing THEN 'NEARING' ELSE 'KEPT' END AS custody,"
-                + "(SELECT COUNT(*) FROM evidence_link l WHERE l.evidence_id=f.evidence_id) AS link_count," + millis("f.retain_until") + " AS retain_until,CAST(NULL AS BIGINT) AS point_count"
+                + "0 AS link_count," + millis("f.retain_until") + " AS retain_until,CAST(NULL AS BIGINT) AS point_count"
                 + " FROM evidence_file f WHERE " + scope("f", access)
                 + ("FILE".equals(q.sourceKind()) && q.sourceId()!=null ? "" : " AND f.kind_code IN ('EO_VIDEO','EO_STILL','SCENE_PHOTO','TRACK_SNAPSHOT','COMMAND_LOG')")
                 + (ingest ? "" : " AND EXISTS(SELECT 1 FROM evidence_link l WHERE l.evidence_id=f.evidence_id)");
         String track = "SELECT 'TRACK',tr.track_id,'TRACK',tr.track_id,t.target_no,CAST(NULL AS VARCHAR(32)),"
                 + "CASE WHEN EXISTS(SELECT 1 FROM track_point tp WHERE tp.track_id=tr.track_id) THEN 'OBSERVED' ELSE 'NO_POINTS' END,"
                 + millis("tr.started_at") + "," + millis("tr.created_at") + ",t.source_mode,tr.layer,"
-                + millis("tr.started_at") + "," + millis("tr.ended_at") + ",CAST(NULL AS BIGINT),FALSE,CAST(NULL AS VARCHAR(16)),1,CAST(NULL AS BIGINT),(SELECT COUNT(*) FROM track_point tp WHERE tp.track_id=tr.track_id)"
+                + millis("tr.started_at") + "," + millis("tr.ended_at") + ",CAST(NULL AS BIGINT),FALSE,CAST(NULL AS VARCHAR(16)),1,CAST(NULL AS BIGINT),CAST(NULL AS BIGINT)"
                 + " FROM track tr JOIN target t ON t.target_id=tr.target_id"
                 + " LEFT JOIN target_source_link l ON l.link_id=tr.link_id AND l.target_id=tr.target_id"
                 + " LEFT JOIN integration_source src ON src.source_id=l.source_id AND src.source_mode=t.source_mode"
@@ -149,7 +149,25 @@ public class EvidenceLedgerRepository {
     public long count(Relation r) { return jdbc.queryForObject("SELECT COUNT(*) FROM ("+r.sql()+") ledger",r.params(),Long.class); }
     public List<LedgerRow> list(Relation r,int offset,int size) {
         Map<String,Object> p=new HashMap<>(r.params());p.put("offset",offset);p.put("size",size);
-        return jdbc.query(r.sql()+" ORDER BY COALESCE(captured_at,stored_at) DESC NULLS LAST,source_kind,source_id OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY",p,EvidenceLedgerRepository::entry);
+        // Point/link totals do not affect membership or ordering: count only the requested page.
+        String page=r.sql()+" ORDER BY COALESCE(captured_at,stored_at) DESC NULLS LAST,source_kind,source_id OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY";
+        return jdbc.query("SELECT page.*,CASE WHEN page.source_kind='TRACK' THEN (SELECT COUNT(*) FROM track_point tp WHERE tp.track_id=page.source_id) END AS loaded_point_count,"
+                + "CASE WHEN page.source_kind='FILE' THEN (SELECT COUNT(*) FROM evidence_link l WHERE l.evidence_id=page.source_id) ELSE page.link_count END AS loaded_link_count"
+                + " FROM ("+page+") page ORDER BY COALESCE(page.captured_at,page.stored_at) DESC NULLS LAST,page.source_kind,page.source_id",p,EvidenceLedgerRepository::entry);
+    }
+    public record Summary(long total, Map<String,Long> category, Map<String,Long> status, Map<String,Long> custody) { }
+    public Summary summarize(Relation r) {
+        Map<String,Long> category=new java.util.LinkedHashMap<>(),status=new java.util.LinkedHashMap<>(),custody=new java.util.LinkedHashMap<>();
+        long[] total={0};
+        // One pass over the same authorized relation replaces four separate aggregate scans.
+        jdbc.query("SELECT category,CASE WHEN source_kind='FILE' THEN status END AS file_status,custody,COUNT(*) AS n FROM ("
+                +r.sql()+") ledger GROUP BY category,CASE WHEN source_kind='FILE' THEN status END,custody",r.params(),rs->{
+            long n=rs.getLong("n");total[0]+=n;
+            if(rs.getString("category")!=null)category.merge(rs.getString("category"),n,Long::sum);
+            if(rs.getString("file_status")!=null)status.merge(rs.getString("file_status"),n,Long::sum);
+            if(rs.getString("custody")!=null)custody.merge(rs.getString("custody"),n,Long::sum);
+        });
+        return new Summary(total[0],category,status,custody);
     }
     public Map<String,Long> counts(Relation r,String column) {
         if(!List.of("category","status","custody").contains(column)) throw new IllegalArgumentException("Invalid statistic");
@@ -171,6 +189,6 @@ public class EvidenceLedgerRepository {
         return new LedgerRow(rs.getString("source_kind"),rs.getString("source_id"),rs.getString("category"),rs.getString("evidence_no"),
                 rs.getString("original_name"),rs.getString("kind_code"),rs.getString("status"),number(rs,"captured_at"),number(rs,"stored_at"),
                 rs.getString("source_mode"),rs.getString("layer"),number(rs,"started_at"),number(rs,"ended_at"),number(rs,"size_bytes"),
-                rs.getBoolean("held"),rs.getString("custody"),rs.getInt("link_count"),number(rs,"retain_until"),number(rs,"point_count"));
+                rs.getBoolean("held"),rs.getString("custody"),rs.getInt("loaded_link_count"),number(rs,"retain_until"),number(rs,"loaded_point_count"));
     }
 }

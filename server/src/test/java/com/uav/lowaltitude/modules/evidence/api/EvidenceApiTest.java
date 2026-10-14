@@ -74,6 +74,7 @@ class EvidenceApiTest {
         mvc.perform(get("/api/v1/evidence-ledger?category=IMAGE&size=1").header("Authorization", bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
                 .andExpect(jsonPath("$.data.items[0].source_kind").value("FILE"))
+                .andExpect(jsonPath("$.data.items[0].link_count").value(1))
                 .andExpect(jsonPath("$.data.items[0].source_id").value(file.get("evidence_id").asText()));
         mvc.perform(get("/api/v1/evidence-ledger/stats?category=IMAGE").header("Authorization", bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
@@ -115,8 +116,11 @@ class EvidenceApiTest {
         jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,current_timestamp,current_timestamp,'FUSED')",track,targetId,track);
         mvc.perform(get("/api/v1/evidence-ledger/records/TRACK/"+track).header("Authorization",bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.entry.status").value("NO_POINTS"))
+                .andExpect(jsonPath("$.data.entry.point_count").value(0))
                 .andExpect(jsonPath("$.data.entry.source_id").value(track));
         jdbc.update("INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at) VALUES (?,?,0,current_timestamp,current_timestamp,CAST('SRID=4326;POINT(118.6 37.4)' AS GEOMETRY),current_timestamp)","ledger-point-"+suffix,track);
+        mvc.perform(get("/api/v1/evidence-ledger?category=TRACK&size=1").header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].point_count").value(1));
         mvc.perform(get("/api/v1/evidence-ledger/materials/TARGET/"+targetId).header("Authorization",bearer(token)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.coverage.TRACK.count").value(1))
                 .andExpect(jsonPath("$.data.records[0].summary.source_id").value(track))

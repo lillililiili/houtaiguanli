@@ -222,7 +222,7 @@ public class ReportingService {
                 legality.putAll(legalityRepository.latestOnPage(batchIds, legalityScope));
             }
             formalRisks.addAll(repository.formalRiskIds(batchIds));
-            summaries.putAll(targetRepository.summaries(batchIds));
+            summaries.putAll(targetRepository.riskSummaries(batchIds));
         }
         return new TargetStates(summaries, legality, formalEvaluations, formalRisks);
     }

@@ -70,8 +70,11 @@ public class RiskReadService {
                 request.optional("target_type", 32), request.riskTypes(), request.excludeDemoSamples());
         String sort = sortKey(values), order = orderDirection(values);
         long total = repository.count(query, decision);
-        return new PageDto<>(repository.list(query, decision, page.offset(), page.size, sort, order).stream()
-                .map(this::dto).toList(), page.page, page.size, total);
+        var rows = repository.list(query, decision, page.offset(), page.size, sort, order);
+        // Permissions are identical within this response; references still require each row's scope checks.
+        Set<PermissionCode> permissions = rows.isEmpty() ? Set.of() : visiblePermissions();
+        long now = clock.nowMillis();
+        return new PageDto<>(rows.stream().map(row -> dto(row, presence.read(row, now), permissions)).toList(), page.page, page.size, total);
     }
 
     /**
@@ -192,11 +195,24 @@ public class RiskReadService {
     }
 
     public RiskDto dto(RiskRow row, RiskPresenceService.Presence current) {
+        return dto(row, current, visiblePermissions());
+    }
+
+    private Set<PermissionCode> visiblePermissions() {
+        var permissions = java.util.EnumSet.noneOf(PermissionCode.class);
+        for (var permission : List.of(PermissionCode.FLIGHT_READ, PermissionCode.ROUTE_READ,
+                PermissionCode.ASSESSMENT_READ, PermissionCode.TARGET_READ, PermissionCode.RISK_VERIFY)) {
+            if (visible(permission)) permissions.add(permission);
+        }
+        return permissions;
+    }
+
+    private RiskDto dto(RiskRow row, RiskPresenceService.Presence current, Set<PermissionCode> permissions) {
         // 风险读取不隐含关联领域权限；即使有权限，也要再次校验关联对象仍属于风险的同一有效范围元组。
-        String planId=visible(PermissionCode.FLIGHT_READ)&&repository.planReferenceVisible(row)?row.planId():null;
-        String routeVersionId=visible(PermissionCode.ROUTE_READ)&&repository.routeReferenceVisible(row)?row.routeVersionId():null;
-        String assessmentId=visible(PermissionCode.ASSESSMENT_READ)&&repository.assessmentReferenceVisible(row)?row.assessmentId():null;
-        boolean targetVisible=visible(PermissionCode.TARGET_READ);
+        String planId=permissions.contains(PermissionCode.FLIGHT_READ)&&repository.planReferenceVisible(row)?row.planId():null;
+        String routeVersionId=permissions.contains(PermissionCode.ROUTE_READ)&&repository.routeReferenceVisible(row)?row.routeVersionId():null;
+        String assessmentId=permissions.contains(PermissionCode.ASSESSMENT_READ)&&repository.assessmentReferenceVisible(row)?row.assessmentId():null;
+        boolean targetVisible=permissions.contains(PermissionCode.TARGET_READ);
         String targetId=targetVisible&&repository.targetReferenceVisible(row)?row.targetId():null;
         String trackId=targetVisible&&repository.trackReferenceVisible(row)?row.trackId():null;
         boolean simulated=repository.simulatedObservation(row);
@@ -205,7 +221,7 @@ public class RiskReadService {
                 targetId, trackId, row.riskType(), row.severity(), row.state(), row.reasonCode(), row.reasonText(),
                 millis(row.occurredAt()), requiredMillis(row.receivedAt()), row.observedAltitudeM(), row.observedAltitudeDatum(),
                 row.heightRelation(), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), row.version(),
-                RiskState.verifiable(row.state())&&visible(PermissionCode.RISK_VERIFY) ? List.of("VERIFY") : List.of(),
+                RiskState.verifiable(row.state())&&permissions.contains(PermissionCode.RISK_VERIFY) ? List.of("VERIFY") : List.of(),
                 sourceName, row.ownerOrgName(), row.districtName(), planId == null ? null : row.planNo(), targetId == null ? null : row.targetNo(),
                 spaceFact(row), row.displayNo(),current.status(),current.reason(),current.observedAt(),simulated?"mock":row.sourceMode());
     }

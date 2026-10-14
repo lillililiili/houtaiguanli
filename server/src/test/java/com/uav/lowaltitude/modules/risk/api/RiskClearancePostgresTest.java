@@ -139,6 +139,19 @@ class RiskClearancePostgresTest {
         assertThat(jdbc.queryForMap("select * from flight_risk where risk_id=?",risk)).isEqualTo(before);
     }
 
+    @Test void latestPointLookupKeepsGlobalOrderingAcrossTracksAndUnknownTimes() {
+        String otherTrack=id();
+        jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)",
+                otherTrack,target,otherTrack,ts(now-600000),ts(now-600000));
+        for(int i=0;i<4;i++) {
+            Long observed=i==3?null:i==0?now-2000:now-1000;
+            jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at,point_kind,position_accuracy_m) values(?,?,?,?,?,ST_SetSRID(ST_MakePoint(118.05,37.01),4326),?,'PRED',5)",
+                    id(),otherTrack,i,observed==null?null:ts(observed),ts(now-400+i),ts(now));
+            String expected=jdbc.queryForObject("select p.point_id from track tr join track_point p on p.track_id=tr.track_id where tr.target_id=? and tr.layer='FUSED' order by p.observed_at desc nulls last,p.received_at desc,p.point_id fetch first 1 row only",String.class,target);
+            assertThat(currentEvidence.observation(target,routeVersion,plan).pointId()).isEqualTo(expected);
+        }
+    }
+
     @Test void firstMeasuredRiskFrameCanBeCurrentButCannotProveClearance() {
         position(37.0001);
         String freshRisk=id();originalRisk(freshRisk,now-1000);

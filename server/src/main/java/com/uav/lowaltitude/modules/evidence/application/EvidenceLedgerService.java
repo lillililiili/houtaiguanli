@@ -60,8 +60,8 @@ public class EvidenceLedgerService {
         Query query=query(params,false,false);
         if(!visible(query,decision))return new Stats(0,counts(Map.of()),List.of(),List.of());
         Relation relation=relation(query,decision);
-        return new Stats(ledger.count(relation),counts(ledger.counts(relation,"category")),
-                entries(ledger.counts(relation,"status")),entries(ledger.counts(relation,"custody")));
+        Summary summary=ledger.summarize(relation);
+        return new Stats(summary.total(),counts(summary.category()),entries(summary.status()),entries(summary.custody()));
     }
     @Transactional
     public Detail detail(String kind,String id,MultiValueMap<String,String> params) {

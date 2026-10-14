@@ -573,6 +573,15 @@ public class TargetReadRepository {
      * 每段都只取**最新一条**：悬浮卡要回答的是"现在怎么样"，不是历史（决策 15-4）。
      */
     public Map<String, TargetSummariesRow> summaries(List<String> targetIds) {
+        return summaries(targetIds, false);
+    }
+
+    /** Reports consume only risk; do not scan legality, disposal or raw bearing history for them. */
+    public Map<String, TargetSummariesRow> riskSummaries(List<String> targetIds) {
+        return summaries(targetIds, true);
+    }
+
+    private Map<String, TargetSummariesRow> summaries(List<String> targetIds, boolean riskOnly) {
         Map<String, TargetSummariesRow> result = new HashMap<>();
         if (targetIds == null || targetIds.isEmpty()) return result;
         Map<String, Object> params = Map.of("ids", targetIds);
@@ -588,6 +597,10 @@ public class TargetReadRepository {
                 rs -> { risks.put(rs.getString("target_id"), new RiskSummaryRow(rs.getString("risk_id"),
                         rs.getString("severity"), rs.getString("state_code"),
                         rs.getObject("occurred_at", OffsetDateTime.class))); });
+        if (riskOnly) {
+            for (String targetId : targetIds) result.put(targetId, new TargetSummariesRow(risks.get(targetId), null, null, null));
+            return result;
+        }
         Map<String, LegalitySummaryRow> legality = new HashMap<>();
         // 类别已改判（例如无人机→鸟，ZT-04）后，按原类别做出的最近一次研判不再是这个目标的"现在怎么样"：摘要不显示它。
         // 研判记录、告警、通知本身都保留（页面在告警详情里写明类别变化）；目标头行类别为空或研判没记类别时照旧显示。
