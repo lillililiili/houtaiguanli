@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.uav.lowaltitude.modules.device.application.DeviceOnboardService;
+import com.uav.lowaltitude.modules.device.application.SimulatedDeviceRestoreService;
 import com.uav.lowaltitude.modules.device.application.DeviceService;
 import com.uav.lowaltitude.modules.device.application.DeviceService.ConnectionProfile;
 import com.uav.lowaltitude.modules.device.application.DeviceService.DeviceDetail;
@@ -46,14 +47,16 @@ public class DeviceController {
     private final DeviceService service;
     private final DeviceOnboardService onboardService;
     private final MqttConfigurationService mqtt;
+    private final SimulatedDeviceRestoreService restore;
     private final ObjectMapper mapper;
     private final Validator validator;
 
     public DeviceController(DeviceService service, DeviceOnboardService onboardService, MqttConfigurationService mqtt,
-                            ObjectMapper mapper, Validator validator) {
+                            SimulatedDeviceRestoreService restore, ObjectMapper mapper, Validator validator) {
         this.service = service;
         this.onboardService = onboardService;
         this.mqtt = mqtt;
+        this.restore = restore;
         this.mapper = mapper;
         this.validator = validator;
     }
@@ -118,9 +121,24 @@ public class DeviceController {
         return ApiResponse.ok(onboardService.onboard(convert(body,DeviceOnboardService.OnboardRequest.class)));
     }
 
+    /** 设备模拟器启动时恢复它自己登记过、已退役或已停用的模拟设备（同一条记录）；真实设备不能恢复。 */
+    @PostMapping("/restore-simulated")
+    @com.uav.lowaltitude.platform.security.BackendOnly
+    public ApiResponse<DeviceDetail> restoreSimulated(@RequestBody JsonNode body,
+                                                      @RequestHeader(value="Idempotency-Key",required=false) String key) {
+        return ApiResponse.ok(service.detail(restore.restore(convert(body, SimulatedDeviceRestoreService.RestoreRequest.class), key)));
+    }
+
     @GetMapping("/{deviceId}")
     public ApiResponse<DeviceDetail> detail(@PathVariable String deviceId) {
         return ApiResponse.ok(service.detail(deviceId));
+    }
+
+    /** 退役前查一下：还有哪些没结束的工作挡着删除。只读。 */
+    @GetMapping("/{deviceId}/catalog-blockers")
+    @com.uav.lowaltitude.platform.security.BackendOnly
+    public ApiResponse<DeviceService.CatalogBlockers> catalogBlockers(@PathVariable String deviceId) {
+        return ApiResponse.ok(service.catalogBlockers(deviceId));
     }
 
     @PostMapping

@@ -239,6 +239,7 @@ final class AuditLabels {
             Map.entry("auto_sms_retry_requested", "申请补发自动短信"),
             Map.entry("auto_voice_retry_requested", "申请补发自动电话"),
             Map.entry("device_delete", "删除设备"),
+            Map.entry("device_restore", "恢复模拟设备"),
             Map.entry("uav_advisory_recorded", "登记无人机劝离记录"),
             Map.entry("uav_no_counter_decided", "确认当前无风险并决定不反制"));
 

@@ -118,6 +118,8 @@ public class MqttConfigurationService {
         if(!broker.sourceMode().equals(p.sourceMode()) || !broker.ownerOrgId().equals(p.ownerOrgId()) || !broker.districtId().equals(p.districtId()))
             throw bad("设备来源模式、组织区域必须与所选连接一致");
         if(broker.sourceMode().equals("live")) validateConnection(broker);
+        var retired=repository.retiredDevice(p.deviceNo());
+        if(retired!=null) throw conflict("DEVICE_RETIRED",retiredMessage(retired));
         idempotency.claim(key,"mqtt.register:"+p);
         try {
             String id=eo(p)?edges.register(p,clock.nowMillis()):repository.register(p,clock.nowMillis());
@@ -269,6 +271,12 @@ public class MqttConfigurationService {
     private void required(String value,int max) { if(value==null || value.isBlank() || value.length()>max || !value.equals(value.trim())) throw bad("必填字段为空、超长或含首尾空格"); }
     private void record(String action,String id) { var actor=AuthContext.require(); audit.record(actor.userId(),actor.account(),action,"mqtt",id,"配置已更新",null); }
     private static ApiException bad(String message) { return new ApiException(HttpStatus.BAD_REQUEST,"MQTT_CONFIG_INVALID",message); }
+    /** 退役编号被再次登记时如实说明，并分清模拟设备（可恢复）和其他设备（换新编号）。 */
+    private static String retiredMessage(Map<String,Object> device) {
+        boolean simulated="replay".equals(device.get("source_mode")) && Boolean.TRUE.equals(device.get("simulated"));
+        return "设备编号 "+device.get("device_no")+"（"+device.get("name")+"）已退役，台账保留着它的历史，这个编号不能再新登记。"
+                +(simulated?"它是设备模拟器登记的模拟设备，可以恢复后继续使用（模拟器启动时会自动恢复）。":"请换一个新的设备编号接入。");
+    }
     private static ApiException conflict(String code,String message) { return new ApiException(HttpStatus.CONFLICT,code,message); }
     private static ApiException versionConflict() { return conflict("VERSION_CONFLICT","配置已变化，请刷新后重试"); }
 }

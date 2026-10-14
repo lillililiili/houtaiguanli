@@ -37,7 +37,7 @@ const actionLabels = {
   user_password_reset: '重置用户密码', user_access_updated: '调整用户角色', organization_created: '创建单位', organization_updated: '更新单位',
   organization_status_changed: '变更单位状态', role_created: '创建角色', role_description_updated: '更新角色说明',
   role_permissions_updated: '更新角色权限', role_deleted: '删除角色', audit_export_requested: '导出审计日志',
-  device_create: '登记设备', device_update: '修改设备', device_enable: '启用设备', device_disable: '停用设备', device_delete: '删除设备',
+  device_create: '登记设备', device_update: '修改设备', device_enable: '启用设备', device_disable: '停用设备', device_delete: '删除设备', device_restore: '恢复模拟设备',
   device_created: '登记设备（历史编码）', device_updated: '修改设备（历史编码）', device_enabled: '启用设备（历史编码）', device_disabled: '停用设备（历史编码）',
   mqtt_broker_create: '登记消息接入连接', mqtt_broker_update: '修改消息接入连接', mqtt_broker_enable: '启用消息接入连接',
   mqtt_broker_disable: '停用消息接入连接', commission_create: '创建调测任务', commission_cancel: '取消调测任务',
