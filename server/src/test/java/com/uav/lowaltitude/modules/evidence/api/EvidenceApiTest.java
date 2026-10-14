@@ -67,6 +67,43 @@ class EvidenceApiTest {
     }
 
     @Test
+    void ledgerFiltersByOccurredTimeWindowAcrossListStatsAndExport() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:ingest", "evidence:read", "evidence:link");
+        long now = Instant.now().toEpochMilli(), hour = 3_600_000L;
+        // Captured times are relative to now so the fixture does not depend on today's date.
+        JsonNode recent = ingestFile(token, "recent-" + suffix + ".jpg", org, district, "TARGET", targetId, "EO_STILL", now - hour);
+        JsonNode older = ingestFile(token, "older-" + suffix + ".png", org, district, "TARGET", targetId, "EO_STILL", now - 72 * hour);
+        String day = "/api/v1/evidence-ledger?category=IMAGE&occurred_from=" + (now - 24 * hour) + "&occurred_to=" + (now + hour);
+        mvc.perform(get(day).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].source_id").value(recent.get("evidence_id").asText()));
+        String week = "occurred_from=" + (now - 7 * 24 * hour) + "&occurred_to=" + (now + hour);
+        mvc.perform(get("/api/v1/evidence-ledger?category=IMAGE&" + week).header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2));
+        // The window is [from, to): a record captured exactly at `to` is outside, exactly at `from` is inside.
+        long olderAt = now - 72 * hour;
+        mvc.perform(get("/api/v1/evidence-ledger?category=IMAGE&occurred_from=" + olderAt + "&occurred_to=" + (olderAt + 1))
+                .header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].source_id").value(older.get("evidence_id").asText()));
+        mvc.perform(get("/api/v1/evidence-ledger?category=IMAGE&occurred_from=" + (olderAt - 1) + "&occurred_to=" + olderAt)
+                .header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(0));
+        mvc.perform(get("/api/v1/evidence-ledger/stats?category=IMAGE&occurred_from=" + (now - 24 * hour) + "&occurred_to=" + (now + hour))
+                .header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1));
+        String csv = mvc.perform(get("/api/v1/evidence-ledger/export.csv?category=IMAGE&occurred_from=" + (now - 24 * hour) + "&occurred_to=" + (now + hour))
+                .header("Authorization", bearer(token)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(csv).contains(recent.get("evidence_no").asText()).doesNotContain(older.get("evidence_no").asText());
+        for (String bad : new String[]{"occurred_from=" + now, "occurred_to=" + now, "occurred_from=" + now + "&occurred_to=" + now,
+                "occurred_from=" + (now + 1) + "&occurred_to=" + now, "occurred_from=x&occurred_to=" + now}) {
+            mvc.perform(get("/api/v1/evidence-ledger?" + bad).header("Authorization", bearer(token)))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("INVALID_TIME_RANGE"));
+        }
+    }
+
+    @Test
     void unifiedLedgerListsAuthorizedFilesAndUsesSameStatistics() throws Exception {
         String token = reader("ASSIGNED", org, district);
         grantAction(token, "evidence:ingest", "evidence:read", "evidence:link");

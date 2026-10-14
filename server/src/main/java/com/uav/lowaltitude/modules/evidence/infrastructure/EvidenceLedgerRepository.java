@@ -18,7 +18,12 @@ public class EvidenceLedgerRepository {
     private final NamedParameterJdbcTemplate jdbc;
     public EvidenceLedgerRepository(JdbcTemplate jdbc) { this.jdbc = new NamedParameterJdbcTemplate(jdbc); }
     public record Query(String category, String status, String custody, String subjectKind, String subjectId,
-            String text, String sourceKind, String sourceId) { }
+            String text, String sourceKind, String sourceId, Long occurredFrom, Long occurredTo) {
+        public Query(String category, String status, String custody, String subjectKind, String subjectId,
+                String text, String sourceKind, String sourceId) {
+            this(category, status, custody, subjectKind, subjectId, text, sourceKind, sourceId, null, null);
+        }
+    }
     public record Relation(String sql, Map<String, Object> params) { }
     public record LedgerRow(String sourceKind, String sourceId, String category, String evidenceNo,
             String originalName, String kindCode, String status, Long capturedAt, Long storedAt,
@@ -69,6 +74,8 @@ public class EvidenceLedgerRepository {
         StringBuilder sql = new StringBuilder("SELECT * FROM (" + files + " UNION ALL " + track + " UNION ALL " + command + ") e WHERE 1=1");
         add(sql,p,"category",q.category()); add(sql,p,"status",q.status()); add(sql,p,"custody",q.custody());
         add(sql,p,"source_kind",q.sourceKind()); add(sql,p,"source_id",q.sourceId());
+        // Time filter uses the same instant the ledger shows and sorts by: capture time, else storage time; [from, to).
+        if(q.occurredFrom()!=null) { sql.append(" AND COALESCE(e.captured_at,e.stored_at)>=:occurred_from AND COALESCE(e.captured_at,e.stored_at)<:occurred_to"); p.put("occurred_from",q.occurredFrom()); p.put("occurred_to",q.occurredTo()); }
         if(q.text()!=null) { sql.append(" AND (LOWER(e.original_name) LIKE :text OR LOWER(e.evidence_no) LIKE :text OR LOWER(e.source_id) LIKE :text)"); p.put("text","%"+q.text().toLowerCase(java.util.Locale.ROOT)+"%"); }
         if(q.subjectKind()!=null) {
             p.put("subject_kind",q.subjectKind()); p.put("subject_id",q.subjectId());
