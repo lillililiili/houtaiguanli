@@ -59,12 +59,14 @@ public class DeviceService {
     private final IdempotencyGuard idempotency;
     private final TcpDeviceScopeService tcpScopes;
     private final FusionProperties fusionProperties;
+    private final RetiredDeviceNumbers retiredNumbers;
 
     public DeviceService(DeviceRepository repository, DeviceAccessPolicy access, AppClock clock,
                          AppProperties properties, AuditService audit, ObjectMapper objectMapper,
                          DeviceAdapterRegistry adapterRegistry, IntegrationSourceService sources,
                          IdempotencyGuard idempotency, DeviceEventPublicationRepository publication,
-                         TcpDeviceScopeService tcpScopes, FusionProperties fusionProperties) {
+                         TcpDeviceScopeService tcpScopes, FusionProperties fusionProperties,
+                         RetiredDeviceNumbers retiredNumbers) {
         this.repository = repository;
         this.publication = publication;
         this.access = access;
@@ -77,6 +79,7 @@ public class DeviceService {
         this.idempotency = idempotency;
         this.tcpScopes = tcpScopes;
         this.fusionProperties = fusionProperties;
+        this.retiredNumbers = retiredNumbers;
     }
 
     public DevicePage list(DeviceFilter filter, int page, int size, String sort) {
@@ -291,6 +294,7 @@ public class DeviceService {
         AuthUser user = access.requireDevicesOperate();
         rejectWeatherMutation(mutation);
         validate(mutation);
+        retiredNumbers.reject(mutation.deviceNo());
         long now = clock.nowMillis();
         String id = UUID.randomUUID().toString();
         Map<String, Object> values = values(mutation, now);

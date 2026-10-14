@@ -129,9 +129,16 @@ class SimulatedDeviceRestoreApiTest {
         assertThat(jdbc.queryForObject("SELECT deleted_at FROM ops_device WHERE device_id=?", Long.class, simulated.id())).isNotNull();
         assertThat(restoreAudits(simulated)).isZero();
 
+        // 没有这个编号的设备：没有可恢复的，成功返回、不带 data，模拟器接着新登记。
+        // 模拟器每次新登记前都先问一次，这不算失败，不留失败审计（上面被拒的恢复照常留）。
         Map<String, Object> unknown = new LinkedHashMap<>(simulated.identity());
         unknown.put("device_no", "map-sim-radar-" + UUID.randomUUID().toString().substring(0, 8));
-        assertThat(error(restore(simulated, unknown), status().isNotFound()).path("code").asText()).isEqualTo("DEVICE_NOT_FOUND");
+        int failures = restoreFailureAudits();
+        assertThat(failures).isPositive();
+        JsonNode nothing = response(restore(simulated, unknown), status().isOk());
+        assertThat(nothing.path("ok").asBoolean()).isTrue();
+        assertThat(nothing.has("data")).isFalse();
+        assertThat(restoreFailureAudits()).isEqualTo(failures);
     }
 
     @Test
@@ -219,6 +226,11 @@ class SimulatedDeviceRestoreApiTest {
 
     private int restoreAudits(Device device) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE action='device_restore' AND object_id=?", Integer.class, device.id());
+    }
+
+    private int restoreFailureAudits() {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE result='FAILURE' AND object_id='/api/v1/devices/restore-simulated'",
+                Integer.class);
     }
 
     private JsonNode data(MockHttpServletRequestBuilder request, ResultMatcher expected) throws Exception {

@@ -16,7 +16,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 class FormalBusinessGuardTest {
     private final SimulationPolicy formal=new SimulationPolicy(SimulationPolicyTest.environment("production"));
     @Test void replayConnectorCreationAndEnableValidationAreRejectedBeforeNetworkOrWrites() {
-        var service=new MqttConfigurationService(null,null,mock(DeviceAccessPolicy.class),null,null,null,null,null,null,formal);
+        var service=new MqttConfigurationService(null,null,mock(DeviceAccessPolicy.class),null,null,null,null,null,null,formal,null);
         assertThatThrownBy(()->service.create(new BrokerInput("replay","127.0.0.1",1883,false,null,null,"127.0.0.0/8","replay","org","district",null),"key"))
                 .isInstanceOf(ApiException.class).hasMessageContaining("模拟");
         assertThatThrownBy(()->service.validateConnection(new Broker("broker","replay","127.0.0.1",1883,false,"id",null,null,"127.0.0.0/8","replay","org","district",true,0,null,null)))

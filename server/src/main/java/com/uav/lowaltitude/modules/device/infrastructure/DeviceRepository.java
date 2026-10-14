@@ -814,6 +814,12 @@ public class DeviceRepository {
         }
     }
 
+    /** 同编号的退役（已删除）设备；各登记入口写库前用它把“编号已退役”说清。 */
+    public Map<String, Object> retiredByDeviceNo(String deviceNo) {
+        return jdbc.queryForList("SELECT device_no,name,source_mode,simulated FROM ops_device WHERE device_no=? AND deleted_at IS NOT NULL",
+                deviceNo).stream().findFirst().orElse(null);
+    }
+
     /** 按设备编号锁住设备行（含已退役即已删除的记录），只供恢复模拟设备用。 */
     public Map<String, Object> lockByDeviceNoIncludingRetired(String deviceNo) {
         jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_no=? FOR UPDATE", deviceNo);

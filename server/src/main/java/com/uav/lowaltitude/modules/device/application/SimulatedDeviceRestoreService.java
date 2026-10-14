@@ -52,7 +52,10 @@ public class SimulatedDeviceRestoreService {
         this.clock = clock;
     }
 
-    /** 返回设备 ID。设备本来就在用时什么也不改，原样返回。 */
+    /**
+     * 返回设备 ID。设备本来就在用时什么也不改，原样返回。没有这个编号的设备（或不在数据范围内）返回 null：
+     * 没有可恢复的，调用方接着新登记。模拟器每次新登记前都先问一次，这不算失败，不写失败审计。
+     */
     @Transactional
     public String restore(RestoreRequest request, String key) {
         AuthUser user = permissions.requireDevicesOperate();
@@ -63,8 +66,7 @@ public class SimulatedDeviceRestoreService {
         // 锁序与启停设备一致：先连接，后设备。
         MqttConfiguration.Broker broker = lingyun.broker(brokerId, true);
         Map<String, Object> row = devices.lockByDeviceNoIncludingRetired(deviceNo);
-        if (row == null || !devices.canDeleteInScope(text(row, "device_id"), user.userId(), user.scopeMode()))
-            throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "没有编号为 " + deviceNo + " 的设备，或不在授权范围内");
+        if (row == null || !devices.canDeleteInScope(text(row, "device_id"), user.userId(), user.scopeMode())) return null;
         String id = text(row, "device_id");
         String label = "设备 " + deviceNo + "（" + text(row, "name") + "）";
         if (!"replay".equals(text(row, "source_mode")) || !Boolean.TRUE.equals(row.get("simulated")))

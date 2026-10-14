@@ -121,12 +121,16 @@ public class DeviceController {
         return ApiResponse.ok(onboardService.onboard(convert(body,DeviceOnboardService.OnboardRequest.class)));
     }
 
-    /** 设备模拟器启动时恢复它自己登记过、已退役或已停用的模拟设备（同一条记录）；真实设备不能恢复。 */
+    /**
+     * 设备模拟器启动时恢复它自己登记过、已退役或已停用的模拟设备（同一条记录）；真实设备不能恢复。
+     * 没有这个编号的设备时成功返回、不带 data：没有可恢复的，模拟器接着新登记。
+     */
     @PostMapping("/restore-simulated")
     @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> restoreSimulated(@RequestBody JsonNode body,
                                                       @RequestHeader(value="Idempotency-Key",required=false) String key) {
-        return ApiResponse.ok(service.detail(restore.restore(convert(body, SimulatedDeviceRestoreService.RestoreRequest.class), key)));
+        String id = restore.restore(convert(body, SimulatedDeviceRestoreService.RestoreRequest.class), key);
+        return ApiResponse.ok(id == null ? null : service.detail(id));
     }
 
     @GetMapping("/{deviceId}")

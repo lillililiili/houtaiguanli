@@ -27,14 +27,17 @@ public class DeviceOnboardService {
     private final IntegrationSourceService sources;
     private final TcpDeviceScopeService scopes;
     private final ManualRadarSimulation simulation;
+    private final RetiredDeviceNumbers retiredNumbers;
 
     public DeviceOnboardService(DeviceAccessPolicy access, DeviceService devices, IntegrationSourceService sources,
-                                TcpDeviceScopeService scopes, ManualRadarSimulation simulation) {
+                                TcpDeviceScopeService scopes, ManualRadarSimulation simulation,
+                                RetiredDeviceNumbers retiredNumbers) {
         this.access = access;
         this.devices = devices;
         this.sources = sources;
         this.scopes = scopes;
         this.simulation = simulation;
+        this.retiredNumbers = retiredNumbers;
     }
 
     public OnboardingOptions options() {
@@ -58,6 +61,7 @@ public class DeviceOnboardService {
         scopes.validateTuple(org,district);
         boolean simulated = Boolean.TRUE.equals(request.simulated());
         if (simulated) simulation.validate(user, request);
+        retiredNumbers.reject(deviceNo);
         Source source;
         try {
             source = sources.insertLive(new Mutation(deviceNo, name, request.protocolCode(), null,

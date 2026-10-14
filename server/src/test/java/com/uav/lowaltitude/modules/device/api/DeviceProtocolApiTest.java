@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.device.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -236,6 +237,33 @@ class DeviceProtocolApiTest {
                 .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("DATA_SCOPE_FORBIDDEN"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no='QA-SCOPE-OUTSIDE'",Long.class)).isZero();
+    }
+
+    /** 2026-10-14：TCP 接入遇到已退役的编号，如实说明是哪台设备、已退役，请换新编号；不再报笼统的“编号或接入编码已存在”。 */
+    @Test void retiredNumberIsNamedWhenOnboardedAgain() throws Exception {
+        String token=login();
+        String org=jdbc.queryForObject("SELECT org_id FROM app_org WHERE org_code='ORG-DEV'",String.class);
+        String district=jdbc.queryForObject("SELECT district_id FROM app_district ORDER BY district_id FETCH FIRST 1 ROW ONLY",String.class);
+        String deviceNo="RAD-RETIRED-"+UUID.randomUUID().toString().substring(0,8);
+        var body=mapper.createObjectNode().put("protocol_code","RADAR_TCP_V3_0_0")
+                .put("device_no",deviceNo).put("name","退役雷达")
+                .put("host","192.0.2.88").put("port",5001).put("allowed_cidrs","192.0.2.0/24")
+                .put("owner_org_id",org).put("district_id",district);
+        String id=mapper.readTree(mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("device").path("device_id").asText();
+        mvc.perform(patch("/api/v1/devices/"+id+"/enabled").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0,\"enabled\":false,\"reason\":\"退役前停用\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(delete("/api/v1/devices/"+id).header("Authorization",bearer(token)).header("Idempotency-Key",UUID.randomUUID().toString())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1,\"reason\":\"测试退役\"}"))
+                .andExpect(status().isOk());
+        JsonNode refused=mapper.readTree(mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isConflict())
+                .andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).path("error");
+        assertThat(refused.path("code").asText()).isEqualTo("DEVICE_RETIRED");
+        assertThat(refused.path("message").asText()).contains(deviceNo).contains("已退役").contains("新的设备编号");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?",Long.class,deviceNo)).isEqualTo(1);
     }
 
     @Test

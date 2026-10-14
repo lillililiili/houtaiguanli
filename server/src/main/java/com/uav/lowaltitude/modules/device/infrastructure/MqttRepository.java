@@ -78,11 +78,6 @@ public class MqttRepository {
                 r.getObject("last_static_pt_time",Long.class),r.getObject("last_pt_time",Long.class),
                 r.getObject("last_msg_cnt",Long.class),r.getString("owner_org_id"),r.getString("district_id"));
     }
-    /** 同编号的退役（已删除）设备；登记前用它把“编号已退役”说清，不让幂等键把这次登记当成重复提交。 */
-    public Map<String,Object> retiredDevice(String deviceNo) {
-        return jdbc.queryForList("SELECT device_no,name,source_mode,simulated FROM ops_device WHERE device_no=? AND deleted_at IS NOT NULL",
-                deviceNo).stream().findFirst().orElse(null);
-    }
     public boolean scopeExists(String org, String district) {
         return jdbc.queryForObject("SELECT COUNT(*) FROM app_org o CROSS JOIN app_district d WHERE o.org_id=? AND d.district_id=?",
                 Integer.class,org,district)==1;
