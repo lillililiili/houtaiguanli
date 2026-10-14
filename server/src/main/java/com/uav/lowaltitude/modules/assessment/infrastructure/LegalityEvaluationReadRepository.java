@@ -79,7 +79,7 @@ public class LegalityEvaluationReadRepository {
         Where where = where(PAGE_LATEST_UAV, access);
         where.sql.append(" AND e.target_id IN (:page_target_ids)");
         where.parameters.put("page_target_ids", targetIds);
-        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status" + from(PAGE_LATEST_UAV) + where.sql, where.parameters,
+        jdbc.query("SELECT e.target_id,e.evaluation_id,e.legal_status" + from(PAGE_LATEST_UAV, true) + where.sql, where.parameters,
                 rs -> { result.put(rs.getString("target_id"), new LatestLegality(rs.getString("evaluation_id"), rs.getString("legal_status"))); });
         return result;
     }
@@ -223,6 +223,10 @@ public class LegalityEvaluationReadRepository {
     private static String from() { return from(EvaluationQuery.empty()); }
 
     private static String from(EvaluationQuery query) {
+        return from(query, false);
+    }
+
+    private static String from(EvaluationQuery query, boolean pageTargets) {
         String source = "rule_evaluation";
         if (query.latestOnly()) {
             // Reduce history before recognition/review/reference joins. OFFSET 0 is an intentional
@@ -230,6 +234,8 @@ public class LegalityEvaluationReadRepository {
             // These outer-row restrictions never restrict successor rows: latest remains global
             // per mode and subject, including when its date/status/source/scope is not visible.
             StringBuilder latest = new StringBuilder("(SELECT e.* FROM rule_evaluation e WHERE 1=1");
+            // Restrict candidates before the optimizer boundary; successor checks remain global.
+            if (pageTargets) latest.append(" AND e.target_id IN (:page_target_ids)");
             if (query.mode() != null) latest.append(" AND e.mode=:mode");
             if (query.subjectKind() != null) latest.append(" AND e.subject_kind=:subject_kind");
             if (query.targetId() != null) latest.append(" AND e.target_id=:target_id");

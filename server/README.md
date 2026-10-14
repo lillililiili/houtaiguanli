@@ -1,5 +1,17 @@
 # low-altitude-server
 
+2026-10-13 同步合并：来源贡献保留远端按当前观测类型补充模拟权重的实现；仅当前有效观测包含 `SIM_NORMALIZED` 时读取模拟权重，真实来源不额外访问模拟配置，生产门禁保持。合并本机的动态来源编号、混合观测属性与生产画像回归，来源贡献 11 项测试全部保留并通过。本机的读取性能优化和 `V202610130001` 索引同时保留，不改已应用迁移、历史事实或运行库规则版本。
+
+本次合并验证：`SourceContributionReaderTest,WeightedFuserTest,AttributeSelectorTest,TargetReadApiTest,AuthApiTest,LegalityScopePostgresTest,ReportingFormalFactsPostgresTest,RiskReadPostgresTest,RiskClearancePostgresTest` 随 `package` 执行 177 项，全部通过；另执行 `EvidenceLedgerPostgresTest#unifiedLedger*+ledger*+statsShare*+evidenceRead*+unknownQuery*` 的 9 项读取测试，全部通过。合计 186 项，失败、错误、跳过均为 0；其中 132 项在独立 PostgreSQL 16/PostGIS 3.5 测试库执行，194 项迁移应用至 `V202610130001`。证据专项初次因新测试库缺 PostGIS 扩展而初始化失败，补齐扩展后原命令通过。本次未运行后端全量测试、浏览器验收或部署；下述既有证据链接写入测试边界仍保留。
+
+2026-10-13 三页读取性能：运行统计只读取实际消费的风险摘要，并在最新研判候选收敛前限定本批目标，后继判断仍为主体/模式全局最新；证据台账在授权、过滤及分页之后计轨迹点数和关联数，统计从同一授权关系一次聚合；风险列表每次请求只读取一份领域动作权限，逐条关联范围检查仍保留。当前风险最新轨迹点先按每条融合轨迹取首条，再按原 observed_at DESC NULLS LAST、received_at DESC、point_id 取全局首条；追加 `V202610130001` 索引，同时加速同时间点冲突查询，不过滤预测点、不改变时效、来源与解除条件。
+
+验证：PostgreSQL 隔离 schema 中证据读取 9 项、合法性范围/统计正式事实/风险读取 61 项、最新位置与风险读取 83 项通过（风险读取 21 项重复执行）。新增分页点数、关联数和多轨迹/未知时间排序断言；后端打包通过。初轮 H2 107 项中，原证据写入测试 `caseAndAuthorizationLinksRequireModuleReadAndStayInScope` 仍有 1 项状态码期望不符（404/403），该链接写入流程不在本次修改范围；其余 106 项通过。本机 `local,qa`、`app.dev-seed.enabled=false` 已加载最终构建及索引。普通登录只读实测：运行统计 3.33s → 0.69～1.85s；证据列表 3.93s → 0.06～0.15s；证据统计 2.01s → 0.04～0.05s；风险 100 条 4.21s → 0.87～0.94s。业务结果逐项一致（统计生成时间、原有无序分类数组顺序除外）；不以模拟数据验收真实设备能力。期间 Docker 连接故障已恢复，故障期间超时不作为上述对比样本。
+
+2026-10-12：目标详情的来源贡献读取改用与融合引擎相同的有效参数加载器，修复当前 `SIM_NORMALIZED` 观测因缺权重使 `/targets/{id}` 返回 500、融合感知来源详情及反制办理“目标位置与轨迹”间歇不可用的问题。仅沿用既有模拟环境参数补充；生产环境禁用、来源标识、观测时效及权限保持，不改配置版本、历史观测或处置状态。
+
+验证：`mvnw.cmd -Dtest=SourceContributionReaderTest,WeightedFuserTest,AttributeSelectorTest,TargetReadApiTest test` 共 40 项通过，失败、错误、跳过均为 0；`mvnw.cmd -DskipTests package` 通过。本机 `local,qa`、`app.dev-seed.enabled=false` 服务已加载修复，10 个已有目标详情读取成功；浏览器以本地超级管理员只读验收，截图所示办理记录的地图、目标及轨迹正常展示，手动刷新后保持正常。验收时实时目标已停报，融合感知无可点击的当前异常；新鲜模拟来源与雷达同时存在的场景由上述回归测试覆盖，不记作持续上报的浏览器验收。
+
 2026-10-12：前后台数据更新统一由 SSE 变化通知驱动，移除重复页面轮询，保留断线兜底和业务时点检查。新增数据库监听状态事件与 `V202610129001` 通知迁移；自动读取不驱动刷新按钮 loading。范围、保留任务、测试和发布要求见[统一 SSE 更新](../docs/acceptance/realtime-sse-2026-10-12.md)。
 
 2026-10-12 补验：大屏实时趋势跳过未使用的轨迹指标，`V202610129003` 补齐最新研判查询索引，后继探测保持相关索引查询。local 数据源设置 `jit=off`；Compose 数据库共享内存默认为 256 MiB，可通过 `DB_SHM_SIZE` 调整，重建容器时保留原数据卷。本机重启、真实数据大屏及前后台断线恢复已验收，详细测试与耗时见上述记录。

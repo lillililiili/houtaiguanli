@@ -11,6 +11,8 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.mock.env.MockEnvironment;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.*;
 import com.uav.lowaltitude.modules.fusion.application.FusionConfigLoader;
@@ -159,5 +161,65 @@ class SourceContributionReaderTest {
         assertThatThrownBy(() -> reader("prod").read("target-z",List.of(simLink)))
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("SIM_NORMALIZED");
         verifyNoInteractions(jdbc);
+    }
+
+    @Test void normalizedReplayAndRadarUseTheSameEffectiveParametersAsThePipeline() throws Exception {
+        snapshot(now.minusMillis(100), Map.of());
+        var jdbc = mock(JdbcTemplate.class);
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("local", "qa");
+        var effective = loader(jdbc, environment);
+        var readerWithPipelineConfig = new SourceContributionReader(tracks, json, config, effective,
+                new AppClock(Clock.fixed(now, ZoneOffset.UTC)), tasks);
+        String suffix = UUID.randomUUID().toString();
+        String sourceId = "normalized-" + suffix, linkId = "link-" + suffix;
+        var simulated = new SourceLinkRow(linkId, sourceId, "SIM-" + suffix, "replay", "session-" + suffix,
+                "external-" + suffix, "device-" + suffix, null, "Simulator", "SIM_NORMALIZED", "CONFIRMED");
+        var radarTrack = tracks.findOpenRawTracks(List.of()).get(link.linkId());
+        var estimate = new SourceEstimate(sourceId, simulated.sourceCode(), "SIM_NORMALIZED", "CONFIRMED",
+                linkId, "track-" + suffix, "observation-" + suffix, now.minusMillis(50),
+                119d, 38d, 5d, null, 80d, 4d, 90d, "UAV", .9d, "identity-" + suffix, .95d, PointKind.MEAS, Map.of());
+        when(tracks.findOpenRawTracks(any())).thenReturn(Map.of(link.linkId(), radarTrack,
+                linkId, new TrackRow(estimate.rawTrackId(), "target-z", linkId, simulated.externalTargetId(),
+                        estimate.observedAt(), json.writeValueAsString(Map.of("source_estimate", estimate)))));
+        var result = readerWithPipelineConfig.read("target-z", List.of(link, simulated));
+        assertThat(result).extracting(r -> r.fusionStatus()).containsExactly("CURRENT", "CURRENT");
+        assertThat(result.get(0).contributionAttributes()).contains("position");
+        assertThat(result.get(1).contributionAttributes()).containsExactly("position", "class", "identity", "motion");
+        assertThat(result.get(1).sourceMode()).isEqualTo("replay");
+        assertThat(result.get(1).observationAt()).isEqualTo(estimate.observedAt().toEpochMilli());
+        verify(jdbc).queryForMap("SELECT * FROM simulator_fusion_parameters WHERE source_type='SIM_NORMALIZED'");
+    }
+
+    @Test void productionKeepsRealSourceParametersWithoutEnablingSimulation() throws Exception {
+        snapshot(now.minusMillis(100), Map.of());
+        var jdbc = mock(JdbcTemplate.class);
+        var environment = new MockEnvironment();
+        environment.setActiveProfiles("prod", "local", "qa");
+        var effective = loader(jdbc, environment);
+        var readerWithPipelineConfig = new SourceContributionReader(tracks, json, config, effective,
+                new AppClock(Clock.fixed(now, ZoneOffset.UTC)), tasks);
+        var liveLink = new SourceLinkRow(link.linkId(), link.sourceId(), link.sourceCode(), "live",
+                link.sourceSessionKey(), link.externalTargetId(), link.deviceId(), null, link.sourceName(), "RADAR", "CONFIRMED");
+        var result = readerWithPipelineConfig.read("target-z", List.of(liveLink)).get(0);
+        assertThat(result.sourceMode()).isEqualTo("live");
+        assertThat(result.fusionStatus()).isEqualTo("CURRENT");
+        assertThat(result.contributionAttributes()).containsExactly("position", "class");
+        assertThat(effective.active().weights()).doesNotContainKey("SIM_NORMALIZED");
+        verify(jdbc, never()).queryForMap(anyString());
+    }
+
+    @SuppressWarnings("unchecked")
+    private FusionConfigLoader loader(JdbcTemplate jdbc, MockEnvironment environment) {
+        String params = """
+                {"identity":{"short_lost_after_ms":5000},"filter":{"accuracy_default_m":{"RADAR":10}},
+                 "weights":{"RADAR":{"position":1,"class":1,"identity":0,"motion":1}}}
+                """;
+        doReturn(Collections.singletonList(new String[] {"test-" + UUID.randomUUID(), params}))
+                .when(jdbc).query(startsWith("SELECT config_version"), any(RowMapper.class));
+        when(jdbc.queryForMap("SELECT * FROM simulator_fusion_parameters WHERE source_type='SIM_NORMALIZED'"))
+                .thenReturn(Map.of("accuracy_m", 5d, "position_weight", 2d, "motion_weight", 2d,
+                        "class_weight", 2d, "identity_weight", 1d));
+        return new FusionConfigLoader(jdbc, new SimulationPolicy(environment));
     }
 }

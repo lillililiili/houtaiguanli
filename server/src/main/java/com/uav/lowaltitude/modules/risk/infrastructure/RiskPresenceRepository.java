@@ -87,7 +87,10 @@ public class RiskPresenceRepository {
                       and (other.point_kind<>p.point_kind or not ST_Equals(other.location,p.location)
                         or other.position_accuracy_m IS DISTINCT FROM p.position_accuracy_m)) peers
                 from target t join target_latest_state ls on ls.target_id=t.target_id
-                join lateral (select candidate.* from track tr join track_point candidate on candidate.track_id=tr.track_id
+                join lateral (select candidate.* from track tr
+                  cross join lateral (select tp.* from track_point tp where tp.track_id=tr.track_id
+                    order by tp.observed_at desc nulls last,tp.received_at desc,tp.point_id
+                    fetch first 1 row only) candidate
                   where tr.target_id=t.target_id and tr.layer='FUSED'
                   order by candidate.observed_at desc nulls last,candidate.received_at desc,candidate.point_id
                   fetch first 1 row only) p on true
