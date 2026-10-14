@@ -2,7 +2,7 @@
 
 ## 2026-10-07 按关注分组筛选与待处置统计
 
-`GET /api/v1/alarms` 与 `GET /api/v1/alarms/export.csv` 新增可选筛选 `attention_group`：逗号分隔的 `CURRENT`、`AWAITING_CONFIRMATION`、`HISTORY`，与每行返回的 `attention_group` 用同一个即时分类表达式，`total`、分页、导出与审计筛选条件一致；未知、重复、空项或重复传参返回 400 `VALIDATION_ERROR`。告警页“待处置”统计 = `state=CONFIRMED&attention_group=CURRENT,AWAITING_CONFIRMATION`：已核实属实、处置尚未结束（含执行中的反制/干扰和未完成的急停核查），不限日期；结束依据与下文分组规则相同，分组规则调整时统计随之变化，不另立口径。
+`GET /api/v1/alarms` 与 `GET /api/v1/alarms/export.csv` 新增可选筛选 `attention_group`：逗号分隔的 `CURRENT`、`AWAITING_CONFIRMATION`、`HISTORY`，与每行返回的 `attention_group` 用同一个即时分类表达式，`total`、分页、导出与审计筛选条件一致；未知、重复、空项或重复传参返回 400 `VALIDATION_ERROR`。告警页“待处置”统计 = `state=CONFIRMED&attention_group=CURRENT,AWAITING_CONFIRMATION`：已核实属实、处置尚未结束（含执行中的反制/干扰；2026-10-14 起未登记的急停不再计入），不限日期；结束依据与下文分组规则相同，分组规则调整时统计随之变化，不另立口径。
 
 同日新增可选筛选 `violation_reason`（单个代码）：按告警当前违规原因匹配完整代码，升级过取最近一次升级的累计原因，否则取告警明细的 `violation_reasons`，与列表、详情返回的 `violation_reasons` 同源。可选值为规则引擎会写入告警的原因：`INSIDE_RESTRICTED_AIRSPACE`、`AIRSPACE_ALTITUDE_EXCEEDED`、`TEMPORARY_RESTRICTION_ACTIVE`、`ROUTE_DEVIATION`、`TIME_WINDOW_OVERRUN`、`NIGHT_FLIGHT`、`PLAN_ALTITUDE_EXCEEDED`、`BVLOS_EXCEEDED`、`NO_AUTHORIZATION`；其他值或重复传参 400 `VALIDATION_ERROR`。告警页“类别”下拉改按违规原因筛；`alarm_type` 筛选保留兼容。
 
@@ -14,7 +14,7 @@
 
 默认 `priority` 先当前、再待确认、最后历史；前两组按当前等级降序、接收时间降序，历史仅接收时间降序，同时间以 alarm_id 升序稳定分页。删除新到 5 分钟置顶和同等级旧告警优先规则。显式指定排序仍尊重原 sort/order；CSV 共用同一次序，末尾追加“观测状态”“关注分组”，原列位置不变。
 
-观测来自告警所关联且同组织、区域、来源模式的 target_latest_state，使用生效融合参数 identity.terminate_after_ms；恰好到期算过期。缺失位置/观测、未来时间、TIME_UNTRUSTED 或目标关联不一致均为 UNKNOWN，不以 received_at 冒充有效观测。未核实也自动下沉，恢复有效观测后自动重新进入当前组。经相同事件、组织、区域和来源关联的设备反制/干扰 APPROVED、EXECUTING，以及急停设备 confirmed_at 为空且 stop_status 非 NOT_REQUIRED，优先保留当前组。FALSE_POSITIVE 或最新实际设备处置 COMPLETED 归历史；完成时间须不早于最新告警升级（无升级时为告警接收），旧完成记录不能盖住后续未完成的处置。已确认但无结束依据仍按观测分组。不使用已停用的人工现场记录推断飞离，不因失联或到期自动解除告警。
+观测来自告警所关联且同组织、区域、来源模式的 target_latest_state，使用生效融合参数 identity.terminate_after_ms；恰好到期算过期。缺失位置/观测、未来时间、TIME_UNTRUSTED 或目标关联不一致均为 UNKNOWN，不以 received_at 冒充有效观测。未核实也自动下沉，恢复有效观测后自动重新进入当前组。经相同事件、组织、区域和来源关联的设备反制/干扰 APPROVED、EXECUTING，优先保留当前组；2026-10-14 起急停后不再登记现场停机核查，未登记的急停任务不再保留当前组。FALSE_POSITIVE 或最新实际设备处置 COMPLETED 归历史；完成时间须不早于最新告警升级（无升级时为告警接收），旧完成记录不能盖住后续未完成的处置。已确认但无结束依据仍按观测分组。不使用已停用的人工现场记录推断飞离，不因失联或到期自动解除告警。
 
 ## 交付边界
 
