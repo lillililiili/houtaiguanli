@@ -141,24 +141,19 @@ class DualChannelReceiptApiTest extends AutoVoiceApiTest {
         } finally { release.countDown(); pool.shutdownNow(); }
     }
 
-    @Test void matrixWatchWindowsUseDeliveryAndPlaybackTimesAndUnknownNeverMeansDeparture() throws Exception {
+    /** 2026-10-14 用户确认“通知零等待”：短信送达后直接进入外呼，电话播完后直接进入待反制；未知仍不算撤离。 */
+    @Test void matrixZeroWaitUsesDeliveryAndPlaybackTimesAndUnknownNeverMeansDeparture() throws Exception {
         long delivered = System.currentTimeMillis();
         jdbc.update("update uav_auto_sms_task set updated_at=? where event_id=?", delivered, eventId);
-        assertThat(NotifyFlow.SMS_WATCH_MILLIS).isEqualTo(3_000L);
-        assertThat(NotifyFlow.CALL_WATCH_MILLIS).isEqualTo(10_000L);
-        at(delivered + 2_999L);
-        voiceService.process(eventId);
-        read().andExpect(jsonPath("$.data.notify_phase").value("WATCHING"));
-        assertThat(records(eventId, "uav_event_voice_advisory")).isZero();
-        at(delivered + 3_000L);
+        assertThat(NotifyFlow.SMS_WATCH_MILLIS).isZero();
+        assertThat(NotifyFlow.CALL_WATCH_MILLIS).isZero();
+        at(delivered);
         voiceService.process(eventId);
         long played = jdbc.queryForObject("select playback_completed_at from uav_auto_voice_task where event_id=?", Long.class, eventId);
-        assertThat(played).isEqualTo(delivered + 3_000L);
-        at(played + 9_999L);
-        read().andExpect(jsonPath("$.data.notify_phase").value("WATCHING"))
-                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        assertThat(played).isEqualTo(delivered);
+        assertThat(records(eventId, "uav_event_voice_advisory")).isEqualTo(1);
         when(departure.assess(anyString(), anyLong(), anyLong())).thenReturn(Presence.UNKNOWN);
-        at(played + 10_000L);
+        at(played);
         read().andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"))
                 .andExpect(jsonPath("$.data.can_request_counter").value(false));
         assertConfirmed(eventId);
@@ -166,24 +161,17 @@ class DualChannelReceiptApiTest extends AutoVoiceApiTest {
         assertThat(records(eventId, "uav_event_voice_advisory")).isEqualTo(1);
     }
 
-    @Test void realTimeWatchWindowsCompleteOnlyAfterThreeAndTenSeconds() throws Exception {
+    @Test void realTimeNotificationsProceedWithoutWatchWait() throws Exception {
         clearSms(eventId);
         automatic.process(eventId);
         long delivered = jdbc.queryForObject("select updated_at from uav_auto_sms_task where event_id=?", Long.class, eventId);
         voiceService.process(eventId);
-        assertThat(records(eventId, "uav_event_voice_advisory")).isZero();
-        read().andExpect(jsonPath("$.data.notify_phase").value("WATCHING"));
-        while (System.currentTimeMillis() < delivered + 3_000L) Thread.sleep(25);
-        voiceService.process(eventId);
+        assertThat(records(eventId, "uav_event_voice_advisory")).isEqualTo(1);
         long played = jdbc.queryForObject("select playback_completed_at from uav_auto_voice_task where event_id=?", Long.class, eventId);
-        assertThat(played - delivered).isGreaterThanOrEqualTo(3_000L);
-        read().andExpect(jsonPath("$.data.notify_phase").value("WATCHING"))
-                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
-        while (System.currentTimeMillis() < played + 10_000L) Thread.sleep(25);
+        assertThat(played).isGreaterThanOrEqualTo(delivered);
         when(departure.assess(anyString(), anyLong(), anyLong())).thenReturn(Presence.UNKNOWN);
         read().andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"))
                 .andExpect(jsonPath("$.data.can_request_counter").value(false));
-        assertThat(System.currentTimeMillis() - played).isGreaterThanOrEqualTo(10_000L);
         assertConfirmed(eventId);
     }
 
@@ -201,7 +189,10 @@ class DualChannelReceiptApiTest extends AutoVoiceApiTest {
     private Map<String, Object> snapshot(String id) {
         return Map.of("event", jdbc.queryForMap("select state_code,version from uav_event where event_id=?", id),
                 "sms", jdbc.queryForList("select * from uav_auto_sms_task where event_id=?", id),
-                "voice", jdbc.queryForList("select * from uav_auto_voice_task where event_id=?", id));
+                // departure_checked_at 只记本事件自己最近一次撤离检查的时间；零等待下每次处理都会刷新，不是另一事件推进的结果。
+                "voice", jdbc.queryForList("select * from uav_auto_voice_task where event_id=?", id).stream()
+                        .map(row -> { var copy = new java.util.HashMap<>(row); copy.remove("departure_checked_at"); copy.remove("DEPARTURE_CHECKED_AT"); return copy; })
+                        .toList());
     }
     private void assertConfirmed(String... ids) throws Exception {
         for (String id : ids) {
