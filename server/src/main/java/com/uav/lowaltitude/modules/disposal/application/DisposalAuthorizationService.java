@@ -119,8 +119,7 @@ public class DisposalAuthorizationService {
         // 若按调用方递进来的旧 ID 落库，"这个目标有没有未了结的授权"就会查不到自己，
         // 并发上限形同虚设，态势页也看不到已经批出去的处置。
         String effectiveSubjectId = subject.subjectId();
-        if ("UAV_EVENT".equals(request.subjectKind()) && emergencyStops.unresolved(effectiveSubjectId))
-            throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
+        // 急停后不再要求登记现场停机核查（2026-10-14 用户确认）：同一事件可以马上再申请。
         // 停用、离线、状态未知、异常或故障的设备在申请时就拒绝（BUG-03），不留一条执行不了却占着名额的授权。
         String unavailable = gateway.requestBlockReason(request.deviceId());
         if (unavailable != null) throw conflict("DEVICE_UNAVAILABLE", unavailable);
@@ -212,13 +211,9 @@ public class DisposalAuthorizationService {
         if ("UAV_EVENT".equals(initial.subjectKind()) && Set.of("COUNTERMEASURE", "JAMMING").contains(initial.actionType()))
             advisory.requireCounter(initial.subjectId(), decision);
         AuthorizationRow row = locked(id, decision);
-        if ("UAV_EVENT".equals(row.subjectKind()) && emergencyStops.unresolved(row.subjectId()))
-            throw conflict("EMERGENCY_STOP_UNCONFIRMED", "上次急停设备仍未确认停止，请先完成核查");
-        if (row.deviceId() != null) {
-            emergencyStops.lockDevice(row.deviceId());
-            if (emergencyStops.deviceUnresolved(row.deviceId()))
-                throw conflict("EMERGENCY_STOP_UNCONFIRMED", "设备仍有待核查的急停任务，请先完成核查");
-        }
+        // 设备锁仍按 事件→授权→设备→指令 的顺序取，让同一设备上的执行与急停、设备忙检查互斥。
+        // 急停后不再等现场停机核查（2026-10-14）：设备是否空闲只看在途指令和执行中的处置。
+        if (row.deviceId() != null) emergencyStops.lockDevice(row.deviceId());
         if (key != null) idempotency.claim(key, "disposal:execute:" + id + ":" + body.expectedVersion());
         requireVersion(row, body.expectedVersion());
         DisposalRules.requireTransition(DisposalRules.EXECUTE, row.status());

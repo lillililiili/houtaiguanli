@@ -11,7 +11,6 @@ import com.uav.lowaltitude.modules.alarm.domain.NoCounterRules;
 import com.uav.lowaltitude.modules.alarm.domain.NoCounterRules.Basis;
 import com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository.EventRow;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
-import com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository;
 import com.uav.lowaltitude.platform.time.AppClock;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -23,10 +22,9 @@ public class NoCounterRepository {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final DisposalRepository disposal;
-    private final EmergencyStopRepository stops;
     private final AppClock clock;
-    public NoCounterRepository(JdbcTemplate jdbc, ObjectMapper json, DisposalRepository disposal, EmergencyStopRepository stops, AppClock clock) {
-        this.jdbc=jdbc; this.json=json; this.disposal=disposal; this.stops=stops; this.clock=clock;
+    public NoCounterRepository(JdbcTemplate jdbc, ObjectMapper json, DisposalRepository disposal, AppClock clock) {
+        this.jdbc=jdbc; this.json=json; this.disposal=disposal; this.clock=clock;
     }
     public record Evaluation(Basis basis, boolean reliable, String alarmId) { }
     public record FrozenBasis(Basis basis, long reviewFrom, List<String> knownEvaluationIds) { }
@@ -87,8 +85,15 @@ public class NoCounterRepository {
     public String operationBlock(String eventId) {
         if(jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE subject_kind='UAV_EVENT' AND subject_id=? AND action_type IN ('COUNTERMEASURE','JAMMING') AND status IN ('REQUESTED','APPROVED','EXECUTING')",Integer.class,eventId)>0)
             return "存在申请中、已授权或执行中的反制，请先完成或撤销在途处置";
-        if(stops.unresolved(eventId))return "设备急停后的实际停机尚未核查，不能结束本次处置";
-        if(jdbc.queryForObject("SELECT COUNT(*) FROM device_command c JOIN disposal_authorization a ON a.authorization_id=c.authorization_id WHERE a.subject_kind='UAV_EVENT' AND a.subject_id=? AND a.action_type IN ('COUNTERMEASURE','JAMMING') AND c.status IN ('QUEUED','SENT','ACCEPTED','TIMED_OUT') AND NOT EXISTS (SELECT 1 FROM disposal_emergency_stop_device sd WHERE sd.authorization_id=a.authorization_id AND sd.confirmed_at IS NOT NULL)",Integer.class,eventId)>0)
+        // 2026-10-14 起急停后不再登记现场停机核查：在途或超时的指令，只要之后这台设备按过急停（任何事件的急停都算，
+        // 全关作用于整台设备），或者就是这次急停覆盖的授权自己的全关和重试，就以急停为准，不再挡结束处置。
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM device_command c JOIN disposal_authorization a ON a.authorization_id=c.authorization_id"
+                +" WHERE a.subject_kind='UAV_EVENT' AND a.subject_id=? AND a.action_type IN ('COUNTERMEASURE','JAMMING')"
+                +" AND c.status IN ('QUEUED','SENT','ACCEPTED','TIMED_OUT')"
+                +" AND NOT EXISTS (SELECT 1 FROM disposal_emergency_stop_device sd JOIN disposal_emergency_stop es ON es.stop_id=sd.stop_id"
+                +" WHERE sd.device_id=c.device_id AND sd.stop_status<>'NOT_REQUIRED' AND (es.requested_at>=c.created_at"
+                +" OR EXISTS (SELECT 1 FROM disposal_emergency_stop_authorization sa WHERE sa.stop_id=sd.stop_id AND sa.authorization_id=a.authorization_id)))",
+                Integer.class,eventId)>0)
             return "设备指令仍在途或结果不明确，请先核查实际设备状态";
         return "";
     }

@@ -786,9 +786,7 @@ public class DeviceRepository {
                      + (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
                         ON a.authorization_id=r.authorization_id WHERE r.device_id=? AND a.status='EXECUTING')
                      + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING')
-                     + (SELECT COUNT(*) FROM disposal_emergency_stop_device WHERE device_id=?
-                        AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED')
-                """, Long.class, id, allowMockSnapshots, id, id, id, id, id) > 0;
+                """, Long.class, id, allowMockSnapshots, id, id, id, id) > 0;
     }
 
     /** Recovery is not an idle-device check. Only confirmed, fresh AUTO tracking may continue during recovery. */
@@ -801,8 +799,6 @@ public class DeviceRepository {
                 OR EXISTS (SELECT 1 FROM disposal_device_run r JOIN disposal_authorization a
                     ON a.authorization_id=r.authorization_id WHERE r.device_id=:device AND a.status='EXECUTING')
                 OR EXISTS (SELECT 1 FROM disposal_authorization WHERE device_id=:device AND status='EXECUTING')
-                OR EXISTS (SELECT 1 FROM disposal_emergency_stop_device WHERE device_id=:device
-                    AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED')
                 OR EXISTS (
                     SELECT 1 FROM eo_tracking_task t JOIN ops_device d ON d.device_id=t.ops_device_id
                     LEFT JOIN eo_device_binding b ON b.ops_device_id=d.device_id

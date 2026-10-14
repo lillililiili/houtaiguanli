@@ -345,7 +345,9 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         assertThat(children(authorization)).isEmpty();
         assertThat(frames).hasSize(1);
         assertThat(jdbc.queryForObject("select count(*) from command_receipt where command_id=? and receipt_kind='PROTOCOL_B_LATE'", Integer.class, commandOf(authorization))).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select confirmed_at from disposal_emergency_stop_device where authorization_id=?", Long.class, authorization)).isNotNull();
+        // 2026-10-14 起急停后不再登记现场停机核查：浏览器流程只按急停，急停任务保持未登记。
+        assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop_device where authorization_id=? and confirmed_at is null",
+                Integer.class, authorization)).isEqualTo(1);
         saveEvidence("browser-emergency-late", authorization);
     }
 
