@@ -22,7 +22,7 @@ class MqttStatusAccessTest {
     final AppClock clock = mock(AppClock.class);
     final AuthUser reader = new AuthUser("reader", "reader", "监测读取", "role", 1, false, "ALL");
     final MqttConfigurationService service = new MqttConfigurationService(data, edges, permissions, access,
-            null, null, clock, null, null, null);
+            null, null, clock, null, null, null, null);
 
     void fixture(boolean eo) {
         when(permissions.requireMonitoringRead()).thenReturn(reader);

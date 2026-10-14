@@ -33,6 +33,6 @@ class MqttConnectionCapabilitiesTest {
     private MqttConfigurationService service(String... profiles) {
         var environment = new MockEnvironment();
         environment.setActiveProfiles(profiles);
-        return new MqttConfigurationService(null, null, permissions, null, null, null, null, null, null, new SimulationPolicy(environment));
+        return new MqttConfigurationService(null, null, permissions, null, null, null, null, null, null, new SimulationPolicy(environment), null);
     }
 }

@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.device.infrastructure;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -769,10 +770,19 @@ public class DeviceRepository {
      * old command/receipt into a successful or cancelled real operation.
      */
     public boolean hasCatalogBlockingWork(String id) {
-        return hasActiveWork(id, statistics.counted("replay"));
+        return !catalogBlockingReasons(id).isEmpty();
+    }
+
+    /** 挡住退役（删除）的未完成工作，逐类写明；与 hasCatalogBlockingWork 同一口径，没有则为空。 */
+    public List<String> catalogBlockingReasons(String id) {
+        return activeWork(id, statistics.counted("replay")).reasons();
     }
 
     private boolean hasActiveWork(String id, boolean allowMockSnapshots) {
+        return !activeWork(id, allowMockSnapshots).reasons().isEmpty();
+    }
+
+    private ActiveWork activeWork(String id, boolean allowMockSnapshots) {
         return jdbc.queryForObject("""
                 SELECT (SELECT COUNT(*) FROM device_command c WHERE c.device_id=? AND c.status IN ('QUEUED','SENT','ACCEPTED')
                         AND (?=FALSE OR NOT (c.source_mode='mock' AND c.simulated=TRUE AND c.command_type='REBOOT'
@@ -780,13 +790,51 @@ public class DeviceRepository {
                             AND EXISTS (SELECT 1 FROM ops_device d LEFT JOIN ops_integration_source s ON s.source_id=d.source_id
                                 WHERE d.device_id=c.device_id AND d.source_mode='mock' AND d.simulated=TRUE
                                 AND (d.source_id IS NULL OR (s.source_mode='mock' AND s.simulated=TRUE AND s.protocol_code IS NULL)))
-                            AND NOT EXISTS (SELECT 1 FROM outbox_event o WHERE o.payload=c.command_id))))
-                     + (SELECT COUNT(*) FROM commission_task WHERE device_id=? AND status IN ('CREATED','CONNECTING','CONNECTED','READY','RUNNING'))
-                     + (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING'))
-                     + (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
+                            AND NOT EXISTS (SELECT 1 FROM outbox_event o WHERE o.payload=c.command_id)))) AS commands,
+                       (SELECT COUNT(*) FROM commission_task WHERE device_id=? AND status IN ('CREATED','CONNECTING','CONNECTED','READY','RUNNING')) AS commissions,
+                       (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING')) AS eo_tasks,
+                       (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
                         ON a.authorization_id=r.authorization_id WHERE r.device_id=? AND a.status='EXECUTING')
-                     + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING')
-                """, Long.class, id, allowMockSnapshots, id, id, id, id) > 0;
+                     + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING') AS disposals
+                """, (rs, row) -> new ActiveWork(rs.getLong("commands"), rs.getLong("commissions"), rs.getLong("eo_tasks"),
+                rs.getLong("disposals")), id, allowMockSnapshots, id, id, id, id);
+    }
+
+    private record ActiveWork(long commands, long commissions, long eoTasks, long disposals) {
+        List<String> reasons() {
+            List<String> reasons = new ArrayList<>();
+            if (commands > 0) reasons.add("有未完成的设备指令");
+            if (commissions > 0) reasons.add("有进行中的调测任务");
+            if (eoTasks > 0) reasons.add("光电跟踪任务还没结束");
+            if (disposals > 0) reasons.add("反制正在执行");
+            return reasons;
+        }
+    }
+
+    /** 同编号的退役（已删除）设备；各登记入口写库前用它把“编号已退役”说清。 */
+    public Map<String, Object> retiredByDeviceNo(String deviceNo) {
+        return jdbc.queryForList("SELECT device_no,name,source_mode,simulated FROM ops_device WHERE device_no=? AND deleted_at IS NOT NULL",
+                deviceNo).stream().findFirst().orElse(null);
+    }
+
+    /** 按设备编号锁住设备行（含已退役即已删除的记录），只供恢复模拟设备用。 */
+    public Map<String, Object> lockByDeviceNoIncludingRetired(String deviceNo) {
+        jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_no=? FOR UPDATE", deviceNo);
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+                SELECT d.device_id,d.device_no,d.name,d.source_mode,d.simulated,d.enabled,d.deleted_at,d.version,
+                       bs.owner_org_id,bs.district_id
+                FROM ops_device d LEFT JOIN device_business_scope bs ON bs.ops_device_id=d.device_id
+                WHERE d.device_no=?
+                """, deviceNo);
+        return rows.size() == 1 ? rows.get(0) : null;
+    }
+
+    /** 撤销退役：同一条设备记录回到台账，历史不动；只对回放模拟设备生效，启用另走各协议的启用。 */
+    public int restoreRetiredSimulated(String id, long version, long now) {
+        return jdbc.update("""
+                UPDATE ops_device SET deleted_at=NULL,updated_at=?,version=version+1
+                WHERE device_id=? AND version=? AND deleted_at IS NOT NULL AND source_mode='replay' AND simulated=TRUE
+                """, now, id, version);
     }
 
     /** Recovery is not an idle-device check. Only confirmed, fresh AUTO tracking may continue during recovery. */

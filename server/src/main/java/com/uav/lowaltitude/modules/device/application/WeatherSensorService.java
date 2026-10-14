@@ -19,9 +19,11 @@ public class WeatherSensorService {
     private final AccessService access;
     private final AppClock clock;
     private final AuditService audit;
+    private final RetiredDeviceNumbers retiredNumbers;
     public WeatherSensorService(WeatherSensorRepository repository,DeviceRepository devices,DeviceAccessPolicy permissions,
-            AccessService access,AppClock clock,AuditService audit) {
+            AccessService access,AppClock clock,AuditService audit,RetiredDeviceNumbers retiredNumbers) {
         this.repository=repository;this.devices=devices;this.permissions=permissions;this.access=access;this.clock=clock;this.audit=audit;
+        this.retiredNumbers=retiredNumbers;
     }
     public Sensor get(String id) { permissions.requireDevicesRead(); return visible(id); }
     @Transactional
@@ -30,6 +32,7 @@ public class WeatherSensorService {
         Input p=normalized(input);
         access.requireTuple(p.ownerOrgId(),p.districtId());
         if(!repository.activeScope(p.ownerOrgId(),p.districtId())) throw bad("单位或区域已停用");
+        retiredNumbers.reject(p.deviceNo());
         String id=UUID.randomUUID().toString(); long now=clock.nowMillis();
         try { repository.insert(id,p,now); }
         catch(DataIntegrityViolationException e) { throw new ApiException(HttpStatus.CONFLICT,"DEVICE_NO_CONFLICT","设备编号已存在，请检查设备台账"); }

@@ -44,6 +44,18 @@ class WeatherSensorApiTest {
         mvc.perform(put("/api/v1/weather-sensors/"+id).header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content(input.toString()))
             .andExpect(status().isBadRequest());
     }
+    /** 2026-10-14：退役编号再登记如实说明是哪台设备、已退役，请换新编号；不再报笼统的“编号已存在”。 */
+    @Test void retiredNumberIsNamedWhenRegisteredAgain() throws Exception {
+        String token=login();String body=body(token);String id=create(token,body);
+        String deviceNo=mapper.readTree(body).path("device_no").asText();
+        mvc.perform(delete("/api/v1/devices/"+id).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())
+            .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0,\"reason\":\"测试退役\"}")).andExpect(status().isOk());
+        var result=mvc.perform(post("/api/v1/weather-sensors").header("Authorization",token).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DEVICE_RETIRED")).andReturn();
+        assertThat(mapper.readTree(result.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8)).path("error").path("message").asText())
+            .contains(deviceNo).contains("已退役").contains("新的设备编号").doesNotContain("可以恢复");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?",Long.class,deviceNo)).isEqualTo(1);
+    }
     @Test void noActionPermissionCannotRegisterAndAssignedUserCannotSeeOtherScope() throws Exception {
         String token=login();String body=body(token);String id=create(token,body);
         jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-SENSOR-READ','设备只读','',FALSE,TRUE,0,0,0,FALSE)");

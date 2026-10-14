@@ -164,7 +164,9 @@ class MqttIngressTest {
                 .satisfies(ex -> {
                     var api = (com.uav.lowaltitude.platform.api.ApiException) ex;
                     assertThat(api.getStatus()).isEqualTo(HttpStatus.CONFLICT);
-                    assertThat(api.getCode()).isEqualTo("DEVICE_IDENTITY_CONFLICT");
+                    // 2026-10-14：退役编号直接说明是哪台设备、已退役，不再报笼统的身份冲突。
+                    assertThat(api.getCode()).isEqualTo("DEVICE_RETIRED");
+                    assertThat(api.getMessage()).contains(p.deviceNo()).contains("已退役");
                 });
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM integration_source", Long.class)).isEqualTo(sources);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?", Long.class, p.deviceNo())).isOne();
