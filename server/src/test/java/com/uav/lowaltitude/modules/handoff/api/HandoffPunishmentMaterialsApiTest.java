@@ -88,6 +88,32 @@ class HandoffPunishmentMaterialsApiTest {
     /* ---- 正面 ---- */
 
     @Test
+    void freezesTheActualExecuteActorRatherThanTheApplicantOrApprover() throws Exception {
+        String executorToken = user("EXECUTOR", List.of("handoff:read"));
+        String executor = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, executorToken);
+        String authorization = jdbc.queryForObject("select authorization_id from disposal_authorization where subject_id=?", String.class, eventId);
+        Timestamp executedAt = Timestamp.from(Instant.parse("2026-09-08T02:12:00Z"));
+        jdbc.update("insert into disposal_authorization_event(event_id,authorization_id,event_kind,actor_id,occurred_at) values (?,?,'EXECUTE',?,?)",
+                UUID.randomUUID().toString(), authorization, executor, executedAt);
+        String handoff = body(submit(submitter, eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+        JsonNode frozen = detail(handoff, submitter).path("material").path("disposals").get(0);
+        assertThat(frozen.path("executed_by_id").asText()).isEqualTo(executor);
+        assertThat(frozen.path("executed_by_name").asText()).isEqualTo("处罚EXECUTOR");
+        assertThat(frozen.path("executed_at").asLong()).isEqualTo(executedAt.getTime());
+        jdbc.update("update app_user set name='后来改名' where user_id=?", executor);
+        assertThat(detail(handoff, submitter).path("material").path("disposals").get(0)).isEqualTo(frozen);
+    }
+
+    @Test
+    void doesNotInventAnExecutorWhenThereIsNoExecuteEvent() throws Exception {
+        String handoff = body(submit(submitter, eventId).andExpect(status().isCreated())).path("data").path("handoff_id").asText();
+        JsonNode disposal = detail(handoff, submitter).path("material").path("disposals").get(0);
+        assertThat(disposal.has("executed_by_id")).isFalse();
+        assertThat(disposal.has("executed_by_name")).isFalse();
+        assertThat(disposal.has("executed_at")).isFalse();
+    }
+
+    @Test
     void oldTrackSnapshotResolvesOnlyLayerAndKeepsFrozenCounts() throws Exception {
         String target = target(eventId, "SN-" + UUID.randomUUID().toString().substring(0,8));
         String reader = user("TRACK", List.of("handoff:create", "handoff:read", "alarm:read", "evidence:read", "target:read"));

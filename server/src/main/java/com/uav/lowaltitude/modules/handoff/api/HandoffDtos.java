@@ -128,7 +128,8 @@ public final class HandoffDtos {
     /** 该事件已经产生的终态授权；未实施反制也可以移送处罚。 */
     public record DisposalMaterialDto(String authorizationId, String authorizationNo, String actionType, String channel,
             String deviceId, String status, String requestedByName, String approvedByName, Long validFrom, Long validUntil,
-            String resultCode, String resultDetail, Long completedAt, String authorizationMode) { }
+            String resultCode, String resultDetail, Long completedAt, String authorizationMode,
+            String executedById, String executedByName, Long executedAt) { }
     public record EvidenceMaterialDto(String evidenceId, String evidenceNo, String kindCode, String sha256,
             Long capturedAt, String status) { }
 

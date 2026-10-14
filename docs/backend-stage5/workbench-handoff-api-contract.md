@@ -133,6 +133,10 @@ POST 成功 201：`{handoff_id,source_kind,source_id,handoff_type,recipient_id,s
 
 执行者 1：`modules/workbench/**`、`T/modules/workbench/**`、`F/services/workbenchApi.js`、`F/services/workbenchEvents.js`、`F/pages/WorkbenchPage.vue`。执行者 2：`modules/handoff/**`、`T/modules/handoff/**`、迁移 031、`integration/mock/LocalStage5HandoffSeeder.java`(+Test)、`F/services/handoffApi.js`、`F/pages/PunishPage.vue`。`FlightsPage.vue` 的通知按钮接线在阶段 4 页面恢复完成后由领导另行分配。公共文件（`PermissionCode.java`、鉴权/审计/幂等/异常组件、`apiClient.js`、`accessControl.js`、`navModel.js`、`registry.js`、`HeaderBar.vue`）只有领导可改。
 
+## 2026-10-13 处罚材料执行人补充
+
+新提交的处罚材料在 `material.disposals[]` 增加 `executed_by_id`、`executed_by_name`、`executed_at`，取同一授权事件流最后一次 `EXECUTE` 的真实主体与时间，提交时冻结。不得把申请人、审批人或当前读者代作执行人；没有执行事件或主体缺失时，相应字段省略。旧冻结快照不回填，前台缺失时显示“执行人：未记录”。下发执行时间不代表设备实际完成时间，完成仍以设备回执及既有完成事件为准。
+
 ## 稳定错误码
 
 `FORBIDDEN(403)`、`NOT_FOUND(404)`、`STATE_REQUIRES_KIND(400)`、`INVALID_KIND(400)`、`UNKNOWN_FIELD(400)`、`INVALID_REQUEST(400)`、`RECIPIENT_NOT_FOUND(404)`、`RECIPIENT_REQUIRED(400)`、`RECIPIENT_NOT_CONFIGURED(409)`、`HANDOFF_PREREQUISITE_UNAVAILABLE(409)`、`HANDOFF_ALREADY_EXISTS(409)`、`INVALID_TRANSITION(409)`、`VERSION_CONFLICT(409)`、`IDEMPOTENCY_REPLAY(409)`、`IDEMPOTENCY_KEY_REUSED(409)`。阶段 4 已有错误码保持不变。

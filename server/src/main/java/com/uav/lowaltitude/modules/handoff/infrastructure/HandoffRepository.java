@@ -443,7 +443,7 @@ public class HandoffRepository {
     public List<DisposalMaterialRow> eventDisposals(String eventId) {
         return jdbc.query("SELECT d.authorization_id,d.authorization_no,d.action_type,d.channel,d.device_id,d.status,"
                 + "ru.name AS requested_by_name,au.name AS approved_by_name,d.valid_from,d.valid_until,d.authorization_mode,"
-                + "d.result_code,d.result_detail,"
+                + "d.result_code,d.result_detail,xe.actor_id AS executed_by_id,xu.name AS executed_by_name,xe.occurred_at AS executed_at,"
                 // 完成时刻取事件流里 COMPLETE/MANUAL_RESULT 的发生时刻（决策 14-26）。
                 // 原先拿 updated_at 冒充：那是"这行最后被改动的时间"，作废、回执、任何一次更新都会推它，
                 // 落到卷宗上就成了一个说不出依据的"完成时间"。取不到就省略键，不猜。
@@ -453,6 +453,10 @@ public class HandoffRepository {
                 + " FROM disposal_authorization d"
                 + " LEFT JOIN app_user ru ON ru.user_id=d.requested_by"
                 + " LEFT JOIN app_user au ON au.user_id=d.approved_by"
+                + " LEFT JOIN disposal_authorization_event xe ON xe.event_id=(SELECT e.event_id"
+                + " FROM disposal_authorization_event e WHERE e.authorization_id=d.authorization_id"
+                + " AND e.event_kind='EXECUTE' ORDER BY e.occurred_at DESC,e.event_id DESC LIMIT 1)"
+                + " LEFT JOIN app_user xu ON xu.user_id=xe.actor_id"
                 + " WHERE d.subject_kind='UAV_EVENT' AND d.subject_id=:id"
                 + " AND d.status IN ('COMPLETED','FAILED','STOPPED','EXPIRED','CANCELLED','REJECTED')"
                 + " ORDER BY d.requested_at ASC, d.authorization_id ASC",
@@ -462,7 +466,8 @@ public class HandoffRepository {
                         rs.getString("approved_by_name"), rs.getObject("valid_from", OffsetDateTime.class),
                         rs.getObject("valid_until", OffsetDateTime.class), rs.getString("result_code"),
                         rs.getString("result_detail"), rs.getObject("completed_at", OffsetDateTime.class),
-                        rs.getString("authorization_mode")));
+                        rs.getString("authorization_mode"), rs.getString("executed_by_id"),
+                        rs.getString("executed_by_name"), rs.getObject("executed_at", OffsetDateTime.class)));
     }
 
     /** 事件主体上关联的证据（只读协作者 A 的表，不写）。 */
@@ -551,7 +556,7 @@ public class HandoffRepository {
     public record DisposalMaterialRow(String authorizationId, String authorizationNo, String actionType, String channel,
             String deviceId, String status, String requestedByName, String approvedByName, OffsetDateTime validFrom,
             OffsetDateTime validUntil, String resultCode, String resultDetail, OffsetDateTime completedAt,
-            String authorizationMode) { }
+            String authorizationMode, String executedById, String executedByName, OffsetDateTime executedAt) { }
     public record EvidenceMaterialRow(String evidenceId, String evidenceNo, String kindCode, String sha256,
             OffsetDateTime capturedAt, String status) { }
 
