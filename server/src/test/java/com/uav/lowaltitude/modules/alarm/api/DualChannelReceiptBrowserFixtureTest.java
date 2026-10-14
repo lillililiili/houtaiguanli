@@ -35,14 +35,14 @@ class DualChannelReceiptBrowserFixtureTest extends DualChannelReceiptApiTest {
         capture("短信跨事件反序与重复", scenarios, this::matrixSmsOutOfOrderAcrossEventsCannotAdvanceTheOtherEvent);
         capture("电话跨事件反序与重复", scenarios, this::matrixVoiceOutOfOrderAcrossEventsCannotAdvanceTheOtherEvent);
         capture("旧短信旧电话过期后迟到", scenarios, this::matrixExpiredSmsAndVoiceReceiptsCannotOverwriteCurrentBatchOrUnknown);
-        capture("实际等待短信3秒电话10秒后位置未知", scenarios, this::realTimeWatchWindowsCompleteOnlyAfterThreeAndTenSeconds);
+        capture("通知零等待后位置未知", scenarios, this::realTimeNotificationsProceedWithoutWatchWait);
         Path directory = Path.of("target", "notification-matrix-browser").toAbsolutePath();
         Files.createDirectories(directory);
         Path stop = directory.resolve("stop");
         Files.deleteIfExists(stop);
         Files.writeString(directory.resolve("manifest.json"), json.writeValueAsString(Map.of(
                 "port", port, "database", "isolated H2 memory", "simulated", true,
-                "scenarios", scenarios, "watch_windows", "real 3 seconds SMS and 10 seconds voice; no external channel")));
+                "scenarios", scenarios, "watch_windows", "zero wait after SMS delivery and call playback; no external channel")));
         var before = eventStates(scenarios);
         long deadline = System.nanoTime() + Duration.ofMinutes(20).toNanos();
         while (!Files.exists(stop) && System.nanoTime() < deadline) Thread.sleep(250);
