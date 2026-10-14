@@ -31,7 +31,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Service
 public class EvidenceLedgerService {
     private static final List<String> CATEGORIES=List.of("VIDEO","TRACK","IMAGE","COMMAND");
-    private static final Set<String> FILTERS=Set.of("category","status","custody","subject_kind","subject_id","q");
+    private static final Set<String> FILTERS=Set.of("category","status","custody","subject_kind","subject_id","q","occurred_from","occurred_to");
     private final EvidenceLedgerRepository ledger;
     private final EvidenceRepository subjects;
     private final EvidenceAssociationService files;
@@ -180,8 +180,12 @@ public class EvidenceLedgerService {
         String kind=choice(p,"subject_kind",EvidenceAssociationService.SUBJECTS),id=text(p,"subject_id");
         if(id!=null&&kind==null||context&&((kind==null)!=(id==null)))throw invalid();
         if(id!=null)identifier(id);String q=text(p,"q");if(q!=null&&q.length()>200)throw invalid();
-        return new Query(category,status,custody,kind,id,q,null,null);
+        Long from=epoch(p,"occurred_from"),to=epoch(p,"occurred_to");
+        if((from==null)!=(to==null)||from!=null&&from>=to)throw badTime();
+        return new Query(category,status,custody,kind,id,q,null,null,from,to);
     }
+    private static Long epoch(MultiValueMap<String,String> p,String key){String value=text(p,key);if(value==null)return null;try{return Long.parseLong(value);}catch(NumberFormatException e){throw badTime();}}
+    private static ApiException badTime(){return new ApiException(HttpStatus.BAD_REQUEST,"INVALID_TIME_RANGE","时间范围无效");}
     private static String text(MultiValueMap<String,String> p,String key){String value=p.getFirst(key);return value==null||value.isBlank()?null:value.trim();}
     private static String choice(MultiValueMap<String,String> p,String key,Set<String> allowed){String value=text(p,key);if(value!=null&&!allowed.contains(value))throw invalid();return value;}
     private static int positive(MultiValueMap<String,String> p,String key,int fallback,int max){try{String s=text(p,key);int n=s==null?fallback:Integer.parseInt(s);if(n<1||n>max)throw invalid();return n;}catch(NumberFormatException e){throw invalid();}}
