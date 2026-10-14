@@ -30,7 +30,7 @@ import com.uav.lowaltitude.modules.device.api.DeviceMonitoringPostgresFixture;
 @AutoConfigureMockMvc
 @ActiveProfiles({"test","postgres-test"})
 @Import(DeviceMonitoringPostgresFixture.NoScheduledJobs.class)
-@EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches="jdbc:postgresql://127\\.0\\.0\\.1:25432/stage456_verify_[a-z0-9_]+")
+@EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL",matches="jdbc:postgresql://127\\.0\\.0\\.1:[0-9]+/stage456_verify_[a-z0-9_]+")
 class NotificationPresenceTimingPostgresTest {
     static final DeviceMonitoringPostgresFixture DATABASE=new DeviceMonitoringPostgresFixture();
     @DynamicPropertySource static void properties(DynamicPropertyRegistry p) {
@@ -95,16 +95,11 @@ class NotificationPresenceTimingPostgresTest {
         Files.writeString(output,json.writerWithDefaultPrettyPrinter().writeValueAsString(evidence));
     }
 
-    @Test void effectiveInAreaObservationsGateRealThreeAndTenSecondWindows() throws Exception {
+    @Test void effectiveInAreaObservationsAllowNotificationProgressWithoutFixedWindows() throws Exception {
         assertThat(departure).isInstanceOf(PostgisPilotDepartureWatch.class);
         fixture();observe();sms.process(event);
         long delivered=jdbc.queryForObject("select updated_at from uav_auto_sms_task where event_id=? and status='SIMULATED_DELIVERED'",Long.class,event);
-        observeUntil(delivered+2500);
-        long beforeSms=System.currentTimeMillis();voice.process(event);
-        assertThat(beforeSms-delivered).isLessThan(3000);
-        assertThat(jdbc.queryForObject("select attempt_count from uav_auto_voice_task where event_id=?",Integer.class,event)).isZero();
-        assertThat(phase()).isEqualTo("WATCHING");
-        observeUntil(delivered+3000);observe();
+        observe();
         assertThat(departure.assess(event,delivered,System.currentTimeMillis())).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
         env.getPropertySources().addFirst(new MapPropertySource("notification-timing-scenario",Map.of(
                 "app.qa.advisory-scenario.enabled",true,"app.qa.advisory-scenario.event-id",event,
@@ -112,27 +107,25 @@ class NotificationPresenceTimingPostgresTest {
         voice.process(event);
         var call=jdbc.queryForMap("select triggered_at,answered_at,playback_completed_at from uav_auto_voice_task where event_id=? and status='SIMULATED_PLAYED'",event);
         long started=((Number)call.get("triggered_at")).longValue(),played=((Number)call.get("playback_completed_at")).longValue();
-        assertThat(started-delivered).isGreaterThanOrEqualTo(3000);
+        assertThat(started-delivered).isBetween(0L,2999L);
         assertThat(played-started).isGreaterThanOrEqualTo(1500);
-        observeUntil(played+9000);observe();
-        long nineCheck=System.currentTimeMillis();
-        assertThat(nineCheck-started).isGreaterThanOrEqualTo(10000);
-        assertThat(nineCheck-played).isBetween(9000L,9999L);
-        assertThat(phase()).isEqualTo("WATCHING"); // Already >10s after dialing, but not after playback.
-        assertThat(departure.assess(event,delivered,played,nineCheck)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
-        observeUntil(played+10000);observe();
-        long tenCheck=System.currentTimeMillis();
+        long completedCheck=System.currentTimeMillis();
+        assertThat(completedCheck-played).isBetween(0L,9999L);
+        // 还没有播放完成后的新位置，也不等待十秒或把未知当作已撤离。
         assertThat(phase()).isEqualTo("AWAIT_COUNTER");
-        assertThat(departure.assess(event,delivered,played,tenCheck)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
+        observe();
+        assertThat(departure.assess(event,delivered,played,System.currentTimeMillis())).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
+        voice.process(event);
+        assertThat(jdbc.queryForObject("select attempt_count from uav_auto_voice_task where event_id=?",Integer.class,event)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,event)).isEqualTo("CONFIRMED");
         Map<String,Object> evidence=new LinkedHashMap<>();
         evidence.put("acceptance_rows",List.of("R16","R18"));evidence.put("event_id",event);
         evidence.put("channel","local simulated SMS/voice; no external channel acceptance");
         evidence.put("clock","actual wall time; no mocked clock or presence conclusion");
-        evidence.put("sms_delivered_at",delivered);evidence.put("pre_sms_check_at",beforeSms);
+        evidence.put("sms_delivered_at",delivered);
         evidence.put("voice_triggered_at",started);evidence.put("answered_at",call.get("answered_at"));evidence.put("playback_completed_at",played);
-        evidence.put("sms_scheduler_delay_ms",started-delivered-3000);evidence.put("nine_second_check_at",nineCheck);
-        evidence.put("ten_second_check_at",tenCheck);evidence.put("ten_second_check_delay_ms",tenCheck-played-10000);
+        evidence.put("sms_to_voice_ms",started-delivered);
+        evidence.put("manual_counter_check_at",completedCheck);evidence.put("playback_to_manual_counter_ms",completedCheck-played);
         evidence.put("observed_at",observations);evidence.put("presence","PostGIS STILL_PRESENT at all decision checkpoints");
         Path output=Path.of("target","qa-unblock","notification-presence-timing.json");Files.createDirectories(output.getParent());
         Files.writeString(output,json.writerWithDefaultPrettyPrinter().writeValueAsString(evidence));
@@ -154,9 +147,6 @@ class NotificationPresenceTimingPostgresTest {
         long now=System.currentTimeMillis();observations.add(now);
         jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at,point_kind,position_accuracy_m) values(?,?,?,?,?,ST_SetSRID(ST_MakePoint(118.5,37.5),4326),?,'MEAS',5)",id(),track,++sequence,ts(now),ts(now),ts(now));
         jdbc.update("update target_latest_state set observed_at=?,received_at=?,updated_at=? where target_id=?",ts(now),ts(now),ts(now),target);
-    }
-    void observeUntil(long deadline) throws InterruptedException {
-        while(System.currentTimeMillis()<deadline){observe();Thread.sleep(Math.min(200,Math.max(1,deadline-System.currentTimeMillis())));}
     }
     String phase() throws Exception {
         return overview().path("notify_phase").asText();

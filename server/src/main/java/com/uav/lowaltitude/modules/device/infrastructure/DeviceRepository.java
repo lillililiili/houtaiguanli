@@ -761,8 +761,26 @@ public class DeviceRepository {
     public record EoAvailability(int total, int online) { }
 
     public boolean hasActiveWork(String id) {
+        return hasActiveWork(id, false);
+    }
+
+    /** Only catalog retirement may distinguish inert mock snapshots from dispatched work.
+     * Keep the stricter guard for control, recovery and maintenance. Never change the
+     * old command/receipt into a successful or cancelled real operation.
+     */
+    public boolean hasCatalogBlockingWork(String id) {
+        return hasActiveWork(id, statistics.counted("replay"));
+    }
+
+    private boolean hasActiveWork(String id, boolean allowMockSnapshots) {
         return jdbc.queryForObject("""
-                SELECT (SELECT COUNT(*) FROM device_command WHERE device_id=? AND status IN ('QUEUED','SENT','ACCEPTED'))
+                SELECT (SELECT COUNT(*) FROM device_command c WHERE c.device_id=? AND c.status IN ('QUEUED','SENT','ACCEPTED')
+                        AND (?=FALSE OR NOT (c.source_mode='mock' AND c.simulated=TRUE AND c.command_type='REBOOT'
+                            AND c.deadline_at IS NULL
+                            AND EXISTS (SELECT 1 FROM ops_device d LEFT JOIN ops_integration_source s ON s.source_id=d.source_id
+                                WHERE d.device_id=c.device_id AND d.source_mode='mock' AND d.simulated=TRUE
+                                AND (d.source_id IS NULL OR (s.source_mode='mock' AND s.simulated=TRUE AND s.protocol_code IS NULL)))
+                            AND NOT EXISTS (SELECT 1 FROM outbox_event o WHERE o.payload=c.command_id))))
                      + (SELECT COUNT(*) FROM commission_task WHERE device_id=? AND status IN ('CREATED','CONNECTING','CONNECTED','READY','RUNNING'))
                      + (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING'))
                      + (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
@@ -770,7 +788,7 @@ public class DeviceRepository {
                      + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING')
                      + (SELECT COUNT(*) FROM disposal_emergency_stop_device WHERE device_id=?
                         AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED')
-                """, Long.class, id, id, id, id, id, id) > 0;
+                """, Long.class, id, allowMockSnapshots, id, id, id, id, id) > 0;
     }
 
     /** Recovery is not an idle-device check. Only confirmed, fresh AUTO tracking may continue during recovery. */

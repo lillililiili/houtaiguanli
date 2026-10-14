@@ -94,8 +94,8 @@ public class EoTrackingRepository {
     public void saveRequest(String actor,String key,String target,String action,long now) {
         jdbc.update("INSERT INTO eo_control_request(actor_id,request_key,target_id,action,created_at) VALUES (?,?,?,?,?)",actor,key,target,action,now);
     }
-    public List<Map<String,Object>> openAutomaticTasks(int batch) {
-        return jdbc.queryForList("SELECT * FROM eo_tracking_task WHERE origin='AUTO' AND status='OPEN' ORDER BY created_at");
+    public List<Map<String,Object>> openTasks() {
+        return jdbc.queryForList("SELECT * FROM eo_tracking_task WHERE status='OPEN' ORDER BY created_at,task_id");
     }
     public List<String> endingTasks() {
         return jdbc.queryForList("SELECT task_id FROM eo_tracking_task WHERE status='ENDING' ORDER BY created_at,task_id", String.class);

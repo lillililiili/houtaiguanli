@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.SourceEstimate;
 import com.uav.lowaltitude.modules.fusion.application.FusionConfigService;
+import com.uav.lowaltitude.modules.fusion.application.FusionConfigLoader;
 import com.uav.lowaltitude.modules.fusion.application.EoFusionTaskContextPort;
 import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser;
 import com.uav.lowaltitude.modules.fusion.infrastructure.RawTrackRepository;
@@ -25,13 +26,15 @@ public class SourceContributionReader {
     private final FusionConfigService config;
     private final AppClock clock;
     private final EoFusionTaskContextPort tasks;
-    public SourceContributionReader(RawTrackRepository tracks, ObjectMapper json, FusionConfigService config, AppClock clock, EoFusionTaskContextPort tasks) {
+    private final FusionConfigLoader configLoader;
+    public SourceContributionReader(RawTrackRepository tracks, ObjectMapper json, FusionConfigService config, AppClock clock, EoFusionTaskContextPort tasks, FusionConfigLoader configLoader) {
         this.tracks = tracks; this.json = json; this.config = config; this.clock = clock; this.tasks = tasks;
+        this.configLoader = configLoader;
     }
     public List<TargetSourceLinkDto> read(String targetId, List<SourceLinkRow> links) {
         if (links.isEmpty()) return List.of();
         var raw = tracks.findOpenRawTracks(links.stream().map(l -> new LinkRow(l.linkId(), targetId, l.sourceId(), l.deviceId(), l.sourceSessionKey(), l.externalTargetId())).toList());
-        var params = config.params(null);
+        var params = configLoader.simulationParameters(config.params(null));
         Instant now = clock.now();
         long window = params.integer("identity", "short_lost_after_ms");
         Map<String, SourceEstimate> saved = new LinkedHashMap<>();

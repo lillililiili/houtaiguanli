@@ -504,6 +504,100 @@ class EoManualTrackApiTest {
         assertThat(trackingRepository.paused(String.valueOf(edges.task(task).get("target_id")))).isTrue();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"UAV","BIRD"})
+    void staleManualTaskStopsAndOnlyMatchingReceiptAllowsNextTarget(String objectType) throws Exception {
+        String target=insertTarget(true);
+        jdbc.update("UPDATE target SET object_type_code=? WHERE target_id=?",objectType,target);
+        String task=startManualTask(target);
+        String begin=String.valueOf(edges.task(task).get("begin_command_id"));
+        long started=clock.nowMillis();
+        edges.updateCommand(begin,"QUEUED","SENT",started,null,null);
+        edges.updateCommand(begin,"SENT","SUCCEEDED",started,"200",null);
+        edges.trackingReport(task,started,started);
+        doReturn(started+60_000).when(clock).nowMillis();
+        refreshStopDevice();
+        String nextTarget=insertTarget(true);
+        scheduler.poll(); // Automatic tracking is disabled: manual task maintenance must still run.
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
+        String end=String.valueOf(edges.task(task).get("end_command_id"));
+        assertThat(edges.command(end).get("reason")).isEqualTo("AUTO_TRACK_STOP:EO_REPORT_STALE");
+        scheduler.poll();
+        assertThat(edges.task(task).get("end_command_id")).isEqualTo(end);
+        mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",nextTarget)
+                .header("Authorization",bearer()).header("Idempotency-Key",key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnprocessableEntity());
+        edges.updateCommand(end,"QUEUED","SENT",clock.nowMillis(),null,null);
+        receiveStop(task,200);
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDED");
+        assertThat(edges.command(end).get("status")).isEqualTo("SUCCEEDED");
+        String next=startManualTask(nextTarget);
+        assertThat(edges.task(next).get("ops_device_id")).isEqualTo(binding.opsDeviceId());
+        receiveStop(task,200);
+        assertThat(edges.task(next).get("status")).isEqualTo("OPEN");
+    }
+
+    @Test void manualTaskWithFreshEoReportsSurvivesStaleGuidanceAndNoAutomaticDemand() throws Exception {
+        String target=insertTarget(true),task=startManualTask(target);
+        String begin=String.valueOf(edges.task(task).get("begin_command_id"));
+        long started=clock.nowMillis();
+        edges.updateCommand(begin,"QUEUED","SENT",started,null,null);
+        edges.updateCommand(begin,"SENT","SUCCEEDED",started,"200",null);
+        doReturn(started+60_000).when(clock).nowMillis();
+        refreshStopDevice();
+        edges.trackingReport(task,clock.nowMillis(),clock.nowMillis());
+        for(boolean automatic:java.util.List.of(false,true)) {
+            doReturn(automatic).when(trackingPolicy).enabled();
+            scheduler.poll();
+            assertThat(edges.task(task).get("status")).isEqualTo("OPEN");
+            assertThat(edges.task(task).get("end_command_id")).isNull();
+        }
+    }
+
+    @Test void newManualTaskIsNotStoppedWhileWaitingForItsFirstReceipt() throws Exception {
+        String target=insertTarget(true),task=startManualTask(target);
+        scheduler.poll();
+        assertThat(edges.task(task).get("status")).isEqualTo("OPEN");
+        assertThat(edges.task(task).get("end_command_id")).isNull();
+    }
+
+    @Test void waitingDispatchNamesStaleOccupationAndThenStopConfirmationWithoutWritingOnRead() throws Exception {
+        String target=insertTarget(true),task=startManualTask(target);
+        long now=clock.nowMillis();
+        String begin=String.valueOf(edges.task(task).get("begin_command_id"));
+        edges.updateCommand(begin,"QUEUED","SENT",now,null,null);
+        edges.updateCommand(begin,"SENT","SUCCEEDED",now,"200",null);
+        edges.trackingReport(task,now,now);
+        doReturn(now+60_000).when(clock).nowMillis();
+        refreshStopDevice();
+        String next=insertTarget(true);
+        mvc.perform(post("/api/v1/targets/{id}/eo-dispatch",next)
+                .header("Authorization",bearer()).header("Idempotency-Key",key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk());
+        String name=trackingRepository.deviceName(binding.opsDeviceId());
+        String number=String.valueOf(trackingRepository.snapshot(target).get("target_no"));
+        long count=jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class);
+        mvc.perform(get("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.message").value(containsString(name)))
+                .andExpect(jsonPath("$.data.message").value(containsString(number)))
+                .andExpect(jsonPath("$.data.message").value(containsString("跟踪回报已过期")));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class)).isEqualTo(count);
+        scheduler.poll();
+        mvc.perform(get("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.message").value(containsString("等待停止确认")));
+        assertThat(edges.openTaskByTarget(next)).isNull();
+    }
+
+    private String startManualTask(String target) throws Exception {
+        return mapper.readTree(mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target)
+                .header("Authorization",bearer()).header("Idempotency-Key",key())
+                .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString())
+                .path("data").path("task_id").asText();
+    }
+
     private String stoppedTask(String objectType) throws Exception {
         String target = insertTarget(true);
         jdbc.update("UPDATE target SET object_type_code=? WHERE target_id=?", objectType, target);

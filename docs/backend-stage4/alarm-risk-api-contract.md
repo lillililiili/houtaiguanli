@@ -199,11 +199,11 @@ GET /api/v1/alarms/{alarm_id}/escalations?page&size     alarm:read
 ```
 
 权限、范围与 404 同告警详情；只接受 `page,size`，其他参数 400 `VALIDATION_ERROR`。按 `seq` 正序分页，项：`escalation_id, seq, trigger_kind ENGINE|MANUAL, severity_before, severity_after, reasons_added, reasons_after, created_at`，可省略 `note, actor_id, actor_name`（只有人工转告警有操作人；说明为空时省略）。升级不改 `uav_event` 状态，已核实属实的告警升级后不要求重新核实。PostgreSQL 上该表只增，写入时发实时推送 `alarm` 主题。
-# 2026-10-09 未匹配任务只作提示
+# 无计划告警原因完整读取（2026-10-13 更新）
 
-告警列表、详情和 CSV 的 `violation_reasons` 不再包含 `NO_AUTHORIZATION`。告警原始明细或最新升级累计原因中有此码时，读取新增可选 `task_match_note`，说明旧规则曾因未匹配报备任务触发，此项现仅作提示、不作为违规原因；其他原因照常保留。CSV 末尾追加“任务匹配提示”，既有列顺序保持。`violation_reason=NO_AUTHORIZATION` 与其他无效原因一样返回 400，不再作为违规原因筛选项。
+2026-10-13 后续修正替代上述只提示口径：本机执行 2026-10-09 已确认的现用 ILLEGAL 参数及既有低空豁免。列表、详情和 CSV 的 `violation_reasons` 完整返回原始告警或最新升级累计原因，包括 `NO_AUTHORIZATION`；不得使用当前规则重新解释或过滤旧记录。`violation_reason=NO_AUTHORIZATION` 是有效筛选，分页、总数、列表及导出同源。可选 `task_match_note` 不再为该原因生成，DTO 与 CSV 末尾“任务匹配提示”列保留兼容（当前为空）。读取只恢复展示已保存事实，不改告警、事件、升级、研判或任何冻结材料；原本没有记录原因时仍返回空，不从最新研判补填。
 
-这是只读展示口径调整，不改写告警、研判、升级历史或事件核实状态，不自动删除或解除旧告警。当前正式规则 `C03.no_plan_status=LEGAL` 继续生效，缺计划本身不判非法，其他独立违规照常判断。
+这是只读展示口径调整，不改写告警、研判、升级历史或事件核实状态，不自动删除或解除旧告警。已发布的 `C03.no_plan_status=LEGAL` 历史版本仍保留其参数及历史结果，不冒充本机当前生效策略，也不因恢复原因展示而触发重算或切换版本。
 
 ### 2026-10-11 流程复验补充契约
 

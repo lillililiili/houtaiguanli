@@ -45,6 +45,7 @@ public class EoDispatchService {
         boolean operate=access.canOperateDevices(user);
         String block=policy.block(snapshot);
         var options=new ArrayList<SwitchOption>();
+        var occupation=new ArrayList<String>();
         boolean protectedBusy=false,available=false;
         if(block==null && task==null) for(String id:devices(snapshot)) {
             if(!tracking.deviceScope(id,user.userId(),user.scopeMode())) continue;
@@ -54,9 +55,14 @@ public class EoDispatchService {
                 continue;
             }
             String oldTarget=text(occupied,"target_id");
+            var old=tracking.snapshot(oldTarget);
+            if(old!=null && permissions.canAccessTuple(text(old,"owner_org_id"),text(old,"district_id"))) {
+                String state="ENDING".equals(text(occupied,"status"))?"等待停止确认"
+                        :occupationState(policy.trackingBlock(old,occupied,edges.binding(id,false)));
+                occupation.add(tracking.deviceName(id)+" → "+text(old,"target_no")+"（"+state+"）");
+            }
             if(queue.protectedTarget(oldTarget)) { protectedBusy=true;continue; }
             if(!operate || !switchable(occupied,snapshot,id)) continue;
-            var old=tracking.snapshot(oldTarget);
             if(old!=null && permissions.canAccessTuple(text(old,"owner_org_id"),text(old,"district_id")))
                 options.add(new SwitchOption(text(occupied,"task_id"),id,tracking.deviceName(id),text(old,"target_no")));
         }
@@ -70,6 +76,8 @@ public class EoDispatchService {
             status="WAITING_DEVICE";
             message=protectedBusy?"等待光电跟踪：设备正在支撑处置或急停核查，当前任务不可打断。"
                     :available?"已进入跟踪队列，等待后台分配设备。":"等待光电跟踪：设备正在执行其他任务或暂无可用设备。";
+            if(!available && !occupation.isEmpty()) message="等待光电跟踪。当前设备占用："+String.join("；",occupation)+"。"
+                    +(protectedBusy?"处置或急停核查中的观察不可被普通请求打断。":"");
         } else {
             var last=queue.latest(target);
             status="IDLE";
@@ -82,6 +90,15 @@ public class EoDispatchService {
         boolean canCancel=operate && request!=null && "MANUAL".equals(text(request,"origin"));
         return new View(target,status,message,request==null?null:text(request,"request_id"),canRequest,canCancel,
                 task==null?List.copyOf(options):List.of());
+    }
+    private static String occupationState(String block) {
+        if(block==null) return "正在跟踪";
+        return switch(block) {
+            case "EO_REPORT_STALE" -> "跟踪回报已过期，等待后台核查";
+            case "EO_HEARTBEAT_STALE" -> "设备状态待确认";
+            case "EO_RECEIPT_UNAVAILABLE" -> "跟踪回执待确认";
+            default -> "跟踪条件已变化，等待后台核查";
+        };
     }
     @Transactional
     public View request(String target,String expectedTask,String key) {

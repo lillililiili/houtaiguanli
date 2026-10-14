@@ -62,6 +62,32 @@ class DirectDisposalApiTest {
         assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?",String.class,id))
                 .contains("DIRECT_AUTHORIZE").doesNotContain("EXECUTE","APPROVE");
     }
+    @Test void directReasonMayBeOmittedNullEmptyOrWhitespace() throws Exception {
+        for (String reason : new String[] {null, "", "   ", "  现场补充说明  "}) {
+            Actor actor=directActor();String event=event(actor,"CONFIRMED");
+            var request=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(body(event,"COUNTERMEASURE"));
+            if (reason == null) request.remove("reason"); else request.put("reason",reason);
+            JsonNode result=data(postDirect(actor,request.toString(),key()).andExpect(status().isCreated()));
+            String stored=jdbc.queryForObject("select reason from disposal_authorization where authorization_id=?",String.class,result.path("authorization_id").asText());
+            assertThat(stored).isEqualTo(reason == null || reason.isBlank() ? "未填写直接反制事由" : reason.trim());
+        }
+        Actor actor=directActor();String event=event(actor,"CONFIRMED");
+        var request=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(body(event,"COUNTERMEASURE"));
+        request.putNull("reason");
+        postDirect(actor,request.toString(),key()).andExpect(status().isCreated());
+    }
+
+    @Test void ordinaryReasonStillRequiredAndProvidedDirectReasonKeepsLengthLimits() throws Exception {
+        Actor actor=actor(List.of(DIRECT,"disposal:request","devices"));String event=event(actor,"CONFIRMED");
+        var request=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(body(event,"COUNTERMEASURE"));
+        request.put("reason", "   ");
+        post(actor,BASE,request.toString(),key()).andExpect(status().isBadRequest());
+        for (String reason : new String[] {"字", "字".repeat(501)}) {
+            request.put("reason",reason);
+            postDirect(actor,request.toString(),key()).andExpect(status().isBadRequest());
+        }
+    }
+
     @Test void directDoesNotAllowSelfApprovalOfAnOrdinaryRequest() throws Exception {
         Actor actor=actor(List.of(DIRECT,"disposal:request","disposal:approve","disposal:execute"));String event=event(actor,"CONFIRMED");
         JsonNode created=data(post(actor,BASE,body(event,"COUNTERMEASURE"),key()).andExpect(status().isCreated()));

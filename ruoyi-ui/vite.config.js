@@ -2,14 +2,33 @@ import { defineConfig, loadEnv } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url));
+
+
+// Written into built HTML, so preview checks the build-time API instead of guessing from its environment.
+function startupMetadata() {
+  let tags;
+  return {
+    name: 'startup-metadata',
+    configResolved(config) {
+      const apiBase = String(config.env.VITE_APP_BASE_API || (config.env.DEV ? '/dev-api' : '/api')).replace(/\/$/, '') + '/v1';
+      tags = Object.entries({
+        'uav-api-base': apiBase,
+        'uav-source-id': createHash('sha256').update(path.resolve(rootDir)).digest('hex'),
+        'uav-runtime-mode': config.command === 'build' ? 'built' : 'dev'
+      }).map(([name, content]) => ({ tag: 'meta', attrs: { name, content }, injectTo: 'head' }));
+    },
+    transformIndexHtml() { return tags; }
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, rootDir);
   const mapProxyTarget = process.env.ADMIN_MAP_PROXY_TARGET || 'http://127.0.0.1:5173';
-  return {
-    plugins: [vue()],
+  const config = {
+    plugins: [vue(), startupMetadata()],
     resolve: { alias: { '@': path.resolve(rootDir, 'src') } },
     server: {
       host: '0.0.0.0',
@@ -38,4 +57,13 @@ export default defineConfig(({ mode }) => {
     },
     build: { sourcemap: false, chunkSizeWarningLimit: 1200 }
   };
+  // Built pages default to /api, while development pages default to /dev-api.
+  // Keep map forwarding and the same trusted request-header handling in preview.
+  config.preview = {
+    proxy: {
+      ...config.server.proxy,
+      '/api': config.server.proxy[env.VITE_APP_BASE_API || '/dev-api']
+    }
+  };
+  return config;
 });

@@ -388,7 +388,7 @@ public class DeviceService {
         long now = clock.nowMillis();
         if (repository.markDeleted(id, version, now) != 1) throw conflict();
         tcpScopes.enabled(id,false,now);
-        if (repository.hasActiveWork(id))
+        if (repository.hasCatalogBlockingWork(id))
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_BUSY", "设备仍有关联的未完成指令或调测任务，请处理后重试");
         repository.addEvent(UUID.randomUUID().toString(), id, "CATALOG_DELETED", "WARN",
                 "设备已删除：" + reason.trim(), now, bool(device, "simulated"));

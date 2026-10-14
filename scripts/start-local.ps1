@@ -645,8 +645,27 @@ foreach ($name in @($services.Keys)) {
 Save-LocalServiceState -Path $stateFile -Services $services
 
 Write-Host ''
-Write-Host '启动完成。建议随后执行：'
-Write-Host "  & '$PSScriptRoot\smoke-system.ps1' -RequireBusinessFrontend:$($services.Contains('business')) -RequireSimulator:$($services.Contains('simulator'))"
+if ($SkipWait) {
+    Write-Warning '已发起启动，但跳过就绪等待和启动检查；不能视为启动完成。请随后执行 check-local-startup.mjs。'
+}
+else {
+    Assert-Command 'node'
+    $checkArgs = @(
+        (Join-Path $PSScriptRoot 'check-local-startup.mjs'),
+        '--api', "http://127.0.0.1:$ApiPort",
+        '--admin', "http://127.0.0.1:$AdminPort",
+        '--admin-dir', $adminDir,
+        '--business', $businessOrigin,
+        '--simulator', "http://127.0.0.1:$SimulatorPort",
+        '--report', (Join-Path $runtimeDir 'startup-check.json')
+    )
+    if ($services.Contains('business')) { $checkArgs += @('--business-dir', $businessDir) }
+    else { $checkArgs += '--skip-business' }
+    if (-not $services.Contains('simulator')) { $checkArgs += '--skip-simulator' }
+    & node @checkArgs
+    if ($LASTEXITCODE -ne 0) { throw '启动检查失败。保留进程与日志供排查；修复并重新检查前不能宣布启动完成。' }
+    Write-Host '启动完成，所选服务自动检查已通过；真实账号登录须单独验证。'
+}
 } finally {
     $operationLock.Dispose()
 }

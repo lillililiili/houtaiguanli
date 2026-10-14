@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.*;
 import com.uav.lowaltitude.modules.fusion.application.FusionConfigService;
+import com.uav.lowaltitude.modules.fusion.application.FusionConfigLoader;
 import com.uav.lowaltitude.modules.fusion.application.EoFusionTaskContextPort;
 import com.uav.lowaltitude.modules.fusion.infrastructure.RawTrackRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.RawTrackRepository.TrackRow;
@@ -21,7 +22,12 @@ class SourceContributionReaderTest {
     private final RawTrackRepository tracks = mock(RawTrackRepository.class);
     private final FusionConfigService config = mock(FusionConfigService.class);
     private final EoFusionTaskContextPort tasks = mock(EoFusionTaskContextPort.class);
-    private final SourceContributionReader reader = new SourceContributionReader(tracks, json, config, new AppClock(Clock.fixed(now, ZoneOffset.UTC)), tasks);
+    private final SourceContributionReader reader = new SourceContributionReader(tracks, json, config, new AppClock(Clock.fixed(now, ZoneOffset.UTC)), tasks, configLoader());
+    private static FusionConfigLoader configLoader() {
+        var loader = mock(FusionConfigLoader.class);
+        when(loader.simulationParameters(any())).thenAnswer(call -> call.getArgument(0));
+        return loader;
+    }
     private final SourceLinkRow link = new SourceLinkRow("link-z", "source-z", "RADAR-Z", "replay", "batch-z", "target-z", "device-z", null, "Radar", "RADAR", "CONFIRMED");
 
     private void snapshot(Instant at, Map<String,Object> quality) throws Exception {

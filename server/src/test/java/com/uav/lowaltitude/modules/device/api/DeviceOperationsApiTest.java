@@ -35,6 +35,50 @@ class DeviceOperationsApiTest {
     @Autowired ObjectMapper objectMapper;
     @Autowired JdbcTemplate jdbc;
     @Autowired OutboxWorker outboxWorker;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
+
+    @Test
+    void mockRebootSnapshotsWithoutDispatchDoNotPermanentlyBlockCatalogRetirement() throws Exception {
+        String token = login("admin1");
+        for (String state : new String[]{"QUEUED", "SENT", "ACCEPTED"}) {
+            String suffix=UUID.randomUUID().toString();
+            JsonNode created=objectMapper.readTree(mvc.perform(post("/api/v1/devices")
+                    .header("Authorization",bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                    .content(deviceBody("RETIRE-"+suffix,"历史模拟设备")))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("device");
+            String id=created.path("device_id").asText();
+            String command=UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at) VALUES (?,?,?,(SELECT user_id FROM app_user WHERE account='admin1'),'REBOOT','历史模拟快照',?,'mock',TRUE,1,1)",command,command,id,state);
+            jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?",id);
+            long version=created.path("version").asLong();
+            String body="{\"version\":"+version+",\"reason\":\"退出测试设备台账，保留历史\"}";
+            // An actual dispatch record, even for mock, must still block deletion.
+            jdbc.update("INSERT INTO outbox_event(outbox_id,topic,payload,created_at,available_at,attempt_count) VALUES (?,'device.reboot',?,1,1,0)",suffix,command);
+            mvc.perform(delete("/api/v1/devices/{id}",id).header("Authorization",bearer(token))
+                    .header("Idempotency-Key","dispatch-"+suffix).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("DEVICE_BUSY"));
+            jdbc.update("DELETE FROM outbox_event WHERE outbox_id=?",suffix);
+            // MockMvc shares the surrounding test transaction; undo the failed
+            // attempt's local row changes (the HTTP production transaction rolls back).
+            jdbc.update("UPDATE ops_device SET deleted_at=NULL,version=? WHERE device_id=?",version,id);
+            assertThat(deviceRepository.hasActiveWork(id)).isTrue();
+            for(String mode:new String[]{"live","replay"}) {
+                jdbc.update("UPDATE device_command SET source_mode=? WHERE command_id=?",mode,command);
+                assertThat(deviceRepository.hasCatalogBlockingWork(id)).isTrue();
+            }
+            jdbc.update("UPDATE device_command SET source_mode='mock',deadline_at=10 WHERE command_id=?",command);
+            assertThat(deviceRepository.hasCatalogBlockingWork(id)).isTrue();
+            jdbc.update("UPDATE device_command SET deadline_at=NULL WHERE command_id=?",command);
+            jdbc.update("UPDATE ops_device SET source_mode='live' WHERE device_id=?",id);
+            assertThat(deviceRepository.hasCatalogBlockingWork(id)).isTrue();
+            jdbc.update("UPDATE ops_device SET source_mode='mock' WHERE device_id=?",id);
+            mvc.perform(delete("/api/v1/devices/{id}",id).header("Authorization",bearer(token))
+                    .header("Idempotency-Key","snapshot-"+suffix).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk());
+            assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?",String.class,command)).isEqualTo(state);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE object_id=? AND action='device_delete'",Integer.class,id)).isEqualTo(1);
+        }
+    }
 
     @Test
     void monitorInformationRequiresBackendIdentityAndStillEnforcesScope() throws Exception {

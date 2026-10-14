@@ -197,9 +197,8 @@ public class AutoVoiceService {
         if(noCounter.active(event.eventId()))return blocked(waiting("已决定不反制"),"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON);
         if("FALSE_POSITIVE".equals(event.state()))return blocked(waiting("误报"),"BLOCKED","已核实为误报，不拨打电话");
         Long smsAt=smsTasks.deliveredAt(event.eventId());
-        if(smsAt==null)return waiting("飞手短信尚未送达，电话要等短信送达并观察 3 秒");
-        // 电话通道或录音不可用，也不能跳过短信送达后的 3 秒观察。
-        if(now<smsAt+WATCH_MILLIS)return waiting("短信已送达，正在用设备位置观察目标是否撤离。满 3 秒后，仍在告警空域才会拨打电话");
+        if(smsAt==null)return waiting("飞手短信尚未送达，送达后即检查电话拨打条件");
+        if(now<smsAt)return waiting("短信送达时间异常，暂不能拨打电话");
         if(!voice.simulationAvailable(event.sourceMode()))return blocked(waiting("通道不可用"),"UNAVAILABLE","正式电话录音通道尚未接入，不能把模拟接通写成真实通话");
         if(recording==null)return blocked(waiting("录音不可用"),"UNAVAILABLE","还没有选用电话通知录音（在管理端 运维管理 → 接口配置 → 电话通知录音 上传并选用），电话通知不能执行");
         PilotDepartureWatch.Presence presence;
@@ -210,7 +209,7 @@ public class AutoVoiceService {
         if(task!=null&&!task.recordingMatches(recording))return blocked(waiting("仍在"),"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
         var pilot=requiredPilot(event.eventId());
         if(pilot==null||!pilot.configured())return blocked(waiting("仍在"),"BLOCKED",pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能拨打电话");
-        return new Eligibility(true,"WAITING","短信送达已满 3 秒，目标仍在告警空域，等待后台拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);
+        return new Eligibility(true,"WAITING","短信已送达，目标仍在告警空域，可立即拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);
     }
     /**
      * 短信发出时不在任何告警空域的，撤离是按最新研判恢复合法判断的（新-31），不能写成离开了告警空域。

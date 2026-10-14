@@ -9,7 +9,8 @@ param(
     [int]$AdminPort = 5175,
     [int]$BusinessPort = 5173,
     [int]$SimulatorPort = 8766,
-    [string]$ReportPath
+    [string]$ReportPath,
+    [string]$BusinessRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +83,21 @@ $apiBase = "http://127.0.0.1:$ApiPort"
 $adminBase = "http://127.0.0.1:$AdminPort"
 $businessBase = Find-MapProviderBase -Port $BusinessPort
 $simulatorBase = "http://127.0.0.1:$SimulatorPort"
+# Always test the actual page API without credentials; account checks below are additional.
+$startupReportPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'artifacts/local-runtime/startup-check.json'
+$checkArgs = @((Join-Path $PSScriptRoot 'check-local-startup.mjs'), '--api', $apiBase, '--admin', $adminBase,
+    '--business', $businessBase, '--simulator', $simulatorBase, '--report', $startupReportPath)
+if ($RequireBusinessFrontend) {
+    if (-not $BusinessRoot) { throw '请通过 -BusinessRoot 显式指定本次要验收的 dongying-vue 代码目录。' }
+    $checkArgs += @('--business-dir', $BusinessRoot)
+}
+else { $checkArgs += '--skip-business' }
+if (-not $RequireSimulator) { $checkArgs += '--skip-simulator' }
+& node @checkArgs
+if ($LASTEXITCODE -ne 0) { throw '自动启动检查失败，请先修复上方失败项。' }
+$startupReport = Get-Content -LiteralPath $startupReportPath -Raw | ConvertFrom-Json
+$adminApiBase = $startupReport.results[1].detail.api_base
+$businessApiBase = if ($RequireBusinessFrontend) { $startupReport.results[2].detail.api_base } else { '/api/v1' }
 $apiHealth = Check-Http -Name 'API readiness' -Uri "$apiBase/actuator/health/readiness" -Required
 $admin = Check-Http -Name '管理前端' -Uri "$adminBase/" -Required
 $business = Check-Http -Name '业务前台' -Uri "$businessBase/" -Required:$RequireBusinessFrontend
@@ -132,7 +148,7 @@ $authOk = $false
 $sessionId = $null
 if ([string]::IsNullOrWhiteSpace($SeedPassword)) {
     $results.Add([pscustomobject]@{ name = '登录与设备契约'; uri = "$apiBase/api/v1/auth/login"; status = 'WARN'; detail = '未提供 -SeedPassword，跳过登录请求以避免错误密码触发账号锁定' })
-    Write-Host '[WARN] 登录、前端代理或设备列表契约 - 未提供 -SeedPassword，已跳过登录请求'
+    Write-Host '[WARN] 真实账号登录与设备列表未验证；无密码的页面代理检查已执行。'
 }
 else {
     try {
@@ -142,12 +158,12 @@ else {
         $sessionId = $login.data.session_id
         $headers = @{ Authorization = "Bearer $sessionId" }
         $me = Invoke-RestMethod -Uri "$apiBase/api/v1/auth/me" -Headers $headers -TimeoutSec 8
-        $adminMe = Invoke-RestMethod -Uri "$adminBase/dev-api/v1/auth/me" -Headers $headers -TimeoutSec 8
+        $adminMe = Invoke-RestMethod -Uri ([Uri]::new([Uri]$adminBase, "${adminApiBase}/auth/me").AbsoluteUri) -Headers $headers -TimeoutSec 8
         if (-not $me.ok -or $me.data.account -ne $SeedAccount) { throw '后端 /auth/me 账号不匹配' }
-        if (-not $adminMe.ok -or $adminMe.data.account -ne $SeedAccount) { throw '管理端 /dev-api 代理账号不匹配' }
+        if (-not $adminMe.ok -or $adminMe.data.account -ne $SeedAccount) { throw '管理端页面实际 API 代理账号不匹配' }
         if ($RequireBusinessFrontend) {
-            $businessMe = Invoke-RestMethod -Uri "$businessBase/api/v1/auth/me" -Headers $headers -TimeoutSec 8
-            if (-not $businessMe.ok -or $businessMe.data.account -ne $SeedAccount) { throw '业务前台 /api 代理账号不匹配' }
+            $businessMe = Invoke-RestMethod -Uri ([Uri]::new([Uri]$businessBase, "${businessApiBase}/auth/me").AbsoluteUri) -Headers $headers -TimeoutSec 8
+            if (-not $businessMe.ok -or $businessMe.data.account -ne $SeedAccount) { throw '业务前台页面实际 API 代理账号不匹配' }
         }
         $devices = Invoke-RestMethod -Uri "$apiBase/api/v1/devices?page=1&size=1" -Headers $headers -TimeoutSec 8
         if (-not $devices.ok -or $null -eq $devices.data.items -or $null -eq $devices.data.total) { throw '设备列表不是约定的 items/total 契约' }

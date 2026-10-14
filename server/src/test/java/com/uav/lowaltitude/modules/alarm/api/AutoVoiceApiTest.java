@@ -388,19 +388,22 @@ class AutoVoiceApiTest {
         jdbc.update("insert into uav_event_advisory(record_id,event_id,event_version,kind,created_at,actor_id,recipient_name,contact_basis,content,urgent,simulated) values(?,?,0,'CONTACT_RECORDED',0,?,'飞手','现场电话核对','已劝离',false,false)",UUID.randomUUID().toString(),eventId,userId);
         voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"));
     }
-    @Test void callWaitsUntilSixtySecondsAfterSms()throws Exception {
+    @Test void callCanStartImmediatelyAfterSmsDelivery()throws Exception {
         jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=?",System.currentTimeMillis(),eventId);
         voiceService.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"));
-        verify(voice,never()).simulate(anyString(),any(),anyString());
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"))
+                .andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"))
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(true));
+        voiceService.process(eventId);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM uav_event_voice_advisory WHERE event_id=?",Integer.class,eventId)).isEqualTo(1);
     }
-    @Test void missingRecordingStillWaitsOutTheSmsWatch()throws Exception {
+    @Test void missingRecordingImmediatelyOffersManualDecision()throws Exception {
         jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=?",System.currentTimeMillis(),eventId);
         doReturn(null).when(recordings).current();
         voiceService.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_voice.status").value("WAITING"))
-                .andExpect(jsonPath("$.data.notify_phase").value("WATCHING"))
-                .andExpect(jsonPath("$.data.counter_launch_visible").value(false));
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("UNAVAILABLE"))
+                .andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"))
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(true));
         verify(voice,never()).simulate(anyString(),any(),anyString());
     }
     @Test void clearFailureAllowsIdempotentQueueOnlyRetryUsingSameProviderKey()throws Exception {

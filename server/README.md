@@ -1,5 +1,7 @@
 # low-altitude-server
 
+2026-10-13：通知不设固定观察等待，短信送达即检查电话条件，电话播放完成后未明确撤离即可待反制，由操作员人工发起。实际运行库从进程DB_URL核对；本机为5432/houtaiguanli_fresh3，自动核实规则已开启但当前识别置信度缺失。详情见[核对与验证记录](../docs/acceptance/notification-zero-wait-2026-10-13.md)。
+
 2026-10-12：前后台数据更新统一由 SSE 变化通知驱动，移除重复页面轮询，保留断线兜底和业务时点检查。新增数据库监听状态事件与 `V202610129001` 通知迁移；自动读取不驱动刷新按钮 loading。范围、保留任务、测试和发布要求见[统一 SSE 更新](../docs/acceptance/realtime-sse-2026-10-12.md)。
 
 2026-10-12 补验：大屏实时趋势跳过未使用的轨迹指标，`V202610129003` 补齐最新研判查询索引，后继探测保持相关索引查询。local 数据源设置 `jit=off`；Compose 数据库共享内存默认为 256 MiB，可通过 `DB_SHM_SIZE` 调整，重建容器时保留原数据卷。本机重启、真实数据大屏及前后台断线恢复已验收，详细测试与耗时见上述记录。
@@ -372,7 +374,7 @@ POST `/api/v1/uav-events/{id}/advisory/auto-sms/retry`，请求 `{expected_versi
 
 ### 通知后的飞离观察只读查询（2026-09-24）
 
-`GET /api/v1/uav-events/{eventId}/advisory/observation` 复用 `alarm:read`、事件数据范围和 `PilotDepartureWatch`。返回 `event_id/channel/status/presence/started_at/deadline_at/evaluated_at`；时间为 epoch 毫秒，未开始时可空字段按既有 JSON 规则省略。`status` 为 NOT_STARTED、WATCHING、ASSESSED；只有 ASSESSED 的 LEFT/STILL_PRESENT 表示明确观察结论，UNKNOWN 表示新位置不足或读取异常。短信送达后观察 3 秒，电话播放完成后观察 10 秒，复用各自窗口；读取不确认告警、不发送、不改事件或通知状态，不放宽反制资格。当前消费者为本机信号模拟器，业务前台和管理端既有 advisory 契约未改动。回归命令：`bash ./mvnw -Dtest=UavDepartureObservationTest,NotifyFlowTest,UavAdvisoryApiTest test`（22 项通过）。
+`GET /api/v1/uav-events/{eventId}/advisory/observation` 复用 `alarm:read`、事件数据范围和 `PilotDepartureWatch`。返回 `event_id/channel/status/presence/started_at/deadline_at/evaluated_at`；时间为 epoch 毫秒，未开始时可空字段按既有 JSON 规则省略。`status` 为 NOT_STARTED、WATCHING、ASSESSED；只有 ASSESSED 的 LEFT/STILL_PRESENT 表示明确观察结论，UNKNOWN 表示新位置不足或读取异常。短信送达、电话播放完成后的固定等待均为0秒，实时deadline_at等于started_at，历史撤离快照保留原值；读取不确认告警、不发送、不改事件或通知状态，不放宽反制资格。当前消费者为本机信号模拟器，业务前台和管理端既有 advisory 契约未改动。回归命令：`bash ./mvnw -Dtest=UavDepartureObservationTest,NotifyFlowTest,UavAdvisoryApiTest test`（22 项通过）。
 
 ### 上级空域下发（2026-09-27）
 

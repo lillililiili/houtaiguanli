@@ -24,6 +24,25 @@ class LocalInterfaceSimulatorApiTest {
  static final String BASE="/api/v1/local-interface-simulator";
  @BeforeEach void login() throws Exception { token="Bearer "+json.readTree(mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"account\":\"admin1\",\"password\":\"changeme\"}")).andReturn().getResponse().getContentAsString()).path("data").path("session_id").asText(); }
  @Autowired com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository rules;
+ @Test void batchActivationRejectsInvalidInputsWithoutSwitchingCurrentBatch() throws Exception {
+  var body=plan("batch-guard-"+UUID.randomUUID());
+  String mock=send("/plans",body,200).path("subject_id").asText();
+  body.put("message_id","batch-replay-"+UUID.randomUUID());body.put("source_mode","replay");
+  String replay=send("/plans",body,200).path("subject_id").asText();
+  var row=jdbc.queryForMap("select owner_org_id,district_id from flight_plan where plan_id=?",replay);
+  var before=jdbc.queryForList("select * from simulation_plan_batch_current");
+  var batch=new LinkedHashMap<String,Object>();batch.put("batch_id","guard-"+UUID.randomUUID());
+  batch.put("started_at",System.currentTimeMillis());batch.putAll(row);
+  batch.put("plan_ids",List.of(replay));batch.put("historical_plan_ids",List.of(mock));
+  mvc.perform(post(BASE+"/plan-batches/activate").contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(batch)))
+   .andExpect(status().isUnauthorized());
+  send("/plan-batches/activate",batch,409);
+  assertThat(jdbc.queryForList("select * from simulation_plan_batch_current")).isEqualTo(before);
+  assertThat(jdbc.queryForObject("select count(*) from simulation_plan_batch where batch_id=?",Long.class,batch.get("batch_id"))).isZero();
+  batch.put("historical_plan_ids",List.of());batch.put("started_at",System.currentTimeMillis()+600000);
+  send("/plan-batches/activate",batch,400);
+  assertThat(jdbc.queryForList("select * from simulation_plan_batch_current")).isEqualTo(before);
+ }
  @Test void currentBatchAloneParticipatesAndOldTasksStayReadable() throws Exception {
   String sn="BATCH-"+UUID.randomUUID();
   var body=plan("batch-old-"+UUID.randomUUID());body.put("uav_sn",sn);body.put("source_mode","replay");

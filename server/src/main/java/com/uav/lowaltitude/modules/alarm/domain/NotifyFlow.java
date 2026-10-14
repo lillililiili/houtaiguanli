@@ -2,10 +2,10 @@ package com.uav.lowaltitude.modules.alarm.domain;
 
 import com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch;
 
-/** 核实属实后的通知阶段。短信送达后观察 3 秒，电话播放后再观察 10 秒。 */
+/** 核实属实后的通知阶段。通知回执后不设观察等待，反制仍由操作员发起。 */
 public final class NotifyFlow {
-    public static final long SMS_WATCH_MILLIS = 3_000L;
-    public static final long CALL_WATCH_MILLIS = 10_000L;
+    public static final long SMS_WATCH_MILLIS = 0L;
+    public static final long CALL_WATCH_MILLIS = 0L;
     public enum Phase { AUTO_SMS, WATCHING, AUTO_CALL, AWAIT_COUNTER }
     private NotifyFlow() { }
     public static Phase phase(String state, String smsStatus, String smsReason, Long smsAt, String voiceStatus, String voiceReason, Long playedAt, long now,

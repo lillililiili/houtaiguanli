@@ -1,6 +1,5 @@
 package com.uav.lowaltitude.modules.device.application;
 
-import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,16 +31,19 @@ public class EoTrackingScheduler {
             if (count >= batch) break;
             if (commands.retryStop(task)) count++;
         }
-        if(!policy.enabled()) return count+dispatch.poll(Math.max(0,batch-count));
-        for(var task:repository.openAutomaticTasks(batch)) {
+        for(var task:repository.openTasks()) {
+            if(count>=batch) break;
             String target=text(task,"target_id");
             if(!repository.tryLock(target)) continue;
             var snapshot=repository.snapshot(target);
-            if(!policy.enabledFor(snapshot)) continue;
+            boolean automatic="AUTO".equals(text(task,"origin"));
+            if(automatic && !policy.enabledFor(snapshot)) continue;
             var device=edges.binding(text(task,"ops_device_id"),true);
             if(device==null) continue;
-            String stopReason=repository.paused(target)?"OPERATOR_PAUSE_AUTO_TRACK":policy.continuationBlock(snapshot,task,device);
-            if(stopReason==null && (!policy.demand(target).isEmpty() || dispatch.protectedObservation(target))) continue;
+            // Manual requests need the same continuity maintenance even when automatic starts are disabled.
+            // A cleared automatic demand (or auto pause) must not cancel a valid manual observation.
+            String stopReason=automatic && repository.paused(target)?"OPERATOR_PAUSE_AUTO_TRACK":policy.continuationBlock(snapshot,task,device);
+            if(stopReason==null && (!automatic || !policy.demand(target).isEmpty() || dispatch.protectedObservation(target))) continue;
             commands.enqueue(device,EoEdgeCommandService.END,EoEdgeCommandService.TOPIC_END,
                     stopReason==null?"AUTO_OBSERVATION_DEMAND_CLEARED":"AUTO_TRACK_STOP:"+stopReason);
             count++;
