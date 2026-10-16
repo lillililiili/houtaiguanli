@@ -412,8 +412,38 @@ class EvidenceApiTest {
     }
 
     @Test
+    void frontendLegacyGrantsCannotLinkCaseOrAuthorization() throws Exception {
+        for (String level : java.util.List.of("READ", "OP")) {
+            String frontend = reader("ASSIGNED", org, district);
+            grantAction(frontend, "evidence:ingest", "evidence:read", "evidence:link", "punishment:read", "disposal:read");
+            jdbc.update("UPDATE app_role_permission SET permission_level=? WHERE permission_code='evidence:link'"
+                    + " AND role_code=(SELECT u.role_code FROM app_user u JOIN app_session s ON s.user_id=u.user_id WHERE s.session_id=?)",
+                    level, frontend);
+            String evidenceId = ingestFile(frontend, "legacy.jpg", org, district, "TARGET", targetId)
+                    .get("evidence_id").asText();
+            Map<String, String> subjects = Map.of("CASE", insertCase(frontend, org, district),
+                    "AUTHORIZATION", insertAuthorization(frontend, org, district));
+            for (var subject : subjects.entrySet()) {
+                mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/links")
+                                .header("Authorization", bearer(frontend)).header("Idempotency-Key", UUID.randomUUID().toString())
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(json.writeValueAsString(Map.of("subject_kind", subject.getKey(), "subject_id", subject.getValue()))))
+                        .andExpect(status().isForbidden())
+                        .andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+            }
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM evidence_link WHERE evidence_id=? AND subject_kind IN ('CASE','AUTHORIZATION')",
+                    Integer.class, evidenceId)).isZero();
+        }
+    }
+
+    @Test
     void caseAndAuthorizationLinksRequireModuleReadAndStayInScope() throws Exception {
         String ingest = reader("ASSIGNED", org, district);
+        // Manual linking is unavailable to frontend roles, including roles with stale grants.
+        // Use a backend identity with explicit test permissions; @Transactional restores the shared role afterwards.
+        jdbc.update("UPDATE app_user SET role_code='ROLE-BACKEND' WHERE user_id=(SELECT user_id FROM app_session WHERE session_id=?)", ingest);
+        jdbc.update("DELETE FROM app_role_permission WHERE role_code='ROLE-BACKEND'"
+                + " AND permission_code IN ('evidence:ingest','evidence:read','evidence:link','punishment:read','disposal:read')");
         grantAction(ingest, "evidence:ingest", "evidence:read", "evidence:link");
         JsonNode created = ingestFile(ingest, "case.jpg", org, district, "TARGET", targetId);
         String evidenceId = created.get("evidence_id").asText();
@@ -424,7 +454,16 @@ class EvidenceApiTest {
                         .header("Authorization", bearer(ingest)).header("Idempotency-Key", "link-case-deny-" + suffix)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"subject_kind\":\"CASE\",\"subject_id\":\"" + caseId + "\"}"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+        mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/links")
+                        .header("Authorization", bearer(ingest)).header("Idempotency-Key", "link-auth-deny-" + suffix)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject_kind\":\"AUTHORIZATION\",\"subject_id\":\"" + authId + "\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM evidence_link WHERE evidence_id=? AND subject_kind IN ('CASE','AUTHORIZATION')",
+                Integer.class, evidenceId)).isZero();
 
         grantAction(ingest, "punishment:read", "disposal:read");
         mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/links")
@@ -446,6 +485,18 @@ class EvidenceApiTest {
                         .content("{\"subject_kind\":\"AUTHORIZATION\",\"subject_id\":\"" + authId + "\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.subject_kind").value("AUTHORIZATION"));
+        Map<String, String> outsideSubjects = Map.of("CASE", insertCase(ingest, otherOrg, otherDistrict),
+                "AUTHORIZATION", insertAuthorization(ingest, otherOrg, otherDistrict));
+        for (var subject : outsideSubjects.entrySet()) {
+            mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/links")
+                            .header("Authorization", bearer(ingest)).header("Idempotency-Key", UUID.randomUUID().toString())
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("subject_kind", subject.getKey(), "subject_id", subject.getValue()))))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.error.code").value("NOT_FOUND"));
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM evidence_link WHERE evidence_id=? AND subject_kind IN ('CASE','AUTHORIZATION')",
+                Integer.class, evidenceId)).isEqualTo(2);
         mvc.perform(post("/api/v1/evidence-files/" + evidenceId + "/links")
                         .header("Authorization", bearer(ingest)).header("Idempotency-Key", "link-bad-kind-" + suffix)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -691,17 +742,18 @@ class EvidenceApiTest {
 
     private String insertCase(String token, String orgId, String districtId) {
         Timestamp at = Timestamp.from(Instant.now());
+        String fixtureId = UUID.randomUUID().toString().substring(0, 8);
         String admin = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
-        String alarmId = "ev-al-" + suffix, eventId = "ev-evt-" + suffix, handoffId = "ev-ho-" + suffix;
-        String recipientId = "ev-rc-" + suffix, caseId = "ev-case-" + suffix;
+        String alarmId = "ev-al-" + fixtureId, eventId = "ev-evt-" + fixtureId, handoffId = "ev-ho-" + fixtureId;
+        String recipientId = "ev-rc-" + fixtureId, caseId = "ev-case-" + fixtureId;
         jdbc.update("""
                 insert into integration_source (source_id,source_code,name,enabled,source_mode,created_at,updated_at,version)
                 values (?,?,?,true,'mock',?,?,0)
-                """, "ev-src-" + suffix, "EV-SRC-" + suffix, "证据案件来源", at, at);
+                """, "ev-src-" + fixtureId, "EV-SRC-" + fixtureId, "证据案件来源", at, at);
         jdbc.update("""
                 insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at)
                 values (?,?,?,?, 'UAV','HIGH',?,?,'mock',?,?,?)
-                """, alarmId, targetId, "ev-src-" + suffix, "AL-" + suffix, at, at, orgId, districtId, at);
+                """, alarmId, targetId, "ev-src-" + fixtureId, "AL-" + fixtureId, at, at, orgId, districtId, at);
         jdbc.update("""
                 insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version)
                 values (?,?,'CONFIRMED',?,?,?,?,1)
@@ -717,18 +769,19 @@ class EvidenceApiTest {
         jdbc.update("""
                 insert into punishment_case (case_id,case_no,event_id,handoff_id,status,party_type,filed_by,filed_by_name,filed_at,owner_org_id,district_id,source_mode,version,created_at,updated_at)
                 values (?,?,?,?,'FILED','UNKNOWN',?,?,?,?,?,'mock',0,?,?)
-                """, caseId, "CASE-20260909-" + suffix.toUpperCase(), eventId, handoffId, admin, "超级管理员", at, orgId, districtId, at, at);
+                """, caseId, "CASE-20260909-" + fixtureId.toUpperCase(), eventId, handoffId, admin, "超级管理员", at, orgId, districtId, at, at);
         return caseId;
     }
 
     private String insertAuthorization(String token, String orgId, String districtId) {
         Timestamp at = Timestamp.from(Instant.now());
+        String fixtureId = UUID.randomUUID().toString().substring(0, 8);
         String admin = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, token);
-        String id = "ev-auth-" + suffix;
+        String id = "ev-auth-" + fixtureId;
         jdbc.update("""
                 insert into disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,target_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at)
                 values (?,?,'DISPERSAL','TARGET',?,?,'MANUAL','证据关联用例',?,?,'REQUESTED','demo-v1',?,?,'mock',0,?,?)
-                """, id, "AUTH-20260909-" + suffix.toUpperCase(), targetId, targetId, admin, at, orgId, districtId, at, at);
+                """, id, "AUTH-20260909-" + fixtureId.toUpperCase(), targetId, targetId, admin, at, orgId, districtId, at, at);
         return id;
     }
 
