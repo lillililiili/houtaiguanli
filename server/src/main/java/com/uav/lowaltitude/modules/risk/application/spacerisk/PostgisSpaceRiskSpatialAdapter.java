@@ -93,6 +93,9 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
     // 按观测发生时刻与该计划的前后放宽窗口匹配；已结束计划在尾部窗口内仍可接受事实，取消计划不可匹配。
     // 同来源模式且同归属元组才匹配，模拟异物不能挂到真实计划。planId 为 null 时决策表直接返回不生成；
     // 距离为 null 时走廊关系为 UNKNOWN，同样不生成。时间条件由调用方追加。
+    // 已登记的模拟任务只有当前批次参与（与合法性计划匹配同一口径，2026-10-12）；旧批次留下、仍在时段内的任务不再给鸟群和机场异物生成新风险。
+    private static final String CURRENT_SIMULATION_PLAN =
+            com.uav.lowaltitude.modules.flight.infrastructure.SimulationPlanBatchRepository.eligibleSql("p");
     private static final String OBSERVATION_SELECT = """
             SELECT DISTINCT survivor.target_id, survivor.target_no, sub.subtype_code, p.plan_id, p.route_version_id,
                    ST_Distance(rv.centerline::geography, ls.location::geography) AS distance_m,
@@ -119,6 +122,7 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
              AND ls.observed_at >= p.start_at - :plan_pad_minutes * INTERVAL '1 minute'
              AND ls.observed_at <= p.end_at + :plan_pad_minutes * INTERVAL '1 minute'
              AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
+             AND """ + CURRENT_SIMULATION_PLAN + """
             LEFT JOIN route_version rv ON rv.route_version_id = p.route_version_id AND rv.centerline IS NOT NULL
             WHERE ls.location IS NOT NULL
               AND survivor.owner_org_id IS NOT NULL AND survivor.district_id IS NOT NULL
@@ -179,6 +183,7 @@ public class PostgisSpaceRiskSpatialAdapter implements SpaceRiskSpatialPort {
                  AND p.status_code IN ('PENDING','EXECUTING','COMPLETED')
                  AND p.start_at <= ls.observed_at AND ls.observed_at < p.end_at
                  AND NOT EXISTS(SELECT 1 FROM flight_plan_duplicate d WHERE d.duplicate_plan_id=p.plan_id)
+                 AND """ + CURRENT_SIMULATION_PLAN + """
                 LEFT JOIN route_version rv ON rv.route_version_id=p.route_version_id
                 WHERE ls.location IS NOT NULL
                 """ + windowCondition + MEASURED_FUSION_POSITION + """
