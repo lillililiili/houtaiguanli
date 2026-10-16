@@ -140,6 +140,27 @@ class ConfirmedSpaceRiskPostgresTest {
                 .anyMatch(row -> target.equals(row.targetId()) && plan.equals(row.planId()))).isEqualTo(matches);
     }
 
+    @ParameterizedTest
+    @CsvSource({"unregistered,true", "current,true", "currentBatchFormerMember,false", "olderBatch,false"})
+    void registeredSimulationPlansOnlyReceiveSpaceRisksWhileInTheCurrentBatch(String membership, boolean matches) {
+        jdbc.update("update target set source_mode='replay' where target_id=?", target);
+        jdbc.update("update flight_plan set source_mode='replay' where plan_id=?", plan);
+        jdbc.update("update track_point set observation_id=? where point_id=?", observation(source("replay"), now, 25), point);
+        airport();
+        if (!"unregistered".equals(membership)) {
+            String user = jdbc.queryForObject("select user_id from app_user order by user_id limit 1", String.class);
+            String batch = id(), current = "olderBatch".equals(membership) ? id() : batch;
+            for (String id : java.util.stream.Stream.of(batch, current).distinct().toList())
+                jdbc.update("insert into simulation_plan_batch(batch_id,owner_org_id,district_id,started_at,registered_at,created_by,request_body) values(?,?,?,0,0,?,'{}')",
+                        id, org, district, user);
+            jdbc.update("insert into simulation_plan_batch_member(batch_id,plan_id,current_member) values(?,?,?)", batch, plan, "current".equals(membership) || "olderBatch".equals(membership));
+            jdbc.update("insert into simulation_plan_batch_current(owner_org_id,district_id,batch_id) values(?,?,?)", org, district, current);
+        }
+        assertThat(observations().stream().anyMatch(row -> plan.equals(row.planId()))).isEqualTo(matches);
+        assertThat(spatial.airportProximity(now.minusSeconds(1), now.plusSeconds(1), 15).stream()
+                .anyMatch(row -> target.equals(row.targetId()) && plan.equals(row.planId()))).isEqualTo(matches);
+    }
+
     @Test void duplicatePlanCannotReceiveRiskEvenWhenItsTimesAndRouteMatch() {
         String duplicate = id();
         jdbc.update("insert into flight_plan(plan_id,plan_no,status_code,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version)"
