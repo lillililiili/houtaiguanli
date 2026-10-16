@@ -16,6 +16,7 @@ import { useAuthStore } from '@/stores/auth.js';
 import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.js';
 import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { deviceCatalogParams } from '@/utils/deviceCatalog.js';
+import { warmDeviceMapResources } from '@/services/deviceLocationMap.js';
 
 const MQTT_PROTOCOL = 'LINGYUN_MQTT_V8_6';
 const EO_PROTOCOL = 'EO_EDGE_MQTT_20250826';
@@ -385,8 +386,9 @@ async function deleteDevice(row) {
 }
 
 watch(() => [filters.type_code, filters.channel, filters.region, filters.vendor, filters.connectivity, filters.enabled, filters.sort], search);
-onMounted(bootstrap);
-onBeforeUnmount(() => { alive = false; detailSequence++; });
+const mapWarmup = new AbortController();
+onMounted(() => { warmDeviceMapResources(mapWarmup.signal); return bootstrap(); });
+onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
 </script>
 
 <template>

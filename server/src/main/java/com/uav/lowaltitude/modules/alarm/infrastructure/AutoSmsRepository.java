@@ -8,6 +8,19 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class AutoSmsRepository {
+    // Resolve the event's exact target and scope once, before the ordered lookup.
+    // A three-way ordered join can scan unrelated history under a generic plan.
+    static final String LATEST_EVALUATION_SQL = """
+        SELECT r.evaluation_id,r.alarm_id,r.legal_status,r.freshness_code,
+               r.unknown_reasons,r.evaluated_at,r.observed_at,r.mode
+        FROM rule_evaluation r
+        WHERE (r.target_id,r.owner_org_id,r.district_id) = (
+            SELECT a.target_id,e.owner_org_id,e.district_id
+            FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id
+            WHERE e.event_id=?
+        ) AND r.mode='ACTIVE'
+        ORDER BY r.evaluated_at DESC,r.evaluation_id DESC FETCH FIRST 1 ROWS ONLY
+        """;
     private final JdbcTemplate jdbc;
     public AutoSmsRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
     public List<String> sendingCandidates() {
@@ -22,7 +35,7 @@ public class AutoSmsRepository {
     }
     /** 按目标取最新 ACTIVE 结论，不能用旧违法结论覆盖后来合法/未知的结论。 */
     public Evaluation latestEvaluation(String eventId) {
-        var rows=jdbc.query("SELECT r.evaluation_id,r.alarm_id,r.legal_status,r.freshness_code,r.unknown_reasons,r.evaluated_at,r.observed_at,r.mode FROM rule_evaluation r JOIN uav_event e ON e.event_id=? JOIN alarm a ON a.alarm_id=e.alarm_id WHERE r.target_id=a.target_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id AND r.mode='ACTIVE' ORDER BY r.evaluated_at DESC,r.evaluation_id DESC FETCH FIRST 1 ROWS ONLY",(r,n)->new Evaluation(r.getString("evaluation_id"),r.getString("alarm_id"),r.getString("legal_status"),r.getString("freshness_code"),r.getString("unknown_reasons"),time(r,"evaluated_at"),time(r,"observed_at")),eventId);
+        var rows=jdbc.query(LATEST_EVALUATION_SQL,(r,n)->new Evaluation(r.getString("evaluation_id"),r.getString("alarm_id"),r.getString("legal_status"),r.getString("freshness_code"),r.getString("unknown_reasons"),time(r,"evaluated_at"),time(r,"observed_at")),eventId);
         return rows.isEmpty()?null:rows.get(0);
     }
     public Long deliveredAt(String eventId) {

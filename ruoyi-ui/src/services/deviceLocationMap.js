@@ -1,6 +1,7 @@
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { PMTiles, Protocol } from 'pmtiles';
 import { applyDeviceMapTheme } from './deviceMapTheme.js';
+import { warmMapResource, warmMapStyleAssets } from './mapResourceWarmup.js';
 
 const protocol = new Protocol();
 
@@ -55,25 +56,48 @@ function localUrl(value, base = window.location.href) {
   return url.href.replaceAll('%7B', '{').replaceAll('%7D', '}');
 }
 
-async function readJson(url, signal, optional = false) {
-  const response = await fetch(url, { signal, cache: 'no-cache', redirect: 'error' });
+async function readJson(url, signal, optional = false, cache = 'no-cache') {
+  const response = await fetch(url, { signal, cache, redirect: 'error' });
   if (optional && (response.status === 204 || response.status === 404)) return null;
   if (!response.ok || !response.headers.get('content-type')?.includes('json')) throw new Error('离线地图资源读取失败，请检查地图服务');
   return response.json();
 }
 
+function vectorTileTemplate(value, manifestUrl) {
+  const url = new URL(localUrl(value, manifestUrl));
+  const path = url.pathname.replaceAll('%7B', '{').replaceAll('%7D', '}');
+  if (url.username || url.password || url.search || url.hash
+      || !/\/\{z\}\/\{x\}\/\{y\}\.(?:pbf|mvt)$/.test(path)
+      || (path.match(/\{/g) || []).length !== 3) throw new Error('地图矢量瓦片地址无效');
+  return `${url.origin}${path}`;
+}
+
+function preferLocalIdeographs(style) {
+  const ranges = new Set(['U+2E80-9FFF', 'U+F900-FAFF', 'U+FF00-FFEF']);
+  const stacks = style['font-faces'];
+  if (!stacks) return;
+  for (const [name, faces] of Object.entries(stacks)) {
+    stacks[name] = faces.filter(face => !(/NotoSansSC-Regular\.otf(?:[?#]|$)/.test(face.url)
+      && Array.isArray(face['unicode-range']) && face['unicode-range'].length
+      && face['unicode-range'].every(range => ranges.has(range))));
+    if (!stacks[name].length) delete stacks[name];
+  }
+  if (!Object.keys(stacks).length) delete style['font-faces'];
+}
+
 export async function loadDeviceMapStyle(signal) {
+  warmMapResource(workerUrl, signal);
   let configUrl = localUrl('/map-data/control/map-config.json');
   let config = await readJson(configUrl, signal, true);
   if (!config) { configUrl = localUrl('/map-config.json'); config = await readJson(configUrl, signal); }
   const manifestUrl = localUrl(config.manifest, configUrl);
-  const manifest = await readJson(manifestUrl, signal);
+  const manifest = await readJson(manifestUrl, signal, false, 'default');
   if (manifest.coordinateSystem !== 'WGS84') throw new Error('底图坐标系不支持');
   const archiveUrl = localUrl(manifest.archive, manifestUrl);
   const archive = protocol.get(archiveUrl) || new PMTiles(archiveUrl);
   protocol.add(archive);
   const styleUrl = localUrl(manifest.style, manifestUrl);
-  const [style, header] = await Promise.all([readJson(styleUrl, signal), archive.getHeader()]);
+  const [style, header] = await Promise.all([readJson(styleUrl, signal, false, 'default'), archive.getHeader()]);
   signal.throwIfAborted();
   const bounds = [header.minLon, header.minLat, header.maxLon, header.maxLat];
   if (header.tileType !== 1 || !bounds.every(Number.isFinite)
@@ -81,7 +105,8 @@ export async function loadDeviceMapStyle(signal) {
       || bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) throw new Error('地图包覆盖范围无效');
   if (style.version !== 8 || !style.sources?.protomaps || Object.keys(style.sources).length !== 1 || style.imports) throw new Error('底图样式不支持');
   style.sources.protomaps = {
-    type: 'vector', url: `pmtiles://${archiveUrl}`,
+    type: 'vector',
+    ...(manifest.vectorTiles != null ? { tiles: [vectorTileTemplate(manifest.vectorTiles, manifestUrl)] } : { url: `pmtiles://${archiveUrl}` }),
     attribution: '© OpenStreetMap contributors · Protomaps', minzoom: header.minZoom, maxzoom: header.maxZoom
   };
   if (style.glyphs) style.glyphs = localUrl(style.glyphs, styleUrl);
@@ -89,6 +114,7 @@ export async function loadDeviceMapStyle(signal) {
   for (const faces of Object.values(style['font-faces'] || {})) {
     for (const face of faces) face.url = localUrl(face.url, styleUrl);
   }
+  preferLocalIdeographs(style);
   const imagery = manifest.imagery?.tiles ? {
     tiles: localUrl(manifest.imagery.tiles, manifestUrl),
     minzoom: manifest.imagery.minZoom ?? 7,
@@ -97,7 +123,15 @@ export async function loadDeviceMapStyle(signal) {
     attribution: manifest.imagery.attribution || ''
   } : null;
   applyDeviceMapTheme(style, { imagery });
+  warmMapStyleAssets(style, signal);
   return { style, bounds, maxZoom: manifest.displayMaxZoom ?? 18 };
+}
+
+// Start the static resource chain alongside device APIs. Each actual map still
+// rechecks the current publishing pointer; no stale style is retained in memory.
+export function warmDeviceMapResources(signal) {
+  void loadDeviceMapStyle(signal).catch(() => {});
+  void loadDeviceMapEngine().catch(() => {});
 }
 
 let enginePromise;

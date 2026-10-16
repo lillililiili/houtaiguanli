@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { devicePosition, loadDeviceMapStyle, deviceMapMinZoom, deviceMapOptions, positionInMapBounds } from '@/services/deviceLocationMap.js';
 
 const archiveHeader = vi.hoisted(() => vi.fn());
+vi.mock('@/services/mapResourceWarmup.js', () => ({ warmMapResource: vi.fn(), warmMapStyleAssets: vi.fn() }));
 vi.mock('pmtiles', () => ({
   PMTiles: class { getHeader() { return archiveHeader(); } },
   Protocol: class { get() {} add() {} }
@@ -50,6 +51,27 @@ describe('设备地图坐标与离线资源', () => {
     expect(fetch.mock.calls[1][0]).toBe(`${window.location.origin}/map-config.json`);
   });
 
+  it('使用同包 XYZ 瓦片且仍由包头确认地图范围，中文字体优先使用本机字体', async () => {
+    stubOptimizedPackage('./xyz/{z}/{x}/{y}.pbf');
+    const { style, bounds } = await loadDeviceMapStyle(new AbortController().signal);
+    expect(style.sources.protomaps.tiles).toEqual([`${window.location.origin}/map-data/alternate/xyz/{z}/{x}/{y}.pbf`]);
+    expect(style.sources.protomaps.url).toBeUndefined();
+    expect(bounds).toEqual([117.9, 36.7, 119.5, 38.3]);
+    expect(style['font-faces'].standard).toBeUndefined();
+    expect(style['font-faces'].custom[0].url).toContain('/map-data/alternate/fonts/custom.otf');
+  });
+
+  it('每次重新核对发布指针，地图包资源遵循服务端缓存策略', async () => {
+    stubOptimizedPackage('./xyz/{z}/{x}/{y}.pbf');
+    await loadDeviceMapStyle(new AbortController().signal);
+    expect(fetch.mock.calls.map(([, options]) => options.cache)).toEqual(['no-cache', 'default', 'default']);
+  });
+
+  it.each(['https://outside.test/{z}/{x}/{y}.pbf', './xyz/{z}/{x}.pbf', './xyz/{z}/{x}/{y}.pbf?key=1'])('拒绝不安全或不完整的矢量瓦片地址：%s', async template => {
+    stubOptimizedPackage(template);
+    await expect(loadDeviceMapStyle(new AbortController().signal)).rejects.toThrow(/地图/);
+  });
+
   it.each([[117.9, 36.7, 119.5, 38.3], [111, 29, 112, 30]])('不同地图包及宽窄视口都由覆盖范围限制缩小，仍可继续放大：%j', (...bounds) => {
     for (const [width, height] of [[850, 280], [340, 700], [1600, 320]]) {
       const container = { clientWidth: width, clientHeight: height };
@@ -72,3 +94,13 @@ describe('设备地图坐标与离线资源', () => {
   });
 });
 function response(value) { return { ok: true, status: 200, headers: new Headers({ 'Content-Type': 'application/json' }), json: async () => value }; }
+
+function stubOptimizedPackage(vectorTiles) {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(response({ manifest: '/map-data/alternate/manifest.json' }))
+    .mockResolvedValueOnce(response({ coordinateSystem: 'WGS84', archive: './other.pmtiles', style: './style.json', vectorTiles }))
+    .mockResolvedValueOnce(response({ version: 8, sources: { protomaps: {} }, layers: [], 'font-faces': {
+      standard: [{ url: './fonts/NotoSansSC-Regular.otf', 'unicode-range': ['U+2E80-9FFF'] }],
+      custom: [{ url: './fonts/custom.otf', 'unicode-range': ['U+0000-00FF'] }]
+    } })));
+}

@@ -17,6 +17,32 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AcceptanceFlowsTest(unittest.TestCase):
+    def test_generated_bundles_have_distinct_devices_but_preserve_all_references(self):
+        bundles = [MODULE.build_scenes() for _ in range(2)]
+        identities = []
+        for scenes in bundles:
+            ids = set()
+            shared = []
+            for scene in scenes.values():
+                devices = {device['id']: device for site in scene['sites'] for device in site['devices']}
+                ids.update(devices)
+                shared.append(next(identity for identity, device in devices.items() if device['kind'] == 'eo'))
+                for item in scene['targets'] + scene['risks']:
+                    for field in ('deviceId', 'secondaryDeviceId'):
+                        if item.get(field):
+                            self.assertIn(item[field], devices)
+                MODULE.validate_scene(scene)
+            self.assertEqual(1, len(set(shared)), 'one generated bundle must reuse the same EO device')
+            identities.append(ids)
+        self.assertFalse(identities[0] & identities[1], 'a new bundle must not revive retired logical devices')
+
+    def test_validation_uses_device_kind_instead_of_a_fixed_fixture_id(self):
+        scene = MODULE.build_scenes()['flow-1-auto-disposal.json']
+        target = scene['targets'][0]
+        target['secondaryDeviceId'] = target['deviceId']
+        with self.assertRaisesRegex(ValueError, '5G-A'):
+            MODULE.validate_scene(scene)
+
     def test_identity_and_datum_use_supported_transport(self):
         for scene in MODULE.build_scenes().values():
             for target in scene['targets']:

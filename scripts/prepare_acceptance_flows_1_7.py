@@ -26,6 +26,7 @@ import json
 import math
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -476,6 +477,21 @@ def build_scenes(filing: dict[str, str] | None = None) -> dict[str, dict[str, An
             ],
         ),
     }
+    # Generating a bundle creates new logical devices. Retired platform identities
+    # remain immutable; retries of an imported scene keep these saved IDs, and all
+    # seven scenes in this bundle share the same device mapping.
+    generation = uuid.uuid4().hex
+    identities = {device['id']: 'acc-' + generation + '-' + device['id']
+                  for scene in scenes.values() for site in scene['sites'] for device in site['devices']}
+    for scene in scenes.values():
+        scene['fullchain']['deviceGeneration'] = generation
+        for site in scene['sites']:
+            for device in site['devices']:
+                device['id'] = identities[device['id']]
+        for item in scene['targets'] + scene['risks']:
+            for field in ('deviceId', 'secondaryDeviceId'):
+                if item.get(field):
+                    item[field] = identities[item[field]]
     return scenes
 
 
@@ -528,7 +544,8 @@ def validate_scene(scene: dict[str, Any], *, compile_scene: Callable[[dict[str, 
         if len(scene["targets"]) != 1 or not scene["targets"][0].get("planId"):
             raise ValueError(f"流程 {flow} 必须有一架关联计划的无人机")
         target = scene["targets"][0]
-        if target.get("secondaryDeviceId") != "acceptance-5ga":
+        devices = {device['id']: device for site in scene['sites'] for device in site['devices']}
+        if devices.get(target.get("secondaryDeviceId"), {}).get('kind') != '5ga':
             raise ValueError(f"流程 {flow} 必须保留 5G-A 辅助来源")
     if flow in (1, 2, 3, 4):
         if not any(zone.get("kindCode") == "PROHIBITED" for zone in scene["zones"]):
