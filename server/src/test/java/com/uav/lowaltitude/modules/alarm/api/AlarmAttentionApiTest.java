@@ -144,6 +144,31 @@ class AlarmAttentionApiTest {
         assertThat(detail(row).path("attention_group").asText()).isEqualTo("AWAITING_CONFIRMATION");
     }
 
+    @Test void recordedDepartureAfterNotificationMovesTheAlarmToHistoryUnlessACounterRequestIsOpen() throws Exception {
+        Alarm left = alarm("replay", "HIGH", 900, now, "CONFIRMED");
+        assertThat(detail(left).path("attention_group").asText()).isEqualTo("CURRENT");
+        departure(left);
+        // 2026-10-16：通知后按有效位置记下已飞离，告警归到已处理完，哪怕目标还在报位置。
+        assertThat(detail(left).path("attention_group").asText()).isEqualTo("HISTORY");
+        assertThat(ids(page("state=CONFIRMED&attention_group=HISTORY"))).containsExactly(left.alarm);
+        assertThat(detail(left).path("state").asText()).isEqualTo("CONFIRMED");
+        Alarm requested = alarm("replay", "HIGH", 800, now, "CONFIRMED");
+        departure(requested); authorization(requested, "REQUESTED");
+        assertThat(detail(requested).path("attention_group").asText()).isEqualTo("CURRENT");
+        Alarm executing = alarm("replay", "HIGH", 700, null, "CONFIRMED");
+        departure(executing); authorization(executing, "EXECUTING");
+        assertThat(detail(executing).path("attention_group").asText()).isEqualTo("CURRENT");
+        Alarm watching = alarm("replay", "HIGH", 600, now, "CONFIRMED");
+        jdbc.update("INSERT INTO uav_auto_voice_task(event_id,status,policy_code,reason,updated_at,provider_key) VALUES(?,'WAITING','test','观察中',?,?)", watching.event, now.toEpochMilli(), "test:" + watching.event);
+        assertThat(detail(watching).path("attention_group").asText()).isEqualTo("CURRENT");
+    }
+
+    void departure(Alarm row) {
+        long at = now.toEpochMilli();
+        jdbc.update("INSERT INTO uav_auto_voice_task(event_id,status,policy_code,reason,updated_at,provider_key,departure_channel,departure_started_at,departure_deadline_at,departure_evaluated_at,departure_observed_at,departure_longitude,departure_latitude,departure_basis) VALUES(?,'WAITING','test','已飞离',?,?,'SMS',?,?,?,?,118.5,37.5,'OUTSIDE_AIRSPACE')",
+                row.event, at, "test:" + row.event, at - 10_000, at, at, at);
+    }
+
     Alarm alarm(String mode, String severity, long ageSeconds, Instant observed, String state) {
         String target = id(), source = id(), alarm = id(), event = state == null ? null : id(), number = "AT-" + id().substring(0, 8);
         Timestamp received = ts(now.minusSeconds(ageSeconds));

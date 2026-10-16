@@ -24,9 +24,15 @@ final class AlarmAttentionSql {
             + " AND newer.subject_id=da.subject_id AND newer.owner_org_id=da.owner_org_id AND newer.district_id=da.district_id"
             + " AND newer.source_mode=da.source_mode AND newer.action_type IN ('COUNTERMEASURE','JAMMING') AND newer.channel<>'MANUAL'"
             + " AND (newer.requested_at>da.requested_at OR (newer.requested_at=da.requested_at AND newer.authorization_id>da.authorization_id))))";
+    // 2026-10-16 用户确认：通知后按有效位置记下“已飞离”、没有在办的反制申请，告警归到已处理完。
+    // 记下飞离之后又升级（无人机回来再违规）的告警，仍按当前事项处理。
+    private static final String DEPARTED = "EXISTS (SELECT 1 FROM uav_auto_voice_task vt WHERE vt.event_id=e.event_id"
+            + " AND e.state_code='CONFIRMED' AND vt.departure_evaluated_at IS NOT NULL"
+            + " AND (esc.created_at IS NULL OR vt.departure_evaluated_at>=CAST(EXTRACT(EPOCH FROM esc.created_at)*1000 AS BIGINT)))"
+            + " AND NOT EXISTS (" + AUTHORIZATION + " AND da.status='REQUESTED')";
     // Since 2026-10-14 an emergency stop needs no site-check registration, so an unconfirmed stop no longer keeps the alarm current.
     static final String GROUP_RANK = "CASE WHEN " + EXECUTING + " THEN 0"
-            + " WHEN e.state_code='FALSE_POSITIVE' OR " + COMPLETED + " THEN 2"
+            + " WHEN e.state_code='FALSE_POSITIVE' OR " + COMPLETED + " OR (" + DEPARTED + ") THEN 2"
             + " WHEN " + KNOWN_OBSERVATION + " AND obs.observed_at>:observation_since THEN 0 ELSE 1 END";
     static final String GROUP = "CASE (" + GROUP_RANK + ") WHEN 0 THEN 'CURRENT' WHEN 1 THEN 'AWAITING_CONFIRMATION' ELSE 'HISTORY' END";
 }
