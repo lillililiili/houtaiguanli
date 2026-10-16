@@ -77,8 +77,8 @@ class FlightPlanAttentionServiceTest {
 
         when(access.require(PermissionCode.RISK_READ)).thenReturn(ACCESS);
         when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenReturn(List.of(
-                new PlanStateCount("pending-risk", "PENDING_VERIFICATION", 2),
-                new PlanStateCount("pending-risk", "PENDING_NOTIFICATION", 1)));
+                new PlanStateCount("pending-risk", "PENDING_VERIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 2),
+                new PlanStateCount("pending-risk", "PENDING_NOTIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 1)));
     }
 
     @Test
@@ -96,6 +96,9 @@ class FlightPlanAttentionServiceTest {
         assertThat(ranked.summary().aircraft()).isEqualTo(1);
         assertThat(ranked.summary().device()).isEqualTo(1);
         assertThat(ranked.summary().risk()).isEqualTo(1);
+        assertThat(ranked.summary().otherExecuting()).isEqualTo(2);
+        assertThat(ranked.attention().get("pending-risk").pendingRiskKinds()).extracting(kind -> kind.reasonCode())
+                .containsExactly("WEATHER_THUNDERSTORM");
 
         assertThat(ranked.attention().get("deviated").matchIssue()).isEqualTo("DEVIATION");
         assertThat(ranked.attention().get("unmatched").kinds()).containsExactly("AIRCRAFT");

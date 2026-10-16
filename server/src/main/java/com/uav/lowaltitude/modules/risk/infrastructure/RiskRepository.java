@@ -80,11 +80,13 @@ public class RiskRepository {
         Where where = where(query, access);
         where.sql.append(" AND r.plan_id IN (:attention_plans) AND r.state_code IN ('PENDING_VERIFICATION','PENDING_NOTIFICATION')");
         where.params.put("attention_plans", planIds);
-        return jdbc.query("SELECT r.plan_id,r.state_code,COUNT(*) AS total" + from() + where.sql + " GROUP BY r.plan_id,r.state_code",
-                where.params, (rs, n) -> new PlanStateCount(rs.getString("plan_id"), rs.getString("state_code"), rs.getLong("total")));
+        return jdbc.query("SELECT r.plan_id,r.state_code,r.risk_type,r.reason_code,COUNT(*) AS total" + from() + where.sql
+                        + " GROUP BY r.plan_id,r.state_code,r.risk_type,r.reason_code",
+                where.params, (rs, n) -> new PlanStateCount(rs.getString("plan_id"), rs.getString("state_code"),
+                        rs.getString("risk_type"), rs.getString("reason_code"), rs.getLong("total")));
     }
 
-    public record PlanStateCount(String planId, String state, long total) { }
+    public record PlanStateCount(String planId, String state, String riskType, String reasonCode, long total) { }
 
     public List<RiskRow> list(RiskQuery query, AccessDecision access, int offset, int size, String sort, String order) {
         Where where = where(query, access);

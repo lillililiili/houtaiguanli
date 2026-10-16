@@ -16,6 +16,7 @@ import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.MatchDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.AttentionSummaryDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.DeviceTaskDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.PlanAttentionDto;
+import com.uav.lowaltitude.modules.flight.api.FlightDtos.RiskKindDto;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanQuery;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanRow;
@@ -66,7 +67,6 @@ public class FlightPlanAttentionService {
     public Ranked page(PlanQuery query, AccessDecision flight, String kind, int offset, int size) {
         List<PlanRow> active = plans.listPlansInStatuses(query, flight, ACTIVE, true, 0, ACTIVE_LIMIT);
         Map<String, PlanAttentionDto> attention = attentionOf(active);
-        AttentionSummaryDto summary = summary(attention);
 
         Comparator<PlanRow> newestFirst = Comparator.comparing(PlanRow::startAt, Comparator.nullsLast(Comparator.<OffsetDateTime>reverseOrder()))
                 .thenComparing(PlanRow::planId);
@@ -80,6 +80,7 @@ public class FlightPlanAttentionService {
             else pending.add(row);
         }
         // 需要处理内部：任务偏离 → 其余执行中（新的在前）→ 待执行（开始时间近的在前），未来的任务不压过正在飞的。
+        AttentionSummaryDto summary = summary(attention, executing.size());
         needs.sort(Comparator.comparing((PlanRow row) -> !attention.get(row.planId()).kinds().contains("DEVIATION"))
                 .thenComparing(row -> !"EXECUTING".equals(row.statusCode()))
                 .thenComparing((a, b) -> "EXECUTING".equals(a.statusCode()) ? newestFirst.compare(a, b) : soonestFirst.compare(a, b)));
@@ -120,10 +121,14 @@ public class FlightPlanAttentionService {
                     .add(new DeviceTaskDto(task.taskId(), task.deviceName(), task.workflowState()));
 
         Map<String, long[]> riskCounts = new HashMap<>();
+        Map<String, List<RiskKindDto>> riskKinds = new HashMap<>();
         AccessDecision risk = probe(PermissionCode.RISK_READ);
         if (risk != null) for (var count : risks.pendingCountsByPlan(EVENT_RISKS, activeIds, risk)) {
             long[] pair = riskCounts.computeIfAbsent(count.planId(), ignored -> new long[2]);
             pair["PENDING_VERIFICATION".equals(count.state()) ? 0 : 1] += count.total();
+            RiskKindDto kind = new RiskKindDto(count.riskType(), "WEATHER".equals(count.riskType()) ? count.reasonCode() : null);
+            List<RiskKindDto> kinds = riskKinds.computeIfAbsent(count.planId(), ignored -> new ArrayList<>());
+            if (!kinds.contains(kind)) kinds.add(kind);
         }
 
         Map<String, PlanAttentionDto> result = new LinkedHashMap<>();
@@ -136,7 +141,8 @@ public class FlightPlanAttentionService {
             else if (issue != null) kinds.add("AIRCRAFT");
             if (!tasks.isEmpty()) kinds.add("DEVICE");
             if (pair[0] + pair[1] > 0) kinds.add("RISK");
-            result.put(row.planId(), new PlanAttentionDto(List.copyOf(kinds), issue, pair[0], pair[1], List.copyOf(tasks)));
+            result.put(row.planId(), new PlanAttentionDto(List.copyOf(kinds), issue, pair[0], pair[1], List.copyOf(tasks),
+                    List.copyOf(riskKinds.getOrDefault(row.planId(), List.of()))));
         }
         return result;
     }
@@ -154,7 +160,7 @@ public class FlightPlanAttentionService {
         return MATCH_ISSUES.contains(match.planMatchCode()) ? match.planMatchCode() : null;
     }
 
-    private static AttentionSummaryDto summary(Map<String, PlanAttentionDto> attention) {
+    private static AttentionSummaryDto summary(Map<String, PlanAttentionDto> attention, long otherExecuting) {
         long needs = 0;
         long[] byKind = new long[KINDS.size()];
         for (PlanAttentionDto item : attention.values()) {
@@ -162,7 +168,7 @@ public class FlightPlanAttentionService {
             needs++;
             for (String kind : item.kinds()) byKind[KINDS.indexOf(kind)]++;
         }
-        return new AttentionSummaryDto(needs, byKind[0], byKind[1], byKind[2], byKind[3]);
+        return new AttentionSummaryDto(needs, byKind[0], byKind[1], byKind[2], byKind[3], otherExecuting);
     }
 
     private static List<PlanRow> slice(List<PlanRow> rows, int offset, int size) {

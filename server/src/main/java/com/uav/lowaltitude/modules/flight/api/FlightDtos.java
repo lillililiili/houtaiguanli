@@ -51,15 +51,19 @@ public final class FlightDtos {
      * PARTIAL、UNDETERMINED 之一，没有问题或无权读研判时为 null。
      */
     public record PlanAttentionDto(List<String> kinds, String matchIssue, long pendingVerificationRisks,
-            long pendingNotificationRisks, List<DeviceTaskDto> deviceTasks) {
+            long pendingNotificationRisks, List<DeviceTaskDto> deviceTasks, List<RiskKindDto> pendingRiskKinds) {
         public boolean needsAction() { return !kinds.isEmpty(); }
     }
 
     public record DeviceTaskDto(String taskId, String deviceName, String workflowState) {
     }
 
-    /** 当前筛选下需要处理的任务数，以及按种类的数量（一个任务有几种问题就各算一次）。 */
-    public record AttentionSummaryDto(long needsAction, long deviation, long aircraft, long device, long risk) {
+    /** 待处理风险的种类（页面写“雷雨预警”“空中异物”等），按种类去重。 */
+    public record RiskKindDto(String riskType, String reasonCode) {
+    }
+
+    /** 当前筛选下需要处理的任务数，以及按种类的数量（一个任务有几种问题就各算一次）；otherExecuting 为其余执行中的任务数。 */
+    public record AttentionSummaryDto(long needsAction, long deviation, long aircraft, long device, long risk, long otherExecuting) {
     }
 
     public record PlanPageDto(List<FlightPlanDto> items, int page, int size, long total, AttentionSummaryDto attentionSummary) {
