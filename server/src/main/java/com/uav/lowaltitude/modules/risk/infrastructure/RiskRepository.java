@@ -74,6 +74,20 @@ public class RiskRepository {
         return total == null ? 0 : total;
     }
 
+    /** 飞行任务列表“需要处理”：按计划统计仍待核验、待通知的风险，与风险列表共用同一筛选和范围谓词。 */
+    public List<PlanStateCount> pendingCountsByPlan(RiskQuery query, List<String> planIds, AccessDecision access) {
+        if (planIds.isEmpty()) return List.of();
+        Where where = where(query, access);
+        where.sql.append(" AND r.plan_id IN (:attention_plans) AND r.state_code IN ('PENDING_VERIFICATION','PENDING_NOTIFICATION')");
+        where.params.put("attention_plans", planIds);
+        return jdbc.query("SELECT r.plan_id,r.state_code,r.risk_type,r.reason_code,COUNT(*) AS total" + from() + where.sql
+                        + " GROUP BY r.plan_id,r.state_code,r.risk_type,r.reason_code",
+                where.params, (rs, n) -> new PlanStateCount(rs.getString("plan_id"), rs.getString("state_code"),
+                        rs.getString("risk_type"), rs.getString("reason_code"), rs.getLong("total")));
+    }
+
+    public record PlanStateCount(String planId, String state, String riskType, String reasonCode, long total) { }
+
     public List<RiskRow> list(RiskQuery query, AccessDecision access, int offset, int size, String sort, String order) {
         Where where = where(query, access);
         where.params.put("offset", offset);

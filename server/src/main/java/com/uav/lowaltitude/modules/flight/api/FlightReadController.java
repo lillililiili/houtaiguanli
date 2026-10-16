@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.FlightPlanDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.PageDto;
+import com.uav.lowaltitude.modules.flight.api.FlightDtos.PlanPageDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteVersionDto;
 import com.uav.lowaltitude.modules.flight.application.FlightReadService;
@@ -25,8 +26,8 @@ public class FlightReadController {
     }
 
     @GetMapping("/flight-plans")
-    public ApiResponse<PageDto<FlightPlanDto>> flightPlans(@RequestParam MultiValueMap<String, String> parameters) {
-        return ApiResponse.ok(service.flightPlans(parameters));
+    public ApiResponse<PlanPageDto> flightPlans(@RequestParam MultiValueMap<String, String> parameters) {
+        return ApiResponse.ok(service.flightPlanList(parameters));
     }
 
     @GetMapping("/flight-plans/{planId}")

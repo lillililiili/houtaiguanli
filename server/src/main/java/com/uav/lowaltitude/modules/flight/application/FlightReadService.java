@@ -17,6 +17,7 @@ import com.uav.lowaltitude.modules.flight.api.FlightDtos.FieldIssueDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.FlightPlanDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.GeoJsonLineStringDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.PageDto;
+import com.uav.lowaltitude.modules.flight.api.FlightDtos.PlanPageDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteReferenceDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RouteVersionDto;
@@ -43,12 +44,45 @@ public class FlightReadService {
     private static final Set<String> ROUTE_PARAMETERS = Set.of("page", "size", "enabled", "source_mode",
             "owner_org_id", "district_id", "keyword");
 
+    /** 飞行任务列表页额外接受：order=attention（需要处理的放最上面）和 attention=种类（只看这一种问题）。 */
+    private static final Set<String> PLAN_LIST_PARAMETERS;
+    static {
+        Set<String> accepted = new java.util.HashSet<>(PLAN_PARAMETERS);
+        accepted.add("order");
+        accepted.add("attention");
+        PLAN_LIST_PARAMETERS = Set.copyOf(accepted);
+    }
+
     private final AccessControlService accessControl;
     private final FlightReadRepository repository;
+    private final FlightPlanAttentionService attention;
 
-    public FlightReadService(AccessControlService accessControl, FlightReadRepository repository) {
+    public FlightReadService(AccessControlService accessControl, FlightReadRepository repository,
+            FlightPlanAttentionService attention) {
         this.accessControl = accessControl;
         this.repository = repository;
+        this.attention = attention;
+    }
+
+    /** 飞行任务列表接口；不带 order 时与 flightPlans 结果相同（仪表盘、模拟器仍直接调 flightPlans）。 */
+    @Transactional(readOnly = true)
+    public PlanPageDto flightPlanList(MultiValueMap<String, String> parameters) {
+        AccessDecision access = accessControl.require(PermissionCode.FLIGHT_READ);
+        RequestValues request = new RequestValues(parameters, PLAN_LIST_PARAMETERS);
+        String order = request.optional("order", 16);
+        String kind = request.optional("attention", 16);
+        if (order != null && !"attention".equals(order)) throw RequestValues.validation("order");
+        if (kind != null && (order == null || !FlightPlanAttentionService.KINDS.contains(kind))) throw RequestValues.validation("attention");
+        Pagination page = request.pagination();
+        PlanQuery query = planQuery(request);
+        if (order == null) {
+            long total = repository.countPlans(query, access);
+            return new PlanPageDto(repository.listPlans(query, access, page.offset(), page.size()).stream().map(this::plan).toList(),
+                    page.page(), page.size(), total, null);
+        }
+        var ranked = attention.page(query, access, kind, page.offset(), page.size());
+        return new PlanPageDto(ranked.rows().stream().map(row -> plan(row).withAttention(ranked.attention().get(row.planId()))).toList(),
+                page.page(), page.size(), ranked.total(), ranked.summary());
     }
 
     @Transactional(readOnly = true)
@@ -57,14 +91,18 @@ public class FlightReadService {
         AccessDecision access = accessControl.require(PermissionCode.FLIGHT_READ);
         RequestValues request = new RequestValues(parameters, PLAN_PARAMETERS);
         Pagination page = request.pagination();
-        TimeRange window = request.timeRange("window_from", "window_to");
-        PlanQuery query = new PlanQuery(request.optional("status_code", 32), request.optional("source_code", 64),
-                request.optional("route_id", 36), request.optional("uav_sn", 128), request.optional("owner_org_id", 36),
-                request.optional("district_id", 36), window.from(), window.to(), request.optional("keyword", 128),
-                request.optional("source_mode", 8));
+        PlanQuery query = planQuery(request);
         long total = repository.countPlans(query, access);
         return new PageDto<>(repository.listPlans(query, access, page.offset(), page.size()).stream().map(this::plan).toList(),
                 page.page(), page.size(), total);
+    }
+
+    private static PlanQuery planQuery(RequestValues request) {
+        TimeRange window = request.timeRange("window_from", "window_to");
+        return new PlanQuery(request.optional("status_code", 32), request.optional("source_code", 64),
+                request.optional("route_id", 36), request.optional("uav_sn", 128), request.optional("owner_org_id", 36),
+                request.optional("district_id", 36), window.from(), window.to(), request.optional("keyword", 128),
+                request.optional("source_mode", 8));
     }
 
     @Transactional(readOnly = true)

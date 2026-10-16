@@ -290,6 +290,37 @@ class FlightReadApiTest {
         assertError("/api/v1/flight-plans/upstream-status", 403, "FORBIDDEN");
     }
 
+    @Test
+    void attentionOrderPutsActivePlansFirstAndOnlyAcceptsKnownValues() throws Exception {
+        jdbc.update("update flight_plan set status_code='COMPLETED' where plan_id=?", planA);
+        jdbc.update("update flight_plan set status_code='EXECUTING' where plan_id=?", planNoTime);
+        // 有研判和风险读权限时跑通三段查询：执行中但还没有研判结果的，算“还没对上飞机”。
+        for (String permission : java.util.List.of("assessment:read", "risk:read")) jdbc.update("""
+                insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at)
+                values (?,?,'READ',false,current_timestamp)
+                """, role, permission);
+
+        JsonNode plain = getJson("/api/v1/flight-plans?size=100").path("data");
+        assertThat(plain.has("attention_summary")).isFalse();
+        assertThat(plain.path("items").get(0).has("attention")).isFalse();
+
+        JsonNode ranked = getJson("/api/v1/flight-plans?size=100&order=attention").path("data");
+        assertThat(ranked.path("total").asLong()).isEqualTo(2);
+        assertThat(ranked.path("items").findValuesAsText("plan_id")).containsExactly(planNoTime, planA);
+        assertThat(ranked.path("attention_summary").path("needs_action").asLong()).isEqualTo(1);
+        assertThat(ranked.path("attention_summary").path("aircraft").asLong()).isEqualTo(1);
+        assertThat(ranked.path("items").get(0).path("attention").path("kinds").get(0).asText()).isEqualTo("AIRCRAFT");
+        assertThat(ranked.path("items").get(0).path("attention").path("match_issue").asText()).isEqualTo("NO_EVALUATION");
+        assertThat(ranked.path("items").get(1).has("attention")).isFalse();
+        assertThat(getJson("/api/v1/flight-plans?order=attention&attention=DEVICE").path("data").path("items")).isEmpty();
+        assertThat(getJson("/api/v1/flight-plans?order=attention&attention=AIRCRAFT").path("data").path("items")
+                .findValuesAsText("plan_id")).containsExactly(planNoTime);
+
+        assertError("/api/v1/flight-plans?order=newest", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/flight-plans?attention=RISK", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/flight-plans?order=attention&attention=OTHER", 400, "VALIDATION_ERROR");
+    }
+
     private java.util.List<String> searchIds(String keyword) throws Exception {
         String body = mvc.perform(get("/api/v1/flight-plans").header("Authorization", "Bearer " + sessionId)
                         .param("keyword", keyword).param("size", "100"))
