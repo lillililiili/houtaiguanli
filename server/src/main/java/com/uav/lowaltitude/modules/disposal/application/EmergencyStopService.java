@@ -34,7 +34,13 @@ public class EmergencyStopService {
     private static final Set<String> ACTIVE=Set.of("REQUESTED","APPROVED","EXECUTING");
     private static final String PENDING="操作员急停本次处置，原因待补充";
     private static final String SHARED_DEVICE_NOTE="同一台设备上另一起处置按了急停，已向设备下发全关（整台设备的输出都会关掉）。"
-            +"本授权没有撤销，但要等现场核查确认设备已停下，才能再下发启动。";
+            +"本授权没有撤销，全关结束、设备空闲后可以再下发启动。";
+    // 2026-10-14 起急停后不再登记现场停机核查。旧记录里存的是当时的提示，读出时换成现在的说法，库里原文不改。
+    private static final String MANUAL_TASK_NAME="人工处置（未绑定设备）";
+    private static final String UNSUPPORTED_DETAIL="该处置不支持远程停止，请到现场关停设备";
+    private static final Map<String,String> LEGACY_TEXT=Map.of(
+            "人工处置现场核查",MANUAL_TASK_NAME,
+            "该处置不支持远程停止，请登记现场核查",UNSUPPORTED_DETAIL);
     private static final Logger log=LoggerFactory.getLogger(EmergencyStopService.class);
     private final AccessControlService access;
     private final UavEventRepository events;
@@ -107,7 +113,7 @@ public class EmergencyStopService {
             Map<String,Object> hardware=row.deviceId()==null?null:devices.find(row.deviceId());
             Dispatch dispatched=physical(row)?dispatch(row.deviceId(),row.channel(),row.authorizationId(),id+"-"+row.authorizationId()+"-0",hardware)
                     :new Dispatch(null,"NOT_REQUIRED","尚未执行，已阻止启动，无需设备停止");
-            stops.task(id,device,row.authorizationId(),hardware==null?"人工处置现场核查":text(hardware,"name"),row.channel(),
+            stops.task(id,device,row.authorizationId(),hardware==null?MANUAL_TASK_NAME:text(hardware,"name"),row.channel(),
                     hardware==null?row.sourceMode():text(hardware,"source_mode"),hardware==null||bool(hardware,"simulated"),
                     dispatched.commandId(),dispatched.status(),dispatched.detail());
             if("QUEUED".equals(dispatched.status())) allOff.put(row.deviceId(),dispatched.commandId());
@@ -128,7 +134,9 @@ public class EmergencyStopService {
             Map<String,Object> task=stops.tasks(stopId).stream().filter(t->deviceId.equals(text(t,"device_id"))).findFirst().orElseThrow(EmergencyStopService::missing);
             Device state=device(task,true);
             if("MANUAL_CONFIRM".equals(action)) {
-                if(!state.allowedActions().contains("MANUAL_CONFIRM")) throw conflict("INVALID_TRANSITION","该设备已确认或无需停止");
+                // 只为兼容旧客户端保留：急停后不再要求登记，概览也不再提供这个动作，任何流程都不依赖它。
+                if(state.confirmedAt()!=null||"NOT_REQUIRED".equals(state.stopStatus()))
+                    throw conflict("INVALID_TRANSITION","该设备已确认或无需停止");
                 // Do not leave a queued all-off to run after a later, freshly authorized action.
                 commands.cancelDelivery(text(task,"command_id"),clock.nowMillis());
                 stops.confirm(stopId,deviceId,AuthContext.require().userId(),clock.nowMillis(),note);
@@ -187,8 +195,8 @@ public class EmergencyStopService {
     }
     /**
      * 全关作用于整台设备。同一设备上别的事件尚未了结的授权不替人撤销（急停人未必看得到那些事件，也无权收回别人的批准），
-     * 只在它们的记录里如实补一条“已下发全关”；在这台设备的急停经现场核查确认之前，它们的执行、续链和排队中的启动
-     * 都会被设备核查拦下（见 DisposalCommandGuard）。
+     * 只在它们的记录里如实补一条“已下发全关”。急停后不再登记现场停机核查（2026-10-14）：全关指令结束、设备空闲后，
+     * 它们可以照常执行。
      * 等急停事务提交后另起事务写：给别的授权记事件要碰那条授权，放在急停事务里会和对方的执行互相等锁。
      * 这条记录只是告知，写不成也不能影响已经提交的急停。
      */
@@ -218,26 +226,26 @@ public class EmergencyStopService {
     }
     private Device device(Map<String,Object> task,boolean writable) {
         String status=text(task,"stop_status"),command=text(task,"command_status"),detail=text(task,"detail");
+        String name=wording(text(task,"device_name"));detail=wording(detail);
         if(command!=null) {
             status=switch(command) {case "QUEUED"->"QUEUED";case "SUCCEEDED"->"CONTROLLER_ALL_OFF_ACK";
                 case "FAILED","CANCELLED"->"FAILED";case "TIMED_OUT"->"TIMED_OUT";default->"WAITING_FEEDBACK";};
-            detail=switch(status) {case "QUEUED"->"停止命令正在排队";case "CONTROLLER_ALL_OFF_ACK"->"已收到全关确认，实际停机仍需现场核查";
+            detail=switch(status) {case "QUEUED"->"停止命令正在排队";case "CONTROLLER_ALL_OFF_ACK"->"已收到全关确认";
                 case "WAITING_FEEDBACK"->"已发出停止命令，等待设备反馈";default->Objects.toString(text(task,"command_detail"),"设备停止尚未确认");};
         }
         Long confirmed=task.get("confirmed_at")==null?null:number(task,"confirmed_at");
+        // 旧的现场确认记录照原样读出（只读历史）；急停后不再要求登记，所以不再提供 MANUAL_CONFIRM。
         if(confirmed!=null) {status="MANUALLY_CONFIRMED";detail="已登记现场核查确认停止";}
         List<String> actions=new ArrayList<>();actions.add("QUERY");
-        if(writable&&confirmed==null&&!"NOT_REQUIRED".equals(status)) {
-            actions.add("MANUAL_CONFIRM");
-            if(Set.of("FAILED","TIMED_OUT","OFFLINE").contains(status)&&"COUNTERMEASURE_4CH".equals(text(task,"channel"))) actions.add("RETRY_STOP");
-        }
-        return new Device(text(task,"device_id"),text(task,"device_name"),text(task,"channel"),text(task,"source_mode"),bool(task,"simulated"),
+        if(writable&&confirmed==null&&Set.of("FAILED","TIMED_OUT","OFFLINE").contains(status)
+                &&"COUNTERMEASURE_4CH".equals(text(task,"channel"))) actions.add("RETRY_STOP");
+        return new Device(text(task,"device_id"),name,text(task,"channel"),text(task,"source_mode"),bool(task,"simulated"),
                 text(task,"command_id"),command,status,detail,actions,text(task,"confirmed_by_name"),confirmed,text(task,"confirmation_note"));
     }
     private Dispatch dispatch(String deviceId,String channel,String auth,String suffix,Map<String,Object> hardware) {
         if(hardware==null||!"COUNTERMEASURE_4CH".equals(channel)||!"live".equals(text(hardware,"source_mode"))
                 ||!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(hardware,"protocol_code")))
-            return new Dispatch(null,"UNSUPPORTED","该处置不支持远程停止，请登记现场核查");
+            return new Dispatch(null,"UNSUPPORTED",UNSUPPORTED_DETAIL);
         DisposalExecutionGateway.Result result=gateway.stop4ch(AuthContext.require(),deviceId,"estop-"+suffix,auth,PENDING);
         if(result instanceof DisposalExecutionGateway.Accepted accepted) return new Dispatch(accepted.commandId(),"QUEUED","停止命令正在排队");
         DisposalExecutionGateway.Rejected rejected=(DisposalExecutionGateway.Rejected)result;
@@ -305,6 +313,7 @@ public class EmergencyStopService {
     }
     private static boolean physical(AuthorizationRow row) {return Set.of("EXECUTING","COMPLETED","FAILED").contains(row.status())||row.executionCommandId()!=null;}
     private static String text(Map<String,Object> row,String name){return row.get(name)==null?null:String.valueOf(row.get(name));}
+    private static String wording(String stored){return stored==null?null:LEGACY_TEXT.getOrDefault(stored,stored);}
     private static long number(Map<String,Object> row,String name){return ((Number)row.get(name)).longValue();}
     private static boolean bool(Map<String,Object> row,String name){return Boolean.TRUE.equals(row.get(name));}
     private static ApiException missing(){return new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","事件或停止记录不存在或不可见");}

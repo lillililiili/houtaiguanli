@@ -130,7 +130,7 @@ class NoCounterApiTest {
         assertThat(jdbc.queryForObject("select attempt_count from uav_auto_sms_task where event_id=?",Integer.class,eventId)).isZero();
         assertThat(jdbc.queryForObject("select attempt_count from uav_auto_voice_task where event_id=?",Integer.class,eventId)).isZero();
     }
-    @Test void requestedCounterAndUnresolvedEmergencyStopBlockDecision() throws Exception {
+    @Test void requestedCounterBlocksDecisionButUnconfirmedEmergencyStopDoesNot() throws Exception {
         var result=mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization","Bearer "+session).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+eventId+"\",\"action_type\":\"COUNTERMEASURE\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"隔离测试反制申请\"}")).andExpect(status().isCreated());
         noCounter().andExpect(jsonPath("$.data.can_decide").value(false));
         decide(body(0),key()).andExpect(status().isConflict());
@@ -142,8 +142,33 @@ class NoCounterApiTest {
         jdbc.update("update disposal_authorization set status='STOPPED' where authorization_id=?",authorization);
         String stop=key();
         jdbc.update("insert into disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note) values(?,?,?,?,true,'隔离停机核查')",stop,eventId,userId,System.currentTimeMillis());
-        jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','COUNTERMEASURE_4CH','mock',true,'UNSUPPORTED','未核实实际停机')",stop,"unbound-test-device",authorization);
-        noCounter().andExpect(jsonPath("$.data.can_decide").value(false)).andExpect(jsonPath("$.data.block_reason").value("设备急停后的实际停机尚未核查，不能结束本次处置"));
+        jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','COUNTERMEASURE_4CH','mock',true,'UNSUPPORTED','该处置不支持远程停止，请到现场关停设备')",stop,"unbound-test-device",authorization);
+        // 2026-10-14 起急停后不再登记现场停机核查：没人登记的急停不再挡住结束处置。
+        noCounter().andExpect(jsonPath("$.data.can_decide").value(true));
+        decide(body(0),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.decision_active").value(true));
+    }
+    @Test void timedOutLaunchBlocksDecisionUntilThatDeviceIsEmergencyStopped() throws Exception {
+        var result=mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization","Bearer "+session).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content("{\"subject_kind\":\"UAV_EVENT\",\"subject_id\":\""+eventId+"\",\"action_type\":\"COUNTERMEASURE\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"隔离测试超时启动\"}")).andExpect(status().isCreated());
+        String authorization=json.readTree(result.andReturn().getResponse().getContentAsString()).path("data").path("authorization_id").asText();
+        String device=opsDevice();
+        long launchedAt=System.currentTimeMillis()-60_000;
+        jdbc.update("insert into device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at,authorization_id) values(?,?,?,?,'COUNTERMEASURE_4CH','隔离测试启动','TIMED_OUT','mock',true,?,?,?)",key(),"NC-"+key(),device,userId,launchedAt,launchedAt,authorization);
+        jdbc.update("update disposal_authorization set status='FAILED',device_id=? where authorization_id=?",device,authorization);
+        // 启动结果不明、这台设备之后也没按过急停：照旧不能结束处置。
+        noCounter().andExpect(jsonPath("$.data.can_decide").value(false)).andExpect(jsonPath("$.data.block_reason").value("设备指令仍在途或结果不明确，请先核查实际设备状态"));
+        decide(body(0),key()).andExpect(status().isConflict());
+        // 这台设备随后按过急停：不用任何人登记，以急停为准，可以结束处置。
+        String stop=key();
+        jdbc.update("insert into disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note) values(?,?,?,?,true,'操作员急停本次处置，原因待补充')",stop,eventId,userId,launchedAt+1);
+        jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','COUNTERMEASURE_4CH','mock',true,'OFFLINE','设备未启用或不在线，无法下发全关')",stop,device,authorization);
+        noCounter().andExpect(jsonPath("$.data.can_decide").value(true));
+        decide(body(0),key()).andExpect(status().isOk()).andExpect(jsonPath("$.data.decision_active").value(true));
+    }
+    private String opsDevice() {
+        long now=System.currentTimeMillis();String source=key(),device=key(),no="NC4-"+key().substring(0,8);
+        jdbc.update("insert into ops_integration_source(source_id,source_code,name,protocol_code,protocol_version,source_mode,enabled,allowed_cidrs,simulated,version,created_at,updated_at) values(?,?,'隔离反制来源',?,'2.0','live',true,'127.0.0.1/32',true,0,?,?)",source,no,com.uav.lowaltitude.integration.device.DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0,now,now);
+        jdbc.update("insert into ops_device(device_id,source_id,external_device_id,device_no,name,device_type_code,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at) values(?,?,?,?,'隔离反制设备','countermeasure','反制','反制直连',true,'live',true,0,?,?)",device,source,no,no,now,now);
+        return device;
     }
     protected ResultActions noCounter()throws Exception{return mvc.perform(get("/api/v1/uav-events/"+eventId+"/no-counter-decision").header("Authorization","Bearer "+session));}
     protected ResultActions decide(String body,String key)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/no-counter-decision").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content(body));}

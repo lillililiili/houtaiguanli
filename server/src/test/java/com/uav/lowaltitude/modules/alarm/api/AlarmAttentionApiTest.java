@@ -104,18 +104,20 @@ class AlarmAttentionApiTest {
         }
     }
 
-    @Test void executionAndUnresolvedEmergencyStopStayCurrentEvenWithoutObservation() throws Exception {
+    @Test void executionStaysCurrentWithoutObservationButAnUnconfirmedEmergencyStopDoesNot() throws Exception {
         Alarm executing = alarm("replay", "LOW", 1000, now.minusMillis(lifetime + 1), "CONFIRMED");
         authorization(executing, "EXECUTING");
         Alarm stopped = alarm("replay", "HIGH", 900, null, "CONFIRMED");
         String authorization = authorization(stopped, "STOPPED"), stop = id();
-        jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note) VALUES (?,?,?,?,?)", stop, stopped.event, actor, now.toEpochMilli(), "核查中");
-        jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) VALUES (?,?,?,'核查设备','COUNTERMEASURE_4CH','replay',TRUE,'UNSUPPORTED','待核查')", stop, id(), authorization);
+        // 2026-10-14 起急停后不再登记现场停机核查：没人登记的急停不再把告警留在当前事项。
+        jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note) VALUES (?,?,?,?,?)", stop, stopped.event, actor, now.toEpochMilli(), "急停");
+        jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) VALUES (?,?,?,'急停设备','COUNTERMEASURE_4CH','replay',TRUE,'UNSUPPORTED','该处置不支持远程停止，请到现场关停设备')", stop, id(), authorization);
         Alarm completed = alarm("replay", "CRITICAL", 1, now, "CONFIRMED"); authorization(completed, "COMPLETED");
-        assertThat(ids(page(""))).containsExactly(stopped.alarm, executing.alarm, completed.alarm);
+        assertThat(ids(page(""))).containsExactly(executing.alarm, stopped.alarm, completed.alarm);
         assertThat(detail(executing).path("attention_group").asText()).isEqualTo("CURRENT");
-        assertThat(detail(stopped).path("attention_group").asText()).isEqualTo("CURRENT");
+        assertThat(detail(stopped).path("attention_group").asText()).isEqualTo("AWAITING_CONFIRMATION");
         assertThat(detail(completed).path("attention_group").asText()).isEqualTo("HISTORY");
+        // 旧的现场确认记录照样保留，也不改变分组。
         jdbc.update("UPDATE disposal_emergency_stop_device SET confirmed_by=?,confirmed_at=?,confirmation_note='已停机' WHERE stop_id=?", actor, now.toEpochMilli(), stop);
         assertThat(detail(stopped).path("attention_group").asText()).isEqualTo("AWAITING_CONFIRMATION");
     }

@@ -11,7 +11,7 @@
 | POST | 基址 | `{}`，无需事前填写理由 |
 | POST | `/{stopId}/notes` | `{"note":"补充原因"}` |
 | POST | `/{stopId}/devices/{deviceId}/retry` | `{}` |
-| POST | `/{stopId}/devices/{deviceId}/manual-confirm` | `{"note":"现场核查依据"}` |
+| POST | `/{stopId}/devices/{deviceId}/manual-confirm` | `{"note":"现场确认依据"}`；2026-10-14 起仅为兼容旧客户端保留，概览不再提供，任何流程都不需要 |
 
 写入须携带 8–128 字符 `Idempotency-Key`，重放不再次下发设备指令。说明为 1–500 字符，记录为追加方式。读取需 `disposal:read` 与事件可见范围；写入需 `disposal:stop` 与事件可见范围。客户端不能指定操作者或设备结果。
 
@@ -19,19 +19,19 @@
 
 - 授权摘要：`authorization_id/action_type/status/device_id/channel`。
 - 停止记录：`stop_id/requested_at/requested_by_name/reason_pending/note/devices/events`。
-- 设备任务：`device_id/device_name/channel/source_mode/simulated/command_id/command_status/stop_status/detail/allowed_actions`，现场确认后附 `confirmed_by_name/confirmed_at/confirmation_note`。
+- 设备任务：`device_id/device_name/channel/source_mode/simulated/command_id/command_status/stop_status/detail/allowed_actions`，旧记录登记过现场确认时附 `confirmed_by_name/confirmed_at/confirmation_note`（只读历史）。
 - 操作记录：`event_id/kind/actor_name/occurred_at/note`。
-- 概览动作：`EMERGENCY_STOP/ADD_NOTE`；设备动作：`QUERY/RETRY_STOP/MANUAL_CONFIRM`。
+- 概览动作：`EMERGENCY_STOP/ADD_NOTE`；设备动作：`QUERY/RETRY_STOP`（2026-10-14 起不再提供 `MANUAL_CONFIRM`）。
 
-人工处置未绑定设备时，`device_id` 为 `manual-{authorization_id}`，表示现场核查任务键，并非真实设备 ID；该行 `channel=MANUAL`，不得提供设备详情链接。
+人工处置未绑定设备时，`device_id` 为 `manual-{authorization_id}`，表示人工处置的停止任务键（名称“人工处置（未绑定设备）”），并非真实设备 ID；该行 `channel=MANUAL`，不得提供设备详情链接。
 
-设备状态包括 `QUEUED/WAITING_FEEDBACK/CONTROLLER_ALL_OFF_ACK/FAILED/TIMED_OUT/OFFLINE/UNSUPPORTED/MANUALLY_CONFIRMED/NOT_REQUIRED`。`NOT_REQUIRED` 表示该任务尚未执行、已阻止启动，不需要设备停止，不阻塞后续新申请。四通道全关回码仅映射为 `CONTROLLER_ALL_OFF_ACK`，不证明物理停机。现场核查记录与设备回码分开；仅 `MANUALLY_CONFIRMED` 表示操作员已按所填依据确认停止。模拟标识始终保留。
+设备状态包括 `QUEUED/WAITING_FEEDBACK/CONTROLLER_ALL_OFF_ACK/FAILED/TIMED_OUT/OFFLINE/UNSUPPORTED/MANUALLY_CONFIRMED/NOT_REQUIRED`。`NOT_REQUIRED` 表示该任务尚未执行、已阻止启动，不需要设备停止。四通道全关回码仅映射为 `CONTROLLER_ALL_OFF_ACK`（“已收到全关确认”），不证明物理停机；`UNSUPPORTED` 提示“该处置不支持远程停止，请到现场关停设备”。`MANUALLY_CONFIRMED` 只出现在旧记录或旧客户端兼容登记中，表示操作员当时按所填依据确认停止。2026-10-14 起任何急停任务都不阻塞后续申请、执行、续链、排队启动或结束处置。模拟标识始终保留。
 
-停止事务持久化本次停止意图、关联授权、逐设备任务及审计；取消本次未发送的启动指令，阻止旧授权迟到完成后接续干扰。停止不解除告警，不恢复旧授权；未确认任务处理完成后可重新申请。
+停止事务持久化本次停止意图、关联授权、逐设备任务及审计；取消本次未发送的启动指令，阻止旧授权迟到完成后接续干扰。停止不解除告警，不恢复旧授权；急停后同一事件马上可以重新申请、执行，不用登记现场核查（2026-10-14）。
 
-其他事件共用同一设备时（2026-10-06，ZT-42 起）：急停**从不**因为别的事件挂着同一台设备的授权而被拒绝，旧的 `SHARED_DEVICE_SCOPE_BLOCKED` 已取消。四通道全关作用于整台设备，所以别的事件在这台设备上的输出也会一起关掉。别的事件的授权不被撤销（急停人未必看得到那些事件，也无权收回别人的批准），但在急停事务提交后另起事务，在它们（同设备、已批准或执行中）的授权记录里补一条 `DEVICE_ALL_OFF_ISSUED` 事件，说明“同一台设备上另一起处置按了急停、已下发全关、要等现场核查后才能再启动”，快照带 `device_id/command_id/source=EMERGENCY_STOP_OTHER_EVENT`，不写急停事件编号。这条补记失败只记日志，不影响已提交的急停。在这台设备的急停任务经现场核查确认（`MANUALLY_CONFIRMED`）之前，同设备上任何授权的执行（`EMERGENCY_STOP_UNCONFIRMED`）、自动续链和排队中的启动指令（发送前复核，取消并记 `AUTHORIZATION_STOPPED`）都被拦下；核查确认后可照常执行。
+其他事件共用同一设备时（2026-10-06，ZT-42 起）：急停**从不**因为别的事件挂着同一台设备的授权而被拒绝，旧的 `SHARED_DEVICE_SCOPE_BLOCKED` 已取消。四通道全关作用于整台设备，所以别的事件在这台设备上的输出也会一起关掉。别的事件的授权不被撤销（急停人未必看得到那些事件，也无权收回别人的批准），但在急停事务提交后另起事务，在它们（同设备、已批准或执行中）的授权记录里补一条 `DEVICE_ALL_OFF_ISSUED` 事件，说明“同一台设备上另一起处置按了急停、已下发全关、本授权没有撤销，全关结束、设备空闲后可以再下发启动”，快照带 `device_id/command_id/source=EMERGENCY_STOP_OTHER_EVENT`，不写急停事件编号。这条补记失败只记日志，不影响已提交的急停。2026-10-14 起不再等现场核查：全关指令仍在途时设备按忙处理（`DEVICE_BUSY`），全关结束后同设备上的授权照常执行、续链和发送排队中的启动，不再返回 `EMERGENCY_STOP_UNCONFIRMED`。
 
-控制范围仅包含当前活动的反制/干扰授权及活动干扰通过 `chained_from_authorization_id` 明确关联的父反制，不包含该事件全部历史完成/失败记录。概览与提交用同一范围；共用设备不再影响 `block_reason` 和 `EMERGENCY_STOP` 动作。只有历史终态、没有活动链也没有既有急停记录时，不推断设备仍在执行，不提供急停；一旦已经发起急停，未确认任务不随授权终态消失。平台取消已发送命令的重投也不证明实际停止；其设备任务仍须核查。
+控制范围仅包含当前活动的反制/干扰授权及活动干扰通过 `chained_from_authorization_id` 明确关联的父反制，不包含该事件全部历史完成/失败记录。概览与提交用同一范围；共用设备不再影响 `block_reason` 和 `EMERGENCY_STOP` 动作。只有历史终态、没有活动链也没有既有急停记录时，不推断设备仍在执行，不提供急停；一旦已经发起急停，停止记录不随授权终态消失。平台取消已发送命令的重投也不证明实际停止，以该设备的急停停止结果为准。
 
 取消范围包括上述授权关联的全部四通道启动与凌云启动指令，不仅是授权的 `execution_command_id`。已停止或被急停覆盖的已知处置授权，不能通过原设备直控接口再次排队或重投启动。检查与急停共用授权行锁，防止检查后并发插入漏单。四通道全关/单通道关闭及凌云 `operation_type=0` 属于停止操作，不被该启动屏障拦截；其他授权或既有外部协议授权引用的语义未在本次扩大修改。
 

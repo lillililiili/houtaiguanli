@@ -74,15 +74,15 @@ public class EoDispatchService {
         } else if(block!=null) { status="BLOCKED";message=EoTrackingStatusService.blockMessage(block);options.clear(); }
         else if(request!=null) {
             status="WAITING_DEVICE";
-            message=protectedBusy?"等待光电跟踪：设备正在支撑处置或急停核查，当前任务不可打断。"
+            message=protectedBusy?"等待光电跟踪：设备正在支撑处置，当前任务不可打断。"
                     :available?"已进入跟踪队列，等待后台分配设备。":"等待光电跟踪：设备正在执行其他任务或暂无可用设备。";
             if(!available && !occupation.isEmpty()) message="等待光电跟踪。当前设备占用："+String.join("；",occupation)+"。"
-                    +(protectedBusy?"处置或急停核查中的观察不可被普通请求打断。":"");
+                    +(protectedBusy?"处置中的观察不可被普通请求打断。":"");
         } else {
             var last=queue.latest(target);
             status="IDLE";
             message=available?"当前没有光电跟踪任务，可请求跟踪此目标。"
-                    :protectedBusy?"光电正在支撑处置或急停核查，可请求排队等待。":"当前没有光电跟踪任务；可请求排队，或选择允许切换的设备。";
+                    :protectedBusy?"光电正在支撑处置，可请求排队等待。":"当前没有光电跟踪任务；可请求排队，或选择允许切换的设备。";
             if(last!=null && "FAILED".equals(text(last,"status"))) {status="FAILED";message=text(last,"message");}
         }
         boolean canRequest=operate && block==null && task==null && (request==null

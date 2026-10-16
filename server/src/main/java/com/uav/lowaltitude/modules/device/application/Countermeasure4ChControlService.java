@@ -97,7 +97,7 @@ public class Countermeasure4ChControlService {
             storedMask = Countermeasure4ChCodec.channelBit(storedChannel);
         }
         if (starts(normalizedAction,storedMask) && !disposalGuard.mayStart(authorizationId.trim()))
-            throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止或当前现场核查不允许继续执行，请查看事件处置记录");
+            throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止或当前条件不允许继续执行，请查看事件处置记录");
         devices.lockForRecovery(deviceId);
         Map<String, Object> device = devices.find(deviceId);
         if (device == null) throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
@@ -146,7 +146,7 @@ public class Countermeasure4ChControlService {
         if (command == null || terminal(text(command,"status"))) return;
         if (!allowed) {
             if (controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
-                    "AUTHORIZATION_STOPPED","处置已停止或当前现场核查不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
+                    "AUTHORIZATION_STOPPED","处置已停止或当前条件不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
                 finished(commandId);
             }
             return;

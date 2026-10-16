@@ -13,7 +13,7 @@ public class DeviceStopRepository {
     public void cancelDelivery(String commandId,long at) {
         lock(commandId);
         jdbc.update("UPDATE device_command SET status='CANCELLED',result_code='EMERGENCY_STOP',"
-                + "result_detail='本事件急停，停止投递和重发；此前已发送的设备动作仍需核查',completed_at=?,updated_at=?"
+                + "result_detail='本事件急停，停止投递和重发；已发出的设备动作以急停停止结果为准',completed_at=?,updated_at=?"
                 + " WHERE command_id=? AND status IN ('QUEUED','SENT','ACCEPTED')",at,at,commandId);
     }
     public java.util.List<String> authorizationStarts(String authorizationId) {

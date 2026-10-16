@@ -58,19 +58,17 @@ public class EoDispatchRepository {
                 ORDER BY b.ops_device_id
                 """,String.class,org,district,mode,cutoff,now);
     }
-    /** Actual device disposal or unresolved emergency stop protects its observation task. */
+    /** Only actual device disposal protects its observation task; since 2026-10-14 an emergency stop needs no site check to observe. */
     public boolean protectedTarget(String target) {
         return first("""
                 SELECT t.target_id FROM target t JOIN alarm a ON a.target_id=t.target_id
                 JOIN uav_event e ON e.alarm_id=a.alarm_id
                 WHERE t.target_id=? AND a.source_mode=t.source_mode AND a.owner_org_id=t.owner_org_id
                 AND a.district_id=t.district_id AND e.owner_org_id=t.owner_org_id AND e.district_id=t.district_id
-                AND (EXISTS (SELECT 1 FROM disposal_authorization da WHERE da.subject_kind='UAV_EVENT'
+                AND EXISTS (SELECT 1 FROM disposal_authorization da WHERE da.subject_kind='UAV_EVENT'
                     AND da.subject_id=e.event_id AND da.source_mode=t.source_mode AND da.owner_org_id=t.owner_org_id
                     AND da.district_id=t.district_id AND da.action_type IN ('COUNTERMEASURE','JAMMING')
                     AND da.channel<>'MANUAL' AND da.status IN ('APPROVED','EXECUTING'))
-                OR EXISTS (SELECT 1 FROM disposal_emergency_stop es JOIN disposal_emergency_stop_device sd ON sd.stop_id=es.stop_id
-                    WHERE es.event_id=e.event_id AND sd.source_mode=t.source_mode AND sd.confirmed_at IS NULL AND sd.stop_status<>'NOT_REQUIRED'))
                 """,target)!=null;
     }
     /** Only recent facts rank new demand; historical severity must not steal a camera. */
