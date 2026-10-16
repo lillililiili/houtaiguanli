@@ -79,6 +79,25 @@ public class FlightActualsService {
                 legality(assessment, evaluation));
     }
 
+    /**
+     * 飞行任务列表“需要处理”用（2026-10-16）：与详情读同一条最近 ACTIVE 研判、同一套命中明细，
+     * 列表与详情不会各说各话。存量明细读不动时只放弃这一条的判断，不让整页列表失败。
+     */
+    public MatchDto latestMatch(String planId, AccessDecision assessment) {
+        if (assessment == null) return null;
+        EvaluationRow evaluation = evaluations.findLatestActiveEvaluation(planId, assessment);
+        try {
+            return match(assessment, evaluation, evaluation == null ? List.of() : hitDetails(evaluation.hitDetailsJson()));
+        } catch (ApiException unreadable) {
+            return null;
+        }
+    }
+
+    /** 当前用户能否读研判结论；不能读时列表不按匹配结论排序，也不显示。 */
+    public AccessDecision assessmentAccess() {
+        return probe(PermissionCode.ASSESSMENT_READ);
+    }
+
     private PlanRow requirePlan(String planId, AccessDecision flight) {
         PlanRow plan = plans.findPlan(identifier(planId), flight);
         if (plan == null) throw new ApiException(HttpStatus.NOT_FOUND, "FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在");
