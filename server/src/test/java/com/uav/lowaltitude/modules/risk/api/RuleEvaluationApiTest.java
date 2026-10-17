@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,8 +42,18 @@ class RuleEvaluationApiTest {
         suffix = SpaceRiskFixture.id().substring(0, 8);
         org = SpaceRiskFixture.id(); district = SpaceRiskFixture.id();
         fixture.org(org, "ORG-EV-" + suffix); fixture.district(district, "DIST-EV-" + suffix);
-        evaluator = fixture.session("ROLE-ADMIN", org, district, "ASSIGNED");
+        // 本类不回滚事务，复用唯一超级管理员，不能向共享上下文遗留额外管理员。
+        evaluator = SpaceRiskFixture.id();
+        assertThat(jdbc.update("""
+                insert into app_session (session_id,user_id,expire_at,ip,permission_version)
+                select ?,user_id,?,'127.0.0.1',permission_version from app_user where role_code='ROLE-ADMIN'
+                """, evaluator, System.currentTimeMillis() + 3_600_000L)).isEqualTo(1);
         readerOnly = fixture.session(fixture.role("EVR-" + suffix, "risk:read"), org, district, "ASSIGNED");
+    }
+
+    @AfterEach
+    void removeEvaluatorSession() {
+        jdbc.update("delete from app_session where session_id=?", evaluator);
     }
 
     @Test
@@ -69,6 +80,7 @@ class RuleEvaluationApiTest {
         long from = SpaceRiskFixture.T0.toInstant().toEpochMilli(), to = SpaceRiskFixture.T0.plusMinutes(30).toInstant().toEpochMilli();
         // 演示种子已经写过两条空间风险：断言"本次评估没有新增"，而不是"库里一条都没有"。
         long risksBefore = jdbc.queryForObject("select count(*) from flight_risk where source_id like 'rule-engine-space-risk-%'", Long.class);
+        long runsBefore = jdbc.queryForObject("select count(*) from rule_evaluation_run where actor_id=(select user_id from app_session where session_id=?)", Long.class, evaluator);
         String key = "eval-" + SpaceRiskFixture.id();
         String body = "{\"rule_code\":\"C04\",\"window_from\":" + from + ",\"window_to\":" + to + "}";
         JsonNode accepted = accepted(trigger(evaluator, body, key));
@@ -87,7 +99,7 @@ class RuleEvaluationApiTest {
 
         // 同键同请求重放：409，且不产生第二条运行记录。
         mvc.perform(trigger(evaluator, body, key)).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_REPLAY"));
-        assertThat(jdbc.queryForObject("select count(*) from rule_evaluation_run where actor_id=(select user_id from app_session where session_id=?)", Long.class, evaluator)).isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select count(*) from rule_evaluation_run where actor_id=(select user_id from app_session where session_id=?)", Long.class, evaluator)).isEqualTo(runsBefore + 1);
 
         JsonNode runs = data("/api/v1/rule-evaluations?rule_code=C04&size=100", evaluator);
         assertThat(runs.path("total").asLong()).isPositive();

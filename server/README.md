@@ -206,6 +206,10 @@ Linux/macOS：
 
 核对 `target/surefire-reports` 中的实际用例数、失败及跳过。H2 测试不替代 PostgreSQL/PostGIS 的 SQL、空间查询、锁、约束和迁移验证；新增相关功能时，在隔离真实数据库中补充验证，不连接生产库。
 
+GitHub `Backend CI` 的红叉表示推送后的自动检查失败，不表示 Git 推送失败。先看运行摘要的 `Failed suites`，再定位对应测试日志；工作流依次执行主套件、目标读取 PostgreSQL 套件、通知 PostgreSQL 套件和打包。专用数据库或浏览器验收门禁会使部分测试跳过，不能仅按跳过数量推断数据库连接失败。
+
+2026-10-17 CI 夹具约束：后台动作的成功用例使用后台身份，前台遗留 OP 仍须拒绝；非事务测试复用唯一超级管理员并清理自己的会话，不能污染后续账号测试。独立 Flyway 配置须调用 `MigrationLineage.configure`，保持两组已应用脚本的历史选择。验证显式模拟接收方的 PostgreSQL 子类须在通用夹具之后设置 `app.handoff.channel=mock`，避免被通用的 `none` 覆盖。启动反制后回码不确认实际结果，应断言 `COUNTERMEASURE_OUTCOME_UNKNOWN`，全关/关闭状态不符仍断言 `COUNTERMEASURE_STATE_MISMATCH`；不得为通过测试放宽业务权限或伪造执行成功。
+
 PostgreSQL/PostGIS 回归只在显式提供隔离数据库时运行。迁移回归只创建和删除随机的 `stage2_compat_*` schema：
 
 ```bash
