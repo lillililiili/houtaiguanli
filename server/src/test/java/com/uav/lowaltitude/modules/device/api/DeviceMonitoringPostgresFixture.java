@@ -26,9 +26,11 @@ public final class DeviceMonitoringPostgresFixture {
         root.execute("CREATE SCHEMA " + schema);
         created = true;
         try {
-            Flyway.configure().dataSource(rootDataSource()).schemas(schema).defaultSchema(schema)
+            var configuration = Flyway.configure().dataSource(rootDataSource()).schemas(schema).defaultSchema(schema)
                     .createSchemas(false).cleanDisabled(true)
-                    .locations("classpath:db/migration", "classpath:db/postgresql").load().migrate();
+                    .locations("classpath:db/migration", "classpath:db/postgresql");
+            com.uav.lowaltitude.platform.database.MigrationLineage.configure(configuration);
+            configuration.load().migrate();
         } catch (RuntimeException error) {
             close();
             throw error;

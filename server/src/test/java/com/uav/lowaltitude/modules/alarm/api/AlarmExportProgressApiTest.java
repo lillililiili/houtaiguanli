@@ -115,7 +115,7 @@ class AlarmExportProgressApiTest {
         assertThat(rows.get(verifyingHanded.number)[5]).isEqualTo("已移送处罚");
         assertThat(rows.get(verifying.number)[5]).isEmpty();
         assertThat(rows.get(falsePositive.number)[5]).isEmpty();
-        assertThat(rows.get(decided.number)[5]).as("不反制的决定最先看").isEqualTo("不反制 · 处置已结束");
+        assertThat(rows.get(decided.number)[5]).as("不反制的决定最先看").isEqualTo("不反制 · 现场处置结束");
         assertThat(rows.get(changed.number)[5]).isEqualTo("风险变化待决策");
         assertThat(rows.get(withoutEvent.number)[5]).isEmpty();
         // 时间列跟着后移一列，仍是发生时间。

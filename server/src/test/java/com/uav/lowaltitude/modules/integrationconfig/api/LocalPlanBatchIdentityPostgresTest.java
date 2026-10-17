@@ -14,6 +14,10 @@ import com.uav.lowaltitude.modules.device.api.DeviceMonitoringPostgresFixture;
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
 class LocalPlanBatchIdentityPostgresTest extends LocalInterfaceSimulatorApiTest {
     private static final DeviceMonitoringPostgresFixture DATABASE = new DeviceMonitoringPostgresFixture();
-    @DynamicPropertySource static void database(DynamicPropertyRegistry properties) { DATABASE.springProperties(properties); }
+    @DynamicPropertySource static void database(DynamicPropertyRegistry properties) {
+        DATABASE.springProperties(properties);
+        // 本套件验证显式绑定的模拟接收方；通用夹具的 none 会覆盖父类的 mock 配置。
+        properties.add("app.handoff.channel", () -> "mock");
+    }
     @AfterAll static void closeDatabase() { DATABASE.close(); }
 }

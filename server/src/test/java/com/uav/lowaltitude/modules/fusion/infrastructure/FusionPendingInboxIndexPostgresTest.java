@@ -104,9 +104,11 @@ class FusionPendingInboxIndexPostgresTest {
     }
 
     private static void migrate(SingleConnectionDataSource dataSource, String schema, String target) {
-        Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).createSchemas(false)
+        var configuration = Flyway.configure().dataSource(dataSource).schemas(schema).defaultSchema(schema).createSchemas(false)
                 .cleanDisabled(true).locations("classpath:db/migration", "classpath:db/postgresql")
-                .target(target).load().migrate();
+                .target(target);
+        com.uav.lowaltitude.platform.database.MigrationLineage.configure(configuration);
+        configuration.load().migrate();
     }
 
     private static Map<String, Long> boundaries(JdbcTemplate jdbc, long base) {

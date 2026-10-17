@@ -42,14 +42,19 @@ class AirportApiTest {
         icao = "ZS" + suffix.substring(0, 2).toUpperCase(java.util.Locale.ROOT);
         jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", org, "ORG-AP-" + suffix, "机场测试机构");
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", district, "DIST-AP-" + suffix, "机场测试区域");
-        manager = session(role("APM-" + suffix, "airport:read", "airport:manage"));
-        reader = session(role("APR-" + suffix, "airport:read"));
-        denied = session(role("APD-" + suffix));
+        manager = session("ROLE-ADMIN");
+        // 隔离事务内只授予读取动作，继续验证后台身份本身不会绕过动作权限。
+        jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled) values ('ROLE-BACKEND','airport:read','OP',false)");
+        reader = session("ROLE-BACKEND");
+        // 前台旧角色的机场权限残留也不能绕过当前身份限制。
+        denied = session(role("APD-" + suffix, "airport:read", "airport:manage"));
     }
 
     @Test
     void createOrderIsPermissionThenParsingThenConflict() throws Exception {
         // 无权限：即使 body 完全非法也只回 403，不泄露解析细节。
+        mvc.perform(create(denied, "{\"bogus\":1}", "k-" + UUID.randomUUID()))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         mvc.perform(create(reader, "{\"bogus\":1}", "k-" + UUID.randomUUID()))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         mvc.perform(create(manager, body(icao) .replace("\"name\"", "\"unknown_field\""), "k-" + UUID.randomUUID()))
@@ -112,7 +117,7 @@ class AirportApiTest {
         String otherOrg = UUID.randomUUID().toString(), otherDistrict = UUID.randomUUID().toString();
         jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", otherOrg, "ORG-AP2-" + suffix, "另一机构");
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) values (?,?,?,true,0,0,0)", otherDistrict, "DIST-AP2-" + suffix, "另一区域");
-        String outsider = sessionIn(role("APO-" + suffix, "airport:read"), otherOrg, otherDistrict);
+        String outsider = sessionIn("ROLE-BACKEND", otherOrg, otherDistrict);
         mvc.perform(get("/api/v1/airports/" + airportId).header("Authorization", "Bearer " + outsider))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.error.code").value("AIRPORT_NOT_FOUND"));
     }

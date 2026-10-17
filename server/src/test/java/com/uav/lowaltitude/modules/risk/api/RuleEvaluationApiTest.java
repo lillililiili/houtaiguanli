@@ -41,12 +41,15 @@ class RuleEvaluationApiTest {
         suffix = SpaceRiskFixture.id().substring(0, 8);
         org = SpaceRiskFixture.id(); district = SpaceRiskFixture.id();
         fixture.org(org, "ORG-EV-" + suffix); fixture.district(district, "DIST-EV-" + suffix);
-        evaluator = fixture.session(fixture.role("EV-" + suffix, "risk:read", "risk:evaluate"), org, district, "ASSIGNED");
+        evaluator = fixture.session("ROLE-ADMIN", org, district, "ASSIGNED");
         readerOnly = fixture.session(fixture.role("EVR-" + suffix, "risk:read"), org, district, "ASSIGNED");
     }
 
     @Test
     void evaluationNeedsRiskEvaluatePermissionBeforeBodyIsParsed() throws Exception {
+        String legacyEvaluator = fixture.session(fixture.role("EV-" + suffix, "risk:read", "risk:evaluate"), org, district, "ASSIGNED");
+        mvc.perform(trigger(legacyEvaluator, "{\"bogus\":1}", "legacy-" + SpaceRiskFixture.id()))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         mvc.perform(trigger(readerOnly, "{\"bogus\":1}", "key-" + SpaceRiskFixture.id()))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         mvc.perform(trigger(evaluator, "{\"rule_code\":\"C04\",\"window_from\":1,\"window_to\":2,\"extra\":1}", "key-" + SpaceRiskFixture.id()))

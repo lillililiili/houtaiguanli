@@ -32,12 +32,18 @@ class ProtocolAdapterSimulatorTest {
 
     @ParameterizedTest
     @CsvSource({
-            "SET_MASK,0,15,false", "SET_MASK,15,0,false", "SET_MASK,13,15,false",
-            "CHANNEL_ON,1,8,false", "CHANNEL_OFF,1,15,false",
-            "SET_MASK,0,0,true", "SET_MASK,15,31,true", "SET_MASK,13,13,true",
-            "CHANNEL_ON,1,9,true", "CHANNEL_OFF,1,14,true"
+            "SET_MASK,0,15,false,COUNTERMEASURE_STATE_MISMATCH",
+            "SET_MASK,15,0,false,COUNTERMEASURE_OUTCOME_UNKNOWN",
+            "SET_MASK,13,15,false,COUNTERMEASURE_OUTCOME_UNKNOWN",
+            "CHANNEL_ON,1,8,false,COUNTERMEASURE_OUTCOME_UNKNOWN",
+            "CHANNEL_OFF,1,15,false,COUNTERMEASURE_STATE_MISMATCH",
+            "SET_MASK,0,0,true,COUNTERMEASURE_SET_OK",
+            "SET_MASK,15,31,true,COUNTERMEASURE_SET_OK",
+            "SET_MASK,13,13,true,COUNTERMEASURE_SET_OK",
+            "CHANNEL_ON,1,9,true,COUNTERMEASURE_SET_OK",
+            "CHANNEL_OFF,1,14,true,COUNTERMEASURE_SET_OK"
     })
-    void countermeasureReplyMustConfirmRequestedRelayState(String action,int requested,int actual,boolean expected) throws Exception {
+    void countermeasureReplyMustConfirmRequestedRelayState(String action,int requested,int actual,boolean expected,String expectedCode) throws Exception {
         try (ServerSocket server = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             server.setSoTimeout(5000);
             CompletableFuture<Void> simulator = CompletableFuture.runAsync(() -> {
@@ -58,8 +64,10 @@ class ProtocolAdapterSimulatorTest {
                     action, "SET_MASK".equals(action) ? null : requested, "SET_MASK".equals(action) ? requested : null));
             simulator.get(5, TimeUnit.SECONDS);
             assertThat(result.success()).isEqualTo(expected);
+            assertThat(result.resultCode()).isEqualTo(expectedCode);
             if (!expected) {
-                assertThat(result.resultCode()).isEqualTo("COUNTERMEASURE_STATE_MISMATCH");
+                if ("COUNTERMEASURE_OUTCOME_UNKNOWN".equals(expectedCode))
+                    assertThat(result.detail()).contains("COUNTERMEASURE_STATE_MISMATCH", "全关");
                 assertThat(result.detail()).contains("未确认", "0x" + Integer.toHexString(actual & 0x0F));
             }
         }

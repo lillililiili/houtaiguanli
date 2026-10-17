@@ -60,12 +60,15 @@ class FusionCommandApiTest {
         linkA = fixture.link(splitTarget, radar, "l-" + suffix, "ext-a");
         linkB = fixture.link(splitTarget, tdoa, "l-" + suffix, "ext-b");
 
-        reviser = fixture.session(fixture.role("W-" + suffix, "target:read", "fusion:revise"), org, district, "ASSIGNED");
+        reviser = fixture.session("ROLE-ADMIN", org, district, "ASSIGNED");
         readerOnly = fixture.session(fixture.role("O-" + suffix, "target:read"), org, district, "ASSIGNED");
     }
 
     @Test
     void permissionPrecedesBodyParsingWhichPrecedesConflicts() throws Exception {
+        String legacyReviser = fixture.session(fixture.role("W-" + suffix, "target:read", "fusion:revise"), org, district, "ASSIGNED");
+        mvc.perform(revise(legacyReviser, survivor, "{\"bogus\":1}", "legacy-" + FusionFixture.id()))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         // 403 先于一切：坏 body、未知字段、错版本都不能让无权者得到 400/409 的差异信息。
         mvc.perform(revise(readerOnly, survivor, "{\"bogus\":1}", "key-" + FusionFixture.id()))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));

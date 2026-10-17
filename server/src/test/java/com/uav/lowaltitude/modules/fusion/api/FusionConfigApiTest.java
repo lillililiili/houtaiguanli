@@ -47,7 +47,8 @@ class FusionConfigApiTest {
         jdbc.update("insert into fusion_config (config_version,status,schema_status,params,note,created_at,version) values (?,'DRAFT','DEMO',CAST(? AS JSON),'测试草稿',?,0)",
                 draft, "{\"degradation\":{\"undetermined_deficit\":0.6}}", FusionFixture.T0);
         reader = fixture.session(fixture.role("CR-" + suffix, "fusion:read"), org, district, "ALL");
-        manager = fixture.session(fixture.role("CM-" + suffix, "fusion:read", "fusion:manage"), org, district, "ALL");
+        // 管理动作仅对后台身份开放；旧前台角色即使残留 OP 也不能激活配置。
+        manager = fixture.session("ROLE-ADMIN", org, district, "ALL");
     }
 
     @Test
@@ -70,6 +71,10 @@ class FusionConfigApiTest {
 
     @Test
     void activationChecksPermissionVersionAndExistence() throws Exception {
+        String legacyManager = fixture.session(fixture.role("CM-" + FusionFixture.id().substring(0, 8), "fusion:read", "fusion:manage"),
+                null, null, "ALL");
+        mvc.perform(activate(legacyManager, draft, "{\"expected_version\":0}", "legacy-" + FusionFixture.id()))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         mvc.perform(activate(reader, draft, "{\"expected_version\":0}", "no-perm-" + FusionFixture.id()))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
         mvc.perform(activate(manager, "missing-version", "{\"expected_version\":0}", "missing-" + FusionFixture.id()))

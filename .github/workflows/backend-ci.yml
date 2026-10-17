@@ -75,9 +75,17 @@ jobs:
           python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import glob, xml.etree.ElementTree as ET
           t=f=e=s=0
+          failed=[]
           for p in glob.glob('target/surefire-reports/TEST-*.xml'):
               r=ET.parse(p).getroot()
               t+=int(r.get('tests',0)); f+=int(r.get('failures',0)); e+=int(r.get('errors',0)); s+=int(r.get('skipped',0))
+              if int(r.get('failures',0)) or int(r.get('errors',0)):
+                  failed.append((r.get('name'),r.get('failures'),r.get('errors')))
           print(f"## Backend tests\n\n| run | failures | errors | skipped |\n| --- | --- | --- | --- |\n| {t} | {f} | {e} | {s} |\n")
-          print("跳过数应只剩非 PostgreSQL 门禁的用例；若接近 90+，说明 PostgreSQL 服务没接上。")
+          if failed:
+              print("### Failed suites\n\n| suite | failures | errors |\n| --- | --- | --- |")
+              for name, failures, errors in sorted(failed):
+                  print(f"| {name} | {failures} | {errors} |")
+              print()
+          print("跳过项包含专用数据库、浏览器验收和显式开关门禁；请核对对应测试的 skipped 原因，不能将跳过记为通过，也不能仅按跳过数量判断数据库是否连接。")
           EOF
