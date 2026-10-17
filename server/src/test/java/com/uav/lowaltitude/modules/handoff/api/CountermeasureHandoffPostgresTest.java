@@ -106,6 +106,7 @@ class CountermeasureHandoffPostgresTest {
         handoffs.automaticAfterDisposal(event); compensation.sweep();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff WHERE event_id=?",Integer.class,event)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff_delivery WHERE handoff_id=?",Integer.class,handoff)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff_notification_decision WHERE handoff_id=?",Integer.class,handoff)).isZero();
         assertThat(jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,handoff)).isEqualTo(snapshot);
         assertThat(disposals.completedWithoutPunishment()).doesNotContain(event);
         verifyNoInteractions(channel);

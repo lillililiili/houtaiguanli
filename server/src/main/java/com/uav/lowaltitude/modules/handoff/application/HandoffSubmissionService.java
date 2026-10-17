@@ -61,6 +61,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class HandoffSubmissionService {
+    private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository legacyFollowups;
     private static final Set<String> BODY_FIELDS = Set.of("source_kind", "source_id", "handoff_type", "recipient_id", "expected_version");
     private static final int HISTORY_LIMIT = 1000;
     /** 处罚交接的材料形状版本（决策 14-1）；v1 的风险形状原样保留。 */
@@ -101,7 +102,9 @@ public class HandoffSubmissionService {
             RiskNotificationService notifications,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
             AutomationRuntimePolicy rulePolicy, AutomationRuntimeRepository ruleRuns, AutomationRuntimeEligibility ruleEligibility,
             com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess,
-            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather) {
+            com.uav.lowaltitude.modules.risk.infrastructure.WeatherRiskRepository weather,
+            com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository legacyFollowups) {
+        this.legacyFollowups = legacyFollowups;
         this.weather = weather;
         this.commandAccess = commandAccess;
         this.rulePolicy = rulePolicy;
@@ -202,6 +205,9 @@ public class HandoffSubmissionService {
         // 锁事件但不改它：锁只用来串行化同一事件的并发提交并冻结版本核对；提交交接不是事件状态迁移。
         UavEventRepository.EventRow event = events.lock(sourceId, alarmDecision);
         if (event == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "源对象不存在或不可见");
+        String existing = repository.existingPunishment(sourceId);
+        if (existing != null && legacyFollowups.decision(existing) != null)
+            throw new ApiException(HttpStatus.CONFLICT, "HANDOFF_FOLLOWUP_REQUIRED", "该事件已有通知决定记录，请打开原待办办理");
         idempotency.claim(key, operation(request.sourceKind(), sourceId, request.handoffType(), recipientId, request.expectedVersion()));
         if (event.version() != request.expectedVersion())
             throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
@@ -413,10 +419,12 @@ public class HandoffSubmissionService {
     @Transactional
     public void automaticAfterDisposal(String eventId) {
         if (eventId == null || eventId.isBlank()) return;
+        String existing = repository.existingPunishment(eventId);
+        // Earlier deployments may have frozen a human notification decision; never decide or send it automatically.
+        if (existing != null && legacyFollowups.decision(existing) != null) return;
         var completion = disposals.punishmentCompletion(eventId);
         if (completion == null) return;
         boolean send = automaticPunishmentSend(eventId);
-        String existing = repository.existingPunishment(eventId);
         if (existing != null) {
             if (send) sendWaitingPunishment(existing, eventId);
             return;

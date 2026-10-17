@@ -31,6 +31,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 已冻结交接材料的发送入口。先持久化占位，事务外投递，再保存结果；中断后保持待核对，不盲目重发。 */
 @Service
 public class HandoffNotificationService {
+ private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups;
  private final HandoffRepository repository;
  private final UavEventRepository events;
  private final RiskRepository risks;
@@ -45,12 +46,15 @@ public class HandoffNotificationService {
  private final TransactionTemplate transaction;
  public HandoffNotificationService(HandoffRepository repository,UavEventRepository events,RiskRepository risks,AccessControlService access,
    IdempotencyGuard idempotency,NotificationDirectoryService directory,HandoffChannelPort channel,AppClock clock,
-   AuditService audit,ObjectMapper json,Environment environment,PlatformTransactionManager manager){
+   AuditService audit,ObjectMapper json,Environment environment,PlatformTransactionManager manager,
+   com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups){
+  this.followups=followups;
   this.repository=repository;this.events=events;this.risks=risks;this.access=access;this.idempotency=idempotency;this.directory=directory;
   this.channel=channel;this.clock=clock;this.audit=audit;this.json=json;this.environment=environment;this.transaction=new TransactionTemplate(manager);
  }
  public record StatusDto(String handoffId,boolean canNotify,String blockedReason,int expectedAttemptNo,
-   String deliveryStatus,String receiptStatus,DeliveryDto latestDelivery,RecipientSnapshot recipientSnapshot,boolean simulated){}
+   String deliveryStatus,String receiptStatus,DeliveryDto latestDelivery,RecipientSnapshot recipientSnapshot,boolean simulated,
+   com.uav.lowaltitude.modules.handoff.api.HandoffDtos.NotificationDecisionDto notificationDecision,boolean canDecline,String declineBlockedReason){}
  private record Prepared(HandoffRow handoff,DeliveryInsert attempt,RecipientSnapshot target,String material){}
 
  public StatusDto status(String id){
@@ -66,8 +70,11 @@ public class HandoffNotificationService {
     if(reason==null){target=notifyTarget(row);reason=channelBlocker(row,target);}
    }catch(ApiException error){reason=error.getStatus()==HttpStatus.FORBIDDEN?"当前账号没有发送本通知所需权限":error.getMessage();}
   }
+  String declineReason=declineBlocker(row,latest);
+  if(declineReason==null){try{access.require(PermissionCode.HANDOFF_CREATE);declineReason=sourceBlocker(row,false);}catch(ApiException error){declineReason=error.getStatus()==HttpStatus.FORBIDDEN?"当前账号没有决定本通知所需权限":error.getMessage();}}
   return new StatusDto(row.handoffId(),reason==null,reason,latest==null?0:latest.attemptNo(),row.deliveryStatus(),row.receiptStatus(),
-    latest==null?null:HandoffReadService.dto(latest),target, target!=null&&("MOCK".equals(target.channelType())||simulatorTarget(target)));
+    latest==null?null:HandoffReadService.dto(latest),target, target!=null&&("MOCK".equals(target.channelType())||simulatorTarget(target)),
+    followups.decision(row.handoffId()),declineReason==null,declineReason);
  }
  public DeliveryDto notify(String id,String raw,String key){
   // 鉴权先于解析，避免无权用户通过校验差异探测对象。
@@ -80,7 +87,7 @@ public class HandoffNotificationService {
   try{
    var row=prepared.handoff();
    result=channel.deliver(new HandoffDispatch(row.handoffId(),row.sourceKind(),row.sourceId(),row.handoffType(),
-     row.recipientId(),prepared.target().recipientName(),prepared.material(),prepared.attempt().createdAt()));
+     prepared.target().recipientId(),prepared.target().recipientName(),prepared.material(),prepared.attempt().createdAt()));
    if(result==null||result.deliveryStatus()==null||result.receiptStatus()==null
       ||!HandoffRules.DELIVERY_STATUSES.contains(result.deliveryStatus())||!HandoffRules.RECEIPT_STATUSES.contains(result.receiptStatus())
       ||"PENDING_DELIVERY".equals(result.deliveryStatus()))result=unknown();
@@ -107,6 +114,14 @@ public class HandoffNotificationService {
   if(snapshot==null)throw conflict("HANDOFF_MATERIAL_UNAVAILABLE","原交接材料缺失，不能发出通知");
   String material=material(snapshot.json());
   var at=clock.now().atOffset(ZoneOffset.UTC);
+  var decision=followups.decision(row.handoffId());
+  if(decision!=null&&"PENDING_DECISION".equals(decision.state())){
+   var actor=AuthContext.require();
+   repository.assignFollowupRecipient(row.handoffId(),target.recipientId(),actor.userId());
+   directory.freezeHandoff(row.handoffId(),target);
+   if(!followups.decide(row.handoffId(),"NOTIFY",null,actor.userId(),followups.actorName(actor.userId()),clock.nowMillis(),decision.version()))throw conflict("HANDOFF_DECISION_CHANGED","通知决定已变化，请刷新");
+   record("handoff_notification_decided",row.handoffId(),"decision=NOTIFY; recipient_id="+target.recipientId());
+  }
   var attempt=new DeliveryInsert(UUID.randomUUID().toString(),row.handoffId(),latest.attemptNo()+1,"SUBMITTED","PENDING","DELIVERY_IN_PROGRESS",at,null,null,null);
   repository.insertDelivery(attempt);
   repository.notificationRecipient(attempt.deliveryId(),encode(target));
@@ -135,6 +150,9 @@ public class HandoffNotificationService {
   return "CONFIRMED".equals(event.state())?null:"当前事件不再属于已核实属实的事件，请核对原交接";
  }
  private String stateBlocker(HandoffRow row,DeliveryRow latest){
+  var decision=followups.decision(row.handoffId());
+  if(decision!=null&&"DO_NOT_NOTIFY".equals(decision.state()))return "本次已选择不通知（已记录）";
+  if(decision!=null&&repository.snapshot(row.handoffId())==null)return "现场处置待办已建立，通知材料尚未具备："+decision.fieldHandling().path("material_blocked_reason").asText("原材料缺失，请核对");
   if(latest==null)return "投递记录缺失，请核对交接历史";
   if(repository.hasDelivered(row.handoffId()))return "已送达或已签收，无需重复通知";
   if("SUBMITTED".equals(latest.deliveryStatus())||"PENDING".equals(latest.receiptStatus())||"TIMEOUT".equals(latest.receiptStatus())
@@ -145,6 +163,13 @@ public class HandoffNotificationService {
  }
  /** 通知对象配置页已撤回。没有单独渠道配置时，本地模拟来源按原处罚接收方通知。 */
  private RecipientSnapshot notifyTarget(HandoffRow row){
+  if(followups.decision(row.handoffId())!=null){
+   var latest=repository.latestDelivery(row.handoffId());
+   var previous=latest==null?null:savedRecipient(latest.deliveryId());
+   var selected=previous==null?repository.findSoleEnabledRecipient(row.handoffType()):repository.findEnabledRecipient(previous.recipientId(),row.handoffType());
+   if(selected==null)return new RecipientSnapshot(null,null,null,null,null,null,null,"NONE",null,null,null,false,"上级接收方未配置、已停用或不唯一，请联系管理员核对",clock.nowMillis());
+   return directory.forHandoff(row.handoffType(),selected.recipientId());
+  }
   RecipientSnapshot target=directory.forHandoff(row.handoffType(),row.recipientId());
   if(target!=null&&target.configured())return target;
   if(riskNotice(row)||target==null||!"接收单位尚未配置通知渠道".equals(target.blockedReason())||!localMock(row))return target;
@@ -156,14 +181,43 @@ public class HandoffNotificationService {
     &&!environment.acceptsProfiles(Profiles.of("prod","production"))&&Set.of("mock","replay").contains(row.sourceMode());
  }
  private String channelBlocker(HandoffRow row,RecipientSnapshot target){
-  if(!riskNotice(row)&&repository.findEnabledRecipient(row.recipientId(),row.handoffType())==null)return "原处罚接收方已停用";
+  boolean internal=followups.decision(row.handoffId())!=null;
+  if(!riskNotice(row)&&!internal&&repository.findEnabledRecipient(row.recipientId(),row.handoffType())==null)return "原处罚接收方已停用";
   if(target==null||!target.configured())return target==null||target.blockedReason()==null?"接收方通知配置不可用":target.blockedReason();
-  if(!Objects.equals(target.recipientId(),row.recipientId()))return "通知接收方与原交接不一致";
+  if(!internal&&!Objects.equals(target.recipientId(),row.recipientId()))return "通知接收方与原交接不一致";
   if((!"MOCK".equals(target.channelType())&&!simulatorTarget(target))||!environment.acceptsProfiles(Profiles.of(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE))
     ||environment.acceptsProfiles(Profiles.of("prod","production"))||!Set.of("mock","replay").contains(row.sourceMode())||!channel.simulated())return "真实通知渠道尚未接通，当前来源不能使用模拟投递";
   return null;
  }
  private boolean simulatorTarget(RecipientSnapshot target){return "simulator".equals(environment.getProperty("app.notifications.transport"))&&"API".equals(target.channelType())&&"local-data-simulator".equals(target.endpointRef());}
+ private String declineBlocker(HandoffRow row,DeliveryRow latest){
+  var decision=followups.decision(row.handoffId());
+  if(decision==null)return "历史交接不适用本次通知决定";
+  if(!"PENDING_DECISION".equals(decision.state()))return "通知决定已记录，不能改为不通知";
+  if(latest==null||latest.attemptNo()!=1||latest.submittedAt()!=null||!"PENDING_DELIVERY".equals(latest.deliveryStatus())||!"NOT_EXPECTED".equals(latest.receiptStatus())||repository.hasDelivered(row.handoffId()))return "已发出或结果尚未明确，不能改为不通知";
+  return null;
+ }
+ public StatusDto decline(String id,String raw,String key){
+  access.require(PermissionCode.HANDOFF_CREATE);access.require(PermissionCode.HANDOFF_READ);access.require(PermissionCode.ALARM_READ);
+  long expected;String reason;
+  try(var parser=json.getFactory().createParser(raw==null?"":raw)){
+   parser.enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION);com.fasterxml.jackson.databind.JsonNode body=json.readTree(parser);
+   if(body==null||!body.isObject()||body.size()!=3||parser.nextToken()!=null||!"DO_NOT_NOTIFY".equals(body.path("decision").asText())||!body.path("expected_version").isIntegralNumber()||!body.path("expected_version").canConvertToLong()||!body.path("reason").isTextual())throw new IllegalArgumentException();
+   expected=body.path("expected_version").longValue();reason=body.path("reason").textValue().trim();if(expected<0||reason.isEmpty()||reason.length()>1000)throw new IllegalArgumentException();
+  }catch(Exception ex){throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请选择不通知并填写1至1000字原因及有效版本");}
+  final long version=expected;final String note=reason;
+  transaction.executeWithoutResult(ignored->{
+   var row=visible(id,true);String sourceReason=sourceBlocker(row,true);
+   idempotency.claim(key,"handoff-decline:"+row.handoffId()+":"+version+":"+note.length()+":"+note);
+   String blocker=declineBlocker(row,repository.latestDelivery(row.handoffId()));
+   if(blocker!=null)throw conflict("HANDOFF_DECISION_BLOCKED",blocker);
+   if(sourceReason!=null)throw conflict("HANDOFF_DECISION_BLOCKED",sourceReason);
+   var actor=AuthContext.require();
+   if(!followups.decide(row.handoffId(),"DO_NOT_NOTIFY",note,actor.userId(),followups.actorName(actor.userId()),clock.nowMillis(),version))throw conflict("HANDOFF_DECISION_CHANGED","通知决定已变化，请刷新");
+   record("handoff_notification_decided",row.handoffId(),"decision=DO_NOT_NOTIFY; reason="+note);
+  });
+  return status(id);
+ }
  private int parse(String raw){try{var body=json.readTree(raw==null?"":raw);if(body==null||!body.isObject()||body.size()!=1||!body.has("expected_attempt_no")||!body.get("expected_attempt_no").isIntegralNumber()||!body.get("expected_attempt_no").canConvertToInt()||body.get("expected_attempt_no").asInt()<0)throw new IllegalArgumentException();return body.get("expected_attempt_no").asInt();}catch(Exception error){throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请提供原通知次数 expected_attempt_no，不允许提交送达或回执结果");}}
  private String material(String raw){try{var value=json.readTree(raw);if(value.isTextual())value=json.readTree(value.textValue());if(!value.isObject())throw new IllegalArgumentException();return json.writeValueAsString(value);}catch(Exception error){throw conflict("HANDOFF_MATERIAL_UNAVAILABLE","原交接材料无法读取");}}
  private RecipientSnapshot savedRecipient(String deliveryId){String raw=repository.notificationRecipient(deliveryId);if(raw==null)return null;try{return json.readValue(raw,RecipientSnapshot.class);}catch(Exception error){throw new IllegalStateException("通知接收快照无法读取",error);}}

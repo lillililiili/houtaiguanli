@@ -85,13 +85,15 @@ class UavHandoffExecutionHistoryPostgresTest {
         when(access.require(any())).thenReturn(new AccessDecision("reader",ScopeMode.ALL));
         when(events.find(eq(event),any())).thenReturn(eventRow);
         when(advisory.counterBlockReason(event)).thenReturn("");
+        when(advisory.counterLaunchBlockReason(event)).thenReturn("");
         when(sms.currentRecipient(eventRow)).thenReturn(mock(RecipientSnapshot.class));
         when(decisions.status(eventRow)).thenReturn(mock(NoCounterDtos.Status.class));
         when(voice.departureSnapshot(event)).thenReturn(new DepartureObservation(event,"SMS","RECORDED","LEFT",now-2000,now-2000,now-1000));
         when(handoffs.enabledRecipients("UAV_PUNISHMENT")).thenReturn(List.of(new HandoffRepository.RecipientRow(key(),"recipient","UAV_PUNISHMENT")));
         service=new UavAdvisoryService(events,advisory,access,mock(AdvisorySmsPort.class),new ObjectMapper(),
                 new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),mock(AuditService.class),sms,voice,
-                mock(PilotDepartureWatch.class),handoffs,disposals,decisions);
+                mock(PilotDepartureWatch.class),handoffs,disposals,decisions,
+                mock(com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository.class));
     }
 
     @AfterEach void close() { if(admin!=null&&schema!=null)admin.execute("DROP SCHEMA "+schema+" CASCADE"); }
@@ -100,7 +102,7 @@ class UavHandoffExecutionHistoryPostgresTest {
         // An enqueued start cancelled before dispatch, and a stop-only command, do not prove execution.
         String cancelled=command(15,"CANCELLED",null,null,authorization);
         jdbc.update("UPDATE disposal_authorization SET execution_command_id=? WHERE authorization_id=?",cancelled,authorization);
-        jdbc.update("INSERT INTO disposal_authorization_event VALUES (?,?,'EXECUTE')",key(),authorization);
+        jdbc.update("INSERT INTO disposal_authorization_event(event_id,authorization_id,event_kind) VALUES (?,?,'EXECUTE')",key(),authorization);
         command(0,"SUCCEEDED",now-100,now-50,authorization);
         jdbc.update("INSERT INTO countermeasure_start_attempt VALUES (?,?,?,?)",key(),key(),device,now);
         assertThat(disposals.counterExecutionEvidence(event)).isEqualTo(CounterExecutionEvidence.NONE);
@@ -194,7 +196,7 @@ class UavHandoffExecutionHistoryPostgresTest {
         jdbc.execute("CREATE TABLE disposal_device_run(authorization_id VARCHAR(36) PRIMARY KEY,device_id VARCHAR(36),on_command_id VARCHAR(36),on_at TIMESTAMP WITH TIME ZONE,off_command_id VARCHAR(36))");
         jdbc.execute("CREATE TABLE countermeasure_start_attempt(command_id VARCHAR(36) PRIMARY KEY,authorization_id VARCHAR(64),device_id VARCHAR(36),attempted_at BIGINT)");
         jdbc.execute("CREATE TABLE command_receipt(receipt_id VARCHAR(36) PRIMARY KEY,command_id VARCHAR(36))");
-        jdbc.execute("CREATE TABLE disposal_authorization_event(event_id VARCHAR(36) PRIMARY KEY,authorization_id VARCHAR(36),event_kind VARCHAR(32))");
+        jdbc.execute("CREATE TABLE disposal_authorization_event(event_id VARCHAR(36) PRIMARY KEY,authorization_id VARCHAR(36),event_kind VARCHAR(32),occurred_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
     }
 
     private static String key() { return UUID.randomUUID().toString(); }

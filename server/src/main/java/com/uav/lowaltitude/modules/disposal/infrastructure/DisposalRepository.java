@@ -350,17 +350,26 @@ public class DisposalRepository {
                 Map.of(), String.class);
     }
 
-    public record PunishmentCompletionRow(String requestedBy, String triggerSource) { }
+    public record PunishmentCompletionRow(String requestedBy, String triggerSource, String authorizationId, Long completedAt) { }
 
     public PunishmentCompletionRow punishmentCompletion(String eventId) {
         if (eventId == null || eventId.isBlank()) return null;
-        var rows = jdbc.query("SELECT a.requested_by,a.action_type FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
+        var rows = jdbc.query("SELECT a.requested_by,a.action_type,a.authorization_id,"
+                + " (SELECT c.completed_at FROM device_command c WHERE c.command_id=a.execution_command_id AND c.status='SUCCEEDED') AS stop_completed_at,"
+                + " (SELECT MAX(e.occurred_at) FROM disposal_authorization_event e WHERE e.authorization_id=a.authorization_id AND e.event_kind='COMPLETE') AS completed_at"
+                + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
                 + " AND a.subject_id=:id AND " + PUNISHMENT_COMPLETION
-                + " ORDER BY a.requested_at DESC,a.authorization_id DESC FETCH FIRST 1 ROW ONLY", Map.of("id", eventId),
+                + " ORDER BY a.requested_at DESC,a.authorization_id DESC", Map.of("id", eventId),
                 (r, n) -> new PunishmentCompletionRow(
                         r.getString("requested_by"), "JAMMING".equals(r.getString("action_type"))
-                                ? "JAMMING_COMPLETED" : "COUNTERMEASURE_COMPLETED"));
-        return rows.isEmpty() ? null : rows.get(0);
+                                ? "JAMMING_COMPLETED" : "COUNTERMEASURE_COMPLETED",r.getString("authorization_id"),
+                        "COUNTERMEASURE".equals(r.getString("action_type"))?(Long)r.getObject("stop_completed_at"):
+                            r.getTimestamp("completed_at")==null?null:r.getTimestamp("completed_at").getTime()));
+        PunishmentCompletionRow latest = null;
+        for (var row : rows) {
+            if (latest == null || row.completedAt() != null && (latest.completedAt() == null || row.completedAt() > latest.completedAt())) latest = row;
+        }
+        return latest;
     }
 
     public enum CounterExecutionEvidence { NONE, POSSIBLE, CONFIRMED }

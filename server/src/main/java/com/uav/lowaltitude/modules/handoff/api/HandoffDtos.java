@@ -16,6 +16,8 @@ public final class HandoffDtos {
     public record RecipientDto(String recipientId, String displayName, String handoffType) { }
     public record RecipientListDto(List<RecipientDto> items) { }
     public record CreateRequest(String sourceKind, String sourceId, String handoffType, String recipientId, long expectedVersion) { }
+    public record NotificationDecisionDto(String state, long version, String reason, String decidedBy, String decidedByName,
+            Long decidedAt, com.fasterxml.jackson.databind.JsonNode fieldHandling) { }
     public record RiskPreviewDto(String sourceId, long sourceVersion, long generatedAt,
             com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,
             String planNo, String targetNo, MaterialDto material) { }
@@ -31,7 +33,8 @@ public final class HandoffDtos {
     public record HandoffDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
             String recipientName, long sourceVersion, String ownerOrgId, String districtId, String sourceMode, String submittedBy,
             long createdAt, String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
-            String ownerOrgName, String districtName, String submittedByName, String sourceNo, String triggerSource) { }
+            String ownerOrgName, String districtName, String submittedByName, String sourceNo, String triggerSource,
+            NotificationDecisionDto notificationDecision) { }
     public record DeliveryDto(String deliveryId, String handoffId, int attemptNo, String deliveryStatus, String receiptStatus,
             String blockedReason, long createdAt, Long submittedAt, Long deliveredAt, Long acknowledgedAt) { }
     public record HandoffDetailDto(String handoffId, String sourceKind, String sourceId, String handoffType, String recipientId,
@@ -44,7 +47,7 @@ public final class HandoffDtos {
             String ownerOrgName, String districtName, String submittedByName, String sourceNo,
             com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot,
             // trigger_source 同 HandoffDto（新-24）。
-            String triggerSource) { }
+            String triggerSource, NotificationDecisionDto notificationDecision) { }
     /**
      * material：AVAILABLE / FORBIDDEN（读者缺来源读权限）/ SOURCE_NOT_VISIBLE（源对象已不在读者可见范围）。
      * evidence（仅 v2）：AVAILABLE / FORBIDDEN（读者缺 evidence:read）/ OMITTED_AT_SUBMISSION（提交人当时就没有该权限）。

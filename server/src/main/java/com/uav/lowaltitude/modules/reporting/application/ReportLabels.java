@@ -30,6 +30,7 @@ public final class ReportLabels {
         entry("SUCCESS","成功"), entry("CANCELLED","已取消"), entry("EXPIRED","已过期"),
         entry("STOPPED","已停止"), entry("TIMED_OUT","超时"),
         entry("PENDING_DELIVERY","待发送"), entry("SUBMITTED","已提交"), entry("DELIVERED","已送达"),
+        entry("PENDING_DECISION","待决定通知"), entry("DO_NOT_NOTIFY","已选择不通知"),
         entry("ACKNOWLEDGED","已回执"), entry("TIMEOUT","回执超时"), entry("NOT_EXPECTED","无需回执"),
         entry("NOT_TAKEN_OFF","未起飞"), entry("DEVICE_ABNORMAL","设备异常"), entry("NORMAL","正常"),
         entry("PLANNED","已安排"), entry("PENDING_EXECUTION","待执行"), entry("IN_PROGRESS","执行中"),
