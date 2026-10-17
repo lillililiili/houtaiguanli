@@ -37,7 +37,7 @@ import com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort;
 @ActiveProfiles("test") @Transactional
 @Import(DeviceMonitoringPostgresFixture.NoScheduledJobs.class)
 @DirtiesContext(classMode=DirtiesContext.ClassMode.AFTER_CLASS)
-@EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL", matches="jdbc:postgresql://[^/]+/advisory_verify_[a-z0-9_]+")
+@EnabledIfEnvironmentVariable(named="POSTGRES_TEST_URL", matches="jdbc:postgresql://[^/]+/(advisory_verify|stage456_verify)_[a-z0-9_]+")
 class CountermeasureHandoffPostgresTest {
     private static final String SCHEMA = "counter_handoff_" + UUID.randomUUID().toString().replace("-", "");
     private static JdbcTemplate root;
@@ -52,7 +52,7 @@ class CountermeasureHandoffPostgresTest {
 
     @DynamicPropertySource static void database(DynamicPropertyRegistry p) {
         String url = System.getenv("POSTGRES_TEST_URL");
-        if (url == null || !url.matches("jdbc:postgresql://[^/]+/advisory_verify_[a-z0-9_]+"))
+        if (url == null || !url.matches("jdbc:postgresql://[^/]+/(advisory_verify|stage456_verify)_[a-z0-9_]+"))
             throw new IllegalStateException("Dedicated test database required");
         String user = System.getenv("POSTGRES_TEST_USER"), password = System.getenv("POSTGRES_TEST_PASSWORD");
         root = new JdbcTemplate(new DriverManagerDataSource(url, user, password));
@@ -100,9 +100,10 @@ class CountermeasureHandoffPostgresTest {
         compensation.sweep();
         String handoff=jdbc.queryForObject("SELECT handoff_id FROM handoff WHERE event_id=?",String.class,event);
         String snapshot=jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=?",String.class,handoff);
-        assertThat(jdbc.queryForObject("SELECT trigger_source FROM handoff WHERE handoff_id=?",String.class,handoff)).isEqualTo("COUNTERMEASURE_COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT trigger_source FROM handoff WHERE handoff_id=?",String.class,handoff)).isEqualTo("FIELD_HANDLING_ENDED");
         assertThat(jdbc.queryForObject("SELECT source_mode FROM handoff WHERE handoff_id=?",String.class,handoff)).isEqualTo(mode);
-        assertThat(jdbc.queryForObject("SELECT submitted_by FROM handoff WHERE handoff_id=?",String.class,handoff)).isEqualTo(actor);
+        assertThat(jdbc.queryForObject("SELECT submitted_by FROM handoff WHERE handoff_id=?",String.class,handoff)).isNull();
+        assertThat(jdbc.queryForObject("SELECT state FROM handoff_notification_decision WHERE handoff_id=?",String.class,handoff)).isEqualTo("PENDING_DECISION");
         handoffs.automaticAfterDisposal(event); compensation.sweep();
         assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff WHERE event_id=?",Integer.class,event)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff_delivery WHERE handoff_id=?",Integer.class,handoff)).isEqualTo(1);
@@ -141,16 +142,18 @@ class CountermeasureHandoffPostgresTest {
         handoffs.automaticAfterJamming(event);
         String old=jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=(SELECT handoff_id FROM handoff WHERE event_id=?)",String.class,event);
         handoffs.automaticAfterDisposal(event);
-        assertThat(jdbc.queryForObject("SELECT trigger_source FROM handoff WHERE event_id=?",String.class,event)).isEqualTo("JAMMING_COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT trigger_source FROM handoff WHERE event_id=?",String.class,event)).isEqualTo("FIELD_HANDLING_ENDED");
+        assertThat(jdbc.queryForObject("SELECT field_handling FROM handoff_notification_decision WHERE event_id=?",String.class,event)).contains("JAMMING_COMPLETED");
         assertThat(jdbc.queryForObject("SELECT CAST(snapshot AS VARCHAR) FROM handoff_material_snapshot WHERE handoff_id=(SELECT handoff_id FROM handoff WHERE event_id=?)",String.class,event)).isEqualTo(old);
         verifyNoInteractions(channel);
     }
 
-    @Test void multipleRecipientsKeepManualChoiceAndCreateNoAutomaticRecord() {
+    @Test void multipleRecipientsCreateOneInternalTaskWithoutChoosingRecipient() {
         stopped(); String recipient=id();
         jdbc.update("INSERT INTO handoff_recipient(recipient_id,display_name,handoff_type,enabled,created_at,updated_at) VALUES(?,?,'UAV_PUNISHMENT',TRUE,current_timestamp,current_timestamp)",recipient,recipient);
         handoffs.automaticAfterDisposal(event);
-        assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff WHERE event_id=?",Integer.class,event)).isZero();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM handoff WHERE event_id=?",Integer.class,event)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT recipient_id FROM handoff WHERE event_id=?",String.class,event)).isNull();
         verifyNoInteractions(channel);
     }
 

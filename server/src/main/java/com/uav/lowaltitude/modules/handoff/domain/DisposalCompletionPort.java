@@ -18,7 +18,9 @@ public interface DisposalCompletionPort {
     String completedJammingRequester(String eventId);
 
     /** 自动移送所需的完成事实；人工移送仍按既有事件规则办理。 */
-    record PunishmentCompletion(String requestedBy, String triggerSource) { }
+    record PunishmentCompletion(String requestedBy, String triggerSource, String authorizationId, Long completedAt) {
+        public PunishmentCompletion(String requestedBy,String triggerSource){this(requestedBy,triggerSource,null,null);}
+    }
 
     default java.util.List<String> completedWithoutPunishment() { return jammingCompletedWithoutPunishment(); }
 

@@ -36,6 +36,6 @@ public class DisposalCompletionAdapter implements DisposalCompletionPort {
     @Override
     public PunishmentCompletion punishmentCompletion(String eventId) {
         var row = repository.punishmentCompletion(eventId);
-        return row == null ? null : new PunishmentCompletion(row.requestedBy(), row.triggerSource());
+        return row == null ? null : new PunishmentCompletion(row.requestedBy(), row.triggerSource(),row.authorizationId(),row.completedAt());
     }
 }

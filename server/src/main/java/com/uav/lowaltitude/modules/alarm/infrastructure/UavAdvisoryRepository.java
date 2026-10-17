@@ -12,12 +12,17 @@ public class UavAdvisoryRepository {
     private final NoCounterRepository noCounter;
     private final AutoSmsRepository facts;
     private final com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository disposal;
+    private final com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository policies;
+    private final com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory;
     public UavAdvisoryRepository(JdbcTemplate jdbc,com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory,
             AutoSmsRepository facts,com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository disposal,
-            com.uav.lowaltitude.platform.time.AppClock clock,com.fasterxml.jackson.databind.ObjectMapper json,NoCounterRepository noCounter) {
+            com.uav.lowaltitude.platform.time.AppClock clock,com.fasterxml.jackson.databind.ObjectMapper json,NoCounterRepository noCounter,
+            com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository policies,
+            com.uav.lowaltitude.modules.disposal.infrastructure.EmergencyStopRepository emergencyStops) {
+        this.policies=policies;this.emergencyStops=emergencyStops;
         this.noCounter=noCounter;
         this.jdbc=jdbc;this.directory=directory;this.facts=facts;this.disposal=disposal;this.clock=clock;this.json=json;
     }
@@ -45,6 +50,14 @@ public class UavAdvisoryRepository {
         return com.uav.lowaltitude.modules.alarm.domain.UavAdvisoryRules.counterBlockReason(
                 (String)event.get("state_code"),(String)event.get("alarm_id"),current,evaluation,
                 sufficient,noUnknowns,disposal.freshSeconds(),clock.nowMillis());
+    }
+    /** 仅用于新建反制入口；执行已有授权仍单独检查 counterBlockReason，不能被自身授权阻断。 */
+    public String counterLaunchBlockReason(String eventId) {
+        if(emergencyStops.unresolved(eventId)) return "上次急停设备仍未确认停止，请先完成核查";
+        long active=disposal.activeCount("UAV_EVENT",eventId,"COUNTERMEASURE");
+        if(active>0 && active>=policies.active().maxActivePerSubject())
+            return "该告警已有未了结的反制授权，请查看当前处置进度";
+        return "";
     }
     public boolean noCounterActive(String eventId) { return noCounter.active(eventId); }
     public void append(String id, String eventId, long version, String actor, long at, Action a, boolean simulated, String delivery) {

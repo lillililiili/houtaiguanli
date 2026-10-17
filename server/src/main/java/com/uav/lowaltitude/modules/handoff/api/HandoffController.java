@@ -87,4 +87,10 @@ public class HandoffController {
             @RequestParam MultiValueMap<String, String> parameters) {
         return ApiResponse.ok(read.deliveries(handoffId, parameters));
     }
+
+    @PostMapping("/handoffs/{handoffId}/notification-decision")
+    public ApiResponse<com.uav.lowaltitude.modules.handoff.application.HandoffNotificationService.StatusDto> decide(@PathVariable String handoffId,
+            @RequestBody(required=false) String request,@RequestHeader(name="Idempotency-Key",required=false) String key) {
+        return ApiResponse.ok(notifications.decline(handoffId,request,key));
+    }
 }

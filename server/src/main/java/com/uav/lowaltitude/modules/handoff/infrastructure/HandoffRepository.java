@@ -29,12 +29,13 @@ public class HandoffRepository {
         Where w = scope(access);
         String time = reader.epoch("e.created_at");
         String sql = "SELECT h.handoff_id AS id,rc.display_name AS label," + time + " AS at_ms,"
-            + "d.delivery_status AS state,h.handoff_type AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,h.source_mode,"
+            + "CASE WHEN nd.state IN ('PENDING_DECISION','DO_NOT_NOTIFY') THEN nd.state ELSE d.delivery_status END AS state,h.handoff_type AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,h.source_mode,"
             + "e.event_id AS related,d.receipt_status AS result,h.receipt_result AS note"
             + " FROM handoff h JOIN uav_event e ON e.event_id=h.event_id AND h.source_kind='UAV_EVENT'"
             + " AND e.owner_org_id=h.owner_org_id AND e.district_id=h.district_id"
             + " JOIN alarm ea ON ea.alarm_id=e.alarm_id AND ea.owner_org_id=e.owner_org_id AND ea.district_id=e.district_id"
-            + " JOIN handoff_recipient rc ON rc.recipient_id=h.recipient_id"
+            + " LEFT JOIN handoff_recipient rc ON rc.recipient_id=h.recipient_id"
+            + " LEFT JOIN handoff_notification_decision nd ON nd.handoff_id=h.handoff_id"
             + " LEFT JOIN handoff_delivery d ON d.handoff_id=h.handoff_id"
             + " AND d.attempt_no=(SELECT MAX(dd.attempt_no) FROM handoff_delivery dd WHERE dd.handoff_id=h.handoff_id)"
             + " LEFT JOIN app_district rd ON rd.district_id=h.district_id" + w.sql;
@@ -115,6 +116,7 @@ public class HandoffRepository {
     }
 
     public RecipientRow findEnabledRecipient(String recipientId, String handoffType) {
+        if (recipientId == null) return null;
         List<RecipientRow> rows = jdbc.query("SELECT recipient_id,display_name,handoff_type FROM handoff_recipient"
                 + " WHERE enabled=TRUE AND handoff_type=:type AND recipient_id=:id", Map.of("type", handoffType, "id", recipientId),
                 HandoffRepository::recipient);
@@ -195,7 +197,7 @@ public class HandoffRepository {
     /* ---- 统计：与 count/list 共用 from()/where()，口径不漂移 ---- */
 
     public Map<String, Long> countByDelivery(HandoffQuery query, AccessDecision access) {
-        return groupCount("d.delivery_status", query, access);
+        return groupCount("CASE WHEN nd.state IN ('PENDING_DECISION','DO_NOT_NOTIFY') THEN nd.state ELSE d.delivery_status END", query, access);
     }
 
     public Map<String, Long> countByReceipt(HandoffQuery query, AccessDecision access) {
@@ -248,6 +250,13 @@ public class HandoffRepository {
     public void notificationRecipient(String deliveryId, String snapshot) {
         jdbc.update("UPDATE handoff_delivery SET recipient_snapshot=:snapshot WHERE delivery_id=:id AND recipient_snapshot IS NULL",
                 Map.of("id",deliveryId,"snapshot",snapshot));
+    }
+
+    /** First manual notification selects the configured recipient exactly once; legacy rows are immutable here. */
+    public void assignFollowupRecipient(String handoffId,String recipientId,String actorId) {
+        int changed=jdbc.update("UPDATE handoff SET recipient_id=:recipient,submitted_by=:actor WHERE handoff_id=:id AND trigger_source='FIELD_HANDLING_ENDED' AND recipient_id IS NULL AND submitted_by IS NULL",
+                Map.of("id",handoffId,"recipient",recipientId,"actor",actorId));
+        if(changed!=1)throw new IllegalStateException("待办接收方已变化");
     }
 
     public String notificationRecipient(String deliveryId) {
@@ -323,6 +332,8 @@ public class HandoffRepository {
         add(where, "h.source_kind", "kind", query.sourceKind);
         add(where, "h.source_id", "source", query.sourceId);
         add(where, "d.delivery_status", "delivery", query.deliveryStatus);
+        add(where, "nd.state", "notification_decision", query.notificationDecision);
+        if (query.deliveryStatus != null) where.sql.append(" AND (nd.state IS NULL OR nd.state='NOTIFY')");
         add(where, "d.receipt_status", "receipt", query.receiptStatus);
         add(where, "h.source_mode", "mode", query.sourceMode);
         if (query.createdFrom != null) {
@@ -358,7 +369,8 @@ public class HandoffRepository {
     }
     private static String from() {
         // delivery_status 指最新一次尝试；列表、详情与 count 共用同一联接，避免口径漂移。
-        return " FROM handoff h JOIN handoff_recipient rc ON rc.recipient_id=h.recipient_id"
+        return " FROM handoff h LEFT JOIN handoff_recipient rc ON rc.recipient_id=h.recipient_id"
+                + " LEFT JOIN handoff_notification_decision nd ON nd.handoff_id=h.handoff_id"
                 + " JOIN handoff_delivery d ON d.handoff_id=h.handoff_id"
                 + " AND d.attempt_no=(SELECT MAX(x.attempt_no) FROM handoff_delivery x WHERE x.handoff_id=h.handoff_id)"
                 + " LEFT JOIN app_org org_ref ON org_ref.org_id=h.owner_org_id LEFT JOIN app_district dist_ref ON dist_ref.district_id=h.district_id"
@@ -396,7 +408,10 @@ public class HandoffRepository {
     public record TrendRow(OffsetDateTime createdAt, String deliveryStatus) { }
     private static final class Where { final StringBuilder sql = new StringBuilder(); final Map<String, Object> params = new HashMap<>(); }
     public record HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo,
-            String sourceMode, String receiptStatus) {
+            String sourceMode, String receiptStatus, String notificationDecision) {
+        public HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo, String sourceMode, String receiptStatus) {
+            this(sourceKind, sourceId, deliveryStatus, createdFrom, createdTo, sourceMode, receiptStatus, null);
+        }
         public HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo, String sourceMode) {
             this(sourceKind, sourceId, deliveryStatus, createdFrom, createdTo, sourceMode, null);
         }

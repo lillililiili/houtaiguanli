@@ -111,7 +111,9 @@ class DisposalJammingFailurePostgresTest extends AutomationMqttFixture {
         assertThat(jdbc.queryForObject("select count(*) from handoff where event_id=?",Integer.class,eventId)).isZero();
         verify(channel,never()).deliver(any());
 
-        // An explicitly requested manual handoff is independent of successful device execution.
+        // Preserve the explicit legacy manual-handoff path for a pre-deployment event; new events use follow-up decisions.
+        // This isolated schema represents deployment after these completed historical receipt facts.
+        jdbc.update("UPDATE handoff_followup_policy SET eligible_from=current_timestamp+INTERVAL '1 second' WHERE policy_id=1");
         long version = jdbc.queryForObject("select version from uav_event where event_id=?",Long.class,eventId);
         String handoff = data(request("/api/v1/handoffs",actor,key(),Map.of("source_kind","UAV_EVENT","source_id",eventId,
                 "handoff_type","UAV_PUNISHMENT","recipient_id",recipient,"expected_version",version))

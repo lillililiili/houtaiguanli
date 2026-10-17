@@ -33,7 +33,10 @@ public final class UavAdvisoryDtos {
      * party_status/party_reasons 只在 MANUAL_REQUIRED 时给出，提交前提示当事人是否明确。
      */
     public record AutoHandoff(boolean enabled, String status, String reason, String handoffId, String triggerSource, Long updatedAt,
-            String partyStatus, List<String> partyReasons) { }
+            String partyStatus, List<String> partyReasons,
+            com.uav.lowaltitude.modules.handoff.api.HandoffDtos.NotificationDecisionDto notificationDecision) {
+        public AutoHandoff(boolean enabled,String status,String reason,String handoffId,String triggerSource,Long updatedAt,String partyStatus,List<String> partyReasons){this(enabled,status,reason,handoffId,triggerSource,updatedAt,partyStatus,partyReasons,null);}
+    }
     public record AutoSms(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,
             int attemptCount,String policyCode,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
     public record AutoVoice(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,

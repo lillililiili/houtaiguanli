@@ -30,6 +30,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavAdvisoryService {
+    private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups;
     private final AutoSmsService automatic;
     private final AutoVoiceService voice;
     private final PilotDepartureWatch departure;
@@ -44,7 +45,9 @@ public class UavAdvisoryService {
     private final AuditService audit;
     private final NoCounterService noCounter;
     public UavAdvisoryService(UavEventRepository events,UavAdvisoryRepository repository,AccessControlService access,
-            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs,DisposalRepository disposals,NoCounterService noCounter) {
+            AdvisorySmsPort sms,ObjectMapper json,AppClock clock,AuditService audit,AutoSmsService automatic,AutoVoiceService voice,PilotDepartureWatch departure,HandoffRepository handoffs,DisposalRepository disposals,NoCounterService noCounter,
+            com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups) {
+        this.followups=followups;
         this.noCounter=noCounter;
         this.voice=voice;
         this.automatic=automatic;
@@ -162,7 +165,7 @@ public class UavAdvisoryService {
         if(!confirmed&&!"PENDING_VERIFICATION".equals(event.state()))return null;
         if(confirmed) {
             Boolean review=noCounter.reviewRequired(event);
-            if(Boolean.FALSE.equals(review))return "不反制 · 处置已结束";
+            if(Boolean.FALSE.equals(review))return "不反制 · 现场处置结束";
             if(Boolean.TRUE.equals(review))return "风险变化待决策";
         }
         String handoffId=handoffs.existingPunishment(eventId);
@@ -212,7 +215,8 @@ public class UavAdvisoryService {
     }
     private Overview view(EventRow event) {
         var records=repository.records(event.eventId());
-        String reason=repository.counterBlockReason(event.eventId());
+        String launchBlock=repository.counterLaunchBlockReason(event.eventId());
+        String reason=launchBlock.isEmpty()?repository.counterBlockReason(event.eventId()):launchBlock;
         boolean mode=sms.simulationAvailable(event.sourceMode());
         boolean request=allowed(PermissionCode.DISPOSAL_REQUEST);
         boolean direct=allowed(PermissionCode.DISPOSAL_DIRECT);
@@ -226,7 +230,7 @@ public class UavAdvisoryService {
                 !decision.decisionActive() && "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的任务执行飞手"),
-                autoSms,voice.mode(event),withoutSms(autoSms,autoVoice),!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event,observation),decision,
+                autoSms,voice.mode(event),withoutSms(autoSms,autoVoice),launchBlock.isEmpty()&&!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event,observation),decision,
                 automatic.pilotContactMissing(event),observation);
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
@@ -259,7 +263,26 @@ public class UavAdvisoryService {
     private AutoHandoff autoHandoff(EventRow event, DepartureObservation observation) {
         String eventId = event.eventId();
         String handoffId = handoffs.existingPunishment(eventId);
+        if(handoffId!=null){
+            var decision=followups.decision(handoffId);
+            if(decision!=null){
+                var latest=handoffs.latestDelivery(handoffId);
+                String status=decision.state();String reason=null;
+                if("PENDING_DECISION".equals(status))reason="现场处置结束，已进入待办，待决定是否通知上级";
+                else if("DO_NOT_NOTIFY".equals(status))reason="本次不通知（已记录）";
+                else if(latest==null){status="BLOCKED";reason="投递记录缺失，请核对原通知";}
+                else if("DELIVERED".equals(latest.deliveryStatus())){status="SUBMITTED";reason="已通知上级，送达与签收分别记录";}
+                else if("FAILED".equals(latest.deliveryStatus())){status="FAILED";reason="通知上级发送失败";}
+                else {status="PENDING";reason="已通知上级，发送结果待确认";}
+                return new AutoHandoff(true,status,reason,handoffId,"FIELD_HANDLING_ENDED",decision.decidedAt(),null,null,decision);
+            }
+        }
         if (handoffId == null) {
+            if(followups.eligible(eventId)){
+                if(!"CONFIRMED".equals(event.state()))return new AutoHandoff(false,"NOT_REQUIRED","仅核实属实的事件在现场处置结束后进入待办",null,null,null,null,null);
+                boolean ended=repository.noCounterActive(eventId)||"LEFT".equals(observation.presence())||disposals.punishmentCompletion(eventId)!=null;
+                return new AutoHandoff(true,"WAITING",ended?"已取得现场结束依据；待办尚未建立，后台将自动重试，请刷新核对。存在在途设备或急停核查时须先完成核查":"现场处置结束后自动进入待办，由操作人员决定是否通知上级",null,null,null,null,null);
+            }
             // 误报不进入处罚移送，不能一直显示“等待移送”。
             if ("FALSE_POSITIVE".equals(event.state()))
                 return new AutoHandoff(false, "NOT_REQUIRED", "已核实为误报，不需要移送处罚", null, null, null, null, null);

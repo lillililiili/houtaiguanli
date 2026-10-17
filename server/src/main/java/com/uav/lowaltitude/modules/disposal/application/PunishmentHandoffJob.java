@@ -12,17 +12,17 @@ import com.uav.lowaltitude.modules.handoff.domain.DisposalCompletionPort;
 @Component
 public class PunishmentHandoffJob {
     private static final Logger log = LoggerFactory.getLogger(PunishmentHandoffJob.class);
-    private final DisposalCompletionPort disposals;
+    private final com.uav.lowaltitude.modules.handoff.application.HandoffFollowupService followups;
     private final HandoffSubmissionService handoffs;
 
-    public PunishmentHandoffJob(DisposalCompletionPort disposals, HandoffSubmissionService handoffs) {
-        this.disposals = disposals;
+    public PunishmentHandoffJob(com.uav.lowaltitude.modules.handoff.application.HandoffFollowupService followups, HandoffSubmissionService handoffs) {
+        this.followups = followups;
         this.handoffs = handoffs;
     }
 
     @Scheduled(fixedDelayString = "${app.handoff.auto-punishment.interval-millis:15000}")
     public void sweep() {
-        for (String eventId : disposals.completedWithoutPunishment()) {
+        for (String eventId : followups.candidates()) {
             try {
                 handoffs.automaticAfterDisposal(eventId);
             } catch (RuntimeException ex) {

@@ -536,7 +536,7 @@ class HandoffApiTest {
         MvcResult result = mvc.perform(get("/api/v1/handoffs/stats?source_kind=RISK&source_id={id}", riskId).header("Authorization", bearer(session)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(1))
-                .andExpect(jsonPath("$.data.by_delivery.length()").value(4))
+                .andExpect(jsonPath("$.data.by_delivery.length()").value(6))
                 .andExpect(jsonPath("$.data.by_delivery[0].code").value("PENDING_DELIVERY"))
                 .andExpect(jsonPath("$.data.by_delivery[0].count").value(1))
                 .andExpect(jsonPath("$.data.by_delivery[2].code").value("DELIVERED"))

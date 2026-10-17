@@ -54,14 +54,15 @@ import com.uav.lowaltitude.platform.api.ApiException;
 
 @Service
 public class HandoffReadService {
+    private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups;
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private static final Set<String> LIST_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
-            "source_mode", "page", "size");
+            "source_mode", "notification_decision", "page", "size");
     private static final Set<String> PAGE_PARAMETERS = Set.of("page", "size");
     private static final Set<String> STATS_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
-            "source_mode");
+            "source_mode", "notification_decision");
     /** 统计输出的固定顺序；Set 常量无序，前端图例按这里的顺序展示。 */
-    private static final List<String> DELIVERY_ORDER = List.of("PENDING_DELIVERY", "SUBMITTED", "DELIVERED", "FAILED");
+    private static final List<String> DELIVERY_ORDER = List.of("PENDING_DELIVERY", "SUBMITTED", "DELIVERED", "FAILED", "PENDING_DECISION", "DO_NOT_NOTIFY");
     private static final List<String> RECEIPT_ORDER = List.of("NOT_EXPECTED", "PENDING", "ACKNOWLEDGED", "TIMEOUT");
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int DEFAULT_TREND_DAYS = 30, MAX_TREND_DAYS = 366, RECIPIENT_LIMIT = 8;
@@ -81,7 +82,9 @@ public class HandoffReadService {
             RiskReadService riskRead, UavEventRepository events, ObjectMapper objectMapper,com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory,
             AppClock clock, com.uav.lowaltitude.modules.target.infrastructure.TargetReadRepository targets,
             com.uav.lowaltitude.modules.evidence.infrastructure.EvidenceLedgerRepository ledger,
-            com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess) {
+            com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess,
+            com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups) {
+        this.followups=followups;
         this.targets=targets;this.ledger=ledger;this.commandAccess=commandAccess;
         this.directory=directory; this.clock = clock;
         this.access = access; this.repository = repository; this.risks = risks; this.riskRead = riskRead;
@@ -113,9 +116,10 @@ public class HandoffReadService {
         TimeRange created = request.timeRange("created_from", "created_to");
         HandoffQuery query = new HandoffQuery(request.enumerated("source_kind", HandoffRules.SOURCE_KINDS), request.optional("source_id", 36),
                 request.enumerated("delivery_status", HandoffRules.DELIVERY_STATUSES), created.from, created.to,
-                request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES));
+                request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES),
+                request.enumerated("notification_decision", Set.of("PENDING_DECISION","NOTIFY","DO_NOT_NOTIFY")));
         long total = repository.count(query, decision);
-        return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(HandoffReadService::dto).toList(),
+        return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row,followups.decision(row.handoffId()))).toList(),
                 page.page, page.size, total);
     }
 
@@ -130,7 +134,8 @@ public class HandoffReadService {
         TimeRange created = request.timeRange("created_from", "created_to");
         HandoffQuery query = new HandoffQuery(request.enumerated("source_kind", HandoffRules.SOURCE_KINDS), request.optional("source_id", 36),
                 request.enumerated("delivery_status", HandoffRules.DELIVERY_STATUSES), created.from, created.to,
-                request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES));
+                request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES),
+                request.enumerated("notification_decision", Set.of("PENDING_DECISION","NOTIFY","DO_NOT_NOTIFY")));
         long total = repository.count(query, decision);
         List<CountDto> byDelivery = ordered(DELIVERY_ORDER, repository.countByDelivery(query, decision));
         List<CountDto> byReceipt = ordered(RECEIPT_ORDER, repository.countByReceipt(query, decision));
@@ -178,7 +183,7 @@ public class HandoffReadService {
                 row.sourceVersion(), row.ownerOrgId(), row.districtId(), row.sourceMode(), row.submittedBy(), requiredMillis(row.createdAt()),
                 row.deliveryStatus(), row.receiptStatus(), row.receiptResult(), row.blockedReason(), material(row, source), latest == null ? null : dto(latest),
                 new AvailabilityDto(source.availability, evidenceAvailability(row, repository.snapshot(row.handoffId()), source.availability)), row.ownerOrgName(), row.districtName(), row.submittedByName(), row.sourceNo(), directory.handoffSnapshot(row.handoffId()),
-                row.triggerSource());
+                row.triggerSource(),followups.decision(row.handoffId()));
     }
 
     @Transactional(readOnly = true)
@@ -333,10 +338,13 @@ public class HandoffReadService {
     }
 
     public static HandoffDto dto(HandoffRow row) {
+        return dto(row,null);
+    }
+    private static HandoffDto dto(HandoffRow row,com.uav.lowaltitude.modules.handoff.api.HandoffDtos.NotificationDecisionDto notificationDecision) {
         return new HandoffDto(row.handoffId(), row.sourceKind(), row.sourceId(), row.handoffType(), row.recipientId(), row.recipientName(),
                 row.sourceVersion(), row.ownerOrgId(), row.districtId(), row.sourceMode(), row.submittedBy(), requiredMillis(row.createdAt()),
                 row.deliveryStatus(), row.receiptStatus(), row.receiptResult(), row.blockedReason(),
-                row.ownerOrgName(), row.districtName(), row.submittedByName(), row.sourceNo(), row.triggerSource());
+                row.ownerOrgName(), row.districtName(), row.submittedByName(), row.sourceNo(), row.triggerSource(),notificationDecision);
     }
 
     public static DeliveryDto dto(DeliveryRow row) {

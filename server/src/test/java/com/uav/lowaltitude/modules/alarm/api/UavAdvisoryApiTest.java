@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.ResultActions;
 class UavAdvisoryApiTest {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
     protected String eventId,session,userId,role;
     private static final String ORG="seed-stage3-org", DISTRICT="seed-stage3-district";
     @BeforeEach void fixture() {
@@ -76,6 +77,38 @@ class UavAdvisoryApiTest {
     @Test void missingSystemEvidenceNeverOffersDirectCounter() throws Exception {
         read().andExpect(jsonPath("$.data.can_direct_counter").value(false))
             .andExpect(jsonPath("$.data.counter_block_reason").isNotEmpty());
+    }
+    @Test void existingAuthorizationBlocksOnlyNewLaunchUntilItIsNoLongerActive() throws Exception {
+        com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture.seed(jdbc,eventId);
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values(?,'disposal:direct','OP',false,current_timestamp)",role);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(true))
+                .andExpect(jsonPath("$.data.can_direct_counter").value(true));
+        String id=key();Timestamp at=Timestamp.from(Instant.now());
+        String policy=jdbc.queryForObject("select policy_code from disposal_policy where status='ACTIVE' order by policy_code limit 1",String.class);
+        jdbc.update("insert into disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,device_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,source_mode,created_at,updated_at) values(?,?,'COUNTERMEASURE','UAV_EVENT',?,?,'COUNTERMEASURE_4CH','隔离资格验证',?,?,'REQUESTED',?,?,?,'mock',?,?)",id,"AUTH-"+id.substring(0,8),eventId,key(),userId,at,policy,ORG,DISTRICT,at,at);
+        for(String state:List.of("REQUESTED","APPROVED","EXECUTING")) {
+            if(!"REQUESTED".equals(state)) jdbc.update("update disposal_authorization set status=?,approved_by=?,approved_at=?,valid_from=?,valid_until=? where authorization_id=?",state,userId,at,at,Timestamp.from(Instant.now().plusSeconds(600)),id);
+            read().andExpect(jsonPath("$.data.can_request_counter").value(false))
+                    .andExpect(jsonPath("$.data.can_direct_counter").value(false))
+                    .andExpect(jsonPath("$.data.counter_launch_visible").value(false))
+                    .andExpect(jsonPath("$.data.counter_block_reason").isNotEmpty());
+            assertThat(advisory.counterBlockReason(eventId)).isEmpty(); // Existing execution must not be blocked by its own authorization.
+        }
+        jdbc.update("update disposal_authorization set subject_id=? where authorization_id=?",key(),id);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(true));
+        jdbc.update("update disposal_authorization set subject_id=? where authorization_id=?",eventId,id);
+        for(String state:List.of("CANCELLED","REJECTED","FAILED","EXPIRED")) {
+            jdbc.update("update disposal_authorization set status=? where authorization_id=?",state,id);
+            read().andExpect(jsonPath("$.data.can_request_counter").value(true))
+                    .andExpect(jsonPath("$.data.can_direct_counter").value(true));
+        }
+        String stop=key();
+        jdbc.update("insert into disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note) values(?,?,?,?,true,'隔离停机核查')",stop,eventId,userId,System.currentTimeMillis());
+        jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','COUNTERMEASURE_4CH','mock',true,'UNSUPPORTED','未核实实际停机')",stop,key(),id);
+        read().andExpect(jsonPath("$.data.can_request_counter").value(false))
+                .andExpect(jsonPath("$.data.can_direct_counter").value(false))
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(false))
+                .andExpect(jsonPath("$.data.counter_block_reason").value("上次急停设备仍未确认停止，请先完成核查"));
     }
     protected ResultActions read() throws Exception {return mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization",bearer()));}
     private ResultActions postActions(String body) throws Exception {return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/actions").header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content(body));}
