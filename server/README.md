@@ -1,5 +1,7 @@
 # low-altitude-server
 
+2026-10-17 旧演示代码清理：业务演示种子及专用回放/空域演示入口已移到 `server/src/test/java`（后端目录内为 `src/test/java`），仅供隔离自动化测试，不随运行包交付。现用信号模拟器和七流程生成入口保留；本地 QA 规则目录仍可补齐缺失配置，但不创建业务记录、不自动激活规则。验收继续保持 `app.dev-seed.enabled=false`；禁止通过测试 classpath 启动验收服务。
+
 2026-10-13：通知不设固定观察等待，短信送达即检查电话条件，电话播放完成后未明确撤离即可待反制，由操作员人工发起。实际运行库从进程DB_URL核对；本机为5432/houtaiguanli_fresh3，自动核实规则已开启但当前识别置信度缺失。详情见[核对与验证记录](../docs/acceptance/notification-zero-wait-2026-10-13.md)。
 
 2026-10-13 同步合并：来源贡献保留远端按当前观测类型补充模拟权重的实现；仅当前有效观测包含 `SIM_NORMALIZED` 时读取模拟权重，真实来源不额外访问模拟配置，生产门禁保持。合并本机的动态来源编号、混合观测属性与生产画像回归，来源贡献 11 项测试全部保留并通过。本机的读取性能优化和 `V202610130001` 索引同时保留，不改已应用迁移、历史事实或运行库规则版本。
@@ -115,7 +117,7 @@ Linux/macOS 在 `server/` 执行：
 
 数据库连接按 [application-local.yml](src/main/resources/application-local.yml)与 [Compose](../deploy/compose.yml)保持一致；修改了数据库凭据后须同步本地连接配置，不要提交或输出真实凭据。Flyway 会对所配置的数据库执行迁移。
 
-`local` profile 默认关闭 `app.dev-seed.enabled`，不预置运维模拟设备台账，也不补写业务演示数据；空库只在 `app.bootstrap-admin.enabled=true` 时幂等创建唯一合成超级管理员 `admin1`，默认临时密码为 `Admin@2026dev`（可通过 `APP_BOOTSTRAP_ADMIN_PASSWORD` 覆盖）。目标/轨迹和统计样本不在验收启动中自动生成。显式在隔离开发上下文开启 `app.dev-seed.enabled=true` 时，才会按对应 Seeder 登记回放设备或样本；生产和普通验收不得开启。其他角色和账号由 `admin1` 在系统管理中按需创建。设备模拟夹具仅在 `test` profile 注入，不能当作现场设备。本工程不是可直接上线的生产配置。
+`local` profile 默认关闭 `app.dev-seed.enabled`，不预置运维模拟设备台账，也不补写业务演示数据；空库只在 `app.bootstrap-admin.enabled=true` 时幂等创建唯一合成超级管理员 `admin1`，默认临时密码为 `Admin@2026dev`（可通过 `APP_BOOTSTRAP_ADMIN_PASSWORD` 覆盖）。目标/轨迹和统计样本不在验收启动中自动生成。旧 Seeder 仅保留在 `src/test/java`，由隔离自动化测试显式启用；运行包不包含这些夹具，生产和普通验收不得开启种子。其他角色和账号由 `admin1` 在系统管理中按需创建。设备模拟夹具仅在 `test` profile 注入，不能当作现场设备。本工程不是可直接上线的生产配置。
 
 两位开发者的个人数据库、共享联调库与迁移协作流程见[协作开发环境](../docs/协作开发环境.md)。
 
@@ -125,13 +127,15 @@ Linux/macOS 在 `server/` 执行：
 
 ## 本地 MQTT 模拟
 
+现用入口是独立信号模拟器及其“生成流程1–7数据”。下述固定 S85 样例和回放命令保留为历史协议测试资料，不能用于填充验收库；对应登记种子已移至测试源码，普通服务启动不再执行。
+
 迁入的 `server/scripts/keepalive_lingyun_static.py` 用于持续发送带新时刻的本地工参，避免冻结回放的时间戳被判为旧报文；`publish_lingyun_ndjson.py` 支持 `--eo-task-id` 和 `--renumber-msgcnt`，需要时显式指定，冻结原文件保持不变。`simulate_flight_check_mqtt.py` 为 `FP-CHECK-*` 设备发送本机工参；local 下 `FLIGHT_DEVICE_CHECK_MQTT_DEMO_ENABLED=true` 仅供 mock 计划演示，真实计划不使用模拟检查结果。脚本默认连接本机 MQTT，不是现场设备联调。
 
 飞行核验现行入口是 `POST /api/v1/flight-plans/{id}/verifications/automatic`，携带 `expected_revision`；旧人工结论入口返回 `MANUAL_VERIFICATION_DISABLED`。系统检查保留起飞状态 UNKNOWN；来源回告通道缺失时不冒充已送达。
 
 本机用 Compose 里的 Mosquitto（只绑 `127.0.0.1:1883`）发布仓库内冻结的 180 行 NDJSON，验证协议 A/C 适配器把报文写入 `inbox_message`。这不是现场联调，也不打开融合。
 
-`local` profile 且 `app.dev-seed.enabled=true` 时，启动会幂等登记：
+隔离测试加载旧 `LocalMqttSimSeeder` 夹具时，会幂等登记以下历史样例：
 
 - MQTT 连接 `local-lingyun-replay`：`127.0.0.1:1883`，`tls=false`，`allowed_cidrs=127.0.0.1/32`，`source_mode=replay`，并启用
 - 设备：`S85R1` 雷达、`S85T1` TDOA、`S85G1` 5G-A（`LINGYUN_MQTT_V8_6`，`providerCode=dongying`）；现场只有融合感知箱（雷达、光电、反制）、TDOA、5G-A 和气象设备，早期登记的 `S85A1`/`S85D1`/`S85I1`/`S85Y1`/`S85F1`/`S85B1` 不再登记，已有库启动时给它们打删除标记；光电边端 `edgeId=S85E1`、`externalDeviceId=S85E1D1`（`EO_EDGE_MQTT_20250826`）
@@ -142,14 +146,14 @@ Linux/macOS 在 `server/` 执行：
 # 1. 启动库和本机 broker（在 deploy/）
 docker compose --profile qa up -d db mosquitto
 
-# 2. local 启动后端（种子登记连接与 replay 设备）
+# 2. 启动后端（不登记旧种子设备；当前设备由信号模拟器受控登记）
 cd ../server
 # Windows PowerShell
 New-Item -ItemType Directory -Force .\target\qa-tmp | Out-Null
 .\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=local" "-Dspring-boot.run.jvmArguments=-Djava.io.tmpdir=E:/houtaiguanlii/server/target/qa-tmp -Djdk.net.unixdomain.tmpdir=E:/houtaiguanlii/server/target/qa-tmp"
 # Linux/macOS: ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 
-# 3. 仅在显式开启 dev-seed 的隔离开发库中登录 admin1 / Admin@2026dev，设备页确认回放连接；验收启动保持 dev-seed=false，不期待自动出现 replay 设备
+# 3. 使用已有账号登录；验收保持 dev-seed=false，由当前信号模拟器准备所用设备和场景
 
 # 4. 仓库根目录发布 NDJSON（payload 原样 UTF-8 字节，禁止再 json.dumps）
 python server/scripts/publish_lingyun_ndjson.py

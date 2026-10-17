@@ -19,6 +19,6 @@ public class LocalQaRuleCatalog implements ApplicationRunner {
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        new LocalStage7RuleEngineSeeder(jdbc).prepareRuleCatalog(Instant.now(),false);
+        new LocalRuleCatalogDefinitions(jdbc).prepareRuleCatalog(Instant.now());
     }
 }
