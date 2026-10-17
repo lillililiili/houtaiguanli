@@ -795,8 +795,9 @@ public class DeviceRepository {
                        (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING')) AS eo_tasks,
                        (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
                         ON a.authorization_id=r.authorization_id WHERE r.device_id=? AND a.status='EXECUTING')
-                     + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING') AS disposals
-                """, (rs, row) -> new ActiveWork(rs.getLong("commands"), rs.getLong("commissions"), rs.getLong("eo_tasks"),
+                     + (SELECT COUNT(*) FROM disposal_authorization a WHERE a.device_id=? AND (a.status='EXECUTING' OR (%s))) AS disposals
+                """.formatted(com.uav.lowaltitude.modules.disposal.infrastructure.DisposalSafetySql.UNCERTAIN_START),
+                (rs, row) -> new ActiveWork(rs.getLong("commands"), rs.getLong("commissions"), rs.getLong("eo_tasks"),
                 rs.getLong("disposals")), id, allowMockSnapshots, id, id, id, id);
     }
 
@@ -847,6 +848,8 @@ public class DeviceRepository {
                 OR EXISTS (SELECT 1 FROM disposal_device_run r JOIN disposal_authorization a
                     ON a.authorization_id=r.authorization_id WHERE r.device_id=:device AND a.status='EXECUTING')
                 OR EXISTS (SELECT 1 FROM disposal_authorization WHERE device_id=:device AND status='EXECUTING')
+                OR EXISTS (SELECT 1 FROM disposal_authorization a WHERE a.device_id=:device AND (
+                """ + com.uav.lowaltitude.modules.disposal.infrastructure.DisposalSafetySql.UNCERTAIN_START + "))" + """
                 OR EXISTS (
                     SELECT 1 FROM eo_tracking_task t JOIN ops_device d ON d.device_id=t.ops_device_id
                     LEFT JOIN eo_device_binding b ON b.ops_device_id=d.device_id

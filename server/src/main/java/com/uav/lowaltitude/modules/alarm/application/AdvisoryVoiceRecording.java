@@ -43,6 +43,11 @@ public class AdvisoryVoiceRecording {
     }
     /** 当前可以播放的录音；没有或文件不可用时返回 null。 */
     public Recording current() {return resolve().recording();}
+    /** Distinguish absent configuration from a configured recording whose file cannot currently be read. */
+    public boolean hasConfiguration() {
+        return (uploaded != null && uploaded.active() != null)
+                || !id.isBlank() || !name.isBlank() || !path.isBlank() || !transcript.isBlank();
+    }
     /** 当前生效来源及录音；只读。uploadedId/uploadedName 只在后台选用了上传录音时出现。 */
     public Resolution resolve() {
         Row active=uploaded==null?null:uploaded.active();

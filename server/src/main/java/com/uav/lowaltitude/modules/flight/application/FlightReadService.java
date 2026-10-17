@@ -10,6 +10,7 @@ import java.util.Set;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.MultiValueMap;
 
@@ -65,7 +66,7 @@ public class FlightReadService {
     }
 
     /** 飞行任务列表接口；不带 order 时与 flightPlans 结果相同（仪表盘、模拟器仍直接调 flightPlans）。 */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public PlanPageDto flightPlanList(MultiValueMap<String, String> parameters) {
         AccessDecision access = accessControl.require(PermissionCode.FLIGHT_READ);
         RequestValues request = new RequestValues(parameters, PLAN_LIST_PARAMETERS);

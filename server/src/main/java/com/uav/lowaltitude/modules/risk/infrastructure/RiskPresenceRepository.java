@@ -67,7 +67,8 @@ public class RiskPresenceRepository {
                 select p.point_id,p.point_kind,p.observed_at,p.received_at,ls.observed_at latest_at,
                   ST_Distance(rv.centerline::geography,p.location::geography) distance_m,
                   p.position_accuracy_m,rv.corridor_width_m/2 half_width_m,
-                  ST_Equals(ls.location,p.location) same_location,CAST(ls.unknown_fields AS VARCHAR) unknown_fields,
+                  (ST_Equals(ls.location,p.location) AND ls.received_at=p.received_at) same_location,
+                  CAST(ls.unknown_fields AS VARCHAR) unknown_fields,
                   t.source_mode target_mode,s.source_mode,so.source_mode observation_mode,
                   plan.source_mode plan_mode,rt.source_mode route_mode,COALESCE(d.determined,TRUE) determined,
                   so.observed_at source_observed_at,so.received_at source_received_at,
@@ -85,7 +86,35 @@ public class RiskPresenceRepository {
                   (select count(*) from track_point other join track ot on ot.track_id=other.track_id
                     where ot.target_id=t.target_id and ot.layer='FUSED' and other.observed_at=p.observed_at
                       and (other.point_kind<>p.point_kind or not ST_Equals(other.location,p.location)
-                        or other.position_accuracy_m IS DISTINCT FROM p.position_accuracy_m)) peers
+                        or other.position_accuracy_m IS DISTINCT FROM p.position_accuracy_m)
+                      -- The writer appends a new sequence and replaces latest in the same frame.
+                      -- Only an ordered, spatially consistent MEAS revision on that very track
+                      -- is superseded. Independent tracks, ambiguous order and disjoint accuracy
+                      -- regions remain contradictory evidence, even if a newer point exists.
+                      and not COALESCE((other.track_id=p.track_id AND ot.config_version IS NOT NULL
+                        AND other.point_kind='MEAS' AND p.point_kind='MEAS'
+                        AND other.point_seq<p.point_seq AND other.received_at<p.received_at
+                        AND other.observation_id IS NOT NULL AND other.position_source_id IS NOT NULL
+                        AND p.observation_id IS NOT NULL AND p.position_source_id IS NOT NULL
+                        AND EXISTS(select 1 from source_observation prior
+                          join integration_source prior_source on prior_source.source_id=prior.source_id
+                          where prior.observation_id=other.observation_id AND prior.source_id=other.position_source_id
+                            AND prior_source.enabled=TRUE AND prior_source.source_mode=t.source_mode
+                            AND prior.source_mode=t.source_mode AND prior.location IS NOT NULL
+                            AND prior.owner_org_id=t.owner_org_id AND prior.district_id=t.district_id
+                            AND prior.observed_at<=other.observed_at AND prior.received_at>=prior.observed_at
+                            AND prior.received_at<=other.received_at
+                            AND EXISTS(select 1 from target_source_link prior_link
+                              join target prior_target on prior_target.target_id=prior_link.target_id
+                              left join target_current_alias prior_alias on prior_alias.historical_target_id=prior_link.target_id
+                              where prior_link.source_id=prior.source_id AND prior_link.source_session_key=prior.source_session_key
+                                AND prior_link.external_target_id=prior.external_target_id
+                                AND COALESCE(prior_alias.current_target_id,prior_link.target_id)=t.target_id
+                                AND prior_target.owner_org_id=t.owner_org_id AND prior_target.district_id=t.district_id
+                                AND prior_target.source_mode=t.source_mode))
+                        AND other.position_accuracy_m>0 AND p.position_accuracy_m>0
+                        AND ST_DWithin(other.location::geography,p.location::geography,
+                          LEAST(other.position_accuracy_m,p.position_accuracy_m))),FALSE)) peers
                 from target t join target_latest_state ls on ls.target_id=t.target_id
                 join lateral (select candidate.* from track tr
                   cross join lateral (select tp.* from track_point tp where tp.track_id=tr.track_id

@@ -22,15 +22,18 @@ public class DirectDisposalAccess {
     private final DeviceAccessPolicy devices;
     private final AppClock clock;
     private final com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows;
+    private final AutomaticCounterAuthorization automatic;
 
     public DirectDisposalAccess(IdentityAdminMapper identity, DisposalRepository authorizations,
                                 DeviceAccessPolicy devices, AppClock clock,
-                                com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows) {
+                                com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows,
+                                AutomaticCounterAuthorization automatic) {
         this.identity = identity;
         this.authorizations = authorizations;
         this.devices = devices;
         this.clock = clock;
         this.deviceRows = deviceRows;
+        this.automatic = automatic;
     }
 
     public AuthUser eligibleRequester(AuthorizationRow row, boolean needsDeviceControl) {
@@ -38,8 +41,12 @@ public class DirectDisposalAccess {
         var now = clock.now().atOffset(ZoneOffset.UTC);
         if (row.validFrom() == null || row.validUntil() == null
                 || now.isBefore(row.validFrom()) || !now.isBefore(row.validUntil())) return null;
-        // 旧自动授权保留历史，但不能再启动设备；停机命令走独立的安全流程。
-        if (AutomationPrincipal.USER_ID.equals(row.requestedBy())) return null;
+        // Only the new persisted rule/run contract can dispatch. The disabled system account is not a login grant.
+        if (AutomationPrincipal.USER_ID.equals(row.requestedBy())) {
+            try {
+                return automatic.mayStart(row) ? authorizations.actor(row.requestedBy()) : null;
+            } catch (RuntimeException unavailable) { return null; }
+        }
         var user = identity.findAdminUser(row.requestedBy(), clock.nowMillis());
         if (user == null || !"ACTIVE".equals(user.getStatus()) || user.isMustChangePassword()) return null;
         var role = identity.findRole(user.getRoleCode());

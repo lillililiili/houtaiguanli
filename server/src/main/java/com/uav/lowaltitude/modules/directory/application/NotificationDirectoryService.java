@@ -45,6 +45,25 @@ public class NotificationDirectoryService {
  public RecipientSnapshot forPilotPlan(String purpose,String planId){if(!Set.of("ADVISORY_SMS","ADVISORY_VOICE").contains(purpose))throw bad("飞手通知用途无效");var row=require("ADVISORY_SMS".equals(purpose)?"advisory-sms":"advisory-voice");var plan=repo.subjectInternal(planId);if(plan==null||plan.pilotId()==null)return missing(null,null,"未找到该任务的执行飞手联系人");var c=repo.contact(plan.pilotId());if(c==null||!Objects.equals(c.orgId(),plan.operatorOrgId())||!c.roles().contains("PILOT"))return missing(null,null,"飞手身份与任务运营单位未形成有效关联");String reason=reason(row);if(!c.enabled()||(c.validUntil()!=null&&c.validUntil()<=clock.nowMillis()))reason="执行飞手联系人不可用";if(blank(c.phone())==null||c.verifiedAt()==null||c.verifiedAt()>clock.nowMillis()||blank(c.verificationBasis())==null)reason="执行飞手联系方式尚未有效核验";return new RecipientSnapshot(c.contactId(),c.name(),c.orgId(),c.orgName(),c.contactId(),c.name(),mask(c.phone()),row.channelType(),row.endpointRef(),row.id(),row.version(),reason==null,reason,clock.nowMillis(),template(row.purpose()),templateVersion(row.purpose()),receipt(row.purpose()),c.version());}
  /** 调用方已完成当前事件/目标/时效守卫；仍核对同一最新评估、同一事件与计划范围。 */
  public RecipientSnapshot currentPilotEvent(String purpose,String eventId){return forPilotEvent(purpose,eventId,repo.latestEventEvaluation(eventId));}
+ /** Structured configuration facts only: a temporary simulator outage is never permission to skip notification. */
+ public boolean cannotNotifyPilotFromConfiguration(String purpose,String eventId){
+  if(!Set.of("ADVISORY_SMS","ADVISORY_VOICE").contains(purpose))throw bad("飞手通知用途无效");
+  var association=repo.currentPilotPlanAssociation(eventId);
+  if(association==null)return false;
+  if(association.explicitlyNoPlan())return true;
+  if(association.planId()==null)return false;
+  var plan=repo.subjectInternal(association.planId());
+  if(plan==null)return false;
+  if(plan.pilotId()==null)return true;
+  var contact=repo.contact(plan.pilotId());
+  if(contact==null||!Objects.equals(contact.orgId(),plan.operatorOrgId())||!contact.roles().contains("PILOT"))return false;
+  long now=clock.nowMillis();
+  if(!contact.enabled()||(contact.validUntil()!=null&&contact.validUntil()<=now)
+    ||blank(contact.phone())==null||contact.verifiedAt()==null||contact.verifiedAt()>now||blank(contact.verificationBasis())==null)return true;
+  var setting=repo.setting("ADVISORY_SMS".equals(purpose)?"advisory-sms":"advisory-voice");
+  return setting!=null&&(!setting.enabled()||"NONE".equals(setting.channelType())
+    ||(setting.validUntil()!=null&&setting.validUntil()<=now));
+ }
  /**
   * BLOCK-03（2026-10-06 用户确认）：飞手信息由上级计划接口提供，不设补录页面。当前事件精确关联的计划没有执行飞手，
   * 或执行飞手没有电话时为 true，页面据此写明“缺飞手联系方式”。事件尚无精确关联计划、联系方式待核验、

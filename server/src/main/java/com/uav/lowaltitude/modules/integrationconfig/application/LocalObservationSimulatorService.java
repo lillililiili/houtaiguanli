@@ -69,12 +69,19 @@ public class LocalObservationSimulatorService {
             if (!hash.equals(previous.requestHash())) throw conflict("同一消息编号的观测源资料已变化，请使用新编号");
             return new RegisteredDevice(previous.sourceId(), previous.deviceId(), previous.messageId());
         }
+        if (input.originOpsDeviceId() != null) {
+            if (input.originOpsDeviceId().isBlank()) throw bad("origin_ops_device_id 不能为空白");
+            if (!repository.lockValidSimulatedOrigin(input.originOpsDeviceId(), input.ownerOrgId(), input.districtId()))
+                throw bad("原始设备必须为同一单位区域内已登记、启用且身份完整的模拟设备");
+        }
         String sourceId = stableId("SIM_NORMALIZED_SOURCE:", input.messageId());
         String deviceId = stableId("SIM_NORMALIZED_DEVICE:", input.messageId());
         repository.insertObservationRegistration(sourceId, deviceId, input.messageId(), input.ownerOrgId(),
-                input.districtId(), hash, "sim-normalized-" + sourceId, input.name(), point(input.longitude(), input.latitude()), clock.nowMillis());
+                input.districtId(), hash, "sim-normalized-" + sourceId, input.name(), point(input.longitude(), input.latitude()),
+                input.originOpsDeviceId(), clock.nowMillis());
         audit.record(actor.userId(), actor.account(), "local_observation_source_register", "device", deviceId,
-                "登记规范化模拟观测源；单位=" + input.ownerOrgId() + "；区域=" + input.districtId(), null);
+                "登记规范化模拟观测源；单位=" + input.ownerOrgId() + "；区域=" + input.districtId()
+                        + (input.originOpsDeviceId() == null ? "" : "；原始台账设备=" + input.originOpsDeviceId()), null);
         return new RegisteredDevice(sourceId, deviceId, input.messageId());
     }
 

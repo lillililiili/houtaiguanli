@@ -35,6 +35,7 @@ class DirectDisposalAccessTest {
     @Mock DisposalRepository authorizations;
     @Mock DeviceAccessPolicy devices;
     @Mock AutomationRuntimeEligibility automation;
+    @Mock AutomaticCounterAuthorization automatic;
     @Mock com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows;
 
     @Test
@@ -72,7 +73,17 @@ class DirectDisposalAccessTest {
     }
 
     private DirectDisposalAccess access() {
-        return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), deviceRows);
+        return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), deviceRows, automatic);
+    }
+
+    @Test void newlyBoundAutomaticCounterUsesTheSystemActorWithoutImpersonatingAHuman() {
+        var row = row(NOW.minusSeconds(30), NOW.plusSeconds(60));
+        AuthUser actor = new AuthUser(AutomationPrincipal.USER_ID, AutomationPrincipal.ACCOUNT, "自动规则",
+                AutomationPrincipal.ROLE, 0, false, "ALL");
+        when(automatic.mayStart(row)).thenReturn(true);
+        when(authorizations.actor(AutomationPrincipal.USER_ID)).thenReturn(actor);
+        assertThat(access().eligibleRequester(row, true)).isSameAs(actor);
+        verify(identity, never()).findAdminUser(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyLong());
     }
 
     private static AuthorizationRow row(Instant from, Instant until) {

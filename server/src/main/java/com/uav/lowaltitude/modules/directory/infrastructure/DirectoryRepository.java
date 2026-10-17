@@ -98,6 +98,27 @@ public class DirectoryRepository {
   return page(sql,w,sort,(r,n)->new Option(r.getString("id"),r.getString("label"),r.getString("org_id"),r.getString("source_id")),page,size);
  }
  public String latestEventEvaluation(String eventId){return one("SELECT r.evaluation_id FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id JOIN rule_evaluation r ON r.target_id=a.target_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id WHERE e.event_id=? AND r.mode='ACTIVE' ORDER BY r.evaluated_at DESC,r.evaluation_id DESC FETCH FIRST 1 ROWS ONLY",(r,n)->r.getString(1),eventId);}
+ /** A single statement snapshot: an obsolete/missing association is not evidence of an absent plan. */
+ public PilotPlanAssociation currentPilotPlanAssociation(String eventId){
+  return one("""
+    WITH current_evaluation AS (
+      SELECT r.evaluation_id,r.alarm_id,r.plan_id,r.plan_match_code,r.source_mode,
+             e.alarm_id AS event_alarm_id,e.owner_org_id,e.district_id,a.source_mode AS alarm_source_mode
+      FROM uav_event e
+      JOIN alarm a ON a.alarm_id=e.alarm_id AND a.owner_org_id=e.owner_org_id AND a.district_id=e.district_id
+      JOIN rule_evaluation r ON r.target_id=a.target_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id
+      WHERE e.event_id=? AND r.mode='ACTIVE'
+      ORDER BY r.evaluated_at DESC,r.evaluation_id DESC FETCH FIRST 1 ROWS ONLY
+    )
+    SELECT r.evaluation_id,r.plan_id AS evaluated_plan_id,r.plan_match_code,p.plan_id AS matched_plan_id
+    FROM current_evaluation r
+    LEFT JOIN flight_plan p ON p.plan_id=r.plan_id AND p.owner_org_id=r.owner_org_id AND p.district_id=r.district_id
+                              AND r.plan_match_code IN('FULL','PARTIAL')
+    WHERE r.alarm_id=r.event_alarm_id AND r.source_mode=r.alarm_source_mode
+    """,(r,n)->new PilotPlanAssociation(r.getString("evaluation_id"),r.getString("matched_plan_id"),
+      "NONE".equals(r.getString("plan_match_code"))&&r.getString("evaluated_plan_id")==null),eventId);
+ }
+ public record PilotPlanAssociation(String evaluationId,String planId,boolean explicitlyNoPlan) { }
  public String eventPlan(String eventId,String evaluationId){if(evaluationId==null)return null;return one("SELECT r.plan_id FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id JOIN rule_evaluation r ON r.target_id=a.target_id AND r.alarm_id=e.alarm_id AND r.owner_org_id=e.owner_org_id AND r.district_id=e.district_id JOIN flight_plan p ON p.plan_id=r.plan_id AND p.owner_org_id=e.owner_org_id AND p.district_id=e.district_id WHERE e.event_id=? AND r.evaluation_id=? AND r.mode='ACTIVE' AND r.plan_match_code IN('FULL','PARTIAL') AND NOT EXISTS(SELECT 1 FROM rule_evaluation newer WHERE newer.target_id=r.target_id AND newer.owner_org_id=r.owner_org_id AND newer.district_id=r.district_id AND newer.mode='ACTIVE' AND (newer.evaluated_at>r.evaluated_at OR(newer.evaluated_at=r.evaluated_at AND newer.evaluation_id>r.evaluation_id)))",(r,n)->r.getString(1),eventId,evaluationId);}
  public RecipientSnapshot advisoryTaskSnapshot(String purpose,String eventId){String table="ADVISORY_SMS".equals(purpose)?"uav_auto_sms_task":"uav_auto_voice_task";String value=one("SELECT recipient_snapshot FROM "+table+" WHERE event_id=?",(r,n)->r.getString(1),eventId);return decodeSnapshot(value);}
  public void freezeAdvisoryTask(String purpose,String eventId,RecipientSnapshot snapshot){String table="ADVISORY_SMS".equals(purpose)?"uav_auto_sms_task":"uav_auto_voice_task";jdbc.update("UPDATE "+table+" SET recipient_snapshot=? WHERE event_id=? AND recipient_snapshot IS NULL",encode(snapshot),eventId);}

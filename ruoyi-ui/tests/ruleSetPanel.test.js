@@ -34,12 +34,14 @@ describe('研判规则集启用', () => {
     expect(host.textContent).toContain('合法性研判演示规则集')
     expect(host.textContent).toContain('尚未启用，系统不会按这套规则研判')
     expect(host.textContent).toContain('演示参数，未经业务方确认')
+    expect([...host.querySelectorAll('.version-id')].map(el => el.textContent)).toEqual(['v2', 'v1'])
   })
 
   it('启用时填写原因并带上规则集版本号，完成后重新读取', async () => {
     await mount()
     buttons('启用此版本')[1].click(); await settle()
     expect(ElMessageBox.prompt).toHaveBeenCalledWith(expect.stringContaining('第 1 版'), '启用第 1 版', expect.any(Object))
+    expect(ElMessageBox.prompt.mock.calls[0][0]).toContain('（v1）')
     expect(ruleSetApi.activate).toHaveBeenCalledWith('LEGALITY-DEMO', { rule_set_version_id: 'v1', note: '新系统准备', expected_version: 0 })
     expect(ElMessage.success).toHaveBeenCalled()
     expect(ruleSetApi.list).toHaveBeenCalledTimes(2)

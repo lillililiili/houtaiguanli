@@ -12,11 +12,17 @@ import static org.mockito.Mockito.when;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpStatus;
 
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.HitDetailDto;
@@ -154,6 +160,72 @@ class FlightPlanAttentionServiceTest {
         assertThat(FlightPlanAttentionService.matchIssue(match("UNDETERMINED", null))).isEqualTo("UNDETERMINED");
         assertThat(FlightPlanAttentionService.matchIssue(match("PARTIAL", "MISMATCH"))).isEqualTo("DEVIATION");
         assertThat(FlightPlanAttentionService.matchIssue(match("MATCHED", null))).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {2000, 2001, 4001})
+    void completePopulationDrivesPriorityFiltersSummaryAndEveryPage(int activeCount) {
+        String prefix = UUID.randomUUID().toString();
+        var deviation = row(prefix + "-deviation", "EXECUTING", T0.minusDays(4));
+        var aircraft = row(prefix + "-aircraft", "EXECUTING", T0.minusDays(2));
+        var faultyDevice = row(prefix + "-device", "EXECUTING", T0.minusDays(3));
+        var normal = row(prefix + "-normal", "EXECUTING", T0.minusDays(5));
+        var riskPlan = row(prefix + "-risk", "APPROVED", T0.plusHours(2));
+        // The oldest five tasks fall beyond the former cap. Tied times exercise deterministic ID ordering.
+        var pending = IntStream.range(0, activeCount - 5)
+                .mapToObj(i -> row(prefix + "-pending-" + i, "PENDING", T0.plusDays(1).plusSeconds(i / 3))).toList();
+        List<PlanRow> population = new ArrayList<>(pending);
+        population.addAll(List.of(deviation, aircraft, faultyDevice, normal, riskPlan));
+        population.sort(Comparator.comparing(PlanRow::startAt).reversed().thenComparing(PlanRow::planId));
+        var history = IntStream.range(0, 7).mapToObj(i -> row(prefix + "-ended-" + i,
+                i % 2 == 0 ? "COMPLETED" : "CANCELLED", T0.minusDays(10).minusHours(i))).toList();
+        when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(true), anyInt(), anyInt()))
+                .thenAnswer(call -> pageOf(population, call.getArgument(4), call.getArgument(5)));
+        when(plans.countPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false))).thenReturn((long) history.size());
+        when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false), anyInt(), anyInt()))
+                .thenAnswer(call -> pageOf(history, call.getArgument(4), call.getArgument(5)));
+        when(actuals.latestMatch(deviation.planId(), ACCESS)).thenReturn(match("PARTIAL", "MISMATCH"));
+        when(actuals.latestMatch(aircraft.planId(), ACCESS)).thenReturn(match("NONE", null));
+        when(plans.openDeviceTasks(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(faultyDevice.planId())
+                ? List.of(new OpenDeviceTaskRow(faultyDevice.planId(), prefix + "-task", "设备", "SUBMITTED")) : List.of());
+        var facts = List.of(new PlanStateCount(aircraft.planId(), "PENDING_NOTIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 2),
+                new PlanStateCount(riskPlan.planId(), "PENDING_VERIFICATION", "SPACE_OBJECT", "OBJECT_NEAR_ROUTE", 3));
+        when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenAnswer(call ->
+                facts.stream().filter(fact -> ((List<?>) call.getArgument(1)).contains(fact.planId())).toList());
+
+        List<PlanRow> expected = new ArrayList<>(List.of(deviation, aircraft, faultyDevice, riskPlan, normal));
+        expected.addAll(pending.stream().sorted(Comparator.comparing(PlanRow::startAt).thenComparing(PlanRow::planId)).toList());
+        expected.addAll(history);
+        List<String> collected = new ArrayList<>();
+        for (int offset = 0; offset < expected.size(); offset += 73) {
+            var page = service.page(PlanQuery.empty(), ACCESS, null, offset, 73);
+            assertThat(page.rows()).containsExactlyElementsOf(pageOf(expected, offset, 73));
+            assertThat(page.total()).isEqualTo(expected.size());
+            assertThat(page.summary().needsAction()).isEqualTo(4);
+            assertThat(page.summary().deviation()).isEqualTo(1);
+            assertThat(page.summary().aircraft()).isEqualTo(1);
+            assertThat(page.summary().device()).isEqualTo(1);
+            assertThat(page.summary().risk()).isEqualTo(2);
+            assertThat(page.summary().otherExecuting()).isEqualTo(1);
+            collected.addAll(page.rows().stream().map(PlanRow::planId).toList());
+        }
+        assertThat(collected).doesNotHaveDuplicates().containsExactlyElementsOf(expected.stream().map(PlanRow::planId).toList());
+        for (var filter : Map.of("DEVIATION", List.of(deviation), "AIRCRAFT", List.of(aircraft),
+                "DEVICE", List.of(faultyDevice), "RISK", List.of(aircraft, riskPlan)).entrySet()) {
+            for (int offset = 0; offset <= filter.getValue().size(); offset++) {
+                var page = service.page(PlanQuery.empty(), ACCESS, filter.getKey(), offset, 1);
+                assertThat(page.rows()).containsExactlyElementsOf(pageOf(filter.getValue(), offset, 1));
+                assertThat(page.total()).isEqualTo(filter.getValue().size());
+                assertThat(page.summary().needsAction()).isEqualTo(4);
+            }
+        }
+        assertThat(service.page(PlanQuery.empty(), ACCESS, null, Integer.MAX_VALUE - 10, 100).rows()).isEmpty();
+        var transition = service.page(PlanQuery.empty(), ACCESS, null, activeCount - 1, 4);
+        assertThat(transition.rows()).containsExactlyElementsOf(expected.subList(activeCount - 1, activeCount + 3));
+    }
+
+    private static <T> List<T> pageOf(List<T> rows, int offset, int size) {
+        return offset >= rows.size() ? List.of() : rows.subList(offset, (int) Math.min(rows.size(), (long) offset + size));
     }
 
     private static MatchDto match(String code, String corridor) {

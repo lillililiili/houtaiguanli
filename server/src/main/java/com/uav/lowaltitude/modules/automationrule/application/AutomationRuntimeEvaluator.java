@@ -31,9 +31,11 @@ public final class AutomationRuntimeEvaluator {
         boolean failed=false,unknown=false,holding=false;
         for(Rule rule:enabled) {
             var fact=facts.facts().get(rule.itemCode());
+            // Device count has an explicit 60-second evidence window; other facts retain deployment policy.
+            long factMaxAge="sourceCount".equals(rule.itemCode())?60_000:maxAge;
             String actual=fact==null?null:fact.value();
             String unavailable=fact==null?"缺少当前判定依据":fact.unavailableReason();
-            if(actual==null||!fresh(fact.observedAt(),now,maxAge)) {
+            if(actual==null||!fresh(fact.observedAt(),now,factMaxAge)) {
                 unknown=true;checks.add(new Condition(rule.name(),"UNKNOWN",display(actual),expected(rule),unavailable(unavailable)));continue;
             }
             boolean pass=matches(group.category(),rule,actual);
@@ -41,7 +43,7 @@ public final class AutomationRuntimeEvaluator {
             if(!pass)failed=true;
             if(pass&&rule.holdSeconds()>0) {
                 Hold old=previous.get(rule.ruleId());long observed=fact.observedAt();
-                long since=old!=null&&observed>=old.observedAt()&&observed-old.observedAt()<=maxAge?old.since():observed;
+                long since=old!=null&&observed>=old.observedAt()&&observed-old.observedAt()<=factMaxAge?old.since():observed;
                 holds.put(rule.ruleId(),new Hold(since,observed));
                 if(observed-since<rule.holdSeconds()*1000L) {holding=true;state="WAITING";reason="等待连续有效观测满足 "+rule.holdSeconds()+" 秒";}
             }
@@ -69,6 +71,7 @@ public final class AutomationRuntimeEvaluator {
             case "LATEST_OBSERVATION_MISSING_STALE_OR_FUTURE"->"最新观测缺失、过期或时间异常";
             case "NO_CURRENT_CONTIGUOUS_RAW_OBSERVATIONS_WITH_TRACK_CONFIG"->"缺少连续有效的原始轨迹观测";
             case "NO_CURRENT_TRACEABLE_SOURCE_OBSERVATION"->"缺少当前可追溯的原始观测";
+            case "NO_CURRENT_VERIFIABLE_DEVICE_OBSERVATION_WITHIN_60_SECONDS"->"最近60秒没有可验证设备身份的有效观测";
             case "NO_PERSISTED_CURRENT_RECEIPT_CHANNEL_READINESS_EVIDENCE"->"缺少回执通道当前可用的依据";
             case "REQUIRES_AUTHORIZED_EXECUTION_DEVICE_AND_CURRENT_DISPATCH_CHECK","UNIQUE_CURRENT_COUNTER_AUTHORIZATION_REQUIRED"->"缺少唯一、有效的反制授权及对应执行设备";
             case "TWO_INDEPENDENT_IDENTITY_SOURCES_REQUIRED"->"需至少两个独立来源的有效身份信息";

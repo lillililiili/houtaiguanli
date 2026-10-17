@@ -4,6 +4,8 @@ import java.sql.Timestamp;
 import java.util.List;
 import java.util.Map;
 
+import com.uav.lowaltitude.modules.device.infrastructure.ObservationDeviceIdentitySql;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -36,6 +38,17 @@ public class LocalObservationSimulatorRepository {
                 r.getString("message_id"), r.getString("owner_org_id"), r.getString("district_id"),
                 r.getString("request_hash")), messageId);
         return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** Lock the identity being linked, then validate its complete current registration and scope. */
+    public boolean lockValidSimulatedOrigin(String opsDeviceId, String ownerOrgId, String districtId) {
+        var locked = jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE", String.class, opsDeviceId);
+        if (locked.isEmpty()) return false;
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM (" + ObservationDeviceIdentitySql.PHYSICAL_IDENTITIES + """
+                ) registered_identity WHERE registered_identity.ops_device_id=? AND registered_identity.owner_org_id=?
+                  AND registered_identity.district_id=? AND registered_identity.simulated=TRUE
+                """, Long.class, opsDeviceId, ownerOrgId, districtId);
+        return count != null && count == 1;
     }
 
     public WeatherRegistration weatherRegistration(String messageId) {
@@ -76,7 +89,7 @@ public class LocalObservationSimulatorRepository {
 
     public void insertObservationRegistration(String sourceId, String deviceId, String messageId,
             String ownerOrgId, String districtId, String requestHash, String sourceCode, String name,
-            String location, long now) {
+            String location, String originOpsDeviceId, long now) {
         Timestamp timestamp = new Timestamp(now);
         jdbc.update("""
                 INSERT INTO integration_source(source_id,source_code,name,protocol_code,protocol_version,
@@ -89,9 +102,9 @@ public class LocalObservationSimulatorRepository {
                 VALUES(?,?,?,?,?,'normalized_source',CAST(? AS GEOMETRY),TRUE,'replay',?,?,?, ?,0)
                 """, deviceId, sourceId, sourceId, sourceCode, name, location, ownerOrgId, districtId, timestamp, timestamp);
         jdbc.update("""
-                INSERT INTO simulator_observation_source(source_id,device_id,message_id,owner_org_id,district_id,request_hash,created_at)
-                VALUES(?,?,?,?,?,?,?)
-                """, sourceId, deviceId, messageId, ownerOrgId, districtId, requestHash, timestamp);
+                INSERT INTO simulator_observation_source(source_id,device_id,message_id,owner_org_id,district_id,request_hash,origin_ops_device_id,created_at)
+                VALUES(?,?,?,?,?,?,?,?)
+                """, sourceId, deviceId, messageId, ownerOrgId, districtId, requestHash, originOpsDeviceId, timestamp);
     }
 
     public void insertWeatherRegistration(String sourceId, String deviceId, String messageId,

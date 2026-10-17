@@ -264,14 +264,22 @@ public class UavAdvisoryService {
             if ("FALSE_POSITIVE".equals(event.state()))
                 return new AutoHandoff(false, "NOT_REQUIRED", "已核实为误报，不需要移送处罚", null, null, null, null, null);
             if(repository.noCounterActive(eventId))return new AutoHandoff(false,"NOT_REQUIRED","已决定不反制；是否移送按事件事实另行判断",null,null,null,null,null);
-            if ("LEFT".equals(observation.presence()) && disposals.punishmentCompletion(eventId) == null
+            var completion = disposals.punishmentCompletion(eventId);
+            if ("LEFT".equals(observation.presence()) && completion == null
                     && disposals.activeCount("UAV_EVENT",eventId,"COUNTERMEASURE") == 0
-                    && disposals.activeCount("UAV_EVENT",eventId,"JAMMING") == 0)
-                return new AutoHandoff(false,"NOT_REQUIRED","通知后有效位置已确认离开；本次未执行反制，无需自动移送处罚",null,null,null,null,null);
+                    && disposals.activeCount("UAV_EVENT",eventId,"JAMMING") == 0) {
+                var execution = disposals.counterExecutionEvidence(eventId);
+                if (execution == DisposalRepository.CounterExecutionEvidence.NONE)
+                    return new AutoHandoff(false,"NOT_REQUIRED","通知后有效位置已确认离开；本次未执行反制，无需自动移送处罚",null,null,null,null,null);
+                String reason = execution == DisposalRepository.CounterExecutionEvidence.CONFIRMED
+                        ? "本次已有设备启动成功记录；当前未满足自动移送完成条件，请结合停止及处置记录核查"
+                        : "本次存在启动尝试或执行结果待核查记录，不能认定为未执行反制；当前未满足自动移送完成条件";
+                return new AutoHandoff(true,"BLOCKED",reason,null,null,null,null,null);
+            }
             boolean inspect = canInspectHandoffRecipients(eventId);
             // Match the automatic submission gate, without selecting a recipient or starting any work.
             int recipients = inspect ? handoffs.enabledRecipients("UAV_PUNISHMENT").size() : -1;
-            if (disposals.punishmentCompletion(eventId) == null)
+            if (completion == null)
                 return new AutoHandoff(true, "WAITING", recipients > 1 ? "反制结束且停止确认后，需要有权限的人员选择处罚接收单位再移送"
                         : recipients == 0 ? "反制结束且停止确认后移送到处罚。目前还没有启用的处罚接收单位，请联系管理员配置" : "反制结束且停止确认后自动移送到处罚",
                         null, null, null, null, null);

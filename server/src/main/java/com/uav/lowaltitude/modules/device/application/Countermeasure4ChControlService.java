@@ -43,16 +43,19 @@ public class Countermeasure4ChControlService {
     private final ApplicationEventPublisher events;
     private final long timeoutMillis;
     private final com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard;
+    private final CountermeasureStartAttempts startAttempts;
 
     public Countermeasure4ChControlService(DeviceAccessPolicy access, DeviceRepository devices,
                                            Countermeasure4ChControlRepository controls,
                                            DeviceAdapterRegistry adapters, AppClock clock, AuditService audit,
                                            ObjectMapper json, ApplicationEventPublisher events,
                                            org.springframework.core.env.Environment environment,
-                                           com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard) {
+                                           com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard disposalGuard,
+                                           CountermeasureStartAttempts startAttempts) {
         this.access = access; this.devices = devices; this.controls = controls; this.adapters = adapters;
         this.clock = clock; this.audit = audit; this.json = json; this.events = events;
         this.disposalGuard = disposalGuard;
+        this.startAttempts = startAttempts;
         this.timeoutMillis = Long.parseLong(environment.getProperty(
                 "app.countermeasure-4ch.command-timeout-millis", "10000"));
     }
@@ -144,6 +147,12 @@ public class Countermeasure4ChControlService {
         controls.lockCommand(commandId);
         command = controls.control(commandId);
         if (command == null || terminal(text(command,"status"))) return;
+        boolean starting = starts(text(command,"action"),number(command,"mask"));
+        if (starting && (startAttempts.exists(commandId) || !"QUEUED".equals(text(command,"status"))
+                || command.get("issued_at") != null)) {
+            uncertainStart(commandId, command);
+            return;
+        }
         if (!allowed) {
             if (controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
                     "AUTHORIZATION_STOPPED","处置已停止或当前条件不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
@@ -161,6 +170,13 @@ public class Countermeasure4ChControlService {
                     "设备已停用、离线或上报故障，取消尚未发送的启动指令；此前设备动作仍需核查") == 1) {
                 finished(commandId);
             }
+            return;
+        }
+        // Persist before any socket I/O. A later receipt/transaction failure must never make this start look unsent.
+        // All-off remains on the existing repeatable safety path.
+        if (starting && !startAttempts.reserve(commandId, text(command,"control_authorization_id"),
+                text(command,"device_id"), now)) {
+            uncertainStart(commandId, command);
             return;
         }
         if ("QUEUED".equals(status)) {
@@ -194,9 +210,31 @@ public class Countermeasure4ChControlService {
         }
     }
 
+    private void uncertainStart(String commandId, Map<String,Object> command) {
+        long at = clock.nowMillis();
+        String detail = "此前启动已进入发送阶段，但执行结果未能可靠保存；为避免重复启动，已停止重发。请核对设备状态，必要时下发全关。";
+        if (controls.updateCommand(commandId,text(command,"status"),"FAILED",at,
+                "COUNTERMEASURE_OUTCOME_UNKNOWN",detail) == 1) {
+            controls.addEvent(text(command,"device_id"),"COUNTERMEASURE_4CH_UNCONFIRMED","WARN",detail,at,bool(command,"simulated"));
+            finished(commandId);
+        }
+    }
+
+    @Transactional
     public void timeout(String commandId, String detail) {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || terminal(text(command, "status"))) return;
+        boolean starting = starts(text(command,"action"),number(command,"mask"));
+        // Keep dispatch's authorization -> command lock order. A timeout cannot erase committed send intent.
+        if (starting) disposalGuard.mayStart(text(command,"control_authorization_id"));
+        controls.lockCommand(commandId);
+        command = controls.control(commandId);
+        if (command == null || terminal(text(command,"status"))) return;
+        if (starting && (startAttempts.exists(commandId) || !"QUEUED".equals(text(command,"status"))
+                || command.get("issued_at") != null)) {
+            uncertainStart(commandId, command);
+            return;
+        }
         long now = clock.nowMillis();
         if (controls.updateCommand(commandId, text(command, "status"), "TIMED_OUT", now, "ADAPTER_TIMEOUT", detail) == 1) {
             controls.addEvent(text(command, "device_id"), "COUNTERMEASURE_4CH_TIMED_OUT", "ERROR", detail, now,

@@ -363,6 +363,50 @@ public class DisposalRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public enum CounterExecutionEvidence { NONE, POSSIBLE, CONFIRMED }
+
+    /** Read-only history, distinct from permission to submit punishment materials or start a device again. */
+    public CounterExecutionEvidence counterExecutionEvidence(String eventId) {
+        String value = jdbc.queryForObject("""
+                WITH authorizations AS (
+                  SELECT a.authorization_id,a.device_id,a.execution_command_id,a.status
+                  FROM disposal_authorization a JOIN uav_event e ON e.event_id=a.subject_id
+                    AND e.owner_org_id=a.owner_org_id AND e.district_id=a.district_id
+                  JOIN alarm alarm ON alarm.alarm_id=e.alarm_id AND alarm.source_mode=a.source_mode
+                  WHERE a.subject_kind='UAV_EVENT' AND a.subject_id=:event
+                    AND a.action_type IN ('COUNTERMEASURE','JAMMING')
+                ), commands AS (
+                  SELECT c.command_id,c.authorization_id,c.device_id,c.status,c.issued_at,c.completed_at,
+                    CASE WHEN (c.command_type='COUNTERMEASURE_4CH' AND (four.action='CHANNEL_ON' OR (four.action='SET_MASK' AND four.mask>0)))
+                           OR (c.command_type='LINGYUN_CONTROL' AND lingyun.operation_type=1) THEN 1 ELSE 0 END AS is_start,
+                    CASE WHEN (c.command_type='COUNTERMEASURE_4CH' AND (four.action='CHANNEL_OFF' OR (four.action='SET_MASK' AND four.mask=0)))
+                           OR (c.command_type='LINGYUN_CONTROL' AND lingyun.operation_type=0) THEN 1 ELSE 0 END AS is_stop
+                  FROM authorizations a JOIN device_command c ON c.authorization_id=a.authorization_id AND c.device_id=a.device_id
+                  LEFT JOIN countermeasure_4ch_command four ON four.command_id=c.command_id AND four.authorization_id=a.authorization_id
+                  LEFT JOIN lingyun_control_command lingyun ON lingyun.command_id=c.command_id AND lingyun.authorization_id=a.authorization_id
+                )
+                SELECT CASE
+                  WHEN EXISTS (SELECT 1 FROM authorizations a JOIN disposal_device_run r
+                    ON r.authorization_id=a.authorization_id AND r.device_id=a.device_id WHERE r.on_at IS NOT NULL)
+                    OR EXISTS (SELECT 1 FROM commands c WHERE c.is_start=1 AND c.status='SUCCEEDED' AND c.completed_at IS NOT NULL)
+                    THEN 'CONFIRMED'
+                  WHEN EXISTS (SELECT 1 FROM authorizations a JOIN countermeasure_start_attempt attempt
+                    ON attempt.authorization_id=a.authorization_id AND attempt.device_id=a.device_id)
+                    OR EXISTS (SELECT 1 FROM commands c WHERE c.is_stop=0 AND (c.issued_at IS NOT NULL
+                      OR c.status IN ('UNKNOWN','TIMED_OUT','SENT','ACCEPTED','SUCCEEDED')
+                      OR EXISTS (SELECT 1 FROM command_receipt receipt WHERE receipt.command_id=c.command_id)))
+                    OR EXISTS (SELECT 1 FROM authorizations a WHERE a.execution_command_id IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.command_id=a.execution_command_id))
+                    OR EXISTS (SELECT 1 FROM authorizations a JOIN disposal_authorization_event history
+                      ON history.authorization_id=a.authorization_id WHERE history.event_kind IN ('EXECUTE','MANUAL_RESULT')
+                      AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.authorization_id=a.authorization_id))
+                    OR EXISTS (SELECT 1 FROM authorizations a WHERE a.status='COMPLETED')
+                    THEN 'POSSIBLE'
+                  ELSE 'NONE' END
+                """, Map.of("event", eventId), String.class);
+        return CounterExecutionEvidence.valueOf(value);
+    }
+
     /** 这起事件的全部反制授权，按申请先后。自动反制据此决定新发、补发还是不再自动发；系统读取，不跟调用者范围。 */
     public List<AuthorizationRow> counterAttempts(String eventId) {
         return jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
@@ -464,6 +508,65 @@ public class DisposalRepository {
                         rs.getString("authorization_id"), rs.getString("event_kind"), rs.getString("actor_id"),
                         rs.getString("note"), com.uav.lowaltitude.modules.fusion.infrastructure.FusionConfigRepository.jsonText(rs.getObject("snapshot")),
                         rs.getObject("occurred_at", OffsetDateTime.class)));
+    }
+
+    /** Select only supported, currently observed controllers in the event's exact business scope. */
+    public List<String> automaticCounterDevices(String sourceMode, String org, String district,
+            long now, long maxAge, boolean allowSimulation) {
+        boolean simulated = "mock".equals(sourceMode) || "replay".equals(sourceMode);
+        if ((!simulated && !"live".equals(sourceMode)) || simulated && !allowSimulation) return List.of();
+        String sql = """
+                SELECT DISTINCT d.device_id FROM ops_device d
+                JOIN ops_integration_source src ON src.source_id=d.source_id
+                JOIN ops_device_state st ON st.device_id=d.device_id
+                JOIN device_business_scope scope ON scope.ops_device_id=d.device_id
+                JOIN device_connection_profile connection ON connection.device_id=d.device_id
+                WHERE d.deleted_at IS NULL AND d.enabled=TRUE AND src.enabled=TRUE
+                  AND d.source_mode='live' AND src.source_mode='live'
+                  AND d.device_type_code='countermeasure' AND src.protocol_code='COUNTERMEASURE_TCP_4CH_V2_0'
+                  AND d.simulated=:simulated AND src.simulated=:simulated
+                  AND scope.owner_org_id=:org AND scope.district_id=:district
+                  AND st.connectivity='ONLINE' AND (st.health_code IS NULL OR st.health_code<>'BAD')
+                  AND st.observed_at BETWEEN :since AND :now AND connection.transport='TCP'
+                """;
+        if (simulated) sql += """
+                  AND connection.host IN ('127.0.0.1','localhost')
+                  AND EXISTS (SELECT 1 FROM audit_log prepared WHERE prepared.object_type='device'
+                    AND prepared.object_id=d.device_id AND prepared.action='local_qa_device_prepare'
+                    AND prepared.result='SUCCESS')
+                """;
+        return jdbc.queryForList(sql + " ORDER BY d.device_id", Map.of("simulated", simulated,
+                "org", org, "district", district, "since", now - maxAge, "now", now), String.class);
+    }
+
+    /** Result text alone is insufficient proof that a failed start never reached its device. */
+    public boolean automaticStartNeverIssued(AuthorizationRow row) {
+        if (automaticStopCovered(row.authorizationId())) return false;
+        Long attempts = jdbc.queryForObject("SELECT COUNT(*) FROM countermeasure_start_attempt WHERE authorization_id=:id",
+                Map.of("id", row.authorizationId()), Long.class);
+        if (attempts == null || attempts != 0) return false;
+        if (row.executionCommandId() == null) {
+            Long count = jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE authorization_id=:id",
+                    Map.of("id", row.authorizationId()), Long.class);
+            return count != null && count == 0;
+        }
+        Long count = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM device_command command
+                WHERE command.command_id=:command AND command.authorization_id=:id
+                  AND command.status='CANCELLED' AND command.issued_at IS NULL
+                  AND command.result_code IN ('AUTHORIZATION_STOPPED','DEVICE_NOT_OPERABLE')
+                  AND NOT EXISTS (SELECT 1 FROM command_receipt receipt WHERE receipt.command_id=command.command_id)
+                  AND NOT EXISTS (SELECT 1 FROM device_command other WHERE other.authorization_id=:id
+                    AND other.command_id<>:command)
+                """, Map.of("id", row.authorizationId(), "command", row.executionCommandId()), Long.class);
+        return count != null && count == 1;
+    }
+
+    /** An emergency stop can cover a failed authorization during a race without changing its terminal status. */
+    public boolean automaticStopCovered(String authorizationId) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_emergency_stop_authorization WHERE authorization_id=:id",
+                Map.of("id", authorizationId), Long.class);
+        return count == null || count > 0;
     }
 
     /** 批量取事件种类，供列表页推导 device_stop_result 而不必逐条查事件流（N+1）。 */
@@ -598,9 +701,10 @@ public class DisposalRepository {
         if (deviceId == null) return false;
         Map<String, Object> p = new HashMap<>();
         p.put("device", deviceId); p.put("id", authorizationId == null ? "" : authorizationId);
-        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a"
-                + " ON a.authorization_id=r.authorization_id WHERE r.device_id=:device AND a.status='EXECUTING'"
-                + " AND r.authorization_id<>:id AND r.authorization_id<>COALESCE((SELECT c.chained_from_authorization_id"
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization a WHERE a.device_id=:device"
+                + " AND ((a.status='EXECUTING' AND EXISTS (SELECT 1 FROM disposal_device_run r WHERE r.authorization_id=a.authorization_id))"
+                + " OR (" + DisposalSafetySql.UNCERTAIN_START + "))"
+                + " AND a.authorization_id<>:id AND a.authorization_id<>COALESCE((SELECT c.chained_from_authorization_id"
                 + " FROM disposal_authorization c WHERE c.authorization_id=:id),'')", p, Long.class);
         return total != null && total > 0;
     }

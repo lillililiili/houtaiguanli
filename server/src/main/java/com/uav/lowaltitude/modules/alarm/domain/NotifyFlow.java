@@ -2,7 +2,7 @@ package com.uav.lowaltitude.modules.alarm.domain;
 
 import com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch;
 
-/** 核实属实后的通知阶段。通知回执后不设观察等待，反制仍由操作员发起。 */
+/** 核实属实后的通知阶段。通知回执后不设观察等待；启用规则全部满足后自动发起反制，否则由有权限的操作员办理。 */
 public final class NotifyFlow {
     public static final long SMS_WATCH_MILLIS = 0L;
     public static final long CALL_WATCH_MILLIS = 0L;

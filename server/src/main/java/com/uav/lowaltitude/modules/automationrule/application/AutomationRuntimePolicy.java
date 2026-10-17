@@ -25,6 +25,6 @@ public class AutomationRuntimePolicy {
         long heartbeat=runs.heartbeat();
         if(heartbeat==0)return new Health("STARTING","自动规则执行引擎正在启动，尚未完成首次检查。");
         if(clock.nowMillis()-heartbeat>Math.max(15000,poll*5)||runs.lastError()!=null)return new Health("UNAVAILABLE","自动规则引擎检查异常，自动动作暂停，请检查运行服务。");
-        return new Health("CONNECTED","规则不控制人工按钮。核实规则全部满足后自动核实。反制规则只评估资格，必须由有权限的操作员人工发起反制。设备处置完成并确认停机后，通知处罚规则全部满足则自动通知处罚部门。事实最长有效期 "+maxAge/1000+" 秒。");
+        return new Health("CONNECTED","规则不控制人工按钮。启用的核实规则全部满足后自动核实；启用的反制规则全部满足且当前证据、范围、时效和设备等业务条件通过后自动发起反制，无规则或条件不满足、未知时可由有权限的操作员人工办理。设备处置完成并确认停机后，通知处罚规则全部满足则自动通知处罚部门。独立设备按最近 60 秒有效观测计数，其他事实默认最长有效期 "+maxAge/1000+" 秒。");
     }
 }

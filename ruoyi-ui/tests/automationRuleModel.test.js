@@ -25,6 +25,6 @@ describe('规则管理展示模型', () => {
   })
 
   it('反制规则文案不把配置开关表达为授权', () => {
-    expect(actionSummary('counter', {})).toBe('执行前仍需独立校验有效授权')
+    expect(actionSummary('counter', {})).toBe('规则全部满足后自动发起，发送前复核授权与业务条件')
   })
 })

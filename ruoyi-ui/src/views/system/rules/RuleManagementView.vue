@@ -8,10 +8,14 @@ import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
 import RuleEditorDialog from './RuleEditorDialog.vue'
 import RuleSettingsDialog from './RuleSettingsDialog.vue'
+import RuleSetPanel from './RuleSetPanel.vue'
 import { CATEGORIES, actionSummary, categoryMeta, conditionText, enabledCount, scopeSummary, timeSummary } from './ruleModel'
 import { useAutomationRuleGroup } from './useAutomationRuleGroup'
 
 const auth = useAuthStore()
+const canReadRuleSets = computed(() => auth.hasPermission('rule:read'))
+const ruleSetsVisible = ref(false), ruleSetsOpened = ref(false)
+function toggleRuleSets() { ruleSetsOpened.value = true; ruleSetsVisible.value = !ruleSetsVisible.value }
 const editorVisible = ref(false), settingsVisible = ref(false), editingRule = ref(null)
 const { category, group, loading, saving, error, actionError, uncertain, recoveryRevision, load, mutate, clearActionError } = useAutomationRuleGroup()
 const canManage = computed(() => Boolean(group.value?.can_manage && auth.hasPermission('responsePlans.auth')))
@@ -23,7 +27,7 @@ const policyText = computed(() => {
   if (group.value?.execution_status !== 'CONNECTED') return group.value?.execution_message || '当前执行服务未连接，规则配置不会触发自动动作。'
   if (!count.value) return `未启用规则时，不会自动${meta.value.noun}。`
   if (category.value === 'verify') return '适用范围内，已启用规则全部满足后，系统自动核实属实，并进入飞手通知。'
-  if (category.value === 'counter') return '反制规则只评估资格，满足后仍等待有权限的操作员人工发起。申请审批、直接授权、当前证据、设备与急停条件继续独立校验。'
+  if (category.value === 'counter') return '启用的反制规则全部满足且当前证据、范围、设备、时效与急停校验通过后，系统自动发起反制。规则不满足或未知时，由有权限的操作员人工发起，继续校验申请审批或直接授权。'
   return '反制结束且停止确认后，规则全部满足则自动通知处罚部门。历史干扰记录保留原流程；没满足也不会关掉「通知处罚部门」。'
 })
 const emptyText = computed(() => '暂无规则。未启用规则时，这一步不会自动执行。')
@@ -52,7 +56,10 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
 </script>
 <template>
   <div class="page-stack rules-page">
-    <PageHeader title="规则管理" description="这三类规则用于前台告警到处罚。核实和通知处罚按满足的规则自动推进；反制规则只评估资格，必须由有权限的操作员人工发起。" />
+    <PageHeader title="规则管理" description="这三类规则用于前台告警到处罚。启用的规则全部满足且业务校验通过后自动推进；无反制规则或条件不满足时，由有权限的操作员人工发起反制。">
+      <el-button v-if="canReadRuleSets" :aria-expanded="ruleSetsVisible" aria-controls="judgement-rule-versions" @click="toggleRuleSets">研判规则版本</el-button>
+    </PageHeader>
+    <section v-if="canReadRuleSets && ruleSetsOpened" v-show="ruleSetsVisible" id="judgement-rule-versions" aria-label="研判规则版本"><RuleSetPanel /></section>
     <el-alert v-if="group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
     <el-alert v-if="uncertain" :title="uncertain" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon><template #default><el-button :disabled="loading" @click="load(category)">重新读取</el-button></template></el-alert>

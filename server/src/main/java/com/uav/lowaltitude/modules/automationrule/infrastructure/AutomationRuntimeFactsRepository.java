@@ -20,6 +20,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TargetState;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeFacts;
 import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeFacts.Fact;
+import com.uav.lowaltitude.modules.device.infrastructure.ObservationDeviceIdentitySql;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionConfigRepository;
 import com.uav.lowaltitude.platform.api.ApiException;
 import org.springframework.beans.factory.annotation.Value;
@@ -122,7 +123,6 @@ public class AutomationRuntimeFactsRepository {
         if (!observations.isEmpty()) {
             Long earliest = observations.stream().map(Observation::observed).min(Long::compareTo).orElseThrow();
             String evidence = observations.stream().map(o -> "source_observation:" + o.id).reduce((a, c) -> a + "," + c).orElseThrow();
-            facts.put("sourceCount", value(Integer.toString(observations.size()), earliest, evidence));
             facts.put("sourceKnown", value("true", earliest, evidence));
             boolean allIdentity = observations.stream().allMatch(o -> present(o.identity));
             if (observations.size() >= 2 && allIdentity) {
@@ -132,10 +132,8 @@ public class AutomationRuntimeFactsRepository {
             if (present(b.sn) && allIdentity) facts.put("identity", value(Boolean.toString(
                     observations.stream().allMatch(o -> b.sn.equals(o.identity))), earliest, evidence));
             accuracy(b, observations, observed, facts);
-        } else {
-            // No usable observations is absence of facts; not a fabricated measured zero-source result.
-            facts.put("sourceCount", unknown("NO_CURRENT_TRACEABLE_SOURCE_OBSERVATION"));
         }
+        facts.put("sourceCount", independentDeviceCount(b, now));
         trackDuration(b, observed, now, facts);
         risk(b, observed, now, facts);
         executionFacts(b, now, facts);
@@ -190,6 +188,49 @@ public class AutomationRuntimeFactsRepository {
         rows.forEach(o -> independent.putIfAbsent(o.source, o));
         return new ArrayList<>(independent.values());
     }
+
+    private Fact independentDeviceCount(Base b, long now) {
+        Map<String, Object> p = params(b);
+        p.put("since", at(now - 60_000)); p.put("now", at(now));
+        var rows = jdbc.query("WITH physical_identity AS (" + ObservationDeviceIdentitySql.PHYSICAL_IDENTITIES + """
+                ), observation_identity AS (
+                  SELECT device_id,source_id,ops_device_id,owner_org_id,district_id,source_mode
+                  FROM physical_identity
+                  UNION
+                  SELECT r.device_id,r.source_id,p.ops_device_id,r.owner_org_id,r.district_id,'replay'
+                  FROM simulator_observation_source r
+                  JOIN physical_identity p ON p.ops_device_id=r.origin_ops_device_id AND p.simulated=TRUE
+                    AND p.owner_org_id=r.owner_org_id AND p.district_id=r.district_id
+                  JOIN device f ON f.device_id=r.device_id AND f.source_id=r.source_id
+                    AND f.source_mode='replay' AND f.enabled=TRUE
+                    AND f.owner_org_id=r.owner_org_id AND f.district_id=r.district_id
+                  JOIN integration_source s ON s.source_id=r.source_id AND s.source_mode='replay'
+                    AND s.enabled=TRUE AND s.protocol_code='SIM_NORMALIZED'
+                ), unambiguous_identity AS (
+                  SELECT device_id,source_id,owner_org_id,district_id,source_mode,MIN(ops_device_id) AS ops_device_id
+                  FROM observation_identity GROUP BY device_id,source_id,owner_org_id,district_id,source_mode
+                  HAVING COUNT(DISTINCT ops_device_id)=1
+                )
+                SELECT o.observation_id,o.observed_at,i.ops_device_id
+                FROM target_source_link l JOIN source_observation o ON o.source_id=l.source_id
+                  AND o.device_id=l.device_id AND o.source_session_key=l.source_session_key
+                  AND o.external_target_id=l.external_target_id
+                JOIN unambiguous_identity i ON i.device_id=o.device_id AND i.source_id=o.source_id
+                  AND i.owner_org_id=o.owner_org_id AND i.district_id=o.district_id AND i.source_mode=o.source_mode
+                WHERE l.target_id=:target AND o.owner_org_id=:org AND o.district_id=:district
+                  AND o.source_mode=:mode AND o.observed_at>=:since AND o.observed_at<=:now
+                ORDER BY o.observed_at DESC,o.observation_id DESC
+                """, p, (r, n) -> new DeviceObservation(r.getString("observation_id"), r.getString("ops_device_id"), time(r,"observed_at")));
+        Map<String, DeviceObservation> devices = new LinkedHashMap<>();
+        rows.forEach(o -> devices.putIfAbsent(o.device, o));
+        if (devices.isEmpty()) return unknown("NO_CURRENT_VERIFIABLE_DEVICE_OBSERVATION_WITHIN_60_SECONDS");
+        long earliest = devices.values().stream().mapToLong(DeviceObservation::observed).min().orElseThrow();
+        String evidence = devices.values().stream().map(o -> "ops_device:" + o.device + "/source_observation:" + o.id)
+                .reduce((a, c) -> a + "," + c).orElseThrow();
+        return value(Integer.toString(devices.size()), earliest, evidence);
+    }
+
+    private record DeviceObservation(String id, String device, long observed) { }
 
     private void accuracy(Base b, List<Observation> observations, Long observed, Map<String, Fact> facts) {
         List<String> sources = jdbc.queryForList("SELECT position_source_id FROM target_attribute_selection WHERE target_id=:target",

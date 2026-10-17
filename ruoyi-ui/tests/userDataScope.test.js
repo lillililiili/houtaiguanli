@@ -33,7 +33,13 @@ beforeEach(() => {
   systemApi.updateUser.mockResolvedValue(row())
   systemApi.createUser.mockResolvedValue(row())
 })
-afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = '' })
+afterEach(async () => {
+  app?.unmount()
+  // Element Plus schedules dialog unlock (200 ms) and table layout cleanup on unmount.
+  // Keep the DOM alive until those callbacks finish instead of leaking them into teardown.
+  await new Promise(resolve => setTimeout(resolve, 250))
+  host?.remove(); document.body.innerHTML = ''
+})
 
 // 整页挂载用户管理（含表格和单位树）较重，机器繁忙时放宽单条超时。
 describe('账号数据范围', { timeout: 30_000 }, () => {

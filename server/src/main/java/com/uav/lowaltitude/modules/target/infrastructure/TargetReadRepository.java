@@ -573,15 +573,20 @@ public class TargetReadRepository {
      * 每段都只取**最新一条**：悬浮卡要回答的是"现在怎么样"，不是历史（决策 15-4）。
      */
     public Map<String, TargetSummariesRow> summaries(List<String> targetIds) {
-        return summaries(targetIds, false);
+        return summaries(targetIds, targetIds, false);
+    }
+
+    /** Keep every summary, but load raw bearing history only for targets whose current state can display it. */
+    public Map<String, TargetSummariesRow> summaries(List<String> targetIds, List<String> bearingTargetIds) {
+        return summaries(targetIds, bearingTargetIds, false);
     }
 
     /** Reports consume only risk; do not scan legality, disposal or raw bearing history for them. */
     public Map<String, TargetSummariesRow> riskSummaries(List<String> targetIds) {
-        return summaries(targetIds, true);
+        return summaries(targetIds, List.of(), true);
     }
 
-    private Map<String, TargetSummariesRow> summaries(List<String> targetIds, boolean riskOnly) {
+    private Map<String, TargetSummariesRow> summaries(List<String> targetIds, List<String> bearingTargetIds, boolean riskOnly) {
         Map<String, TargetSummariesRow> result = new HashMap<>();
         if (targetIds == null || targetIds.isEmpty()) return result;
         Map<String, Object> params = Map.of("ids", targetIds);
@@ -630,7 +635,8 @@ public class TargetReadRepository {
         // 而这条查询在单测库与生产库上必须是同一条。改成 SQL 里做可移植的粗筛（LIKE 键名），
         // 取值交给 Java 解析——与仓库里其它 JSON 列的读法一致。
         Map<String, BearingRow> bearings = new HashMap<>();
-        jdbc.query("SELECT l.target_id, o.device_id, o.quality FROM source_observation o"
+        if (bearingTargetIds != null && !bearingTargetIds.isEmpty()) {
+            jdbc.query("SELECT l.target_id, o.device_id, o.quality FROM source_observation o"
                 + " JOIN target_source_link l ON l.source_id=o.source_id"
                 + "   AND l.external_target_id=o.external_target_id"
                 + " WHERE l.target_id IN (:ids) AND o.location IS NULL AND " + QualityFacts.mentionsBearing("o.quality")
@@ -638,7 +644,7 @@ public class TargetReadRepository {
                 + "   JOIN target_source_link nl ON nl.source_id=n.source_id AND nl.external_target_id=n.external_target_id"
                 + "   WHERE nl.target_id=l.target_id AND n.location IS NULL AND " + QualityFacts.mentionsBearing("n.quality")
                 + "   AND (n.observed_at > o.observed_at"
-                + "        OR (n.observed_at = o.observed_at AND n.observation_id > o.observation_id)))", params,
+                + "        OR (n.observed_at = o.observed_at AND n.observation_id > o.observation_id)))", Map.of("ids", bearingTargetIds),
                 rs -> {
                     BigDecimal bearing = QualityFacts.bearingDeg(jsonTextOf(rs.getObject("quality")));
                     // 粗筛只保证字符串里出现过这个键；真取不到值就不给方位，而不是画一条方向不明的线。
@@ -646,6 +652,7 @@ public class TargetReadRepository {
                         bearings.put(rs.getString("target_id"), new BearingRow(bearing, rs.getString("device_id")));
                     }
                 });
+        }
         for (String targetId : targetIds) {
             result.put(targetId, new TargetSummariesRow(risks.get(targetId), legality.get(targetId),
                     disposals.get(targetId), bearings.get(targetId)));

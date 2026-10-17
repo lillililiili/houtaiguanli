@@ -96,6 +96,63 @@ class LocalInterfaceSimulatorApiTest {
   }
  }
  @org.junit.jupiter.params.ParameterizedTest
+ @org.junit.jupiter.params.provider.CsvSource({"mock,0", "replay,37000"})
+ void declaredBatchSeparatesRehearsalsButKeepsSameBatchRetries(String mode,long shiftMillis) throws Exception {
+  var body=plan("batch-identity-"+UUID.randomUUID());
+  body.put("uav_sn","UNCHANGED-"+UUID.randomUUID());body.put("source_mode",mode);body.put("status_code","PENDING");
+  body.put("start_at",((Number)body.get("start_at")).longValue()+shiftMillis);
+  body.put("end_at",((Number)body.get("end_at")).longValue()+shiftMillis);
+  String batch="batch-"+UUID.randomUUID(),originalMessage=body.get("message_id").toString();
+  body.put("simulation_batch_id",batch);
+  var first=send("/plans",body,200);String original=first.path("subject_id").asText();
+  assertThat(first.path("payload").path("simulation_batch_id").asText()).isEqualTo(batch);
+  var originalPlan=jdbc.queryForMap("select * from flight_plan where plan_id=?",original);
+  var originalReceipt=jdbc.queryForMap("select * from local_interface_message where message_id=?",first.path("message_id").asText());
+  assertThat(send("/plans",body,200)).isEqualTo(first);
+  body.put("message_id","same-batch-"+UUID.randomUUID());body.put("status_code","COMPLETED");
+  assertThat(send("/plans",body,200).path("subject_id").asText()).isEqualTo(original);
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=?",Long.class,body.get("uav_sn"))).isEqualTo(1);
+
+  // Maximum-length batch ID is valid; no SN, route, source or flight-time change creates the new identity.
+  body.put("simulation_batch_id","B".repeat(28)+UUID.randomUUID());body.put("status_code","PENDING");
+  body.put("message_id","next-batch-"+UUID.randomUUID());
+  var next=send("/plans",body,200);String current=next.path("subject_id").asText();
+  assertThat(current).isNotEqualTo(original);
+  assertThat(send("/plans",body,200).path("subject_id").asText()).isEqualTo(current);
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=?",Long.class,body.get("uav_sn"))).isEqualTo(2);
+  assertThat(jdbc.queryForMap("select uav_sn,start_at,end_at,route_version_id,source_mode from flight_plan where plan_id=?",current))
+   .isEqualTo(jdbc.queryForMap("select uav_sn,start_at,end_at,route_version_id,source_mode from flight_plan where plan_id=?",original));
+
+  // Transport idempotency cannot be used to change or remove the first message's declared batch.
+  body.put("message_id",originalMessage);send("/plans",body,409);
+  body.remove("simulation_batch_id");send("/plans",body,409);
+  assertThat(jdbc.queryForMap("select * from flight_plan where plan_id=?",original)).isEqualTo(originalPlan);
+  assertThat(jdbc.queryForMap("select * from local_interface_message where message_id=?",first.path("message_id").asText())).isEqualTo(originalReceipt);
+ }
+ @Test void omittedOrNullBatchKeepsLegacyPlanIdentity() throws Exception {
+  var body=plan("legacy-batch-"+UUID.randomUUID());body.put("uav_sn","LEGACY-"+UUID.randomUUID());
+  var first=send("/plans",body,200);String original=first.path("subject_id").asText();
+  assertThat(first.path("payload").has("simulation_batch_id")).isFalse();
+  var explicitNull=(com.fasterxml.jackson.databind.node.ObjectNode)json.valueToTree(body);
+  explicitNull.putNull("simulation_batch_id");
+  assertThat(send("/plans",explicitNull,200)).isEqualTo(first);
+  explicitNull.put("message_id","legacy-retry-"+UUID.randomUUID());
+  assertThat(send("/plans",explicitNull,200).path("subject_id").asText()).isEqualTo(original);
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=?",Long.class,body.get("uav_sn"))).isEqualTo(1);
+  body.put("simulation_batch_id","new-batch-"+UUID.randomUUID());send("/plans",body,409);
+ }
+ @Test void invalidBatchIdentityCannotWriteAPlanOrBypassSimulationAccess() throws Exception {
+  var body=plan("invalid-batch-"+UUID.randomUUID());body.put("uav_sn","INVALID-"+UUID.randomUUID());
+  for(String invalid:List.of("", " ", "batch/one", "batch.one", "批次一", "x".repeat(65))){
+   body.put("simulation_batch_id",invalid);send("/plans",body,400);
+  }
+  body.put("simulation_batch_id","valid-batch-"+UUID.randomUUID());
+  mvc.perform(post(BASE+"/plans").contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(body))).andExpect(status().isUnauthorized());
+  for(String forbidden:List.of("live","unknown")){body.put("source_mode",forbidden);send("/plans",body,400);}
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=?",Long.class,body.get("uav_sn"))).isZero();
+  assertThat(jdbc.queryForObject("select count(*) from local_interface_message where external_id=?",Long.class,body.get("message_id"))).isZero();
+ }
+ @org.junit.jupiter.params.ParameterizedTest
  @org.junit.jupiter.params.provider.CsvSource({"mock,false", "replay,false", "live,true"})
  void equivalentPlanWithNewMessageRechecksSourceAvailability(String mode,boolean enabled) throws Exception {
   String source=UUID.randomUUID().toString();

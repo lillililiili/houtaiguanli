@@ -129,15 +129,22 @@ onMounted(load)
       <div class="audit-footer"><span>默认按时间倒序，单次 CSV 导出上限 50,000 条。</span><el-pagination v-model:current-page="filters.page" v-model:page-size="filters.size" background layout="total, sizes, prev, pager, next" :page-sizes="[10,20,50,100]" :total="total" @current-change="load" @size-change="filters.page=1;load()" /></div>
     </section>
 
-    <el-dialog v-model="detailDialog.visible" title="审计日志详情" width="720px">
-      <div v-loading="detailDialog.loading"><el-descriptions v-if="detailDialog.row" :column="2" border>
-        <el-descriptions-item label="时间">{{ formatTime(detailDialog.row.occurred_at) }}</el-descriptions-item><el-descriptions-item label="结果">{{ detailDialog.row.result==='SUCCESS'?'成功':'失败' }}</el-descriptions-item>
-        <el-descriptions-item label="账号">{{ detailDialog.row.account || '—' }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row) }}</el-descriptions-item>
-        <el-descriptions-item label="菜单">{{ detailDialog.row.module_name || moduleText(detailDialog.row.menu_code || detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ detailDialog.row.action_name || actionText(detailDialog.row.action) }}</el-descriptions-item>
-        <el-descriptions-item label="对象类型">{{ detailDialog.row.object_type || '—' }}</el-descriptions-item><el-descriptions-item label="对象编号"><span class="audit-object-id">{{ detailDialog.row.object_id || '—' }}</span></el-descriptions-item>
-        <el-descriptions-item label="IP">{{ ipText(detailDialog.row.ip) }}</el-descriptions-item><el-descriptions-item label="客户端">{{ detailDialog.row.user_agent || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="详情" :span="2"><span class="detail-text">{{ detailDialog.row.detail || '—' }}</span></el-descriptions-item>
-      </el-descriptions></div>
+    <el-dialog v-model="detailDialog.visible" title="审计日志详情" width="min(760px, calc(100vw - 32px))" top="8vh">
+      <div v-loading="detailDialog.loading" class="audit-detail-body">
+        <template v-if="detailDialog.row">
+          <el-descriptions class="audit-detail-metadata" :column="2" border>
+            <el-descriptions-item label="时间">{{ formatTime(detailDialog.row.occurred_at) }}</el-descriptions-item><el-descriptions-item label="结果">{{ detailDialog.row.result==='SUCCESS'?'成功':'失败' }}</el-descriptions-item>
+            <el-descriptions-item label="账号">{{ detailDialog.row.account || '—' }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row) }}</el-descriptions-item>
+            <el-descriptions-item label="菜单">{{ detailDialog.row.module_name || moduleText(detailDialog.row.menu_code || detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ detailDialog.row.action_name || actionText(detailDialog.row.action) }}</el-descriptions-item>
+            <el-descriptions-item label="对象类型">{{ detailDialog.row.object_type || '—' }}</el-descriptions-item><el-descriptions-item label="对象编号"><span class="audit-object-id">{{ detailDialog.row.object_id || '—' }}</span></el-descriptions-item>
+            <el-descriptions-item label="IP">{{ ipText(detailDialog.row.ip) }}</el-descriptions-item><el-descriptions-item label="客户端">{{ detailDialog.row.user_agent || '—' }}</el-descriptions-item>
+          </el-descriptions>
+          <section class="audit-detail-section" aria-label="操作详情">
+            <h3>操作详情</h3>
+            <div class="audit-detail-text">{{ detailDialog.row.detail || '—' }}</div>
+          </section>
+        </template>
+      </div>
       <template #footer><el-button @click="detailDialog.visible=false">关闭</el-button></template>
     </el-dialog>
   </div>
@@ -145,6 +152,13 @@ onMounted(load)
 
 <style scoped>
 .audit-object-id { overflow-wrap: anywhere; }
-.audit-card{display:flex;min-height:0;flex:1;flex-direction:column;padding:16px;border-radius:12px}.filter-bar{flex:none}.filter-bar .el-input,.filter-bar .el-select{width:170px}.audit-footer{display:flex;flex:none;align-items:center;justify-content:space-between;gap:20px;padding-top:16px;color:var(--admin-muted)}.detail-text{padding:12px;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-card-soft);white-space:pre-wrap;word-break:break-word}
+.audit-card{display:flex;min-height:0;flex:1;flex-direction:column;padding:16px;border-radius:12px}.filter-bar{flex:none}.filter-bar .el-input,.filter-bar .el-select{width:170px}.audit-footer{display:flex;flex:none;align-items:center;justify-content:space-between;gap:20px;padding-top:16px;color:var(--admin-muted)}
+.audit-detail-body { max-height: calc(84vh - 150px); overflow: auto; }
+.audit-detail-metadata :deep(.el-descriptions__table) { width: 100%; table-layout: fixed; }
+.audit-detail-metadata :deep(.el-descriptions__label) { width: 88px; white-space: nowrap; }
+.audit-detail-metadata :deep(.el-descriptions__content) { overflow-wrap: anywhere; line-height: 1.65; }
+.audit-detail-section { margin-top: 20px; }
+.audit-detail-section h3 { margin: 0 0 10px; color: var(--admin-text-strong); font-size: 14px; font-weight: 650; }
+.audit-detail-text { padding: 14px 16px; border: 1px solid var(--admin-border); border-radius: 8px; background: var(--admin-card-soft); color: var(--admin-text); line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media(max-width:900px){.audit-card{min-height:640px}.audit-footer{align-items:flex-start;flex-direction:column}.filter-bar .el-input,.filter-bar .el-select{width:220px}}
 </style>

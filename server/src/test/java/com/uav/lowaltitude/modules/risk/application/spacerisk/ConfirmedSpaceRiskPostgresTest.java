@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
@@ -167,6 +168,95 @@ class ConfirmedSpaceRiskPostgresTest {
                 + " select ?,?,'PENDING',source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,0 from flight_plan where plan_id=?", duplicate, duplicate, plan);
         jdbc.update("insert into flight_plan_duplicate(duplicate_plan_id,canonical_plan_id,reason) values(?,?,'同源重复计划')", duplicate, plan);
         assertThat(observations().stream().filter(row -> target.equals(row.targetId())).map(SpaceObservation::planId)).contains(plan).doesNotContain(duplicate);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 37})
+    void currentSimulationBatchFiltersBothSpatialRiskQueries(int timeShiftSeconds) {
+        airport();
+        setFixtureMode("replay");
+        jdbc.update("update flight_plan set start_at=start_at + ? * INTERVAL '1 second',end_at=end_at + ? * INTERVAL '1 second' where plan_id=?",
+                timeShiftSeconds, timeShiftSeconds, plan);
+        String nextPlan = copyPlan(), unregisteredPlan = copyPlan();
+        String previousBatch = registerBatch(plan, now.minusMinutes(2)), nextBatch = registerBatch(nextPlan, now.minusMinutes(1));
+        jdbc.update("insert into simulation_plan_batch_member(batch_id,plan_id,current_member) values(?,?,false)", nextBatch, plan);
+        jdbc.update("insert into simulation_plan_batch_current(owner_org_id,district_id,batch_id) values(?,?,?)", org, district, previousBatch);
+        var originalPlan = jdbc.queryForMap("select * from flight_plan where plan_id=?", plan);
+        var originalRiskRows = jdbc.queryForList("select * from flight_risk where target_id=? order by risk_id", target);
+
+        assertPlanCandidates(plan, unregisteredPlan);
+        jdbc.update("update simulation_plan_batch_current set batch_id=? where owner_org_id=? and district_id=?", nextBatch, org, district);
+        assertPlanCandidates(nextPlan, unregisteredPlan);
+        assertThat(jdbc.queryForMap("select * from flight_plan where plan_id=?", plan)).isEqualTo(originalPlan);
+        assertThat(jdbc.queryForList("select * from flight_risk where target_id=? order by risk_id", target)).isEqualTo(originalRiskRows);
+
+        // The LEFT JOIN must retain a target with no eligible plan; the decision table records no risk.
+        jdbc.update("update flight_plan set status_code='CANCELLED' where plan_id in (?,?)", nextPlan, unregisteredPlan);
+        assertPlanCandidates((String) null);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"live", "mock", "replay"})
+    void batchFilterPreservesUnregisteredPlansAndExistingSourceScopeGuards(String mode) {
+        airport();
+        setFixtureMode(mode);
+        assertPlanCandidates(plan);
+        String foreignMode = "live".equals(mode) ? "replay" : "live";
+        jdbc.update("update flight_plan set source_mode=? where plan_id=?", foreignMode, plan);
+        assertPlanCandidates((String) null);
+        jdbc.update("update flight_plan set source_mode=?,owner_org_id='seed-stage3-org' where plan_id=?", mode, plan);
+        assertPlanCandidates((String) null);
+    }
+
+    private void assertPlanCandidates(String... expected) {
+        OffsetDateTime from = now.minusSeconds(1), to = now.plusSeconds(1);
+        var ids = java.util.Arrays.asList(expected);
+        assertThat(spatial.observations(from, to, 15, 0).stream().filter(row -> target.equals(row.targetId())).map(SpaceObservation::planId))
+                .containsExactlyInAnyOrderElementsOf(ids);
+        assertThat(spatial.refreshedObservations(from, to, now.minusMinutes(30), 15, 0).stream().filter(row -> target.equals(row.targetId())).map(SpaceObservation::planId))
+                .containsExactlyInAnyOrderElementsOf(ids);
+        assertThat(spatial.airportProximity(from, to, 0).stream().filter(row -> target.equals(row.targetId())).map(SpaceRiskSpatialPort.AirportProximity::planId))
+                .containsExactlyInAnyOrderElementsOf(ids);
+        assertThat(spatial.refreshedAirportProximity(from, to, now.minusMinutes(30), 0).stream().filter(row -> target.equals(row.targetId())).map(SpaceRiskSpatialPort.AirportProximity::planId))
+                .containsExactlyInAnyOrderElementsOf(ids);
+    }
+
+    private void setFixtureMode(String mode) {
+        String oldPoint = point;
+        String oldObservation = jdbc.queryForObject("select observation_id from track_point where point_id=?", String.class, oldPoint);
+        var originalObservation = jdbc.queryForMap("select * from source_observation where observation_id=?", oldObservation);
+        var originalPoint = jdbc.queryForMap("select * from track_point where point_id=?", oldPoint);
+        jdbc.update("update target set source_mode=? where target_id=?", mode, target);
+        jdbc.update("update flight_plan set source_mode=? where plan_id=?", mode, plan);
+        jdbc.update("update route set source_mode=? where route_id=(select route_id from route_version where route_version_id=?)", mode, route);
+        // Raw observations are append-only: build a new source and frame instead of relabelling history.
+        source = source(mode);
+        String currentObservation = observation(source, now, 25);
+        point = id();
+        OffsetDateTime received = now.plusNanos(1_000_000);
+        jdbc.update("insert into track_point(point_id,track_id,point_seq,observed_at,received_at,location,position_accuracy_m,height_agl_m,observation_id,point_kind,created_at)"
+                + " values(?,?,2,?,?,ST_SetSRID(ST_MakePoint(118,37.001),4326),1,100,?,'MEAS',?)",
+                point, track, ts(now), ts(received), currentObservation, ts(received));
+        jdbc.update("update target_latest_state set received_at=?,updated_at=? where target_id=?", ts(received), ts(received), target);
+        assertThat(jdbc.queryForMap("select * from source_observation where observation_id=?", oldObservation)).isEqualTo(originalObservation);
+        assertThat(jdbc.queryForMap("select * from track_point where point_id=?", oldPoint)).isEqualTo(originalPoint);
+    }
+
+    private String copyPlan() {
+        String copy = id();
+        jdbc.update("insert into flight_plan(plan_id,plan_no,status_code,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,version)"
+                + " select ?,?,status_code,source_mode,start_at,end_at,route_version_id,owner_org_id,district_id,created_at,updated_at,0 from flight_plan where plan_id=?",
+                copy, copy, plan);
+        return copy;
+    }
+
+    private String registerBatch(String member, OffsetDateTime started) {
+        String batch = id();
+        jdbc.update("insert into simulation_plan_batch(batch_id,owner_org_id,district_id,started_at,registered_at,created_by,request_body)"
+                + " select ?,?,?,?,?,user_id,'{}' from app_user where account='admin1'",
+                batch, org, district, started.toInstant().toEpochMilli(), now.toInstant().toEpochMilli());
+        jdbc.update("insert into simulation_plan_batch_member(batch_id,plan_id,current_member) values(?,?,true)", batch, member);
+        return batch;
     }
 
     @Test void countsComeFromReferencedSourcesAndConflictingValuesRemainUnknown() {

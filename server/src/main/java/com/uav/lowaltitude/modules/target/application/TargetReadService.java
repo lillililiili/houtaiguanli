@@ -138,7 +138,7 @@ public class TargetReadService {
         long total = repository.countTargets(query, access);
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
-        Map<String, TargetSummariesRow> summaries = repository.summaries(rows.stream().map(TargetRow::targetId).toList());
+        Map<String, TargetSummariesRow> summaries = summaries(rows);
         long mapLifetimeMs = rows.isEmpty() ? 0 : mapVisibleAt != null ? visibleLifetimeMs : configuredMapLifetimeMs();
         List<TargetSummaryDto> items = rows.stream()
                 .map(row -> summary(row, summaries.get(row.targetId()), mapLifetimeMs))
@@ -149,6 +149,15 @@ public class TargetReadService {
     /** 地图显示时长：目标最新状态之后多久从地图上退出，与融合终止时长相同。 */
     private long configuredMapLifetimeMs() {
         return fusionConfig.params(null).integer("identity", "terminate_after_ms");
+    }
+
+    private Map<String, TargetSummariesRow> summaries(List<TargetRow> rows) {
+        // state() omits bearings when there is no current state or the target already has a position.
+        // Apply the same rule before querying append-only observation history; pilot position is unrelated.
+        List<String> bearingIds = rows.stream()
+                .filter(row -> row.stateObservedAt() != null && row.location() == null)
+                .map(TargetRow::targetId).toList();
+        return repository.summaries(rows.stream().map(TargetRow::targetId).toList(), bearingIds);
     }
 
     /** The caller's transaction retains this lock while claiming a target operation. */
@@ -172,7 +181,7 @@ public class TargetReadService {
         SelectionRow selection = degradations.findSelection(id);
         // 详情与列表走同一套取数（决策 15-4）：同一张悬浮卡在两处都要能画出来，
         // 两条路各写一份就迟早会长出差异，而那种差异只有对着页面看才发现得了。
-        TargetSummariesRow summaries = repository.summaries(List.of(id)).get(id);
+        TargetSummariesRow summaries = summaries(List.of(row)).get(id);
         return new TargetDetailDto(
                 row.targetId(), row.targetNo(), millis(row.firstSeenAt()), millis(row.lastSeenAt()),
                 row.objectTypeCode(), row.subtype(), row.uavSn(), row.sourceMode(), row.ownerOrgId(),

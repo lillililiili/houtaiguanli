@@ -158,7 +158,7 @@ public class EmergencyStopService {
     private Overview view(String eventId) {
         boolean canStop=canStop();List<AuthorizationRow> rows=rows(eventId,false);
         List<AuthorizationRow> current=current(rows);
-        boolean active=current.stream().anyMatch(r->ACTIVE.contains(r.status()));
+        boolean active=current.stream().anyMatch(r->ACTIVE.contains(r.status())||uncertainStart(r));
         boolean requiresDeviceStop=current.stream().anyMatch(EmergencyStopService::physical);
         String block=canStop?null:"无停止处置权限";
         boolean mayAct=canStop&&(!revokeOnly(current)||isRequester(current));
@@ -182,7 +182,7 @@ public class EmergencyStopService {
     }
     private List<AuthorizationRow> current(List<AuthorizationRow> rows,Set<String> observed) {
         Set<String> selected=new HashSet<>();
-        for(AuthorizationRow row:rows) if((ACTIVE.contains(row.status())
+        for(AuthorizationRow row:rows) if((ACTIVE.contains(row.status())||uncertainStart(row)
                 || (observed.contains(row.authorizationId())&&Set.of("COMPLETED","FAILED").contains(row.status())))
                 &&!stops.covered(row.authorizationId())) {
             selected.add(row.authorizationId());
@@ -312,6 +312,10 @@ public class EmergencyStopService {
         }catch(ApiException ex){throw ex;}catch(Exception ex){throw bad();}
     }
     private static boolean physical(AuthorizationRow row) {return Set.of("EXECUTING","COMPLETED","FAILED").contains(row.status())||row.executionCommandId()!=null;}
+    private static boolean uncertainStart(AuthorizationRow row) {
+        return "FAILED".equals(row.status())&&"COUNTERMEASURE_4CH".equals(row.channel())
+                &&"COUNTERMEASURE_OUTCOME_UNKNOWN".equals(row.resultCode());
+    }
     private static String text(Map<String,Object> row,String name){return row.get(name)==null?null:String.valueOf(row.get(name));}
     private static String wording(String stored){return stored==null?null:LEGACY_TEXT.getOrDefault(stored,stored);}
     private static long number(Map<String,Object> row,String name){return ((Number)row.get(name)).longValue();}

@@ -27,7 +27,7 @@ public final class UavAdvisoryDtos {
             boolean pilotContactMissing, DepartureObservation departureObservation) { }
     /**
      * 处罚移送进度。status：WAITING 等待干扰完成或后台自动移送；MANUAL_REQUIRED 启用了多个处罚接收单位，需有权限的人选定后移送；
-     * BLOCKED 没有可用接收单位；PENDING 交接已建立但还没发出；SUBMITTED 已发出；FAILED 发送失败；NOT_REQUIRED 不需要移送（误报、已决定不反制）。
+     * BLOCKED 没有可用接收单位或执行历史仍需核查；PENDING 交接已建立但还没发出；SUBMITTED 已发出；FAILED 发送失败；NOT_REQUIRED 不需要移送（误报、已决定不反制）。
      * trigger_source：COUNTERMEASURE_COMPLETED 反制停止确认后自动建立，JAMMING_COMPLETED 旧干扰完成链，
      * MANUAL 有人选定接收单位后提交，旧记录可能为空。
      * party_status/party_reasons 只在 MANUAL_REQUIRED 时给出，提交前提示当事人是否明确。

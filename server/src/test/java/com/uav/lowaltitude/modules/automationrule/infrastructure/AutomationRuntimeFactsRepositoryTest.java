@@ -11,6 +11,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
+import javax.sql.DataSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SpatialFactPort;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository;
@@ -30,7 +31,8 @@ class AutomationRuntimeFactsRepositoryTest {
     private AutomationRuntimeFactsRepository repository;
 
     @BeforeEach void setup() {
-        jdbc = new JdbcTemplate(new DriverManagerDataSource("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1","sa",""));
+        jdbc = new JdbcTemplate(testDataSource());
+        jdbc.setQueryTimeout(5);
         for (String ddl : List.of(
                 "CREATE TABLE app_org(org_id varchar,enabled boolean)",
                 "CREATE TABLE app_district(district_id varchar,enabled boolean)",
@@ -39,18 +41,22 @@ class AutomationRuntimeFactsRepositoryTest {
                 "CREATE TABLE target(target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar,object_type_code varchar,uav_sn varchar)",
                 "CREATE TABLE target_latest_state(target_id varchar,observed_at timestamp with time zone)",
                 "CREATE TABLE automation_runtime_state(event_id varchar,status varchar)",
-                "CREATE TABLE target_source_link(link_id varchar,target_id varchar,source_id varchar,source_session_key varchar,external_target_id varchar)",
-                "CREATE TABLE source_observation(observation_id varchar,source_id varchar,observed_at timestamp with time zone,identity_clue varchar,position_accuracy_m numeric,source_session_key varchar,external_target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar)",
-                "CREATE TABLE integration_source(source_id varchar,enabled boolean,source_mode varchar)",
+                "CREATE TABLE target_source_link(link_id varchar,target_id varchar,source_id varchar,source_session_key varchar,external_target_id varchar,device_id varchar)",
+                "CREATE TABLE source_observation(observation_id varchar,source_id varchar,observed_at timestamp with time zone,identity_clue varchar,position_accuracy_m numeric,source_session_key varchar,external_target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar,device_id varchar)",
+                "CREATE TABLE integration_source(source_id varchar,enabled boolean,source_mode varchar,protocol_code varchar,source_code varchar)",
+                "CREATE TABLE device(device_id varchar,source_id varchar,external_device_id varchar,enabled boolean,source_mode varchar,owner_org_id varchar,district_id varchar)",
+                "CREATE TABLE mqtt_device_binding(device_id varchar,source_id varchar,ops_device_id varchar,ops_source_id varchar,external_device_id varchar,source_mode varchar)",
+                "CREATE TABLE eo_device_binding(device_id varchar,source_id varchar,ops_device_id varchar,ops_source_id varchar,external_device_id varchar,source_mode varchar)",
+                "CREATE TABLE simulator_observation_source(source_id varchar,device_id varchar,owner_org_id varchar,district_id varchar,origin_ops_device_id varchar)",
                 "CREATE TABLE target_attribute_selection(target_id varchar,position_source_id varchar)",
                 "CREATE TABLE track(track_id varchar,link_id varchar,target_id varchar,config_version varchar,layer varchar,ended_at timestamp with time zone,started_at timestamp with time zone)",
                 "CREATE TABLE fusion_config(config_version varchar,params varchar)",
                 "CREATE TABLE track_point(point_id varchar,point_seq bigint,point_kind varchar,observed_at timestamp with time zone,observation_id varchar,track_id varchar)",
                 "CREATE TABLE rule_evaluation(evaluation_id varchar,target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar,mode varchar,subject_kind varchar,observed_at timestamp with time zone,evaluated_at timestamp with time zone,freshness_code varchar,grade varchar,legal_status varchar,alarm_id varchar)",
                 "CREATE TABLE airspace(airspace_id varchar,owner_org_id varchar,district_id varchar)",
-                "CREATE TABLE ops_device(device_id varchar,source_id varchar,enabled boolean,source_mode varchar)",
+                "CREATE TABLE ops_device(device_id varchar,source_id varchar,enabled boolean,source_mode varchar,external_device_id varchar,simulated boolean,deleted_at bigint)",
                 "CREATE TABLE ops_device_state(device_id varchar,observed_at bigint,connectivity varchar,health_code varchar,has_alarm boolean)",
-                "CREATE TABLE ops_integration_source(source_id varchar,enabled boolean,protocol_code varchar,source_mode varchar)",
+                "CREATE TABLE ops_integration_source(source_id varchar,enabled boolean,protocol_code varchar,source_mode varchar,source_code varchar,simulated boolean)",
                 "CREATE TABLE device_business_scope(ops_device_id varchar,owner_org_id varchar,district_id varchar)",
                 "CREATE TABLE disposal_authorization(authorization_id varchar,device_id varchar,channel varchar,subject_kind varchar,subject_id varchar,target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar,action_type varchar,status varchar,valid_from timestamp with time zone,valid_until timestamp with time zone)")) jdbc.execute(ddl);
         jdbc.update("INSERT INTO app_org VALUES('org',TRUE)");
@@ -65,6 +71,11 @@ class AutomationRuntimeFactsRepositoryTest {
         repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),30_000);
     }
 
+    /** The same fact contract is executed against H2 and an isolated PostgreSQL schema. */
+    protected DataSource testDataSource() {
+        return new DriverManagerDataSource("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1","sa","");
+    }
+
     @Test void tracesRealConfidenceAndLeavesAbsentAccuracyUnknown() {
         source("s1",NOW,"SN","org","mock");
         var f=repository.read("event",NOW);
@@ -77,8 +88,8 @@ class AutomationRuntimeFactsRepositoryTest {
     }
     @Test void deduplicatesAndExcludesStaleForeignScopeAndOtherModeSources() {
         source("s1",NOW,"SN","org","mock");
-        jdbc.update("INSERT INTO source_observation VALUES('old-s1','s1',?,'SN',NULL,'session','external','org','district','mock')",at(NOW-1_000));
-        source("s2",NOW-31_000,"SN","org","mock");
+        jdbc.update("INSERT INTO source_observation VALUES('old-s1','s1',?,'SN',NULL,'session','external','org','district','mock','device-s1')",at(NOW-1_000));
+        source("s2",NOW-60_001,"SN","org","mock");
         source("s3",NOW,"SN","other","mock");
         source("s4",NOW,"SN","org","live");
         var f=repository.read("event",NOW);
@@ -90,6 +101,94 @@ class AutomationRuntimeFactsRepositoryTest {
         assertThat(repository.read("event",NOW).facts().get("consistency").value()).isEqualTo("true");
         jdbc.update("UPDATE source_observation SET identity_clue='OTHER' WHERE source_id='s2'");
         assertThat(repository.read("event",NOW).facts().get("consistency").value()).isEqualTo("false");
+    }
+    @Test void deviceWindowIsExactlySixtySecondsWithoutChangingOtherFactAge() {
+        repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),120_000);
+        source("boundary",NOW-60_000,"SN","org","mock");
+        source("too-old",NOW-60_001,"SN","org","mock");
+        source("future",NOW+1,"SN","org","mock");
+        var facts=repository.read("event",NOW).facts();
+        assertThat(facts.get("sourceCount").value()).isEqualTo("1");
+        assertThat(facts.get("sourceCount").evidenceId()).contains("ops-dev-boundary").doesNotContain("too-old","future");
+        assertThat(facts.get("consistency").value()).isEqualTo("true");
+        assertThat(facts.get("sourceCount").observedAt()).isEqualTo(NOW-60_000);
+    }
+    @Test void normalizedAndProtocolReportsOfOneDeviceCannotCreateTwoDeviceEvidence() {
+        replayTarget();
+        String first=UUID.randomUUID().toString(), second=UUID.randomUUID().toString();
+        source(first,NOW-1_000,"SN","org","replay");
+        normalized("normalized-a","ops-dev-"+first,NOW,"org");
+        normalized("normalized-b","ops-dev-"+first,NOW-50,"org");
+        normalized("legacy",null,NOW,"org");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("1");
+        source(second,NOW-5_000,"SN","org","replay");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("2");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").evidenceId()).doesNotContain("legacy");
+    }
+    @Test void legacyOrUnverifiableDeviceIdentityRemainsUnknown() {
+        replayTarget();
+        normalized("legacy",null,NOW,"org");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+        source("origin",NOW,"SN","org","replay");
+        normalized("aux","ops-dev-origin",NOW,"org");
+        jdbc.update("UPDATE ops_device SET enabled=FALSE");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+        jdbc.update("UPDATE ops_device SET enabled=TRUE,external_device_id='different-device'");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+        jdbc.update("UPDATE ops_device SET external_device_id='origin',deleted_at=1");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+        jdbc.update("UPDATE ops_device SET deleted_at=NULL");
+        jdbc.update("UPDATE device_business_scope SET owner_org_id='other'");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+    }
+    @Test void normalizedMappingCannotTurnRealDeviceOrForeignScopeIntoSimulatedEvidence() {
+        replayTarget();
+        source("real",NOW,"SN","org","live");
+        jdbc.update("UPDATE ops_device SET simulated=FALSE");
+        normalized("real-aux","ops-dev-real",NOW,"org");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+        jdbc.update("UPDATE ops_device SET simulated=TRUE");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("1");
+        jdbc.update("UPDATE simulator_observation_source SET owner_org_id='other'");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isNull();
+    }
+    @Test void eoAndTcpUseExplicitRegistrationsAndCountDifferentDevices() {
+        source("eo",NOW,"SN","org","mock");
+        var registrations=new com.uav.lowaltitude.modules.integrationconfig.infrastructure.LocalObservationSimulatorRepository(jdbc);
+        assertThat(registrations.lockValidSimulatedOrigin("ops-dev-eo","org","district")).isTrue();
+        jdbc.update("INSERT INTO eo_device_binding SELECT * FROM mqtt_device_binding");
+        jdbc.update("DELETE FROM mqtt_device_binding");
+        jdbc.update("UPDATE integration_source SET protocol_code='EO_EDGE_MQTT_20250826'");
+        jdbc.update("UPDATE ops_integration_source SET protocol_code='EO_EDGE_MQTT_20250826'");
+        assertThat(registrations.lockValidSimulatedOrigin("ops-dev-eo","org","district")).isTrue();
+        source("tcp",NOW,"SN","org","mock");
+        jdbc.update("DELETE FROM mqtt_device_binding WHERE source_id='tcp'");
+        jdbc.update("UPDATE ops_device SET device_id='device-tcp' WHERE device_id='ops-dev-tcp'");
+        jdbc.update("UPDATE device_business_scope SET ops_device_id='device-tcp' WHERE ops_device_id='ops-dev-tcp'");
+        jdbc.update("UPDATE integration_source SET protocol_code='RADAR_TCP_V3_0_0' WHERE source_id='tcp'");
+        jdbc.update("UPDATE ops_integration_source SET protocol_code='RADAR_TCP_V3_0_0' WHERE source_id='ops-src-tcp'");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("2");
+        assertThat(registrations.lockValidSimulatedOrigin("device-tcp","org","district")).isTrue();
+        jdbc.update("UPDATE integration_source SET source_code='unrelated' WHERE source_id='tcp'");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("1");
+        assertThat(registrations.lockValidSimulatedOrigin("device-tcp","org","district")).isFalse();
+    }
+    @Test void differentTcpDevicesOnOneSourceAreCountedSeparatelyAndRequireMatchingLinkDevice() {
+        source("shared",NOW,"SN","org","mock");
+        jdbc.update("DELETE FROM mqtt_device_binding");
+        jdbc.update("UPDATE ops_device SET device_id='device-shared'");
+        jdbc.update("UPDATE device_business_scope SET ops_device_id='device-shared'");
+        jdbc.update("UPDATE integration_source SET protocol_code='RADAR_TCP_V3_0_0'");
+        jdbc.update("UPDATE ops_integration_source SET protocol_code='RADAR_TCP_V3_0_0'");
+        String second=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO device VALUES(?,'shared',?,TRUE,'mock','org','district')",second,second);
+        jdbc.update("INSERT INTO ops_device VALUES(?,'ops-src-shared',TRUE,'mock',?,TRUE,NULL)",second,second);
+        jdbc.update("INSERT INTO device_business_scope VALUES(?,'org','district')",second);
+        jdbc.update("INSERT INTO target_source_link VALUES('second-link','target','shared','second-session','external',?)",second);
+        jdbc.update("INSERT INTO source_observation VALUES('second-observation','shared',?,'SN',NULL,'second-session','external','org','district','mock',?)",at(NOW),second);
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("2");
+        jdbc.update("UPDATE target_source_link SET device_id='device-shared' WHERE link_id='second-link'");
+        assertThat(repository.read("event",NOW).facts().get("sourceCount").value()).isEqualTo("1");
     }
     @Test void nonUavAndScopeMismatchCannotProducePassingFacts() {
         jdbc.update("UPDATE target SET object_type_code='BIRD'");
@@ -172,7 +271,7 @@ class AutomationRuntimeFactsRepositoryTest {
         jdbc.update("INSERT INTO track VALUES('track','link-s1','target','c','RAW',NULL,?)",at(NOW-10_000));
         for(int i=0;i<4;i++) {
             long time=NOW-i*1_000;
-            if(i>0) jdbc.update("INSERT INTO source_observation VALUES(?, 's1',?,'SN',NULL,'session','external','org','district','mock')","o"+i,at(time));
+            if(i>0) jdbc.update("INSERT INTO source_observation VALUES(?, 's1',?,'SN',NULL,'session','external','org','district','mock','device-s1')","o"+i,at(time));
             jdbc.update("INSERT INTO track_point VALUES(?,?,?,?,?,'track')","p"+i,4-i,i==2?"PRED":"MEAS",at(time),i==0?"obs-s1":"o"+i);
         }
         assertThat(repository.read("event",NOW).facts().get("trackDuration").value()).isEqualTo("1.000");
@@ -181,9 +280,9 @@ class AutomationRuntimeFactsRepositoryTest {
     }
     @Test void authorizedDeviceHealthAndConflictsAreCurrentButReceiptStillUnknown() {
         jdbc.update("INSERT INTO disposal_authorization VALUES('a','dev','COUNTERMEASURE_4CH','UAV_EVENT','event','target','org','district','mock','COUNTERMEASURE','APPROVED',?,?)",at(NOW-1_000),at(NOW+10_000));
-        jdbc.update("INSERT INTO ops_device VALUES('dev','src',TRUE,'mock')");
+        jdbc.update("INSERT INTO ops_device(device_id,source_id,enabled,source_mode) VALUES('dev','src',TRUE,'mock')");
         jdbc.update("INSERT INTO ops_device_state VALUES('dev',?,'ONLINE','GOOD',FALSE)",NOW);
-        jdbc.update("INSERT INTO ops_integration_source VALUES('src',TRUE,'COUNTERMEASURE_TCP_4CH_V2_0','mock')");
+        jdbc.update("INSERT INTO ops_integration_source(source_id,enabled,protocol_code,source_mode) VALUES('src',TRUE,'COUNTERMEASURE_TCP_4CH_V2_0','mock')");
         jdbc.update("INSERT INTO device_business_scope VALUES('dev','org','district')");
         var f=repository.read("event",NOW);
         assertThat(f.facts().get("device").value()).isEqualTo("true");
@@ -195,9 +294,25 @@ class AutomationRuntimeFactsRepositoryTest {
         assertThat(repository.read("event",NOW).facts().get("device").value()).isNull();
     }
     private void source(String id,long observed,String identity,String org,String mode) {
-        jdbc.update("INSERT INTO integration_source VALUES(?,TRUE,?)",id,mode);
-        jdbc.update("INSERT INTO target_source_link VALUES(?,'target',?,'session','external')","link-"+id,id);
-        jdbc.update("INSERT INTO source_observation VALUES(?,?,?, ?,NULL,'session','external',?,'district',?)","obs-"+id,id,at(observed),identity,org,mode);
+        jdbc.update("INSERT INTO integration_source VALUES(?,TRUE,?,'LINGYUN_MQTT_V8_6',?)",id,mode,id);
+        jdbc.update("INSERT INTO device VALUES(?,?,?,TRUE,?,?,'district')","device-"+id,id,id,mode,org);
+        jdbc.update("INSERT INTO ops_integration_source VALUES(?,TRUE,'LINGYUN_MQTT_V8_6',?,?,TRUE)","ops-src-"+id,mode,id);
+        jdbc.update("INSERT INTO ops_device VALUES(?,?,TRUE,?,?,TRUE,NULL)","ops-dev-"+id,"ops-src-"+id,mode,id);
+        jdbc.update("INSERT INTO device_business_scope VALUES(?,?,'district')","ops-dev-"+id,org);
+        jdbc.update("INSERT INTO mqtt_device_binding VALUES(?,?,?,?,?,?)","device-"+id,id,"ops-dev-"+id,"ops-src-"+id,id,mode);
+        jdbc.update("INSERT INTO target_source_link VALUES(?,'target',?,'session','external',?)","link-"+id,id,"device-"+id);
+        jdbc.update("INSERT INTO source_observation VALUES(?,?,?, ?,NULL,'session','external',?,'district',?,?)","obs-"+id,id,at(observed),identity,org,mode,"device-"+id);
+    }
+    private void replayTarget() {
+        jdbc.update("UPDATE target SET source_mode='replay'");
+        jdbc.update("UPDATE alarm SET source_mode='replay'");
+    }
+    private void normalized(String id,String origin,long observed,String org) {
+        jdbc.update("INSERT INTO integration_source VALUES(?,TRUE,'replay','SIM_NORMALIZED',?)",id,id);
+        jdbc.update("INSERT INTO device VALUES(?,?,?,TRUE,'replay',?,'district')","device-"+id,id,id,org);
+        jdbc.update("INSERT INTO simulator_observation_source VALUES(?,?,?,'district',?)",id,"device-"+id,org,origin);
+        jdbc.update("INSERT INTO target_source_link VALUES(?,'target',?,'session','external',?)","link-"+id,id,"device-"+id);
+        jdbc.update("INSERT INTO source_observation VALUES(?,?,?,'SN',NULL,'session','external',?,'district','replay',?)","obs-"+id,id,at(observed),org,"device-"+id);
     }
     private void risk(String id,long observed,long evaluated,String grade,String legal) {
         jdbc.update("INSERT INTO rule_evaluation VALUES(?,'target','org','district','mock','ACTIVE','TARGET',?,?,'FRESH',?,?,'alarm')",id,at(observed),at(evaluated),grade,legal);

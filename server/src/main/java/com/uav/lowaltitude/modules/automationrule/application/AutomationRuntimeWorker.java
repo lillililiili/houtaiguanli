@@ -4,11 +4,12 @@ import java.util.List;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import com.uav.lowaltitude.modules.alarm.application.AlarmRuleVerification;
+import com.uav.lowaltitude.modules.alarm.application.AlarmRuleCounter;
 import com.uav.lowaltitude.modules.automationrule.infrastructure.*;
 import com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService;
 import com.uav.lowaltitude.platform.time.AppClock;
 
-/** 判定告警流程规则。核实通过后确认事件，反制通过后等待有权限的操作员人工发起，通知处罚通过后尝试自动通知。 */
+/** Rules drive automatic actions only after their independent business and dispatch checks pass. */
 @Component
 public class AutomationRuntimeWorker {
     private final AutomationRuntimePolicy policy;
@@ -16,12 +17,14 @@ public class AutomationRuntimeWorker {
     private final AutomationRuntimeFactsRepository facts;
     private final AutomationRuntimeService service;
     private final AlarmRuleVerification verification;
+    private final AlarmRuleCounter counter;
     private final HandoffSubmissionService handoffs;
     private final AppClock clock;
     public AutomationRuntimeWorker(AutomationRuntimePolicy policy,AutomationRuntimeRepository runs,AutomationRuntimeFactsRepository facts,
-            AutomationRuntimeService service,AlarmRuleVerification verification,
+            AutomationRuntimeService service,AlarmRuleVerification verification,AlarmRuleCounter counter,
             HandoffSubmissionService handoffs,AppClock clock){
         this.policy=policy;this.runs=runs;this.facts=facts;this.service=service;this.verification=verification;
+        this.counter=counter;
         this.handoffs=handoffs;this.clock=clock;
     }
     @Scheduled(fixedDelayString="${app.automation-rules.poll-ms:2000}")
@@ -40,6 +43,7 @@ public class AutomationRuntimeWorker {
                             var state=runs.state(category,event);
                             if(state==null||!"PASS".equals(state.status()))continue;
                             if("verify".equals(category))verification.confirmIfPassed(event,state.runId());
+                            else if("counter".equals(category))counter.launchIfPassed(event,state.runId());
                             else if("dispose".equals(category))handoffs.automaticAfterDisposal(event);
                         }
                         catch(RuntimeException failed){error="部分事件判定异常，需检查后台日志";org.slf4j.LoggerFactory.getLogger(getClass()).warn("Rule evaluation failed for {} / {}: {}",category,event,failed.getClass().getSimpleName());}

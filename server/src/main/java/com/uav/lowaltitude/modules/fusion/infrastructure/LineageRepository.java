@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -23,8 +24,13 @@ public class LineageRepository {
     private static final String LINEAGE_SELECT = "SELECT g.lineage_id,g.op,g.occurred_at,g.survivor_target_id,g.origin_target_id,g.member_target_ids,g.source_target_ids,g.basis,"
             + "g.algo_version,g.config_version,g.operator_kind,g.operator_id,g.note,g.snapshots,g.created_at FROM target_lineage g";
     private final NamedParameterJdbcTemplate jdbc;
+    private final boolean postgresql;
 
-    public LineageRepository(JdbcTemplate jdbcTemplate) { this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate); }
+    public LineageRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
+        this.postgresql = Boolean.TRUE.equals(jdbcTemplate.execute((ConnectionCallback<Boolean>) connection ->
+                "PostgreSQL".equalsIgnoreCase(connection.getMetaData().getDatabaseProductName())));
+    }
 
     public TrackStatusRow findTrackStatus(String targetId) {
         List<TrackStatusRow> rows = jdbc.query("SELECT target_id,status,since,confirm_hits,miss_frames,last_observed_at,updated_at,version FROM target_track_status WHERE target_id=:t",
@@ -73,9 +79,8 @@ public class LineageRepository {
     }
 
     /**
-     * 与目标相关的血缘：作为 survivor、origin 或成员/来源出现。成员列表是 JSON 数组，H2 与 PostgreSQL 的 JSON 运算符不同，
-     * 这里统一用文本包含判断；H2 把 CAST(? AS JSON) 存成带转义的 JSON 字符串，所以不能按 "id" 带引号匹配，只能匹配裸 ID。
-     * 目标 ID 是 UUID/不可猜标识，裸串包含不会误命中其它目标。
+     * 与目标相关的血缘：作为 survivor、origin 或成员/来源出现。PostgreSQL 精确匹配 JSON 数组并使用既有 GIN 索引。
+     * H2 不支持该运算符，且把 CAST(? AS JSON) 存成带转义的 JSON 字符串，保留测试库的文本兼容路径。
      */
     public long countLineage(String targetId) {
         Long count = jdbc.queryForObject("SELECT COUNT(*) " + lineageFrom(), params(targetId), Long.class);
@@ -107,7 +112,12 @@ public class LineageRepository {
         return p;
     }
 
-    private static String lineageFrom() {
+    private String lineageFrom() {
+        if (postgresql) {
+            return "FROM target_lineage g WHERE g.survivor_target_id=:t OR g.origin_target_id=:t"
+                    + " OR g.member_target_ids @> jsonb_build_array(CAST(:t AS text))"
+                    + " OR g.source_target_ids @> jsonb_build_array(CAST(:t AS text))";
+        }
         return "FROM target_lineage g WHERE g.survivor_target_id=:t OR g.origin_target_id=:t"
                 + " OR CAST(g.member_target_ids AS VARCHAR) LIKE :contained OR CAST(g.source_target_ids AS VARCHAR) LIKE :contained";
     }

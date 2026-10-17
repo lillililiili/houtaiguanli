@@ -28,7 +28,7 @@ export function scopeSummary(settings = {}) {
 
 export function actionSummary(category) {
   if (category === 'verify') return '记录目标身份核实结论'
-  if (category === 'counter') return '执行前仍需独立校验有效授权'
+  if (category === 'counter') return '规则全部满足后自动发起，发送前复核授权与业务条件'
   return '通知处罚部门'
 }
 

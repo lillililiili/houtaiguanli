@@ -1,5 +1,9 @@
 # 阶段 9 飞行监管补齐与第二业务线接口契约
 
+2026-10-16 验收修复（待本轮 PostgreSQL 回归和部署验证）：C04/C05 手工及定时空间候选统一复用 `SimulationPlanBatchRepository.eligibleSql`，已登记的 replay 计划只允许当前范围批次的当前成员参与新评估；未登记输入和真实计划仍遵循原来源、范围与时段规则。无可用计划的目标继续保留为无计划候选，已有风险、评估及通知历史不修改。
+
+当前风险读取要求选中的 FUSED 点位置和接收时刻精确对应 `target_latest_state`。融合 writer 对同一事件时刻逐次追加点，并以同次写入时间更新 latest；只有同一有配置版本的 FUSED 轨迹、均为 MEAS、原始来源引用存在、序号更小且接收时刻严格更早、双方精度为正且位置距离不超过双方较小精度时，较早点才视为已被覆盖的历史修订。跨轨、平局或倒序、缺精度、超出精度范围的位置差异仍计入矛盾；预测、时效、来源关系、规则及风险距离门槛保持。回归使用实际 `DefaultFusedLayerWriter` 连续写入及相邻编号/时间夹具，验证历史不被改写；测试结果另记，不以代码落盘视为通过。
+
 > 状态：领导冻结稿 v1.1（2026-09-07：space-fact 响应体、并发 confirm 的 409 码；v1.0 于 2026-09-06）。**2026-09-09 变更**：外部授权登记按需求确认表增补四 F8 整体撤除——`GET/POST /flight-plans/{id}/authorizations`、`actuals` 响应的 `authorizations` 段、权限 `flight:authorize`、表 `flight_plan_authorization` 均已删除（`V202609090106`），下文相关条目仅作历史记录。配套：`docs/backend-stage9/decisions.md`、`docs/backend-stage3/flight-airspace-assessment-api-contract.md`（阶段 3 只读契约，本文只追加）、`docs/backend-stage4/alarm-risk-api-contract.md`（风险核验，本文只加过滤与可空字段）、`docs/backend-stage7/rule-engine-api-contract.md`（规则参数机制）。约定沿用：`{ok,data}` 包络、snake_case、字符串 ID、epoch 毫秒、`page/size → items/page/size/total`、先鉴权再解析、精确 `(owner_org_id,district_id)` 元组、越权 404、写接口 `Idempotency-Key` + `expected_version`、成功审计同事务、失败审计事务外、未知字段 `UNKNOWN_FIELD`。
 
 ## 交付边界

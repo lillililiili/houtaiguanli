@@ -20,22 +20,22 @@ class CounterHistoryTest {
     private static final String AUTO = AutomationPrincipal.USER_ID;
 
     @Test void noCounterYetLaunchesTheFirstAttempt() {
-        assertThat(CounterHistory.of(List.of(), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 1));
+        assertThat(history(List.of(), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 1));
     }
 
     @Test void startCancelledBeforeSendingOrExpiredUnsentIsRetriedUpToThreeAttempts() {
         var cancelled = authorization("a1", DisposalRules.FAILED, AUTO, "cmd-1", "AUTHORIZATION_STOPPED");
         var offline = authorization("a2", DisposalRules.FAILED, AUTO, "cmd-2", "DEVICE_NOT_OPERABLE");
         var expired = authorization("a3", DisposalRules.EXPIRED, AUTO, null, null);
-        assertThat(CounterHistory.of(List.of(cancelled), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 2));
-        assertThat(CounterHistory.of(List.of(cancelled, offline), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 3));
-        assertThat(CounterHistory.of(List.of(cancelled, offline, expired), NOW).next()).isEqualTo(Next.NOTHING);
+        assertThat(history(List.of(cancelled), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 2));
+        assertThat(history(List.of(cancelled, offline), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 3));
+        assertThat(history(List.of(cancelled, offline, expired), NOW).next()).isEqualTo(Next.NOTHING);
     }
 
     @Test void queuedAutomaticCounterIsDispatchedInsteadOfCreatingAnother() {
         var cancelled = authorization("a1", DisposalRules.FAILED, AUTO, "cmd-1", "AUTHORIZATION_STOPPED");
         var queued = authorization("a2", DisposalRules.APPROVED, AUTO, null, null);
-        var history = CounterHistory.of(List.of(cancelled, queued), NOW);
+        var history = history(List.of(cancelled, queued), NOW);
         assertThat(history.next()).isEqualTo(Next.DISPATCH_QUEUED);
         assertThat(history.queued()).isSameAs(queued);
         assertThat(history.attempt()).isEqualTo(2);
@@ -43,21 +43,36 @@ class CounterHistoryTest {
 
     @Test void approvedPastItsWindowCountsAsUnsentButNotAsQueued() {
         var stale = withWindow(authorization("a1", DisposalRules.APPROVED, AUTO, null, null), NOW.minusMinutes(20), NOW.minusMinutes(10));
-        assertThat(CounterHistory.of(List.of(stale), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 2));
+        assertThat(history(List.of(stale), NOW)).isEqualTo(new CounterHistory(Next.LAUNCH, null, 2));
     }
 
     @Test void anythingThatMayHaveReachedTheDeviceOrInvolvedAPersonStopsAutomation() {
         for (AuthorizationRow row : List.of(
                 authorization("timeout", DisposalRules.FAILED, AUTO, "cmd", "ADAPTER_TIMEOUT"),
                 authorization("device-failed", DisposalRules.FAILED, AUTO, "cmd", "COUNTERMEASURE_SET_FAILED"),
+                authorization("unknown-failure", DisposalRules.FAILED, AUTO, "cmd", null),
                 authorization("running", DisposalRules.EXECUTING, AUTO, "cmd", null),
                 authorization("done", DisposalRules.COMPLETED, AUTO, "cmd", "COUNTERMEASURE_SET_OK"),
                 authorization("stopped", DisposalRules.STOPPED, AUTO, "cmd", "STOPPED_BY_OPERATOR"),
                 authorization("cancelled", DisposalRules.CANCELLED, AUTO, null, null),
                 authorization("manual-cancelled-start", DisposalRules.FAILED, "operator-1", "cmd", "AUTHORIZATION_STOPPED"),
                 authorization("manual-queued", DisposalRules.APPROVED, "operator-1", null, null))) {
-            assertThat(CounterHistory.of(List.of(row), NOW).next()).as(row.authorizationId()).isEqualTo(Next.NOTHING);
+            assertThat(history(List.of(row), NOW).next()).as(row.authorizationId()).isEqualTo(Next.NOTHING);
         }
+    }
+
+    private static CounterHistory history(List<AuthorizationRow> rows, OffsetDateTime now) {
+        return CounterHistory.of(rows, now, row -> true, row -> true);
+    }
+
+    @Test void legacyAutomaticAuthorizationAndUnprovenCancellationNeverRetry() {
+        var cancelled = authorization("legacy", DisposalRules.FAILED, AUTO, "command", "AUTHORIZATION_STOPPED");
+        assertThat(CounterHistory.of(List.of(cancelled), NOW, row -> false, row -> true).next()).isEqualTo(Next.NOTHING);
+        assertThat(CounterHistory.of(List.of(cancelled), NOW, row -> true, row -> false).next()).isEqualTo(Next.NOTHING);
+        var queued = authorization("legacy-q", DisposalRules.APPROVED, AUTO, null, null);
+        assertThat(CounterHistory.of(List.of(queued), NOW, row -> false, row -> true).next()).isEqualTo(Next.NOTHING);
+        assertThat(CounterHistory.of(List.of(queued), NOW, row -> true, row -> false).next()).isEqualTo(Next.NOTHING);
+        assertThat(history(List.of(cancelled, cancelled, cancelled, queued), NOW).next()).isEqualTo(Next.NOTHING);
     }
 
     private static AuthorizationRow withWindow(AuthorizationRow r, OffsetDateTime from, OffsetDateTime until) {

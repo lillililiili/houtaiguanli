@@ -50,7 +50,12 @@ beforeEach(() => {
   externalInterfacesApi.get.mockImplementation(async kind => ({ kind, name: '任务接口', source_mode: 'live', version: 0, status: 'NOT_CONFIGURED', enabled: false }));
   voiceRecordingApi.catalog.mockResolvedValue(catalog());
 });
-afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = ''; });
+afterEach(async () => {
+  app?.unmount();
+  // Element Plus unlocks the dialog body 200 ms after unmount; finish before jsdom teardown.
+  await new Promise(resolve => setTimeout(resolve, 250));
+  host?.remove(); document.body.innerHTML = '';
+});
 
 it('接口配置页有电话通知录音入口，切过去不再读外部接口配置', async () => {
   await mount(InterfacesView);

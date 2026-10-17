@@ -139,6 +139,103 @@ class RiskClearancePostgresTest {
         assertThat(jdbc.queryForMap("select * from flight_risk where risk_id=?",risk)).isEqualTo(before);
     }
 
+    @ParameterizedTest
+    @CsvSource({"mock,0", "replay,17"})
+    void incrementalFusionRevisionsRemainCurrentWithoutErasingHistory(String mode, int timeShiftSeconds) {
+        RiskPresenceService service = measuredRevisionSequence(mode, timeShiftSeconds);
+        var row = risks.find(risk,new AccessDecision("qa",ScopeMode.ALL));
+        var before = jdbc.queryForList("select * from track_point where track_id=? order by point_seq",track);
+        var riskBefore = jdbc.queryForMap("select * from flight_risk where risk_id=?",risk);
+        var factBefore = jdbc.queryForMap("select * from space_risk_fact where risk_id=?",risk);
+        assertThat(before).hasSize(3);
+        assertThat(currentEvidence.observation(target,routeVersion,plan).peers()).isZero();
+        assertThat(service.read(row,now).status()).isEqualTo("CURRENT");
+        assertThat(jdbc.queryForList("select * from track_point where track_id=? order by point_seq",track)).isEqualTo(before);
+        assertThat(jdbc.queryForMap("select * from flight_risk where risk_id=?",risk)).isEqualTo(riskBefore);
+        assertThat(jdbc.queryForMap("select * from space_risk_fact where risk_id=?",risk)).isEqualTo(factBefore);
+        assertThat(count()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"different-track","equal-received","reverse-sequence","later-contradiction",
+            "disjoint-position","missing-accuracy","latest-receipt-mismatch","wrong-source","stale","unconfirmed-live",
+            "earlier-wrong-source","earlier-foreign-scope","earlier-missing-link"})
+    void orderedRevisionsNeverHideUncertainOrConflictingEvidence(String condition) {
+        RiskPresenceService service = measuredRevisionSequence("mock", 0);
+        String earlier = jdbc.queryForObject("select point_id from track_point where track_id=? order by point_seq fetch first 1 row only",String.class,track);
+        switch(condition) {
+            case "different-track" -> {
+                String other = id();
+                jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at,config_version) values(?,?,?,'FUSED',?,?,'demo-v1')",
+                        other,target,other,ts(now-1000),ts(now-1000));
+                jdbc.update("update track_point set track_id=? where point_id=?",other,earlier);
+            }
+            case "equal-received" -> jdbc.update("update track_point set received_at=(select received_at from track_point where point_id=?) where point_id=?",point,earlier);
+            case "reverse-sequence" -> jdbc.update("update track_point set point_seq=20 where point_id=?",earlier);
+            case "later-contradiction" -> jdbc.update("update track_point set received_at=? where point_id=?",ts(now-50),earlier);
+            case "disjoint-position" -> jdbc.update("update track_point set location=ST_SetSRID(ST_MakePoint(118.05,37.02),4326) where point_id=?",earlier);
+            case "missing-accuracy" -> jdbc.update("update track_point set position_accuracy_m=null where point_id=?",earlier);
+            case "latest-receipt-mismatch" -> jdbc.update("update target_latest_state set received_at=? where target_id=?",ts(now-90),target);
+            case "wrong-source" -> jdbc.update("update track_point set position_source_id='rule-engine-space-risk-live' where point_id=?",point);
+            case "stale" -> now += 300000;
+            case "unconfirmed-live" -> jdbc.update("update flight_risk set source_mode='live',source_id='rule-engine-space-risk-live' where risk_id=?",risk);
+            case "earlier-wrong-source" -> jdbc.update("update track_point set position_source_id='rule-engine-space-risk-live' where point_id=?",earlier);
+            case "earlier-missing-link" -> jdbc.update("delete from target_source_link where source_id=(select position_source_id from track_point where point_id=?)",earlier);
+            case "earlier-foreign-scope" -> {
+                String observation=id(),sourceSession=id();
+                jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,quality,source_mode,owner_org_id,district_id,created_at)"
+                        +" select ?,source_id,?,external_target_id,observed_at,received_at,location,position_accuracy_m,quality,source_mode,'seed-stage3-other-org',district_id,created_at from source_observation"
+                        +" where observation_id=(select observation_id from track_point where point_id=?)",observation,sourceSession,earlier);
+                jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) select ?,?,source_id,source_session_key,external_target_id,created_at from source_observation where observation_id=?",
+                        id(),target,observation);
+                jdbc.update("update track_point set observation_id=? where point_id=?",observation,earlier);
+            }
+        }
+        if(condition.startsWith("earlier-")) {
+            assertThat(currentEvidence.observation(target,routeVersion,plan).sourceScopeValid()).isTrue();
+            assertThat(currentEvidence.observation(target,routeVersion,plan).peers()).isPositive();
+        }
+        assertThat(service.read(risks.find(risk,new AccessDecision("qa",ScopeMode.ALL)),now).status()).as(condition).isEqualTo("UNKNOWN");
+        assertThat(count()).isZero();
+    }
+
+    /** Produce revisions with the actual writer: independent source updates share one event time. */
+    private RiskPresenceService measuredRevisionSequence(String mode, int timeShiftSeconds) {
+        now += timeShiftSeconds * 1000L;
+        long observed = now-500;
+        jdbc.update("update track set ended_at=? where track_id=?",ts(observed-1),track);
+        jdbc.update("update target set source_mode=? where target_id=?",mode,target);
+        jdbc.update("update flight_plan set source_mode=? where plan_id=?",mode,plan);
+        jdbc.update("update route set source_mode=? where route_id=(select route_id from route_version where route_version_id=?)",mode,routeVersion);
+        jdbc.update("update flight_risk set source_mode=?,source_id=? where risk_id=?",mode,"rule-engine-space-risk-"+mode,risk);
+        var estimates = new java.util.ArrayList<SourceEstimate>();
+        for(int index=0; index<3; index++) {
+            // Stable ordering makes each newly added equal-quality source become the selected source.
+            String source=Character.toString('f'-index)+id().substring(1),link=id(),observation=id(),sourceSession=id();
+            double latitude=37.00010+index*0.00001;
+            jdbc.update("insert into integration_source(source_id,source_code,name,protocol_code,protocol_version,enabled,source_mode,created_at,updated_at,version) values(?,?,'revision source','SIM_NORMALIZED','1',true,?,?,?,0)",
+                    source,source,mode,ts(now-700000),ts(observed));
+            jdbc.update("insert into target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) values(?,?,?,?,?,?)",
+                    link,target,source,sourceSession,target,ts(now-700000));
+            jdbc.update("insert into source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,quality,source_mode,owner_org_id,district_id,created_at)"
+                    +" values(?,?,?,?,?,?,ST_SetSRID(ST_MakePoint(118.05,?),4326),5,CAST('{\"object_count\":25}' AS JSON),?,?,?,?)",
+                    observation,source,sourceSession,target,ts(observed),ts(observed+50),latitude,mode,ORG,DISTRICT,ts(observed+50));
+            estimates.add(new SourceEstimate(source,source,"RADAR","CONFIRMED",link,null,observation,Instant.ofEpochMilli(observed),
+                    118.05,latitude,5.0,100.0,60.0,2.0,90.0,"BIRD",0.99,null,null,PointKind.MEAS,java.util.Map.of()));
+            doReturn(Instant.ofEpochMilli(now-300+index*100)).when(clock).now();
+            doReturn(now-300+index*100).when(clock).nowMillis();
+            writer.write(new TargetFrameResult(target,new FusionDomainKey(mode,ORG,DISTRICT),Instant.ofEpochMilli(observed),
+                    List.copyOf(estimates),TrackStatus.STABLE,0,"demo-v1"));
+        }
+        doReturn(Instant.ofEpochMilli(now)).when(clock).now();doReturn(now).when(clock).nowMillis();
+        track=jdbc.queryForObject("select track_id from track where target_id=? and layer='FUSED' and ended_at is null",String.class,target);
+        point=jdbc.queryForObject("select point_id from track_point where track_id=? order by point_seq desc fetch first 1 row only",String.class,track);
+        var env=new org.springframework.mock.env.MockEnvironment().withProperty("app.flight-device-check.simulator-device-bridge-enabled","true");
+        env.setActiveProfiles("local","qa");
+        return new RiskPresenceService(currentEvidence,risks,spaceRepository,weatherRepository,parameters,json,clock,
+                new com.uav.lowaltitude.platform.config.SimulationPolicy(env),env);
+    }
+
     @Test void latestPointLookupKeepsGlobalOrderingAcrossTracksAndUnknownTimes() {
         String otherTrack=id();
         jdbc.update("insert into track(track_id,target_id,external_track_id,layer,started_at,created_at) values(?,?,?,'FUSED',?,?)",

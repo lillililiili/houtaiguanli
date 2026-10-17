@@ -44,8 +44,8 @@ public class FlightPlanAttentionService {
 
     public static final List<String> KINDS = List.of("DEVIATION", "AIRCRAFT", "DEVICE", "RISK");
     private static final List<String> ACTIVE = List.of("EXECUTING", "PENDING", "APPROVED");
-    /** 活跃任务整批取回在内存排序；演示与验收规模远小于此，超出时只排前这么多条。 */
-    private static final int ACTIVE_LIMIT = 2000;
+    /** 只限制单次读取及关联事实查询的大小，不限制参与排序、筛选和统计的任务总数。 */
+    private static final int ACTIVE_BATCH_SIZE = 500;
     private static final Set<String> MATCH_ISSUES = Set.of("NONE", "PARTIAL", "UNDETERMINED");
     /** 与飞行任务页“全部风险事件”同一口径：事件类风险，不含两类预设展示样例。 */
     private static final RiskQuery EVENT_RISKS = new RiskQuery(null, null, null, null, null, null, null, null, null, null, null,
@@ -65,8 +65,19 @@ public class FlightPlanAttentionService {
 
     /** kind 为 null 时返回整份排好的列表；给了 kind 时只返回有这一种问题的任务。 */
     public Ranked page(PlanQuery query, AccessDecision flight, String kind, int offset, int size) {
-        List<PlanRow> active = plans.listPlansInStatuses(query, flight, ACTIVE, true, 0, ACTIVE_LIMIT);
-        Map<String, PlanAttentionDto> attention = attentionOf(active);
+        List<PlanRow> active = new ArrayList<>();
+        Map<String, PlanAttentionDto> attention = new LinkedHashMap<>();
+        AccessDecision assessment = actuals.assessmentAccess();
+        AccessDecision risk = probe(PermissionCode.RISK_READ);
+        // 调用方的只读可重复读事务覆盖各批任务、关联事实以及历史任务的计数和分页。
+        // 先读完整个筛选范围，再计算全局优先级；后面批次的偏离任务也必须排到第一页。
+        for (int batchOffset = 0; ; ) {
+            List<PlanRow> batch = plans.listPlansInStatuses(query, flight, ACTIVE, true, batchOffset, ACTIVE_BATCH_SIZE);
+            active.addAll(batch);
+            attention.putAll(attentionOf(batch, assessment, risk));
+            if (batch.size() < ACTIVE_BATCH_SIZE) break;
+            batchOffset = Math.addExact(batchOffset, batch.size());
+        }
 
         Comparator<PlanRow> newestFirst = Comparator.comparing(PlanRow::startAt, Comparator.nullsLast(Comparator.<OffsetDateTime>reverseOrder()))
                 .thenComparing(PlanRow::planId);
@@ -104,12 +115,11 @@ public class FlightPlanAttentionService {
         return new Ranked(rows, attention, summary, ordered.size() + ended);
     }
 
-    private Map<String, PlanAttentionDto> attentionOf(List<PlanRow> active) {
+    private Map<String, PlanAttentionDto> attentionOf(List<PlanRow> active, AccessDecision assessment, AccessDecision risk) {
         List<String> executingIds = active.stream().filter(row -> "EXECUTING".equals(row.statusCode())).map(PlanRow::planId).toList();
         List<String> activeIds = active.stream().map(PlanRow::planId).toList();
 
         Map<String, String> matchIssue = new HashMap<>();
-        AccessDecision assessment = actuals.assessmentAccess();
         if (assessment != null) for (String id : executingIds) {
             String issue = matchIssue(actuals.latestMatch(id, assessment));
             if (issue != null) matchIssue.put(id, issue);
@@ -122,7 +132,6 @@ public class FlightPlanAttentionService {
 
         Map<String, long[]> riskCounts = new HashMap<>();
         Map<String, List<RiskKindDto>> riskKinds = new HashMap<>();
-        AccessDecision risk = probe(PermissionCode.RISK_READ);
         if (risk != null) for (var count : risks.pendingCountsByPlan(EVENT_RISKS, activeIds, risk)) {
             long[] pair = riskCounts.computeIfAbsent(count.planId(), ignored -> new long[2]);
             pair["PENDING_VERIFICATION".equals(count.state()) ? 0 : 1] += count.total();
@@ -173,7 +182,7 @@ public class FlightPlanAttentionService {
 
     private static List<PlanRow> slice(List<PlanRow> rows, int offset, int size) {
         if (offset >= rows.size()) return List.of();
-        return rows.subList(offset, Math.min(rows.size(), offset + size));
+        return rows.subList(offset, (int) Math.min(rows.size(), (long) offset + size));
     }
 
     private AccessDecision probe(PermissionCode permission) {

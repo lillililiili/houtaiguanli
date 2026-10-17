@@ -47,7 +47,7 @@ class CommandSettlementSignalTest {
     private final Countermeasure4ChControlRepository fourChannelControls = mock(Countermeasure4ChControlRepository.class);
     private final Countermeasure4ChControlService fourChannel = new Countermeasure4ChControlService(
             mock(DeviceAccessPolicy.class), devices, fourChannelControls, mock(DeviceAdapterRegistry.class), clock,
-            mock(AuditService.class), new ObjectMapper(), events, new MockEnvironment(), guard);
+            mock(AuditService.class), new ObjectMapper(), events, new MockEnvironment(), guard, mock(CountermeasureStartAttempts.class));
 
     private final LingyunControlRepository lingyunControls = mock(LingyunControlRepository.class);
     @SuppressWarnings("unchecked")

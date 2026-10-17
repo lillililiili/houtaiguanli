@@ -143,6 +143,7 @@ public class EoDispatchService {
     /** Called within the scheduler transaction, under the same cursor used by all EO commands. */
     public int poll(int maximum) {
         if(policy.enabled()) for(String target:tracking.candidates(policy.cutoff(),policy.now(),maximum)) {
+            if(!tracking.tryLock(target)) continue;
             var snapshot=tracking.snapshot(target);
             if(!policy.enabledFor(snapshot)||policy.block(snapshot)!=null||tracking.paused(target)||policy.demand(target).isEmpty()) continue;
             if(queue.pending(target)!=null || edges.targetHasOpenTask(target)) continue;
@@ -150,6 +151,7 @@ public class EoDispatchService {
             var oldTask=edges.latestTaskByTarget(target);
             if(previous!=null && "FAILED".equals(text(previous,"status"))) continue;
             if(oldTask!=null && "FAILED".equals(text(oldTask,"status"))) continue;
+            if(!hasObservationAfterEnd(snapshot,oldTask)) continue;
             queue.create(UUID.randomUUID().toString(),target,null,policy.now());
         }
         var pending=new ArrayList<>(queue.waiting());
@@ -168,6 +170,11 @@ public class EoDispatchService {
                 finish(req,"CANCELLED",null,"当前已无有效自动观察需求。");continue;
             }
             if(edges.targetHasOpenTask(target)) {finish(req,"STARTED",text(edges.openTaskByTarget(target),"task_id"),"目标已有跟踪任务。");continue;}
+            // A request can outlive a previous task. Re-read its terminal fact under the
+            // cursor/target locks, so an old queued request cannot reuse pre-stop evidence.
+            if(!manual && !hasObservationAfterEnd(snapshot,edges.latestTaskByTarget(target))) {
+                finish(req,"CANCELLED",null,"上次光电跟踪已结束，等待结束后的新有效观测再自动跟踪。");continue;
+            }
             Binding picked=null;
             if("STOPPING".equals(text(req,"status"))) {
                 var old=edges.task(text(req,"stop_task_id"));
@@ -210,6 +217,13 @@ public class EoDispatchService {
             }
         }
         return count;
+    }
+    private static boolean hasObservationAfterEnd(Map<String,Object> snapshot,Map<String,Object> task) {
+        if(task==null || !"ENDED".equals(text(task,"status"))) return true;
+        // Missing stop time is not proof that a later observation exists. Manual requests
+        // still use their existing permission, position freshness and device checks.
+        return task.get("ended_at") instanceof Number ended && snapshot!=null
+                && EoTrackingPolicy.millis(snapshot.get("observed_at"))>ended.longValue();
     }
     private int priority(String target) {return queue.priority(target,policy.now()-policy.demandMaxAge(),policy.now());}
     public boolean protectedObservation(String target) {return queue.protectedTarget(target);}

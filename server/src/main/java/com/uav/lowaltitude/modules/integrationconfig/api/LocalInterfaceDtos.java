@@ -13,7 +13,9 @@ public final class LocalInterfaceDtos {
   @NotNull @Positive Long startAt,@NotNull @Positive Long endAt,
   @Valid com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing filing,
   @Pattern(regexp="mock|replay") String sourceMode,
-  @Pattern(regexp="PENDING|EXECUTING|COMPLETED|CANCELLED") String statusCode){}
+  @Pattern(regexp="PENDING|EXECUTING|COMPLETED|CANCELLED") String statusCode,
+  @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+  @Pattern(regexp="[A-Za-z0-9_-]{1,64}",message="模拟批次编号须为1至64位字母、数字、下划线或横线") String simulationBatchId){}
  public record PlanRoute(@NotBlank @Size(max=128) String name,
   @NotNull JsonNode geometry,@NotNull @DecimalMin("0.01") BigDecimal corridorWidthM,
   BigDecimal minAltitudeM,BigDecimal maxAltitudeM,String altitudeDatum,

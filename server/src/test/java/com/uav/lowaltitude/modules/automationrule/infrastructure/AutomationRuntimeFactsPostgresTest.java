@@ -152,8 +152,14 @@ class AutomationRuntimeFactsPostgresTest {
         jdbc.update("INSERT INTO integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at) VALUES(?,?,'FACTS-PG mock source',TRUE,'mock',?,?)",id,"FACTS-PG-"+id,at(NOW),at(NOW));
     }
     private void observation(String source,String target,String org,String district) {
-        jdbc.update("INSERT INTO target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) VALUES(?,?,?,'FACTS-PG','external',?)",uuid(),target,source,at(NOW));
-        jdbc.update("INSERT INTO source_observation(observation_id,source_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,class_code,identity_clue,source_mode,owner_org_id,district_id,created_at) VALUES(?,?,'FACTS-PG','external',?,?,ST_SetSRID(ST_MakePoint(118,37),4326),5,'UAV','FACTS-PG-SN','mock',?,?,?)",uuid(),source,at(NOW),at(NOW),org,district,at(NOW));
+        String device=uuid(),opsSource=uuid();
+        jdbc.update("UPDATE integration_source SET protocol_code='RADAR_TCP_V3_0_0' WHERE source_id=?",source);
+        jdbc.update("INSERT INTO ops_integration_source(source_id,source_code,name,protocol_code,source_mode,enabled,created_at,updated_at) VALUES(?,?,'FACTS-PG sensing source','RADAR_TCP_V3_0_0','mock',TRUE,?,?)",opsSource,"FACTS-PG-"+source,NOW,NOW);
+        jdbc.update("INSERT INTO ops_device(device_id,source_id,external_device_id,device_no,name,device_type_name,channel,enabled,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,?, 'FACTS-PG sensing device','TEST','TEST',TRUE,'mock',TRUE,?,?)",device,opsSource,device,"FACTS-PG-"+device,NOW,NOW);
+        jdbc.update("INSERT INTO device(device_id,source_id,external_device_id,device_no,name,device_type_code,enabled,source_mode,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,?,'FACTS-PG sensing','RADAR',TRUE,'mock',?,?,?,?)",device,source,device,"FACTS-PG-"+device,org,district,at(NOW),at(NOW));
+        jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,?,?)",device,org,district,at(NOW),at(NOW));
+        jdbc.update("INSERT INTO target_source_link(link_id,target_id,source_id,device_id,source_session_key,external_target_id,created_at) VALUES(?,?,?,?,'FACTS-PG','external',?)",uuid(),target,source,device,at(NOW));
+        jdbc.update("INSERT INTO source_observation(observation_id,source_id,device_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,class_code,identity_clue,source_mode,owner_org_id,district_id,created_at) VALUES(?,?,?,'FACTS-PG','external',?,?,ST_SetSRID(ST_MakePoint(118,37),4326),5,'UAV','FACTS-PG-SN','mock',?,?,?)",uuid(),source,device,at(NOW),at(NOW),org,district,at(NOW));
     }
     private void alarm(String id,String target,String source,String org,String district) {
         jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) VALUES(?,?,?,?,'UAV_INTRUSION','HIGH',?,?,'mock',?,?,?)",id,target,source,"FACTS-PG-"+id,at(NOW),at(NOW),org,district,at(NOW));

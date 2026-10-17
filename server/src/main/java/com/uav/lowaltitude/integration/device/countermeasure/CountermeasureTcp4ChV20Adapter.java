@@ -42,6 +42,7 @@ public class CountermeasureTcp4ChV20Adapter implements DeviceAdapterPort {
 
     @Override
     public AdapterResult setRelays(RelayWork work) {
+        boolean[] sending = {false};
         try {
             AdapterConfiguration config = AdapterConfiguration.parse(mapper, work.configurationJson());
             config.validateEndpoint();
@@ -53,7 +54,8 @@ public class CountermeasureTcp4ChV20Adapter implements DeviceAdapterPort {
             }
             byte[] logical = setFrame(address, work);
             List<InetAddress> addresses = networkPolicy.resolveAllowed(config.host(), config.allowedCidrs());
-            byte[] response = exchange(addresses.get(0), config.port(), config.timeoutMillis(), logical, encoding);
+            byte[] response = exchange(addresses.get(0), config.port(), config.timeoutMillis(), logical, encoding,
+                    () -> sending[0] = true);
             RelayState state = Countermeasure4ChCodec.parseResponse(
                     Countermeasure4ChCodec.decodeWire(response, encoding), address, functionOf(work.action()));
             int actual = (int) (state.rawStatusWord() & 0x0F);
@@ -63,20 +65,28 @@ public class CountermeasureTcp4ChV20Adapter implements DeviceAdapterPort {
                 case "CHANNEL_OFF" -> (actual & requiredBit(work.channelBit())) == 0;
                 default -> false;
             };
-            if (!matches) return new AdapterResult(false, "COUNTERMEASURE_STATE_MISMATCH",
+            if (!matches) return failedSet(work, sending[0], "COUNTERMEASURE_STATE_MISMATCH",
                     "回码继电器状态与请求不一致（低四位=0x" + Integer.toHexString(actual)
                             + "），本次设置未确认；请核查设备实际状态");
             return new AdapterResult(true, "COUNTERMEASURE_SET_OK",
                     "继电器设置回码已确认，低四位=" + Integer.toHexString(actual)
                             + "；不代表射频已发射");
         } catch (SocketTimeoutException ex) {
-            return new AdapterResult(false, "ADAPTER_TIMEOUT",
+            return failedSet(work, sending[0], "ADAPTER_TIMEOUT",
                     "设备响应超时，本次设置结果未确认；设备可能已动作，请核查实际状态");
         } catch (ProtocolException ex) {
-            return new AdapterResult(false, ex.code(), ex.getMessage());
+            return failedSet(work, sending[0], ex.code(), ex.getMessage());
         } catch (IOException ex) {
-            return new AdapterResult(false, "ADAPTER_UNAVAILABLE", safe(ex));
+            return failedSet(work, sending[0], "ADAPTER_UNAVAILABLE", safe(ex));
         }
+    }
+
+    private static AdapterResult failedSet(RelayWork work, boolean sending, String code, String detail) {
+        boolean starting = "CHANNEL_ON".equals(work.action())
+                || "SET_MASK".equals(work.action()) && work.mask() != null && work.mask() != 0;
+        if (starting && sending) return new AdapterResult(false, "COUNTERMEASURE_OUTCOME_UNKNOWN",
+                "启动已进入发送，但回码未确认实际结果；原结果 " + code + "：" + detail + "。可下发全关安全收尾。");
+        return new AdapterResult(false, code, detail);
     }
 
     @Override
@@ -142,10 +152,16 @@ public class CountermeasureTcp4ChV20Adapter implements DeviceAdapterPort {
 
     private byte[] exchange(InetAddress address, int port, int timeout, byte[] logicalFrame,
                             WireEncoding encoding) throws IOException {
+        return exchange(address, port, timeout, logicalFrame, encoding, () -> { });
+    }
+
+    private byte[] exchange(InetAddress address, int port, int timeout, byte[] logicalFrame,
+                            WireEncoding encoding, Runnable beforeWrite) throws IOException {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress(address, port), timeout);
             socket.setSoTimeout(timeout);
             byte[] request = Countermeasure4ChCodec.encodeWire(logicalFrame, encoding);
+            beforeWrite.run();
             socket.getOutputStream().write(request);
             socket.getOutputStream().flush();
             return readResponse(socket, encoding);

@@ -3,6 +3,7 @@ package com.uav.lowaltitude.modules.alarm.application;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
@@ -21,22 +22,23 @@ record CounterHistory(Next next, AuthorizationRow queued, int attempt) {
     /** 启动指令在发出去之前被取消（设备没收到）的结果码，见 Countermeasure4ChControlService.dispatch。 */
     static final Set<String> NOT_SENT = Set.of("AUTHORIZATION_STOPPED", "DEVICE_NOT_OPERABLE");
 
-    static CounterHistory of(List<AuthorizationRow> rows, OffsetDateTime now) {
+    static CounterHistory of(List<AuthorizationRow> rows, OffsetDateTime now,
+            Predicate<AuthorizationRow> currentOrigin, Predicate<AuthorizationRow> neverIssued) {
         AuthorizationRow queued = null;
         int unsent = 0;
         for (AuthorizationRow row : rows) {
-            if (!automatic(row)) return nothing();
+            if (!automatic(row) || !currentOrigin.test(row)) return nothing();
             if (waiting(row, now)) {
-                if (queued != null) return nothing();
+                if (queued != null || !neverIssued.test(row)) return nothing();
                 queued = row;
-            } else if (neverSent(row)) {
+            } else if (neverSent(row) && neverIssued.test(row)) {
                 unsent++;
             } else {
                 return nothing();
             }
         }
-        if (queued != null) return new CounterHistory(Next.DISPATCH_QUEUED, queued, unsent + 1);
         if (unsent >= MAX_ATTEMPTS) return nothing();
+        if (queued != null) return new CounterHistory(Next.DISPATCH_QUEUED, queued, unsent + 1);
         return new CounterHistory(Next.LAUNCH, null, unsent + 1);
     }
 
@@ -49,7 +51,7 @@ record CounterHistory(Next next, AuthorizationRow queued, int attempt) {
 
     /** 设备没收到过它的启动指令。设备回过失败、超时的不算：设备可能动过，要人核查。 */
     static boolean neverSent(AuthorizationRow row) {
-        if (DisposalRules.FAILED.equals(row.status())) return NOT_SENT.contains(row.resultCode());
+        if (DisposalRules.FAILED.equals(row.status())) return row.resultCode() != null && NOT_SENT.contains(row.resultCode());
         return (DisposalRules.EXPIRED.equals(row.status()) || DisposalRules.APPROVED.equals(row.status()))
                 && row.executionCommandId() == null;
     }

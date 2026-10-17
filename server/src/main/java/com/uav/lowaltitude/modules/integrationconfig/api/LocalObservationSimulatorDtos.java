@@ -3,6 +3,8 @@ package com.uav.lowaltitude.modules.integrationconfig.api;
 import java.math.BigDecimal;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -20,7 +22,8 @@ public final class LocalObservationSimulatorDtos {
             @NotNull BigDecimal longitude,
             @NotNull BigDecimal latitude,
             @NotBlank @Size(max = 36) String ownerOrgId,
-            @NotBlank @Size(max = 36) String districtId) { }
+            @NotBlank @Size(max = 36) String districtId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) @Size(max = 36) String originOpsDeviceId) { }
 
     public record WeatherDeviceInput(
             @NotBlank @Size(max = 64) String messageId,

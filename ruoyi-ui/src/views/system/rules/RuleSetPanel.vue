@@ -38,7 +38,7 @@ async function activate(set, version) {
   let note
   try {
     const result = await ElMessageBox.prompt(
-      `启用后，系统按“${set.name}”第 ${version.version_no} 版自动研判${current ? `，原来生效的第 ${current.version_no} 版停止使用` : ''}。${version.param_status === 'DEMO' ? '这一版是演示参数，只适合测试和演示。' : ''}请填写启用原因。`,
+      `启用后，系统按“${set.name}”第 ${version.version_no} 版（${version.rule_set_version_id}）自动研判${current ? `，原来生效的第 ${current.version_no} 版停止使用` : ''}。${version.param_status === 'DEMO' ? '这一版是演示参数，只适合测试和演示。' : ''}请填写启用原因。`,
       `启用第 ${version.version_no} 版`,
       { confirmButtonText: '启用', cancelButtonText: '取消', inputValue: '系统准备：启用研判规则', inputValidator: value => (Boolean(value?.trim()) && value.trim().length <= 1000) || '请填写启用原因（不超过 1000 字）' })
     note = result.value.trim()
@@ -73,7 +73,7 @@ onBeforeUnmount(() => { alive = false; sequence++ })
           <el-tag v-else type="warning">尚未启用，系统不会按这套规则研判</el-tag>
         </header>
         <el-table :data="set.versions" empty-text="这套规则集还没有版本">
-          <el-table-column label="版本" width="90"><template #default="{ row }">第 {{ row.version_no }} 版</template></el-table-column>
+          <el-table-column label="版本" min-width="240"><template #default="{ row }"><div>第 {{ row.version_no }} 版</div><small class="version-id">{{ row.rule_set_version_id }}</small></template></el-table-column>
           <el-table-column label="说明" min-width="200"><template #default="{ row }">{{ row.description || '—' }}</template></el-table-column>
           <el-table-column label="参数" min-width="170"><template #default="{ row }"><el-tag :type="paramLabel(row.param_status)[1]" effect="plain">{{ paramLabel(row.param_status)[0] }}</el-tag></template></el-table-column>
           <el-table-column label="发布时间" min-width="160"><template #default="{ row }">{{ formatTime(row.published_at) }}</template></el-table-column>

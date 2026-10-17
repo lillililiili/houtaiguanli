@@ -32,6 +32,27 @@ class AutomationRuntimeEvaluatorTest {
         assertThat(first.status()).isEqualTo("WAITING");
         assertThat(evaluate(List.of(confidence),facts(now+5000,Map.of()),now+5000,Map.of(),first.unknownSince()).status()).isEqualTo("REVIEW");
     }
+    @Test void deviceCountUsesItsExplicitSixtySecondWindowWithoutRelaxingOtherFacts(){
+        var count=new Rule("devices","独立设备","sourceCount","2",0,true,0,"admin");
+        for(long age:List.of(50_000L,60_000L)) {
+            var current=facts(now-1000,Map.of("sourceCount",fact("2",now-age)));
+            assertThat(evaluate(List.of(count),current,now,Map.of(),null).status()).isEqualTo("PASS");
+        }
+        for(long age:List.of(60_001L,-1L)) {
+            var current=facts(now,Map.of("sourceCount",fact("2",now-age)));
+            assertThat(evaluate(List.of(count),current,now,Map.of(),null).status()).isEqualTo("WAITING");
+        }
+        var staleConfidence=facts(now,Map.of("sourceCount",fact("2",now-50_000),"confidence",fact("99",now-50_000)));
+        assertThat(evaluate(List.of(count,confidence),staleConfidence,now,Map.of(),null).status()).isEqualTo("WAITING");
+        assertThat(evaluate(List.of(count),facts(now-30_001,Map.of("sourceCount",fact("2",now-30_001))),now,Map.of(),null).status()).isEqualTo("REVIEW");
+    }
+    @Test void deviceCountHoldUsesRealEvidenceTimesAndResetsBeyondSixtySeconds(){
+        var count=new Rule("devices","独立设备持续","sourceCount","2",5,true,0,"admin");
+        var previous=Map.of("devices",new Hold(now-60_000,now-50_000));
+        assertThat(evaluate(List.of(count),facts(now,Map.of("sourceCount",fact("2",now))),now,previous,null).status()).isEqualTo("PASS");
+        previous=Map.of("devices",new Hold(now-90_000,now-60_001));
+        assertThat(engine.evaluate(group,List.of(count),Set.of(),facts(now,Map.of("sourceCount",fact("2",now))),now,120_000,previous,null).status()).isEqualTo("WAITING");
+    }
     @Test void staleFutureAndUnknownObjectNeverPass(){
         for(long at:List.of(now-30001,now+1))assertThat(evaluate(List.of(confidence),facts(at,Map.of("confidence",fact("99",at))),now,Map.of(),null).status()).isEqualTo("REVIEW");
         var f=new AutomationRuntimeFacts("e","t","a","o","d","mock","PENDING_VERIFICATION","UNKNOWN",now,Set.of(),false,Map.of("confidence",fact("99",now)));

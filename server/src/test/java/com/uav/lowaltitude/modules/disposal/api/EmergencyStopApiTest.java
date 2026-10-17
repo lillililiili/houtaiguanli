@@ -550,7 +550,7 @@ class EmergencyStopApiTest {
 
     @Test void directHandoffKeepsInitiatorAndFrozenEvidenceAfterLaterUpload() throws Exception {
         String actor = user("disposal:direct", "disposal:read", "disposal:stop", "devices",
-                "handoff:create", "handoff:read", "evidence:read", "evidence:ingest", "evidence:link");
+                "handoff:create", "handoff:read", "evidence:read", "evidence:ingest");
         String actorId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, actor);
         jdbc.update("update app_user set name='直接发起人甲' where user_id=?", actorId);
         String device = fourChannel();
@@ -597,10 +597,9 @@ class EmergencyStopApiTest {
         var file = new org.springframework.mock.web.MockMultipartFile("file", filename, "text/plain", content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         String id = data(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart("/api/v1/evidence-files")
                 .file(file).param("kind_code", "COMMAND_LOG").param("owner_org_id", ORG).param("district_id", DISTRICT)
+                .param("subject_kind", "EVENT").param("subject_id", eventId)
                 .header("Authorization", "Bearer " + actor).header("Idempotency-Key", key())).andExpect(status().isCreated()))
                 .path("evidence_id").asText();
-        request("/api/v1/evidence-files/" + id + "/links", actor, key(), Map.of("subject_kind", "EVENT", "subject_id", eventId))
-                .andExpect(status().isCreated());
         return id;
     }
 

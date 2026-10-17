@@ -341,7 +341,7 @@ class TargetReadPostgresApiTest {
         assertSafeSchema();
         JdbcTemplate root = new JdbcTemplate(rootDataSource());
         String database = root.queryForObject("select current_database()", String.class);
-        if (database == null || !database.matches("^stage2_target_verify_[a-z0-9_]+$")) {
+        if (database == null || !database.matches("^(stage2_target|stage456)_verify_[a-z0-9_]+$")) {
             throw new IllegalStateException("Refusing target API verification outside an isolated database");
         }
         String extension = root.queryForObject(
