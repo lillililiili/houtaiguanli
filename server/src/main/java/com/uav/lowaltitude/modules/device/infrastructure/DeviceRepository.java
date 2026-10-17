@@ -795,21 +795,18 @@ public class DeviceRepository {
                        (SELECT COUNT(*) FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING')) AS eo_tasks,
                        (SELECT COUNT(*) FROM disposal_device_run r JOIN disposal_authorization a
                         ON a.authorization_id=r.authorization_id WHERE r.device_id=? AND a.status='EXECUTING')
-                     + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING') AS disposals,
-                       (SELECT COUNT(*) FROM disposal_emergency_stop_device WHERE device_id=?
-                        AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED') AS stops
+                     + (SELECT COUNT(*) FROM disposal_authorization WHERE device_id=? AND status='EXECUTING') AS disposals
                 """, (rs, row) -> new ActiveWork(rs.getLong("commands"), rs.getLong("commissions"), rs.getLong("eo_tasks"),
-                rs.getLong("disposals"), rs.getLong("stops")), id, allowMockSnapshots, id, id, id, id, id);
+                rs.getLong("disposals")), id, allowMockSnapshots, id, id, id, id);
     }
 
-    private record ActiveWork(long commands, long commissions, long eoTasks, long disposals, long stops) {
+    private record ActiveWork(long commands, long commissions, long eoTasks, long disposals) {
         List<String> reasons() {
             List<String> reasons = new ArrayList<>();
             if (commands > 0) reasons.add("有未完成的设备指令");
             if (commissions > 0) reasons.add("有进行中的调测任务");
             if (eoTasks > 0) reasons.add("光电跟踪任务还没结束");
             if (disposals > 0) reasons.add("反制正在执行");
-            if (stops > 0) reasons.add("急停后还没登记现场停机核查");
             return reasons;
         }
     }
@@ -850,8 +847,6 @@ public class DeviceRepository {
                 OR EXISTS (SELECT 1 FROM disposal_device_run r JOIN disposal_authorization a
                     ON a.authorization_id=r.authorization_id WHERE r.device_id=:device AND a.status='EXECUTING')
                 OR EXISTS (SELECT 1 FROM disposal_authorization WHERE device_id=:device AND status='EXECUTING')
-                OR EXISTS (SELECT 1 FROM disposal_emergency_stop_device WHERE device_id=:device
-                    AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED')
                 OR EXISTS (
                     SELECT 1 FROM eo_tracking_task t JOIN ops_device d ON d.device_id=t.ops_device_id
                     LEFT JOIN eo_device_binding b ON b.ops_device_id=d.device_id

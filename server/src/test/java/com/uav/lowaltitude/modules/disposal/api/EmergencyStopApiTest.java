@@ -38,6 +38,11 @@ class EmergencyStopApiTest {
     @Autowired com.uav.lowaltitude.modules.disposal.application.DisposalReceiptSync receiptSync;
     @Autowired com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository disposalRepository;
     @Autowired com.uav.lowaltitude.modules.device.application.Countermeasure4ChControlService fourChannelControl;
+    @Autowired com.uav.lowaltitude.modules.disposal.application.DisposalCommandGuard commandGuard;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.EoDispatchRepository eoDispatch;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository noCounter;
+    private static final String UNSETTLED_COMMAND = "设备指令仍在途或结果不明确，请先核查实际设备状态";
     String requester, operator, backendOperator, eventId;
 
     @BeforeEach
@@ -94,6 +99,8 @@ class EmergencyStopApiTest {
                 .andExpect(status().isOk())).path("latest_stop");
         assertThat(replay.path("events").size()).isEqualTo(noted.path("events").size());
         String device = latest.path("devices").get(0).path("device_id").asText();
+        // 2026-10-14 起急停后不再登记现场停机核查：概览不再提供登记动作，旧客户端调用的接口仍然兼容。
+        assertThat(latest.path("devices").get(0).path("allowed_actions").toString()).doesNotContain("MANUAL_CONFIRM");
         request(stopPath + "/devices/" + device + "/manual-confirm", operator, key(), Map.of("note", ""))
                 .andExpect(status().isBadRequest());
         JsonNode confirmed = data(request(stopPath + "/devices/" + device + "/manual-confirm", operator, key(),
@@ -172,6 +179,8 @@ class EmergencyStopApiTest {
                 .andExpect(status().isOk())).path("latest_stop").path("devices").get(0);
         assertThat(acknowledged.path("stop_status").asText()).isEqualTo("CONTROLLER_ALL_OFF_ACK");
         assertThat(acknowledged.path("stop_status").asText()).isNotEqualTo("MANUALLY_CONFIRMED");
+        assertThat(acknowledged.path("detail").asText()).isEqualTo("已收到全关确认");
+        assertThat(acknowledged.path("allowed_actions").toString()).doesNotContain("MANUAL_CONFIRM");
         assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Long.class, device)).isEqualTo(1);
     }
 
@@ -221,9 +230,9 @@ class EmergencyStopApiTest {
     }
 
     @Test
-    void otherEventApprovalOnStoppedDeviceWaitsForSiteCheckBeforeAnyStart() throws Exception {
-        // ZT-42 原场景：A、B 两起事件都批了同一台反制设备，A 在执行。A 急停后，B 的批准不被撤销，
-        // 但在现场核查确认设备已停之前，B 不能执行，B 排队中的启动也不能发出去。
+    void otherEventApprovalOnStoppedDeviceStartsOnceAllOffFinishesWithoutSiteCheck() throws Exception {
+        // ZT-42 原场景：A、B 两起事件都批了同一台反制设备，A 在执行。A 急停后，B 的批准不被撤销。
+        // 2026-10-14 起急停后不再登记现场停机核查：全关还在排队时设备忙，全关结束后 B 直接可以执行，不用任何人登记。
         String device = fourChannel(), firstEvent = eventId;
         String operatorId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, operator);
         String running = authorization("COUNTERMEASURE", true);
@@ -236,14 +245,15 @@ class EmergencyStopApiTest {
                 .andExpect(status().isCreated())).path("authorization_id").asText();
         request("/api/v1/disposal-authorizations/" + waiting + "/approve", operator, key(), Map.of("expected_version", 0))
                 .andExpect(status().isOk());
-        String queuedStart = directFourChannel(device, waiting, 15);
         eventId = firstEvent;
 
         JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
         assertThat(statusOf(running)).isEqualTo("STOPPED");
         assertThat(latest.path("devices").findValuesAsText("device_id")).containsExactly(device);
-        assertThat(latest.path("devices").get(0).path("stop_status").asText()).isEqualTo("QUEUED");
-        String allOff = latest.path("devices").get(0).path("command_id").asText();
+        JsonNode task = latest.path("devices").get(0);
+        assertThat(task.path("stop_status").asText()).isEqualTo("QUEUED");
+        assertThat(task.path("allowed_actions").toString()).doesNotContain("MANUAL_CONFIRM");
+        String allOff = task.path("command_id").asText();
         assertThat(jdbc.queryForObject("select mask from countermeasure_4ch_command where command_id=?", Integer.class, allOff)).isZero();
 
         assertThat(statusOf(waiting)).isEqualTo("APPROVED");
@@ -251,28 +261,29 @@ class EmergencyStopApiTest {
                 + " where authorization_id=? and event_kind='DEVICE_ALL_OFF_ISSUED'", waiting);
         assertThat(notes).hasSize(1);
         assertThat(notes.get(0).get("actor_id")).isEqualTo(operatorId);
-        assertThat(notes.get(0).get("note").toString()).contains("现场核查");
+        assertThat(notes.get(0).get("note").toString()).contains("另一起处置按了急停").doesNotContain("核查");
+        // 排队中的启动、续链和手动执行都不再因为这次急停被拦。
+        assertThat(commandGuard.mayStart(waiting)).isTrue();
 
-        fourChannelControl.dispatch(queuedStart);
-        var cancelled = jdbc.queryForMap("select status,result_code,issued_at from device_command where command_id=?", queuedStart);
-        assertThat(cancelled.get("status")).isEqualTo("CANCELLED");
-        assertThat(cancelled.get("result_code")).isEqualTo("AUTHORIZATION_STOPPED");
-        assertThat(cancelled.get("issued_at")).isNull();
-        request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
-                Map.of("authorization_id", waiting, "action", "SET_MASK", "mask", 15, "reason", "未核查前不得重新启动"))
-                .andExpect(status().isConflict());
-
+        // 全关还在排队：设备忙，这次不下发、授权仍是已批准；不是急停核查拦的。
         long version = jdbc.queryForObject("select version from disposal_authorization where authorization_id=?", Long.class, waiting);
-        String blocked = request("/api/v1/disposal-authorizations/" + waiting + "/execute", operator, key(),
+        String busy = request("/api/v1/disposal-authorizations/" + waiting + "/execute", operator, key(),
                 Map.of("expected_version", version)).andExpect(status().isConflict()).andReturn().getResponse().getContentAsString();
-        assertThat(blocked).contains("EMERGENCY_STOP_UNCONFIRMED");
+        assertThat(busy).contains("DEVICE_BUSY").doesNotContain("EMERGENCY_STOP_UNCONFIRMED");
         assertThat(statusOf(waiting)).isEqualTo("APPROVED");
 
-        request(path() + "/" + latest.path("stop_id").asText() + "/devices/" + device + "/manual-confirm", operator, key(),
-                Map.of("note", "现场核实设备已经全关")).andExpect(status().isOk());
+        // Trusted device receipt fixture: the controller acknowledged the all-off.
+        jdbc.update("update device_command set status='SUCCEEDED' where command_id=?", allOff);
+        JsonNode acknowledged = data(mvc.perform(get(path()).header("Authorization", "Bearer " + operator))
+                .andExpect(status().isOk())).path("latest_stop").path("devices").get(0);
+        assertThat(acknowledged.path("stop_status").asText()).isEqualTo("CONTROLLER_ALL_OFF_ACK");
+        assertThat(acknowledged.path("allowed_actions").toString()).doesNotContain("MANUAL_CONFIRM");
+        version = jdbc.queryForObject("select version from disposal_authorization where authorization_id=?", Long.class, waiting);
         request("/api/v1/disposal-authorizations/" + waiting + "/execute", operator, key(), Map.of("expected_version", version))
                 .andExpect(status().isOk());
         assertThat(statusOf(waiting)).isEqualTo("EXECUTING");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop_device where stop_id=? and confirmed_at is not null",
+                Long.class, latest.path("stop_id").asText())).isZero();
     }
 
     @Test
@@ -539,7 +550,7 @@ class EmergencyStopApiTest {
 
     @Test void directHandoffKeepsInitiatorAndFrozenEvidenceAfterLaterUpload() throws Exception {
         String actor = user("disposal:direct", "disposal:read", "disposal:stop", "devices",
-                "handoff:create", "handoff:read", "evidence:read", "evidence:ingest", "evidence:link");
+                "handoff:create", "handoff:read", "evidence:read", "evidence:ingest");
         String actorId = jdbc.queryForObject("select user_id from app_session where session_id=?", String.class, actor);
         jdbc.update("update app_user set name='直接发起人甲' where user_id=?", actorId);
         String device = fourChannel();
@@ -586,10 +597,9 @@ class EmergencyStopApiTest {
         var file = new org.springframework.mock.web.MockMultipartFile("file", filename, "text/plain", content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         String id = data(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart("/api/v1/evidence-files")
                 .file(file).param("kind_code", "COMMAND_LOG").param("owner_org_id", ORG).param("district_id", DISTRICT)
+                .param("subject_kind", "EVENT").param("subject_id", eventId)
                 .header("Authorization", "Bearer " + actor).header("Idempotency-Key", key())).andExpect(status().isCreated()))
                 .path("evidence_id").asText();
-        request("/api/v1/evidence-files/" + id + "/links", actor, key(), Map.of("subject_kind", "EVENT", "subject_id", eventId))
-                .andExpect(status().isCreated());
         return id;
     }
 
@@ -762,30 +772,158 @@ class EmergencyStopApiTest {
     }
 
     @Test
-    void unresolvedPhysicalStopBlocksNewAuthorizationUntilManualConfirmation() throws Exception {
+    void sameEventCanRequestAgainRightAfterStopWithoutSiteCheck() throws Exception {
         authorization("COUNTERMEASURE", true);
         JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
-        request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
+        JsonNode task = latest.path("devices").get(0);
+        assertThat(task.path("stop_status").asText()).isEqualTo("UNSUPPORTED");
+        assertThat(task.path("device_name").asText()).isEqualTo("人工处置（未绑定设备）");
+        assertThat(task.path("detail").asText()).isEqualTo("该处置不支持远程停止，请到现场关停设备");
+        assertThat(task.path("allowed_actions").toString()).doesNotContain("MANUAL_CONFIRM");
+        String again = data(request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
                 "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "COUNTERMEASURE_4CH",
                 "device_id", "estop-fixture-device", "reason", "再次处置"))
-                .andExpect(status().isConflict());
-        String device = latest.path("devices").get(0).path("device_id").asText();
-        request(path() + "/" + latest.path("stop_id").asText() + "/devices/" + device + "/manual-confirm",
-                operator, key(), Map.of("note", "已核实所有现场动作停止")).andExpect(status().isOk());
-        assertThat(statusOf(authorization("COUNTERMEASURE", false))).isEqualTo("APPROVED");
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        request("/api/v1/disposal-authorizations/" + again + "/approve", operator, key(), Map.of("expected_version", 0))
+                .andExpect(status().isOk());
+        assertThat(statusOf(again)).isEqualTo("APPROVED");
+        assertThat(jdbc.queryForObject("select count(*) from disposal_emergency_stop_device where stop_id=? and confirmed_at is null",
+                Long.class, latest.path("stop_id").asText())).isEqualTo(1);
     }
 
     @Test
-    void manualConfirmationCancelsQueuedAllOffBeforeAllowingNewExecution() throws Exception {
+    void legacyManualConfirmationIsOptionalButStillCancelsQueuedAllOffAndStaysReadable() throws Exception {
         String device = fourChannel();
         String authorization = authorization("COUNTERMEASURE", true);
         jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?", device, authorization);
         JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
         String command = jdbc.queryForObject("select command_id from device_command where device_id=?", String.class, device);
-        request(path() + "/" + latest.path("stop_id").asText() + "/devices/" + device + "/manual-confirm", operator,
-                key(), Map.of("note", "现场已经断电核实停机")).andExpect(status().isOk());
-        assertThat(jdbc.queryForObject("select status from device_command where command_id=?", String.class, command)).isEqualTo("CANCELLED");
+        // 不用任何人登记，同一事件马上可以再申请、再批准。
         assertThat(statusOf(authorization("COUNTERMEASURE", false))).isEqualTo("APPROVED");
+        // 旧客户端仍可调用登记接口：照旧取消排队中的全关，并留下只读记录。
+        String confirmPath = path() + "/" + latest.path("stop_id").asText() + "/devices/" + device + "/manual-confirm";
+        JsonNode confirmed = data(request(confirmPath, operator, key(), Map.of("note", "现场已经断电核实停机"))
+                .andExpect(status().isOk())).path("latest_stop");
+        assertThat(jdbc.queryForObject("select status from device_command where command_id=?", String.class, command)).isEqualTo("CANCELLED");
+        request(confirmPath, operator, key(), Map.of("note", "重复登记")).andExpect(status().isConflict());
+        JsonNode reread = data(mvc.perform(get(path()).header("Authorization", "Bearer " + operator))
+                .andExpect(status().isOk())).path("latest_stop");
+        for (JsonNode stop : java.util.List.of(confirmed, reread)) {
+            JsonNode task = stop.path("devices").get(0);
+            assertThat(task.path("stop_status").asText()).isEqualTo("MANUALLY_CONFIRMED");
+            assertThat(task.path("confirmation_note").asText()).isEqualTo("现场已经断电核实停机");
+            assertThat(task.path("confirmed_by_name").asText()).isEqualTo("急停测试操作员");
+            assertThat(task.path("confirmed_at").isNumber()).isTrue();
+            assertThat(task.path("allowed_actions").toString()).doesNotContain("MANUAL_CONFIRM", "RETRY");
+            assertThat(stop.path("events").findValuesAsText("kind")).contains("STOP", "MANUAL_CONFIRM");
+        }
+    }
+
+    @Test
+    void oldStopRecordsKeepTheirTextButShowCurrentInstructions() throws Exception {
+        authorization("COUNTERMEASURE", true);
+        String stop = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop").path("stop_id").asText();
+        // 2026-10-14 之前写入的记录：库里的原文不改，读出时换成现在的说法。
+        jdbc.update("update disposal_emergency_stop_device set device_name='人工处置现场核查',detail='该处置不支持远程停止，请登记现场核查'"
+                + " where stop_id=?", stop);
+        JsonNode task = data(mvc.perform(get(path()).header("Authorization", "Bearer " + operator))
+                .andExpect(status().isOk())).path("latest_stop").path("devices").get(0);
+        assertThat(task.path("device_name").asText()).isEqualTo("人工处置（未绑定设备）");
+        assertThat(task.path("detail").asText()).isEqualTo("该处置不支持远程停止，请到现场关停设备");
+        assertThat(jdbc.queryForMap("select device_name,detail from disposal_emergency_stop_device where stop_id=?", stop))
+                .containsEntry("device_name", "人工处置现场核查").containsEntry("detail", "该处置不支持远程停止，请登记现场核查");
+    }
+
+    @Test
+    void unconfirmedStopNoLongerKeepsTheDeviceBusy() throws Exception {
+        String device = fourChannel();
+        jdbc.update("update ops_device_state set connectivity='OFFLINE' where device_id=?", device);
+        String authorization = authorization("COUNTERMEASURE", true);
+        jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?", device, authorization);
+        JsonNode task = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop").path("devices").get(0);
+        assertThat(task.path("stop_status").asText()).isEqualTo("OFFLINE");
+        assertThat(task.path("confirmed_at").isNumber()).isFalse();
+        long now = System.currentTimeMillis();
+        assertThat(deviceRepository.hasActiveWork(device)).isFalse();
+        assertThat(deviceRepository.hasCatalogBlockingWork(device)).isFalse();
+        assertThat(deviceRepository.hasRecoveryBlockingWork(device, now - 60_000, now)).isFalse();
+        jdbc.update("update ops_device_state set connectivity='ONLINE' where device_id=?", device);
+        String next = data(request("/api/v1/disposal-authorizations", requester, key(), Map.of("action_type", "COUNTERMEASURE",
+                "subject_kind", "UAV_EVENT", "subject_id", eventId, "channel", "COUNTERMEASURE_4CH",
+                "device_id", device, "reason", "急停后马上再反制"))
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        request("/api/v1/disposal-authorizations/" + next + "/approve", operator, key(), Map.of("expected_version", 0))
+                .andExpect(status().isOk());
+        request("/api/v1/disposal-authorizations/" + next + "/execute", operator, key(), Map.of("expected_version", 1))
+                .andExpect(status().isOk());
+        assertThat(statusOf(next)).isEqualTo("EXECUTING");
+    }
+
+    @Test
+    void stopWithoutSiteCheckNoLongerProtectsEoObservation() throws Exception {
+        String target = jdbc.queryForObject("select a.target_id from alarm a join uav_event e on e.alarm_id=a.alarm_id where e.event_id=?",
+                String.class, eventId);
+        authorization("COUNTERMEASURE", true);
+        JsonNode task = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop").path("devices").get(0);
+        assertThat(task.path("stop_status").asText()).isEqualTo("UNSUPPORTED");
+        assertThat(task.path("source_mode").asText()).isEqualTo("mock");
+        assertThat(eoDispatch.protectedTarget(target)).isFalse();
+        // 真正在做的设备处置仍然保护它的观察任务。
+        authorization("COUNTERMEASURE", false);
+        assertThat(eoDispatch.protectedTarget(target)).isTrue();
+    }
+
+    @Test
+    void timedOutLaunchBlocksEndingTheDisposalUntilThatDeviceIsEmergencyStopped() throws Exception {
+        String device = fourChannel(), firstEvent = eventId;
+        String failed = authorization("COUNTERMEASURE", true);
+        String launch = launch(device, failed);
+        jdbc.update("update device_command set status='TIMED_OUT' where command_id=?", launch);
+        jdbc.update("update disposal_authorization set status='FAILED' where authorization_id=?", failed);
+        // 没有急停：结果不明的启动照旧挡住结束处置。
+        assertThat(noCounter.operationBlock(firstEvent)).isEqualTo(UNSETTLED_COMMAND);
+        // 之后这台设备按过急停（这里是同设备上的另一起事件）：全关作用于整台设备，不用登记就以急停为准。
+        eventId = event();
+        String other = authorization("COUNTERMEASURE", true);
+        jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH' where authorization_id=?", device, other);
+        JsonNode task = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop").path("devices").get(0);
+        assertThat(task.path("stop_status").asText()).isEqualTo("QUEUED");
+        assertThat(task.path("confirmed_at").isNumber()).isFalse();
+        long launchedAt = jdbc.queryForObject("select created_at from device_command where command_id=?", Long.class, launch);
+        long stoppedAt = jdbc.queryForObject("select requested_at from disposal_emergency_stop where event_id=?", Long.class, eventId);
+        assertThat(stoppedAt).isGreaterThanOrEqualTo(launchedAt);
+        assertThat(noCounter.operationBlock(firstEvent)).isEmpty();
+        assertThat(noCounter.operationBlock(eventId)).isEmpty();
+    }
+
+    @Test
+    void emergencyStopSettlesItsOwnTimedOutCommandsButNotLaterLaunches() throws Exception {
+        String device = fourChannel(), authorization = authorization("COUNTERMEASURE", true);
+        String launch = launch(device, authorization);
+        jdbc.update("update device_command set status='TIMED_OUT' where command_id=?", launch);
+        // 回执同步还没把授权改成失败时按了急停。
+        JsonNode latest = data(stop(operator, key()).andExpect(status().isOk())).path("latest_stop");
+        String allOff = latest.path("devices").get(0).path("command_id").asText();
+        assertThat(noCounter.operationBlock(eventId)).isEmpty();
+        // 急停自己的全关超时也不会把结束处置卡住（不再有现场登记能解开它）。
+        jdbc.update("update device_command set status='TIMED_OUT' where command_id=?", allOff);
+        assertThat(noCounter.operationBlock(eventId)).isEmpty();
+        // 急停之后另起的启动不在这次急停范围内：结果不明时照旧不能结束。
+        String later = authorization("COUNTERMEASURE", false);
+        String laterLaunch = directFourChannel(device, later, 15);
+        long stoppedAt = jdbc.queryForObject("select requested_at from disposal_emergency_stop where stop_id=?", Long.class,
+                latest.path("stop_id").asText());
+        jdbc.update("update device_command set status='TIMED_OUT',created_at=? where command_id=?", stoppedAt + 1, laterLaunch);
+        jdbc.update("update disposal_authorization set status='FAILED' where authorization_id=?", later);
+        assertThat(noCounter.operationBlock(eventId)).isEqualTo(UNSETTLED_COMMAND);
+    }
+
+    /** 处置启动指令（四通道 mask 15），授权随之指到这台设备。 */
+    private String launch(String device, String authorization) throws Exception {
+        String command = directFourChannel(device, authorization, 15);
+        jdbc.update("update disposal_authorization set device_id=?,channel='COUNTERMEASURE_4CH',execution_command_id=? where authorization_id=?",
+                device, command, authorization);
+        return command;
     }
 
     @Test

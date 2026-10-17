@@ -46,12 +46,10 @@ public class DisposalCommandGuard {
             if (!Set.of("APPROVED", "EXECUTING").contains(current.status())
                     || current.validFrom() == null || current.validUntil() == null
                     || now.isBefore(current.validFrom()) || !now.isBefore(current.validUntil())) return false;
-            // 这台设备上还有未经现场核查的急停（可能是同设备另一事件按的）时，排队中的启动一律不发，
-            // 与手动执行、续链用同一道设备核查（锁序：事件→授权→设备→指令）。
-            if (current.deviceId() != null) {
-                stops.lockDevice(current.deviceId());
-                if (stops.deviceUnresolved(current.deviceId())) return false;
-            }
+            // 设备锁仍按 事件→授权→设备→指令 的顺序取，与手动执行、续链和急停互斥。
+            // 2026-10-14 起急停后不再登记现场停机核查：同一设备上别的授权排队中的启动不再因急停被拦，
+            // 被急停覆盖或已停止的授权仍按上面的授权状态挡下。
+            if (current.deviceId() != null) stops.lockDevice(current.deviceId());
         }
         if (current != null && "DIRECT".equals(current.authorizationMode())) {
             return status != null && Set.of("APPROVED", "EXECUTING").contains(status)

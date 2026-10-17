@@ -38,15 +38,7 @@ public class EmergencyStopRepository {
         return jdbc.queryForList("SELECT authorization_id FROM disposal_emergency_stop_authorization WHERE stop_id=?",
                 String.class,stopId);
     }
-    public boolean unresolved(String eventId) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM disposal_emergency_stop_device d JOIN disposal_emergency_stop s"
-                + " ON s.stop_id=d.stop_id WHERE s.event_id=? AND d.confirmed_at IS NULL AND d.stop_status<>'NOT_REQUIRED'", Long.class, eventId) > 0;
-    }
     public void lockDevice(String id) { jdbc.queryForList("SELECT device_id FROM ops_device WHERE device_id=? FOR UPDATE", id); }
-    public boolean deviceUnresolved(String id) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM disposal_emergency_stop_device WHERE device_id=?"
-                + " AND confirmed_at IS NULL AND stop_status<>'NOT_REQUIRED'",Long.class,id)>0;
-    }
     /**
      * 同一设备上其他事件或目标尚未了结的授权（已批准或执行中）。
      * 只用于记录全关对它们的影响；急停本身从不因此被拒绝。

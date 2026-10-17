@@ -104,18 +104,20 @@ class AlarmAttentionApiTest {
         }
     }
 
-    @Test void executionAndUnresolvedEmergencyStopStayCurrentEvenWithoutObservation() throws Exception {
+    @Test void executionStaysCurrentWithoutObservationButAnUnconfirmedEmergencyStopDoesNot() throws Exception {
         Alarm executing = alarm("replay", "LOW", 1000, now.minusMillis(lifetime + 1), "CONFIRMED");
         authorization(executing, "EXECUTING");
         Alarm stopped = alarm("replay", "HIGH", 900, null, "CONFIRMED");
         String authorization = authorization(stopped, "STOPPED"), stop = id();
-        jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note) VALUES (?,?,?,?,?)", stop, stopped.event, actor, now.toEpochMilli(), "核查中");
-        jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) VALUES (?,?,?,'核查设备','COUNTERMEASURE_4CH','replay',TRUE,'UNSUPPORTED','待核查')", stop, id(), authorization);
+        // 2026-10-14 起急停后不再登记现场停机核查：没人登记的急停不再把告警留在当前事项。
+        jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note) VALUES (?,?,?,?,?)", stop, stopped.event, actor, now.toEpochMilli(), "急停");
+        jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) VALUES (?,?,?,'急停设备','COUNTERMEASURE_4CH','replay',TRUE,'UNSUPPORTED','该处置不支持远程停止，请到现场关停设备')", stop, id(), authorization);
         Alarm completed = alarm("replay", "CRITICAL", 1, now, "CONFIRMED"); authorization(completed, "COMPLETED");
-        assertThat(ids(page(""))).containsExactly(stopped.alarm, executing.alarm, completed.alarm);
+        assertThat(ids(page(""))).containsExactly(executing.alarm, stopped.alarm, completed.alarm);
         assertThat(detail(executing).path("attention_group").asText()).isEqualTo("CURRENT");
-        assertThat(detail(stopped).path("attention_group").asText()).isEqualTo("CURRENT");
+        assertThat(detail(stopped).path("attention_group").asText()).isEqualTo("AWAITING_CONFIRMATION");
         assertThat(detail(completed).path("attention_group").asText()).isEqualTo("HISTORY");
+        // 旧的现场确认记录照样保留，也不改变分组。
         jdbc.update("UPDATE disposal_emergency_stop_device SET confirmed_by=?,confirmed_at=?,confirmation_note='已停机' WHERE stop_id=?", actor, now.toEpochMilli(), stop);
         assertThat(detail(stopped).path("attention_group").asText()).isEqualTo("AWAITING_CONFIRMATION");
     }
@@ -140,6 +142,55 @@ class AlarmAttentionApiTest {
         now = now.plusSeconds(1);
         authorization(row, "FAILED");
         assertThat(detail(row).path("attention_group").asText()).isEqualTo("AWAITING_CONFIRMATION");
+    }
+
+    @Test void recordedDepartureAfterNotificationMovesTheAlarmToHistoryUnlessACounterRequestIsOpen() throws Exception {
+        Alarm left = alarm("replay", "HIGH", 900, now, "CONFIRMED");
+        assertThat(detail(left).path("attention_group").asText()).isEqualTo("CURRENT");
+        departure(left);
+        // 2026-10-16：通知后按有效位置记下已飞离，告警归到已处理完，哪怕目标还在报位置。
+        assertThat(detail(left).path("attention_group").asText()).isEqualTo("HISTORY");
+        assertThat(ids(page("state=CONFIRMED&attention_group=HISTORY"))).containsExactly(left.alarm);
+        assertThat(detail(left).path("state").asText()).isEqualTo("CONFIRMED");
+        Alarm requested = alarm("replay", "HIGH", 800, now, "CONFIRMED");
+        departure(requested); authorization(requested, "REQUESTED");
+        assertThat(detail(requested).path("attention_group").asText()).isEqualTo("CURRENT");
+        Alarm executing = alarm("replay", "HIGH", 700, null, "CONFIRMED");
+        departure(executing); authorization(executing, "EXECUTING");
+        assertThat(detail(executing).path("attention_group").asText()).isEqualTo("CURRENT");
+        Alarm watching = alarm("replay", "HIGH", 600, now, "CONFIRMED");
+        jdbc.update("INSERT INTO uav_auto_voice_task(event_id,status,policy_code,reason,updated_at,provider_key) VALUES(?,'WAITING','test','观察中',?,?)", watching.event, now.toEpochMilli(), "test:" + watching.event);
+        assertThat(detail(watching).path("attention_group").asText()).isEqualTo("CURRENT");
+    }
+
+    @Test void recordedDepartureStaysCurrentWhileTheLatestJudgementIsStillIllegal() throws Exception {
+        Alarm row = alarm("replay", "HIGH", 900, now, "CONFIRMED");
+        departure(row);
+        evaluation(row, "LEGAL", now.minusSeconds(2));
+        assertThat(detail(row).path("attention_group").asText()).isEqualTo("HISTORY");
+        // 离开了短信时所在空域，却又进了另一块禁飞区：最新研判仍是违规，不能算处理完。
+        evaluation(row, "ILLEGAL", now.minusSeconds(1));
+        assertThat(detail(row).path("attention_group").asText()).isEqualTo("CURRENT");
+        evaluation(row, "LEGAL", now);
+        assertThat(detail(row).path("attention_group").asText()).isEqualTo("HISTORY");
+    }
+
+    void evaluation(Alarm row, String legal, Instant at) {
+        String set = id(), version = id(), run = id(), evaluation = id();
+        boolean illegal = "ILLEGAL".equals(legal);
+        jdbc.update("INSERT INTO rule_set(rule_set_id,rule_set_code,name,version,created_at,updated_at) VALUES (?,?,'飞离研判',0,current_timestamp,current_timestamp)", set, "RS-AT-" + set.substring(0, 8));
+        jdbc.update("INSERT INTO rule_set_version(rule_set_version_id,rule_set_id,version_no,status_code,param_status,valid_from,description,source_mode,created_at,published_at) VALUES (?,?,1,'PUBLISHED','DEMO',?,'测试','replay',current_timestamp,current_timestamp)", version, set, ts(at));
+        jdbc.update("INSERT INTO rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,subject_count,evaluated_count,alarm_created_count,alarm_merged_count,source_mode,created_at) VALUES (?,?,?,'ACTIVE','MANUAL',?,?,'RUNNING',0,0,0,0,'replay',current_timestamp)", run, set, version, ts(at), ts(at));
+        jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,"
+                + "violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,owner_org_id,district_id,source_mode,created_at)"
+                + " VALUES (?,?,?,'ACTIVE','TARGET',?,?,?,?,'FRESH','NONE',?,?,?,CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),?,?,'replay',?)",
+                evaluation, run, version, row.target, ts(at), ts(at), ts(at), legal, illegal ? new java.math.BigDecimal("80") : null, illegal ? "HIGH" : null, org, district, ts(at));
+    }
+
+    void departure(Alarm row) {
+        long at = now.toEpochMilli();
+        jdbc.update("INSERT INTO uav_auto_voice_task(event_id,status,policy_code,reason,updated_at,provider_key,departure_channel,departure_started_at,departure_deadline_at,departure_evaluated_at,departure_observed_at,departure_longitude,departure_latitude,departure_basis) VALUES(?,'WAITING','test','已飞离',?,?,'SMS',?,?,?,?,118.5,37.5,'OUTSIDE_AIRSPACE')",
+                row.event, at, "test:" + row.event, at - 10_000, at, at, at);
     }
 
     Alarm alarm(String mode, String severity, long ageSeconds, Instant observed, String state) {

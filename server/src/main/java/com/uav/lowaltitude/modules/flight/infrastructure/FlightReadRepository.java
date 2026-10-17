@@ -66,6 +66,44 @@ public class FlightReadRepository {
                 + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.parameters, this::planRow);
     }
 
+    /** “需要处理”排序（2026-10-16）：只取给定状态的计划；活跃计划整批取回由服务排序，已结束计划仍在库里按开始时间分页。 */
+    public long countPlansInStatuses(PlanQuery query, AccessDecision access, List<String> statuses, boolean include) {
+        Where where = planWhere(query, access);
+        excludeDuplicates(where);
+        inStatuses(where, statuses, include);
+        return count("SELECT COUNT(*) " + planFrom() + where.sql, where.parameters);
+    }
+
+    public List<PlanRow> listPlansInStatuses(PlanQuery query, AccessDecision access, List<String> statuses, boolean include,
+            int offset, int size) {
+        Where where = planWhere(query, access);
+        excludeDuplicates(where);
+        inStatuses(where, statuses, include);
+        where.parameters.put("offset", offset);
+        where.parameters.put("size", size);
+        return jdbc.query(planSelect() + planFrom() + where.sql
+                + " ORDER BY p.start_at DESC NULLS LAST,p.plan_id ASC"
+                + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.parameters, this::planRow);
+    }
+
+    private static void inStatuses(Where where, List<String> statuses, boolean include) {
+        where.sql.append(include ? " AND p.status_code IN (:attention_statuses)" : " AND p.status_code NOT IN (:attention_statuses)");
+        where.parameters.put("attention_statuses", statuses);
+    }
+
+    /** 未办结的周边设备处置单（任务定时设备检查发现的异常设备），按计划分组；办结后不再算待处理。 */
+    public List<OpenDeviceTaskRow> openDeviceTasks(List<String> planIds) {
+        if (planIds.isEmpty()) return List.of();
+        return jdbc.query("SELECT f.plan_id,t.task_id,t.device_name,t.workflow_state FROM flight_device_check_fault f"
+                + " JOIN ops_device_maintenance_task t ON t.task_id=f.task_id"
+                + " WHERE f.plan_id IN (:plan_ids) AND t.workflow_state NOT IN ('COMPLETED','LEGACY_HANDLED')"
+                + " ORDER BY f.plan_id,f.device_id", Map.of("plan_ids", planIds),
+                (rs, n) -> new OpenDeviceTaskRow(rs.getString("plan_id"), rs.getString("task_id"), rs.getString("device_name"),
+                        rs.getString("workflow_state")));
+    }
+
+    public record OpenDeviceTaskRow(String planId, String taskId, String deviceName, String workflowState) { }
+
     public PlanRow findPlan(String planId, AccessDecision access) {
         Where where = planWhere(PlanQuery.empty(), access);
         where.sql.append(" AND p.plan_id=:plan_id");

@@ -102,13 +102,15 @@ class UavAdvisoryApiTest {
             read().andExpect(jsonPath("$.data.can_request_counter").value(true))
                     .andExpect(jsonPath("$.data.can_direct_counter").value(true));
         }
+        jdbc.update("update disposal_authorization set status='STOPPED' where authorization_id=?",id);
         String stop=key();
         jdbc.update("insert into disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note) values(?,?,?,?,true,'隔离停机核查')",stop,eventId,userId,System.currentTimeMillis());
         jdbc.update("insert into disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) values(?,?,?,'隔离设备','COUNTERMEASURE_4CH','mock',true,'UNSUPPORTED','未核实实际停机')",stop,key(),id);
-        read().andExpect(jsonPath("$.data.can_request_counter").value(false))
-                .andExpect(jsonPath("$.data.can_direct_counter").value(false))
-                .andExpect(jsonPath("$.data.counter_launch_visible").value(false))
-                .andExpect(jsonPath("$.data.counter_block_reason").value("上次急停设备仍未确认停止，请先完成核查"));
+        // 停止后按当前资格重新申请，旧现场核查记录不再构成独立阻断。
+        read().andExpect(jsonPath("$.data.can_request_counter").value(true))
+                .andExpect(jsonPath("$.data.can_direct_counter").value(true))
+                .andExpect(jsonPath("$.data.counter_launch_visible").value(true))
+                .andExpect(jsonPath("$.data.counter_block_reason").value(""));
     }
     protected ResultActions read() throws Exception {return mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization",bearer()));}
     private ResultActions postActions(String body) throws Exception {return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/actions").header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON).content(body));}

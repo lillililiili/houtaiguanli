@@ -281,7 +281,7 @@ public class UavAdvisoryService {
             if(followups.eligible(eventId)){
                 if(!"CONFIRMED".equals(event.state()))return new AutoHandoff(false,"NOT_REQUIRED","仅核实属实的事件在现场处置结束后进入待办",null,null,null,null,null);
                 boolean ended=repository.noCounterActive(eventId)||"LEFT".equals(observation.presence())||disposals.punishmentCompletion(eventId)!=null;
-                return new AutoHandoff(true,"WAITING",ended?"已取得现场结束依据；待办尚未建立，后台将自动重试，请刷新核对。存在在途设备或急停核查时须先完成核查":"现场处置结束后自动进入待办，由操作人员决定是否通知上级",null,null,null,null,null);
+                return new AutoHandoff(true,"WAITING",ended?"已取得现场结束依据；待办尚未建立，后台将自动重试，请刷新核对。存在在途设备时须先完成处置":"现场处置结束后自动进入待办，由操作人员决定是否通知上级",null,null,null,null,null);
             }
             // 误报不进入处罚移送，不能一直显示“等待移送”。
             if ("FALSE_POSITIVE".equals(event.state()))
