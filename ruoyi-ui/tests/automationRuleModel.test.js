@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { actionSummary, conditionText, enabledCount, ruleDraft, scopeSummary, timeSummary } from '@/views/system/rules/ruleModel.js'
+import { actionSummary, autoRuleName, conditionText, enabledCount, ruleDraft, scopeSummary, timeSummary } from '@/views/system/rules/ruleModel.js'
 
 const catalog = [
   { code: 'confidence', label: '识别置信度', default_name: '识别置信度要求', kind: 'NUMBER', operator: '不低于', unit: '%', supports_hold: true },
@@ -26,5 +26,15 @@ describe('规则管理展示模型', () => {
 
   it('反制规则文案不把配置开关表达为授权', () => {
     expect(actionSummary('counter', {})).toBe('规则全部满足后自动发起，发送前复核授权与业务条件')
+  })
+
+  it.each([
+    ['', '识别置信度要求', '目标身份可关联'],
+    ['   ', '识别置信度要求', '目标身份可关联'],
+    ['识别置信度要求', '识别置信度要求', '目标身份可关联'],
+    ['港区夜间核实', '识别置信度要求', '港区夜间核实'],
+    ['识别置信度要求', '', '识别置信度要求']
+  ])('切换判定项时名称“%s”（上次自动名称“%s”）变为“%s”', (current, previous, expected) => {
+    expect(autoRuleName(current, previous, catalog[1])).toBe(expected)
   })
 })

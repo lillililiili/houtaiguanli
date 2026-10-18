@@ -63,9 +63,11 @@ async function save() {
     const result = props.basicOnly && props.kind === 'profile'
       ? await (id ? systemApi.updateOrganization(id, { name: body.name, parent_id: body.parent_id, expected_version: body.expected_version }) : systemApi.createOrganization({ name: body.name, parent_id: body.parent_id }))
       : await directoryApi[method](id, body)
+    // 先解除忙碌状态再请求关闭：嵌入单位弹窗时，外层在忙碌期间会拒绝关闭（#8）。
+    busy.value = false
     emit('saved', result)
     emit('update:visible', false)
-    ElMessage.success('资料已保存，历史通知快照保持原样。')
+    ElMessage.success(props.row ? '资料已保存，历史通知快照保持原样。' : ({ profile: '单位已新建。', contact: '联系人已新增。', binding: '来源映射已新增。' })[props.kind])
   } catch (e) { error.value = configurationError(e); blocked.value = requiresReload(e) }
   finally { busy.value = false }
 }

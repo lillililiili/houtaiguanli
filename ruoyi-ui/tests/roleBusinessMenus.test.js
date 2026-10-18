@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
-import ElementPlus, { ElMessageBox } from 'element-plus'
+import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import RolesView from '@/views/system/RolesView.vue'
 import { systemApi } from '@/api/system.js'
+import { applyMenuEnabled, applyMenuLevel, inconsistentMenus } from '@/views/system/roles/menuPermissionDraft.js'
 
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }))
 vi.mock('@/api/system', () => ({ systemApi: {
@@ -30,7 +31,7 @@ async function mount() {
   app.mount(host)
   await settle()
 }
-function codes(root) { return [...root.querySelectorAll('.permission-matrix__meta .code-note')].map(item => item.textContent) }
+function codes(root) { return [...root.querySelectorAll('.permission-matrix__meta')].map(item => item.dataset.permissionCode) }
 function button(text, root = document.body) { return [...root.querySelectorAll('button')].find(item => item.textContent.trim() === text) }
 
 beforeEach(() => {
@@ -62,7 +63,7 @@ describe('角色菜单仅配置业务前台', () => {
     await mount()
     expect(codes(host)).toEqual(Object.keys(businessRoutes))
     // 改名、未知后台路由和无路由权限都不能扩大配置范围；前后台共用 stats 仍保留前台统计入口。
-    const row = [...host.querySelectorAll('.permission-matrix__row')].find(item => item.textContent.includes('statistics'))
+    const row = [...host.querySelectorAll('.permission-matrix__row')].find(item => item.querySelector('[data-permission-code="statistics"]'))
     row.querySelector('input[type="checkbox"]').click()
     await settle()
     button('保存并立即生效', host).click()
@@ -119,7 +120,7 @@ describe('角色菜单仅配置业务前台', () => {
     await mount()
     ;[...host.querySelectorAll('[role="tab"]')].find(item => item.textContent.includes('动作权限')).click()
     await settle()
-    const read = () => host.querySelector('[aria-label="查看设备"] input[value="OP"]')
+    const read = () => host.querySelector('[aria-label="查看前台设备"] input[value="OP"]')
     const control = () => host.querySelector('[aria-label="控制设备"] input[value="OP"]')
     expect(read().checked).toBe(true)
     expect(control().checked).toBe(level !== 'READ')
@@ -129,7 +130,7 @@ describe('角色菜单仅配置业务前台', () => {
     expect(read().checked).toBe(true)
     expect(control().checked).toBe(false)
     control().click(); await settle()
-    host.querySelector('[aria-label="查看设备"] input[value="NONE"]').click(); await settle()
+    host.querySelector('[aria-label="查看前台设备"] input[value="NONE"]').click(); await settle()
     expect(read().checked).toBe(false)
     expect(control().checked).toBe(false)
     button('保存并立即生效', host).click(); await settle()
@@ -155,5 +156,81 @@ describe('角色菜单仅配置业务前台', () => {
     await settle()
     button('保存并立即生效', host).click(); await settle()
     expect(systemApi.updateRolePermissions.mock.calls[0][1].actions).toEqual([{ permission_code: 'rule:read', level: 'OP' }])
+  })
+
+  it('角色列表和菜单矩阵不显示内部角色编码和菜单英文名', async () => {
+    await mount()
+    expect(host.querySelector('.role-list').textContent).not.toContain(role.role_code)
+    const matrix = host.querySelector('.permission-matrix').textContent
+    Object.keys(businessRoutes).forEach(code => expect(matrix).not.toContain(code))
+  })
+
+  it.each([
+    ['READ', false],
+    ['NONE', true]
+  ])('服务端存量的菜单方框与等级不一致（等级 %s、方框 %s）时，保存前提示并不提交', async (level, enabled) => {
+    const alarms = role.permissions.find(item => item.permission_code === 'alarms')
+    alarms.level = level; alarms.menu_enabled = enabled
+    await mount()
+    // 改一个其他菜单让页面进入“有改动”状态。
+    const row = [...host.querySelectorAll('.permission-matrix__row')].find(item => item.querySelector('[data-permission-code="evidence"]'))
+    row.querySelector('input[type="checkbox"]').click(); await settle()
+    button('保存并立即生效', host).click(); await settle()
+    expect(systemApi.updateRolePermissions).not.toHaveBeenCalled()
+    expect(ElMessage.warning).toHaveBeenCalledWith(expect.stringContaining('方框与权限等级不一致'))
+  })
+
+  it('取消勾选菜单时等级一起改回无权限，保存的组合保持一致', async () => {
+    const legality = role.permissions.find(item => item.permission_code === 'legality')
+    legality.level = 'OP'; legality.menu_enabled = true
+    await mount()
+    const row = [...host.querySelectorAll('.permission-matrix__row')].find(item => item.querySelector('[data-permission-code="legality"]'))
+    row.querySelector('input[type="checkbox"]').click(); await settle()
+    button('保存并立即生效', host).click(); await settle()
+    expect(systemApi.updateRolePermissions.mock.calls[0][1].permissions).toContainEqual({ permission_code: 'legality', level: 'NONE', menu_enabled: false })
+  })
+
+  it('两个“查看设备”分别显示为前台设备与设备资料，不再同名', async () => {
+    systemApi.permissionActions.mockResolvedValue([{ module_code: 'device', module_name: '设备', actions: [{ permission_code: 'device:read', name: '查看设备' }] }])
+    await mount()
+    ;[...host.querySelectorAll('[role="tab"]')].find(item => item.textContent.includes('动作权限')).click()
+    await settle()
+    const labels = [...host.querySelectorAll('.action-row__label > span')].map(item => item.textContent.trim())
+    expect(labels).toContain('查看前台设备')
+    expect(labels).toContain('查看设备资料')
+    expect(labels).not.toContain('查看设备')
+    expect(host.querySelector('[aria-label="查看设备资料"]')).not.toBeNull()
+  })
+})
+
+describe('菜单方框与权限等级联动', () => {
+  it.each(['READ', 'OP', 'AUTH'])('选择等级 %s 自动勾选菜单，改回无权限取消勾选', level => {
+    const row = { permission_code: 'flights', level: 'NONE', menu_enabled: false }
+    applyMenuLevel(row, level)
+    expect(row).toMatchObject({ level, menu_enabled: true })
+    applyMenuLevel(row, 'NONE')
+    expect(row).toMatchObject({ level: 'NONE', menu_enabled: false })
+  })
+
+  it('勾选菜单默认给查看，取消勾选等级改回无权限，已有等级保持', () => {
+    const row = { permission_code: 'alarms', level: 'NONE', menu_enabled: false }
+    applyMenuEnabled(row, true)
+    expect(row).toMatchObject({ level: 'READ', menu_enabled: true })
+    row.level = 'OP'
+    applyMenuEnabled(row, true)
+    expect(row.level).toBe('OP')
+    applyMenuEnabled(row, false)
+    expect(row).toMatchObject({ level: 'NONE', menu_enabled: false })
+  })
+
+  it('只列出未锁定且方框与等级不一致的菜单', () => {
+    const rows = [
+      { permission_code: 'a', level: 'READ', menu_enabled: false },
+      { permission_code: 'b', level: 'NONE', menu_enabled: true },
+      { permission_code: 'c', level: 'OP', menu_enabled: true },
+      { permission_code: 'd', level: 'NONE', menu_enabled: false },
+      { permission_code: 'e', level: 'READ', menu_enabled: false }
+    ]
+    expect(inconsistentMenus(rows, row => row.permission_code === 'e').map(row => row.permission_code)).toEqual(['a', 'b'])
   })
 })

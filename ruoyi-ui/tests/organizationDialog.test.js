@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, reactive } from 'vue'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessage } from 'element-plus'
 import OrganizationDialog from '@/views/system/organization/OrganizationDialog.vue'
 import UsersView from '@/views/system/UsersView.vue'
 import { directoryApi } from '@/api/organizationDirectory'
@@ -9,7 +9,7 @@ import { systemApi } from '@/api/system'
 const auth = vi.hoisted(() => ({ user: { menu_keys: ['organizations'], permission_codes: ['organizations.read'] }, hasPermission(code) { return this.user.permission_codes.includes(code) } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 vi.mock('@/api/organizationDirectory', () => ({ directoryApi: { profile: vi.fn(), profiles: vi.fn(), contacts: vi.fn(), contact: vi.fn(), bindings: vi.fn(), options: vi.fn(), saveProfile: vi.fn() } }))
-vi.mock('@/api/system', () => ({ systemApi: { users: vi.fn(), organizations: vi.fn(), roles: vi.fn(), updateOrganization: vi.fn() } }))
+vi.mock('@/api/system', () => ({ systemApi: { users: vi.fn(), organizations: vi.fn(), roles: vi.fn(), updateOrganization: vi.fn(), createOrganization: vi.fn() } }))
 vi.mock('element-plus', async original => ({ ...await original(), ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
 let app, host
 const profile = { org_id: 'org-1', name: '已维护单位', parent_id: 'parent', parent_name: '上级单位', org_code: 'ORG-1', organization_type: 'OPERATOR', address: '原单位地址', credit_code: 'CODE-1', remarks: '原备注', responsibilities: '已维护业务说明', version: 7 }
@@ -120,3 +120,41 @@ describe('用户管理内的单位资料', () => {
     expect(directoryApi.saveProfile).toHaveBeenCalledWith(undefined, expect.objectContaining({ name: '下级单位', parent_id: 'org-1' }))
   })
 })
+
+describe('新增单位保存后关闭弹窗', () => {
+  it.each([
+    ['完整资料', { canReadDirectory: true, canEditDirectory: true }, () => directoryApi.saveProfile],
+    ['仅基本维护', { canReadDirectory: false, canEditDirectory: false, canEditBasic: true }, () => systemApi.createOrganization]
+  ])('%s：保存成功后弹窗关闭，提示“单位已新建”，不显示历史快照说明', async (_, rights, api) => {
+    const created = { ...profile, org_id: `org-${crypto.randomUUID()}`, name: '新建运营单位', version: 1 }
+    api().mockResolvedValue(created)
+    const saved = vi.fn()
+    const state = reactive({ visible: true, row: null, parent: null, mode: 'create', ...rights })
+    await mount({
+      components: { OrganizationDialog },
+      setup: () => ({ state, saved, onVisible: value => { state.visible = value } }),
+      template: '<OrganizationDialog v-bind="state" @update:visible="onVisible" @saved="saved" />'
+    })
+    const name = [...document.querySelectorAll('textarea, input')].find(node => node.closest('.el-form-item')?.textContent.includes('单位名称'))
+    name.value = '新建运营单位'; name.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+    button('保存').click(); await settle()
+    expect(api()).toHaveBeenCalledTimes(1)
+    expect(saved).toHaveBeenCalledWith(created)
+    expect(state.visible).toBe(false)
+    expect(ElMessage.success).toHaveBeenCalledWith('单位已新建。')
+    expect(ElMessage.success).not.toHaveBeenCalledWith(expect.stringContaining('历史通知快照'))
+  })
+
+  it('编辑已有单位保存后仍说明历史通知快照保持原样', async () => {
+    const state = reactive({ ...props(), mode: 'edit', visible: true })
+    await mount({
+      components: { OrganizationDialog },
+      setup: () => ({ state, onVisible: value => { state.visible = value } }),
+      template: '<OrganizationDialog v-bind="state" @update:visible="onVisible" />'
+    })
+    button('保存').click(); await settle()
+    expect(state.visible).toBe(false)
+    expect(ElMessage.success).toHaveBeenCalledWith('资料已保存，历史通知快照保持原样。')
+  })
+})
+

@@ -45,3 +45,10 @@ export function settingsDraft(settings = {}) {
     timezone: 'Asia/Shanghai', insufficient_wait_seconds: settings.insufficient_wait_seconds ?? 15, actions: [...(settings.actions || [])]
   }
 }
+
+// 切换判定项时的规则名称：名称为空或仍是上一次自动带出的名称才换成新判定项的默认名称，
+// 操作员自己写的名称保留（#5）。
+export function autoRuleName(currentName, previousAutoName, item) {
+  const current = String(currentName ?? '')
+  return !current.trim() || current === previousAutoName ? (item?.default_name || '') : current
+}

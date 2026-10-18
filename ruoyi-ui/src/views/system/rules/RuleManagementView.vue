@@ -7,6 +7,8 @@ import { automationRuleApi } from '@/api/automationRules'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
 import RuleEditorDialog from './RuleEditorDialog.vue'
+import RuleHistoryDialog from './RuleHistoryDialog.vue'
+import RuleRunsDialog from './RuleRunsDialog.vue'
 import RuleSettingsDialog from './RuleSettingsDialog.vue'
 import RuleSetPanel from './RuleSetPanel.vue'
 import { CATEGORIES, actionSummary, categoryMeta, conditionText, enabledCount, scopeSummary, timeSummary } from './ruleModel'
@@ -16,7 +18,7 @@ const auth = useAuthStore()
 const canReadRuleSets = computed(() => auth.hasPermission('rule:read'))
 const ruleSetsVisible = ref(false), ruleSetsOpened = ref(false)
 function toggleRuleSets() { ruleSetsOpened.value = true; ruleSetsVisible.value = !ruleSetsVisible.value }
-const editorVisible = ref(false), settingsVisible = ref(false), editingRule = ref(null)
+const editorVisible = ref(false), settingsVisible = ref(false), editingRule = ref(null), runsVisible = ref(false), historyVisible = ref(false)
 const { category, group, loading, saving, error, actionError, uncertain, recoveryRevision, load, mutate, clearActionError } = useAutomationRuleGroup()
 const canManage = computed(() => Boolean(group.value?.can_manage && auth.hasPermission('responsePlans.auth')))
 const count = computed(() => enabledCount(group.value))
@@ -35,7 +37,7 @@ const executionType = computed(() => ({ CONNECTED: 'success', STARTING: 'warning
 
 function openEditor(rule = null) { clearActionError(); editingRule.value = rule; editorVisible.value = true }
 function openSettings() { clearActionError(); settingsVisible.value = true }
-function changeCategory(next) { if (!saving.value && !loading.value && next !== category.value) { editorVisible.value = false; settingsVisible.value = false; clearActionError(); load(next) } }
+function changeCategory(next) { if (!saving.value && !loading.value && next !== category.value) { editorVisible.value = false; settingsVisible.value = false; runsVisible.value = false; historyVisible.value = false; clearActionError(); load(next) } }
 async function saveRule(payload) {
   const current = editingRule.value
   const success = await mutate(state => current ? automationRuleApi.updateRule(category.value, current.rule_id, { ...payload, expected_version: state.version }) : automationRuleApi.createRule(category.value, { ...payload, expected_version: state.version }))
@@ -68,7 +70,7 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
       <el-tabs :model-value="category" @update:model-value="changeCategory"><el-tab-pane v-for="item in CATEGORIES" :key="item.key" :label="item.label" :name="item.key" :disabled="saving || loading" /></el-tabs>
       <template v-if="group">
         <section class="context-grid"><div><span>适用范围</span><strong>{{ scopeSummary(group.settings) }}</strong></div><div><span>生效时间</span><strong>{{ timeSummary(group.settings) }}</strong></div><div><span>预设动作</span><strong>{{ actionSummary(category, group.settings) }}</strong></div><el-button type="primary" :icon="Setting" :disabled="!canManage || saving || loading" @click="openSettings">生效设置</el-button></section>
-        <section class="list-bar"><div><p :class="{ paused: !count }">{{ policyText }}</p><small>共 {{ group.rules.length }} 条 · {{ count }} 条已启用</small></div><el-button type="primary" :icon="Plus" :disabled="!mayCreate || saving" @click="openEditor()">新建规则</el-button></section>
+        <section class="list-bar"><div><p :class="{ paused: !count }">{{ policyText }}</p><small>共 {{ group.rules.length }} 条 · {{ count }} 条已启用</small></div><div class="list-actions"><el-button @click="runsVisible = true">运行记录</el-button><el-button @click="historyVisible = true">变更记录</el-button><el-button type="primary" :icon="Plus" :disabled="!mayCreate || saving" @click="openEditor()">新建规则</el-button></div></section>
         <el-table v-loading="loading" :data="group.rules" class="rules-table">
           <el-table-column label="规则名称" min-width="150"><template #default="{ row }"><strong>{{ row.name }}</strong><small>更新于 {{ formatTime(row.updated_at) }}<template v-if="row.updated_by"> · {{ row.updated_by }}</template></small></template></el-table-column>
           <el-table-column label="条件要求" min-width="190"><template #default="{ row }">{{ conditionText(row, group.catalog) }}</template></el-table-column>
@@ -82,11 +84,13 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
       </template><el-skeleton v-else-if="loading" :rows="6" animated />
     </el-card>
     <RuleEditorDialog v-model="editorVisible" :rule="editingRule" :catalog="catalog" :category="category" :category-label="meta.label" :execution-status="group?.execution_status" :execution-message="group?.execution_message" :busy="saving" :server-error="actionError" @save="saveRule" />
+    <RuleRunsDialog v-if="group" v-model="runsVisible" :category="category" />
+    <RuleHistoryDialog v-if="group" v-model="historyVisible" :category="category" />
     <RuleSettingsDialog v-if="group" v-model="settingsVisible" :settings="group.settings" :category="category" :busy="saving" :server-error="actionError" @save="saveSettings" />
   </div>
 </template>
 <style scoped>
-.rules-page { min-width: 0; }.rule-card :deep(.el-card__body) { padding: 0; }.rule-card :deep(.el-tabs__header) { margin: 0; padding: 0 22px; }.context-grid { display: grid; grid-template-columns: minmax(150px,1fr) minmax(170px,1fr) minmax(210px,1.4fr) auto; gap: 18px; align-items: center; padding: 18px 22px; border-bottom: 1px solid var(--el-border-color); }.context-grid div { display: grid; gap: 5px; min-width: 0; }.context-grid span,.list-bar small { color: var(--el-text-color-secondary); font-size: 12px; }.context-grid strong { font-size: 13px; font-weight: 400; overflow-wrap: anywhere; }.list-bar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 22px; }.list-bar p { margin: 0 0 5px; }.paused { color: var(--el-text-color-secondary); }.rules-table strong,.rules-table small { display: block; overflow-wrap: anywhere; }.rules-table small { margin-top: 5px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 400; }.rules-table :deep(.cell) { white-space: normal; overflow-wrap: anywhere; line-height: 1.65; }.rule-cards { display: none; }.table-foot,.readonly-note { margin: 0; padding: 14px 22px; color: var(--el-text-color-secondary); font-size: 12px; border-top: 1px solid var(--el-border-color); overflow-wrap: anywhere; }.readonly-note { color: var(--el-color-warning); }
+.rules-page { min-width: 0; }.rule-card :deep(.el-card__body) { padding: 0; }.rule-card :deep(.el-tabs__header) { margin: 0; padding: 0 22px; }.context-grid { display: grid; grid-template-columns: minmax(150px,1fr) minmax(170px,1fr) minmax(210px,1.4fr) auto; gap: 18px; align-items: center; padding: 18px 22px; border-bottom: 1px solid var(--el-border-color); }.context-grid div { display: grid; gap: 5px; min-width: 0; }.context-grid span,.list-bar small { color: var(--el-text-color-secondary); font-size: 12px; }.context-grid strong { font-size: 13px; font-weight: 400; overflow-wrap: anywhere; }.list-bar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 22px; }.list-bar p { margin: 0 0 5px; }.list-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }.list-actions .el-button { margin-left: 0; }.paused { color: var(--el-text-color-secondary); }.rules-table strong,.rules-table small { display: block; overflow-wrap: anywhere; }.rules-table small { margin-top: 5px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 400; }.rules-table :deep(.cell) { white-space: normal; overflow-wrap: anywhere; line-height: 1.65; }.rule-cards { display: none; }.table-foot,.readonly-note { margin: 0; padding: 14px 22px; color: var(--el-text-color-secondary); font-size: 12px; border-top: 1px solid var(--el-border-color); overflow-wrap: anywhere; }.readonly-note { color: var(--el-color-warning); }
 .rules-page :deep(.rule-edit.el-button) { --el-button-text-color: #fff; --el-button-hover-text-color: #fff; --el-button-active-text-color: #fff; --el-button-disabled-text-color: #fff; color: #fff; }
 .rules-page :deep(.rule-edit.el-button span),
 .rules-page :deep(.rule-edit.el-button .el-icon) { color: #fff; }.rules-page :deep(.el-alert) { margin-bottom: 14px; }

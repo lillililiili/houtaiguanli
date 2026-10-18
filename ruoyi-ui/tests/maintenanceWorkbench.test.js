@@ -197,7 +197,9 @@ describe('设备异常工作台的两步办理', () => {
     activeFlow = makeFlow(id);
     activeFlow.related_plans = [{ plan_id: `${id}-plan-a` }, { plan_id: `${id}-plan-b` }];
     await mount(`task_id=${id}`);
-    expect(host.querySelector('.case-reference').textContent).toContain(id);
+    expect(host.querySelector('.case-summary').textContent).not.toContain('处置单编号');
+    expect(host.querySelector('.case-facts').textContent).not.toContain(`${id}-plan-a`);
+    expect(host.querySelector('.tech-details').textContent).toContain(id);
     expect(host.querySelector('.shared-case-hint').textContent).toContain('不会重复新增待办');
     activeFlow.related_plans = [{ plan_id: `${id}-plan-a` }];
     await realtime.reload(['device']); await settle();
@@ -244,3 +246,40 @@ describe('设备异常工作台的两步办理', () => {
     expect(button('确认办结')).toBeUndefined(); expect(button('接手处理')).toBeUndefined();
   });
 });
+
+describe('设备异常处置单筛选', () => {
+  const listItem = (id, state) => ({ ...makeFlow(id, state).task, workflow_state: state });
+  async function choose(label) {
+    host.querySelector('#maintenance-status').closest('.el-select').querySelector('.el-input__inner').click(); await settle();
+    [...document.querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === label).click(); await settle();
+  }
+  it.each([
+    ['已办结', 'COMPLETED', ['case-done-1', 'case-done-2']],
+    ['全部记录', 'ALL', ['case-done-3', 'case-open-9']]
+  ])('选择“%s”按 %s 读取，原选中单不在新列表时右侧改看新列表第一张', async (label, status, ids) => {
+    deviceMaintenanceApi.list.mockImplementation(async ({ status: requested }) => requested === status
+      ? { items: ids.map(id => listItem(id, 'COMPLETED')), total: ids.length }
+      : { items: [listItem('case-radar', 'PENDING')], total: 1 });
+    deviceMaintenanceApi.workflow.mockImplementation(async id => structuredClone(makeFlow(id, id === 'case-radar' ? 'PENDING' : 'COMPLETED')));
+    await mount('task_id=case-radar');
+    await choose(label);
+    expect(deviceMaintenanceApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ status, page: 1 }));
+    expect(router.currentRoute.value.query.task_id).toBe(ids[0]);
+    expect(host.querySelector('.case-heading h2').textContent).toBe(`设备 ${ids[0]}`);
+  });
+  it('选中单仍在新列表里时保持不动', async () => {
+    deviceMaintenanceApi.list.mockImplementation(async () => ({ items: [listItem('case-other', 'PROCESSING'), listItem('case-radar', 'PENDING')], total: 2 }));
+    await mount('task_id=case-radar');
+    await choose('全部记录');
+    expect(router.currentRoute.value.query.task_id).toBe('case-radar');
+  });
+  it('新列表为空时清空右侧详情', async () => {
+    deviceMaintenanceApi.list.mockImplementation(async ({ status }) => status === 'READY_TO_COMPLETE' ? { items: [], total: 0 } : { items: [listItem('case-radar', 'PENDING')], total: 1 });
+    await mount('task_id=case-radar');
+    await choose('待确认办结');
+    expect(router.currentRoute.value.query.task_id).toBeUndefined();
+    expect(host.querySelector('.case-heading')).toBeNull();
+    expect(host.textContent).toContain('选择一份处置单开始查看');
+  });
+});
+

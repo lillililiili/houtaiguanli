@@ -6,6 +6,7 @@ import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
 import { useAuthStore } from '@/stores/auth'
 import { isBusinessMenu } from '@/config/businessMenus'
+import { applyMenuEnabled, applyMenuLevel, inconsistentMenus } from './roles/menuPermissionDraft'
 
 const auth = useAuthStore()
 const loading = ref(false)
@@ -40,7 +41,7 @@ const canOperate = computed(() => auth.hasPermission('roles.auth'))
 const locked = computed(() => detail.value?.role_code === 'ROLE-ADMIN')
 const filteredRoles = computed(() => {
   const text = query.value.trim().toLowerCase()
-  return roles.value.filter(item => !text || [item.name, item.role_code, item.description].some(value => String(value || '').toLowerCase().includes(text)))
+  return roles.value.filter(item => !text || [item.name, item.description].some(value => String(value || '').toLowerCase().includes(text)))
 })
 const menuPermissions = computed(() => permissions.value.filter(isBusinessMenu))
 const createMenuPermissions = computed(() => createDialog.permissions.filter(isBusinessMenu))
@@ -59,7 +60,7 @@ const dirty = computed(() => {
 })
 
 function menuLabel(item) {
-  return menuLabels[item.permission_code] || menuLabels[item.route_key] || item.module_name || item.name || item.permission_code
+  return menuLabels[item.permission_code] || menuLabels[item.route_key] || item.module_name || item.name || '未命名菜单'
 }
 function permissionLimit(row, asCreate = false) {
   if (!asCreate && locked.value) return '固定权限'
@@ -73,7 +74,12 @@ function moduleLabel(group) {
   if (group.module_code === 'disposal') return '反制授权'
   return /[\u4e00-\u9fff]/.test(group.module_name || '') ? group.module_name : (moduleLabels[group.module_code] || group.module_code)
 }
+// 动作目录里的中文名来自服务端；同名项在这里补足用途，只改显示，不改权限编码（#4）。
+const actionDisplay = {
+  'device:read': { label: '查看设备资料', description: '用于数据大屏的设备统计和证据关联设备；申请反制选执行设备、光电追踪请在“前台设备操作”中开启“查看前台设备”。' }
+}
 function actionLabel(action) {
+  if (actionDisplay[action.permission_code]) return actionDisplay[action.permission_code].label
   if (/[\u4e00-\u9fff]/.test(action.name || '')) return action.permission_code?.startsWith('disposal:') ? action.name.replaceAll('处置', '反制') : action.name
   const suffix = action.permission_code?.split('.').pop()
   return actionLabels[suffix] || action.permission_code
@@ -83,13 +89,19 @@ function actionSelection(action) {
   const level = actionDraft[action.permission_code]
   return (action.permission_code === 'disposal:direct' ? level === 'OP' : ['READ', 'OP', 'AUTH'].includes(level)) ? 'OP' : 'NONE'
 }
-function actionDescription(action) { return action.permission_code === 'disposal:direct' ? '免逐次审批；仍校验反制范围、时效及设备权限。' : '' }
+function actionDescription(action) {
+  if (action.permission_code === 'disposal:direct') return '免逐次审批；仍校验反制范围、时效及设备权限。'
+  return actionDisplay[action.permission_code]?.description || ''
+}
 function isPermissionLocked(row) { return locked.value || protectedCodes.has(row.permission_code) }
 // 只归超级管理员的动作：页面上锁定，保存时也不随整组提交（BUG-01）。
 function isProtectedAction(code) { return code === 'map:activate' || ['users', 'roles', 'audit', 'countermeasure'].includes(String(code || '').split(':')[0]) }
 function isActionLocked(action) { return locked.value || isProtectedAction(action.permission_code) }
-function setLevel(row, level) { row.level = level; if (level === 'NONE') row.menu_enabled = false }
-function setMenu(row, enabled) { row.menu_enabled = enabled; if (enabled && row.level === 'NONE') row.level = 'READ' }
+const setLevel = applyMenuLevel
+const setMenu = applyMenuEnabled
+function warnInconsistentMenus(rows) {
+  ElMessage.warning(`以下菜单的方框与权限等级不一致：${rows.map(menuLabel).join('、')}。请勾选方框并选择权限等级，或把等级改为“无权限”后再保存。`)
+}
 function setBusinessDeviceLevel(level) { businessDevicePermission.value.level = level; businessDevicePermission.value.menu_enabled = false }
 function setDeviceRead(value) { setBusinessDeviceLevel(value === 'NONE' ? 'NONE' : deviceControlAllowed.value ? 'OP' : 'READ') }
 function setDeviceControl(value) { setBusinessDeviceLevel(value === 'OP' ? 'OP' : deviceReadAllowed.value ? 'READ' : 'NONE') }
@@ -129,6 +141,8 @@ async function loadAll() {
 function discard() { resetDraft(detail.value); ElMessage.info('已放弃未保存的权限改动。') }
 async function savePermissions() {
   if (!dirty.value || locked.value) return
+  const mismatched = inconsistentMenus(menuPermissions.value, isPermissionLocked)
+  if (mismatched.length) return warnInconsistentMenus(mismatched)
   try {
     await ElMessageBox.confirm('保存后权限立即生效，该角色下所有用户的旧会话会被撤销。', `保存权限 · ${detail.value.name}`, { type: 'warning', confirmButtonText: '保存并立即生效' })
     const body = {
@@ -152,6 +166,8 @@ function openCreate() {
 }
 async function createRole() {
   if (!createDialog.form.name.trim()) return ElMessage.warning('角色名称不能为空。')
+  const mismatched = inconsistentMenus(createMenuPermissions.value, row => protectedCodes.has(row.permission_code))
+  if (mismatched.length) return warnInconsistentMenus(mismatched)
   createDialog.busy = true
   try {
     const saved = await systemApi.createRole({
@@ -203,7 +219,7 @@ onMounted(loadAll)
             <div><strong>角色列表</strong><small>选择角色后配置权限</small></div>
             <span class="role-count">{{ roles.length }}</span>
           </div>
-          <el-input v-model="query" clearable aria-label="搜索角色" placeholder="搜索名称、编码或说明" />
+          <el-input v-model="query" clearable aria-label="搜索角色" placeholder="搜索角色名称或说明" />
         </header>
         <nav class="role-list" aria-label="角色列表">
           <button
@@ -215,7 +231,6 @@ onMounted(loadAll)
             @click="selectedCode = role.role_code"
           >
             <span class="role-item__title"><strong>{{ role.name }}</strong><span :class="['role-type', { 'is-custom': !role.builtin }]">{{ role.builtin ? '内置' : '自定义' }}</span></span>
-            <code>{{ role.role_code }}</code>
             <small>{{ role.user_count }} 名用户</small>
           </button>
           <el-empty v-if="!filteredRoles.length" :image-size="60" description="未找到匹配角色" />
@@ -240,7 +255,7 @@ onMounted(loadAll)
               <div v-for="row in menuPermissions" :key="row.permission_code" class="permission-matrix__row" role="row">
                 <div class="permission-matrix__entry" role="cell">
                   <el-checkbox :model-value="row.menu_enabled" :disabled="isPermissionLocked(row)" @change="value=>setMenu(row,value)">
-                    <span class="permission-matrix__meta"><strong>{{ menuLabel(row) }}</strong><small class="code-note">{{ row.permission_code }}</small></span>
+                    <span class="permission-matrix__meta" :data-permission-code="row.permission_code"><strong>{{ menuLabel(row) }}</strong></span>
                   </el-checkbox>
                 </div>
                 <div class="permission-matrix__level" role="cell">
@@ -260,11 +275,11 @@ onMounted(loadAll)
             <div class="permission-intro"><div><h3>动作权限</h3><p>每项选择“无”或“允许”；允许仅授予该项动作，仍受数据范围和业务条件限制。</p></div></div>
             <section v-if="businessDevicePermission" class="action-group business-device-permission">
               <h4>前台设备操作</h4>
-              <div class="action-row"><span class="action-row__label"><span>查看设备</span><small>允许读取前台设备信息；取消查看会同时取消控制。</small></span><el-radio-group :model-value="deviceReadAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="查看设备" @change="setDeviceRead"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
+              <div class="action-row"><span class="action-row__label"><span>查看前台设备</span><small>申请反制选择执行设备、光电追踪需要开启；取消查看会同时取消控制。</small></span><el-radio-group :model-value="deviceReadAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="查看前台设备" @change="setDeviceRead"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
               <div class="action-row"><span class="action-row__label"><span>控制设备</span><small>允许控制时同时允许查看；反制仍须单独授权，不开放后台设备管理。</small></span><el-radio-group :model-value="deviceControlAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="控制设备" @change="setDeviceControl"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
             </section>
             <div v-if="businessActionCatalog.length" class="action-grid"><section v-for="group in businessActionCatalog" :key="group.module_code" class="action-group"><h4>{{ moduleLabel(group) }}</h4>
-              <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label" :title="action.permission_code"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-radio-group :model-value="actionSelection(action)" :disabled="isActionLocked(action) || !canOperate" size="small" :aria-label="actionLabel(action)" @change="value => actionDraft[action.permission_code] = value"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
+              <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-radio-group :model-value="actionSelection(action)" :disabled="isActionLocked(action) || !canOperate" size="small" :aria-label="actionLabel(action)" @change="value => actionDraft[action.permission_code] = value"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
             </section></div><el-empty v-else description="当前没有可配置的动作权限" />
           </el-tab-pane>
         </el-tabs>
@@ -283,12 +298,12 @@ onMounted(loadAll)
         </div>
         <div v-for="row in createMenuPermissions" :key="row.permission_code" class="permission-matrix__row" role="row">
           <div class="permission-matrix__entry" role="cell">
-            <el-checkbox v-model="row.menu_enabled" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setMenu(row,value)">
-              <span class="permission-matrix__meta"><strong>{{ menuLabel(row) }}</strong><small class="code-note">{{ row.permission_code }}</small></span>
+            <el-checkbox :model-value="row.menu_enabled" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setMenu(row,value)">
+              <span class="permission-matrix__meta" :data-permission-code="row.permission_code"><strong>{{ menuLabel(row) }}</strong></span>
             </el-checkbox>
           </div>
           <div class="permission-matrix__level" role="cell">
-            <el-select v-model="row.level" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setLevel(row,value)">
+            <el-select :model-value="row.level" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setLevel(row,value)">
               <el-option v-for="level in levels" :key="level.value" :label="level.label" :value="level.value" />
             </el-select>
           </div>
