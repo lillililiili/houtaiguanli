@@ -5,7 +5,10 @@ export function maintenanceTime(value) {
 }
 
 export const connectionLabel = value => ({ ONLINE: '在线', OFFLINE: '离线', ABNORMAL: '异常上报', DISABLED: '停用', UNKNOWN: '待确认' })[value] || '待确认';
-export const healthLabel = value => ({ GOOD: '正常', BAD: '故障', DEGRADED: '异常', UNKNOWN: '待确认' })[value] || '待确认';
+// 设备离线或停用时，最后一次健康上报已不能说明现在的状况（心跳不续期旧健康、在线不代表恢复），不再显示“正常”。
+export const healthLabel = (value, connectivity) => connectivity === 'OFFLINE' ? '未知（离线）'
+  : connectivity === 'DISABLED' ? '未知（停用）'
+    : ({ GOOD: '正常', BAD: '故障', DEGRADED: '异常', UNKNOWN: '待确认' })[value] || '待确认';
 export const alarmLabel = value => value === true ? '有告警' : value === false ? '无告警' : '待确认';
 export const finishedMaintenance = state => ['COMPLETED', 'LEGACY_HANDLED'].includes(state);
 export const maintenanceActionLabel = action => ({ START: '接手处理', CONFIRM_COMPLETE: '确认办结', SAVE_PROGRESS: '记录处理' })[action] || '';

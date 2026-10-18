@@ -27,7 +27,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 @ConditionalOnProperty(prefix="app.qa.device-setup",name="enabled",havingValue="true")
 public class LocalQaDeviceService {
-    private static final String NO="QA-LOCAL-CM4", CIDR="127.0.0.1/32";
+    private static final String NO="QA-LOCAL-CM4", CIDR="127.0.0.1/32", COVERAGE_LABEL="模拟器场景配置";
     private final AccessService access; private final FlightReadService flights;
     private final IntegrationSourceService sources; private final DeviceService devices;
     private final LocalQaDeviceRepository repo; private final IdempotencyGuard idempotency;
@@ -40,10 +40,16 @@ public class LocalQaDeviceService {
     /** 反制设备长期部署在某个单位与区县，不跟飞行计划绑定（2026-10-05 业务确认）。
      *  位置只用于地图上画作用范围示意：新登记时带上；已登记但还没有位置的补上，已有位置的不改（新-4）。 */
     @Transactional public DeviceDetail prepare(String ownerOrgId,String districtId,String planId,BigDecimal longitude,BigDecimal latitude,String key) {
+        return prepare(ownerOrgId,districtId,planId,longitude,latitude,null,key);
+    }
+    /** coverageRadiusM：模拟器场景配置的反制作用半径；设备还没有覆盖范围时补上，已有的（含设备管理里配的）不改（#25）。 */
+    @Transactional public DeviceDetail prepare(String ownerOrgId,String districtId,String planId,BigDecimal longitude,BigDecimal latitude,
+            BigDecimal coverageRadiusM,String key) {
         access.require("interfaces.op");access.require("devices.auth");
         var actor=AuthContext.require();
         if(!"ALL".equals(actor.scopeMode()))throw new ApiException(HttpStatus.FORBIDDEN,"QA_GLOBAL_SCOPE_REQUIRED","本地测试设备准备需要全局管理范围");
         Position position=position(longitude,latitude);
+        BigDecimal radius=radius(coverageRadiusM);
         Scope scope;
         if(!blank(ownerOrgId)||!blank(districtId)) {
             if(blank(ownerOrgId)||blank(districtId))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请同时选择反制设备所属单位和区县");
@@ -65,9 +71,13 @@ public class LocalQaDeviceService {
                 throw new ApiException(HttpStatus.CONFLICT,"QA_DEVICE_CONFLICT","已有同编号设备的来源、范围或本机连接配置不匹配");
             var row=configured.get(0); String deviceId=(String)row.get("device_id");
             if(matches(row,scope.ownerOrgId(),scope.districtId())) {
-                if(position!=null&&row.get("longitude")==null&&row.get("latitude")==null){
-                    idempotency.claim(key,"local-qa-cm4-position:"+deviceId+":"+position);
-                    place(actor,deviceId,position);
+                boolean needsPosition=position!=null&&row.get("longitude")==null&&row.get("latitude")==null;
+                boolean needsCoverage=radius!=null&&!repo.hasSensingProfile(deviceId);
+                if(needsPosition||needsCoverage){
+                    idempotency.claim(key,needsCoverage?"local-qa-cm4-fill:"+deviceId+":"+(needsPosition?position:"-")+":"+radius.toPlainString()
+                            :"local-qa-cm4-position:"+deviceId+":"+position);
+                    if(needsPosition)place(actor,deviceId,position);
+                    if(needsCoverage)cover(actor,deviceId,radius);
                 }
                 return devices.detail(deviceId);
             }
@@ -82,6 +92,7 @@ public class LocalQaDeviceService {
             audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",deviceId,
                     "恢复既有 QA 模拟设备；仅127.0.0.1:10006，不创建反制授权",null);
             if(position!=null&&row.get("longitude")==null&&row.get("latitude")==null) place(actor,deviceId,position);
+            if(radius!=null) cover(actor,deviceId,radius);
             return devices.detail(deviceId);
         }
         idempotency.claim(key,"local-qa-cm4:"+scopeKey);
@@ -92,6 +103,7 @@ public class LocalQaDeviceService {
         var created=devices.create(new DeviceMutation(source.sourceId(),NO,NO,"本机四通道QA模拟器","countermeasure","反制","反制直连","QA-CM4","本机协议模拟",scope.ownerOrgName(),scope.districtName(),null,
                 position==null?null:position.longitude(),position==null?null:position.latitude(),position==null?null:"WGS-84",null,null,null,null,connection,protocol,CIDR));
         repo.bindScope(created.device().deviceId(),scope.ownerOrgId(),scope.districtId(),clock.nowMillis());
+        if(radius!=null) cover(actor,created.device().deviceId(),radius);
         sources.activate(source.sourceId(),source.version(),"显式准备本机QA模拟设备；不代表现场射频设备");
         audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",created.device().deviceId(),
                 "仅127.0.0.1:10006；不创建反制授权"+(position==null?"":"；位置 "+position.text()+"，只用于地图上画作用范围示意"),null);
@@ -101,6 +113,18 @@ public class LocalQaDeviceService {
         if(repo.fillPosition(deviceId,position.longitude(),position.latitude(),clock.nowMillis()))
             audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",deviceId,
                     "补上 QA 模拟设备位置 "+position.text()+"，只用于地图上画作用范围示意；已有位置的设备不改",null);
+    }
+    private void cover(AuthUser actor,String deviceId,BigDecimal radius) {
+        if(repo.fillCircleCoverage(deviceId,radius,COVERAGE_LABEL,clock.nowMillis()))
+            audit.record(actor.userId(),actor.account(),"local_qa_device_prepare","device",deviceId,
+                    "补上 QA 模拟设备作用半径 "+radius.stripTrailingZeros().toPlainString()+" 米（模拟器场景配置）；已有覆盖范围的设备不改",null);
+    }
+    /** 作用半径可不传；传了须大于 0、不超过 100 公里，存到 2 位小数，和覆盖范围表一致。 */
+    private static BigDecimal radius(BigDecimal value) {
+        if(value==null)return null;
+        if(value.compareTo(BigDecimal.ZERO)<=0||value.compareTo(BigDecimal.valueOf(100_000))>0)
+            throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","反制设备作用半径须大于 0 米、不超过 100000 米");
+        return value.setScale(2,RoundingMode.HALF_UP);
     }
     /** 经纬度要么都不传，要么都传且在 WGS-84 范围内；存到 7 位小数，和设备表一致。 */
     private static Position position(BigDecimal longitude,BigDecimal latitude) {

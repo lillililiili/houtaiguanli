@@ -30,6 +30,8 @@ public class MqttConnectivityIncidentJob {
             if (!"OFFLINE".equals(row.get("connectivity"))) continue;
             String id = (String) row.get("device_id");
             boolean simulated = !"live".equals(row.get("source_mode"));
+            // 模拟器正常停止时已声明计划下线：停发不是故障，不开异常事件，也就不会自动生成处置单（#12）。
+            if (simulated && repository.plannedOffline(id)) continue;
             if (repository.openMqttIncident(id, now, simulated)) {
                 repository.addEvent(UUID.randomUUID().toString(), id, "INCIDENT_OPENED", "WARN",
                         "MQTT 心跳超时，已创建异常事件", now, simulated);

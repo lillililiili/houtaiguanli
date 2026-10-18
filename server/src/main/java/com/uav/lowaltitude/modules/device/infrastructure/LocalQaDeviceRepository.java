@@ -37,6 +37,19 @@ public class LocalQaDeviceRepository {
                 WHERE device_id=? AND version=? AND source_mode='live' AND simulated=TRUE
                 """, now, deviceId, expectedVersion) == 1;
     }
+    /** 是否已有覆盖范围（不论来自设备管理还是之前的模拟器登记）。 */
+    public boolean hasSensingProfile(String deviceId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM device_sensing_profile WHERE device_id=?",Long.class,deviceId)>0;
+    }
+    /** 只给还没有覆盖范围的本机模拟设备补一个圆形作用半径；已有的（例如在设备管理里配过）一概不改。 */
+    public boolean fillCircleCoverage(String deviceId, BigDecimal radiusM, String sourceLabel, long now) {
+        return jdbc.update("""
+                INSERT INTO device_sensing_profile(device_id,coverage_kind,radius_m,range_m,azimuth_deg,fov_deg,source_label,version,updated_at)
+                SELECT d.device_id,'CIRCLE',?,NULL,NULL,NULL,?,0,? FROM ops_device d
+                WHERE d.device_id=? AND d.source_mode='live' AND d.simulated=TRUE AND d.deleted_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM device_sensing_profile p WHERE p.device_id=d.device_id)
+                """, radiusM, sourceLabel, now, deviceId) == 1;
+    }
     /** Only a device without any position gets one; a position someone already set (设备管理) is never moved. */
     public boolean fillPosition(String deviceId, BigDecimal longitude, BigDecimal latitude, long now) {
         return jdbc.update("""
