@@ -167,6 +167,10 @@ public class AutoSmsService {
         String source=task!=null&&RECHECK.equals(task.triggerSource())?RECHECK:TRIGGER;
         if(records.noCounterActive(event.eventId()))return new Eligibility(false,"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON,source,null,null);
         if("FALSE_POSITIVE".equals(event.state()))return new Eligibility(false,"BLOCKED","已核实为误报，不发送飞手短信",source,null,null);
+        // 没有可通知的飞手是事实本身（2026-10-18 rose 确认，流程 3、4）：先于“等待核实”“超过时效”和通道说明给出，
+        // 从告警一出来就写明不发，之后也不随时间改口。发送资格本身不变：这些条件原本就要全部满足才发送。
+        var pilot=requiredPilot(event.eventId());
+        if(pilot==null||!pilot.configured())return new Eligibility(false,"BLOCKED",pilotReason(pilot),source,null,null);
         if(!"CONFIRMED".equals(event.state()))return new Eligibility(false,"WAITING","事件尚未核实属实，核实后自动发送短信",source,null,null);
         // 告警接收后超过事件时效才走到发送（例如过了时效才核实，或通道很晚才接通）：情况可能已经变化，
         // 不再自动发短信和打电话，等人核对最新情况。页面总是先看到这条提示。
@@ -178,8 +182,6 @@ public class AutoSmsService {
             return new Eligibility(false,rest.status(),stale+"；同时"+rest.reason(),rest.source(),rest.evaluation(),rest.observedAt());
         }
         if(!sms.automaticSimulationAvailable(event.sourceMode()))return new Eligibility(false,"UNAVAILABLE","正式短信渠道尚未接入，不能把模拟送达写成真实通知",source,null,null);
-        var pilot=requiredPilot(event.eventId());
-        if(pilot==null||!pilot.configured())return new Eligibility(false,"BLOCKED",pilotReason(pilot),source,null,null);
         return new Eligibility(true,"WAITING",RECHECK.equals(source)?"已核对最新情况并登记发送，等待后台发送":"告警已建立，等待后台自动模拟发送",source,null,null);
     }
     private boolean staleEvent(String eventId) {
