@@ -77,6 +77,15 @@ export function businessReportFilename(preview, format) {
   return `${preview.simulated ? '模拟验收-' : ''}${preview.title}${period}-${preview.from}-${preview.to}.${format}`;
 }
 
+// 与后端 ReportLabels.text 同一兜底：未配中文的内部代码（FOO_BAR / foo_bar）显示“其他”，中文值与名称原样显示。
+const REPORT_CODE = /^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)$/;
+export function reportLabel(labels, section, field, value) {
+  if (value === null || value === undefined || value === '') return '未知';
+  const text = labels?.[`${section}.${field}.${value}`] || labels?.[value];
+  if (text) return text;
+  return REPORT_CODE.test(String(value)) ? '其他' : String(value);
+}
+
 export function reportRowMatchesScope(mode, scope) {
   return scope === 'simulated' ? ['mock', 'replay'].includes(mode) : scope === 'live' && mode === 'live';
 }

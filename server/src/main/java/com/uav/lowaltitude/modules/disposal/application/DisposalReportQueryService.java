@@ -21,6 +21,12 @@ public class DisposalReportQueryService extends BusinessReportSource {
     @Override public List<Dimension> dimensions() {
         return List.of(new Dimension("state", "当前状态"), new Dimension("result", "执行结果"));
     }
+    /** 结果说明里的设备回码原文（继电器、低四位）换成通俗说法（问题清单 #21）；原文仍在授权记录里。 */
+    @Override protected Row present(Row row) {
+        String note = DisposalResultText.forOperator(row.note());
+        return java.util.Objects.equals(note, row.note()) ? row : new Row(row.id(), row.label(), row.occurredAt(), row.state(), row.kind(),
+                row.severity(), row.region(), row.sourceMode(), row.related(), row.result(), note);
+    }
     @Override protected Dataset dataset(Range range) {
         access.require(PermissionCode.ALARM_READ);
         return repository.reportDataset(reader, range, access.require(PermissionCode.DISPOSAL_READ));

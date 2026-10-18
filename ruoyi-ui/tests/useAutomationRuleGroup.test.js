@@ -32,4 +32,29 @@ describe('规则组并发状态', () => {
     await state.load('counter'); write.resolve({ category: 'verify', version: 2 }); await saving; await settle()
     expect(state.group.value).toMatchObject({ category: 'counter', version: 4 })
   })
+
+  it.each([
+    ['RULE_NAME_EXISTS', '规则名称已存在'],
+    ['RULE_ITEM_EXISTS', '此判定项已配置，请编辑已有规则']
+  ])('重复校验 %s 直接提示原因，不刷新、不触发关闭弹窗', async (code, message) => {
+    automationRuleApi.group.mockResolvedValue({ category: 'verify', version: 3 })
+    mount(); await state.load('verify')
+    const reads = automationRuleApi.group.mock.calls.length
+    const saved = await state.mutate(() => Promise.reject(Object.assign(new Error(message), { code, status: 409 })))
+    expect(saved).toBe(false)
+    expect(state.actionError.value).toBe(message)
+    expect(state.uncertain.value).toBe('')
+    expect(state.recoveryRevision.value).toBe(0)
+    expect(automationRuleApi.group).toHaveBeenCalledTimes(reads)
+  })
+
+  it('真正的版本冲突仍重新读取并提示核对', async () => {
+    automationRuleApi.group.mockResolvedValue({ category: 'verify', version: 3 })
+    mount(); await state.load('verify')
+    const saved = await state.mutate(() => Promise.reject(Object.assign(new Error('规则配置已更新'), { code: 'VERSION_CONFLICT', status: 409 })))
+    expect(saved).toBe(false)
+    expect(state.uncertain.value).toContain('保存结果需要确认')
+    expect(state.recoveryRevision.value).toBe(1)
+    expect(state.actionError.value).toBe('')
+  })
 })

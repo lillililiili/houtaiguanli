@@ -30,6 +30,7 @@ public interface AuditMapper {
             @Param("result") String result,
             @Param("objectType") String objectType,
             @Param("objectId") String objectId,
+            @Param("includeAutomatic") boolean includeAutomatic,
             @Param("limit") int limit,
             @Param("offset") int offset);
 
@@ -42,7 +43,8 @@ public interface AuditMapper {
             @Param("action") String action,
             @Param("result") String result,
             @Param("objectType") String objectType,
-            @Param("objectId") String objectId);
+            @Param("objectId") String objectId,
+            @Param("includeAutomatic") boolean includeAutomatic);
 
     @SelectProvider(type = AuditSql.class, method = "detail")
     AuditLog findById(@Param("auditId") String auditId);

@@ -4,13 +4,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { ruleSetApi } from '@/api/ruleSets'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
+import { DEMO_PARAM_LABEL, isDemoVersion, isRecommendedVersion, versionSummary } from './ruleSetPresentation'
 
 const auth = useAuthStore()
 const canManage = computed(() => auth.hasPermission('rule:manage'))
 const sets = ref([]), loading = ref(false), error = ref(''), busy = ref('')
 let sequence = 0, alive = true
 
-const paramLabel = value => ({ CONFIRMED: ['已确认参数', 'success'], DEMO: ['演示参数，未经业务方确认', 'warning'] })[value] || [value || '参数状态未知', 'info']
+const paramLabel = value => ({ CONFIRMED: ['已确认参数', 'success'], DEMO: [DEMO_PARAM_LABEL, 'warning'] })[value] || [value || '参数状态未知', 'info']
 function versionState(version) {
   if (version.is_active) return ['生效中', 'success']
   if (version.is_shadow) return ['影子验证中', 'warning']
@@ -38,7 +39,7 @@ async function activate(set, version) {
   let note
   try {
     const result = await ElMessageBox.prompt(
-      `启用后，系统按“${set.name}”第 ${version.version_no} 版（${version.rule_set_version_id}）自动研判${current ? `，原来生效的第 ${current.version_no} 版停止使用` : ''}。${version.param_status === 'DEMO' ? '这一版是演示参数，只适合测试和演示。' : ''}请填写启用原因。`,
+      `启用后，系统按“${set.name}”第 ${version.version_no} 版自动研判${current ? `，原来生效的第 ${current.version_no} 版停止使用` : ''}。${version.param_status === 'DEMO' ? '这一版是演示参数，只适合测试和演示。' : ''}请填写启用原因。`,
       `启用第 ${version.version_no} 版`,
       { confirmButtonText: '启用', cancelButtonText: '取消', inputValue: '系统准备：启用研判规则', inputValidator: value => (Boolean(value?.trim()) && value.trim().length <= 1000) || '请填写启用原因（不超过 1000 字）' })
     note = result.value.trim()
@@ -62,19 +63,19 @@ onBeforeUnmount(() => { alive = false; sequence++ })
 <template>
   <el-card class="rule-set-card" shadow="never">
     <template #header>
-      <div class="rule-set-heading"><div><b>研判规则集</b><small>决定系统怎样自动判断飞行是否合法、空间是否有风险。没有生效版本时，系统不会自动研判。</small></div><el-button :disabled="loading" @click="load">刷新</el-button></div>
+      <div class="rule-set-heading"><div><b>研判规则集</b><small>决定系统怎样自动判断飞行是否合法、空间是否有风险。没有生效版本时，系统不会自动研判。标有“推荐”的是已确认的最新版本，是否启用由管理员决定。</small></div><el-button :disabled="loading" @click="load">刷新</el-button></div>
     </template>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon><template #default><el-button :disabled="loading" @click="load">重新读取</el-button></template></el-alert>
     <div v-loading="loading" class="rule-set-list">
       <section v-for="set in sets" :key="set.rule_set_id" class="rule-set">
         <header>
-          <div><strong>{{ set.name }}</strong><small>{{ set.rule_set_code }}</small></div>
+          <div><strong>{{ set.name }}</strong></div>
           <el-tag v-if="activeVersion(set)" type="success">当前生效：第 {{ activeVersion(set).version_no }} 版</el-tag>
           <el-tag v-else type="warning">尚未启用，系统不会按这套规则研判</el-tag>
         </header>
         <el-table :data="set.versions" empty-text="这套规则集还没有版本">
-          <el-table-column label="版本" min-width="240"><template #default="{ row }"><div>第 {{ row.version_no }} 版</div><small class="version-id">{{ row.rule_set_version_id }}</small></template></el-table-column>
-          <el-table-column label="说明" min-width="200"><template #default="{ row }">{{ row.description || '—' }}</template></el-table-column>
+          <el-table-column label="版本" min-width="130"><template #default="{ row }"><div class="version-name">第 {{ row.version_no }} 版<el-tag v-if="isRecommendedVersion(row)" class="recommended-tag" type="success" size="small" effect="dark">推荐</el-tag><el-tag v-else-if="isDemoVersion(row)" class="demo-tag" type="warning" size="small" effect="plain">演示参数</el-tag></div></template></el-table-column>
+          <el-table-column label="说明" min-width="300"><template #default="{ row }"><p class="version-summary">{{ versionSummary(row.description) }}</p><details class="version-details"><summary>详细信息</summary><p>{{ row.description || '暂无说明' }}</p><p class="version-id">版本编号：{{ row.rule_set_version_id }}</p></details></template></el-table-column>
           <el-table-column label="参数" min-width="170"><template #default="{ row }"><el-tag :type="paramLabel(row.param_status)[1]" effect="plain">{{ paramLabel(row.param_status)[0] }}</el-tag></template></el-table-column>
           <el-table-column label="发布时间" min-width="160"><template #default="{ row }">{{ formatTime(row.published_at) }}</template></el-table-column>
           <el-table-column label="状态" width="110"><template #default="{ row }"><el-tag :type="versionState(row)[1]">{{ versionState(row)[0] }}</el-tag></template></el-table-column>
@@ -95,6 +96,7 @@ onBeforeUnmount(() => { alive = false; sequence++ })
 .rule-set-heading > div { display: grid; gap: 5px; min-width: 0; }.rule-set-heading small,.rule-set header small { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .rule-set-list { min-height: 80px; }.rule-set + .rule-set { margin-top: 22px; }.rule-set header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .rule-set header > div { display: grid; gap: 3px; min-width: 0; }.rule-set :deep(.cell) { white-space: normal; overflow-wrap: anywhere; line-height: 1.6; }.block-reason { font-size: 12px; line-height: 1.5; }
+.version-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }.version-summary { margin: 0; }.version-details { margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }.version-details summary { cursor: pointer; }.version-details p { margin: 4px 0 0; overflow-wrap: anywhere; }
 .readonly-note { margin: 14px 0 0; font-size: 12px; }
 @media (max-width: 680px) { .rule-set-heading,.rule-set header { align-items: flex-start; flex-direction: column; } }
 </style>

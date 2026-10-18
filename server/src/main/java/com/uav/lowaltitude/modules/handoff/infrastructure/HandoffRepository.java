@@ -30,7 +30,7 @@ public class HandoffRepository {
         String time = reader.epoch("e.created_at");
         String sql = "SELECT h.handoff_id AS id,rc.display_name AS label," + time + " AS at_ms,"
             + "CASE WHEN nd.state IN ('PENDING_DECISION','DO_NOT_NOTIFY') THEN nd.state ELSE d.delivery_status END AS state,h.handoff_type AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,h.source_mode,"
-            + "e.event_id AS related,d.receipt_status AS result,h.receipt_result AS note"
+            + "ea.alarm_no AS related,d.receipt_status AS result,h.receipt_result AS note"
             + " FROM handoff h JOIN uav_event e ON e.event_id=h.event_id AND h.source_kind='UAV_EVENT'"
             + " AND e.owner_org_id=h.owner_org_id AND e.district_id=h.district_id"
             + " JOIN alarm ea ON ea.alarm_id=e.alarm_id AND ea.owner_org_id=e.owner_org_id AND ea.district_id=e.district_id"

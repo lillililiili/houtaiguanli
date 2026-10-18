@@ -16,9 +16,17 @@ const form = reactive({ account: localStorage.getItem(ACCOUNT_KEY) || '', passwo
 const rules = { account: [{ required: true, message: '请输入账号', trigger: 'blur' }], password: [{ required: true, message: '请输入密码', trigger: 'blur' }] };
 const formRef = ref();
 
+// 回车会同时触发表单原生提交；只认表单提交一个入口，并在请求进行中忽略重复提交，
+// 避免一次登录发出两个请求（两条“登录成功”提示和两条审计记录，#24）。
 async function submit() {
-  await formRef.value.validate();
+  if (loading.value) return;
   loading.value = true;
+  try {
+    await formRef.value.validate();
+  } catch {
+    loading.value = false;
+    return;
+  }
   try {
     const user = await auth.login({ account: form.account.trim(), password: form.password });
     if (form.remember) localStorage.setItem(ACCOUNT_KEY, form.account.trim()); else localStorage.removeItem(ACCOUNT_KEY);
@@ -48,7 +56,7 @@ async function submit() {
         <el-alert v-if="route.query.denied === '1'" class="login-expired" title="该账号不能进入后台管理系统，请使用后台用户账号。" type="error" show-icon :closable="false" />
         <el-form ref="formRef" :model="form" :rules="rules" label-position="top" size="large" @submit.prevent="submit">
           <el-form-item label="账号" prop="account"><el-input v-model="form.account" autocomplete="username" placeholder="请输入账号" :prefix-icon="User" /></el-form-item>
-          <el-form-item label="密码" prop="password"><el-input v-model="form.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :prefix-icon="Lock" @keyup.enter="submit" /></el-form-item>
+          <el-form-item label="密码" prop="password"><el-input v-model="form.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :prefix-icon="Lock" /></el-form-item>
           <div class="login-options"><el-checkbox v-model="form.remember">记住账号</el-checkbox><span>忘记密码请联系系统管理员</span></div>
           <el-button native-type="submit" type="primary" :loading="loading" class="login-submit">登录</el-button>
         </el-form>

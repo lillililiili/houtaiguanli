@@ -21,6 +21,9 @@ const actionStatus = {
 const sourceLabel = value => ({ live: '真实接入', mock: '模拟', replay: '回放' })[String(value || '').toLowerCase()] || value || '来源未知'
 const statusText = (mapping, value) => mapping[value]?.[0] || value || '状态未知'
 const statusType = (mapping, value) => mapping[value]?.[1] || 'info'
+// 动作代码不直接给操作员看；未知代码统一显示“自动动作”，原始代码放在“详细信息”里（#21）。
+const actionNames = { verify: '自动核实', notify: '发送通知', sms: '发送短信', voice: '拨打电话', call: '拨打电话', pilot: '飞手提醒', counter: '自动反制', countermeasure: '自动反制', dispose: '通知处罚部门', punishment: '通知处罚部门', evidence: '汇集证据', track: '持续跟踪', audit: '写入审计记录' }
+const actionName = code => actionNames[String(code || '').toLowerCase()] || '自动动作'
 const displayValue = value => value === null || value === undefined || value === '' ? '未提供' : String(value)
 
 async function load(next = page.value) {
@@ -53,13 +56,11 @@ watch(() => props.category, () => { if (props.modelValue) load(1) })
     <div v-loading="loading" class="run-list">
       <article v-for="row in rows" :key="row.run_id" class="run-entry">
         <header>
-          <div><strong>{{ row.event_id || row.target_id || row.run_id }}</strong><small>运行编号：{{ row.run_id }}</small></div>
+          <div><strong>{{ formatTime(row.evaluated_at) }} 判定</strong><small>{{ row.target_id ? '已关联目标' : '未关联目标' }}<template v-if="row.event_id"> · 已关联告警</template></small></div>
           <el-tag :type="statusType(runStatus, row.status)" effect="light">{{ statusText(runStatus, row.status) }}</el-tag>
         </header>
         <dl class="run-meta">
-          <div><dt>目标</dt><dd>{{ row.target_id || '未关联目标' }}</dd></div>
           <div><dt>规则版本</dt><dd>v{{ row.group_version }}</dd></div>
-          <div><dt>判定时间</dt><dd>{{ formatTime(row.evaluated_at) }}</dd></div>
           <div><dt>观测时间</dt><dd>{{ formatTime(row.observed_at) }}</dd></div>
           <div><dt>数据来源</dt><dd>{{ sourceLabel(row.source_mode) }}</dd></div>
         </dl>
@@ -74,11 +75,18 @@ watch(() => props.category, () => { if (props.modelValue) load(1) })
         <section v-if="row.actions?.length">
           <h4>动作结果</h4>
           <div v-for="(action, index) in row.actions" :key="`${action.code}-${index}`" class="result-row">
-            <div><strong>{{ action.code || '未命名动作' }}</strong><small v-if="action.reference">关联记录：{{ action.reference }}</small><p v-if="action.reason">{{ action.reason }}</p></div>
+            <div><strong>{{ actionName(action.code) }}</strong><p v-if="action.reason">{{ action.reason }}</p></div>
             <el-tag :type="statusType(actionStatus, action.status)" size="small">{{ statusText(actionStatus, action.status) }}</el-tag>
           </div>
         </section>
         <p v-if="!row.conditions?.length && !row.actions?.length" class="empty-detail">本次运行未返回判定明细或动作结果。</p>
+        <details class="tech-details">
+          <summary>详细信息</summary>
+          <p>运行编号：{{ row.run_id }}</p>
+          <p v-if="row.event_id">告警编号：{{ row.event_id }}</p>
+          <p v-if="row.target_id">目标编号：{{ row.target_id }}</p>
+          <p v-for="(action, index) in row.actions || []" :key="`ref-${action.code}-${index}`">{{ actionName(action.code) }}：{{ action.code || '未记录代码' }}<template v-if="action.reference"> · 关联记录 {{ action.reference }}</template></p>
+        </details>
       </article>
       <el-empty v-if="!loading && !error && !rows.length" description="暂无运行记录" />
     </div>
@@ -88,7 +96,7 @@ watch(() => props.category, () => { if (props.modelValue) load(1) })
 </template>
 
 <style scoped>
-.run-list { min-height: 160px; }.run-entry { padding: 18px 0; border-bottom: 1px solid var(--el-border-color); overflow-wrap: anywhere; }.run-entry:first-child { padding-top: 0; }.run-entry>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }.run-entry header div,.result-row>div { min-width: 0; }.run-entry header small,.result-row small { display: block; margin-top: 5px; color: var(--el-text-color-secondary); font-size: 12px; }.run-meta { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px 18px; margin: 14px 0 0; }.run-meta div { min-width: 0; }.run-meta dt { color: var(--el-text-color-secondary); font-size: 12px; }.run-meta dd { margin: 4px 0 0; }.run-reason,.result-row p,.empty-detail { margin: 10px 0 0; color: var(--el-text-color-secondary); line-height: 1.65; }.run-entry section { margin-top: 16px; }.run-entry h4 { margin: 0 0 6px; }.result-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 10px 0; border-top: 1px dashed var(--el-border-color); }.result-row p { margin-top: 5px; font-size: 12px; }:global(.automation-rule-runs-dialog) { max-width: calc(100vw - 32px); }
+.run-list { min-height: 160px; }.run-entry { padding: 18px 0; border-bottom: 1px solid var(--el-border-color); overflow-wrap: anywhere; }.run-entry:first-child { padding-top: 0; }.run-entry>header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }.run-entry header div,.result-row>div { min-width: 0; }.run-entry header small,.result-row small { display: block; margin-top: 5px; color: var(--el-text-color-secondary); font-size: 12px; }.run-meta { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px 18px; margin: 14px 0 0; }.run-meta div { min-width: 0; }.run-meta dt { color: var(--el-text-color-secondary); font-size: 12px; }.run-meta dd { margin: 4px 0 0; }.run-reason,.result-row p,.empty-detail { margin: 10px 0 0; color: var(--el-text-color-secondary); line-height: 1.65; }.run-entry section { margin-top: 16px; }.run-entry h4 { margin: 0 0 6px; }.result-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 10px 0; border-top: 1px dashed var(--el-border-color); }.result-row p { margin-top: 5px; font-size: 12px; }.tech-details { margin-top: 12px; color: var(--el-text-color-secondary); font-size: 12px; }.tech-details summary { cursor: pointer; }.tech-details p { margin: 6px 0 0; overflow-wrap: anywhere; }:global(.automation-rule-runs-dialog) { max-width: calc(100vw - 32px); }
 @media (max-width: 680px) { .run-meta { grid-template-columns: 1fr 1fr; }.run-entry>header,.result-row { align-items: flex-start; }.run-entry>header>.el-tag,.result-row>.el-tag { flex: 0 0 auto; max-width: 45%; height: auto; white-space: normal; text-align: center; } }
 @media (max-width: 460px) { .run-meta { grid-template-columns: 1fr; } }
 </style>

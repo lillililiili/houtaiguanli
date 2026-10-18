@@ -78,7 +78,8 @@ describe('账号数据范围', { timeout: 30_000 }, () => {
     expect(dialog().textContent).not.toContain('无需配置业务角色')
     buttons('保存并立即生效')[0].click(); await settle()
     expect(systemApi.updateUser).not.toHaveBeenCalled()
-    expect(ElMessage.warning).toHaveBeenCalledWith('请完整填写姓名、所属单位和前台角色。')
+    expect(ElMessage.warning).toHaveBeenCalledWith('请填写以下必填项：角色。')
+    expect(dialog().querySelector('.el-form-item.is-error').textContent).toContain('角色')
   })
 
   it('新增用户默认只看本单位', async () => {
@@ -117,3 +118,50 @@ describe('账号数据范围', { timeout: 30_000 }, () => {
     expect(dialog().textContent).toContain('超级管理员固定能看到全部单位的数据')
   })
 })
+
+describe('新增用户逐格校验', { timeout: 30_000 }, () => {
+  const errorLabels = () => [...dialog().querySelectorAll('.el-form-item.is-error .el-form-item__label')].map(node => node.textContent.trim())
+  const type = (label, value) => {
+    const input = [...dialog().querySelectorAll('.el-form-item')].find(item => item.querySelector('.el-form-item__label')?.textContent.trim() === label).querySelector('input')
+    input.value = value; input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  it('空着提交：登录账号、姓名、所属单位、角色、临时密码全部标红并一次列出', async () => {
+    await mount()
+    buttons('新增用户')[0].click(); await settle()
+    buttons('保存并立即生效')[0].click(); await settle()
+    expect(systemApi.createUser).not.toHaveBeenCalled()
+    expect(errorLabels()).toEqual(expect.arrayContaining(['登录账号', '姓名', '所属单位', '角色', '临时密码']))
+    expect(ElMessage.warning).toHaveBeenCalledWith('请填写以下必填项：登录账号、姓名、所属单位、角色、临时密码。')
+    type('姓名', '值班员丁'); await settle()
+    expect(errorLabels()).not.toContain('姓名')
+    expect(errorLabels()).toContain('登录账号')
+  })
+
+  it('后台用户只要求账号、姓名、单位和密码；只漏密码时只标密码', async () => {
+    await mount()
+    buttons('新增用户')[0].click(); await settle()
+    radio('后台用户').querySelector('input').click(); await settle()
+    type('登录账号', `ops-${Date.now()}`); type('姓名', '运维乙'); await settle()
+    dialog().querySelector('.el-select .el-input__inner').click(); await settle()
+    ;[...document.querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === '甲单位下属队').click(); await settle()
+    buttons('保存并立即生效')[0].click(); await settle()
+    expect(systemApi.createUser).not.toHaveBeenCalled()
+    expect(errorLabels()).toEqual(['临时密码'])
+    expect(ElMessage.warning).toHaveBeenCalledWith('请填写以下必填项：临时密码。')
+  })
+
+  it('临时密码格式不符时在密码格提示规则，不当作漏填', async () => {
+    await mount()
+    buttons('新增用户')[0].click(); await settle()
+    radio('后台用户').querySelector('input').click(); await settle()
+    type('登录账号', 'ops-b'); type('姓名', '运维丙'); type('临时密码', 'short'); await settle()
+    dialog().querySelector('.el-select .el-input__inner').click(); await settle()
+    ;[...document.querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === '甲单位').click(); await settle()
+    buttons('保存并立即生效')[0].click(); await settle()
+    expect(systemApi.createUser).not.toHaveBeenCalled()
+    expect(errorLabels()).toEqual(['临时密码'])
+    expect(ElMessage.warning).toHaveBeenCalledWith('临时密码须为 6–32 位。')
+  })
+})
+

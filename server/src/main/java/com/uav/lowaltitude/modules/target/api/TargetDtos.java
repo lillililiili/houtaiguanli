@@ -100,7 +100,13 @@ public final class TargetDtos {
             LegalitySummaryDto legalitySummary,
             DisposalSummaryDto disposalSummary,
             /* ZT-04：类别变化记录（系统改判与人工修订），最新的在前；没有变化过就省略。 */
-            List<ClassChangeDto> classChanges) {
+            List<ClassChangeDto> classChanges,
+            /* 2026-10-18：最新状态没有速度时，最后一次来源上报的有效速度与时刻；最新状态有速度或从未上报过就省略。 */
+            LastSpeedDto lastReportedSpeed) {
+    }
+
+    /** 最后一次上报的有效速度：页面写“最后一次上报”，不当成当前速度。 */
+    public record LastSpeedDto(BigDecimal speedMps, long observedAt) {
     }
 
     /** 一次类别变化：何时、由什么改成什么（改前为空表示当时还是"识别中/未定类"）、系统改判还是人工修订。 */

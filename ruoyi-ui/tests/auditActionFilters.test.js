@@ -50,6 +50,24 @@ it('菜单筛选、导出保持一致，历史缺失信息明确显示', async (
   [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '导出 CSV').click(); await settle();
   expect(systemApi.auditCsv).toHaveBeenLastCalledWith(expect.objectContaining({ module: 'maintenance' }));
 });
+it.each([
+  ['AUTO_VERIFY', '系统自动核实'],
+  ['AUTO_SOMETHING_NEW', '系统']
+])('系统自动记录的账号显示后端给的中文名 %s，原代码只在详情括号里', async (account, name) => {
+  const row = { audit_id: `log-${account}`, account, account_name: name, role_code: 'SYSTEM', role_name: '系统',
+    module_name: '告警事件', action_name: '自动核实告警', result: 'SUCCESS', ip: null, occurred_at: 1 };
+  systemApi.audits.mockResolvedValue({ items: [row], total: 1 });
+  systemApi.audit.mockResolvedValue(row);
+  host = document.createElement('div'); document.body.append(host);
+  app = createApp(AuditView); app.use(ElementPlus); app.mount(host); await settle();
+  const table = host.querySelector('.el-table__body').textContent;
+  expect(table).toContain(name);
+  expect(table).not.toContain(account);
+  expect(table).not.toContain('SYSTEM');
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '详情').click(); await settle();
+  expect(document.querySelector('.el-dialog__body').textContent).toContain(`${name}（原代码：${account}）`);
+});
+
 afterEach(async () => {
   app?.unmount();
   // Drain Element Plus table layout and dialog timers before jsdom is disposed.
@@ -75,4 +93,27 @@ it.each([
   expect(systemApi.audits).toHaveBeenLastCalledWith(expect.objectContaining({ action: code, page: 1 }));
   [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '导出 CSV').click(); await settle();
   expect(systemApi.auditCsv).toHaveBeenLastCalledWith(expect.objectContaining({ action: code }));
+});
+
+it('默认隐藏系统自动记录，勾选后请求包含；结果与动作显示中文，详情保留原代码', async () => {
+  const row = { audit_id: 'auto', account: 'AUTO_SMS', action: 'brand_new_action', action_name: '其他操作',
+    result: 'FAILED', result_name: '失败', object_type: 'uav_event', object_type_name: '无人机事件', occurred_at: 1 };
+  systemApi.audits.mockResolvedValue({ items: [row], total: 1 });
+  systemApi.audit.mockResolvedValue(row);
+  host = document.createElement('div'); document.body.append(host);
+  app = createApp(AuditView); app.use(ElementPlus); app.mount(host); await settle();
+  expect(systemApi.audits).toHaveBeenLastCalledWith(expect.objectContaining({ include_automatic: '' }));
+  expect(host.textContent).toContain('已隐藏系统自动记录');
+  expect(host.textContent).toContain('其他操作');
+  expect(host.textContent).toContain('失败');
+  expect(host.textContent).not.toContain('brand_new_action');
+  [...host.querySelectorAll('.el-checkbox')].find(x => x.textContent.includes('显示系统自动记录')).click(); await settle();
+  expect(systemApi.audits).toHaveBeenLastCalledWith(expect.objectContaining({ include_automatic: 'true', page: 1 }));
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '导出 CSV').click(); await settle();
+  expect(systemApi.auditCsv).toHaveBeenLastCalledWith(expect.objectContaining({ include_automatic: 'true' }));
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '详情').click(); await settle();
+  const detail = document.querySelector('.el-dialog__body').textContent;
+  expect(detail).toContain('其他操作（原代码：brand_new_action）');
+  expect(detail).toContain('无人机事件（原代码：uav_event）');
+  expect(detail).toContain('失败（原代码：FAILED）');
 });

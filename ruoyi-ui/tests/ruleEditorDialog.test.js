@@ -21,4 +21,19 @@ describe('规则编辑弹窗', () => {
   it('只向父组件提交字符串 value 和可选持续时间', async () => { let saved; await mount({ onSave: value => { saved = value } }); const number = [...document.querySelectorAll('input')].find(input => input.type === 'number'); number.value = '95'; number.dispatchEvent(new Event('input')); await settle(); [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '保存').click(); await settle(); expect(saved).toMatchObject({ name: '识别置信度要求', item_code: 'confidence', value: '95', hold_seconds: 0, enabled: true }) })
   it('执行服务已连接时说明保存用于下一轮判定', async () => { await mount({ executionStatus: 'CONNECTED' }); expect(document.body.textContent).toContain('保存后用于下一轮自动判定'); expect(document.body.textContent).toContain('不会立即触发动作') })
   it('执行服务不可用时展示服务端解释且不宣称会执行', async () => { await mount({ executionStatus: 'UNAVAILABLE', executionMessage: '执行服务暂不可用，请稍后查看运行状态。' }); expect(document.body.textContent).toContain('执行服务暂不可用，请稍后查看运行状态。'); expect(document.body.textContent).not.toContain('保存后用于下一轮自动判定') })
+
+  it.each([
+    ['港区夜间核实', '港区夜间核实'],
+    [null, '目标身份可关联']
+  ])('先写名称再选判定项：手写名称 %s 保留，未改动的自动名称随判定项更新', async (typed, expected) => {
+    const items = [...catalog, { code: 'identity', label: '目标身份关联', default_name: '目标身份可关联', kind: 'FIXED', fixed_value: '身份标识与当前目标明确关联', supports_hold: false }]
+    await mount({ catalog: items })
+    const name = document.querySelector('input[maxlength="40"]')
+    expect(name.value).toBe('识别置信度要求')
+    if (typed !== null) { name.value = typed; name.dispatchEvent(new Event('input')); await settle() }
+    document.querySelector('.el-select .el-input__inner').click(); await settle()
+    ;[...document.querySelectorAll('.el-select-dropdown__item')].find(item => item.textContent.trim() === '目标身份关联').click(); await settle()
+    expect(document.querySelector('.fixed-value').textContent).toContain('身份标识与当前目标明确关联')
+    expect(document.querySelector('input[maxlength="40"]').value).toBe(expected)
+  })
 })

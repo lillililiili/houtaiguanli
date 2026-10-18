@@ -104,6 +104,40 @@ class AuditPresentationApiTest {
                 .containsEntry("ip", "192.0.2.39").containsEntry("user_agent", "audit-integration-client");
     }
 
+    @Test void systemPrincipalsShowChineseNamesWhileTypedAccountsStayAsIs() throws Exception {
+        String token = BackendAccountFixture.session(jdbc, "ALL", null, null);
+        String verify = insert(null, "AUTO_VERIFY", "SYSTEM", "uav_event_verified", "uav_event", null);
+        String sms = insert(null, "AUTO_SMS", "SYSTEM", "auto_sms_delivered", "uav_event", null);
+        String unknown = insert(null, "AUTO_NEW_" + UUID.randomUUID().toString().substring(0, 6).toUpperCase(), "SYSTEM", "uav_event_verified", "uav_event", null);
+        String bare = insert(null, "SYSTEM", null, "device_maintenance_created", "device", null);
+        String typed = insert(null, "nosuch-" + UUID.randomUUID().toString().substring(0, 6), null, "login_failed", "user", null);
+        expect(token, verify, "系统自动核实", "系统");
+        expect(token, sms, "系统自动短信", "系统");
+        expect(token, unknown, "系统", "系统");
+        expect(token, bare, "系统", "系统");
+        String typedAccount = jdbc.queryForObject("select account from audit_log where audit_id=?", String.class, typed);
+        Integer automation = jdbc.queryForObject("select count(*) from app_user where user_id='automation-rule-runner'", Integer.class);
+        if (automation != null && automation > 0) {
+            String rule = insert("automation-rule-runner", "automation-rule", "ROLE-AUTOMATION", "disposal_direct_authorized", "disposal_authorization", null);
+            mvc.perform(get("/api/v1/audit-logs/" + rule).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.account_name").value("系统按规则自动执行"));
+        }
+        expect(token, typed, typedAccount, "未记录");
+        // 原代码仍在 account 字段，数据库不改写。
+        mvc.perform(get("/api/v1/audit-logs/" + verify).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.account").value("AUTO_VERIFY")).andExpect(jsonPath("$.data.role_code").value("SYSTEM"));
+        String csv = mvc.perform(get("/api/v1/audit-logs/export.csv").header("Authorization", "Bearer " + token)
+                        .param("action", "uav_event_verified"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(csv).contains("系统自动核实").doesNotContain("AUTO_VERIFY");
+    }
+
+    private void expect(String token, String id, String accountName, String roleName) throws Exception {
+        mvc.perform(get("/api/v1/audit-logs/" + id).header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.account_name").value(accountName))
+                .andExpect(jsonPath("$.data.role_name").value(roleName));
+    }
+
     private String insert(String user, String account, String role, String action, String object, String ip) {
         String id = UUID.randomUUID().toString();
         jdbc.update("insert into audit_log(audit_id,user_id,account,role_code,module_code,action,object_type,object_id,occurred_at,ip,result) values(?,?,?,?,'system',?,?,?,? ,?,'SUCCESS')",

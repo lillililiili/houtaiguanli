@@ -20,13 +20,26 @@ public class DeviceMaintenanceRepository {
     private static final String CASE_PRIORITY_ORDER = "CASE WHEN t.status='PENDING' AND t.workflow_version=2 THEN 0"
             + " WHEN t.status='PENDING' THEN 1 ELSE 2 END,";
 
+    /**
+     * 报表“处理结果”读处置单的办结记录（2026-10-10 流程）：已办结写办结说明及恢复依据；
+     * 历史已反馈写当时反馈；未办结写当前阶段；旧数据没有记录写“无处理记录”，不写“未知”。
+     */
+    static final String RESULT = "CASE"
+        + " WHEN t.workflow_state='COMPLETED' THEN '已办结'"
+        + "||COALESCE('：'||NULLIF(TRIM(t.handling_note),''),'')"
+        + "||CASE WHEN t.recovery_result='PASS' THEN '（设备已恢复）' ELSE '' END"
+        + " WHEN t.status='HANDLED' THEN COALESCE('历史反馈：'||NULLIF(TRIM(t.handling_note),''),'无处理记录')"
+        + " WHEN t.workflow_state='READY_TO_COMPLETE' THEN '设备已恢复，待确认办结'"
+        + " WHEN t.workflow_state='PROCESSING' THEN '处理中'||COALESCE('（'||NULLIF(TRIM(t.assigned_to_name),'')||'）','')"
+        + " WHEN t.workflow_state IN ('PENDING','PENDING_VERIFICATION') THEN '尚未办结'"
+        + " ELSE '无处理记录' END";
     public com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset reportDataset(
             com.uav.lowaltitude.platform.report.BusinessReportSource.Range range, AuthUser actor) {
         Map<String,Object> params = new HashMap<>();
         String sql = "SELECT t.task_id AS id,t.device_name AS label,t.reported_at AS at_ms,"
             + "t.workflow_state AS state,t.health_code AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,"
             + "CASE WHEN t.simulated=TRUE THEN 'mock' ELSE d.source_mode END AS source_mode,"
-            + "t.device_no AS related,t.handling_note AS result,t.reason AS note"
+            + "COALESCE(t.device_no,d.device_no) AS related," + RESULT + " AS result,t.reason AS note"
             + " FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"
             + " LEFT JOIN app_district rd ON rd.district_id=t.district_id" + scope(actor, params);
         return com.uav.lowaltitude.platform.report.ReportDatasetReader.window(sql, params, range, "t.reported_at");

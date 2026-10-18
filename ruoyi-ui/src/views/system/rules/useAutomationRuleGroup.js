@@ -2,6 +2,11 @@ import { onBeforeUnmount, ref } from 'vue'
 import { automationRuleApi } from '@/api/automationRules'
 import { isUncertainOutcome } from '@/services/apiClient'
 
+const VALIDATION_CONFLICTS = new Map([
+  ['RULE_NAME_EXISTS', '规则名称已存在，请换一个名称。'],
+  ['RULE_ITEM_EXISTS', '此判定项已配置，请编辑已有规则。']
+])
+
 export function useAutomationRuleGroup(initialCategory = 'verify') {
   const category = ref(initialCategory), group = ref(null), loading = ref(false), saving = ref(false), error = ref(''), actionError = ref(''), uncertain = ref(''), recoveryRevision = ref(0)
   let sequence = 0
@@ -28,6 +33,11 @@ export function useAutomationRuleGroup(initialCategory = 'verify') {
       return true
     }
     catch (exception) {
+      // 名称或判定项重复是确定的校验结果，服务端未保存任何内容：直接提示原因并保留弹窗内容（#7）。
+      if (VALIDATION_CONFLICTS.has(exception?.code)) {
+        actionError.value = exception.message || VALIDATION_CONFLICTS.get(exception.code)
+        return false
+      }
       const needsRefresh = isUncertainOutcome(exception) || exception?.status === 409 || exception?.code === 'VERSION_CONFLICT'
       if (needsRefresh) {
         uncertain.value = '保存结果需要确认，已重新读取服务器上的最新配置。请核对后再继续操作。'

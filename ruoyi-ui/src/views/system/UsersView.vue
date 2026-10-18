@@ -25,6 +25,31 @@ const total = ref(0)
 const selectedOrgId = ref(ALL_ORGS)
 const filters = reactive({ keyword: '', roleCode: '', user_type: '', status: '', page: 1, size: 20 })
 const userDialog = reactive({ visible: false, busy: false, mode: 'create', row: null, form: {} })
+// 逐格校验：漏填的必填项各自标红，提示里一次列出全部漏填项（#27）。
+const userErrors = reactive({})
+const userFieldLabels = { account: '登录账号', name: '姓名', org_id: '所属单位', role_code: '角色', temporary_password: '临时密码' }
+function userFormErrors(form, { create, backend }) {
+  const required = [...(create ? ['account'] : []), 'name', 'org_id', ...(backend ? [] : ['role_code']), ...(create ? ['temporary_password'] : [])]
+  const missing = Object.keys(userFieldLabels).filter(key => required.includes(key) && !String(form[key] ?? '').trim())
+  const errors = Object.fromEntries(missing.map(key => [key, `${['org_id', 'role_code'].includes(key) ? '请选择' : '请填写'}${userFieldLabels[key]}`]))
+  if (create && !errors.temporary_password) {
+    const invalid = passwordError(form.temporary_password, String(form.account || '').trim())
+    if (invalid) errors.temporary_password = invalid
+  }
+  return { errors, missing }
+}
+function validateUserForm() {
+  const { errors, missing } = userFormErrors(userDialog.form, { create: userDialog.mode === 'create', backend: backendForm.value })
+  Object.keys(userErrors).forEach(key => delete userErrors[key])
+  Object.assign(userErrors, errors)
+  if (missing.length) ElMessage.warning(`请填写以下必填项：${missing.map(key => userFieldLabels[key]).join('、')}。`)
+  else if (Object.keys(errors).length) ElMessage.warning(Object.values(errors)[0])
+  return !Object.keys(errors).length
+}
+// 改动某一格后去掉这一格的标红，其余漏填项保持标红直到补齐。
+watch(() => ({ ...userDialog.form }), (form, previous) => {
+  Object.keys(userErrors).forEach(key => { if (form[key] !== previous?.[key]) delete userErrors[key] })
+})
 const orgDialog = reactive({ visible: false, row: null, parent: null, mode: 'view' })
 const resetDialog = reactive({ visible: false, busy: false, row: null, password: '' })
 const districtDialogVisible = ref(false)
@@ -114,6 +139,7 @@ function resetFilters() { Object.assign(filters, { keyword: '', roleCode: '', us
 function selectOrg(data) { selectedOrgId.value = data.org_id; filters.page = 1; loadUsers() }
 
 function openUser(mode, row = null) {
+  Object.keys(userErrors).forEach(key => delete userErrors[key])
   userDialog.mode = mode
   userDialog.row = row
   userDialog.form = {
@@ -127,12 +153,7 @@ function openUser(mode, row = null) {
 }
 async function saveUser() {
   const form = userDialog.form
-  if (!form.name?.trim() || !form.org_id || (!backendForm.value && !form.role_code)) return ElMessage.warning('请完整填写姓名、所属单位和前台角色。')
-  if (userDialog.mode === 'create') {
-    if (!form.account?.trim() || !form.temporary_password) return ElMessage.warning('请填写登录账号和临时密码。')
-    const invalid = passwordError(form.temporary_password, form.account.trim())
-    if (invalid) return ElMessage.warning(invalid)
-  }
+  if (userDialog.busy || !validateUserForm()) return
   userDialog.busy = true
   try {
     if (userDialog.mode === 'create') {
@@ -179,9 +200,9 @@ async function resetPassword() {
 }
 async function removeUser(row) {
   try {
-    const { value } = await ElMessageBox.prompt(`账号“${row.account}”将被逻辑删除，历史审计仍会保留。`, '删除用户', { inputPlaceholder: '请输入删除原因', inputValidator: value => !!value.trim() || '删除原因为必填项', type: 'warning' })
+    const { value } = await ElMessageBox.prompt(`账号“${row.account}”将被删除，历史记录仍会保留。`, '删除用户', { inputPlaceholder: '请输入删除原因', inputValidator: value => !!value.trim() || '删除原因为必填项', type: 'warning' })
     await systemApi.deleteUser(row.user_id, row.version, value.trim())
-    ElMessage.success('用户已逻辑删除，相关会话已撤销。')
+    ElMessage.success('用户已删除，历史记录保留，相关会话已撤销。')
     await refreshAll()
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '删除失败。') }
 }
@@ -266,14 +287,14 @@ onMounted(refreshAll)
 
     <el-dialog v-model="userDialog.visible" :title="userDialog.mode === 'create' ? '新增用户' : `编辑资料 · ${userDialog.row?.name || ''}`" width="620px" destroy-on-close>
       <el-form label-position="top" class="dialog-grid">
-        <el-form-item v-if="userDialog.mode === 'create'" label="登录账号" required><el-input v-model="userDialog.form.account" maxlength="64" /></el-form-item>
-        <el-form-item label="姓名" required><el-input v-model="userDialog.form.name" maxlength="64" /></el-form-item>
+        <el-form-item v-if="userDialog.mode === 'create'" label="登录账号" required :error="userErrors.account"><el-input v-model="userDialog.form.account" maxlength="64" /></el-form-item>
+        <el-form-item label="姓名" required :error="userErrors.name"><el-input v-model="userDialog.form.name" maxlength="64" /></el-form-item>
         <el-form-item label="联系电话"><el-input v-model="userDialog.form.phone" maxlength="32" /></el-form-item>
-        <el-form-item label="所属单位" required><el-select v-model="userDialog.form.org_id" filterable><el-option v-for="org in organizations" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item>
+        <el-form-item label="所属单位" required :error="userErrors.org_id"><el-select v-model="userDialog.form.org_id" filterable><el-option v-for="org in organizations" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item>
         <el-form-item label="用户类型" required><el-radio-group v-model="userDialog.form.user_type" :disabled="isAdmin(userDialog.row)" @change="changeUserType"><el-radio label="FRONTEND">前台用户</el-radio><el-radio label="BACKEND">后台用户</el-radio></el-radio-group></el-form-item>
-        <el-form-item v-if="!backendForm" label="角色" required><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
+        <el-form-item v-if="!backendForm" label="角色" required :error="userErrors.role_code"><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
         <el-alert v-else class="dialog-grid__wide" title="后台用户拥有全部后台菜单和管理功能，无需配置业务角色。" type="info" :closable="false" />
-        <el-form-item v-if="userDialog.mode === 'create'" label="临时密码" required><el-input v-model="userDialog.form.temporary_password" type="password" show-password autocomplete="new-password" maxlength="32" /><small>6–32 位，包含大小写字母、数字和特殊字符。</small></el-form-item>
+        <el-form-item v-if="userDialog.mode === 'create'" label="临时密码" required :error="userErrors.temporary_password"><el-input v-model="userDialog.form.temporary_password" type="password" show-password autocomplete="new-password" maxlength="32" /><small>6–32 位，包含大小写字母、数字和特殊字符。</small></el-form-item>
         <el-form-item label="数据范围" required class="dialog-grid__wide">
           <el-radio-group v-model="userDialog.form.data_scope" :disabled="backendForm">
             <el-radio v-for="option in DATA_SCOPE_OPTIONS" :key="option.value" :label="option.value">{{ option.label }}</el-radio>

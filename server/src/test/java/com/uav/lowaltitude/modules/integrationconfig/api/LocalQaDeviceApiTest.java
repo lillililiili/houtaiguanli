@@ -137,6 +137,40 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         assertThat(rejected(positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("-90.5")))).contains("纬度必须在 -90 到 90 之间");
         assertThat(jdbc.queryForObject("select count(*) from ops_device",Long.class)).isEqualTo(before);
     }
+    @Test void sceneRadiusBecomesCircleCoverageSoTargetReachCanBeJudged() throws Exception {
+        var body=positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("37.46"));body.put("coverage_radius_m",2000);
+        var device=prepareScope(body,200).path("device");
+        String id=device.path("device_id").asText();
+        assertThat(device.path("coverage").path("kind").asText()).isEqualTo("CIRCLE");
+        assertThat(device.path("coverage").path("radius_m").decimalValue()).isEqualByComparingTo("2000");
+        assertThat(jdbc.queryForObject("select source_label from device_sensing_profile where device_id=?",String.class,id)).isEqualTo("模拟器场景配置");
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action='local_qa_device_prepare' and object_id=? and detail like '补上 QA 模拟设备作用半径%'",Long.class,id)).isEqualTo(1);
+        // Another scene with another radius, or a range someone configured in 设备管理, is never overwritten.
+        body.put("coverage_radius_m",500);prepareScope(body,200);
+        assertThat(jdbc.queryForObject("select radius_m from device_sensing_profile where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("2000");
+        jdbc.update("update device_sensing_profile set radius_m=1500,source_label='设备管理' where device_id=?",id);
+        body.put("coverage_radius_m",3000);prepareScope(body,200);
+        assertThat(jdbc.queryForObject("select radius_m from device_sensing_profile where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("1500");
+    }
+    @Test void alreadyRegisteredDeviceWithoutCoverageGetsTheSceneRadiusOnNextStart() throws Exception {
+        String id=prepareScope(scope(),200).path("device").path("device_id").asText();
+        assertThat(jdbc.queryForObject("select count(*) from device_sensing_profile where device_id=?",Long.class,id)).isZero();
+        var body=new HashMap<String,Object>(scope());body.put("coverage_radius_m",new java.math.BigDecimal("1200.5"));
+        assertThat(prepareScope(body,200).path("device").path("device_id").asText()).isEqualTo(id);
+        assertThat(jdbc.queryForObject("select radius_m from device_sensing_profile where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("1200.5");
+        // A restored (previously deleted) device keeps the range it already had.
+        jdbc.update("update ops_device set enabled=false,deleted_at=? where device_id=?",System.currentTimeMillis(),id);
+        body.put("coverage_radius_m",900);prepareScope(body,200);
+        assertThat(jdbc.queryForObject("select radius_m from device_sensing_profile where device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("1200.5");
+    }
+    @Test void invalidRadiusIsRejectedBeforeAnythingIsRegistered() throws Exception {
+        long before=jdbc.queryForObject("select count(*) from ops_device",Long.class);
+        for(Object radius:List.of(0,-5,100001)){
+            var body=new HashMap<String,Object>(scope());body.put("coverage_radius_m",radius);
+            assertThat(rejected(body)).contains("作用半径");
+        }
+        assertThat(jdbc.queryForObject("select count(*) from ops_device",Long.class)).isEqualTo(before);
+    }
     Map<String,String> scope() {
         String org=jdbc.queryForObject("select org_id from app_org where enabled order by org_id fetch first 1 rows only",String.class);
         String district=jdbc.queryForObject("select district_id from app_district where enabled order by district_id fetch first 1 rows only",String.class);

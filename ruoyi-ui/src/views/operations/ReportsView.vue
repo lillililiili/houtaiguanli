@@ -7,7 +7,7 @@ import MetricCards from '@/components/MetricCards.vue';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import ReportChart from '@/components/ReportChart.vue';
 import ReportDetailTable from '@/components/ReportDetailTable.vue';
-import { businessReportApi, businessReportFilename, createLatestRequestGuard, reportPreviewMatchesScope } from '@/api/reports.js';
+import { businessReportApi, businessReportFilename, createLatestRequestGuard, reportLabel, reportPreviewMatchesScope } from '@/api/reports.js';
 import { isFuturePickerDate, normalizeAnchor, pickerValue, shanghaiToday } from '@/utils/reportPeriods.js';
 
 const categories = [
@@ -54,7 +54,7 @@ const metrics = computed(() => {
   return result;
 });
 const palette = ['#1677ff', '#d93d4c', '#7457d6', '#16875b', '#c57813'];
-function label(value, section, field) { return preview.value?.labels?.[`${section}.${field}.${value}`] || preview.value?.labels?.[value] || value || '未知'; }
+function label(value, section, field) { return reportLabel(preview.value?.labels, section, field, value); }
 function generated(value) {
   return value ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'medium', timeStyle: 'medium', hour12: false }).format(new Date(value)) : '—';
 }

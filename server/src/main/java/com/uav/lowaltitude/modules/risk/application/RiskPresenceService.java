@@ -113,9 +113,9 @@ public class RiskPresenceService {
             long occurredAt=row.occurredAt()==null?originalAt:row.occurredAt().toInstant().toEpochMilli();
             // 发现风险的这一帧仍有效时即可证明当前存在；解除仍须严格晚于原评估和接收时间。
             if(observed<occurredAt||observed>now||received<observed||received>now||now-observed>seconds*1000L||received-observed>seconds*1000L)
-                return blocked("没有风险发生后时效内的新实测位置；停报、迟到或未来时间不能确认解除");
+                return blocked(NO_NEW_POSITION+howToEnd(row.state(),realtimeSimulation));
             if(!"MEAS".equals(p.kind())||!p.sameLocation()||p.peers()!=0||!p.observedAt().equals(p.latestAt())||!p.determined()||positionUnknown(p.unknownFields()))
-                return blocked("最新位置缺少一致可靠实测依据，预测、矛盾或失联不能确认解除");
+                return blocked(UNRELIABLE_POSITION+howToEnd(row.state(),realtimeSimulation));
             boolean geometryMatches=geometryMode(row.sourceMode(),p.planMode())&&geometryMode(row.sourceMode(),p.routeMode());
             if(realtimeSimulation && !geometryMatches) geometryMatches=risks.localSimulatorGeometry(row);
             if(!p.sourceScopeValid()||!row.sourceMode().equals(p.targetMode())||!row.sourceMode().equals(p.sourceMode())
@@ -140,6 +140,23 @@ public class RiskPresenceService {
             String reason=switch(status){case "CLEARED"->"新的有效实测位置已明确离开原风险范围";case "CURRENT"->"新的有效实测位置仍在原风险范围内";default->"位置精度范围与风险边界重叠，当前影响待确认";};
             return new Decision(new Presence(status,reason,observed),p,boundary,seconds,fact.ruleSetVersionId(),fresh.ruleSetVersionId());
         } catch(ApiException invalid) { return blocked("风险规则或观测有效策略不可用，当前影响待确认"); }
+    }
+    /*
+     * 鸟群、异物飞走或模拟停发后最常见的两种“待确认”说明（问题清单 #31）：给值班员看的通俗短句，并按代码里
+     * 真正能结束风险的方式写明谁来结束。解除规则不变：停报、失联、预测位置都不能判为已离开。
+     */
+    static final String NO_NEW_POSITION="目标已没有新的位置上报（可能已停报或飞出探测范围），暂时不能确认已离开风险范围。";
+    static final String UNRELIABLE_POSITION="目标最新位置不是可靠的实测位置（可能是预测位置、多个来源不一致或已失去跟踪），暂时不能确认已离开风险范围。";
+    static String howToEnd(String state,boolean simulation) {
+        // 自动解除只来自 recordC04Clearances：新的有效实测位置明确在原风险范围外；实时模拟不生成解除事实。
+        String automatic=simulation?"模拟数据不会自动解除。":"设备再次测到目标、且位置明确在风险范围外时，系统会自动解除。";
+        // 人工结束只有核验结论“排除”（RiskState.next）：待核验点“人工核验”，待通知点“改判为排除”；已通知后不能再改判。
+        String manual=switch(state==null?"":state){
+            case "PENDING_VERIFICATION"->"如确认已不构成风险，值班员可在风险详情点“人工核验”，选择排除。";
+            case "PENDING_NOTIFICATION"->"如确认已不构成风险，值班员可在风险详情点“改判为排除”。";
+            default->"风险已通知上级，不能再改判排除，历史和通知记录保留。";
+        };
+        return automatic+manual;
     }
     private boolean positionUnknown(String text) {
         try {

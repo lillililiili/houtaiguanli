@@ -34,10 +34,10 @@ public class AuditQueryService {
         validateRange(filter);
         String account = like(filter.account());
         List<AuditResponse> items = mapper.query(filter.from(), filter.to(), account, menu(filter.module()),
-                clean(filter.action()), clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()),
+                clean(filter.action()), clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()), filter.includeAutomatic(),
                 page.size(), (page.page() - 1) * page.size()).stream().map(AuditQueryService::toResponse).toList();
         long total = mapper.count(filter.from(), filter.to(), account, menu(filter.module()), clean(filter.action()),
-                clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()));
+                clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()), filter.includeAutomatic());
         return new PageResponse<>(items, page.page(), page.size(), total);
     }
 
@@ -54,13 +54,13 @@ public class AuditQueryService {
         validateRange(filter);
         String account = like(filter.account());
         long total = mapper.count(filter.from(), filter.to(), account, menu(filter.module()), clean(filter.action()),
-                clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()));
+                clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()), filter.includeAutomatic());
         if (total > EXPORT_LIMIT) {
             throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "EXPORT_LIMIT_EXCEEDED",
                     "筛选结果超过50000条，请缩小时间或筛选范围");
         }
         List<AuditResponse> rows = mapper.query(filter.from(), filter.to(), account, menu(filter.module()),
-                clean(filter.action()), clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()),
+                clean(filter.action()), clean(filter.result()), clean(filter.objectType()), clean(filter.objectId()), filter.includeAutomatic(),
                 EXPORT_LIMIT, 0).stream().map(AuditQueryService::toResponse).toList();
         AuthUser actor = AuthContext.require();
         auditService.record(actor.userId(), actor.account(), actor.roleCode(), "audit", "audit_export_requested",
@@ -79,10 +79,15 @@ public class AuditQueryService {
                 log.getModuleCode(), log.getAction(), log.getObjectType(), log.getObjectId(), log.getDetail(),
                 log.getOccurredAt(), log.getIp(), log.getResult(), log.getUserAgent(),
                 AuditLabels.module(log.getMenuCode()), AuditLabels.action(log.getAction()),
-                roleName(log), log.getRoleSource(), log.getDisplayRoleCode(), log.getMenuCode());
+                roleName(log), log.getRoleSource(), log.getDisplayRoleCode(), log.getMenuCode(),
+                AuditLabels.result(log.getResult()), AuditLabels.objectType(log.getObjectType()),
+                AuditLabels.automatic(log.getAction()),
+                AuditLabels.accountName(log.getUserId(), log.getAccount(), log.getRoleCode()));
     }
 
     private static String roleName(AuditLog log) {
+        // 系统自动记录没有登录用户：角色写“系统”，不显示 SYSTEM 这类代码（问题清单 #20）。
+        if (AuditLabels.systemPrincipal(log.getUserId(), log.getAccount(), log.getRoleCode())) return "系统";
         String name = log.getRoleName();
         if (name == null || name.isBlank()) name = AuditLabels.role(log.getDisplayRoleCode());
         if (name.isBlank()) return "未记录";
@@ -103,14 +108,19 @@ public class AuditQueryService {
         return clean == null || clean.isEmpty() ? null : "%" + clean.toLowerCase(Locale.ROOT) + "%";
     }
 
+    /**
+     * includeAutomatic=false（默认）时列表、计数与导出都不含 AuditLabels.AUTOMATIC_ACTIONS 这类系统自动高频记录；
+     * 明确按动作筛选时照常返回。只影响查询，写入不变。
+     */
     public record AuditFilter(Long from, Long to, String account, String module, String action,
-            String result, String objectType, String objectId) {
+            String result, String objectType, String objectId, boolean includeAutomatic) {
     }
 
     public record AuditResponse(
             String auditId, String userId, String account, String roleCode, String moduleCode,
             String action, String objectType, String objectId, String detail, long occurredAt,
             String ip, String result, String userAgent, String moduleName, String actionName,
-            String roleName, String roleSource, String displayRoleCode, String menuCode) {
+            String roleName, String roleSource, String displayRoleCode, String menuCode,
+            String resultName, String objectTypeName, boolean automatic, String accountName) {
     }
 }

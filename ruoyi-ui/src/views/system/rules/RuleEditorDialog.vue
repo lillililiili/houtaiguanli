@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, watch } from 'vue'
-import { ruleDraft } from './ruleModel'
+import { autoRuleName, ruleDraft } from './ruleModel'
 
 const props = defineProps({ modelValue: Boolean, rule: { type: Object, default: null }, catalog: { type: Array, default: () => [] }, category: { type: String, default: '' }, categoryLabel: { type: String, required: true }, executionStatus: { type: String, default: 'UNAVAILABLE' }, executionMessage: { type: String, default: '' }, busy: Boolean, serverError: { type: String, default: '' } })
 const emit = defineEmits(['update:modelValue', 'save'])
@@ -11,12 +11,15 @@ const saveNote = computed(() => props.executionStatus !== 'CONNECTED'
   ? props.executionMessage || '当前执行服务未连接，保存仅更新配置，不会触发运行时动作。'
   : '保存后用于下一轮自动判定；本次保存不会立即触发动作。')
 
-function reset() { Object.assign(form, ruleDraft(props.rule, availableCatalog.value)); error.message = '' }
+// 记住上一次由判定项自动带出的名称：只有名称为空或仍是自动名称时，切换判定项才替换名称（#5）。
+let autoName = ''
+function reset() { Object.assign(form, ruleDraft(props.rule, availableCatalog.value)); autoName = props.rule ? '' : form.name; error.message = '' }
 watch(() => props.modelValue, visible => { if (visible) reset() }, { immediate: true })
 function selectItem(code) {
   const item = props.catalog.find(entry => entry.code === code)
   if (!item) return
-  form.name = item.default_name || ''
+  const name = autoRuleName(form.name, autoName, item)
+  if (name !== form.name) { form.name = name; autoName = name }
   form.value = item.kind === 'FIXED' ? String(item.fixed_value ?? '') : ''
   if (!item.supports_hold) form.hold_seconds = 0
 }

@@ -241,7 +241,73 @@ final class AuditLabels {
             Map.entry("device_delete", "删除设备"),
             Map.entry("device_restore", "恢复模拟设备"),
             Map.entry("uav_advisory_recorded", "登记无人机劝离记录"),
-            Map.entry("uav_no_counter_decided", "确认当前无风险并决定不反制"));
+            Map.entry("uav_no_counter_decided", "确认当前无风险并决定不反制"),
+            // 2026-10-18 问题清单 #20：自动核验、模拟器接入、自动通知等此前未配中文的动作码。
+            Map.entry("device_maintenance_created", "自动生成设备异常处置单"),
+            Map.entry("device_maintenance_auto_check", "自动核验设备恢复情况"),
+            Map.entry("device_maintenance_auto_recovered", "自动核验：设备已恢复"),
+            Map.entry("device_maintenance_recovery_invalidated", "设备再次异常，撤销待确认办结"),
+            Map.entry("device_maintenance_confirm_complete", "确认办结设备异常处置单"),
+            Map.entry("device_incident_auto_recovered", "设备异常自动恢复"),
+            Map.entry("mqtt_device_register", "登记消息接入设备"),
+            Map.entry("mqtt_device_update", "修改消息接入设备"),
+            Map.entry("mqtt_device_enable", "启用消息接入设备"),
+            Map.entry("mqtt_device_disable", "停用消息接入设备"),
+            Map.entry("integration_source_disable", "停用接入来源"),
+            Map.entry("auto_sms_delivered", "自动短信已送达"),
+            Map.entry("auto_sms_failed", "自动短信发送失败"),
+            Map.entry("auto_sms_unknown", "自动短信结果待确认"),
+            Map.entry("auto_sms_recheck_requested", "申请重新检查自动短信"),
+            Map.entry("auto_voice_played", "自动电话已播放"),
+            Map.entry("auto_voice_failed", "自动电话拨打失败"),
+            Map.entry("auto_voice_unknown", "自动电话结果待确认"),
+            Map.entry("notification_departure_recorded", "记录通知后飞离情况"),
+            Map.entry("handoff_followup_created", "建立现场处置结束待办"),
+            Map.entry("handoff_notification_requested", "申请通知上级"),
+            Map.entry("handoff_notification_decided", "决定是否通知上级"),
+            Map.entry("handoff_notification_result", "登记通知上级结果"),
+            Map.entry("eo_auto_paused", "自动光电跟踪暂停"),
+            Map.entry("eo_auto_resumed", "自动光电跟踪恢复"),
+            Map.entry("qa_video_register", "登记测试视频"),
+            Map.entry("qa_video_unregister", "注销测试视频"),
+            Map.entry("device_created", "登记设备（历史编码）"),
+            Map.entry("device_updated", "修改设备（历史编码）"),
+            Map.entry("device_enabled", "启用设备（历史编码）"),
+            Map.entry("device_disabled", "停用设备（历史编码）"),
+            Map.entry("commission_task_created", "创建调测任务（历史编码）"),
+            Map.entry("commission_task_cancelled", "取消调测任务（历史编码）"),
+            // 模拟器正常停止时声明模拟设备计划下线（另一分支新增）。
+            Map.entry("device_planned_offline", "模拟设备计划下线"));
+
+    /**
+     * 系统自动产生的高频记录（模拟器每秒的观测、设备状态上报，后台每 5 秒的自动核验等）。
+     * 审计日志列表默认不显示这些，打开“显示系统自动记录”或按动作明确筛选时照常显示；写入与导出完整性不变。
+     */
+    static final java.util.List<String> AUTOMATIC_ACTIONS = java.util.List.of(
+            "local_normalized_observation", "local_qa_device_status", "local_weather_observation",
+            "weather_simulator_observation", "local_interface_input", "local_interface_receipt",
+            "simulator_notification_receipt", "simulator_receipt_projection", "flight_execution_fact_received",
+            "device_maintenance_auto_check", "device_maintenance_auto_recovered", "device_maintenance_recovery_invalidated",
+            "device_incident_auto_recovered", "eo_auto_paused", "eo_auto_resumed");
+
+    private static final Map<String, String> OBJECT_TYPES = Map.ofEntries(
+            Map.entry("user", "用户"), Map.entry("role", "角色"), Map.entry("organization", "单位"),
+            Map.entry("district", "区域"), Map.entry("device", "设备"), Map.entry("device_command", "设备指令"),
+            Map.entry("device_incident", "设备异常"), Map.entry("device_maintenance_task", "设备异常处置单"),
+            Map.entry("commission_task", "调测任务"), Map.entry("mqtt", "消息接入"), Map.entry("integration_source", "接入来源"),
+            Map.entry("weather_sensor", "天气传感器"), Map.entry("uav_event", "无人机事件"), Map.entry("alarm", "告警"),
+            Map.entry("flight_risk", "飞行风险"), Map.entry("handoff", "业务交接"), Map.entry("disposal_authorization", "处置授权"),
+            Map.entry("disposal_emergency_stop", "急停"), Map.entry("eo_dispatch_request", "光电调度"),
+            Map.entry("eo_tracking_task", "光电跟踪"), Map.entry("target", "目标"), Map.entry("evidence_file", "证据文件"),
+            Map.entry("evidence_ledger", "证据台账"), Map.entry("airspace", "空域"), Map.entry("airport", "机场"),
+            Map.entry("map_package", "离线地图包"), Map.entry("advisory_voice_recording", "电话通知录音"),
+            Map.entry("automation_rule_group", "自动化规则"), Map.entry("rule_set", "规则集"),
+            Map.entry("legality_evaluation", "合法性研判"), Map.entry("response_plan", "处置预案"),
+            Map.entry("business_directory", "单位联系人"), Map.entry("simulation_plan_batch", "模拟任务批次"),
+            Map.entry("local_interface", "本地模拟接口"), Map.entry("simulator_message", "模拟器消息"),
+            Map.entry("flight_verification", "任务核验"), Map.entry("flight_execution_fact", "飞行执行事实"),
+            Map.entry("external_interface", "外部接口"), Map.entry("fusion_config", "融合参数"),
+            Map.entry("stats_report", "运行报表"), Map.entry("audit", "审计日志"), Map.entry("request", "接口请求"));
 
     private static final Map<String, String> METHODS = Map.of(
             "GET", "查询", "POST", "提交", "PUT", "更新", "PATCH", "更新", "DELETE", "删除");
@@ -294,31 +360,94 @@ final class AuditLabels {
         if (roleCode == null || roleCode.isBlank()) return "";
         if ("ROLE-ADMIN".equals(roleCode)) return "超级管理员";
         if ("ROLE-BACKEND".equals(roleCode)) return "后台用户";
+        if (SYSTEM_ROLE.equalsIgnoreCase(roleCode)) return "系统";
         return roleCode;
     }
 
-    static String module(String moduleCode) {
-        if (moduleCode == null || moduleCode.isBlank()) return "";
-        return MODULES.getOrDefault(moduleCode, moduleCode);
+    /** 系统自动记录写入的角色码（没有登录用户）。 */
+    static final String SYSTEM_ROLE = "SYSTEM";
+
+    /**
+     * 系统自动记录的执行主体（没有用户 ID，账号写的是主体代码）在审计列表里的中文名（问题清单 #20）。
+     * 原代码保留在 account 字段和详情里，只是不直接给操作员看。
+     */
+    private static final Map<String, String> SYSTEM_PRINCIPALS = Map.ofEntries(
+            Map.entry("SYSTEM", "系统"),
+            Map.entry("AUTO_VERIFY", "系统自动核实"),
+            Map.entry("AUTO_SMS", "系统自动短信"),
+            Map.entry("AUTO_VOICE", "系统自动电话"),
+            Map.entry("AUTO_PUNISHMENT", "系统自动移送处罚"),
+            Map.entry("AUTO_RESEND", "系统自动重发"),
+            Map.entry("AUTO_FOLLOWUP", "系统自动跟进"),
+            Map.entry("DEPARTURE_WATCH", "系统飞离观察"));
+
+    /** 后台自动规则的执行身份（与 AutomationPrincipal.USER_ID 一致）：有用户行，账号是英文代码。 */
+    static final String AUTOMATION_USER_ID = "automation-rule-runner";
+
+    /**
+     * 没有用户 ID、且角色是 SYSTEM 或账号是已知系统主体的记录才算系统主体；
+     * 登录失败等写着用户输入账号的记录（同样没有用户 ID、没有角色）照原样显示，不冒充“系统”。
+     */
+    static boolean systemPrincipal(String userId, String account, String roleCode) {
+        if (userId != null && !userId.isBlank()) return false;
+        if (roleCode != null && SYSTEM_ROLE.equalsIgnoreCase(roleCode.trim())) return true;
+        return account != null && SYSTEM_PRINCIPALS.containsKey(account.trim().toUpperCase(Locale.ROOT));
     }
 
+    /** 审计列表“账号”列的显示名：系统主体写中文，未知系统主体兜底“系统”；普通账号原样。 */
+    static String accountName(String userId, String account, String roleCode) {
+        if (AUTOMATION_USER_ID.equals(userId)) return "系统按规则自动执行";
+        if (!systemPrincipal(userId, account, roleCode)) return account;
+        String key = account == null ? "" : account.trim().toUpperCase(Locale.ROOT);
+        return SYSTEM_PRINCIPALS.getOrDefault(key, "系统");
+    }
+
+    static boolean hasModuleLabel(String moduleCode) { return moduleCode != null && MODULES.containsKey(moduleCode); }
+
+    static String module(String moduleCode) {
+        if (moduleCode == null || moduleCode.isBlank()) return "";
+        String mapped = MODULES.get(moduleCode);
+        return mapped != null ? mapped : readable(moduleCode, "其他");
+    }
+
+    /** 字典里有没有这个动作码（覆盖测试用：兜底“其他操作”不算有中文）。 */
+    static boolean hasActionLabel(String action) { return action != null && ACTIONS.containsKey(action); }
+
+    static boolean automatic(String action) { return action != null && AUTOMATIC_ACTIONS.contains(action); }
+
+    /** 未配置中文的码一律写“其他操作”，原代码在详情里保留（问题清单 #20），不把英文码直接显示给操作员。 */
     static String action(String action) {
         if (action == null || action.isBlank()) return "";
         String mapped = ACTIONS.get(action);
         if (mapped != null) return mapped;
         String[] parts = action.split("\\s+", 2);
-        if (parts.length != 2) return action;
+        if (parts.length != 2) return readable(action, "其他操作");
         String method = METHODS.get(parts[0].toUpperCase(Locale.ROOT));
-        if (method == null) return action;
+        if (method == null) return readable(action, "其他操作");
         for (Map.Entry<String, String> path : PATHS.entrySet()) {
             if (parts[1].contains(path.getKey())) return method + path.getValue();
         }
         return method + "接口";
     }
 
+    /** 历史写法 FAILURE 与 FAILED 都是失败（自动短信、电话写的是 FAILED）。 */
+    static final java.util.List<String> FAILURE_RESULTS = java.util.List.of("FAILURE", "FAILED");
+
     static String result(String result) {
+        if (result == null || result.isBlank()) return "";
         if ("SUCCESS".equals(result)) return "成功";
-        if ("FAILURE".equals(result)) return "失败";
-        return result == null ? "" : result;
+        if (FAILURE_RESULTS.contains(result)) return "失败";
+        if ("DENIED".equals(result)) return "已拒绝";
+        return readable(result, "其他结果");
+    }
+
+    static String objectType(String objectType) {
+        if (objectType == null || objectType.isBlank()) return "";
+        String mapped = OBJECT_TYPES.get(objectType);
+        return mapped != null ? mapped : readable(objectType, "其他对象");
+    }
+
+    private static String readable(String code, String fallback) {
+        return code.codePoints().anyMatch(c -> Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN) ? code : fallback;
     }
 }
