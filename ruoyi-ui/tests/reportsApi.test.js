@@ -35,3 +35,17 @@ describe('报表接口适配', () => {
     expect(guard.isCurrent(current)).toBe(true)
   })
 })
+
+describe('报表中文兜底（问题清单 #18/#20）', async () => {
+  const { reportLabel } = await import('@/api/reports')
+  it('按字典翻译，未配置的内部代码显示“其他”，中文与名称原样', () => {
+    const labels = { UAV_PUNISHMENT: '处罚移送', 'maintenance.state.COMPLETED': '已办结', COMPLETED: '已完成' }
+    expect(reportLabel(labels, 'handoffs', 'kind', 'UAV_PUNISHMENT')).toBe('处罚移送')
+    expect(reportLabel(labels, 'maintenance', 'state', 'COMPLETED')).toBe('已办结')
+    expect(reportLabel(labels, 'authorizations', 'state', 'COMPLETED')).toBe('已完成')
+    expect(reportLabel(labels, 'authorizations', 'result', 'SOME_NEW_CODE')).toBe('其他')
+    expect(reportLabel(labels, 'devices', 'kind', 'TDOA')).toBe('TDOA')
+    expect(reportLabel(labels, 'events', 'state', '待发送移送')).toBe('待发送移送')
+    expect(reportLabel(labels, 'events', 'state', '')).toBe('未知')
+  })
+})

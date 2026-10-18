@@ -34,7 +34,7 @@ public class DeviceRepository {
     public com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset reportDataset() {
         Map<String,Object> params = readParameters();
         String sql = "SELECT d.device_id AS id,d.name AS label,CAST(NULL AS BIGINT) AS at_ms,"
-            + EFFECTIVE_CONNECTIVITY + " AS state,d.device_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,d.region_name AS region,"
+            + EFFECTIVE_CONNECTIVITY + " AS state,COALESCE(NULLIF(d.device_type_name,''),d.device_type_code) AS kind,CAST(NULL AS VARCHAR) AS severity,d.region_name AS region,"
             + "CASE WHEN d.simulated=TRUE AND d.source_mode='live' THEN 'mock' ELSE d.source_mode END AS source_mode,"
             + "d.device_no AS related,s.health_code AS result,CAST(NULL AS VARCHAR) AS note"
             + " FROM ops_device d LEFT JOIN ops_device_state s ON s.device_id=d.device_id WHERE d.deleted_at IS NULL" + deviceScope(params);

@@ -8,6 +8,7 @@ import java.util.Map;
 import static java.util.Map.entry;
 import com.uav.lowaltitude.platform.report.BusinessReportSource.Row;
 import com.uav.lowaltitude.platform.export.CsvLabels;
+import com.uav.lowaltitude.platform.report.DeviceDisplayNo;
 
 public final class ReportLabels {
     private ReportLabels() { }
@@ -36,14 +37,44 @@ public final class ReportLabels {
         entry("PLANNED","已安排"), entry("PENDING_EXECUTION","待执行"), entry("IN_PROGRESS","执行中"),
         entry("ACTIVE","进行中"), entry("FINISHED","已结束"), entry("mock","模拟数据"),
         entry("replay","回放数据"), entry("live","真实数据"), entry("mixed","混合数据"),
-        entry("simulated","模拟验收"), entry("unknown","暂无数据"));
-    public static String text(String value) { return value == null || value.isBlank() ? "未知" : LABELS.getOrDefault(value,value); }
+        entry("simulated","模拟验收"), entry("unknown","暂无数据"),
+        // 设备类型代码兜底（报表优先用台账 device_type_name，与设备管理页同一字段）。
+        entry("EO","光电"), entry("eo","光电"), entry("countermeasure","反制设备"), entry("counter","四通道反制设备"),
+        entry("weather","气象设备"), entry("weather_sensor","天气传感器"), entry("RADAR","雷达"),
+        // 交接类型与设备执行结果（问题清单 #20：报表不再出现 UAV_PUNISHMENT、COUNTERMEASURE_SET_OK 等英文码）。
+        entry("UAV_PUNISHMENT","处罚移送"), entry("RISK_NOTICE","风险通报"), entry("DEVICE_INCIDENT","设备异常"),
+        entry("COUNTERMEASURE_SET_OK","设备已确认开启"), entry("COUNTERMEASURE_TCP_OK","设备连接正常"),
+        entry("COUNTERMEASURE_QUERY_PASSED","设备状态查询通过"), entry("COUNTERMEASURE_STATE_MISMATCH","设备状态与指令不一致"),
+        entry("COUNTERMEASURE_OUTCOME_UNKNOWN","设备执行结果待确认"), entry("COUNTERMEASURE_COMPLETED","反制已完成"),
+        entry("JAMMING_COMPLETED","干扰已完成"), entry("DEVICE_SUCCEEDED","设备执行成功"), entry("DEVICE_FAILED","设备执行失败"),
+        entry("DEVICE_TIMED_OUT","设备回执超时"), entry("DEVICE_TIMEOUT","设备回执超时"), entry("DEVICE_ALL_OFF_ISSUED","已下发全部关闭"),
+        entry("DEVICE_OFFLINE","设备离线"), entry("DEVICE_BUSY","设备忙"), entry("DEVICE_NOT_BOUND","设备未登记控制连接"),
+        entry("ADAPTER_TIMEOUT","设备回执超时"), entry("ADAPTER_UNAVAILABLE","设备通道不可用"), entry("ADAPTER_RETRY_EXHAUSTED","重试后仍未成功"),
+        entry("COMMAND_FAILED","指令执行失败"), entry("COMMAND_EXPIRED","指令已过期"), entry("MANUAL_RESULT","人工登记结果"),
+        entry("LINGYUN_CONTROL_SUCCEEDED","设备执行成功"), entry("LINGYUN_CONTROL_FAILED","设备执行失败"),
+        entry("LINGYUN_CONTROL_TIMED_OUT","设备回执超时"), entry("LINGYUN_CONTROL_QUEUED","指令排队中"),
+        entry("LINGYUN_CONTROL_LATE_RESPONSE","设备回执迟到"), entry("PENDING_NOTIFICATION_DECISION","待决定通知"),
+        entry("PASS","通过"), entry("FAIL","未通过"), entry("PROCESSING","处理中"),
+        entry("PLANNED_OFFLINE","计划下线（模拟器已停止）"));
+    /** 形如 FOO_BAR / foo_bar 的内部代码；未配中文时不直接显示（显示“其他”），区域、名称等中文值不受影响。 */
+    private static final java.util.regex.Pattern CODE = java.util.regex.Pattern.compile("^(?:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+)$");
+    public static String text(String value) {
+        if (value == null || value.isBlank()) return "未知";
+        String label = LABELS.get(value);
+        if (label != null) return label;
+        return CODE.matcher(value).matches() ? "其他" : value;
+    }
     public static String text(String section, String field, String value) {
         if (value==null || value.isBlank()) return "未知";
         if (field.equals("severity")) return CsvLabels.severity(value);
         if (section.equals("alarms") || section.equals("events")) {
             if (field.equals("state")) return CsvLabels.uavEventState(value);
             if (field.equals("kind")) return CsvLabels.alarmType(value);
+        }
+        // 设备异常处置单的办理阶段与“设备异常处理”工作台同一写法（docs/device-maintenance-workflow.md）。
+        if (section.equals("maintenance") && field.equals("state")) {
+            if (value.equals("COMPLETED")) return "已办结";
+            if (value.equals("PENDING_VERIFICATION")) return "历史流程自动核验中";
         }
         if (section.equals("risks")) {
             if (field.equals("state")) return CsvLabels.riskState(value);
@@ -78,10 +109,13 @@ public final class ReportLabels {
             case "occurred_at" -> time(row.occurredAt());
             case "state" -> text(section,field,row.state()); case "kind" -> text(section,field,row.kind()); case "severity" -> text(section,field,row.severity());
             case "result" -> text(row.result()); case "source_mode" -> text(row.sourceMode());
-            case "region" -> text(row.region()); case "related" -> row.related() == null ? "—" : row.related();
+            case "region" -> text(row.region());
+            case "related" -> row.related() == null ? "—" : deviceSection(section) ? DeviceDisplayNo.format(row.related()) : row.related();
             case "note" -> row.note() == null ? "—" : row.note(); default -> "—";
         };
     }
+    /** 设备快照与运维待办的“设备编号”按设备管理页的显示编号写，原始编号只用于关联。 */
+    static boolean deviceSection(String section) { return section.equals("devices") || section.equals("maintenance"); }
     public static Map<String,String> dictionary() {
         Map<String,String> labels=new java.util.LinkedHashMap<>(LABELS);
         var codes=new java.util.LinkedHashSet<>(LABELS.keySet());

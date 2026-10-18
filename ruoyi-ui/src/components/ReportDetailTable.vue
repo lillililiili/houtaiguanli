@@ -1,8 +1,8 @@
 <script setup>
 import { computed, ref, watch, onBeforeUnmount } from 'vue';
-import { businessReportApi, createLatestRequestGuard, reportRowMatchesScope } from '@/api/reports.js';
+import { businessReportApi, createLatestRequestGuard, reportLabel, reportRowMatchesScope } from '@/api/reports.js';
 import ErrorAlert from '@/components/ErrorAlert.vue';
-import { formatBusinessNo } from '@/utils/format.js';
+import { formatBusinessNo, formatDeviceNo } from '@/utils/format.js';
 const props = defineProps({
   params: { type: Object, required: true }, section: { type: Object, required: true },
   columns: { type: Array, required: true }, labels: { type: Object, required: true }, refresh: { type: Number, default: 0 }
@@ -13,10 +13,12 @@ const queryKey = computed(() => JSON.stringify([props.params, props.section.key,
 function cell(row, field) {
   const value = row[field];
   if (field === 'label' && ['targets', 'alarms', 'risks', 'events'].includes(props.section.key)) return formatBusinessNo(value) || row.id;
+  // 设备编号与设备管理页同一显示写法（导出由后端 DeviceDisplayNo 按同一算法生成）。
+  if (field === 'related' && ['devices', 'maintenance'].includes(props.section.key)) return formatDeviceNo(value);
   if (field === 'occurred_at') return value == null ? '—' : new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium', hour12: false
   }).format(new Date(value));
-  if (['state', 'kind', 'severity', 'result', 'source_mode'].includes(field)) return props.labels[`${props.section.key}.${field}.${value}`] || props.labels[value] || value || '未知';
+  if (['state', 'kind', 'severity', 'result', 'source_mode'].includes(field)) return reportLabel(props.labels, props.section.key, field, value);
   return value || (field === 'label' ? row.id : '—');
 }
 async function load() {

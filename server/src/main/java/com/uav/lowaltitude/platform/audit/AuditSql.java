@@ -8,10 +8,18 @@ public final class AuditSql {
             <if test='to != null'>AND a.occurred_at &lt;= #{to}</if>
             <if test='account != null and account != ""'>AND LOWER(a.account) LIKE #{account}</if>
             <if test='action != null and action != ""'>AND a.action = #{action}</if>
-            <if test='result != null and result != ""'>AND a.result = #{result}</if>
+            <if test='result != null and result != "" and result != "FAILURE"'>AND a.result = #{result}</if>
+            <if test='result == "FAILURE"'>AND a.result IN ('FAILURE', 'FAILED')</if>
+            <if test='!includeAutomatic and (action == null or action == "")'>AND (a.action IS NULL OR a.action NOT IN (""" + automatic() + """
+            ))</if>
             <if test='objectType != null and objectType != ""'>AND a.object_type = #{objectType}</if>
             <if test='objectId != null and objectId != ""'>AND a.object_id = #{objectId}</if>
             """ + "<if test='module != null and module != \"\"'>AND (" + AuditMenus.sql() + ") = #{module}</if> ";
+
+    /** Constant action codes only (AuditLabels.AUTOMATIC_ACTIONS), never request input. */
+    private static String automatic() {
+        return String.join(",", AuditLabels.AUTOMATIC_ACTIONS.stream().map(code -> "'" + code + "'").toList());
+    }
 
     private static String select(String inner) {
         return """

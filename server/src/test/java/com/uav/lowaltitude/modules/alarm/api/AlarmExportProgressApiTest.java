@@ -93,6 +93,14 @@ class AlarmExportProgressApiTest {
         Alarm changed = alarm("CONFIRMED", 13);
         noCounter(changed, id());
         Alarm withoutEvent = alarm(null, 14);
+        Alarm sent = alarm("CONFIRMED", 15);
+        authorization(sent, "COUNTERMEASURE", "COMPLETED", 60);
+        handoff(sent, "SUBMITTED");
+        Alarm awaitingDecision = alarm("CONFIRMED", 16);
+        authorization(awaitingDecision, "COUNTERMEASURE", "COMPLETED", 60);
+        String followup = handoff(awaitingDecision, "PENDING_DELIVERY");
+        jdbc.update("INSERT INTO handoff_notification_decision(handoff_id,event_id,state,version,field_handling) VALUES(?,?,'PENDING_DECISION',0,'{}')",
+                followup, awaitingDecision.event);
 
         List<String> lines = csv(token);
         assertThat(lines.get(0).replace("\uFEFF", "")).startsWith("编号,告警类别,违规原因,等级,核实状态,处置进度,发生时间");
@@ -110,7 +118,10 @@ class AlarmExportProgressApiTest {
         assertThat(rows.get(requested.number)[5]).isEqualTo("待审批");
         assertThat(rows.get(stopped.number)[5]).as("取最近申请的一条").isEqualTo("反制已中止");
         assertThat(rows.get(failedLater.number)[5]).as("失败的不算").isEqualTo("已反制");
-        assertThat(rows.get(handed.number)[5]).as("移送在反制之前看").isEqualTo("已移送处罚");
+        // 交接已建立但还没发出叫“待发送移送”，真正发出（已提交/已送达）才叫“已移送处罚”（问题清单 #9/#19）。
+        assertThat(rows.get(handed.number)[5]).as("移送在反制之前看").isEqualTo("待发送移送");
+        assertThat(rows.get(sent.number)[5]).isEqualTo("已移送处罚");
+        assertThat(rows.get(awaitingDecision.number)[5]).as("通知决定先看").isEqualTo("现场处置结束 · 待决定通知");
         assertThat(rows.get(handoffFailed.number)[5]).as("移送发送失败不算已移送").isEqualTo("已干扰");
         assertThat(rows.get(verifyingHanded.number)[5]).isEqualTo("已移送处罚");
         assertThat(rows.get(verifying.number)[5]).isEmpty();
@@ -153,10 +164,11 @@ class AlarmExportProgressApiTest {
                 approved ? ts(at) : null, approved ? ts(at.plusSeconds(600)) : null, state, policy, org, district, ts(at), ts(at));
     }
 
-    void handoff(Alarm row, String delivery) {
+    String handoff(Alarm row, String delivery) {
         String id = id();
         jdbc.update("INSERT INTO handoff(handoff_id,source_kind,source_id,event_id,handoff_type,recipient_id,source_version,owner_org_id,district_id,source_mode,submitted_by,created_at) VALUES(?,'UAV_EVENT',?,?,'UAV_PUNISHMENT',?,1,?,?,'replay',?,?)", id, row.event, row.event, recipient, org, district, actor, ts(now));
         jdbc.update("INSERT INTO handoff_delivery(delivery_id,handoff_id,attempt_no,delivery_status,receipt_status,blocked_reason,created_at) VALUES(?,?,1,?,'NOT_EXPECTED',NULL,?)", id(), id, delivery, ts(now));
+        return id;
     }
 
     /** 不反制决定；目标与事件不一致时按“风险变化，要重新决策”处理。 */

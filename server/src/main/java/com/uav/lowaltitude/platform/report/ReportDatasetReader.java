@@ -71,6 +71,52 @@ public class ReportDatasetReader {
                 + " GROUP BY " + value + " ORDER BY n DESC,name ASC" + limit, data.parameters(),
                 (rs, i) -> new Count(rs.getString("name"), rs.getLong("n")));
     }
+    /** 全部明细行（来源口径与 details 相同、顺序相同），供需要逐条按业务服务推导状态的报表使用。 */
+    public List<Row> rows(Dataset data, SourceScope scope) {
+        return jdbc.query("SELECT *" + from(data, scope) + " ORDER BY at_ms DESC NULLS LAST,id DESC", data.parameters(), ROW);
+    }
+    /**
+     * 与 summarize 同一统计口径，但在 Java 中对已推导好的行聚合：每日趋势按上海时区日期、分布按值计数降序再按名称升序，
+     * 设备排行仍只取前 10。行须已按 rows() 取出（即已过来源口径）。
+     */
+    public static Summary summarizeRows(List<Row> rows, Range range, String key, String title, String basis,
+            boolean snapshot, List<Dimension> dimensions) {
+        List<Distribution> distributions = new ArrayList<>();
+        for (Dimension d : dimensions) distributions.add(new Distribution(d.key(), d.title(), groupRows(rows, d.key())));
+        distributions.add(new Distribution("region", "区域分布", groupRows(rows, "region")));
+        List<Day> days = new ArrayList<>();
+        if (!snapshot) {
+            Map<String,Long> counts = new HashMap<>();
+            for (Row row : rows) if (row.occurredAt() != null)
+                counts.merge(java.time.Instant.ofEpochMilli(row.occurredAt()).atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate().toString(), 1L, Long::sum);
+            for (LocalDate day = range.from(); !day.isAfter(range.to()); day = day.plusDays(1))
+                days.add(new Day(day.toString(), counts.getOrDefault(day.toString(), 0L)));
+        }
+        return new Summary(key, title, basis, snapshot, true, (long) rows.size(), days, distributions, groupRows(rows, "source_mode"));
+    }
+    public static Page pageRows(List<Row> rows, int page, int size) {
+        int from = (int) Math.min(rows.size(), (long) (page - 1) * size);
+        return new Page(List.copyOf(rows.subList(from, Math.min(rows.size(), from + size))), page, size, rows.size());
+    }
+    private static List<Count> groupRows(List<Row> rows, String column) {
+        Map<String,Long> counts = new HashMap<>();
+        for (Row row : rows) {
+            String value = switch (column) {
+                case "state" -> row.state(); case "kind" -> row.kind(); case "severity" -> row.severity();
+                case "region" -> row.region(); case "result" -> row.result(); case "label" -> row.label();
+                case "source_mode" -> row.sourceMode();
+                default -> throw new IllegalArgumentException("Unknown report dimension");
+            };
+            counts.merge(value == null || value.isEmpty() ? "UNKNOWN" : value, 1L, Long::sum);
+        }
+        var stream = counts.entrySet().stream()
+                .sorted(java.util.Map.Entry.<String,Long>comparingByValue().reversed().thenComparing(java.util.Map.Entry.comparingByKey()))
+                .map(e -> new Count(e.getKey(), e.getValue()));
+        return (column.equals("label") ? stream.limit(10) : stream).toList();
+    }
+    private static final org.springframework.jdbc.core.RowMapper<Row> ROW = (rs, i) -> new Row(rs.getString("id"), rs.getString("label"),
+            rs.getObject("at_ms", Long.class), rs.getString("state"), rs.getString("kind"), rs.getString("severity"), rs.getString("region"),
+            rs.getString("source_mode"), rs.getString("related"), rs.getString("result"), rs.getString("note"));
     public Page details(Dataset data, int page, int size) {
         return details(data, page, size, SourceScope.LIVE);
     }
@@ -78,10 +124,7 @@ public class ReportDatasetReader {
         Map<String,Object> p = new HashMap<>(data.parameters());
         p.put("report_offset", (long)(page - 1) * size); p.put("report_size", size);
         List<Row> rows = jdbc.query("SELECT *" + from(data, scope)
-                + " ORDER BY at_ms DESC NULLS LAST,id DESC OFFSET :report_offset ROWS FETCH NEXT :report_size ROWS ONLY", p,
-                (rs, i) -> new Row(rs.getString("id"), rs.getString("label"), rs.getObject("at_ms", Long.class),
-                        rs.getString("state"), rs.getString("kind"), rs.getString("severity"), rs.getString("region"),
-                        rs.getString("source_mode"), rs.getString("related"), rs.getString("result"), rs.getString("note")));
+                + " ORDER BY at_ms DESC NULLS LAST,id DESC OFFSET :report_offset ROWS FETCH NEXT :report_size ROWS ONLY", p, ROW);
         return new Page(rows, page, size, count(data, scope));
     }
 }
