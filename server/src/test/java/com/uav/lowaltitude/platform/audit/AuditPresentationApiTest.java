@@ -116,6 +116,12 @@ class AuditPresentationApiTest {
         expect(token, unknown, "系统", "系统");
         expect(token, bare, "系统", "系统");
         String typedAccount = jdbc.queryForObject("select account from audit_log where audit_id=?", String.class, typed);
+        Integer automation = jdbc.queryForObject("select count(*) from app_user where user_id='automation-rule-runner'", Integer.class);
+        if (automation != null && automation > 0) {
+            String rule = insert("automation-rule-runner", "automation-rule", "ROLE-AUTOMATION", "disposal_direct_authorized", "disposal_authorization", null);
+            mvc.perform(get("/api/v1/audit-logs/" + rule).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.account_name").value("系统按规则自动执行"));
+        }
         expect(token, typed, typedAccount, "未记录");
         // 原代码仍在 account 字段，数据库不改写。
         mvc.perform(get("/api/v1/audit-logs/" + verify).header("Authorization", "Bearer " + token))

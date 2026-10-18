@@ -379,8 +379,10 @@ final class AuditLabels {
             Map.entry("AUTO_PUNISHMENT", "系统自动移送处罚"),
             Map.entry("AUTO_RESEND", "系统自动重发"),
             Map.entry("AUTO_FOLLOWUP", "系统自动跟进"),
-            Map.entry("DEPARTURE_WATCH", "系统飞离观察"),
-            Map.entry("AUTOMATION-RULE-RUNNER", "系统规则自动执行"));
+            Map.entry("DEPARTURE_WATCH", "系统飞离观察"));
+
+    /** 后台自动规则的执行身份（与 AutomationPrincipal.USER_ID 一致）：有用户行，账号是英文代码。 */
+    static final String AUTOMATION_USER_ID = "automation-rule-runner";
 
     /**
      * 没有用户 ID、且角色是 SYSTEM 或账号是已知系统主体的记录才算系统主体；
@@ -394,6 +396,7 @@ final class AuditLabels {
 
     /** 审计列表“账号”列的显示名：系统主体写中文，未知系统主体兜底“系统”；普通账号原样。 */
     static String accountName(String userId, String account, String roleCode) {
+        if (AUTOMATION_USER_ID.equals(userId)) return "系统按规则自动执行";
         if (!systemPrincipal(userId, account, roleCode)) return account;
         String key = account == null ? "" : account.trim().toUpperCase(Locale.ROOT);
         return SYSTEM_PRINCIPALS.getOrDefault(key, "系统");
