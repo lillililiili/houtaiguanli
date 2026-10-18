@@ -666,6 +666,26 @@ public class DeviceRepository {
         return locked;
     }
 
+    /** 模拟器正常停止时写入的设备事件类型（见 LocalQaDeviceStatusService.plannedOffline）。 */
+    public static final String PLANNED_OFFLINE_EVENT = "PLANNED_OFFLINE";
+    /** 声明前已发出、稍后才到平台的心跳不结束计划下线；超过这段时间后收到的心跳视为设备重新开始上报。 */
+    static final long PLANNED_OFFLINE_HEARTBEAT_GRACE_MILLIS = 5_000;
+
+    /**
+     * 回放模拟设备是否处于计划下线：模拟器正常停止时声明过计划下线，且此后没有再收到心跳。
+     * 只认标明模拟的回放设备和模拟事件；真实设备、模拟器崩溃（没有声明）或重新上报后再停发，都按原规则开单。
+     */
+    public boolean plannedOffline(String deviceId) {
+        return jdbc.queryForObject("""
+                SELECT COUNT(*) FROM device_event_log e
+                JOIN ops_device d ON d.device_id=e.device_id
+                JOIN ops_device_state s ON s.device_id=d.device_id
+                WHERE e.device_id=? AND e.event_type=? AND e.simulated=TRUE
+                  AND d.simulated=TRUE AND d.source_mode='replay' AND d.deleted_at IS NULL
+                  AND s.last_heartbeat_at IS NOT NULL AND e.occurred_at>=s.last_heartbeat_at-?
+                """, Long.class, deviceId, PLANNED_OFFLINE_EVENT, PLANNED_OFFLINE_HEARTBEAT_GRACE_MILLIS) > 0;
+    }
+
     public boolean openMqttIncident(String deviceId, long now, boolean simulated) {
         String id = UUID.randomUUID().toString();
         return jdbc.update("""

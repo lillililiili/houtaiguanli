@@ -35,6 +35,11 @@ public class LocalQaDeviceStatusRepository {
                 (r,n)->new Previous(r.getString(1),r.getLong(2)),source,message);
         return rows.isEmpty()?null:rows.get(0);
     }
+    public void plannedOffline(String id,long now){
+        jdbc.update("INSERT INTO device_event_log (event_id,device_id,event_type,level_code,message,occurred_at,simulated) VALUES (?,?,?,?,?,?,TRUE)",
+                UUID.randomUUID().toString(),id,DeviceRepository.PLANNED_OFFLINE_EVENT,"INFO",
+                "模拟器已正常停止，模拟设备计划下线；恢复上报前的心跳超时不生成异常处置单",now);
+    }
     public Long currentObserved(String id){return jdbc.queryForObject("SELECT GREATEST(health_observed_at,alarm_observed_at) FROM ops_device_state WHERE device_id=?",Long.class,id);}
     public void save(Input input,String source,String hash,byte[] raw,long receivedAt){
         jdbc.update("""

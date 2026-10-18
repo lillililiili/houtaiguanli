@@ -19,4 +19,9 @@ public class LocalQaDeviceStatusController {
             @Valid @RequestBody LocalQaDeviceStatusDtos.Input input){
         return ApiResponse.ok(service.accept(input));
     }
+    /** 模拟器正常停止（用户点停止或场景结束）时调用；模拟器崩溃等非计划停发不会调用，仍按心跳超时开单。 */
+    @PostMapping("/planned-offline") public ApiResponse<LocalQaDeviceStatusDtos.PlannedOffline> plannedOffline(
+            @Valid @RequestBody LocalQaDeviceStatusDtos.PlannedOfflineInput input){
+        return ApiResponse.ok(service.plannedOffline(input));
+    }
 }

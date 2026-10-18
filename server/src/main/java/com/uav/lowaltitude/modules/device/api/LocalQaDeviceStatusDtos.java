@@ -15,4 +15,9 @@ public final class LocalQaDeviceStatusDtos {
             @NotNull Boolean hasAlarm) { }
     public record Receipt(String messageId,String deviceId,long observedAt,long receivedAt,
             String sourceType,boolean simulated) { }
+    /** 模拟器正常停止时声明设备计划下线：之后到恢复上报前的心跳超时不算故障，不生成异常处置单。 */
+    public record PlannedOfflineInput(
+            @NotBlank @Size(max=36) String deviceId,
+            @NotBlank @Size(max=36) String sourceId) { }
+    public record PlannedOffline(String deviceId,long declaredAt,boolean simulated) { }
 }

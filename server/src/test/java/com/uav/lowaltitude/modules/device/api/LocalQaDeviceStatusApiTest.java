@@ -44,6 +44,8 @@ class LocalQaDeviceStatusApiTest {
     @Autowired MqttRepository mqtt;
     @Autowired EoEdgeRepository edges;
     @Autowired DeviceRecoveryService recovery;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
+    @Autowired com.uav.lowaltitude.platform.time.AppClock clock;
     String token;
     Binding device;
 
@@ -201,6 +203,90 @@ class LocalQaDeviceStatusApiTest {
         }
         send(body,409);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM inbox_message WHERE source=?",Long.class,"local-qa-status:"+eo.opsDeviceId())).isZero();
+    }
+    static final String PLANNED=PATH+"/planned-offline";
+    @Test void plannedStopDoesNotOpenHeartbeatIncidentUntilReportsResume() throws Exception {
+        heardAt(clock.nowMillis()-31_000);
+        var declared=plan(device.opsDeviceId(),device.opsSourceId(),200);
+        assertThat(declared.path("simulated").asBoolean()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM device_event_log WHERE device_id=? AND event_type='PLANNED_OFFLINE' AND simulated=TRUE",Long.class,device.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_log WHERE action='device_planned_offline' AND object_id=?",Long.class,device.opsDeviceId())).isOne();
+        offline(device.opsDeviceId());
+        reconcile();reconcile();
+        assertThat(heartbeatIncidents(device.opsDeviceId())).isZero();
+        // The simulator starts again: a heartbeat after the declaration ends the planned window.
+        heardAt(declared.path("declared_at").asLong()+6_000);offline(device.opsDeviceId());
+        reconcile();
+        assertThat(heartbeatIncidents(device.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT simulated FROM device_incident WHERE device_id=?",Boolean.class,device.opsDeviceId())).isTrue();
+    }
+    @Test void heartbeatStillInFlightAtDeclarationDoesNotEndThePlannedWindow() throws Exception {
+        long declared=plan(device.opsDeviceId(),device.opsSourceId(),200).path("declared_at").asLong();
+        heardAt(declared+1_000);offline(device.opsDeviceId());
+        reconcile();
+        assertThat(heartbeatIncidents(device.opsDeviceId())).isZero();
+    }
+    @Test void unplannedSimulatorStopStillOpensSimulatedIncidentAndDeclarationIsPerDevice() throws Exception {
+        var other=registerMqtt("5ga");
+        heardAt(clock.nowMillis()-31_000);
+        jdbc.update("UPDATE ops_device_state SET last_heartbeat_at=? WHERE device_id=?",clock.nowMillis()-31_000,other.opsDeviceId());
+        plan(device.opsDeviceId(),device.opsSourceId(),200);
+        offline(device.opsDeviceId());offline(other.opsDeviceId());
+        reconcile();
+        assertThat(heartbeatIncidents(device.opsDeviceId())).isZero();
+        assertThat(heartbeatIncidents(other.opsDeviceId())).isOne();
+        assertThat(jdbc.queryForObject("SELECT simulated FROM device_incident WHERE device_id=?",Boolean.class,other.opsDeviceId())).isTrue();
+    }
+    @Test void deviceNoLongerMarkedSimulatedIsNeverExemptedEvenWithALeftoverPlannedEvent() throws Exception {
+        heardAt(clock.nowMillis()-31_000);
+        plan(device.opsDeviceId(),device.opsSourceId(),200);
+        jdbc.update("UPDATE ops_device SET simulated=FALSE WHERE device_id=?",device.opsDeviceId());
+        offline(device.opsDeviceId());
+        reconcile();
+        assertThat(heartbeatIncidents(device.opsDeviceId())).isOne();
+    }
+    @ParameterizedTest @ValueSource(strings={"disabled","source-disabled","not-simulated","wrong-source","unbound","unauthorized"})
+    void plannedOfflineRefusesNonQaDevicesAndUnauthorizedCallers(String mode) throws Exception {
+        String source=device.opsSourceId();int expected=409;
+        switch(mode){
+            case "disabled" -> jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?",device.opsDeviceId());
+            case "source-disabled" -> jdbc.update("UPDATE ops_integration_source SET enabled=FALSE WHERE source_id=?",device.opsSourceId());
+            case "not-simulated" -> jdbc.update("UPDATE ops_device SET simulated=FALSE WHERE device_id=?",device.opsDeviceId());
+            case "wrong-source" -> source=UUID.randomUUID().toString();
+            case "unbound" -> jdbc.update("DELETE FROM mqtt_device_binding WHERE ops_device_id=?",device.opsDeviceId());
+            case "unauthorized" -> {
+                jdbc.update("INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,system_role) VALUES('ROLE-QA-PLANNED-READ','QA planned read','',FALSE,TRUE,0,0,0,FALSE)");
+                jdbc.update("UPDATE app_user SET role_code='ROLE-QA-PLANNED-READ' WHERE account='admin1'");
+                expected=403;
+            }
+        }
+        plan(device.opsDeviceId(),source,expected);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM device_event_log WHERE device_id=? AND event_type='PLANNED_OFFLINE'",Long.class,device.opsDeviceId())).isZero();
+    }
+    private Binding registerMqtt(String type){
+        String user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);
+        AuthContext.set(new AuthUser(user,"admin1","QA planned test","ROLE-ADMIN",1,false,"ALL"));
+        try{
+            String suffix=UUID.randomUUID().toString().substring(0,8);
+            String id=configuration.register(new Registration(LingyunEnvelope.PROTOCOL,device.brokerId(),"qa-status",suffix,type,
+                    "replay",device.ownerOrgId(),device.districtId(),"QA-PLANNED-"+suffix,"模拟计划下线设备",null,null,null),UUID.randomUUID().toString());
+            var other=mqtt.binding(id,false);
+            jdbc.update("UPDATE ops_device SET enabled=TRUE WHERE device_id=?",id);
+            jdbc.update("UPDATE ops_integration_source SET enabled=TRUE WHERE source_id=?",other.opsSourceId());
+            return other;
+        }finally{AuthContext.clear();}
+    }
+    private void heardAt(long at){jdbc.update("UPDATE ops_device_state SET last_heartbeat_at=?,connectivity='ONLINE' WHERE device_id=?",at,device.opsDeviceId());}
+    private void offline(String id){
+        jdbc.update("UPDATE mqtt_broker SET enabled=TRUE WHERE broker_id=?",device.brokerId());
+        jdbc.update("UPDATE ops_device_state SET connectivity='OFFLINE' WHERE device_id=?",id);
+    }
+    private void reconcile(){new com.uav.lowaltitude.modules.device.application.MqttConnectivityIncidentJob(deviceRepository,clock).reconcile();}
+    private long heartbeatIncidents(String id){return jdbc.queryForObject("SELECT count(*) FROM device_incident WHERE device_id=? AND incident_type='MQTT_HEARTBEAT_TIMEOUT'",Long.class,id);}
+    private JsonNode plan(String id,String source,int expected) throws Exception {
+        return json.readTree(mvc.perform(post(PLANNED).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("device_id",id,"source_id",source)))).andExpect(status().is(expected))
+                .andReturn().getResponse().getContentAsString()).path("data");
     }
     private EoEdgeConfiguration.Binding registerEo(String mode){
         String user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);

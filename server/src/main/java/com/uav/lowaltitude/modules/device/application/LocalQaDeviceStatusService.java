@@ -62,5 +62,23 @@ public class LocalQaDeviceStatusService {
                 "独立模拟状态；非协议心跳健康推断；message_id="+input.messageId()+"; source_id="+input.sourceId()+"; health="+input.healthCode(),null);
         return new Receipt(input.messageId(),input.deviceId(),input.observedAt(),now,"LOCAL_QA_STATUS",true);
     }
+    /**
+     * 只接受当前启用、来源一致、经回放 MQTT/光电连接登记且标明模拟的设备；真实设备没有这个入口，规则不变。
+     * 计划下线只记一条设备事件和审计，不改设备状态、不关闭已有异常、不办结处置单；设备重新上报心跳后自然结束。
+     */
+    @Transactional public PlannedOffline plannedOffline(PlannedOfflineInput input){
+        access.require("interfaces.op");access.require("devices.auth");access.require("monitoring.op");
+        var actor=AuthContext.require();
+        if(!"ALL".equals(actor.scopeMode()))throw new ApiException(HttpStatus.FORBIDDEN,"QA_GLOBAL_SCOPE_REQUIRED","模拟设备计划下线需要全局管理范围");
+        var device=repository.lock(input.deviceId());
+        if(device==null||!Objects.equals(device.sourceId(),input.sourceId())||!"replay".equals(device.sourceMode())
+                ||!device.simulated()||!device.enabled()||!device.sourceEnabled())
+            throw conflict("只有当前启用、来源一致的回放模拟设备可以声明计划下线");
+        long now=clock.nowMillis();
+        repository.plannedOffline(input.deviceId(),now);
+        audit.record(actor.userId(),actor.account(),"device_planned_offline","device",input.deviceId(),
+                "模拟器正常停止，模拟设备计划下线；恢复上报前的心跳超时不生成异常处置单",null);
+        return new PlannedOffline(input.deviceId(),now,true);
+    }
     private static ApiException conflict(String text){return new ApiException(HttpStatus.CONFLICT,"QA_STATUS_CONFLICT",text);}
 }
