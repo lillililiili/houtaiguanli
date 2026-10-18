@@ -222,6 +222,12 @@ public class AlarmReadRepository {
         add(sql, parameters, "e.state_code", "state", query.state());
         add(sql, parameters, CURRENT_SEVERITY, "severity", query.severity());
         add(sql, parameters, "a.target_id", "target_id", query.targetId());
+        if (query.targetNo() != null) {
+            sql.append(" AND EXISTS (SELECT 1 FROM target filter_target WHERE filter_target.target_id=a.target_id"
+                    + " AND filter_target.owner_org_id=a.owner_org_id AND filter_target.district_id=a.district_id"
+                    + " AND POSITION(LOWER(:target_no) IN LOWER(filter_target.target_no))>0)");
+            parameters.put("target_no", query.targetNo());
+        }
         add(sql, parameters, "a.owner_org_id", "owner_org_id", query.ownerOrgId());
         add(sql, parameters, "a.district_id", "district_id", query.districtId());
         add(sql, parameters, "a.source_mode", "source_mode", query.sourceMode());
@@ -286,7 +292,13 @@ public class AlarmReadRepository {
             /* 2026-10-07：按关注分组筛（待处置统计、状态筛选）；null 表示不限。 */
             List<String> attentionGroups,
             /* 2026-10-07：按当前违规原因代码筛（告警页"违规类别"）；null 表示不限。 */
-            String violationReason) {
+            String violationReason, String targetNo) {
+        public AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
+                OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
+                String alarmType, List<String> attentionGroups, String violationReason) {
+            this(state, severity, targetId, occurredFrom, occurredTo, ownerOrgId, districtId, sourceMode,
+                    alarmType, attentionGroups, violationReason, null);
+        }
         public static AlarmQuery empty() {
             return new AlarmQuery(null, null, null, null, null, null, null, null, null, null, null);
         }

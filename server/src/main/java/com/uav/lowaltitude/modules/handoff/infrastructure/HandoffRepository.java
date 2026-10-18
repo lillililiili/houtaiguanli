@@ -336,6 +336,16 @@ public class HandoffRepository {
         if (query.deliveryStatus != null) where.sql.append(" AND (nd.state IS NULL OR nd.state='NOTIFY')");
         add(where, "d.receipt_status", "receipt", query.receiptStatus);
         add(where, "h.source_mode", "mode", query.sourceMode);
+        if (query.targetNo != null) {
+            // 仅匹配同域无人机事件的真实目标关联；不搜索材料文本或相似来源编号。
+            where.sql.append(" AND h.source_kind='UAV_EVENT' AND ue.event_id=h.source_id"
+                    + " AND ue.owner_org_id=h.owner_org_id AND ue.district_id=h.district_id"
+                    + " AND al.owner_org_id=h.owner_org_id AND al.district_id=h.district_id"
+                    + " AND EXISTS (SELECT 1 FROM target filter_target WHERE filter_target.target_id=al.target_id"
+                    + " AND filter_target.owner_org_id=h.owner_org_id AND filter_target.district_id=h.district_id"
+                    + " AND POSITION(LOWER(:target_no) IN LOWER(filter_target.target_no))>0)");
+            where.params.put("target_no", query.targetNo);
+        }
         if (query.createdFrom != null) {
             where.sql.append(" AND h.created_at>=:created_from AND h.created_at<:created_to");
             where.params.put("created_from", query.createdFrom); where.params.put("created_to", query.createdTo);
@@ -408,7 +418,11 @@ public class HandoffRepository {
     public record TrendRow(OffsetDateTime createdAt, String deliveryStatus) { }
     private static final class Where { final StringBuilder sql = new StringBuilder(); final Map<String, Object> params = new HashMap<>(); }
     public record HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo,
-            String sourceMode, String receiptStatus, String notificationDecision) {
+            String sourceMode, String receiptStatus, String notificationDecision, String targetNo) {
+        public HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo,
+                String sourceMode, String receiptStatus, String notificationDecision) {
+            this(sourceKind, sourceId, deliveryStatus, createdFrom, createdTo, sourceMode, receiptStatus, notificationDecision, null);
+        }
         public HandoffQuery(String sourceKind, String sourceId, String deliveryStatus, OffsetDateTime createdFrom, OffsetDateTime createdTo, String sourceMode, String receiptStatus) {
             this(sourceKind, sourceId, deliveryStatus, createdFrom, createdTo, sourceMode, receiptStatus, null);
         }

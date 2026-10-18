@@ -43,7 +43,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @Service
 public class LegalityEvaluationReadService {
     public static final String ACTION_REVIEW = "REVIEW", ACTION_RECOMPUTE = "RECOMPUTE", ACTION_ESCALATE = "ESCALATE";
-    private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id", "object_type_code",
+    private static final Set<String> ALLOWED = Set.of("mode", "latest_only", "legal_status", "plan_match", "review_state", "subject_kind", "target_id", "target_no", "object_type_code",
             "plan_id", "from", "to", "owner_org_id", "district_id", "source_mode", "needs_review", "needs_attention", "has_alarm", "page", "size", "sort");
     private static final Set<String> MODES = Set.of("ACTIVE", "SHADOW");
     private static final Set<String> LEGAL_STATUSES = Set.of("LEGAL", "ABNORMAL", "ILLEGAL", "UNDETERMINED", "NOT_APPLICABLE", "REJECTED");
@@ -96,7 +96,7 @@ public class LegalityEvaluationReadService {
         // 鉴权必须先于参数解析，防止未授权调用者用 400/404 差异探测受保护接口。
         AccessDecision decision = access.require(PermissionCode.ASSESSMENT_READ);
         // 原始请求只要出现关联筛选就先要求关联读取动作；不能先解析其他坏参数泄露筛选能力。
-        if (values.containsKey("target_id") || values.containsKey("object_type_code")) access.require(PermissionCode.TARGET_READ);
+        if (values.containsKey("target_id") || values.containsKey("target_no") || values.containsKey("object_type_code")) access.require(PermissionCode.TARGET_READ);
         if (values.containsKey("plan_id")) access.require(PermissionCode.FLIGHT_READ);
         return decision;
     }
@@ -108,7 +108,7 @@ public class LegalityEvaluationReadService {
                 request.enumerated("review_state", REVIEW_STATES), request.enumerated("subject_kind", SUBJECTS),
                 request.optional("target_id", 36), request.optional("plan_id", 36), range.from, range.to,
                 request.optional("owner_org_id", 36), request.optional("district_id", 36), request.enumerated("source_mode", SOURCE_MODES),
-                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"), request.optionalBool("needs_attention"), request.optionalBool("has_alarm"));
+                request.enumerated("object_type_code", OBJECT_TYPES), request.optionalBool("needs_review"), request.optionalBool("needs_attention"), request.optionalBool("has_alarm"), request.optional("target_no", 64));
     }
 
     @Transactional(readOnly = true)

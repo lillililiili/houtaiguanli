@@ -40,7 +40,7 @@ import com.uav.lowaltitude.platform.api.ApiException;
 public class AlarmReadService {
     // 参数白名单：写错的参数必须报错而不是被忽略，否则调用方以为筛过了、拿到的却是全量。
     // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group、violation_reason。
-    private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "occurred_from", "occurred_to",
+    private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "target_no", "occurred_from", "occurred_to",
             "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group",
             "violation_reason");
     private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
@@ -72,7 +72,7 @@ public class AlarmReadService {
     @Transactional
     public ResponseEntity<byte[]> export(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.ALARM_READ);
-        AccessDecision targetDecision = values.containsKey("target_id") ? access.require(PermissionCode.TARGET_READ) : null;
+        AccessDecision targetDecision = values.containsKey("target_id") || values.containsKey("target_no") ? access.require(PermissionCode.TARGET_READ) : null;
         AlarmQuery query = new Request(values).query();
         if (query.targetId() != null && !repository.targetReadable(query.targetId(), targetDecision)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权筛选该关联目标");
@@ -143,7 +143,7 @@ public class AlarmReadService {
         return "state=" + query.state() + ",severity=" + query.severity() + ",alarm_type=" + query.alarmType()
                 + ",attention_group=" + (query.attentionGroups() == null ? null : String.join("|", query.attentionGroups()))
                 + ",violation_reason=" + query.violationReason()
-                + ",district_id=" + query.districtId() + ",target_id=" + query.targetId()
+                + ",district_id=" + query.districtId() + ",target_id=" + query.targetId() + ",target_no=" + query.targetNo()
                 + ",sort=" + sort + ",order=" + order;
     }
 
@@ -151,7 +151,7 @@ public class AlarmReadService {
     public PageDto<AlarmDto> list(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.ALARM_READ);
         // 筛选字段本身已是关联目标的探测入口；在解析其值（甚至分页）之前完成 target:read 鉴权。
-        AccessDecision targetDecision = values.containsKey("target_id") ? access.require(PermissionCode.TARGET_READ) : null;
+        AccessDecision targetDecision = values.containsKey("target_id") || values.containsKey("target_no") ? access.require(PermissionCode.TARGET_READ) : null;
         Request request = new Request(values);
         Page page = request.page();
         AlarmQuery query = request.query();
@@ -289,7 +289,7 @@ public class AlarmReadService {
         private AlarmQuery query() {
             return new AlarmQuery(optional("state", 32), optional("severity", 16), optional("target_id", 36), timeFrom(), timeTo(),
                     optional("owner_org_id", 36), optional("district_id", 36), optional("source_mode", 8), optional("alarm_type", 32),
-                    attentionGroups(), violationReason());
+                    attentionGroups(), violationReason(), optional("target_no", 64));
         }
         private String violationReason() {
             String value = optional("violation_reason", 64);

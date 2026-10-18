@@ -294,6 +294,11 @@ public class LegalityEvaluationReadRepository {
             where.sql.append(" AND tg.owner_org_id=e.owner_org_id AND tg.district_id=e.district_id");
         }
         add(where, "e.target_id", "target_id", query.targetId());
+        if (query.targetNo() != null) {
+            where.sql.append(" AND tg.owner_org_id=e.owner_org_id AND tg.district_id=e.district_id"
+                    + " AND POSITION(LOWER(:target_no) IN LOWER(tg.target_no))>0");
+            where.parameters.put("target_no", query.targetNo());
+        }
         add(where, "e.plan_id", "plan_id", query.planId());
         add(where, "e.owner_org_id", "owner_org_id", query.ownerOrgId());
         add(where, "e.district_id", "district_id", query.districtId());
@@ -412,7 +417,13 @@ public class LegalityEvaluationReadRepository {
 
     public record EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
             String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
-            String objectTypeCode, Boolean needsReview, Boolean needsAttention, Boolean hasAlarm) {
+            String objectTypeCode, Boolean needsReview, Boolean needsAttention, Boolean hasAlarm, String targetNo) {
+        public EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
+                String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
+                String objectTypeCode, Boolean needsReview, Boolean needsAttention, Boolean hasAlarm) {
+            this(mode, latestOnly, legalStatus, planMatch, reviewState, subjectKind, targetId, planId, from, to,
+                    ownerOrgId, districtId, sourceMode, objectTypeCode, needsReview, needsAttention, hasAlarm, null);
+        }
         public EvaluationQuery(String mode, boolean latestOnly, String legalStatus, String planMatch, String reviewState, String subjectKind,
                 String targetId, String planId, OffsetDateTime from, OffsetDateTime to, String ownerOrgId, String districtId, String sourceMode,
                 String objectTypeCode, Boolean needsReview, Boolean needsAttention) {

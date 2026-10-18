@@ -57,10 +57,10 @@ public class HandoffReadService {
     private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups;
     private final com.uav.lowaltitude.modules.directory.application.NotificationDirectoryService directory;
     private static final Set<String> LIST_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
-            "source_mode", "notification_decision", "page", "size");
+            "source_mode", "notification_decision", "target_no", "page", "size");
     private static final Set<String> PAGE_PARAMETERS = Set.of("page", "size");
     private static final Set<String> STATS_PARAMETERS = Set.of("source_kind", "source_id", "delivery_status", "receipt_status", "created_from", "created_to",
-            "source_mode", "notification_decision");
+            "source_mode", "notification_decision", "target_no");
     /** 统计输出的固定顺序；Set 常量无序，前端图例按这里的顺序展示。 */
     private static final List<String> DELIVERY_ORDER = List.of("PENDING_DELIVERY", "SUBMITTED", "DELIVERED", "FAILED", "PENDING_DECISION", "DO_NOT_NOTIFY");
     private static final List<String> RECEIPT_ORDER = List.of("NOT_EXPECTED", "PENDING", "ACKNOWLEDGED", "TIMEOUT");
@@ -108,16 +108,24 @@ public class HandoffReadService {
         catch (ApiException denied) { access.require(PermissionCode.HANDOFF_CREATE); }
     }
 
+    private void authorizeTargetFilter(MultiValueMap<String, String> values) {
+        if (values.containsKey("target_no")) {
+            access.require(PermissionCode.TARGET_READ);
+            access.require(PermissionCode.ALARM_READ);
+        }
+    }
+
     @Transactional(readOnly = true)
     public PageDto<HandoffDto> list(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.HANDOFF_READ);
+        authorizeTargetFilter(values);
         Request request = new Request(values, LIST_PARAMETERS);
         Page page = request.page();
         TimeRange created = request.timeRange("created_from", "created_to");
         HandoffQuery query = new HandoffQuery(request.enumerated("source_kind", HandoffRules.SOURCE_KINDS), request.optional("source_id", 36),
                 request.enumerated("delivery_status", HandoffRules.DELIVERY_STATUSES), created.from, created.to,
                 request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES),
-                request.enumerated("notification_decision", Set.of("PENDING_DECISION","NOTIFY","DO_NOT_NOTIFY")));
+                request.enumerated("notification_decision", Set.of("PENDING_DECISION","NOTIFY","DO_NOT_NOTIFY")), request.optional("target_no", 64));
         long total = repository.count(query, decision);
         return new PageDto<>(repository.list(query, decision, page.offset(), page.size).stream().map(row -> dto(row,followups.decision(row.handoffId()))).toList(),
                 page.page, page.size, total);
@@ -130,12 +138,13 @@ public class HandoffReadService {
     @Transactional(readOnly = true)
     public HandoffStatsDto stats(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.HANDOFF_READ);
+        authorizeTargetFilter(values);
         Request request = new Request(values, STATS_PARAMETERS);
         TimeRange created = request.timeRange("created_from", "created_to");
         HandoffQuery query = new HandoffQuery(request.enumerated("source_kind", HandoffRules.SOURCE_KINDS), request.optional("source_id", 36),
                 request.enumerated("delivery_status", HandoffRules.DELIVERY_STATUSES), created.from, created.to,
                 request.enumerated("source_mode", HandoffRules.SOURCE_MODES), request.enumerated("receipt_status", HandoffRules.RECEIPT_STATUSES),
-                request.enumerated("notification_decision", Set.of("PENDING_DECISION","NOTIFY","DO_NOT_NOTIFY")));
+                request.enumerated("notification_decision", Set.of("PENDING_DECISION","NOTIFY","DO_NOT_NOTIFY")), request.optional("target_no", 64));
         long total = repository.count(query, decision);
         List<CountDto> byDelivery = ordered(DELIVERY_ORDER, repository.countByDelivery(query, decision));
         List<CountDto> byReceipt = ordered(RECEIPT_ORDER, repository.countByReceipt(query, decision));
