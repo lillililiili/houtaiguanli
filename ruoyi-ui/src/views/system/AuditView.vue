@@ -84,6 +84,8 @@ function resultType(row) { return row.result === 'SUCCESS' ? 'success' : ['FAILU
 function objectTypeText(row) { return row.object_type_name || (row.object_type ? '其他对象' : '—') }
 // 详情里保留原代码，便于排查；列表只显示中文。
 function withCode(text, code) { return code && text !== code ? `${text}（原代码：${code}）` : text }
+/* 系统自动记录的执行主体由后端给出中文名（account_name），原代码只在详情括号里保留。 */
+function accountText(row) { return row.account_name || row.account || '—' }
 function roleText(row) { return row.role_name || ({ 'ROLE-ADMIN': '超级管理员', 'ROLE-BACKEND': '后台用户' }[row.role_code]) || row.role_code || '未记录' }
 function ipText(value) { return value?.trim() || '未记录' }
 
@@ -133,7 +135,7 @@ onMounted(load)
       </el-form>
       <div class="table-scroll"><el-table v-loading="loading" :data="rows" height="100%" empty-text="当前条件下暂无审计日志">
         <el-table-column label="时间" min-width="172"><template #default="{row}">{{ formatTime(row.occurred_at) }}</template></el-table-column>
-        <el-table-column prop="account" label="账号" min-width="120" show-overflow-tooltip /><el-table-column label="角色" min-width="180" show-overflow-tooltip><template #default="{row}"><span :title="row.display_role_code || row.role_code">{{ roleText(row) }}</span></template></el-table-column>
+        <el-table-column label="账号" min-width="120" show-overflow-tooltip><template #default="{row}">{{ accountText(row) }}</template></el-table-column><el-table-column label="角色" min-width="180" show-overflow-tooltip><template #default="{row}"><span :title="row.display_role_code || row.role_code">{{ roleText(row) }}</span></template></el-table-column>
         <el-table-column label="菜单" min-width="140"><template #default="{row}">{{ row.module_name || moduleText(row.menu_code || row.module_code) }}</template></el-table-column>
         <el-table-column label="动作" min-width="160" show-overflow-tooltip><template #default="{row}">{{ row.action_name || actionText(row.action) }}</template></el-table-column>
         <el-table-column label="结果" width="82"><template #default="{row}"><el-tag :type="resultType(row)">{{ resultText(row) }}</el-tag></template></el-table-column>
@@ -148,7 +150,7 @@ onMounted(load)
         <template v-if="detailDialog.row">
           <el-descriptions class="audit-detail-metadata" :column="2" border>
             <el-descriptions-item label="时间">{{ formatTime(detailDialog.row.occurred_at) }}</el-descriptions-item><el-descriptions-item label="结果">{{ withCode(resultText(detailDialog.row), detailDialog.row.result) }}</el-descriptions-item>
-            <el-descriptions-item label="账号">{{ detailDialog.row.account || '—' }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row) }}</el-descriptions-item>
+            <el-descriptions-item label="账号">{{ withCode(accountText(detailDialog.row), detailDialog.row.account) }}</el-descriptions-item><el-descriptions-item label="角色">{{ roleText(detailDialog.row) }}</el-descriptions-item>
             <el-descriptions-item label="菜单">{{ detailDialog.row.module_name || moduleText(detailDialog.row.menu_code || detailDialog.row.module_code) }}</el-descriptions-item><el-descriptions-item label="动作">{{ withCode(detailDialog.row.action_name || actionText(detailDialog.row.action), detailDialog.row.action) }}</el-descriptions-item>
             <el-descriptions-item label="对象类型">{{ withCode(objectTypeText(detailDialog.row), detailDialog.row.object_type) }}</el-descriptions-item><el-descriptions-item label="对象编号"><span class="audit-object-id">{{ detailDialog.row.object_id || '—' }}</span></el-descriptions-item>
             <el-descriptions-item label="IP">{{ ipText(detailDialog.row.ip) }}</el-descriptions-item><el-descriptions-item label="客户端">{{ detailDialog.row.user_agent || '—' }}</el-descriptions-item>

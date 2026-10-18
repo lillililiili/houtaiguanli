@@ -81,10 +81,13 @@ public class AuditQueryService {
                 AuditLabels.module(log.getMenuCode()), AuditLabels.action(log.getAction()),
                 roleName(log), log.getRoleSource(), log.getDisplayRoleCode(), log.getMenuCode(),
                 AuditLabels.result(log.getResult()), AuditLabels.objectType(log.getObjectType()),
-                AuditLabels.automatic(log.getAction()));
+                AuditLabels.automatic(log.getAction()),
+                AuditLabels.accountName(log.getUserId(), log.getAccount(), log.getRoleCode()));
     }
 
     private static String roleName(AuditLog log) {
+        // 系统自动记录没有登录用户：角色写“系统”，不显示 SYSTEM 这类代码（问题清单 #20）。
+        if (AuditLabels.systemPrincipal(log.getUserId(), log.getAccount(), log.getRoleCode())) return "系统";
         String name = log.getRoleName();
         if (name == null || name.isBlank()) name = AuditLabels.role(log.getDisplayRoleCode());
         if (name.isBlank()) return "未记录";
@@ -118,6 +121,6 @@ public class AuditQueryService {
             String action, String objectType, String objectId, String detail, long occurredAt,
             String ip, String result, String userAgent, String moduleName, String actionName,
             String roleName, String roleSource, String displayRoleCode, String menuCode,
-            String resultName, String objectTypeName, boolean automatic) {
+            String resultName, String objectTypeName, boolean automatic, String accountName) {
     }
 }

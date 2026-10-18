@@ -43,7 +43,7 @@ public final class ReportLabels {
         entry("weather","气象设备"), entry("weather_sensor","天气传感器"), entry("RADAR","雷达"),
         // 交接类型与设备执行结果（问题清单 #20：报表不再出现 UAV_PUNISHMENT、COUNTERMEASURE_SET_OK 等英文码）。
         entry("UAV_PUNISHMENT","处罚移送"), entry("RISK_NOTICE","风险通报"), entry("DEVICE_INCIDENT","设备异常"),
-        entry("COUNTERMEASURE_SET_OK","设备已确认开启"), entry("COUNTERMEASURE_TCP_OK","设备连接正常"),
+        entry("COUNTERMEASURE_SET_OK","设备已确认执行指令"), entry("COUNTERMEASURE_TCP_OK","设备连接正常"),
         entry("COUNTERMEASURE_QUERY_PASSED","设备状态查询通过"), entry("COUNTERMEASURE_STATE_MISMATCH","设备状态与指令不一致"),
         entry("COUNTERMEASURE_OUTCOME_UNKNOWN","设备执行结果待确认"), entry("COUNTERMEASURE_COMPLETED","反制已完成"),
         entry("JAMMING_COMPLETED","干扰已完成"), entry("DEVICE_SUCCEEDED","设备执行成功"), entry("DEVICE_FAILED","设备执行失败"),
@@ -96,7 +96,7 @@ public final class ReportLabels {
             case "plans" -> List.of(new Column("label","任务编号"),new Column("occurred_at","任务开始时间"),new Column("state","任务状态"),
                     new Column("result","最新核验"),new Column("note","核验说明"),new Column("region","区域"),new Column("source_mode","来源"));
             case "authorizations","handoffs" -> List.of(new Column("label",key.equals("handoffs")?"接收方":"授权编号"),
-                    new Column("related","关联事件 ID"),new Column("occurred_at","关联事件创建时间"),new Column("kind","类型"),
+                    new Column("related","关联告警编号"),new Column("occurred_at","关联事件创建时间"),new Column("kind","类型"),
                     new Column("state",key.equals("handoffs")?"发送状态":"授权状态"),new Column("result",key.equals("handoffs")?"回执状态":"执行结果"),
                     new Column("note","结果说明"),new Column("source_mode","来源"));
             default -> List.of(new Column("label","业务编号"),new Column("occurred_at","统计时间"),new Column("kind","类型"),
@@ -110,10 +110,14 @@ public final class ReportLabels {
             case "state" -> text(section,field,row.state()); case "kind" -> text(section,field,row.kind()); case "severity" -> text(section,field,row.severity());
             case "result" -> text(row.result()); case "source_mode" -> text(row.sourceMode());
             case "region" -> text(row.region());
-            case "related" -> row.related() == null ? "—" : deviceSection(section) ? DeviceDisplayNo.format(row.related()) : row.related();
+            case "related" -> row.related() == null ? "—" : deviceSection(section) ? DeviceDisplayNo.format(row.related())
+                    : eventSection(section) ? businessNo(row.related()) : row.related();
             case "note" -> row.note() == null ? "—" : row.note(); default -> "—";
         };
     }
+    /** 处置授权、事件交接的“关联告警编号”和告警页一样去掉“告警-”前缀（问题清单 #21：不再给操作员看事件内部 ID）。 */
+    static boolean eventSection(String section) { return section.equals("authorizations") || section.equals("handoffs"); }
+    static String businessNo(String value) { return value.trim().replaceFirst("^(?:告警|目标|风险)-", ""); }
     /** 设备快照与运维待办的“设备编号”按设备管理页的显示编号写，原始编号只用于关联。 */
     static boolean deviceSection(String section) { return section.equals("devices") || section.equals("maintenance"); }
     public static Map<String,String> dictionary() {

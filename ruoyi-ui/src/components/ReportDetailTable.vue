@@ -15,6 +15,8 @@ function cell(row, field) {
   if (field === 'label' && ['targets', 'alarms', 'risks', 'events'].includes(props.section.key)) return formatBusinessNo(value) || row.id;
   // 设备编号与设备管理页同一显示写法（导出由后端 DeviceDisplayNo 按同一算法生成）。
   if (field === 'related' && ['devices', 'maintenance'].includes(props.section.key)) return formatDeviceNo(value);
+  // 处置授权、事件交接的关联告警编号和告警页同一写法（去掉“告警-”前缀）。
+  if (field === 'related' && ['authorizations', 'handoffs'].includes(props.section.key)) return formatBusinessNo(value) || '—';
   if (field === 'occurred_at') return value == null ? '—' : new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'medium', hour12: false
   }).format(new Date(value));

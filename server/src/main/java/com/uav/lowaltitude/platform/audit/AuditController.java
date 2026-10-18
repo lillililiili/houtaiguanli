@@ -68,7 +68,7 @@ public class AuditController {
                 filter(from, to, account, module, action, result, objectType, objectId, includeAutomatic),
                 request.getRemoteAddr(), request.getHeader("User-Agent"));
         return CsvExport.response("audit-logs.csv", List.of("时间", "账号", "角色", "菜单", "动作", "结果", "IP", "终端", "详情"),
-                rows.stream().map(row -> Arrays.asList(String.valueOf(row.occurredAt()), row.account(), row.roleName(),
+                rows.stream().map(row -> Arrays.asList(String.valueOf(row.occurredAt()), row.accountName(), row.roleName(),
                         row.moduleName(), row.actionName(), row.resultName(),
                         row.ip() == null || row.ip().isBlank() ? "未记录" : row.ip(), row.userAgent(), row.detail())).toList());
     }

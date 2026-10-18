@@ -20,8 +20,11 @@ public abstract class BusinessReportSource {
         return reader.summarize(dataset(range), range, key(), title(), basis(), snapshot(), dimensions());
     }
     public Page details(Range range, int page, int size) {
-        return reader.details(dataset(range), page, size, range.sourceScope());
+        Page raw = reader.details(dataset(range), page, size, range.sourceScope());
+        return new Page(raw.items().stream().map(this::present).toList(), raw.page(), raw.size(), raw.total());
     }
+    /** 明细行给操作员看之前的整理（页面与导出同源）；默认原样。只改显示，不改库里的记录。 */
+    protected Row present(Row row) { return row; }
     public enum SourceScope {
         LIVE("live"), SIMULATED("simulated");
         private final String value;

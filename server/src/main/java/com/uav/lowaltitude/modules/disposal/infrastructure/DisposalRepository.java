@@ -32,7 +32,7 @@ public class DisposalRepository {
         String time = reader.epoch("e.created_at");
         String sql = "SELECT a.authorization_id AS id,a.authorization_no AS label," + time + " AS at_ms,"
             + "a.status AS state,a.action_type AS kind,CAST(NULL AS VARCHAR) AS severity,rd.name AS region,a.source_mode,"
-            + "e.event_id AS related,a.result_code AS result,a.result_detail AS note"
+            + "ea.alarm_no AS related,a.result_code AS result,a.result_detail AS note"
             + " FROM disposal_authorization a JOIN uav_event e ON a.subject_kind='UAV_EVENT' AND a.subject_id=e.event_id"
             + " AND e.owner_org_id=a.owner_org_id AND e.district_id=a.district_id"
             + " JOIN alarm ea ON ea.alarm_id=e.alarm_id AND ea.owner_org_id=e.owner_org_id AND ea.district_id=e.district_id"

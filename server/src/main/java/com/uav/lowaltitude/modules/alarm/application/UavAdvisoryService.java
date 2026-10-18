@@ -350,8 +350,8 @@ public class UavAdvisoryService {
         return new AutoHandoff(true, "SUBMITTED", null, handoffId, trigger, updatedAt, null, null);
     }
     private static String pendingReason(String blocked) {
-        if (blocked == null || blocked.isBlank()) return "处罚交接已建立，还没有发给处罚部门";
-        if ("通知处罚规则尚未全部满足".equals(blocked)) return "通知处罚的规则还没有全部满足，系统没有自动发出。有权限的人员可以打开处罚交接手动发送";
+        if (blocked == null || blocked.isBlank()) return "处罚交接已建立，还没有发给处罚部门。";
+        if ("通知处罚规则尚未全部满足".equals(blocked)) return "通知处罚的规则还没有全部满足，系统没有自动发出。有权限的人员可以打开处罚交接手动发送。";
         return blocked;
     }
     private boolean canInspectHandoffRecipients(String eventId) {

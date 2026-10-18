@@ -84,7 +84,7 @@ public class NoCounterRepository {
     }
     public String operationBlock(String eventId) {
         if(jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE subject_kind='UAV_EVENT' AND subject_id=? AND action_type IN ('COUNTERMEASURE','JAMMING') AND status IN ('REQUESTED','APPROVED','EXECUTING')",Integer.class,eventId)>0)
-            return "存在申请中、已授权或执行中的反制，请先完成或撤销在途处置";
+            return "存在申请中、已授权或执行中的反制，请先完成或撤销在途处置。";
         // 2026-10-14 起急停后不再登记现场停机核查：在途或超时的指令，只要之后这台设备按过急停（任何事件的急停都算，
         // 全关作用于整台设备），或者就是这次急停覆盖的授权自己的全关和重试，就以急停为准，不再挡结束处置。
         if(jdbc.queryForObject("SELECT COUNT(*) FROM device_command c JOIN disposal_authorization a ON a.authorization_id=c.authorization_id"

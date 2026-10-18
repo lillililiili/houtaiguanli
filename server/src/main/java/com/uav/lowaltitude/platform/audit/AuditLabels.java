@@ -360,7 +360,43 @@ final class AuditLabels {
         if (roleCode == null || roleCode.isBlank()) return "";
         if ("ROLE-ADMIN".equals(roleCode)) return "超级管理员";
         if ("ROLE-BACKEND".equals(roleCode)) return "后台用户";
+        if (SYSTEM_ROLE.equalsIgnoreCase(roleCode)) return "系统";
         return roleCode;
+    }
+
+    /** 系统自动记录写入的角色码（没有登录用户）。 */
+    static final String SYSTEM_ROLE = "SYSTEM";
+
+    /**
+     * 系统自动记录的执行主体（没有用户 ID，账号写的是主体代码）在审计列表里的中文名（问题清单 #20）。
+     * 原代码保留在 account 字段和详情里，只是不直接给操作员看。
+     */
+    private static final Map<String, String> SYSTEM_PRINCIPALS = Map.ofEntries(
+            Map.entry("SYSTEM", "系统"),
+            Map.entry("AUTO_VERIFY", "系统自动核实"),
+            Map.entry("AUTO_SMS", "系统自动短信"),
+            Map.entry("AUTO_VOICE", "系统自动电话"),
+            Map.entry("AUTO_PUNISHMENT", "系统自动移送处罚"),
+            Map.entry("AUTO_RESEND", "系统自动重发"),
+            Map.entry("AUTO_FOLLOWUP", "系统自动跟进"),
+            Map.entry("DEPARTURE_WATCH", "系统飞离观察"),
+            Map.entry("AUTOMATION-RULE-RUNNER", "系统规则自动执行"));
+
+    /**
+     * 没有用户 ID、且角色是 SYSTEM 或账号是已知系统主体的记录才算系统主体；
+     * 登录失败等写着用户输入账号的记录（同样没有用户 ID、没有角色）照原样显示，不冒充“系统”。
+     */
+    static boolean systemPrincipal(String userId, String account, String roleCode) {
+        if (userId != null && !userId.isBlank()) return false;
+        if (roleCode != null && SYSTEM_ROLE.equalsIgnoreCase(roleCode.trim())) return true;
+        return account != null && SYSTEM_PRINCIPALS.containsKey(account.trim().toUpperCase(Locale.ROOT));
+    }
+
+    /** 审计列表“账号”列的显示名：系统主体写中文，未知系统主体兜底“系统”；普通账号原样。 */
+    static String accountName(String userId, String account, String roleCode) {
+        if (!systemPrincipal(userId, account, roleCode)) return account;
+        String key = account == null ? "" : account.trim().toUpperCase(Locale.ROOT);
+        return SYSTEM_PRINCIPALS.getOrDefault(key, "系统");
     }
 
     static boolean hasModuleLabel(String moduleCode) { return moduleCode != null && MODULES.containsKey(moduleCode); }

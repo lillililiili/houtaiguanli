@@ -4,14 +4,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { ruleSetApi } from '@/api/ruleSets'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
-import { isRecommendedVersion, versionSummary } from './ruleSetPresentation'
+import { DEMO_PARAM_LABEL, isDemoVersion, isRecommendedVersion, versionSummary } from './ruleSetPresentation'
 
 const auth = useAuthStore()
 const canManage = computed(() => auth.hasPermission('rule:manage'))
 const sets = ref([]), loading = ref(false), error = ref(''), busy = ref('')
 let sequence = 0, alive = true
 
-const paramLabel = value => ({ CONFIRMED: ['已确认参数', 'success'], DEMO: ['演示参数，未经业务方确认', 'warning'] })[value] || [value || '参数状态未知', 'info']
+const paramLabel = value => ({ CONFIRMED: ['已确认参数', 'success'], DEMO: [DEMO_PARAM_LABEL, 'warning'] })[value] || [value || '参数状态未知', 'info']
 function versionState(version) {
   if (version.is_active) return ['生效中', 'success']
   if (version.is_shadow) return ['影子验证中', 'warning']
@@ -74,7 +74,7 @@ onBeforeUnmount(() => { alive = false; sequence++ })
           <el-tag v-else type="warning">尚未启用，系统不会按这套规则研判</el-tag>
         </header>
         <el-table :data="set.versions" empty-text="这套规则集还没有版本">
-          <el-table-column label="版本" min-width="130"><template #default="{ row }"><div class="version-name">第 {{ row.version_no }} 版<el-tag v-if="isRecommendedVersion(row)" class="recommended-tag" type="success" size="small" effect="dark">推荐</el-tag></div></template></el-table-column>
+          <el-table-column label="版本" min-width="130"><template #default="{ row }"><div class="version-name">第 {{ row.version_no }} 版<el-tag v-if="isRecommendedVersion(row)" class="recommended-tag" type="success" size="small" effect="dark">推荐</el-tag><el-tag v-else-if="isDemoVersion(row)" class="demo-tag" type="warning" size="small" effect="plain">演示参数</el-tag></div></template></el-table-column>
           <el-table-column label="说明" min-width="300"><template #default="{ row }"><p class="version-summary">{{ versionSummary(row.description) }}</p><details class="version-details"><summary>详细信息</summary><p>{{ row.description || '暂无说明' }}</p><p class="version-id">版本编号：{{ row.rule_set_version_id }}</p></details></template></el-table-column>
           <el-table-column label="参数" min-width="170"><template #default="{ row }"><el-tag :type="paramLabel(row.param_status)[1]" effect="plain">{{ paramLabel(row.param_status)[0] }}</el-tag></template></el-table-column>
           <el-table-column label="发布时间" min-width="160"><template #default="{ row }">{{ formatTime(row.published_at) }}</template></el-table-column>

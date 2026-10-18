@@ -50,6 +50,24 @@ it('菜单筛选、导出保持一致，历史缺失信息明确显示', async (
   [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '导出 CSV').click(); await settle();
   expect(systemApi.auditCsv).toHaveBeenLastCalledWith(expect.objectContaining({ module: 'maintenance' }));
 });
+it.each([
+  ['AUTO_VERIFY', '系统自动核实'],
+  ['AUTO_SOMETHING_NEW', '系统']
+])('系统自动记录的账号显示后端给的中文名 %s，原代码只在详情括号里', async (account, name) => {
+  const row = { audit_id: `log-${account}`, account, account_name: name, role_code: 'SYSTEM', role_name: '系统',
+    module_name: '告警事件', action_name: '自动核实告警', result: 'SUCCESS', ip: null, occurred_at: 1 };
+  systemApi.audits.mockResolvedValue({ items: [row], total: 1 });
+  systemApi.audit.mockResolvedValue(row);
+  host = document.createElement('div'); document.body.append(host);
+  app = createApp(AuditView); app.use(ElementPlus); app.mount(host); await settle();
+  const table = host.querySelector('.el-table__body').textContent;
+  expect(table).toContain(name);
+  expect(table).not.toContain(account);
+  expect(table).not.toContain('SYSTEM');
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '详情').click(); await settle();
+  expect(document.querySelector('.el-dialog__body').textContent).toContain(`${name}（原代码：${account}）`);
+});
+
 afterEach(async () => {
   app?.unmount();
   // Drain Element Plus table layout and dialog timers before jsdom is disposed.

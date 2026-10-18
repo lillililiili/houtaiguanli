@@ -200,9 +200,9 @@ async function resetPassword() {
 }
 async function removeUser(row) {
   try {
-    const { value } = await ElMessageBox.prompt(`账号“${row.account}”将被逻辑删除，历史审计仍会保留。`, '删除用户', { inputPlaceholder: '请输入删除原因', inputValidator: value => !!value.trim() || '删除原因为必填项', type: 'warning' })
+    const { value } = await ElMessageBox.prompt(`账号“${row.account}”将被删除，历史记录仍会保留。`, '删除用户', { inputPlaceholder: '请输入删除原因', inputValidator: value => !!value.trim() || '删除原因为必填项', type: 'warning' })
     await systemApi.deleteUser(row.user_id, row.version, value.trim())
-    ElMessage.success('用户已逻辑删除，相关会话已撤销。')
+    ElMessage.success('用户已删除，历史记录保留，相关会话已撤销。')
     await refreshAll()
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '删除失败。') }
 }
