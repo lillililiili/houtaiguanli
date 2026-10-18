@@ -33,6 +33,39 @@ class AuditLabelsCoverageTest {
         }
     }
 
+    /** 问题清单 #20：自动核验、模拟接入、自动通知等由变量或拼接写入的动作码，字典里都要有中文。 */
+    @Test
+    void automaticAndComposedActionsSeenInAcceptanceHaveChineseLabels() {
+        for (String code : List.of("device_maintenance_auto_check", "device_maintenance_auto_recovered",
+                "device_maintenance_recovery_invalidated", "device_maintenance_created", "device_maintenance_confirm_complete",
+                "device_incident_auto_recovered", "mqtt_device_register", "mqtt_device_disable", "auto_sms_delivered",
+                "auto_sms_failed", "auto_voice_played", "auto_voice_unknown", "notification_departure_recorded",
+                "handoff_followup_created", "handoff_notification_decided", "eo_auto_paused", "integration_source_disable",
+                "local_normalized_observation", "local_qa_device_status", "device_planned_offline")) {
+            assertThat(AuditLabels.hasActionLabel(code)).as(code).isTrue();
+            assertThat(AuditLabels.action(code)).as(code).matches(".*[\\p{IsHan}].*").doesNotContain("_");
+        }
+        for (String code : AuditLabels.AUTOMATIC_ACTIONS) assertThat(AuditLabels.hasActionLabel(code)).as(code).isTrue();
+    }
+
+    /** 未配中文的码不直接显示：动作写“其他操作”、结果写“其他结果”、对象写“其他对象”，原代码由详情保留。 */
+    @Test
+    void unknownCodesFallBackToChineseWithoutHidingKnownOnes() {
+        assertThat(AuditLabels.action("brand_new_action")).isEqualTo("其他操作");
+        assertThat(AuditLabels.action("COUNTERMEASURE_SET_OK")).isEqualTo("其他操作");
+        assertThat(AuditLabels.action("GET /api/v1/handoffs")).isEqualTo("查询业务交接");
+        assertThat(AuditLabels.action("自定义中文动作")).isEqualTo("自定义中文动作");
+        assertThat(AuditLabels.result("FAILED")).isEqualTo("失败");
+        assertThat(AuditLabels.result("FAILURE")).isEqualTo("失败");
+        assertThat(AuditLabels.result("SUCCESS")).isEqualTo("成功");
+        assertThat(AuditLabels.result("PARTIAL_X")).isEqualTo("其他结果");
+        assertThat(AuditLabels.objectType("device_maintenance_task")).isEqualTo("设备异常处置单");
+        assertThat(AuditLabels.objectType("brand_new_object")).isEqualTo("其他对象");
+        assertThat(AuditLabels.module("brand_new_module")).isEqualTo("其他");
+        assertThat(AuditLabels.automatic("local_normalized_observation")).isTrue();
+        assertThat(AuditLabels.automatic("login_success")).isFalse();
+    }
+
     @Test
     void conditionalEvidencePreviewActionsHaveChineseLabels() {
         assertThat(AuditLabels.action("evidence_preview")).isEqualTo("预览证据文件");
@@ -83,9 +116,9 @@ class AuditLabelsCoverageTest {
         assertThat(modules).as("扫到的模块码").isNotEmpty();
 
         List<String> missingModules = modules.stream()
-                .filter(code -> AuditLabels.module(code).equals(code)).sorted().toList();
+                .filter(code -> !AuditLabels.hasModuleLabel(code)).sorted().toList();
         List<String> missingActions = actions.stream()
-                .filter(code -> AuditLabels.action(code).equals(code)).sorted().toList();
+                .filter(code -> !AuditLabels.hasActionLabel(code)).sorted().toList();
 
         assertThat(missingModules).as("这些模块码在审计日志里会显示成英文").isEmpty();
         assertThat(missingActions).as("这些动作码在审计日志里会显示成英文").isEmpty();

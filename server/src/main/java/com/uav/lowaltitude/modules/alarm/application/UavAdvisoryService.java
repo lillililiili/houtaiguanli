@@ -163,13 +163,17 @@ public class UavAdvisoryService {
         if(event==null)return null;
         boolean confirmed="CONFIRMED".equals(event.state());
         if(!confirmed&&!"PENDING_VERIFICATION".equals(event.state()))return null;
-        if(confirmed) {
-            Boolean review=noCounter.reviewRequired(event);
-            if(Boolean.FALSE.equals(review))return "不反制 · 现场处置结束";
-            if(Boolean.TRUE.equals(review))return "风险变化待决策";
-        }
+        Boolean review=confirmed?noCounter.reviewRequired(event):null;
+        if(Boolean.TRUE.equals(review))return "风险变化待决策";
         String handoffId=handoffs.existingPunishment(eventId);
-        if(handoffId!=null&&!"FAILED".equals(handoffs.latestDeliveryStatus(handoffId)))return "已移送处罚";
+        // 页面先看通知决定（旧版“现场处置结束待决定通知”的冻结流程），写法同 autoHandoffView.notificationProgressView。
+        var notice=handoffId==null?null:followups.decision(handoffId);
+        if(notice!=null)return noticeProgress(notice.state(),handoffs.latestDeliveryStatus(handoffId));
+        if(Boolean.FALSE.equals(review))return "不反制 · 现场处置结束";
+        if(handoffId!=null) {
+            String handoff=punishmentProgress(handoffs.latestDeliveryStatus(handoffId));
+            if(handoff!=null)return handoff;
+        }
         if(!confirmed)return null;
         if(disposalScope!=null) {
             String counter=counterProgress(disposals.list(disposalScope,new DisposalRepository.Query("UAV_EVENT",eventId,null,null,null),0,50));
@@ -178,6 +182,25 @@ public class UavAdvisoryService {
         var phase=notifyPhase(event,automatic.overview(event,false),voice.overview(event,false));
         if(phase==null)return null;
         return switch(phase){case AUTO_SMS->"自动短信";case WATCHING->"观察中";case AUTO_CALL->"自动电话";case AWAIT_COUNTER->"待定是否反制";};
+    }
+    /**
+     * 处罚移送只在真正发出（已提交或已送达）后才叫“已移送处罚”；交接已建立但还没发出叫“待发送移送”（问题清单 #9/#19）。
+     * 发送失败不算已移送，接着看反制进度（同页面 deriveAlarmProgress）。
+     */
+    static String punishmentProgress(String delivery) {
+        if("SUBMITTED".equals(delivery)||"DELIVERED".equals(delivery))return "已移送处罚";
+        if("FAILED".equals(delivery))return null;
+        return "待发送移送";
+    }
+    static String noticeProgress(String decision, String delivery) {
+        if("PENDING_DECISION".equals(decision))return "现场处置结束 · 待决定通知";
+        if("DO_NOT_NOTIFY".equals(decision))return "本次不通知（已记录）";
+        if("NOTIFY".equals(decision)) {
+            if("DELIVERED".equals(delivery)||"SUBMITTED".equals(delivery))return "已通知上级";
+            if("FAILED".equals(delivery))return "通知上级发送失败";
+            if(delivery!=null)return "已通知上级 · 送达待确认";
+        }
+        return "通知进度待确认";
     }
     /** 同页面 deriveAlarmProgress：只看信号干扰和联动反制，失败、驳回、撤销、过期的不算，取最近申请的一条（列表按申请时间倒序）。 */
     private static String counterProgress(List<DisposalRepository.AuthorizationRow> rows) {
