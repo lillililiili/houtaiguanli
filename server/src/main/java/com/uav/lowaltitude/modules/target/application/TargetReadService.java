@@ -190,7 +190,16 @@ public class TargetReadService {
                 status == null ? null : new TrackStatusDto(status.status(), requiredMillis(status.since())),
                 degradationDto(degradation), selectionDto(selection), lineageSummary(id),
                 allowedActions(id, status, links.size()), row.version(),
-                riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries), classChanges(id));
+                riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries), classChanges(id),
+                lastReportedSpeed(row));
+    }
+
+    /** 最新状态没有速度时才查最后一次上报的速度；有速度就以最新状态为准。 */
+    private com.uav.lowaltitude.modules.target.api.TargetDtos.LastSpeedDto lastReportedSpeed(TargetRow row) {
+        if (row.stateObservedAt() == null || row.speedMps() != null) return null;
+        var last = repository.lastReportedSpeed(row.targetId(), row.stateObservedAt());
+        return last == null || last.observedAt() == null || last.speedMps() == null ? null
+                : new com.uav.lowaltitude.modules.target.api.TargetDtos.LastSpeedDto(last.speedMps(), last.observedAt().toInstant().toEpochMilli());
     }
 
     /**

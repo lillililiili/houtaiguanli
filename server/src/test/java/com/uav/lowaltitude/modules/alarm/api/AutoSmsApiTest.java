@@ -169,6 +169,32 @@ class AutoSmsApiTest {
         assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,eventId)).isEqualTo("PENDING_VERIFICATION");
     }
+    /** 2026-10-18（流程 3、4）：没有报备飞手时，从告警一出来到超过通知时效，原因都写没有飞手，不改说“等待核实”或“超过时效”。 */
+    @Test void missingReportedPilotIsTheReasonFromTheStartAndAfterTheWindow()throws Exception {
+        for(String state:List.of("PENDING_VERIFICATION","CONFIRMED")) {
+            fixture();
+            jdbc.update("update uav_event set state_code=? where event_id=?",state,eventId);
+            // 研判是只追加的：换到一个没有任何研判的目标上，模拟“对不上报备任务”。
+            String withoutPlan=UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO target(target_id,target_no,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at,version) SELECT ?,?,'UAV','mock',owner_org_id,district_id,created_at,updated_at,0 FROM target WHERE target_id=?",withoutPlan,"NO-PILOT-"+withoutPlan,targetId);
+            jdbc.update("INSERT INTO target_latest_state(target_id,observed_at,received_at,created_at,updated_at,unknown_fields) SELECT ?,observed_at,received_at,created_at,updated_at,unknown_fields FROM target_latest_state WHERE target_id=?",withoutPlan,targetId);
+            jdbc.update("UPDATE alarm SET target_id=? WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?)",withoutPlan,eventId);
+            targetId=withoutPlan;
+            automatic.process(eventId);
+            read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"))
+                    .andExpect(jsonPath("$.data.auto_sms.reason").value("当前事件尚无精确关联任务，不能把单位联系人当作执行飞手"))
+                    .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
+            // 超过通知时效后仍是同一个原因。
+            jdbc.update("update alarm set received_at=? where alarm_id=(select alarm_id from uav_event where event_id=?)",Timestamp.from(Instant.now().minusSeconds(301)),eventId);
+            automatic.process(eventId);
+            read().andExpect(jsonPath("$.data.auto_sms.status").value("BLOCKED"))
+                    .andExpect(jsonPath("$.data.auto_sms.reason").value("当前事件尚无精确关联任务，不能把单位联系人当作执行飞手"));
+            if("CONFIRMED".equals(state)) read().andExpect(jsonPath("$.data.notify_phase").value("AWAIT_COUNTER"));
+            else read().andExpect(jsonPath("$.data.notify_phase").doesNotExist());
+            assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=? and kind='SMS_SIMULATED'",Integer.class,eventId)).isZero();
+        }
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
     @Test void latestUnlinkedEvaluationDoesNotProvideAPilot()throws Exception {
         evaluation("LEGAL","FRESH","[]",false,Instant.now().minusSeconds(1));
         automatic.process(eventId);

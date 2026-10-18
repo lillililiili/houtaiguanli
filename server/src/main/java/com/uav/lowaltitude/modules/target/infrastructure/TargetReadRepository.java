@@ -106,6 +106,26 @@ public class TargetReadRepository {
 
     public record PilotFixRow(Coordinate location, OffsetDateTime observedAt) { }
 
+    /**
+     * 目标最后一次上报的有效速度（2026-10-18）：融合后的最新状态没有速度时（例如流程结束前最后几帧来源没报速度），
+     * 告警详情保留最后一次来源实测上报的速度并注明时刻。只读本目标已关联来源的观测，不晚于最新状态时刻，不推算。
+     * 调用方已对目标做过权限与范围校验。没有就返回 null。
+     */
+    public LastSpeedRow lastReportedSpeed(String targetId, OffsetDateTime notAfter) {
+        Map<String, Object> parameters = new HashMap<>();
+        parameters.put("target_id", targetId);
+        parameters.put("not_after", notAfter);
+        List<LastSpeedRow> rows = jdbc.query("SELECT o.speed_mps,o.observed_at FROM target_source_link l"
+                + " JOIN source_observation o ON o.source_id=l.source_id AND o.source_session_key=l.source_session_key"
+                + " AND o.external_target_id=l.external_target_id"
+                + " WHERE l.target_id=:target_id AND o.speed_mps IS NOT NULL AND o.observed_at<=:not_after"
+                + " ORDER BY o.observed_at DESC FETCH FIRST 1 ROWS ONLY",
+                parameters, (rs, i) -> new LastSpeedRow(rs.getBigDecimal("speed_mps"), time(rs, "observed_at")));
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public record LastSpeedRow(BigDecimal speedMps, OffsetDateTime observedAt) { }
+
     public TargetRow findTarget(String targetId, AccessDecision access) {
         TargetQuery query = new TargetQuery(null, null, null, null, null, null, null, true, null);
         Where where = targetWhere(query, access);

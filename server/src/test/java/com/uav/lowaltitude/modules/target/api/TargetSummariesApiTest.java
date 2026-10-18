@@ -159,6 +159,34 @@ class TargetSummariesApiTest {
     }
 
     @Test
+    void lastReportedSpeedIsKeptWhenTheLatestStateHasNoSpeed() throws Exception {
+        String targetId = target();
+        Instant stateAt = Instant.parse("2026-09-08T05:00:00Z");
+        speedObservation(targetId, stateAt.minusSeconds(30), "4.200");
+        speedObservation(targetId, stateAt.minusSeconds(10), "6.500");
+        speedObservation(targetId, stateAt.minusSeconds(5), null);
+        // 最新状态之后的观测不能冒充“最后一次上报”。
+        speedObservation(targetId, stateAt.plusSeconds(20), "9.900");
+        JsonNode last = detail(targetId).path("last_reported_speed");
+        assertThat(last.path("speed_mps").decimalValue()).isEqualByComparingTo("6.5");
+        assertThat(last.path("observed_at").asLong()).isEqualTo(stateAt.minusSeconds(10).toEpochMilli());
+    }
+
+    @Test
+    void lastReportedSpeedIsOmittedWhenTheLatestStateHasSpeedOrNothingWasReported() throws Exception {
+        String withSpeed = target();
+        speedObservation(withSpeed, Instant.parse("2026-09-08T04:59:50Z"), "3.000");
+        jdbc.update("update target_latest_state set speed_mps=7.25 where target_id=?", withSpeed);
+        JsonNode node = detail(withSpeed);
+        assertThat(node.has("last_reported_speed")).isFalse();
+        assertThat(node.path("latest_state").path("speed_mps").decimalValue()).isEqualByComparingTo("7.25");
+
+        String neverReported = target();
+        speedObservation(neverReported, Instant.parse("2026-09-08T04:59:50Z"), null);
+        assertThat(detail(neverReported).has("last_reported_speed")).isFalse();
+    }
+
+    @Test
     void bearingIsOmittedWhenTheTargetItselfHasAPosition() throws Exception {
         String targetId = target();
         bearingObservation(targetId);
@@ -348,6 +376,23 @@ class TargetSummariesApiTest {
                 + "source_mode,created_at) values (?,'sum-aoa-src','AOA','sum-session',?,?,?,null,0.80000,"
                 + "?,CAST(? AS JSON),'mock',?)",
                 UUID.randomUUID().toString(), external, at, at, anyDevice(), "{\"bearing_deg\":123.5}", at);
+    }
+
+    private void speedObservation(String targetId, Instant observedAt, String speed) {
+        Timestamp at = Timestamp.from(observedAt);
+        String external = "spd-" + targetId.substring(11);
+        jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,source_type,"
+                + "created_at,updated_at,version) select 'sum-aoa-src','SUM-AOA','方位测试来源',true,'mock','AOA',?,?,0"
+                + " where not exists(select 1 from integration_source where source_id='sum-aoa-src')", at, at);
+        jdbc.update("insert into target_source_link (link_id,target_id,source_id,source_session_key,"
+                + "external_target_id,created_at) select ?,?,'sum-aoa-src','sum-speed',?,?"
+                + " where not exists(select 1 from target_source_link where target_id=? and source_session_key='sum-speed')",
+                UUID.randomUUID().toString(), targetId, external, at, targetId);
+        jdbc.update("insert into source_observation (observation_id,source_id,source_type,source_session_key,"
+                + "external_target_id,observed_at,received_at,location,identity_confidence,device_id,speed_mps,"
+                + "source_mode,created_at) values (?,'sum-aoa-src','AOA','sum-speed',?,?,?,null,0.80000,?,"
+                + "CAST(? AS NUMERIC),'mock',?)",
+                UUID.randomUUID().toString(), external, at, at, anyDevice(), speed, at);
     }
 
     /** device_id 有指向 device 表的外键，不能编一个：用库里已有的设备，否则插入直接撞 23503。 */
