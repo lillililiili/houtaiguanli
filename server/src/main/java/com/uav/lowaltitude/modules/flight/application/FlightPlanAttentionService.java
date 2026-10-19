@@ -33,16 +33,16 @@ import static com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.NO_EVALUA
 /**
  * 飞行任务列表“需要处理的放在最上面”（2026-10-16 用户确认设计二）。
  *
- * 顺序：需要处理（任务偏离在最前，再是执行中的、新的在前，再是待执行的、开始时间近的在前）→ 其他执行中（新的在前）→ 待执行（开始时间近的在前）
+ * 顺序：需要处理（执行中的、新的在前，再是待执行的、开始时间近的在前）→ 其他执行中（新的在前）→ 待执行（开始时间近的在前）
  * → 已结束/已取消（新的在前）。需要处理只看还没结束的任务：
- * 执行中的看匹配结论（偏离、未找到对应飞机、还没对上飞机、部分匹配、不可判定）和未办结的周边设备处置单；
+ * 执行中的看未办结的周边设备处置单；2026-10-18 起匹配结论不再作为需要处理的类别。
  * 执行中和待执行的都看待核验、待通知的风险。每一项只在当前用户有对应读权限时参与，
  * 没权限看研判或风险的人不会因为排序看出这些结论。
  */
 @Service
 public class FlightPlanAttentionService {
 
-    public static final List<String> KINDS = List.of("DEVIATION", "AIRCRAFT", "DEVICE", "RISK");
+    public static final List<String> KINDS = List.of("DEVICE", "RISK");
     private static final List<String> ACTIVE = List.of("EXECUTING", "PENDING", "APPROVED");
     /** 只限制单次读取及关联事实查询的大小，不限制参与排序、筛选和统计的任务总数。 */
     private static final int ACTIVE_BATCH_SIZE = 500;
@@ -70,7 +70,7 @@ public class FlightPlanAttentionService {
         AccessDecision assessment = actuals.assessmentAccess();
         AccessDecision risk = probe(PermissionCode.RISK_READ);
         // 调用方的只读可重复读事务覆盖各批任务、关联事实以及历史任务的计数和分页。
-        // 先读完整个筛选范围，再计算全局优先级；后面批次的偏离任务也必须排到第一页。
+        // 先读完整个筛选范围，再计算全局优先级；后面批次的待处理任务也必须参与。
         for (int batchOffset = 0; ; ) {
             List<PlanRow> batch = plans.listPlansInStatuses(query, flight, ACTIVE, true, batchOffset, ACTIVE_BATCH_SIZE);
             active.addAll(batch);
@@ -90,10 +90,9 @@ public class FlightPlanAttentionService {
             else if ("EXECUTING".equals(row.statusCode())) executing.add(row);
             else pending.add(row);
         }
-        // 需要处理内部：任务偏离 → 其余执行中（新的在前）→ 待执行（开始时间近的在前），未来的任务不压过正在飞的。
+        // 需要处理内部：执行中（新的在前）→ 待执行（开始时间近的在前）。
         AttentionSummaryDto summary = summary(attention, executing.size());
-        needs.sort(Comparator.comparing((PlanRow row) -> !attention.get(row.planId()).kinds().contains("DEVIATION"))
-                .thenComparing(row -> !"EXECUTING".equals(row.statusCode()))
+        needs.sort(Comparator.comparing((PlanRow row) -> !"EXECUTING".equals(row.statusCode()))
                 .thenComparing((a, b) -> "EXECUTING".equals(a.statusCode()) ? newestFirst.compare(a, b) : soonestFirst.compare(a, b)));
         executing.sort(newestFirst);
         pending.sort(soonestFirst);
@@ -146,8 +145,6 @@ public class FlightPlanAttentionService {
             List<DeviceTaskDto> tasks = devices.getOrDefault(row.planId(), List.of());
             long[] pair = riskCounts.getOrDefault(row.planId(), new long[2]);
             List<String> kinds = new ArrayList<>();
-            if ("DEVIATION".equals(issue)) kinds.add("DEVIATION");
-            else if (issue != null) kinds.add("AIRCRAFT");
             if (!tasks.isEmpty()) kinds.add("DEVICE");
             if (pair[0] + pair[1] > 0) kinds.add("RISK");
             result.put(row.planId(), new PlanAttentionDto(List.copyOf(kinds), issue, pair[0], pair[1], List.copyOf(tasks),
@@ -177,7 +174,8 @@ public class FlightPlanAttentionService {
             needs++;
             for (String kind : item.kinds()) byKind[KINDS.indexOf(kind)]++;
         }
-        return new AttentionSummaryDto(needs, byKind[0], byKind[1], byKind[2], byKind[3], otherExecuting);
+        // 旧字段保留为零以兼容响应结构，不再计入待处理数量。
+        return new AttentionSummaryDto(needs, 0, 0, byKind[0], byKind[1], otherExecuting);
     }
 
     private static List<PlanRow> slice(List<PlanRow> rows, int offset, int size) {

@@ -89,7 +89,8 @@ class FlightAttentionPagingPostgresTest {
         seedPopulation(mode);
         assertAllPages("", population, 97);
         List<Plan> aircraft=population.stream().filter(p->p.state.equals("EXECUTING")).toList();
-        assertAllPages("&attention=AIRCRAFT",aircraft,4);
+        assertAllPages("&attention=DEVICE",List.of(),4);
+        assertAllPages("&attention=RISK",List.of(),4);
         assertAllPages("&status_code=PENDING&source_mode="+mode,
                 population.stream().filter(p->p.state.equals("PENDING")&&p.mode.equals(mode)).toList(),100);
         assertAllPages("&status_code=COMPLETED",population.stream().filter(p->p.state.equals("COMPLETED")).toList(),3);
@@ -114,7 +115,7 @@ class FlightAttentionPagingPostgresTest {
         assertThat(page.path("total").asInt()).isEqualTo(population.size());
         assertThat(page.path("attention_summary").path("needs_action").asInt()).isZero();
         assertThat(page.path("attention_summary").path("other_executing").asInt()).isEqualTo(11);
-        assertThat(read("&attention=AIRCRAFT").path("total").asInt()).isZero();
+        assertThat(read("&attention=RISK").path("total").asInt()).isZero();
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='flight:read'",role);
         mvc.perform(get("/api/v1/flight-plans?order=attention").header("Authorization","Bearer "+session))
                 .andExpect(status().isForbidden());
@@ -171,11 +172,11 @@ class FlightAttentionPagingPostgresTest {
     private void assertAllPages(String filter,List<Plan> expected,int size) throws Exception {
         List<String> collected=new ArrayList<>();
         List<Plan> ranked=ordered(expected);
-        long needs=expected.stream().filter(p->p.state.equals("EXECUTING")).count();
         for(int page=1;page<=(expected.size()+size-1)/size+1;page++) {
             JsonNode result=read(filter+"&size="+size+"&page="+page);
             assertThat(result.path("total").asInt()).as(filter+" total page "+page).isEqualTo(expected.size());
-            assertThat(result.path("attention_summary").path("aircraft").asLong()).isEqualTo(needs);
+            assertThat(result.path("attention_summary").path("aircraft").asLong()).isZero();
+            assertThat(result.path("attention_summary").path("needs_action").asLong()).isZero();
             int offset=(page-1)*size;
             List<String> ids=result.path("items").findValuesAsText("plan_id");
             assertThat(ids).containsExactlyElementsOf(ranked.subList(Math.min(offset,ranked.size()),Math.min(offset+size,ranked.size()))

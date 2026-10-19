@@ -319,7 +319,7 @@ public class DisposalAuthorizationService {
     @Transactional
     public ActionResultDto cancel(String id, String rawRequest, String key) {
         // 撤销尚未执行的申请或授权（BUG-03：批准后没执行的授权不能只等过期）：
-        // 申请人本人凭申请权（直接授权凭直接处置权）即可；替别人撤销需要审批权。都没有时按 403 拒绝。
+        // 待审批只能由申请人撤回；已批准未执行时，审批人仍可撤销他人的授权。
         AccessDecision decision = cancelAccess();
         Decision body = parseDecision(rawRequest, false);
         AuthorizationRow row = locked(id, decision);
@@ -328,6 +328,8 @@ public class DisposalAuthorizationService {
         DisposalRules.requireTransition(DisposalRules.CANCEL, row.status());
         AuthUser actor = AuthContext.require();
         boolean own = actor.userId().equals(row.requestedBy());
+        if (!own && DisposalRules.REQUESTED.equals(row.status()))
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "只有申请人可以撤回待审批的申请");
         if (!own) access.require(PermissionCode.DISPOSAL_APPROVE);
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         // 结果码如实写是谁撤的：审批人撤销别人的授权不能记成“申请人撤回”。

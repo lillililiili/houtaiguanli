@@ -59,6 +59,12 @@ test('still compares cached built assets with the local build', async t => {
   await assert.rejects(checkFrontend(f.origin, f.dir, 'BACKEND'), /构建产物/);
 });
 
+test('timestamped dev resources still require actual JavaScript', async t => {
+  const scriptPath = `/src/main.js?t=${Date.now()}`;
+  const f = await fixture(t, { [scriptPath]: [200, 'text/html', '<html>fallback</html>'] }, { mode: 'dev', scriptPath });
+  await assert.rejects(checkFrontend(f.origin, f.dir, 'FRONTEND'), /静态资源/);
+});
+
 for (const scriptPath of ['https://example.invalid/main.js?t=1', '/assets/main.js?t=1#fragment']) {
   test(`rejects unsafe resource URL ${scriptPath}`, async t => {
     const f = await fixture(t, {}, { mode: 'dev', scriptPath });
