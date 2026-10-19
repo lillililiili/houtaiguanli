@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.reporting.infrastructure;
 
 import java.time.*;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionConfigRepository;
@@ -19,8 +20,14 @@ public class ObservationMetricsRepository {
     private final ObjectMapper json;
     private final FusionConfigRepository configs;
     private final boolean postgres;
+    private final int maxPoints;
+    @Autowired
     public ObservationMetricsRepository(JdbcTemplate template, ObjectMapper json, FusionConfigRepository configs) {
+        this(template, json, configs, MAX_POINTS);
+    }
+    ObservationMetricsRepository(JdbcTemplate template, ObjectMapper json, FusionConfigRepository configs, int maxPoints) {
         this.jdbc = new NamedParameterJdbcTemplate(template); this.json = json; this.configs = configs;
+        this.maxPoints = maxPoints;
         postgres = Boolean.TRUE.equals(template.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>) c -> c.getMetaData().getDatabaseProductName().contains("PostgreSQL")));
     }
     private record Stored(Point point, String org, String district, String contributors) { }
@@ -52,16 +59,23 @@ public class ObservationMetricsRepository {
                JOIN app_district district ON district.district_id=ds.district_id AND district.enabled=TRUE
                WHERE ds.user_id=:user AND ds.org_id=t.owner_org_id AND ds.district_id=t.district_id)
             """;
+        String pointScope = " FROM target t JOIN track tr ON tr.target_id=t.target_id AND tr.layer='FUSED'"
+                + " JOIN track_point p ON p.track_id=tr.track_id WHERE t.object_type_code='UAV' AND t.source_mode IN (:modes)"
+                + " AND p.observed_at>=:start AND p.observed_at<=:end"
+                + " AND NOT EXISTS (SELECT 1 FROM target_track_status s WHERE s.target_id=t.target_id AND s.status='MERGE')"
+                + access;
+        // Check the budget using narrow, unordered rows before fetching geometry/JSON or sorting.
+        // Both reads use the caller's REPEATABLE_READ snapshot and exactly the same visibility/window.
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM (SELECT 1" + pointScope
+                + " FETCH FIRST " + (maxPoints + 1) + " ROWS ONLY) bounded_points", parameters, Long.class);
+        if (count != null && count > maxPoints) return overBudget();
         String location = postgres ? "CASE WHEN ST_SRID(p.location)=4326 THEN ST_AsText(p.location) ELSE NULL END" : "CAST(p.location AS VARCHAR)";
         List<Stored> stored = jdbc.query("""
             SELECT t.target_id,t.source_mode,t.owner_org_id,t.district_id,tr.track_id,tr.config_version,
                    p.observed_at,p.point_kind,p.position_accuracy_m,p.observation_id,p.position_source_id,
                    p.source_switched,p.contributing,
-            """ + location + " AS position_text FROM target t JOIN track tr ON tr.target_id=t.target_id AND tr.layer='FUSED'"
-                + " JOIN track_point p ON p.track_id=tr.track_id WHERE t.object_type_code='UAV' AND t.source_mode IN (:modes)"
-                + " AND p.observed_at>=:start AND p.observed_at<=:end"
-                + " AND NOT EXISTS (SELECT 1 FROM target_track_status s WHERE s.target_id=t.target_id AND s.status='MERGE')"
-                + access + " ORDER BY tr.track_id,p.observed_at,p.point_id FETCH FIRST " + (MAX_POINTS + 1) + " ROWS ONLY", parameters, (r,n) -> {
+            """ + location + " AS position_text" + pointScope
+                + " ORDER BY tr.track_id,p.observed_at,p.point_id FETCH FIRST " + (maxPoints + 1) + " ROWS ONLY", parameters, (r,n) -> {
                     double[] coordinates = coordinates(r.getString("position_text"));
                     Point point = new Point(r.getString("target_id"), r.getString("track_id"), r.getObject("observed_at", OffsetDateTime.class).toInstant().toEpochMilli(),
                             r.getString("point_kind"), coordinates == null ? null : coordinates[0], coordinates == null ? null : coordinates[1],
@@ -69,7 +83,7 @@ public class ObservationMetricsRepository {
                             r.getString("source_mode"), r.getBoolean("source_switched"), policies.get(r.getString("config_version")), null);
                     return new Stored(point, r.getString("owner_org_id"), r.getString("district_id"), FusionConfigRepository.jsonText(r.getObject("contributing")));
                 });
-        if (stored.size() > MAX_POINTS) return Result.unavailable("轨迹点超过单次统计上限，请缩短统计周期；未返回截断后的合计");
+        if (stored.size() > maxPoints) return overBudget();
         Set<String> ids = new HashSet<>();
         for (Stored s : stored) {
             if (s.point.observation() != null) ids.add(s.point.observation());
@@ -106,6 +120,9 @@ public class ObservationMetricsRepository {
             points.add(new Point(p.target(),p.track(),p.at(),p.kind(),p.lon(),p.lat(),p.accuracy(),p.observation(),p.source(),p.mode(),p.switched(),p.policy(),reason));
         }
         return ObservationMetrics.calculate(points,from,to,now);
+    }
+    private static Result overBudget() {
+        return Result.unavailable("轨迹点超过单次统计上限，请缩短统计周期；未返回截断后的合计");
     }
     private static boolean matches(Fact f, Stored s) {
         return f != null && Objects.equals(f.mode,s.point.mode()) && Objects.equals(f.org,s.org)

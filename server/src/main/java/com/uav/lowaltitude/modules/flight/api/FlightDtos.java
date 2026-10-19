@@ -46,8 +46,8 @@ public final class FlightDtos {
     }
 
     /**
-     * 飞行任务“需要处理”（2026-10-16 用户确认设计二）：kinds 取 DEVIATION（任务偏离）、AIRCRAFT（没对上飞机）、
-     * DEVICE（周边设备处置单未办结）、RISK（风险待核验/待通知）。matchIssue 为 DEVIATION、NONE、NO_EVALUATION、
+     * 飞行任务“需要处理”（2026-10-18）：kinds 仅取 DEVICE（周边设备处置单未办结）、RISK（风险待核验/待通知）。
+     * matchIssue 保留只读匹配事实，不参与待处理分类、排序或计数，为 DEVIATION、NONE、NO_EVALUATION、
      * PARTIAL、UNDETERMINED 之一，没有问题或无权读研判时为 null。
      */
     public record PlanAttentionDto(List<String> kinds, String matchIssue, long pendingVerificationRisks,
@@ -62,7 +62,7 @@ public final class FlightDtos {
     public record RiskKindDto(String riskType, String reasonCode) {
     }
 
-    /** 当前筛选下需要处理的任务数，以及按种类的数量（一个任务有几种问题就各算一次）；otherExecuting 为其余执行中的任务数。 */
+    /** 待处理任务去重计数，device/risk 可重叠；deviation/aircraft 为兼容字段固定为零；otherExecuting 为其余执行中数量。 */
     public record AttentionSummaryDto(long needsAction, long deviation, long aircraft, long device, long risk, long otherExecuting) {
     }
 

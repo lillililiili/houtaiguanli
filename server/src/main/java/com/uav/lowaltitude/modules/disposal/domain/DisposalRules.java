@@ -135,8 +135,9 @@ public final class DisposalRules {
         // 尚未下发时的撤销只属于发起人。已在执行中的急停仍按停止权限开放。
         if (TRANSITIONS.get(STOP).contains(status) && permissions.contains("disposal:stop")
                 && (!APPROVED.equals(status) || callerId != null && callerId.equals(requestedBy))) actions.add(STOP);
-        // 撤回是申请人自己收回申请，因此本人无需审批权；他人收回则需要审批权。
-        if (TRANSITIONS.get(CANCEL).contains(status) && (canApprove || callerId != null && callerId.equals(requestedBy)))
+        // 待审批只能由申请人撤回；审批人可拒绝申请，或撤销已批准但尚未执行的授权。
+        if (TRANSITIONS.get(CANCEL).contains(status)
+                && (callerId != null && callerId.equals(requestedBy) || APPROVED.equals(status) && canApprove))
             actions.add(CANCEL);
         return actions;
     }

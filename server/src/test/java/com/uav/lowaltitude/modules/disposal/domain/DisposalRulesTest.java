@@ -110,7 +110,7 @@ class DisposalRulesTest {
     @Test
     void allowedActionsRequireBothStatusAndPermission() {
         assertThat(DisposalRules.allowedActions(DisposalRules.REQUESTED, DisposalRules.LINGYUN_B, "u-1", "u-2", ALL_PERMS))
-                .containsExactlyInAnyOrder("APPROVE", "REJECT", "CANCEL");
+                .containsExactlyInAnyOrder("APPROVE", "REJECT");
         assertThat(DisposalRules.allowedActions(DisposalRules.APPROVED, DisposalRules.LINGYUN_B, "u-1", "u-2", ALL_PERMS))
                 .containsExactlyInAnyOrder("EXECUTE", "CANCEL");
         assertThat(DisposalRules.allowedActions(DisposalRules.APPROVED, DisposalRules.LINGYUN_B, "u-1", "u-1", ALL_PERMS))
@@ -133,9 +133,13 @@ class DisposalRulesTest {
     void requesterMayCancelOwnRequestWithoutApprovalPermission() {
         assertThat(DisposalRules.allowedActions(DisposalRules.REQUESTED, DisposalRules.MANUAL, "u-1", "u-1",
                 Set.of("disposal:read", "disposal:request"))).containsExactly("CANCEL");
-        // 别人的申请，没有审批权就不能替他撤回。
+        // 别人的待审批申请，即使有审批权也不能替他撤回。
         assertThat(DisposalRules.allowedActions(DisposalRules.REQUESTED, DisposalRules.MANUAL, "u-1", "u-9",
                 Set.of("disposal:read", "disposal:request"))).isEmpty();
+        assertThat(DisposalRules.allowedActions(DisposalRules.REQUESTED, DisposalRules.COUNTERMEASURE_4CH, "u-3", "u-8",
+                ALL_PERMS)).doesNotContain("CANCEL");
+        assertThat(DisposalRules.allowedActions(DisposalRules.REQUESTED, DisposalRules.COUNTERMEASURE_4CH, null, null,
+                ALL_PERMS)).doesNotContain("CANCEL");
     }
 
     @Test

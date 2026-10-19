@@ -146,7 +146,7 @@ onBeforeUnmount(() => guard.begin());
         <el-radio-group v-model="period" aria-label="选择报表周期"><el-radio-button v-for="item in periods" :key="item.value" :label="item.value">{{ item.label }}</el-radio-button></el-radio-group>
         <el-date-picker v-model="selectedDate" :type="datePickerType" :value-format="dateFormat" :clearable="false"
           :placeholder="period === 'WEEKLY' ? '选择周内日期' : '选择日期'" :disabled-date="date => isFuturePickerDate(date, period)" aria-label="选择统计日期" />
-        <div class="period-range"><el-icon><Calendar /></el-icon><div><strong>{{ preview?.period_label || '正在计算统计区间…' }}</strong><small>{{ preview ? preview.from + ' 至 ' + preview.to : '当前周期统计至今日' }}</small></div></div>
+        <div class="period-range"><el-icon><Calendar /></el-icon><div><strong>{{ preview?.period_label || (error ? '统计区间未加载' : '正在计算统计区间…') }}</strong><small>{{ preview ? preview.from + ' 至 ' + preview.to : '当前周期统计至今日' }}</small></div></div>
       </div>
     </section>
     <el-alert v-if="sourceMode === 'live'" title="正式统计仅纳入真实来源记录；模拟、回放及来源未知记录不计入。预览、明细和导出使用同一口径。" type="info" :closable="false" />

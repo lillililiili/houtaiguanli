@@ -221,11 +221,37 @@ class DisposalAuthorizationApiTest {
     @Test
     void allowedActionsReflectStatusAndCallerPermissions() throws Exception {
         String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
-        assertThat(allowedActions(id, approver)).containsExactlyInAnyOrder("APPROVE", "REJECT", "CANCEL");
+        assertThat(allowedActions(id, approver)).containsExactlyInAnyOrder("APPROVE", "REJECT");
         // 申请人没有审批权，但可以撤回自己的申请。
         assertThat(allowedActions(id, requester)).containsExactly("CANCEL");
         // 只读用户一个动作都拿不到。
         assertThat(allowedActions(id, reader)).isEmpty();
+    }
+
+    @Test
+    void onlyRequesterCanWithdrawPendingApplication() throws Exception {
+        String id = id(create(requester, "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH").andExpect(status().isCreated()));
+        String otherRequester = user("OTHERREQ", List.of("disposal:read", "disposal:request"), false)[0];
+        String dualRole = user("DUAL", List.of("disposal:read", "disposal:request", "disposal:approve"), false)[0];
+        List<JsonNode> originalHistory = eventStream(id);
+        for (String caller : List.of(approver, otherRequester, dualRole)) {
+            assertThat(allowedActions(id, caller)).doesNotContain("CANCEL");
+            mvc.perform(post("/api/v1/disposal-authorizations/{id}/cancel", id).header("Authorization", bearer(caller))
+                    .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"expected_version\":0}"))
+                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORBIDDEN"));
+        }
+        assertThat(eventStream(id)).isEqualTo(originalHistory);
+        mvc.perform(post("/api/v1/disposal-authorizations/{id}/cancel", id).header("Authorization", bearer(requester))
+                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"expected_version\":0}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCELLED"));
+        assertThat(eventStream(id)).hasSize(2).containsAll(originalHistory);
+        mvc.perform(post("/api/v1/disposal-authorizations/{id}/cancel", id).header("Authorization", bearer(requester))
+                .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"expected_version\":0}"))
+                .andExpect(status().isConflict());
+        assertThat(eventStream(id)).hasSize(2);
     }
 
     /* ---- 事件只增 ---- */

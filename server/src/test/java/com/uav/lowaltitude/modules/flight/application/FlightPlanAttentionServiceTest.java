@@ -88,26 +88,26 @@ class FlightPlanAttentionServiceTest {
     }
 
     @Test
-    void needsActionComeFirstWithDeviationOnTopThenExecutingPendingAndEnded() {
+    void onlyDeviceAndRiskNeedActionWhileMatchFactsRemainReadable() {
         var ranked = service.page(PlanQuery.empty(), ACCESS, null, 0, 20);
 
         assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(
-                "deviated", "unmatched", "device", "pending-risk",
+                "device", "pending-risk", "unmatched", "deviated",
                 "normal-new", "normal-old",
                 "pending-soon", "pending-later",
                 "ended");
         assertThat(ranked.total()).isEqualTo(9);
-        assertThat(ranked.summary().needsAction()).isEqualTo(4);
-        assertThat(ranked.summary().deviation()).isEqualTo(1);
-        assertThat(ranked.summary().aircraft()).isEqualTo(1);
+        assertThat(ranked.summary().needsAction()).isEqualTo(2);
+        assertThat(ranked.summary().deviation()).isZero();
+        assertThat(ranked.summary().aircraft()).isZero();
         assertThat(ranked.summary().device()).isEqualTo(1);
         assertThat(ranked.summary().risk()).isEqualTo(1);
-        assertThat(ranked.summary().otherExecuting()).isEqualTo(2);
+        assertThat(ranked.summary().otherExecuting()).isEqualTo(4);
         assertThat(ranked.attention().get("pending-risk").pendingRiskKinds()).extracting(kind -> kind.reasonCode())
                 .containsExactly("WEATHER_THUNDERSTORM");
 
         assertThat(ranked.attention().get("deviated").matchIssue()).isEqualTo("DEVIATION");
-        assertThat(ranked.attention().get("unmatched").kinds()).containsExactly("AIRCRAFT");
+        assertThat(ranked.attention().get("unmatched").kinds()).isEmpty();
         assertThat(ranked.attention().get("unmatched").matchIssue()).isEqualTo("NONE");
         assertThat(ranked.attention().get("device").deviceTasks()).singleElement()
                 .satisfies(task -> assertThat(task.deviceName()).isEqualTo("雷达一号"));
@@ -115,6 +115,20 @@ class FlightPlanAttentionServiceTest {
         assertThat(ranked.attention().get("pending-risk").pendingNotificationRisks()).isEqualTo(1);
         assertThat(ranked.attention().get("normal-new").needsAction()).isFalse();
         assertThat(ranked.attention()).doesNotContainKey("ended");
+    }
+
+    @Test
+    void deviceAndRiskOnSameTaskCountOnceRegardlessOfMatchConclusion() {
+        when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenReturn(List.of(
+                new PlanStateCount("device", "PENDING_VERIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 2)));
+        when(actuals.latestMatch("device", ACCESS)).thenReturn(match("PARTIAL", "MISMATCH"));
+        var ranked = service.page(PlanQuery.empty(), ACCESS, null, 0, 20);
+        assertThat(ranked.summary().needsAction()).isEqualTo(1);
+        assertThat(ranked.summary().device()).isEqualTo(1);
+        assertThat(ranked.summary().risk()).isEqualTo(1);
+        assertThat(ranked.attention().get("device").kinds()).containsExactly("DEVICE", "RISK");
+        assertThat(ranked.attention().get("deviated").needsAction()).isFalse();
+        assertThat(ranked.attention().get("unmatched").needsAction()).isFalse();
     }
 
     @Test
@@ -132,10 +146,10 @@ class FlightPlanAttentionServiceTest {
         var risk = service.page(PlanQuery.empty(), ACCESS, "RISK", 0, 20);
         assertThat(risk.rows()).extracting(PlanRow::planId).containsExactly("pending-risk");
         assertThat(risk.total()).isEqualTo(1);
-        assertThat(risk.summary().needsAction()).isEqualTo(4);
+        assertThat(risk.summary().needsAction()).isEqualTo(2);
 
         var aircraft = service.page(PlanQuery.empty(), ACCESS, "AIRCRAFT", 0, 20);
-        assertThat(aircraft.rows()).extracting(PlanRow::planId).containsExactly("unmatched");
+        assertThat(aircraft.rows()).isEmpty();
     }
 
     @Test
@@ -193,7 +207,7 @@ class FlightPlanAttentionServiceTest {
         when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenAnswer(call ->
                 facts.stream().filter(fact -> ((List<?>) call.getArgument(1)).contains(fact.planId())).toList());
 
-        List<PlanRow> expected = new ArrayList<>(List.of(deviation, aircraft, faultyDevice, riskPlan, normal));
+        List<PlanRow> expected = new ArrayList<>(List.of(aircraft, faultyDevice, riskPlan, deviation, normal));
         expected.addAll(pending.stream().sorted(Comparator.comparing(PlanRow::startAt).thenComparing(PlanRow::planId)).toList());
         expected.addAll(history);
         List<String> collected = new ArrayList<>();
@@ -201,22 +215,21 @@ class FlightPlanAttentionServiceTest {
             var page = service.page(PlanQuery.empty(), ACCESS, null, offset, 73);
             assertThat(page.rows()).containsExactlyElementsOf(pageOf(expected, offset, 73));
             assertThat(page.total()).isEqualTo(expected.size());
-            assertThat(page.summary().needsAction()).isEqualTo(4);
-            assertThat(page.summary().deviation()).isEqualTo(1);
-            assertThat(page.summary().aircraft()).isEqualTo(1);
+            assertThat(page.summary().needsAction()).isEqualTo(3);
+            assertThat(page.summary().deviation()).isZero();
+            assertThat(page.summary().aircraft()).isZero();
             assertThat(page.summary().device()).isEqualTo(1);
             assertThat(page.summary().risk()).isEqualTo(2);
-            assertThat(page.summary().otherExecuting()).isEqualTo(1);
+            assertThat(page.summary().otherExecuting()).isEqualTo(2);
             collected.addAll(page.rows().stream().map(PlanRow::planId).toList());
         }
         assertThat(collected).doesNotHaveDuplicates().containsExactlyElementsOf(expected.stream().map(PlanRow::planId).toList());
-        for (var filter : Map.of("DEVIATION", List.of(deviation), "AIRCRAFT", List.of(aircraft),
-                "DEVICE", List.of(faultyDevice), "RISK", List.of(aircraft, riskPlan)).entrySet()) {
+        for (var filter : Map.of("DEVICE", List.of(faultyDevice), "RISK", List.of(aircraft, riskPlan)).entrySet()) {
             for (int offset = 0; offset <= filter.getValue().size(); offset++) {
                 var page = service.page(PlanQuery.empty(), ACCESS, filter.getKey(), offset, 1);
                 assertThat(page.rows()).containsExactlyElementsOf(pageOf(filter.getValue(), offset, 1));
                 assertThat(page.total()).isEqualTo(filter.getValue().size());
-                assertThat(page.summary().needsAction()).isEqualTo(4);
+                assertThat(page.summary().needsAction()).isEqualTo(3);
             }
         }
         assertThat(service.page(PlanQuery.empty(), ACCESS, null, Integer.MAX_VALUE - 10, 100).rows()).isEmpty();

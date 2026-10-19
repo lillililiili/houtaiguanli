@@ -33,6 +33,21 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); });
 
 describe('业务报表', () => {
+  it('轨迹统计超限时保留业务汇总和导出，不把未知时长显示成零', async () => {
+    await mount();
+    pending[0].resolve({ ...makePreview(pending[0].params),
+      sections: [{ key: 'targets', title: '新增目标', accessible: true, total: 12, snapshot: false, basis: '首次发现时间', days: [], distributions: [] }],
+      observation_metrics: { status: 'UNAVAILABLE', reason: '轨迹点超过单次统计上限，请缩短统计周期', basis: '不返回截断合计',
+        duration_seconds: null, distance_meters: null, observed_targets: 0, measured_targets: 0,
+        valid_segments: 0, source_modes: [], exclusions: [], days: [] }
+    });
+    await settle();
+    expect(host.textContent).toContain('新增目标');
+    expect(host.textContent).toContain('12');
+    expect(host.textContent).toContain('缩短统计周期');
+    expect(host.querySelector('.observation-metrics').textContent.match(/暂不可统计/g)).toHaveLength(2);
+    expect(button('下载 PDF').disabled).toBe(false);
+  });
   it('已有目标的监测片段不被新增目标零记录遮盖，未知时长不显示为零', async () => {
     await mount();
     pending[0].resolve({ ...makePreview(pending[0].params),
@@ -81,6 +96,8 @@ describe('业务报表', () => {
   });
   it('失败清除旧内容并禁止导出，重试后恢复', async () => {
     await mount(); pending[0].reject(new Error('没有风险读取权限')); await settle();
+    expect(host.textContent).toContain('统计区间未加载');
+    expect(host.textContent).not.toContain('正在计算统计区间');
     expect(host.textContent).toContain('没有风险读取权限');
     expect(button('导出 Excel').disabled).toBe(true);
     button('重新加载').click(); await settle();

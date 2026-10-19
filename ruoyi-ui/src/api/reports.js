@@ -67,7 +67,7 @@ export const reportApi = {
 };
 
 export const businessReportApi = {
-  preview: params => request({ url: `/v1/stats/reports/preview${queryString(params)}` }),
+  preview: params => request({ url: `/v1/stats/reports/preview${queryString(params)}`, timeout: 120000 }),
   details: params => request({ url: `/v1/stats/reports/details${queryString(params)}` }),
   exportFile: (params, format, filename) => download(`/v1/stats/reports/export.${format}${queryString(params)}`, filename, { timeout: 120000 })
 };

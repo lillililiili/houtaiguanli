@@ -56,6 +56,11 @@ function normalizeError(error) {
     window.dispatchEvent(new CustomEvent('admin:access-denied'));
   }
   if (response?.status === 401) notifyUnauthorized(error.config || response.config);
+  if (!response && ['ECONNABORTED', 'ETIMEDOUT'].includes(error?.code)) {
+    const readOnly = ['get', 'head'].includes(String(error.config?.method || 'get').toLowerCase());
+    return new ApiError(readOnly ? '请求处理超时，请稍后重试；查询报表时可缩短统计周期。'
+      : '请求处理超时，操作结果尚未确认，请先核对最新记录，避免重复提交。', 'TIMEOUT', 0);
+  }
   if (!response) return new ApiError('暂时无法连接系统，请检查网络；若刚提交过操作，请先核对最新记录，避免重复提交。', 'NETWORK_ERROR', 0);
   return new ApiError(payload.message || '系统暂时无法完成操作，请查看最新记录；仍有问题请联系管理员。', payload.code || 'REQUEST_FAILED', response.status);
 }
