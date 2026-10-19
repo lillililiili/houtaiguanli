@@ -6,17 +6,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { checkFrontend, sourceId } from '../check-local-startup.mjs';
 
-async function fixture(t, overrides = {}) {
+async function fixture(t, overrides = {}, { mode = 'built', scriptPath = '/assets/main.js', apiBase = '/api/v1' } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'startup-check-'));
   const script = 'export const ready = true;';
-  const html = `<html><head><meta name="uav-api-base" content="/api/v1"><meta name="uav-source-id" content="${sourceId(dir)}"><meta name="uav-runtime-mode" content="built"><script type="module" src="/assets/main.js"></script></head></html>`;
+  const html = `<html><head><meta name="uav-api-base" content="${apiBase}"><meta name="uav-source-id" content="${sourceId(dir)}"><meta name="uav-runtime-mode" content="${mode}"><script type="module" src="${scriptPath}"></script></head></html>`;
   await mkdir(path.join(dir, 'dist/assets'), { recursive: true });
   await writeFile(path.join(dir, 'dist/index.html'), html);
   await writeFile(path.join(dir, 'dist/assets/main.js'), script);
   const requests = [];
   const routes = {
     '/': [200, 'text/html', html],
-    '/assets/main.js': [200, 'text/javascript', script],
+    [scriptPath]: [200, 'text/javascript', script],
     '/api/v1/auth/login': [400, 'application/json', { ok: false, error: { code: 'VALIDATION_ERROR' } }],
     '/api/v1/auth/me': [401, 'application/json', { ok: false, error: { code: 'UNAUTHORIZED' } }],
     ...overrides
@@ -39,6 +39,46 @@ test('checks the API baked into the served page without trying a password', asyn
   assert.equal(result.api_base, '/api/v1');
   assert.equal(result.mode, 'built');
   assert.deepEqual(f.requests.find(r => r.path.endsWith('/login')), { path: '/api/v1/auth/login', method: 'POST', body: '{}' });
+});
+
+for (const [mode, query] of [['dev', `?t=${Date.now()}`], ['dev', '?v=alternate-module'], ['built', '?v=release-2']]) {
+  test(`checks same-origin ${mode} assets with cache query ${query}`, async t => {
+    const scriptPath = `/assets/main.js${query}`;
+    const f = await fixture(t, {}, { mode, scriptPath });
+    const result = await checkFrontend(f.origin, f.dir, 'FRONTEND');
+    assert.equal(result.mode, mode);
+    assert.ok(f.requests.some(r => r.path === scriptPath), 'request the exact resource URL, including its query');
+    assert.ok(f.requests.some(r => r.path === '/api/v1/auth/login'));
+    assert.ok(f.requests.some(r => r.path === '/api/v1/auth/me'));
+  });
+}
+
+test('still compares cached built assets with the local build', async t => {
+  const f = await fixture(t, {}, { scriptPath: '/assets/main.js?v=previous-build' });
+  await writeFile(path.join(f.dir, 'dist/assets/main.js'), 'new build');
+  await assert.rejects(checkFrontend(f.origin, f.dir, 'BACKEND'), /构建产物/);
+});
+
+for (const scriptPath of ['https://example.invalid/main.js?t=1', '/assets/main.js?t=1#fragment']) {
+  test(`rejects unsafe resource URL ${scriptPath}`, async t => {
+    const f = await fixture(t, {}, { mode: 'dev', scriptPath });
+    await assert.rejects(checkFrontend(f.origin, f.dir, 'BACKEND'));
+    assert.deepEqual(f.requests.map(r => r.path), ['/']);
+  });
+}
+
+for (const apiBase of ['/api/v1?version=1', 'https://example.invalid/api/v1', '/api/v1#fragment']) {
+  test(`rejects unsafe API metadata ${apiBase}`, async t => {
+    const f = await fixture(t, {}, { apiBase });
+    await assert.rejects(checkFrontend(f.origin, f.dir, 'BACKEND'));
+    assert.deepEqual(f.requests.map(r => r.path), ['/']);
+  });
+}
+
+test('a cached development entry does not hide a broken API proxy', async t => {
+  const f = await fixture(t, { '/api/v1/auth/login': [404, 'text/html', 'missing'] },
+    { mode: 'dev', scriptPath: '/assets/main.js?t=2' });
+  await assert.rejects(checkFrontend(f.origin, f.dir, 'BACKEND'), /登录代理/);
 });
 for (const [name, route] of [
   ['wrong /api proxy even when /dev-api works', [404, 'text/html', '']],

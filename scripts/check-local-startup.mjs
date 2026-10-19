@@ -24,9 +24,10 @@ function metadata(html, name) {
   }
   return '';
 }
-function sameOriginUrl(value, origin) {
+function sameOriginUrl(value, origin, { allowSearch = false } = {}) {
   const url = new URL(value, origin);
-  requireFact(url.origin === new URL(origin).origin && !url.username && !url.password && !url.search && !url.hash, '检查仅支持页面同源地址；请明确配置本地代理');
+  requireFact(url.origin === new URL(origin).origin && !url.username && !url.password && !url.hash, '检查仅支持页面同源地址；请明确配置本地代理');
+  requireFact(allowSearch || !url.search, 'API 或地图配置地址不能包含查询参数');
   return url;
 }
 
@@ -48,7 +49,9 @@ export async function checkFrontend(origin, directory, clientType) {
   ];
   requireFact(resources.length > 0, '首页没有可检查的静态资源');
   for (const resource of new Set(resources)) {
-    const url = sameOriginUrl(resource, origin);
+    // Vite HMR and versioned assets carry cache queries; fetch that exact same-origin resource.
+    // API/map metadata stays query-free, and built assets still match their local file contents.
+    const url = sameOriginUrl(resource, origin, { allowSearch: true });
     const response = await request(url);
     requireFact(response.status === 200 && /javascript|css/.test(response.type) && !/^\s*(?:<!doctype|<html)/i.test(response.body), `静态资源不可用：${url.pathname}（HTTP ${response.status} ${response.type}）`);
     if (mode === 'built') {
