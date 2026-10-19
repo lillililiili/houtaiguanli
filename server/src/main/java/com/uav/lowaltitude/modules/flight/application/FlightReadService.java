@@ -183,6 +183,16 @@ public class FlightReadService {
         return routeVersion(row);
     }
 
+    /** Resolve only the version attached to an authorized flight; no additional route-management privilege. */
+    @Transactional(readOnly = true)
+    public RouteVersionDto flightRouteVersion(String planId) {
+        var plan = flightPlan(planId);
+        var decision = accessControl.require(PermissionCode.FLIGHT_READ);
+        var row = repository.findRouteVersion(plan.route().routeVersionId(), decision);
+        if (row == null) throw notFound("ROUTE_VERSION_NOT_FOUND", "任务航线版本不存在");
+        return routeVersion(row);
+    }
+
     private FlightPlanDto plan(PlanRow row) {
         return plan(row, null);
     }

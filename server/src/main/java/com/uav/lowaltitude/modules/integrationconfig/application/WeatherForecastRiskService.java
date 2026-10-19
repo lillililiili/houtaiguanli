@@ -80,6 +80,11 @@ public class WeatherForecastRiskService {
         int created = 0;
         OffsetDateTime receivedAt = clock.now().atOffset(ZoneOffset.UTC);
         for (PlanCandidate plan : plans) {
+            if (input.polygon() != null) {
+                var route = flights.flightRouteVersion(plan.planId());
+                if (route.centerline() == null || !com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.intersects(
+                        input.polygon(), route.centerline().coordinates(), route.corridorWidthM()==null?0:route.corridorWidthM().doubleValue())) continue;
+            }
             for (RuleHit hit : hits(input.periods(), plan.startAt(), plan.endAt())) {
                 String sourceId = "weather-forecast-rule-" + plan.sourceMode();
                 String key = sourceKey(input, plan, hit);
@@ -152,6 +157,8 @@ public class WeatherForecastRiskService {
     private static String sourceKey(WeatherInput input, PlanCandidate plan, RuleHit hit) {
         String key = plan.sourceMode() + "|" + plan.planId() + "|" + normalize(input.areaName()) + "|"
                 + input.publishedAt() + "|" + hit.period().from() + "|" + hit.period().to() + "|" + hit.ruleCode();
+        // Preserve legacy region keys; explicit footprints and measurements belong to their own frozen product.
+        if (input.polygon() != null) key += "|" + input.polygon() + "|" + hit.period();
         return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 

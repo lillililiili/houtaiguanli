@@ -21,7 +21,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 class LocalForecastReadServiceTest {
     private final LocalInterfaceRepository repository = mock(LocalInterfaceRepository.class);
     private final ObjectMapper json = new ObjectMapper().setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-    private final LocalForecastReadService service = new LocalForecastReadService(repository, json);
+    private final LocalForecastReadService service = new LocalForecastReadService(repository, json, mock(com.uav.lowaltitude.modules.flight.application.FlightReadService.class));
     private final String planId = UUID.randomUUID().toString();
     private final String area = "测试区域-" + UUID.randomUUID();
 

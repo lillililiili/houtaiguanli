@@ -46,6 +46,9 @@ public class AutomationRuntimeService {
             var node=tree.path("facts").path(age);
             if(node.isObject())((com.fasterxml.jackson.databind.node.ObjectNode)node).remove("value");
         }
+        // An unused phone timer must not create new runs for unrelated rules on every poll.
+        var phone=tree.path("facts").path("counterVoiceWait");
+        if(phone.isObject())((com.fasterxml.jackson.databind.node.ObjectNode)phone).remove(List.of("value","observed_at","observedAt"));
         return tree;
     }
     private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception invalid){throw new IllegalStateException(invalid);}}

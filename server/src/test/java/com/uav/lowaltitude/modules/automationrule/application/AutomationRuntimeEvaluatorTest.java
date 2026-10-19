@@ -16,6 +16,47 @@ class AutomationRuntimeEvaluatorTest {
     Rule confidence=new Rule("r1","识别置信度","confidence","90",0,true,0,"admin");
     AutomationRuntimeFacts facts(long observed,Map<String,Fact> values){return new AutomationRuntimeFacts("e","t","a","o","d","mock","PENDING_VERIFICATION","UAV",observed,Set.of("air"),true,values);}
     Fact fact(String value,long at){return new Fact(value,at,"observation",null);}
+    @Test void phoneWaitUsesElapsedPlaybackTimeAndStillRequiresAllOtherConditions() {
+        group=new Head("counter",1,"ALL","ALL_DAY","00:00","23:59",5,"[]");
+        var wait=new Rule("phone","电话完成后等待","counterVoiceWait","30",0,true,0,"admin");
+        var risk=new Rule("risk","高风险","riskLevel","高风险",0,true,0,"admin");
+        var values=new HashMap<String,Fact>();
+        values.put("counterVoiceWait",fact("29.999",now)); values.put("riskLevel",fact("HIGH",now));
+        var pending=evaluate(List.of(wait,risk),facts(now,values),now,Map.of(),null);
+        assertThat(pending.status()).isEqualTo("WAITING");
+        assertThat(pending.conditions().get(0).reason()).contains("电话播放完成", "30 秒");
+        values.put("counterVoiceWait",fact("30.000",now));
+        assertThat(evaluate(List.of(wait,risk),facts(now,values),now,Map.of(),null).status()).isEqualTo("PASS");
+        values.put("riskLevel",fact("LOW",now));
+        assertThat(evaluate(List.of(wait,risk),facts(now,values),now,Map.of(),null).status()).isEqualTo("NOT_MATCHED");
+        assertThat(evaluate(List.of(wait),facts(now-30_001,values),now,Map.of(),null).status()).isEqualTo("REVIEW");
+    }
+    @Test void explicitlyUnavailablePhoneSkipsOnlyPhoneWaitAndStillRequiresFreshOtherConditions() {
+        group=new Head("counter",1,"ALL","ALL_DAY","00:00","23:59",0,"[]");
+        var wait=new Rule("phone","电话完成后等待","counterVoiceWait","600",0,true,0,"admin");
+        var risk=new Rule("risk","高风险","riskLevel","高风险",0,true,0,"admin");
+        var values=new HashMap<String,Fact>();
+        values.put("counterVoiceWait",fact("NOT_REQUIRED",now)); values.put("riskLevel",fact("HIGH",now));
+        var passed=evaluate(List.of(wait,risk),facts(now,values),now,Map.of(),null);
+        assertThat(passed.status()).isEqualTo("PASS");
+        assertThat(passed.conditions().get(0).reason()).contains("无法通知", "跳过电话等待");
+        values.put("riskLevel",fact("LOW",now));
+        assertThat(evaluate(List.of(wait,risk),facts(now,values),now,Map.of(),null).status()).isEqualTo("NOT_MATCHED");
+        values.remove("riskLevel");
+        assertThat(evaluate(List.of(wait,risk),facts(now,values),now,Map.of(),null).status()).isEqualTo("REVIEW");
+        values.put("counterVoiceWait",fact("NOT_REQUIRED",now-30_001));
+        assertThat(evaluate(List.of(wait),facts(now,values),now,Map.of(),null).status()).isEqualTo("REVIEW");
+        assertThat(evaluate(List.of(risk),facts(now,Map.of("riskLevel",fact("NOT_REQUIRED",now))),now,Map.of(),null).status()).isEqualTo("NOT_MATCHED");
+    }
+    @Test void zeroPhoneWaitRequiresPlaybackEvidenceAndDisabledWaitDoesNotBlockExistingRules() {
+        group=new Head("counter",1,"ALL","ALL_DAY","00:00","23:59",0,"[]");
+        var wait=new Rule("phone","电话完成后等待","counterVoiceWait","0",0,true,0,"admin");
+        assertThat(evaluate(List.of(wait),facts(now,Map.of()),now,Map.of(),null).status()).isEqualTo("REVIEW");
+        assertThat(evaluate(List.of(wait),facts(now,Map.of("counterVoiceWait",fact("0",now))),now,Map.of(),null).status()).isEqualTo("PASS");
+        var off=new Rule("phone","电话完成后等待","counterVoiceWait","60",0,false,0,"admin");
+        var risk=new Rule("risk","高风险","riskLevel","高风险",0,true,0,"admin");
+        assertThat(evaluate(List.of(off,risk),facts(now,Map.of("riskLevel",fact("HIGH",now))),now,Map.of(),null).status()).isEqualTo("PASS");
+    }
     Decision evaluate(List<Rule> rules,AutomationRuntimeFacts facts,long time,Map<String,Hold> holds,Long unknown){return engine.evaluate(group,rules,Set.of("air"),facts,time,30000,holds,unknown);}
     @Test void emptyAndAllDisabledPause(){
         assertThat(evaluate(List.of(),null,now,Map.of(),null).status()).isEqualTo("PAUSED");

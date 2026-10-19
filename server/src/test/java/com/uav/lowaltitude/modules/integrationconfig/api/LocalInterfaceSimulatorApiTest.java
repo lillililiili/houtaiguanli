@@ -570,6 +570,56 @@ class LocalInterfaceSimulatorApiTest {
   mvc.perform(get(BASE+"/weather-devices/"+id+"/observations")).andExpect(status().isUnauthorized());
  }
 
+ @org.junit.jupiter.params.ParameterizedTest
+ @org.junit.jupiter.params.provider.CsvSource({"118.6,37.4,mock", "119.1,36.8,replay"})
+ void forecastMapUsesExplicitFootprintAndFrozenPeriod(double lon,double lat,String mode) throws Exception {
+  var body=plan("map-plan-"+UUID.randomUUID());
+  var scope=jdbc.queryForMap("select r.owner_org_id,r.district_id,d.name from route_version v join route r on r.route_id=v.route_id join app_district d on d.district_id=r.district_id where v.route_version_id=?",body.remove("route_version_id"));
+  body.put("route",Map.of("name","天气范围测试","owner_org_id",scope.get("owner_org_id"),"district_id",scope.get("district_id"),"geometry",Map.of("type","LineString","coordinates",List.of(List.of(lon-.02,lat),List.of(lon+.02,lat))),"corridor_width_m",100,"min_altitude_m",0,"max_altitude_m",120,"altitude_datum","AGL"));
+  body.put("source_mode",mode);
+  String planId=send("/plans",body,200).path("subject_id").asText();
+  long from=(long)body.get("start_at"),to=(long)body.get("end_at"),published=System.currentTimeMillis()-2000;
+  var p=new HashMap<String,Object>(period(from,to,"雷雨",12));p.put("precipitation_rate_mm_h",2.1);
+  var input=forecast("map-weather-"+UUID.randomUUID(),scope.get("name").toString(),published,p);input.put("plan_id",planId);
+  var ring=List.of(List.of(lon-.01,lat-.01),List.of(lon+.01,lat-.01),List.of(lon+.01,lat+.01),List.of(lon-.01,lat+.01),List.of(lon-.01,lat-.01));
+  input.put("polygon",ring);
+  var receipt=send("/weather",input,200);send("/weather",input,200);
+  String riskId=jdbc.queryForObject("select risk_id from flight_risk where plan_id=?",String.class,planId);
+  var path="/api/v1/risks/"+riskId+"/weather-fact";
+  mvc.perform(get(path).header("Authorization",token)).andExpect(status().isOk())
+   .andExpect(jsonPath("$.data.coverage_basis").value("POLYGON"))
+   .andExpect(jsonPath("$.data.polygon[0][0]").value(lon-.01))
+   .andExpect(jsonPath("$.data.precipitation_rate_mm_h").value(2.1))
+   .andExpect(jsonPath("$.data.wind_from_degrees").value(180))
+   .andExpect(jsonPath("$.data.simulated").value(true))
+   .andExpect(jsonPath("$.data.forecast_message_id").value(receipt.path("message_id").asText()));
+  // A newer forecast elsewhere in the same district must not replace this event's range or create a route risk.
+  input.put("message_id","map-away-"+UUID.randomUUID());input.put("published_at",published+1);
+  input.put("polygon",ring.stream().map(point->List.of(point.get(0)+.5,point.get(1))).toList());
+  send("/weather",input,200);
+  assertThat(jdbc.queryForObject("select count(*) from flight_risk where plan_id=?",Long.class,planId)).isEqualTo(1);
+  mvc.perform(get(path).header("Authorization",token)).andExpect(jsonPath("$.data.polygon[0][0]").value(lon-.01));
+  mvc.perform(get("/api/v1/flight-plans/"+planId+"/weather-forecast").header("Authorization",token))
+   .andExpect(status().isOk()).andExpect(jsonPath("$.data.forecast.published_at").value(published));
+  mvc.perform(get(path)).andExpect(status().isUnauthorized());
+  // Missing geometry stays regional; the reader must never invent a boundary.
+  input.remove("polygon");input.put("message_id","map-region-"+UUID.randomUUID());input.put("published_at",published+2);
+  send("/weather",input,200);
+  String regional=jdbc.queryForObject("select risk_id from flight_risk where plan_id=? and risk_id<>?",String.class,planId,riskId);
+  mvc.perform(get("/api/v1/risks/"+regional+"/weather-fact").header("Authorization",token))
+   .andExpect(jsonPath("$.data.coverage_basis").value("REGION")).andExpect(jsonPath("$.data.polygon").doesNotExist());
+ }
+ @Test void weatherFootprintRejectsInvalidCoordinatesAndRainfall() throws Exception {
+  long now=System.currentTimeMillis();
+  var input=forecast("bad-map-"+UUID.randomUUID(),"测试区域",now,period(now,now+600000,"雷雨",12));
+  for(var ring:List.of(List.of(List.of(118.,37.),List.of(119.,38.),List.of(118.,38.),List.of(119.,37.),List.of(118.,37.)),
+    List.of(List.of(181.,37.),List.of(182.,37.),List.of(182.,38.),List.of(181.,37.)),
+    List.of(List.of(118.,37.),List.of(119.,37.),List.of(119.,38.)))) {
+   input.put("polygon",ring);send("/weather",input,400);
+  }
+  input.remove("polygon");var p=new HashMap<String,Object>(period(now,now+600000,"雷雨",12));p.put("precipitation_rate_mm_h",-1);input.put("periods",List.of(p));send("/weather",input,400);
+ }
+
  static Map<String,Object> forecast(String message,String area,long published,Map<String,Object> period) {
   var input=new HashMap<String,Object>();input.put("message_id",message);input.put("area_name",area);input.put("published_at",published);input.put("periods",List.of(period));return input;
  }

@@ -47,6 +47,21 @@ public class AutomaticCounterNotificationGate {
         }
     }
 
+    /** Only an unattempted, explicitly unavailable notification may waive the configurable phone wait. */
+    public boolean phoneWaitNotRequired(String eventId) {
+        try {
+            EventRow event = events.find(eventId, new AccessDecision("system:auto-counter", ScopeMode.ALL));
+            if (event == null || !"CONFIRMED".equals(event.state())) return false;
+            var call = voice.find(eventId);
+            if (call != null && (call.attempts() != 0 || !UNATTEMPTED.contains(call.status())
+                    || call.answeredAt() != null || call.playbackCompletedAt() != null)) return false;
+            // Reuse the same structured recipient/configuration, freshness and departure checks as dispatch.
+            return ready(event, clock.nowMillis());
+        } catch (RuntimeException unavailable) {
+            return false;
+        }
+    }
+
     private boolean ready(EventRow event, long now) {
         String id = event.eventId();
         if (voice.departure(id) != null) return false;

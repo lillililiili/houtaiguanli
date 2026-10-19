@@ -28,7 +28,7 @@ public final class AutomationRuntimeEvaluator {
             if(Collections.disjoint(scope,facts.airspaceIds()))return result("OUT_OF_SCOPE","目标不在指定的有效空域内");
         }
         var checks=new ArrayList<Condition>();var holds=new LinkedHashMap<String,Hold>();
-        boolean failed=false,unknown=false,holding=false;
+        boolean failed=false,unknown=false,holding=false,phoneWaiting=false;
         for(Rule rule:enabled) {
             var fact=facts.facts().get(rule.itemCode());
             // Device count has an explicit 60-second evidence window; other facts retain deployment policy.
@@ -38,9 +38,16 @@ public final class AutomationRuntimeEvaluator {
             if(actual==null||!fresh(fact.observedAt(),now,factMaxAge)) {
                 unknown=true;checks.add(new Condition(rule.name(),"UNKNOWN",display(actual),expected(rule),unavailable(unavailable)));continue;
             }
+            if ("counter".equals(group.category()) && "counterVoiceWait".equals(rule.itemCode()) && "NOT_REQUIRED".equals(actual)) {
+                checks.add(new Condition(rule.name(),"PASS","无需电话等待",expected(rule),
+                        "已确认无法通知飞手，跳过电话等待；其余反制条件仍须满足"));
+                continue;
+            }
             boolean pass=matches(group.category(),rule,actual);
             String state=pass?"PASS":"FAIL",reason=pass?"条件满足":"未达到配置要求";
-            if(!pass)failed=true;
+            if(!pass && "counterVoiceWait".equals(rule.itemCode())) {
+                phoneWaiting=true; state="WAITING"; reason="等待电话播放完成满 "+rule.value()+" 秒";
+            } else if(!pass)failed=true;
             if(pass&&rule.holdSeconds()>0) {
                 Hold old=previous.get(rule.ruleId());long observed=fact.observedAt();
                 long since=old!=null&&observed>=old.observedAt()&&observed-old.observedAt()<=factMaxAge?old.since():observed;
@@ -55,6 +62,7 @@ public final class AutomationRuntimeEvaluator {
             return new Decision(now-since>=group.waitSeconds()*1000L?"REVIEW":"WAITING",
                 now-since>=group.waitSeconds()*1000L?"补充数据等待已结束，仍缺少判定依据，请处理异常":"等待补充缺少的判定依据",checks,holds,since);
         }
+        if(phoneWaiting)return new Decision("WAITING","电话播放已完成，等待配置的时长后再自动反制",checks,holds,null);
         if(holding)return new Decision("WAITING","条件已满足，等待持续观测时长达到要求",checks,holds,null);
         return new Decision("PASS","全部已启用规则满足",checks,holds,null);
     }
@@ -72,6 +80,7 @@ public final class AutomationRuntimeEvaluator {
             case "NO_CURRENT_CONTIGUOUS_RAW_OBSERVATIONS_WITH_TRACK_CONFIG"->"缺少连续有效的原始轨迹观测";
             case "NO_CURRENT_TRACEABLE_SOURCE_OBSERVATION"->"缺少当前可追溯的原始观测";
             case "NO_CURRENT_VERIFIABLE_DEVICE_OBSERVATION_WITHIN_60_SECONDS"->"最近60秒没有可验证设备身份的有效观测";
+            case "PHONE_PLAYBACK_COMPLETION_UNAVAILABLE"->"缺少本事件电话播放完成的有效回执，不能开始自动反制等待计时";
             case "NO_PERSISTED_CURRENT_RECEIPT_CHANNEL_READINESS_EVIDENCE"->"缺少回执通道当前可用的依据";
             case "REQUIRES_AUTHORIZED_EXECUTION_DEVICE_AND_CURRENT_DISPATCH_CHECK","UNIQUE_CURRENT_COUNTER_AUTHORIZATION_REQUIRED"->"缺少唯一、有效的反制授权及对应执行设备";
             case "TWO_INDEPENDENT_IDENTITY_SOURCES_REQUIRED"->"需至少两个独立来源的有效身份信息";

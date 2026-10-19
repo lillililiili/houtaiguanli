@@ -51,6 +51,38 @@ public class WeatherRiskRepository {
             String summary, BigDecimal windSpeedMps, BigDecimal gustMps, Integer precipitationProbabilityPct,
             String ruleCode, String ruleVersion, String sourceMode) { }
 
+    public record ForecastMap(List<List<Double>> polygon, BigDecimal windFromDegrees, BigDecimal precipitationRateMmH) { }
+
+    /** Read only the original receipt and exact period frozen by this risk, never the latest district forecast. */
+    public ForecastMap forecastMap(String riskId) {
+        return jdbc.query("""
+            SELECT m.payload,f.published_at,f.valid_from,f.valid_to
+              FROM weather_forecast_risk_fact f JOIN flight_risk r ON r.risk_id=f.risk_id AND r.source_mode=f.source_mode
+              JOIN local_interface_message m ON m.message_id=f.forecast_message_id AND m.kind='WEATHER_FORECAST' AND m.direction='IN'
+             WHERE f.risk_id=? AND r.risk_type='WEATHER' AND r.source_id IN ('weather-forecast-rule-mock','weather-forecast-rule-replay')
+            """, (rs,n) -> {
+                try {
+                    var payload=json.readTree(rs.getString("payload"));
+                    if (payload.path("published_at").asLong(-1)!=rs.getTimestamp("published_at").getTime()) return null;
+                    List<List<Double>> polygon=payload.hasNonNull("polygon") ? json.convertValue(payload.get("polygon"),new TypeReference<List<List<Double>>>() {}) : null;
+                    com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.validate(polygon);
+                    for (var period:payload.path("periods")) {
+                        if (period.path("from").asLong(-1)==rs.getTimestamp("valid_from").getTime()
+                                && period.path("to").asLong(-1)==rs.getTimestamp("valid_to").getTime())
+                            return new ForecastMap(polygon,number(period,"wind_direction_deg",360),number(period,"precipitation_rate_mm_h",1000));
+                    }
+                    return null;
+                } catch (java.io.IOException | IllegalArgumentException ex) { throw new IllegalStateException("原始天气预报范围无法读取",ex); }
+            },riskId).stream().filter(java.util.Objects::nonNull).findFirst().orElse(null);
+    }
+
+    private static BigDecimal number(com.fasterxml.jackson.databind.JsonNode period,String field,int max) {
+        var value=period.path(field);
+        if (!value.isNumber()) return null;
+        var number=value.decimalValue();
+        return number.signum()>=0 && number.compareTo(BigDecimal.valueOf(max))<=0 ? number : null;
+    }
+
     /** 风险生成时存下的预报事实；不读取后续预报代替原依据。调用方先完成风险范围鉴权。 */
     public ForecastFact forecast(String riskId) {
         return jdbc.query("SELECT f.* FROM weather_forecast_risk_fact f JOIN flight_risk r ON r.risk_id=f.risk_id WHERE f.risk_id=? AND r.risk_type='WEATHER'",

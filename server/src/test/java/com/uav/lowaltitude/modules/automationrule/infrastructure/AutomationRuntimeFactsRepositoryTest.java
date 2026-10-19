@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.UUID;
 import javax.sql.DataSource;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.alarm.application.AutomaticCounterNotificationGate;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SpatialFactPort;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository.StateRow;
@@ -28,6 +29,7 @@ class AutomationRuntimeFactsRepositoryTest {
     private JdbcTemplate jdbc;
     private RuleEngineRepository states;
     private SpatialFactPort spatial;
+    private AutomaticCounterNotificationGate notifications;
     private AutomationRuntimeFactsRepository repository;
 
     @BeforeEach void setup() {
@@ -41,6 +43,8 @@ class AutomationRuntimeFactsRepositoryTest {
                 "CREATE TABLE target(target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar,object_type_code varchar,uav_sn varchar)",
                 "CREATE TABLE target_latest_state(target_id varchar,observed_at timestamp with time zone)",
                 "CREATE TABLE automation_runtime_state(event_id varchar,status varchar)",
+                "CREATE TABLE uav_auto_voice_task(event_id varchar,status varchar,delivery_record_id varchar,answered_at bigint,playback_completed_at bigint)",
+                "CREATE TABLE uav_event_voice_advisory(record_id varchar,event_id varchar,delivery_status varchar,answered_at bigint,playback_completed_at bigint)",
                 "CREATE TABLE target_source_link(link_id varchar,target_id varchar,source_id varchar,source_session_key varchar,external_target_id varchar,device_id varchar)",
                 "CREATE TABLE source_observation(observation_id varchar,source_id varchar,observed_at timestamp with time zone,identity_clue varchar,position_accuracy_m numeric,source_session_key varchar,external_target_id varchar,owner_org_id varchar,district_id varchar,source_mode varchar,device_id varchar)",
                 "CREATE TABLE integration_source(source_id varchar,enabled boolean,source_mode varchar,protocol_code varchar,source_code varchar)",
@@ -68,12 +72,64 @@ class AutomationRuntimeFactsRepositoryTest {
         states=mock(RuleEngineRepository.class); spatial=mock(SpatialFactPort.class);
         when(states.latestState("target")).thenReturn(state(NOW));
         when(spatial.airspaceHits(any(),any(),any())).thenReturn(List.of());
-        repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),30_000);
+        notifications=mock(AutomaticCounterNotificationGate.class);
+        repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),notifications,30_000);
     }
 
     /** The same fact contract is executed against H2 and an isolated PostgreSQL schema. */
     protected DataSource testDataSource() {
         return new DriverManagerDataSource("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1","sa","");
+    }
+
+    @Test void phoneWaitCountsFromPersistedPlaybackCompletionForTheSameEvent() {
+        for (String mode : List.of("replay", "live")) {
+            String event=UUID.randomUUID().toString(), receipt=UUID.randomUUID().toString();
+            jdbc.update("UPDATE target SET source_mode=?",mode);
+            jdbc.update("UPDATE alarm SET source_mode=?",mode);
+            jdbc.update("INSERT INTO uav_event VALUES(?,'alarm','org','district','CONFIRMED',?)",event,at(NOW));
+            jdbc.update("INSERT INTO uav_auto_voice_task VALUES(?,'SIMULATED_PLAYED',?,?,?)",event,receipt,NOW-70_000,NOW-60_000);
+            jdbc.update("INSERT INTO uav_event_voice_advisory VALUES(?,?,'SIMULATED_PLAYED',?,?)",receipt,event,NOW-70_000,NOW-60_000);
+            var first=repository.read(event,NOW).facts().get("counterVoiceWait");
+            assertThat(first.value()).isEqualTo("60.000");
+            assertThat(first.observedAt()).isEqualTo(NOW);
+            assertThat(first.evidenceId()).contains(receipt);
+            assertThat(repository.read(event,NOW+999).facts().get("counterVoiceWait").value()).isEqualTo("60.999");
+            assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+        }
+    }
+
+    @Test void explicitNotificationExceptionIsRecordedWithoutFabricatingCompletionAndCannotOverrideAReceipt() {
+        when(notifications.phoneWaitNotRequired("event")).thenReturn(true);
+        var skipped=repository.read("event",NOW).facts().get("counterVoiceWait");
+        assertThat(skipped.value()).isEqualTo("NOT_REQUIRED");
+        assertThat(skipped.evidenceId()).isEqualTo("notification_configuration:event");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_event_voice_advisory",Integer.class)).isZero();
+        jdbc.update("INSERT INTO uav_event_voice_advisory VALUES('orphan','event','UNKNOWN',NULL,NULL)");
+        assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+    }
+
+    @Test void phoneWaitRejectsMissingIncompleteForeignAndInconsistentReceipts() {
+        assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+        jdbc.update("INSERT INTO uav_auto_voice_task VALUES('event','CALLING','receipt',?,?)",NOW-20_000,NOW-10_000);
+        jdbc.update("INSERT INTO uav_event_voice_advisory VALUES('receipt','other','SIMULATED_PLAYED',?,?)",NOW-20_000,NOW-10_000);
+        assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+        jdbc.update("UPDATE uav_auto_voice_task SET status='SIMULATED_PLAYED'");
+        assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+        jdbc.update("UPDATE uav_event_voice_advisory SET event_id='event',playback_completed_at=?",NOW-5000);
+        assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+        jdbc.update("UPDATE uav_event_voice_advisory SET playback_completed_at=?,delivery_status='FAILED'",NOW-10_000);
+        assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+    }
+
+    @Test void phoneWaitRejectsNullFutureAndReversedTimes() {
+        jdbc.update("INSERT INTO uav_auto_voice_task VALUES('event','SIMULATED_PLAYED','receipt',NULL,NULL)");
+        jdbc.update("INSERT INTO uav_event_voice_advisory VALUES('receipt','event','SIMULATED_PLAYED',NULL,NULL)");
+        for (Long[] times : List.of(new Long[]{null,null},new Long[]{NOW-10_000,null},
+                new Long[]{NOW,NOW+1},new Long[]{NOW,NOW-1})) {
+            jdbc.update("UPDATE uav_auto_voice_task SET answered_at=?,playback_completed_at=?",times[0],times[1]);
+            jdbc.update("UPDATE uav_event_voice_advisory SET answered_at=?,playback_completed_at=?",times[0],times[1]);
+            assertThat(repository.read("event",NOW).facts().get("counterVoiceWait").value()).isNull();
+        }
     }
 
     @Test void tracesRealConfidenceAndLeavesAbsentAccuracyUnknown() {
@@ -103,7 +159,7 @@ class AutomationRuntimeFactsRepositoryTest {
         assertThat(repository.read("event",NOW).facts().get("consistency").value()).isEqualTo("false");
     }
     @Test void deviceWindowIsExactlySixtySecondsWithoutChangingOtherFactAge() {
-        repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),120_000);
+        repository=new AutomationRuntimeFactsRepository(jdbc,states,spatial,new ObjectMapper(),notifications,120_000);
         source("boundary",NOW-60_000,"SN","org","mock");
         source("too-old",NOW-60_001,"SN","org","mock");
         source("future",NOW+1,"SN","org","mock");

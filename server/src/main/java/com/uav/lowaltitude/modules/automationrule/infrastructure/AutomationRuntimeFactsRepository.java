@@ -15,6 +15,7 @@ import java.util.Objects;
 import java.util.Set;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.modules.alarm.application.AutomaticCounterNotificationGate;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.SpatialFactPort;
 import com.uav.lowaltitude.modules.assessment.engine.RuleContracts.TargetState;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository;
@@ -38,14 +39,17 @@ public class AutomationRuntimeFactsRepository {
     private final RuleEngineRepository states;
     private final SpatialFactPort spatial;
     private final ObjectMapper json;
+    private final AutomaticCounterNotificationGate notifications;
     private final long maxAgeMs;
 
     public AutomationRuntimeFactsRepository(JdbcTemplate jdbc, RuleEngineRepository states, SpatialFactPort spatial,
-            ObjectMapper json, @Value("${app.automation-rules.fact-max-age-ms:30000}") long maxAgeMs) {
+            ObjectMapper json, AutomaticCounterNotificationGate notifications,
+            @Value("${app.automation-rules.fact-max-age-ms:30000}") long maxAgeMs) {
         this.jdbc = new NamedParameterJdbcTemplate(jdbc);
         this.states = states;
         this.spatial = spatial;
         this.json = json;
+        this.notifications = notifications;
         if (maxAgeMs <= 0 || maxAgeMs > 300_000) throw new IllegalArgumentException("Invalid automation fact age");
         this.maxAgeMs = maxAgeMs;
     }
@@ -94,7 +98,7 @@ public class AutomationRuntimeFactsRepository {
         Base b = bases.get(0);
         Map<String, Fact> facts = new LinkedHashMap<>();
         for (String code : List.of("confidence", "freshness", "consistency", "sourceCount", "accuracy", "identity",
-                "trackDuration", "counterFreshness", "device", "receipt", "conflictTask", "riskLevel", "position",
+                "trackDuration", "counterFreshness", "counterVoiceWait", "device", "receipt", "conflictTask", "riskLevel", "position",
                 "riskActive", "disposeFreshness", "eventLink", "sourceKnown")) facts.put(code, unknown("FACT_NOT_AVAILABLE"));
         if (!"UAV".equals(b.objectType)) {
             facts.replaceAll((k, v) -> unknown("TARGET_NOT_EXPLICIT_UAV"));
@@ -134,6 +138,7 @@ public class AutomationRuntimeFactsRepository {
             accuracy(b, observations, observed, facts);
         }
         facts.put("sourceCount", independentDeviceCount(b, now));
+        facts.put("counterVoiceWait", phoneWait(b, now));
         trackDuration(b, observed, now, facts);
         risk(b, observed, now, facts);
         executionFacts(b, now, facts);
@@ -169,6 +174,32 @@ public class AutomationRuntimeFactsRepository {
             else facts.put("position", unknown("CURRENT_AIRSPACE_RELATION_UNKNOWN"));
         }
         return result(b, observed, airspaces, known, facts);
+    }
+
+    /** Elapsed time is derived from the persisted completion receipt, never from polling or page entry. */
+    private Fact phoneWait(Base b, long now) {
+        var p = params(b); p.put("event", b.event); p.put("now", now);
+        var rows = jdbc.query("""
+                SELECT r.record_id,r.playback_completed_at FROM uav_auto_voice_task t
+                JOIN uav_event_voice_advisory r ON r.record_id=t.delivery_record_id AND r.event_id=t.event_id
+                WHERE t.event_id=:event AND t.status='SIMULATED_PLAYED' AND r.delivery_status='SIMULATED_PLAYED'
+                  AND t.answered_at=r.answered_at AND t.playback_completed_at=r.playback_completed_at
+                  AND r.answered_at>=0 AND r.playback_completed_at>=r.answered_at
+                  AND r.playback_completed_at<=:now
+                """, p, (r,n) -> {
+            long completed = r.getLong("playback_completed_at");
+            // The receipt remains historical evidence; this fact is the duration calculated as of now.
+            return value(BigDecimal.valueOf(now-completed, 3).toPlainString(), now,
+                    "uav_event_voice_advisory:"+r.getString("record_id")+":"+completed);
+        });
+        if (rows.size()==1) return rows.get(0);
+        // An incomplete, mismatched or orphan receipt cannot become a configuration exception.
+        if (rows.isEmpty() && jdbc.queryForObject(
+                "SELECT COUNT(*) FROM uav_event_voice_advisory WHERE event_id=:event", p, Integer.class)==0
+                && notifications.phoneWaitNotRequired(b.event)) {
+            return value("NOT_REQUIRED", now, "notification_configuration:"+b.event);
+        }
+        return unknown("PHONE_PLAYBACK_COMPLETION_UNAVAILABLE");
     }
 
     private List<Observation> observations(Base b, long now) {

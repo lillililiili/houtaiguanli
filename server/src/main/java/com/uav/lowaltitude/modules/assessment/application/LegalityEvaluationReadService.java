@@ -161,7 +161,7 @@ public class LegalityEvaluationReadService {
                         verification.eventId(), verification.conclusion(), verification.note(), verification.version(), verification.verifiedAt()),
                 "ABNORMAL".equals(row.legalStatus()) ? row.legalStatus() : null,
                 com.uav.lowaltitude.modules.assessment.infrastructure.LegalityStatusProjection.effective(
-                        row.legalStatus(), row.mode(), row.reviewRejected() ? "REJECTED" : row.reviewState(), row.manualStatus()), confidence.value(), confidence.threshold(), confidence.sourceCount());
+                        row.legalStatus(), row.mode(), row.reviewRejected() ? "REJECTED" : row.reviewState(), row.manualStatus()), confidence.value(), confidence.threshold(), confidence.sourceCount(), alarmId != null);
     }
 
     private record ConfidenceCheck(BigDecimal value, BigDecimal threshold, Integer sourceCount) {

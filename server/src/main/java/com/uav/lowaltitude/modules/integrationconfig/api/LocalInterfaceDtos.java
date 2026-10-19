@@ -22,8 +22,9 @@ public final class LocalInterfaceDtos {
   @NotBlank(message="航线归属单位不能为空") @Size(max=36) String ownerOrgId,@NotBlank(message="航线所在区县不能为空") @Size(max=36) String districtId){}
  public record WeatherInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
-  @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods,@Size(max=36) String districtId){
-  public WeatherInput(String messageId,String planId,String areaName,Long publishedAt,List<Period> periods){this(messageId,planId,areaName,publishedAt,periods,null);}
+  @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods,@Size(max=36) String districtId,
+  @Size(min=4,max=101) List<List<Double>> polygon){
+  public WeatherInput(String messageId,String planId,String areaName,Long publishedAt,List<Period> periods){this(messageId,planId,areaName,publishedAt,periods,null,null);}
  }
  public record Period(@NotNull @Positive Long from,@NotNull @Positive Long to,@NotBlank @Size(max=128) String summary,
   @NotNull @DecimalMin("-90") @DecimalMax("60") Double temperatureC,
@@ -31,7 +32,10 @@ public final class LocalInterfaceDtos {
   @NotNull @DecimalMin("0") @DecimalMax("150") Double gustMs,
   @NotNull @Min(0) @Max(360) Integer windDirectionDeg,
   @NotNull @Min(0) @Max(100) Integer precipitationProbabilityPct,
-  @NotNull @Min(0) @Max(100) Integer humidityPct){}
+  @NotNull @Min(0) @Max(100) Integer humidityPct,
+  @DecimalMin("0") @DecimalMax("1000") Double precipitationRateMmH){
+  public Period(Long from,Long to,String summary,Double temperatureC,Double windSpeedMs,Double gustMs,Integer windDirectionDeg,Integer precipitationProbabilityPct,Integer humidityPct){this(from,to,summary,temperatureC,windSpeedMs,gustMs,windDirectionDeg,precipitationProbabilityPct,humidityPct,null);}
+ }
  public record BindingInput(@Pattern(regexp="RISK|UAV_EVENT|NOTIFICATION_CHANNEL") @NotNull String sourceKind,
   @NotBlank @Size(max=36) String sourceId,@NotNull Boolean enabled){}
  public record Binding(String sourceKind,String sourceId,boolean enabled,long expiresAt){}

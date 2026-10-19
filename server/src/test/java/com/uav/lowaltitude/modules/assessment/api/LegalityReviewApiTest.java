@@ -654,7 +654,13 @@ class LegalityReviewApiTest {
         String readOnly = user("ASSIGNED", "assessment:read");
         mvc.perform(get(path + "&has_alarm=true").header("Authorization", bearer(readOnly)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.items[0].has_alarm").value(true))
                 .andExpect(jsonPath("$.data.items[0].alarm_id").doesNotExist());
+        mvc.perform(get("/api/v1/legality-evaluations/" + evaluation).header("Authorization", bearer(readOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.has_alarm").value(true))
+                .andExpect(jsonPath("$.data.alarm_id").doesNotExist());
+        mvc.perform(get("/api/v1/legality-evaluations/" + other).header("Authorization", bearer(readOnly)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.has_alarm").value(false));
         mvc.perform(get(path + "&has_alarm=invalid").header("Authorization", bearer(session)))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(path + "&has_alarm=invalid").header("Authorization", bearer(user("ASSIGNED", "target:read"))))

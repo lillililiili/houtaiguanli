@@ -107,8 +107,9 @@ public class DisposalAuthorizationService {
         if (DisposalRules.MANUAL.equals(request.channel()))
             throw bad("人工执行通道已关闭，请改用设备通道");
         String subjectId = text(request.subjectId(), "subject_id");
-        // 直接反制事由选填；明确记录未填写，兼容授权存储与设备指令的非空约束，不编造操作人事由。
-        String reason = direct && blank(request.reason()) ? "未填写直接反制事由" : reason(request.reason());
+        // 申请与直接反制事由均选填；明确记录未填写，兼容授权和设备指令的非空约束，不编造操作人事由。
+        String reason = blank(request.reason())
+                ? (direct ? "未填写直接反制事由" : "未填写申请事由") : reason(request.reason());
         if (blank(request.deviceId()))
             throw bad("经设备执行的处置必须指定设备");
 

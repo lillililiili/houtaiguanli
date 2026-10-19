@@ -92,6 +92,30 @@ class AutomaticCounterNotificationGateTest {
         verify(directory).cannotNotifyPilotFromConfiguration("ADVISORY_SMS", id);
     }
 
+    @Test void phoneWaitMayBeWaivedOnlyForExplicitlyUnattemptedNotification() {
+        when(sms.facts(id)).thenReturn(new AutoSmsRepository.Facts(now, "UAV", now, now));
+        when(directory.cannotNotifyPilotFromConfiguration("ADVISORY_SMS", id)).thenReturn(true);
+        assertThat(gate(true,true).phoneWaitNotRequired(id)).isTrue();
+        for (String status : java.util.List.of("CALLING","FAILED","UNKNOWN","SIMULATED_PLAYED")) {
+            when(voice.find(id)).thenReturn(call(status,1,null,null));
+            assertThat(gate(true,true).phoneWaitNotRequired(id)).as(status).isFalse();
+        }
+        when(voice.find(id)).thenReturn(call("WAITING",0,now,null));
+        assertThat(gate(true,true).phoneWaitNotRequired(id)).isFalse();
+    }
+
+    @Test void unavailablePhoneConfigurationSkipsWaitButCallablePhoneAndReadFailuresDoNot() {
+        long delivered=now-1_000;
+        delivered(delivered);
+        when(departure.assess(id,delivered,now)).thenReturn(Presence.STILL_PRESENT);
+        when(recordings.current()).thenReturn(recording);
+        assertThat(gate(true,true).phoneWaitNotRequired(id)).isFalse();
+        when(directory.cannotNotifyPilotFromConfiguration("ADVISORY_VOICE",id)).thenReturn(true);
+        assertThat(gate(true,true).phoneWaitNotRequired(id)).isTrue();
+        when(directory.cannotNotifyPilotFromConfiguration("ADVISORY_VOICE",id)).thenThrow(new IllegalStateException("read unavailable"));
+        assertThat(gate(true,true).phoneWaitNotRequired(id)).isFalse();
+    }
+
     @ParameterizedTest @ValueSource(strings = {"BLOCKED", "UNAVAILABLE", "WAITING", "CALLING", "FAILED", "UNKNOWN"})
     void temporaryVoiceBlockOrOfflineReceiverDoesNotSkipPlayback(String status) {
         long delivered = now - 1_000;

@@ -17,6 +17,7 @@ public final class AutomationRuleCatalog {
             fixed("identity", "目标身份关联", "目标身份可关联", "身份标识与当前目标明确关联", false, "当前目标的身份关联记录"),
             number("trackDuration", "连续观测时长", "连续观测时长要求", "不少于", "秒", 1, 300, false, "同一轨迹内连续有效的观测记录")),
         "counter", List.of(
+            number("counterVoiceWait", "电话完成后等待时长", "电话完成后等待再自动反制", "不少于", "秒", 0, 86400, false, "本事件电话播放完成回执；明确无法通知且尚未尝试时跳过电话等待，0秒表示播放完成后不额外等待"),
             number("counterFreshness", "目标观测时效", "反制依据保持最新", "不超过", "秒", 1, 300, false, "当前目标的最新有效观测"),
             fixed("device", "执行设备状态", "执行设备在线可用", "在线且无故障", false, "执行设备的实时健康状态"),
             fixed("receipt", "回执通道状态", "执行回执通道可用", "可用", false, "执行通道连接及健康状态"),

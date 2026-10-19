@@ -77,13 +77,34 @@ class DirectDisposalApiTest {
         postDirect(actor,request.toString(),key()).andExpect(status().isCreated());
     }
 
-    @Test void ordinaryReasonStillRequiredAndProvidedDirectReasonKeepsLengthLimits() throws Exception {
+    @Test void ordinaryReasonIsOptionalAndStillRequiresApproval() throws Exception {
+        for (String fields : List.of("{}", "{\"reason\":null}", "{\"reason\":\"\"}", "{\"reason\":\"   \"}",
+                "{\"reason\":\"  补充说明  \"}")) {
+            Actor actor=actor(List.of("disposal:request","disposal:read"));String event=event(actor,"CONFIRMED");
+            var request=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(body(event,"COUNTERMEASURE"));
+            request.remove("reason");
+            request.setAll((com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(fields));
+            JsonNode result=data(post(actor,BASE,request.toString(),key()).andExpect(status().isCreated()));
+            String id=result.path("authorization_id").asText();
+            JsonNode detail=data(mvc.perform(get(BASE+"/"+id).header("Authorization",actor.bearer())).andExpect(status().isOk()));
+            String supplied=request.path("reason").asText("").trim();
+            assertThat(detail.path("reason").asText()).isEqualTo(supplied.isEmpty() ? "未填写申请事由" : supplied);
+            assertThat(detail.path("status").asText()).isEqualTo("REQUESTED");
+            assertThat(detail.path("authorization_mode").asText()).isEqualTo("REVIEW");
+            assertThat(detail.hasNonNull("approved_by")).isFalse();
+            assertThat(jdbc.queryForList("select event_kind from disposal_authorization_event where authorization_id=?",String.class,id))
+                    .containsExactly("REQUEST");
+            post(actor,BASE,request.toString(),key()).andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("ACTIVE_AUTHORIZATION_EXISTS"));
+        }
+    }
+
+    @Test void providedReasonsKeepLengthLimitsForBothModes() throws Exception {
         Actor actor=actor(List.of(DIRECT,"disposal:request","devices"));String event=event(actor,"CONFIRMED");
         var request=(com.fasterxml.jackson.databind.node.ObjectNode)json.readTree(body(event,"COUNTERMEASURE"));
-        request.put("reason", "   ");
-        post(actor,BASE,request.toString(),key()).andExpect(status().isBadRequest());
         for (String reason : new String[] {"字", "字".repeat(501)}) {
             request.put("reason",reason);
+            post(actor,BASE,request.toString(),key()).andExpect(status().isBadRequest());
             postDirect(actor,request.toString(),key()).andExpect(status().isBadRequest());
         }
     }

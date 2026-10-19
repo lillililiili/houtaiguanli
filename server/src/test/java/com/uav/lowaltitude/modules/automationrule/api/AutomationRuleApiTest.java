@@ -50,6 +50,28 @@ class AutomationRuleApiTest {
         }
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM automation_rule_change",Long.class)).isZero();
     }
+    @Test void phoneWaitCanBeCreatedEditedAndReloadedWithVersionedHistory() throws Exception {
+        var body=rule(0); body.put("item_code","counterVoiceWait"); body.put("hold_seconds",0); body.put("value","0");
+        var created=ok(write(post(BASE+"counter/rules"),body));
+        String id=created.path("rules").get(0).path("rule_id").asText();
+        body.put("value","45"); body.put("expected_version",1);
+        ok(write(put(BASE+"counter/rules/"+id),body));
+        var reloaded=ok(auth(get(BASE+"counter")));
+        assertThat(reloaded.path("rules").get(0).path("value").asText()).isEqualTo("45");
+        assertThat(reloaded.path("version").asLong()).isEqualTo(2);
+        assertThat(ok(auth(get(BASE+"counter/history"))).path("total").asLong()).isEqualTo(2);
+    }
+    @Test void phoneWaitRejectsInvalidValuesOtherCategoriesAndSustainedObservation() throws Exception {
+        for(String value:List.of("-1","1.5","86401","abc")) {
+            var body=rule(0);body.put("item_code","counterVoiceWait");body.put("hold_seconds",0);body.put("value",value);
+            mvc.perform(write(post(BASE+"counter/rules"),body)).andExpect(status().isBadRequest());
+        }
+        var body=rule(0);body.put("item_code","counterVoiceWait");body.put("value","30");
+        mvc.perform(write(post(BASE+"counter/rules"),body)).andExpect(status().isBadRequest());
+        body.put("hold_seconds",0);
+        mvc.perform(write(post(BASE+"verify/rules"),body)).andExpect(status().isBadRequest());
+        mvc.perform(write(post(BASE+"dispose/rules"),body)).andExpect(status().isBadRequest());
+    }
     @Test void createUpdateDisableAndHistoryUsePersistedVersionAndActor() throws Exception {
         var created=ok(write(post(BASE+"verify/rules"),rule(0)));
         String id=created.path("rules").get(0).path("rule_id").asText();

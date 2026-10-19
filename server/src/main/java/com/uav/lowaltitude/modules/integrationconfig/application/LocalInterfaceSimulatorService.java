@@ -93,9 +93,11 @@ public class LocalInterfaceSimulatorService {
   if(p.planId()!=null&&!p.planId().isBlank())requireSimulated(flights.flightPlan(p.planId()).sourceMode());
   Row previous=repository.existing(actor.userId(),"WEATHER_FORECAST",p.messageId());if(previous!=null)return replay(previous,p);
   if(p.publishedAt()>clock.nowMillis()+30000)throw bad("预报发布时间不能在未来");
+  try{com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.validate(p.polygon());}catch(IllegalArgumentException ex){throw bad(ex.getMessage());}
   long last=0;
   for(Period period:p.periods()){
    if(period.from()>=period.to()||period.from()<p.publishedAt()||period.from()<last||period.to()-p.publishedAt()>7*86400000L||!Double.isFinite(period.temperatureC())||!Double.isFinite(period.windSpeedMs())||!Double.isFinite(period.gustMs()))throw bad("预报时段须有序、不重叠且在发布时间后7天内，数值须有效");
+   if(period.precipitationRateMmH()!=null&&!Double.isFinite(period.precipitationRateMmH()))throw bad("降雨强度须为有效数值");
    last=period.to();
   }
   String subject=p.planId()!=null&&!p.planId().isBlank()?p.planId():forecastSubject(p.areaName());

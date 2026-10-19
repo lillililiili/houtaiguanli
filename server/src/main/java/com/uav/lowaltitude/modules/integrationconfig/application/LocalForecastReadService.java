@@ -10,7 +10,8 @@ import com.uav.lowaltitude.modules.flight.api.FlightDtos.FlightPlanDto;
 @Service @Profile(com.uav.lowaltitude.platform.config.SimulationPolicy.PROFILE)
 public class LocalForecastReadService {
  private final LocalInterfaceRepository repository;private final ObjectMapper json;
- public LocalForecastReadService(LocalInterfaceRepository repository,ObjectMapper json){this.repository=repository;this.json=json;}
+ private final com.uav.lowaltitude.modules.flight.application.FlightReadService flights;
+ public LocalForecastReadService(LocalInterfaceRepository repository,ObjectMapper json,com.uav.lowaltitude.modules.flight.application.FlightReadService flights){this.repository=repository;this.json=json;this.flights=flights;}
  public ForecastAvailability read(FlightPlanDto plan){
   if(plan.startAt()==null||plan.endAt()==null||plan.startAt()>=plan.endAt()) return null;
   // CDX-P06：同一区域常常每半小时交一份预报，和计划时间重叠的每一份都列出来（以前只取最近收到的一份）；
@@ -26,6 +27,10 @@ public class LocalForecastReadService {
    // Keep the forecast's other periods for history and partial-coverage display.
    boolean overlaps=p.periods()!=null&&p.periods().stream().anyMatch(x->valid(x)&&x.from()<plan.endAt()&&x.to()>plan.startAt());
    if(!matchesPlan||!overlaps) continue;
+   if(p.polygon()!=null){
+    var route=flights.flightRouteVersion(plan.planId());
+    if(route.centerline()==null||!com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.intersects(p.polygon(),route.centerline().coordinates(),route.corridorWidthM()==null?0:route.corridorWidthM().doubleValue()))continue;
+   }
    if(newest==null||p.publishedAt()>newest.publishedAt()) newest=p;
    for(var x:p.periods()){
     if(!valid(x)) continue;

@@ -177,9 +177,14 @@ public class RiskReadService {
         var fact = "WEATHER".equals(row.riskType()) ? weather.find(row.riskId()) : null;
         if (fact == null && "WEATHER".equals(row.riskType())) {
             var forecast = weather.forecast(row.riskId());
-            if (forecast != null) return new com.uav.lowaltitude.modules.risk.api.WeatherRiskDto(null, forecast.publishedAt(),
-                    forecast.validFrom(), forecast.validTo(), forecast.windSpeedMps(), null, null, forecast.sourceMode(),
-                    "REGION", forecast.areaName(), dto(row).districtName(), forecast.messageId());
+            if (forecast != null) {
+                var map=weather.forecastMap(row.riskId());
+                return new com.uav.lowaltitude.modules.risk.api.WeatherRiskDto(map==null?null:map.polygon(), forecast.publishedAt(),
+                    forecast.validFrom(), forecast.validTo(), forecast.windSpeedMps(), map==null?null:map.windFromDegrees(), null, forecast.sourceMode(),
+                    map!=null && map.polygon()!=null?"POLYGON":"REGION", forecast.areaName(), dto(row).districtName(), forecast.messageId(),
+                    map==null?null:map.precipitationRateMmH(), forecast.summary(),
+                    map!=null);
+            }
         }
         return fact == null ? null : new com.uav.lowaltitude.modules.risk.api.WeatherRiskDto(fact.polygon(), fact.publishedAt(),
             fact.validFrom(), fact.validTo(), fact.windSpeedMps(), fact.windFromDegrees(), fact.visibilityM(), fact.sourceMode());

@@ -314,6 +314,78 @@ class AutomaticCounterFlowPostgresTest {
         assertThat(jdbc.queryForObject("SELECT attempt_count FROM uav_auto_voice_task WHERE event_id=?", Integer.class, event)).isZero();
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {5, 17})
+    void configuredPhoneWaitBlocksCommandsUntilExactDeadline(int seconds) {
+        notificationEvidence(true);
+        presence(Presence.STILL_PRESENT, Presence.STILL_PRESENT);
+        long completed=jdbc.queryForObject("SELECT playback_completed_at FROM uav_auto_voice_task WHERE event_id=?",Long.class,event);
+        rule("counterVoiceWait",Integer.toString(seconds),clock.nowMillis());
+        jdbc.update("UPDATE automation_rule_group SET version=version+1 WHERE category='counter'");
+        doReturn(Instant.ofEpochMilli(completed+seconds*1000L-1)).when(clock).now();
+        service.evaluate("counter",event);
+        assertThat(runs.state("counter",event).status()).isEqualTo("WAITING");
+        launch(); assertNoAutomaticStart();
+
+        doReturn(Instant.ofEpochMilli(completed+seconds*1000L)).when(clock).now();
+        service.evaluate("counter",event);
+        assertThat(runs.state("counter",event).status()).isEqualTo("PASS");
+        launch(); launch();
+        var row=onlyAuthorization();
+        controls.dispatch(row.executionCommandId()); receipts.syncByCommand(row.executionCommandId());
+        assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?",String.class,row.executionCommandId())).isEqualTo("SUCCEEDED");
+        assertThat(frames).hasSize(1);
+    }
+
+    @ParameterizedTest @ValueSource(ints = {2, 600})
+    void noAssociatedPilotSkipsPhoneWaitAndStartsExactlyOnceWithoutFakeNotification(int seconds) {
+        doReturn(true).when(smsPolicy).enabled();
+        doReturn(true).when(voicePolicy).enabled();
+        String run=key();
+        jdbc.update("INSERT INTO rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,status,source_mode,created_at) SELECT ?,r.rule_set_id,r.rule_set_version_id,'ACTIVE','SCHEDULED',r.as_of,CURRENT_TIMESTAMP,'DONE','mock',CURRENT_TIMESTAMP FROM rule_run r JOIN rule_evaluation e ON e.run_id=r.run_id WHERE e.alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?) ORDER BY e.evaluated_at DESC LIMIT 1",run,event);
+        jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) SELECT ?,?,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,CURRENT_TIMESTAMP,freshness_code,'NONE',legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,CURRENT_TIMESTAMP,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons FROM rule_evaluation WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?) ORDER BY evaluated_at DESC LIMIT 1",key(),run,event);
+        assertThat(directory.cannotNotifyPilotFromConfiguration("ADVISORY_SMS",event)).isTrue();
+        rule("counterVoiceWait",Integer.toString(seconds),clock.nowMillis());
+        service.evaluate("counter",event);
+        assertThat(runs.state("counter",event).status()).isEqualTo("PASS");
+        launch(); launch();
+        var row=onlyAuthorization();
+        controls.dispatch(row.executionCommandId()); receipts.syncByCommand(row.executionCommandId());
+        assertThat(jdbc.queryForObject("SELECT status FROM device_command WHERE command_id=?",String.class,row.executionCommandId())).isEqualTo("SUCCEEDED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_event_voice_advisory WHERE event_id=?",Integer.class,event)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_auto_voice_task WHERE event_id=?",Integer.class,event)).isZero();
+        assertThat(frames).hasSize(1);
+    }
+
+    @Test void unavailableVoiceConfigurationSkipsWaitAfterSmsButIsRecheckedBeforeDispatch() {
+        notificationEvidence(false);
+        presence(Presence.STILL_PRESENT,Presence.STILL_PRESENT);
+        doReturn(true).when(directory).cannotNotifyPilotFromConfiguration("ADVISORY_VOICE",event);
+        rule("counterVoiceWait","600",clock.nowMillis());
+        service.evaluate("counter",event);
+        assertThat(runs.state("counter",event).status()).isEqualTo("PASS");
+        launch();
+        var row=onlyAuthorization();
+        doReturn(false).when(directory).cannotNotifyPilotFromConfiguration("ADVISORY_VOICE",event);
+        controls.dispatch(row.executionCommandId()); receipts.syncByCommand(row.executionCommandId());
+        assertCancelledBeforeSend(row.executionCommandId());
+        assertThat(frames).isEmpty();
+    }
+
+    @Test void configuredPhoneWaitDoesNotChangeManualCounterEligibility() {
+        notificationEvidence(false);
+        presence(Presence.STILL_PRESENT,Presence.STILL_PRESENT);
+        rule("counterVoiceWait","60",clock.nowMillis());
+        jdbc.update("UPDATE automation_rule_group SET version=version+1 WHERE category='counter'");
+        service.evaluate("counter",event);
+        assertThat(runs.state("counter",event).status()).isNotEqualTo("PASS");
+        launch(); assertNoAutomaticStart();
+        AuthContext.set(operator);
+        try { manual.directExecute(request(),key()); }
+        finally { AuthContext.clear(); }
+        assertThat(onlyAuthorization().requestedBy()).isEqualTo(operator.userId());
+    }
+
     @Test void completedPlaybackNeedsANewStillPresentObservationBeforeAutomaticStart() {
         notificationEvidence(true);
         presence(Presence.STILL_PRESENT, Presence.UNKNOWN);
