@@ -11,6 +11,10 @@ spring:
 
 app:
   source-mode: mock
+  # 自动截图录像的后台轮询会在别的测试中途写审计；需要它的测试自己构造实例。
+  video:
+    auto-capture:
+      enabled: false
   fusion:
     enabled: false
   rule-engine:

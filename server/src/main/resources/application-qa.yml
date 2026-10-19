@@ -23,6 +23,12 @@ app:
     media-password: ${APP_VIDEO_MEDIA_PASSWORD:}
     # 未设置上面的读取密码时，读设备模拟器"开启视频推流"自动生成的本机私有凭据文件（只取 read）。
     media-password-file: ${APP_VIDEO_MEDIA_PASSWORD_FILE:${user.home}/.dongying-qa/qa-video-credentials.json}
+    media-rtsp-origin: ${APP_VIDEO_MEDIA_RTSP_ORIGIN:rtsp://127.0.0.1:8554}
+    # 告警核实属实、反制开始时自动截图并录像（2026-10-19 用户确认）；需要本机装有 ffmpeg。
+    auto-capture:
+      enabled: ${APP_VIDEO_AUTO_CAPTURE_ENABLED:true}
+      ffmpeg-path: ${APP_VIDEO_FFMPEG_PATH:ffmpeg}
+      clip-seconds: ${APP_VIDEO_AUTO_CAPTURE_CLIP_SECONDS:30}
   dev-seed:
     enabled: false
   fusion:

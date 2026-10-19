@@ -54,6 +54,17 @@ class VideoMediaClientTest {
             assertThat(media.ready(PATH)).isFalse();assertThatThrownBy(()->media.resource(PATH,"index.m3u8")).hasMessageContaining("暂不可用");
         }
     }
+    /** 自动取证的拉流地址只用只读账号，密码取自模拟器凭据文件；没有凭据时不带账号。 */
+    @Test void rtspReadUrlUsesReadAccountFromCredentialsFile(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        var file=directory.resolve("qa-video-credentials.json");
+        java.nio.file.Files.writeString(file,"{\"publish\":\""+"p".repeat(32)+"\",\"read\":\""+"r".repeat(32)+"\"}");
+        var media=new VideoMediaClient(new ObjectMapper(),"http://127.0.0.1:9997","http://127.0.0.1:8888","qa-platform","",file.toString(),new com.uav.lowaltitude.platform.time.AppClock());
+        assertThat(media.rtspReadUrl(PATH)).isEqualTo("rtsp://qa-platform:"+"r".repeat(32)+"@127.0.0.1:8554/"+PATH);
+        java.nio.file.Files.delete(file);
+        assertThat(media.rtspReadUrl(PATH)).isEqualTo("rtsp://127.0.0.1:8554/"+PATH);
+        assertThatThrownBy(()->media.rtspReadUrl("qa/../other")).hasMessageContaining("视频流标识无效");
+    }
+
     @Test void readPasswordComesFromSimulatorCredentialsFileAndFollowsItsChanges(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
         var file=directory.resolve("qa-video-credentials.json");
         String first="a".repeat(32), second="b".repeat(32);
