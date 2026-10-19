@@ -28,7 +28,7 @@ export function chartOption(data, chart) {
   for (let at = data.from; at <= data.to; at += data.bucket_ms) times.push(at);
   return { animation: false, color: ['#2685ff', '#26bec6', '#9b83f4', '#e5a632'],
     tooltip: { trigger: 'axis' }, legend: { top: 0, type: 'scroll' }, grid: { left: 48, right: 16, top: 55, bottom: 35 },
-    xAxis: { type: 'category', boundaryGap: Boolean(chart.bar), axisLabel: { hideOverlap: true, showMaxLabel: false }, data: times.map(at => { const date = new Date(at); return `${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}\n${date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`; }) },
+    xAxis: { type: 'category', boundaryGap: Boolean(chart.bar), axisLabel: { hideOverlap: true, showMaxLabel: false }, data: times.map(at => { const date = new Date(at); return `${date.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit' })}\n${date.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false })}`; }) },
     yAxis: { type: 'value', minInterval: chart.state ? 1 : undefined, splitLine: { lineStyle: { color: '#edf1f7' } } },
     series: chart.series.map(series => { const byTime = new Map(series.rows.map(r => [r.at, r])); return { name: series.name, type: chart.bar ? 'bar' : 'line', stack: chart.bar ? 'reports' : undefined, step: chart.state ? 'end' : false, connectNulls: false, showSymbol: Boolean(chart.state) || series.rows.length <= 2, symbolSize: 5, areaStyle: chart.state || chart.bar ? undefined : { opacity: .07 }, data: times.map(at => { const row = byTime.get(at); return !row || (chart.state && row.minimum !== row.maximum) ? null : row[series.field] ?? null; }) }; }) };
 }
