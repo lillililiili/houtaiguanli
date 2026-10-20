@@ -28,7 +28,8 @@ import org.springframework.http.HttpStatus;
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.HitDetailDto;
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.MatchDto;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
-import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.OpenDeviceTaskRow;
+import com.uav.lowaltitude.modules.device.api.DeviceMaintenanceDtos.PlanTask;
+import com.uav.lowaltitude.modules.device.application.DeviceMaintenanceService;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanQuery;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanRow;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
@@ -49,6 +50,7 @@ class FlightPlanAttentionServiceTest {
     private FlightActualsService actuals;
     private RiskRepository risks;
     private AccessControlService access;
+    private DeviceMaintenanceService maintenance;
     private FlightPlanAttentionService service;
 
     // 执行中：偏离（较早开始）、未找到对应飞机（最新开始）、设备、正常两条；待执行两条（风险、正常）。
@@ -68,13 +70,14 @@ class FlightPlanAttentionServiceTest {
         actuals = mock(FlightActualsService.class);
         risks = mock(RiskRepository.class);
         access = mock(AccessControlService.class);
-        service = new FlightPlanAttentionService(plans, actuals, risks, access);
+        maintenance = mock(DeviceMaintenanceService.class);
+        service = new FlightPlanAttentionService(plans, actuals, risks, access, maintenance);
 
         when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(true), eq(0), anyInt())).thenReturn(List.of(
                 normalOld, pendingLater, deviated, pendingSoon, device, unmatched, normalNew, pendingRisk));
         when(plans.countPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false))).thenReturn(1L);
         when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false), anyInt(), anyInt())).thenReturn(List.of(ended));
-        when(plans.openDeviceTasks(anyList())).thenReturn(List.of(new OpenDeviceTaskRow("device", "task-1", "雷达一号", "SUBMITTED")));
+        when(maintenance.openForPlans(anyList())).thenReturn(List.of(new PlanTask("device", "task-1", "雷达一号", "SUBMITTED")));
 
         when(actuals.assessmentAccess()).thenReturn(ACCESS);
         when(actuals.latestMatch(any(), eq(ACCESS))).thenReturn(match("MATCHED", null));
@@ -200,8 +203,8 @@ class FlightPlanAttentionServiceTest {
                 .thenAnswer(call -> pageOf(history, call.getArgument(4), call.getArgument(5)));
         when(actuals.latestMatch(deviation.planId(), ACCESS)).thenReturn(match("PARTIAL", "MISMATCH"));
         when(actuals.latestMatch(aircraft.planId(), ACCESS)).thenReturn(match("NONE", null));
-        when(plans.openDeviceTasks(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(faultyDevice.planId())
-                ? List.of(new OpenDeviceTaskRow(faultyDevice.planId(), prefix + "-task", "设备", "SUBMITTED")) : List.of());
+        when(maintenance.openForPlans(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(faultyDevice.planId())
+                ? List.of(new PlanTask(faultyDevice.planId(), prefix + "-task", "设备", "SUBMITTED")) : List.of());
         var facts = List.of(new PlanStateCount(aircraft.planId(), "PENDING_NOTIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 2),
                 new PlanStateCount(riskPlan.planId(), "PENDING_VERIFICATION", "SPACE_OBJECT", "OBJECT_NEAR_ROUTE", 3));
         when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenAnswer(call ->

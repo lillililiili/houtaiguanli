@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.springframework.stereotype.Service;
+import com.uav.lowaltitude.modules.device.application.DeviceMaintenanceService;
 
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.HitDetailDto;
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.MatchDto;
@@ -55,10 +56,12 @@ public class FlightPlanAttentionService {
     private final FlightActualsService actuals;
     private final RiskRepository risks;
     private final AccessControlService access;
+    private final DeviceMaintenanceService maintenance;
 
     public FlightPlanAttentionService(FlightReadRepository plans, FlightActualsService actuals, RiskRepository risks,
-            AccessControlService access) {
+            AccessControlService access, DeviceMaintenanceService maintenance) {
         this.plans = plans; this.actuals = actuals; this.risks = risks; this.access = access;
+        this.maintenance = maintenance;
     }
 
     public record Ranked(List<PlanRow> rows, Map<String, PlanAttentionDto> attention, AttentionSummaryDto summary, long total) { }
@@ -125,7 +128,7 @@ public class FlightPlanAttentionService {
         }
 
         Map<String, List<DeviceTaskDto>> devices = new HashMap<>();
-        for (var task : plans.openDeviceTasks(executingIds))
+        for (var task : maintenance.openForPlans(executingIds))
             devices.computeIfAbsent(task.planId(), ignored -> new ArrayList<>())
                     .add(new DeviceTaskDto(task.taskId(), task.deviceName(), task.workflowState()));
 

@@ -208,6 +208,14 @@ public class DeviceMaintenanceService {
         return new Page(tasks.forPlan(planKey,deviceKey,page,size,actor,scope).stream().map(row->dto(row,actor,false)).toList(),page,size,tasks.countForPlan(planKey,deviceKey,actor));
     }
 
+    /** Task-list attention uses the same saved plan links and device visibility as the progress entry. */
+    @Transactional(readOnly=true)
+    public java.util.List<PlanTask> openForPlans(java.util.List<String> planIds) {
+        var scope=access.require(PermissionCode.FLIGHT_READ);
+        AuthUser actor=com.uav.lowaltitude.platform.security.AuthContext.require();
+        return tasks.openForPlans(planIds,actor,scope);
+    }
+
     private com.uav.lowaltitude.modules.identity.domain.AccessDecision visiblePlanScope() {
         try { return access.require(PermissionCode.FLIGHT_READ); }
         catch(ApiException error) { if(error.getStatus()!=HttpStatus.FORBIDDEN)throw error;return null; }

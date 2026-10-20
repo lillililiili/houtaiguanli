@@ -11,6 +11,7 @@ import org.springframework.stereotype.Repository;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
+import com.uav.lowaltitude.modules.device.api.DeviceMaintenanceDtos.PlanTask;
 
 @Repository
 public class DeviceMaintenanceRepository {
@@ -159,6 +160,21 @@ public class DeviceMaintenanceRepository {
     public long countForPlan(String planId,String deviceId,AuthUser actor) {
         Map<String,Object> p=new HashMap<>();p.put("plan",planId);p.put("device",deviceId);
         return jdbc.queryForObject("SELECT COUNT(*) FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id"+scope(actor,p)+" AND (t.plan_id=:plan OR EXISTS(SELECT 1 FROM ops_maintenance_plan l WHERE l.task_id=t.task_id AND l.plan_id=:plan))"+(deviceId==null?"":" AND t.device_id=:device"),p,Long.class);
+    }
+
+    public List<PlanTask> openForPlans(List<String> planIds,AuthUser actor,AccessDecision planAccess) {
+        if(planIds.isEmpty())return List.of();
+        var visible=plans.visiblePlanIds(planAccess);
+        Map<String,Object> p=new HashMap<>(visible.parameters());p.put("attention_plan_ids",planIds);
+        // UNION deduplicates a case linked through both its original plan and the shared-case table.
+        // Scheduled checks and frontend reports both save these links; the scheduler cache is not the case ledger.
+        return jdbc.query("SELECT l.plan_id,t.task_id,t.device_name,t.workflow_state FROM ops_device_maintenance_task t"
+                + " JOIN ops_device d ON d.device_id=t.device_id"
+                + " JOIN (SELECT task_id,plan_id FROM ops_maintenance_plan UNION"
+                + " SELECT task_id,plan_id FROM ops_device_maintenance_task WHERE plan_id IS NOT NULL) l ON l.task_id=t.task_id"
+                + scope(actor,p) + " AND t.status='PENDING' AND l.plan_id IN (:attention_plan_ids)"
+                + " AND l.plan_id IN ("+visible.sql()+") ORDER BY l.plan_id,t.device_id,t.task_id",p,
+                (r,n)->new PlanTask(r.getString("plan_id"),r.getString("task_id"),r.getString("device_name"),r.getString("workflow_state")));
     }
 
     public int handle(String id, long version, String note, AuthUser actor, long at) {

@@ -121,6 +121,84 @@ class FlightAttentionPagingPostgresTest {
                 .andExpect(status().isForbidden());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings={"live","replay"})
+    void reportedCasesDriveAttentionWithoutScheduledFaultRows(String mode) throws Exception {
+        Plan first=new Plan(id(),prefix+"-reported","EXECUTING",mode,now.minusMinutes(20));
+        Plan second=new Plan(id(),prefix+"-shared","EXECUTING",mode,now.minusMinutes(10));
+        Plan unrelated=new Plan(id(),prefix+"-unrelated","EXECUTING",mode,now.minusMinutes(5));
+        insert(List.of(first,second,unrelated),org,district);
+        String device=maintenanceDevice(mode), task=maintenanceTask(device,null,2);
+        for(Plan plan:List.of(first,second)) jdbc.update(
+                "insert into ops_maintenance_plan(task_id,plan_id,first_reported_at) values(?,?,?)",task,plan.id,System.currentTimeMillis());
+        assertThat(jdbc.queryForObject("select count(*) from flight_device_check_fault where plan_id in (?,?)",Integer.class,first.id,second.id)).isZero();
+        assertThat(maintenanceItems(first.id).findValuesAsText("task_id")).containsExactly(task);
+
+        JsonNode filtered=read("&attention=DEVICE");
+        assertThat(filtered.path("items").findValuesAsText("plan_id")).containsExactly(second.id,first.id);
+        assertThat(filtered.path("attention_summary").path("device").asInt()).isEqualTo(2);
+        assertThat(filtered.path("attention_summary").path("needs_action").asInt()).isEqualTo(2);
+        for(JsonNode item:filtered.path("items"))
+            assertThat(item.path("attention").path("device_tasks").findValuesAsText("task_id")).containsExactly(task);
+
+        // A scheduled check and the original report may point at the same case; count it once.
+        jdbc.update("update ops_device_maintenance_task set plan_id=? where task_id=?",first.id,task);
+        jdbc.update("insert into flight_device_check_fault(plan_id,device_id,episode_id,incident_key,active,task_id) values(?,?,?,'[]',true,?)",
+                first.id,device,id(),task);
+        assertThat(read("&keyword="+first.number).path("items").get(0).path("attention").path("device_tasks").size()).isEqualTo(1);
+        for(String state:List.of("PROCESSING","READY_TO_COMPLETE")) {
+            jdbc.update("update ops_device_maintenance_task set workflow_state=? where task_id=?",state,task);
+            assertThat(read("&attention=DEVICE").path("total").asInt()).isEqualTo(2);
+        }
+        String actor=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,session);
+        jdbc.update("update ops_device_maintenance_task set status='HANDLED',workflow_state='COMPLETED',active_key=null,handled_by=?,handled_at=?,handling_note='verified' where task_id=?",
+                actor,System.currentTimeMillis(),task);
+        assertThat(read("&attention=DEVICE").path("total").asInt()).isZero();
+        assertThat(maintenanceItems(first.id).findValuesAsText("task_id")).containsExactly(task);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings={"live","replay"})
+    void attentionUsesSameDeviceScopeAsPlanMaintenanceAndKeepsLegacyLinks(String mode) throws Exception {
+        Plan plan=new Plan(id(),prefix+"-legacy","EXECUTING",mode,now.minusMinutes(30));
+        insert(List.of(plan),org,district);
+        String device=maintenanceDevice(mode), task=maintenanceTask(device,plan.id,1);
+        assertThat(maintenanceItems(plan.id).findValuesAsText("task_id")).containsExactly(task);
+        assertThat(read("&attention=DEVICE").path("total").asInt()).isEqualTo(1);
+        assertThat(read("&attention=DEVICE").path("items").get(0).path("attention").path("device_tasks").findValuesAsText("task_id")).containsExactly(task);
+        // A v2 case is only visible while the user retains the device's business scope.
+        jdbc.update("update ops_device_maintenance_task set workflow_version=2 where task_id=?",task);
+        jdbc.update("delete from device_business_scope where ops_device_id=?",device);
+        assertThat(maintenanceItems(plan.id)).isEmpty();
+        assertThat(read("&attention=DEVICE").path("total").asInt()).isZero();
+        jdbc.update("insert into device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) values(?,?,?,current_timestamp,current_timestamp)",device,org,district);
+        assertThat(read("&attention=DEVICE").path("total").asInt()).isEqualTo(1);
+        jdbc.update("update ops_device set enabled=false,deleted_at=? where device_id=?",System.currentTimeMillis(),device);
+        assertThat(maintenanceItems(plan.id)).isEmpty();
+        assertThat(read("&attention=DEVICE").path("total").asInt()).isZero();
+    }
+
+    private String maintenanceDevice(String mode) {
+        String device=id();
+        jdbc.update("insert into ops_device(device_id,device_no,name,device_type_name,channel,source_mode,simulated,created_at,updated_at) values(?,?,?,'雷达','融合感知箱',?,?,0,0)",
+                device,device,"待办设备-"+prefix,mode,!"live".equals(mode));
+        jdbc.update("insert into device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) values(?,?,?,current_timestamp,current_timestamp)",device,org,district);
+        return device;
+    }
+    private String maintenanceTask(String device,String plan,int workflowVersion) {
+        String task=id();
+        String actor=jdbc.queryForObject("select user_id from app_session where session_id=?",String.class,session);
+        boolean simulated=Boolean.TRUE.equals(jdbc.queryForObject("select simulated from ops_device where device_id=?",Boolean.class,device));
+        jdbc.update("insert into ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,device_name,reason,simulated,status,active_key,reported_by,reported_by_name,reported_at,workflow_state,workflow_version)"
+                + " values(?,?,?,?,?,?,'设备离线',?,'PENDING',?,?,'测试上报',?,'PENDING',?)",
+                task,plan,device,org,district,"待办设备-"+prefix,simulated,task,actor,System.currentTimeMillis(),workflowVersion);
+        return task;
+    }
+    private JsonNode maintenanceItems(String plan) throws Exception {
+        return json.readTree(mvc.perform(get("/api/v1/flight-plans/"+plan+"/device-maintenance-tasks")
+                .header("Authorization","Bearer "+session)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("items");
+    }
+
     @Test void concurrentStatusChangeAndInsertCannotShiftBatchesWithinOneRequest() throws Exception {
         seedPopulation("live");
         Plan changed=population.stream().filter(p->p.state.equals("PENDING")&&p.start!=null).max(SOONEST).orElseThrow();
