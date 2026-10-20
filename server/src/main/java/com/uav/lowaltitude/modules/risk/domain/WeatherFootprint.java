@@ -6,11 +6,12 @@ import java.util.List;
 
 /** Explicit WGS84 forecast footprint. A station or district label never supplies a polygon. */
 public final class WeatherFootprint {
+    public static final int MAX_VERTICES = 1000;
     private WeatherFootprint() { }
 
     public static void validate(List<List<Double>> ring) {
         if (ring == null) return;
-        if (ring.size() < 4 || ring.size() > 101) throw new IllegalArgumentException("气象范围须有3至100个顶点并闭合");
+        if (ring.size() < 4 || ring.size() > MAX_VERTICES + 1) throw new IllegalArgumentException("气象范围须有3至" + MAX_VERTICES + "个顶点并闭合");
         for (var p : ring) if (p == null || p.size() != 2 || p.stream().anyMatch(v -> v == null || !Double.isFinite(v))
                 || Math.abs(p.get(0)) > 180 || Math.abs(p.get(1)) > 85.051129)
             throw new IllegalArgumentException("气象范围须为有效WGS84地图坐标");

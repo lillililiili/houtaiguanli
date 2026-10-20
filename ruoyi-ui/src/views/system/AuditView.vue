@@ -66,7 +66,7 @@ function params(paged = true) {
   const from = filters.range?.[0]
   const to = filters.range?.[1]
   return {
-    from: from ? new Date(from).getTime() : '', to: to ? new Date(to).getTime() : '',
+    from: from ? Date.parse(`${from.replace(' ', 'T')}+08:00`) : '', to: to ? Date.parse(`${to.replace(' ', 'T')}+08:00`) : '',
     account: filters.account.trim(), module: filters.module, action: filters.action, result: filters.result,
     include_automatic: filters.includeAutomatic ? 'true' : '',
     ...(paged ? { page: filters.page, size: filters.size } : {})
@@ -126,13 +126,13 @@ onBeforeUnmount(() => { alive = false; listSequence++ })
 
 <template>
   <div class="page-stack page-stack--viewport">
-    <PageHeader title="审计日志" description="日志只读且不可修改或删除；CSV 导出沿用当前筛选条件。">
+    <PageHeader title="审计日志" description="时间显示与筛选统一使用北京时间；日志只读且不可修改或删除，CSV 导出沿用当前筛选条件。">
       <el-button type="primary" :loading="exporting" :disabled="!canExport" @click="exportCsv">导出 CSV</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="load" />
     <section class="content-card audit-card viewport-fill">
       <el-form class="filter-bar" inline @submit.prevent="search">
-        <el-form-item label="时间"><el-date-picker v-model="filters.range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" value-format="x" /></el-form-item>
+        <el-form-item label="时间（北京时间）"><el-date-picker v-model="filters.range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" range-separator="至" value-format="YYYY-MM-DD HH:mm:ss" /></el-form-item>
         <el-form-item label="账号"><el-input v-model="filters.account" clearable placeholder="登录账号" @keyup.enter="search" /></el-form-item>
         <el-form-item label="菜单"><el-select v-model="filters.module" clearable filterable placeholder="全部菜单"><el-option v-for="item in moduleOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>
         <el-form-item label="动作"><el-select v-model="filters.action" clearable filterable placeholder="全部动作"><el-option v-for="item in actionOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select></el-form-item>

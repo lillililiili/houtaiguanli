@@ -91,19 +91,6 @@ public class FlightReadRepository {
         where.parameters.put("attention_statuses", statuses);
     }
 
-    /** 未办结的周边设备处置单（任务定时设备检查发现的异常设备），按计划分组；办结后不再算待处理。 */
-    public List<OpenDeviceTaskRow> openDeviceTasks(List<String> planIds) {
-        if (planIds.isEmpty()) return List.of();
-        return jdbc.query("SELECT f.plan_id,t.task_id,t.device_name,t.workflow_state FROM flight_device_check_fault f"
-                + " JOIN ops_device_maintenance_task t ON t.task_id=f.task_id"
-                + " WHERE f.plan_id IN (:plan_ids) AND t.workflow_state NOT IN ('COMPLETED','LEGACY_HANDLED')"
-                + " ORDER BY f.plan_id,f.device_id", Map.of("plan_ids", planIds),
-                (rs, n) -> new OpenDeviceTaskRow(rs.getString("plan_id"), rs.getString("task_id"), rs.getString("device_name"),
-                        rs.getString("workflow_state")));
-    }
-
-    public record OpenDeviceTaskRow(String planId, String taskId, String deviceName, String workflowState) { }
-
     /** 当前台账来源下仍未办结的设备单；调用方只传入权限内候选设备，输出继续按来源和航线覆盖筛选。 */
     public List<OpenDeviceCaseRow> openDeviceCases(List<String> deviceIds) {
         if (deviceIds.isEmpty()) return List.of();

@@ -59,6 +59,7 @@ public final class DeviceMaintenanceDtos {
             String deliveryStatus, String receiptStatus, String receiptResult, String blockedReason,
             Long submittedAt, Long deliveredAt, Long acknowledgedAt, String outcomeState, boolean historical) { }
     public record Page(List<Task> items, int page, int size, long total) { }
+    public record PlanTask(String planId,String taskId,String deviceName,String workflowState) { }
     public record Task(String taskId, String planId, String planNo, String deviceId, String deviceNo,
             String deviceName, String reason, String connectivity, String healthCode, Long observedAt,
             Long lastHeartbeatAt, boolean simulated, String status, String reportedByName, long reportedAt,

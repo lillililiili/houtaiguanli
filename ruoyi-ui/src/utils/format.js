@@ -1,7 +1,7 @@
 export function formatTime(value) {
   if (value === null || value === undefined || value === '') return '—';
   const date = new Date(Number(value));
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
 }
 
 export function display(value, fallback = '—') {

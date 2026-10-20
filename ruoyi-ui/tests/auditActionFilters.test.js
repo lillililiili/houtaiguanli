@@ -36,6 +36,29 @@ it.each(['127.0.0.1', '2001:db8::42'])('列表和详情显示服务端角色、�
   expect(detail.textContent).toContain(ip);
 });
 
+it('时间筛选和导出按输入的北京时间查询，跨日不受电脑时区影响', async () => {
+  host = document.createElement('div'); document.body.append(host);
+  app = createApp(AuditView); app.use(ElementPlus); app.mount(host); await settle();
+  const values = ['2027-01-02 00:00:00', '2027-01-02 00:30:00'];
+  for (const [index, placeholder] of ['开始时间', '结束时间'].entries()) {
+    const input = host.querySelector(`input[placeholder="${placeholder}"]`);
+    input.focus(); await settle();
+    input.value = values[index];
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+  }
+  host.querySelector('input[placeholder="结束时间"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+  await settle();
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '查询').click(); await settle();
+  const range = { from: Date.parse('2027-01-01T16:00:00Z'), to: Date.parse('2027-01-01T16:30:00Z') };
+  expect(systemApi.audits).toHaveBeenLastCalledWith(expect.objectContaining(range));
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '导出 CSV').click(); await settle();
+  expect(systemApi.auditCsv).toHaveBeenLastCalledWith(expect.objectContaining(range));
+  [...host.querySelectorAll('button')].find(x => x.textContent.trim() === '重置').click(); await settle();
+  expect(systemApi.audits).toHaveBeenLastCalledWith(expect.objectContaining({ from: '', to: '' }));
+});
+
 it('菜单筛选、导出保持一致，历史缺失信息明确显示', async () => {
   systemApi.audits.mockResolvedValue({ items: [{ audit_id: 'legacy', account: 'operator',
     role_name: '后台用户（当前角色，历史未记录）', role_source: 'CURRENT', module_name: '设备异常处理', ip: null }], total: 1 });

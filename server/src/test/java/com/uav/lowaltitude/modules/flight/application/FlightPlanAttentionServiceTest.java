@@ -28,7 +28,8 @@ import org.springframework.http.HttpStatus;
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.HitDetailDto;
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.MatchDto;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
-import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.OpenDeviceTaskRow;
+import com.uav.lowaltitude.modules.device.api.DeviceMaintenanceDtos.PlanTask;
+import com.uav.lowaltitude.modules.device.application.DeviceMaintenanceService;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanQuery;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository.PlanRow;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
@@ -50,6 +51,7 @@ class FlightPlanAttentionServiceTest {
     private RiskRepository risks;
     private AccessControlService access;
     private FlightDeviceCheckService checks;
+    private DeviceMaintenanceService maintenance;
     private FlightPlanAttentionService service;
 
     // 执行中：偏离（较早开始）、未找到对应飞机（最新开始）、设备、正常两条；待执行两条（风险、正常）。
@@ -70,13 +72,14 @@ class FlightPlanAttentionServiceTest {
         risks = mock(RiskRepository.class);
         access = mock(AccessControlService.class);
         checks = mock(FlightDeviceCheckService.class);
-        service = new FlightPlanAttentionService(plans, actuals, risks, access, checks);
+        maintenance = mock(DeviceMaintenanceService.class);
+        service = new FlightPlanAttentionService(plans, actuals, risks, access, checks, maintenance);
 
         when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(true), eq(0), anyInt())).thenReturn(List.of(
                 normalOld, pendingLater, deviated, pendingSoon, device, unmatched, normalNew, pendingRisk));
         when(plans.countPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false))).thenReturn(1L);
         when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false), anyInt(), anyInt())).thenReturn(List.of(ended));
-        when(plans.openDeviceTasks(anyList())).thenReturn(List.of(new OpenDeviceTaskRow("device", "task-1", "雷达一号", "SUBMITTED")));
+        when(maintenance.openForPlans(anyList())).thenReturn(List.of(new PlanTask("device", "task-1", "雷达一号", "SUBMITTED")));
 
         when(actuals.assessmentAccess()).thenReturn(ACCESS);
         when(actuals.latestMatch(any(), eq(ACCESS))).thenReturn(match("MATCHED", null));
@@ -150,7 +153,7 @@ class FlightPlanAttentionServiceTest {
         var state = new FlightDeviceCheckService.DeviceRow(deviceId,"覆盖设备",true,java.math.BigDecimal.ONE,
                 "ONLINE",abnormal ? "BAD" : "GOOD",1L,1L,abnormal,true,List.of(),
                 abnormal ? null : new FlightDeviceCheckService.MaintenanceProgress(taskId,"READY_TO_COMPLETE"));
-        when(plans.openDeviceTasks(anyList())).thenReturn(List.of());
+        when(maintenance.openForPlans(anyList())).thenReturn(List.of());
         when(checks.readForAttention(anyList())).thenReturn(Map.of(device.planId(),new FlightDeviceCheckService.Check(
                 device.planId(),"AUTO_DEVICE_ABNORMAL","",1L,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(state),true)));
         var ranked = service.page(PlanQuery.empty(),ACCESS,"DEVICE",0,20);
@@ -178,6 +181,30 @@ class FlightPlanAttentionServiceTest {
 
         var aircraft = service.page(PlanQuery.empty(), ACCESS, "AIRCRAFT", 0, 20);
         assertThat(aircraft.rows()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"PROCESSING", "READY_TO_COMPLETE"})
+    void linkedCaseAndCurrentCoverageKeepOneTaskInAttention(String workflowState) {
+        String deviceId = UUID.randomUUID().toString(), taskId = UUID.randomUUID().toString();
+        var state = new FlightDeviceCheckService.DeviceRow(deviceId,"覆盖设备",true,java.math.BigDecimal.ONE,
+                "ONLINE","GOOD",1L,1L,false,true,List.of(),
+                new FlightDeviceCheckService.MaintenanceProgress(taskId,workflowState));
+        when(maintenance.openForPlans(anyList())).thenReturn(List.of(
+                new PlanTask(device.planId(),taskId,"覆盖设备",workflowState)));
+        when(checks.readForAttention(anyList())).thenReturn(Map.of(device.planId(),new FlightDeviceCheckService.Check(
+                device.planId(),"AUTO_DEVICE_NORMAL","",1L,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(state),true)));
+        when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenReturn(List.of());
+
+        var ranked = service.page(PlanQuery.empty(),ACCESS,"DEVICE",0,20);
+        assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(device.planId());
+        assertThat(ranked.total()).isEqualTo(1);
+        assertThat(ranked.summary().needsAction()).isEqualTo(1);
+        assertThat(ranked.summary().device()).isEqualTo(1);
+        var attention = ranked.attention().get(device.planId());
+        assertThat(attention.kinds()).containsExactly("DEVICE");
+        assertThat(attention.deviceTasks()).singleElement().satisfies(row -> assertThat(row.taskId()).isEqualTo(taskId));
+        assertThat(attention.deviceChecks()).singleElement().satisfies(row -> assertThat(row.taskId()).isEqualTo(taskId));
     }
 
     @Test
@@ -228,8 +255,8 @@ class FlightPlanAttentionServiceTest {
                 .thenAnswer(call -> pageOf(history, call.getArgument(4), call.getArgument(5)));
         when(actuals.latestMatch(deviation.planId(), ACCESS)).thenReturn(match("PARTIAL", "MISMATCH"));
         when(actuals.latestMatch(aircraft.planId(), ACCESS)).thenReturn(match("NONE", null));
-        when(plans.openDeviceTasks(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(faultyDevice.planId())
-                ? List.of(new OpenDeviceTaskRow(faultyDevice.planId(), prefix + "-task", "设备", "SUBMITTED")) : List.of());
+        when(maintenance.openForPlans(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(faultyDevice.planId())
+                ? List.of(new PlanTask(faultyDevice.planId(), prefix + "-task", "设备", "SUBMITTED")) : List.of());
         var facts = List.of(new PlanStateCount(aircraft.planId(), "PENDING_NOTIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 2),
                 new PlanStateCount(riskPlan.planId(), "PENDING_VERIFICATION", "SPACE_OBJECT", "OBJECT_NEAR_ROUTE", 3));
         when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenAnswer(call ->
