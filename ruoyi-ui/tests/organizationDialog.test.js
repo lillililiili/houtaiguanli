@@ -31,14 +31,16 @@ beforeEach(() => {
 })
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = '' })
 describe('用户管理内的单位资料', () => {
-  it('查看单位用只读表单，不含页签、编辑入口、单位编码和账号维护提示', async () => {
+  it('查看单位复用基本资料表单，全部只读且无页签或维护入口', async () => {
     await mount(OrganizationDialog, props())
     expect(formLabels()).toEqual(expect.arrayContaining(['单位名称', '单位类型', '上级单位', '统一社会信用代码或统一标识', '单位地址', '备注']))
     expect(formLabels()).not.toContain('单位编码')
     expect(fieldValues()).toEqual(expect.arrayContaining(['已维护单位', '原单位地址', '原备注', '已维护业务说明']))
     expect(document.body.textContent).not.toContain('单位资料与账号分别维护')
-    expect(document.querySelector('.el-tabs')).toBeFalsy()
-    expect(document.querySelector('textarea[disabled], .el-textarea.is-disabled, .el-input.is-disabled')).toBeTruthy()
+    expect(document.querySelector('[role="tab"]')).toBeNull()
+    const inputs = [...document.querySelectorAll('.el-form input, .el-form textarea')]
+    expect(inputs.length).toBeGreaterThan(0)
+    expect(inputs.every(input => input.disabled)).toBe(true)
     expect(button('保存')).toBeUndefined()
     expect(button('取消')).toBeUndefined()
     expect(button('编辑单位')).toBeUndefined()
@@ -85,7 +87,7 @@ describe('用户管理内的单位资料', () => {
     expect(fieldValues()).toContain('原单位地址')
     expect(button('编辑单位')).toBeUndefined()
     expect(button('保存')).toBeUndefined()
-    expect(document.querySelector('.el-tabs')).toBeFalsy()
+    expect(document.querySelector('.el-tabs')).toBeNull()
   })
   it('资料加载失败给出重试，不能用空表单覆盖原记录', async () => {
     directoryApi.profile.mockRejectedValue(new Error('读取单位失败'))

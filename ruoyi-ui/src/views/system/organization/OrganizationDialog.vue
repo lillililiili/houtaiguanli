@@ -25,8 +25,9 @@ async function loadProfile() {
   } catch (e) { if (current === sequence) error.value = e.message || '单位资料加载失败，请重试。' }
   finally { if (current === sequence) loading.value = false }
 }
-watch(() => [props.visible, props.row, props.mode], async () => {
+watch(() => [props.visible, props.row, props.mode, props.canReadDirectory], async () => {
   sequence++
+  busy.value = false
   if (!props.visible) return
   targetOrgId.value = props.row?.org_id || ''
   profile.value = null; error.value = ''; loading.value = false
@@ -44,7 +45,7 @@ onBeforeUnmount(() => { sequence++ })
       <p v-if="mode === 'view' && profile && !canReadDirectory" class="muted">当前权限可查看单位基本信息，完整资料需要单位资料读取权限。</p>
     </section>
     <template v-if="mode === 'view' || !showForm" #footer>
-      <el-button @click="close">关闭</el-button>
+      <el-button :disabled="busy" @click="close">关闭</el-button>
     </template>
   </el-dialog>
 </template>

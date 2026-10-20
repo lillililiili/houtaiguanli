@@ -46,14 +46,18 @@ public final class FlightDtos {
     }
 
     /**
-     * 飞行任务“需要处理”（2026-10-18）：kinds 仅取 DEVICE（周边设备处置单未办结）、RISK（风险待核验/待通知）。
+     * 飞行任务“需要处理”：kinds 仅取 DEVICE（覆盖航线的设备当前异常或处置单未办结）、RISK（风险待核验/待通知）。
      * matchIssue 保留只读匹配事实，不参与待处理分类、排序或计数，为 DEVIATION、NONE、NO_EVALUATION、
      * PARTIAL、UNDETERMINED 之一，没有问题或无权读研判时为 null。
      */
     public record PlanAttentionDto(List<String> kinds, String matchIssue, long pendingVerificationRisks,
-            long pendingNotificationRisks, List<DeviceTaskDto> deviceTasks, List<RiskKindDto> pendingRiskKinds) {
+            long pendingNotificationRisks, List<DeviceTaskDto> deviceTasks, List<RiskKindDto> pendingRiskKinds,
+            List<DeviceCheckAttentionDto> deviceChecks) {
         public boolean needsAction() { return !kinds.isEmpty(); }
     }
+
+    public record DeviceCheckAttentionDto(String deviceId,String deviceName,boolean abnormal,String connectivity,
+            String healthCode,String taskId,String workflowState) { }
 
     public record DeviceTaskDto(String taskId, String deviceName, String workflowState) {
     }

@@ -49,6 +49,7 @@ class FlightPlanAttentionServiceTest {
     private FlightActualsService actuals;
     private RiskRepository risks;
     private AccessControlService access;
+    private FlightDeviceCheckService checks;
     private FlightPlanAttentionService service;
 
     // 执行中：偏离（较早开始）、未找到对应飞机（最新开始）、设备、正常两条；待执行两条（风险、正常）。
@@ -68,7 +69,8 @@ class FlightPlanAttentionServiceTest {
         actuals = mock(FlightActualsService.class);
         risks = mock(RiskRepository.class);
         access = mock(AccessControlService.class);
-        service = new FlightPlanAttentionService(plans, actuals, risks, access);
+        checks = mock(FlightDeviceCheckService.class);
+        service = new FlightPlanAttentionService(plans, actuals, risks, access, checks);
 
         when(plans.listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(true), eq(0), anyInt())).thenReturn(List.of(
                 normalOld, pendingLater, deviated, pendingSoon, device, unmatched, normalNew, pendingRisk));
@@ -139,6 +141,32 @@ class FlightPlanAttentionServiceTest {
 
         service.page(PlanQuery.empty(), ACCESS, null, 10, 5);
         verify(plans).listPlansInStatuses(any(), eq(ACCESS), eq(ACTIVE), eq(false), eq(2), eq(5));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void coverageFactsAndUnlinkedOpenCasesCountWithoutScheduledCheckRows(boolean abnormal) {
+        String deviceId = UUID.randomUUID().toString(), taskId = UUID.randomUUID().toString();
+        var state = new FlightDeviceCheckService.DeviceRow(deviceId,"覆盖设备",true,java.math.BigDecimal.ONE,
+                "ONLINE",abnormal ? "BAD" : "GOOD",1L,1L,abnormal,true,List.of(),
+                abnormal ? null : new FlightDeviceCheckService.MaintenanceProgress(taskId,"READY_TO_COMPLETE"));
+        when(plans.openDeviceTasks(anyList())).thenReturn(List.of());
+        when(checks.readForAttention(anyList())).thenReturn(Map.of(device.planId(),new FlightDeviceCheckService.Check(
+                device.planId(),"AUTO_DEVICE_ABNORMAL","",1L,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(state),true)));
+        var ranked = service.page(PlanQuery.empty(),ACCESS,"DEVICE",0,20);
+        assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(device.planId());
+        assertThat(ranked.summary().device()).isEqualTo(1);
+        assertThat(ranked.attention().get(device.planId()).deviceTasks()).isEmpty();
+        assertThat(ranked.attention().get(device.planId()).deviceChecks()).singleElement().satisfies(row -> {
+            assertThat(row.deviceId()).isEqualTo(deviceId);
+            assertThat(row.abnormal()).isEqualTo(abnormal);
+            assertThat(row.workflowState()).isEqualTo(abnormal ? null : "READY_TO_COMPLETE");
+        });
+        var normal = new FlightDeviceCheckService.DeviceRow(deviceId,"覆盖设备",true,java.math.BigDecimal.ONE,
+                "ONLINE","GOOD",1L,1L,false,true,List.of());
+        when(checks.readForAttention(anyList())).thenReturn(Map.of(device.planId(),new FlightDeviceCheckService.Check(
+                device.planId(),"CHECK_INCOMPLETE","",1L,"DEVICE_SCAN_COVERAGE",true,0,0,List.of(normal),true)));
+        assertThat(service.page(PlanQuery.empty(),ACCESS,"DEVICE",0,20).rows()).isEmpty();
     }
 
     @Test

@@ -15,6 +15,7 @@ import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.HitDetailDto;
 import com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.MatchDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.AttentionSummaryDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.DeviceTaskDto;
+import com.uav.lowaltitude.modules.flight.api.FlightDtos.DeviceCheckAttentionDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.PlanAttentionDto;
 import com.uav.lowaltitude.modules.flight.api.FlightDtos.RiskKindDto;
 import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
@@ -35,7 +36,7 @@ import static com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.NO_EVALUA
  *
  * 顺序：需要处理（执行中的、新的在前，再是待执行的、开始时间近的在前）→ 其他执行中（新的在前）→ 待执行（开始时间近的在前）
  * → 已结束/已取消（新的在前）。需要处理只看还没结束的任务：
- * 执行中的看未办结的周边设备处置单；2026-10-18 起匹配结论不再作为需要处理的类别。
+ * 执行中的共用航线覆盖设备检查，当前异常或未办结处置单均计入；2026-10-18 起匹配结论不再作为需要处理的类别。
  * 执行中和待执行的都看待核验、待通知的风险。每一项只在当前用户有对应读权限时参与，
  * 没权限看研判或风险的人不会因为排序看出这些结论。
  */
@@ -55,10 +56,11 @@ public class FlightPlanAttentionService {
     private final FlightActualsService actuals;
     private final RiskRepository risks;
     private final AccessControlService access;
+    private final FlightDeviceCheckService deviceChecks;
 
     public FlightPlanAttentionService(FlightReadRepository plans, FlightActualsService actuals, RiskRepository risks,
-            AccessControlService access) {
-        this.plans = plans; this.actuals = actuals; this.risks = risks; this.access = access;
+            AccessControlService access, FlightDeviceCheckService deviceChecks) {
+        this.plans = plans; this.actuals = actuals; this.risks = risks; this.access = access; this.deviceChecks = deviceChecks;
     }
 
     public record Ranked(List<PlanRow> rows, Map<String, PlanAttentionDto> attention, AttentionSummaryDto summary, long total) { }
@@ -128,6 +130,7 @@ public class FlightPlanAttentionService {
         for (var task : plans.openDeviceTasks(executingIds))
             devices.computeIfAbsent(task.planId(), ignored -> new ArrayList<>())
                     .add(new DeviceTaskDto(task.taskId(), task.deviceName(), task.workflowState()));
+        var currentChecks = deviceChecks.readForAttention(active.stream().filter(row -> "EXECUTING".equals(row.statusCode())).toList());
 
         Map<String, long[]> riskCounts = new HashMap<>();
         Map<String, List<RiskKindDto>> riskKinds = new HashMap<>();
@@ -143,12 +146,18 @@ public class FlightPlanAttentionService {
         for (PlanRow row : active) {
             String issue = matchIssue.get(row.planId());
             List<DeviceTaskDto> tasks = devices.getOrDefault(row.planId(), List.of());
+            var check = currentChecks.get(row.planId());
+            List<DeviceCheckAttentionDto> checked = check == null ? List.of() : check.rows().stream()
+                    .filter(device -> device.abnormal() || device.maintenance() != null)
+                    .map(device -> new DeviceCheckAttentionDto(device.deviceId(),device.name(),device.abnormal(),
+                            device.connectivity(),device.healthCode(),device.maintenance()==null?null:device.maintenance().taskId(),
+                            device.maintenance()==null?null:device.maintenance().workflowState())).toList();
             long[] pair = riskCounts.getOrDefault(row.planId(), new long[2]);
             List<String> kinds = new ArrayList<>();
-            if (!tasks.isEmpty()) kinds.add("DEVICE");
+            if (!tasks.isEmpty() || !checked.isEmpty()) kinds.add("DEVICE");
             if (pair[0] + pair[1] > 0) kinds.add("RISK");
             result.put(row.planId(), new PlanAttentionDto(List.copyOf(kinds), issue, pair[0], pair[1], List.copyOf(tasks),
-                    List.copyOf(riskKinds.getOrDefault(row.planId(), List.of()))));
+                    List.copyOf(riskKinds.getOrDefault(row.planId(), List.of())), checked));
         }
         return result;
     }

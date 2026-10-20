@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { checkFrontend, sourceId } from '../check-local-startup.mjs';
+import { checkFrontend, checkMap, compareMaps, sourceId } from '../check-local-startup.mjs';
 
 async function fixture(t, overrides = {}, { mode = 'built', scriptPath = '/assets/main.js', apiBase = '/api/v1' } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'startup-check-'));
@@ -24,8 +24,8 @@ async function fixture(t, overrides = {}, { mode = 'built', scriptPath = '/asset
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     requests.push({ path: req.url, method: req.method, body });
-    const [status, type, data] = routes[req.url] || [404, 'text/html', 'missing'];
-    res.writeHead(status, { 'Content-Type': type });
+    const [status, type, data, headers = {}] = routes[req.url] || [404, 'text/html', 'missing'];
+    res.writeHead(status, { 'Content-Type': type, ...headers });
     res.end(typeof data === 'string' ? data : JSON.stringify(data));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -39,6 +39,68 @@ test('checks the API baked into the served page without trying a password', asyn
   assert.equal(result.api_base, '/api/v1');
   assert.equal(result.mode, 'built');
   assert.deepEqual(f.requests.find(r => r.path.endsWith('/login')), { path: '/api/v1/auth/login', method: 'POST', body: '{}' });
+});
+
+const mapManifest = { version: 1, coordinateSystem: 'WGS84', archive: './city.pmtiles', style: './style.json', dataVersion: 'original' };
+const mapPointerPath = '/map-data/control/map-config.json';
+function mapRoutes(id = 'map-version-a', revision = 1, overrides = {}) {
+  const manifest = `/map-data/packages/${id}/manifest.json`;
+  return {
+    [mapPointerPath]: [200, 'application/json', { package_id: id, revision, manifest, city_code: '370500', clear_business_overlays: false }, { 'Cache-Control': 'no-store, max-age=0' }],
+    [manifest]: [200, 'application/json', mapManifest],
+    '/map-config.json': [200, 'application/json', { manifest: '/map-data/builtin/manifest.json' }],
+    '/map-data/builtin/manifest.json': [200, 'application/json', mapManifest],
+    ...overrides
+  };
+}
+
+for (const missingStatus of [204, 404]) {
+  test(`uses built-in map only when the managed pointer is absent (${missingStatus})`, async t => {
+    const f = await fixture(t, mapRoutes('unused', 1, { [mapPointerPath]: [missingStatus, 'text/plain', ''] }));
+    const result = await checkMap(f.origin);
+    assert.equal(result.managed, false);
+    assert.equal(result.manifest, '/map-data/builtin/manifest.json');
+  });
+}
+
+for (const [id, revision] of [['alternate-city-version', 2], ['rollback-package', 19]]) {
+  test(`checks published ${id} instead of healthy built-in resources`, async t => {
+    const f = await fixture(t, mapRoutes(id, revision));
+    const result = await checkMap(f.origin);
+    assert.equal(result.package_id, id);
+    assert.equal(result.revision, revision);
+    assert.equal(result.managed, true);
+    assert.ok(!f.requests.some(r => r.path === '/map-config.json'));
+  });
+}
+
+for (const [label, badPointer] of [
+  ['server error', [503, 'application/json', { error: 'unavailable' }]],
+  ['SPA HTML fallback', [200, 'text/html', '<html>fallback</html>']],
+  ['missing identity', [200, 'application/json', { manifest: '/map-data/builtin/manifest.json' }]],
+  ['cached pointer', [200, 'application/json', { manifest: '/map-data/builtin/manifest.json', package_id: 'a', revision: 1 }, { 'Cache-Control': 'max-age=3600' }]]
+]) test(`does not hide a ${label} behind the built-in fallback`, async t => {
+  const f = await fixture(t, mapRoutes('a', 1, { [mapPointerPath]: badPointer }));
+  await assert.rejects(checkMap(f.origin));
+  assert.ok(!f.requests.some(r => r.path === '/map-config.json'));
+});
+
+test('fails when a published map is unavailable despite a healthy built-in map', async t => {
+  const f = await fixture(t, mapRoutes('missing', 4, { '/map-data/packages/missing/manifest.json': [404, 'text/plain', 'missing'] }));
+  await assert.rejects(checkMap(f.origin), /manifest/);
+});
+
+test('detects different roots serving different contents at the same map URL', async t => {
+  const business = await fixture(t, mapRoutes());
+  const admin = await fixture(t, mapRoutes('map-version-a', 1, {
+    '/map-data/packages/map-version-a/manifest.json': [200, 'application/json', { ...mapManifest, dataVersion: 'stale-other-root' }]
+  }));
+  const [businessMap, adminMap] = await Promise.all([checkMap(business.origin), checkMap(admin.origin)]);
+  assert.throws(() => compareMaps(businessMap, adminMap), /不一致/);
+  assert.deepEqual(compareMaps(businessMap, { ...businessMap }), businessMap);
+  assert.throws(() => compareMaps(businessMap, { ...businessMap, revision: 2 }), /不一致/);
+  assert.throws(() => compareMaps(businessMap, { ...businessMap, managed: false, package_id: null }), /不一致/);
+  assert.throws(() => compareMaps(businessMap, { ...businessMap, clear_business_overlays: true }), /不一致/);
 });
 
 for (const [mode, query] of [['dev', `?t=${Date.now()}`], ['dev', '?v=alternate-module'], ['built', '?v=release-2']]) {

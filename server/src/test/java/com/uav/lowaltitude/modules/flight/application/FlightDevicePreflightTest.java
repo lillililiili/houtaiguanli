@@ -65,6 +65,39 @@ class FlightDevicePreflightTest {
         assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_NORMAL");
         assertThat(result.message()).doesNotContain("未按任务起飞");
     }
+
+    @ParameterizedTest
+    @ValueSource(strings={"live","replay"})
+    void attentionUsesSameCoverageStateAndCurrentUnlinkedMaintenanceCase(String mode) {
+        String planId=java.util.UUID.randomUUID().toString(),deviceId=java.util.UUID.randomUUID().toString(),taskId=java.util.UUID.randomUUID().toString();
+        when(plan.planId()).thenReturn(planId);
+        when(plan.sourceMode()).thenReturn(mode);
+        when(device.sourceMode()).thenReturn(mode);
+        when(device.deviceId()).thenReturn(deviceId);
+        state("ONLINE","BAD");
+        when(plans.openDeviceCases(List.of(deviceId))).thenReturn(List.of(
+            new FlightReadRepository.OpenDeviceCaseRow(deviceId,taskId,"当前设备","PROCESSING")));
+        var check=service.readForAttention(List.of(plan)).get(planId);
+        assertThat(check.rows()).singleElement().satisfies(row->{
+            assertThat(row.abnormal()).isTrue();
+            assertThat(row.maintenance().taskId()).isEqualTo(taskId);
+        });
+        when(device.coverage()).thenReturn(null);
+        assertThat(service.readForAttention(List.of(plan)).get(planId).rows()).isEmpty();
+        when(device.coverage()).thenReturn(new Coverage("CIRCLE","AVAILABLE",BigDecimal.valueOf(1000),null,null,null,null,"范围",null,1L));
+        when(device.sourceMode()).thenReturn("live".equals(mode)?"replay":"live");
+        assertThat(service.readForAttention(List.of(plan)).get(planId).rows()).isEmpty();
+    }
+
+    @Test void attentionCachesSameScopeAndRouteWithinRequestAndDoesNotTreatForbiddenAsDeviceFault() {
+        when(plan.planId()).thenReturn("one");
+        service.readForAttention(java.util.Collections.nCopies(600,plan));
+        verify(devices,times(1)).inspectPlanDevices(any(),any(),eq(false));
+        verify(spatial,times(1)).distanceToRoute(any(),eq("route"));
+        when(devices.inspectPlanDevices(any(),any(),eq(false))).thenThrow(new com.uav.lowaltitude.platform.api.ApiException(
+            org.springframework.http.HttpStatus.FORBIDDEN,"FORBIDDEN","无设备读取权限"));
+        assertThat(service.readForAttention(List.of(plan))).isEmpty();
+    }
     @Test void futurePlanShowsCurrentFaultAndIgnoresClosedPastIncident() {
         state("ONLINE","BAD");
         incidents=List.of(new Incident("old","old","sensor","sensor","雷达","FAULT","HIGH","CLOSED",now.minusSeconds(900).toEpochMilli(),"旧故障",now.minusSeconds(600).toEpochMilli(),null,true,null));

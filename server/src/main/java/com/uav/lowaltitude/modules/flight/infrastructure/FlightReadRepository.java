@@ -104,6 +104,23 @@ public class FlightReadRepository {
 
     public record OpenDeviceTaskRow(String planId, String taskId, String deviceName, String workflowState) { }
 
+    /** 当前台账来源下仍未办结的设备单；调用方只传入权限内候选设备，输出继续按来源和航线覆盖筛选。 */
+    public List<OpenDeviceCaseRow> openDeviceCases(List<String> deviceIds) {
+        if (deviceIds.isEmpty()) return List.of();
+        return jdbc.query("""
+            SELECT t.device_id,t.task_id,t.device_name,t.workflow_state
+            FROM ops_device_maintenance_task t JOIN ops_device d ON d.device_id=t.device_id
+            WHERE t.device_id IN (:devices) AND t.workflow_version=2 AND t.active_key IS NOT NULL
+              AND t.status='PENDING' AND t.workflow_state NOT IN ('COMPLETED','LEGACY_HANDLED')
+              AND t.workflow_source_id IS NOT DISTINCT FROM d.source_id
+              AND t.workflow_source_mode=d.source_mode AND t.simulated=d.simulated
+            ORDER BY t.device_id,t.task_id
+            """, Map.of("devices", deviceIds), (rs, n) -> new OpenDeviceCaseRow(rs.getString("device_id"),
+                    rs.getString("task_id"),rs.getString("device_name"),rs.getString("workflow_state")));
+    }
+
+    public record OpenDeviceCaseRow(String deviceId, String taskId, String deviceName, String workflowState) { }
+
     public PlanRow findPlan(String planId, AccessDecision access) {
         Where where = planWhere(PlanQuery.empty(), access);
         where.sql.append(" AND p.plan_id=:plan_id");

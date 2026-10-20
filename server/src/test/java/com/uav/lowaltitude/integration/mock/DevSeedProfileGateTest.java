@@ -9,6 +9,9 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * 源码门禁：凡是受 {@code app.dev-seed.enabled} 控制的 ApplicationRunner，必须同时排除 production。
@@ -56,9 +59,31 @@ class DevSeedProfileGateTest {
                         || name.matches("(?:RuleReplayRunner|RuleDemoVolumeReplayRunner|FieldDeviceScope|LocalAirspaceDemoTarget.*)(?:\\$.*)?\\.class");
             }).toList()).as("legacy fixtures must not enter the runtime artifact").isEmpty();
         }
-        assertThat(LocalStage7RuleEngineSeeder.class.getProtectionDomain().getCodeSource().getLocation().toURI())
-                .isEqualTo(Path.of("target/test-classes").toAbsolutePath().toUri());
+        assertThat(codeSourcePath(LocalStage7RuleEngineSeeder.class))
+                .isEqualTo(Path.of("target/test-classes").toRealPath());
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"plain-classes", "中文测试类", "classes with spaces", "中文 空格 %20"})
+    void classLocationsCompareAsPathsRegardlessOfUrlEncoding(String directory, @TempDir Path root) throws Exception {
+        Path classes = Files.createDirectory(root.resolve(directory));
+        String name = CodeSourceFixture.class.getName();
+        String resource = name.replace('.', '/') + ".class";
+        Path classFile = classes.resolve(resource);
+        Files.createDirectories(classFile.getParent());
+        try (var bytes = getClass().getClassLoader().getResourceAsStream(resource)) {
+            Files.copy(bytes, classFile);
+        }
+        try (var loader = new java.net.URLClassLoader(new java.net.URL[]{classes.toUri().toURL()}, null)) {
+            assertThat(codeSourcePath(Class.forName(name, false, loader))).isEqualTo(classes.toRealPath());
+        }
+    }
+
+    private static Path codeSourcePath(Class<?> type) throws Exception {
+        return Path.of(type.getProtectionDomain().getCodeSource().getLocation().toURI()).toRealPath();
+    }
+
+    static final class CodeSourceFixture { }
 
     private static boolean isApplicationRunner(Path root, Path path) {
         String name = root.relativize(path).toString().replace(java.io.File.separatorChar, '.').replace('/', '.').replaceAll("\\.java$", "");
