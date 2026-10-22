@@ -80,6 +80,6 @@ class CounterHistoryTest {
                 r.targetId(), r.deviceId(), r.channel(), r.reason(), r.requestedBy(), from, r.approvedBy(), r.approvedAt(),
                 r.decisionNote(), from, until, r.status(), r.executionCommandId(), r.resultCode(), r.resultDetail(),
                 r.policyVersion(), r.ownerOrgId(), r.districtId(), r.sourceMode(), r.version(), r.requestedByName(),
-                r.approvedByName(), r.authorizationMode());
+                r.approvedByName(), r.authorizationMode(), r.countermeasureMode());
     }
 }

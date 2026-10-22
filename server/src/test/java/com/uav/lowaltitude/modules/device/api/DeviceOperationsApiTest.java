@@ -75,6 +75,34 @@ class DeviceOperationsApiTest {
     }
 
     @Test
+    void deviceCoordinateContractRejectsOtherDatumsAndNormalizesEquivalentNames() throws Exception {
+        String token=login("admin1");
+        for(String crs:new String[]{"GCJ02","CGCS2000","BD09","EPSG:14326"}) {
+            String number="CRS-"+UUID.randomUUID();
+            var body=(com.fasterxml.jackson.databind.node.ObjectNode)objectMapper.readTree(deviceBody(number,"坐标校验设备"));
+            body.put("coordinate_system",crs);
+            mvc.perform(post("/api/v1/devices").header("Authorization",bearer(token))
+                    .contentType(MediaType.APPLICATION_JSON).content(body.toString()))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?",Integer.class,number)).isZero();
+        }
+        for(String crs:new String[]{"WGS84","WGS-84"," wgs84 "}) {
+            var body=(com.fasterxml.jackson.databind.node.ObjectNode)objectMapper.readTree(deviceBody("CRS-"+UUID.randomUUID(),"坐标校验设备"));
+            body.put("coordinate_system",crs).put("longitude",119.2).put("latitude",36.8);
+            JsonNode data=objectMapper.readTree(mvc.perform(post("/api/v1/devices").header("Authorization",bearer(token))
+                    .contentType(MediaType.APPLICATION_JSON).content(body.toString()))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.coordinate_system").value("WGS-84"))
+                    .andReturn().getResponse().getContentAsString()).path("data");
+            String id=data.path("device").path("device_id").asText();
+            assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_id=?",String.class,id)).isEqualTo("WGS-84");
+            body.put("version",data.path("device").path("version").asLong()).put("coordinate_system","GCJ02");
+            mvc.perform(put("/api/v1/devices/{id}",id).header("Authorization",bearer(token))
+                    .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isBadRequest());
+            assertThat(getJson("/api/v1/devices/"+id,token).path("data").path("longitude").asDouble()).isEqualTo(119.2);
+        }
+    }
+
+    @Test
     void mockRebootSnapshotsWithoutDispatchDoNotPermanentlyBlockCatalogRetirement() throws Exception {
         String token = login("admin1");
         for (String state : new String[]{"QUEUED", "SENT", "ACCEPTED"}) {

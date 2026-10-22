@@ -32,7 +32,7 @@ public class AutomationRuleRepository {
     }
     // Called only after the application service requires ALL data scope.
     public boolean airspaceExists(String id) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM airspace WHERE airspace_id=?",Long.class,id)==1;
+        return jdbc.queryForObject("SELECT COUNT(*) FROM airspace WHERE airspace_id=? AND deleted_at IS NULL",Long.class,id)==1;
     }
     public void insert(String category, Rule rule, long now) {
         jdbc.update("INSERT INTO automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) VALUES(?,?,?,?,?,?,?,?,?,?)",

@@ -28,7 +28,7 @@ class PredictionDispatchGuardTest {
         guard.setPredictionEventGate(gate);
         var at=now.atOffset(ZoneOffset.UTC);
         var row=new AuthorizationRow(auth,"AUTH","COUNTERMEASURE","UAV_EVENT",event,null,device,"COUNTERMEASURE_4CH","",
-                actor,at,null,null,null,at,at.plusSeconds(60),"APPROVED",null,null,null,"policy","org","district","live",1,null,null,"DIRECT");
+                actor,at,null,null,null,at,at.plusSeconds(60),"APPROVED",null,null,null,"policy","org","district","live",1,null,null,"DIRECT",null);
         when(repo.findUnlocked(auth)).thenReturn(row);when(stops.lockAuthorizationStatus(auth)).thenReturn("APPROVED");
         when(advisory.counterBlockReason(event)).thenReturn("");
         when(access.eligibleRequester(row,true)).thenReturn(mock(AuthUser.class));

@@ -181,6 +181,24 @@ class DisposalMqttFlowTest extends EmergencyStopApiTest {
         saveEvidence("direct-" + condition, authorization);
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"FORCE_LAND,60003", "DRIVE_AWAY,60002"})
+    void selectedModeUsesTheProtocolBCommandOnTheWire(String mode, int expectedCommand) throws Exception {
+        String actor = user("disposal:direct", "disposal:read", "devices", "target:read");
+        var requestBody = new java.util.LinkedHashMap<>(body("反制方式协议回归"));
+        requestBody.put("countermeasure_mode", mode);
+        String authorization = data(request("/api/v1/disposal-authorizations/direct-execute", actor, key(), requestBody)
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        outbox.poll();
+        awaitWire(1);
+        assertThat(frames.get(0).path("data").path("operationCmd").asInt()).isEqualTo(expectedCommand);
+        assertThat(frames.get(0).path("data").path("operationType").asInt()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select countermeasure_mode from disposal_authorization where authorization_id=?", String.class, authorization)).isEqualTo(mode);
+        lingyun.dispatch(commandOf(authorization));
+        assertThat(frames).hasSize(1);
+        saveEvidence("mode-" + mode, authorization);
+    }
+
     @Test void repeatedDispatchOfSentCommandDoesNotPublishAgain() throws Exception {
         String actor = user("disposal:direct", "disposal:read", "devices", "target:read");
         String authorization = data(request("/api/v1/disposal-authorizations/direct-execute", actor, key(), body("隔离重复投递验证"))

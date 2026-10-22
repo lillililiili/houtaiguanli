@@ -9,7 +9,7 @@ public final class DisposalDtos {
     private DisposalDtos() { }
 
     public record CreateRequest(String actionType, String subjectKind, String subjectId, String deviceId,
-            String channel, String reason) { }
+            String channel, String reason, String countermeasureMode) { }
 
     public record DecisionRequest(Long expectedVersion, String note) { }
 
@@ -30,7 +30,7 @@ public final class DisposalDtos {
             Long approvedAt, String decisionNote, Long validFrom, Long validUntil, String status,
             String executionCommandId, String resultCode, String resultDetail, String deviceStopResult,
             String executionBlockReason, String policyVersion, String policyStatus, String ownerOrgId, String districtId, String sourceMode,
-            long version, List<String> allowedActions, String authorizationMode) { }
+            long version, List<String> allowedActions, String authorizationMode, String countermeasureMode) { }
 
     /** 只读处置分组；每个成员保持原授权身份、状态和动作，根授权 ID 作为稳定的展示 ID。 */
     public record AuthorizationGroupDto(String disposalId, List<AuthorizationDto> authorizations) { }

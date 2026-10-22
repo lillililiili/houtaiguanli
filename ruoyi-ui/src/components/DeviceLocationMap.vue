@@ -9,6 +9,7 @@ const container = ref();
 const position = computed(() => devicePosition(props.device));
 const loading = ref(false);
 const error = ref('');
+const imageryWarning = ref('');
 const outside = ref(false);
 let map, marker, observer, controller, resources, mapEngine, markedPosition;
 
@@ -41,7 +42,7 @@ function syncDevice(recenter = false) {
   }
 }
 async function renderMap() {
-  dispose(); error.value = ''; loading.value = false; outside.value = false;
+  dispose(); error.value = ''; imageryWarning.value = ''; loading.value = false; outside.value = false;
   if (!position.value || !container.value) return;
   const current = new AbortController(); controller = current; loading.value = true;
   try {
@@ -53,8 +54,16 @@ async function renderMap() {
     map.touchZoomRotate.disableRotation();
     syncDevice();
     map.on('load', () => { if (!current.signal.aborted) { resizeDeviceMap(map, resources); loading.value = false; } });
-    map.on('error', () => {
-      if (!current.signal.aborted) { loading.value = false; error.value = '底图加载失败，请重试。设备坐标仍可在下方查看。'; }
+    map.on('error', event => {
+      if (current.signal.aborted) return;
+      const imageryState = resources.handleImageryError(map, event);
+      if (imageryState) {
+        if (imageryState === 'fallback') imageryWarning.value = '卫星影像读取失败，已恢复本地矢量底图';
+        return;
+      }
+      const reason = event.error;
+      if (reason?.name === 'AbortError' || reason?.code === 20 || /abort|cancelled|canceled/i.test(String(reason?.message || ''))) return;
+      loading.value = false; error.value = '底图加载失败，请重试。设备坐标仍可在下方查看。';
     });
     observer = new ResizeObserver(() => { if (map) resizeDeviceMap(map, resources); }); observer.observe(container.value);
   } catch (reason) {
@@ -77,7 +86,8 @@ onBeforeUnmount(dispose);
     </div>
     <el-empty v-else description="暂无可定位的 WGS84 坐标" :image-size="55" />
     <div v-if="error" class="map-error" role="alert"><span>{{ error }}</span><el-button link type="primary" @click="renderMap">重试</el-button></div>
-    <p v-else-if="outside" class="map-note">设备位于当前离线底图覆盖范围外</p>
+    <div v-else-if="imageryWarning" class="map-error" role="status"><span>{{ imageryWarning }}</span><el-button link type="primary" @click="renderMap">重试影像</el-button></div>
+    <p v-if="outside" class="map-note">设备位于当前离线底图覆盖范围外</p>
     <div class="location-caption"><b>{{ device.region_name || '所属区域未登记' }}</b><span>{{ device.address || '尚未登记安装地址' }}</span></div>
   </section>
 </template>

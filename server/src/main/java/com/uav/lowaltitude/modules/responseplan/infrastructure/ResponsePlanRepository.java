@@ -35,7 +35,7 @@ public class ResponsePlanRepository {
         return jdbc.query(SELECT+where+" ORDER BY v.revision DESC",this::version,args.toArray());
     }
     public Page<AirspaceOption> airspaces(int page,int size,String keyword) {
-        var args=new ArrayList<Object>();String where=" WHERE "+scope(args);
+        var args=new ArrayList<Object>();String where=" WHERE a.deleted_at IS NULL AND "+scope(args);
         if(keyword!=null&&!keyword.isBlank()){where+=" AND LOWER(a.name) LIKE ?";args.add("%"+keyword.toLowerCase(Locale.ROOT)+"%");}
         long total=jdbc.queryForObject("SELECT COUNT(*) FROM airspace a"+where,Long.class,args.toArray());
         args.add(size);args.add((page-1)*size);
@@ -49,7 +49,7 @@ public class ResponsePlanRepository {
         return jdbc.queryForObject("SELECT COUNT(*) FROM airspace a JOIN airspace b ON (a.owner_org_id=b.owner_org_id OR (a.owner_org_id IS NULL AND b.owner_org_id IS NULL)) AND (a.district_id=b.district_id OR (a.district_id IS NULL AND b.district_id IS NULL)) WHERE a.airspace_id=? AND b.airspace_id=?",Long.class,first,second)==1;
     }
     public void lockAirspace(String id){jdbc.queryForObject("SELECT airspace_id FROM airspace WHERE airspace_id=? FOR UPDATE",String.class,id);}
-    public int activeAirspaceVersions(String id,long now){var at=new java.sql.Timestamp(now);return jdbc.queryForObject("SELECT COUNT(*) FROM airspace_version WHERE airspace_id=? AND valid_from<=? AND (valid_to IS NULL OR valid_to>?)",Integer.class,id,at,at);}
+    public int activeAirspaceVersions(String id,long now){var at=new java.sql.Timestamp(now);return jdbc.queryForObject("SELECT COUNT(*) FROM airspace_version av JOIN airspace a ON a.airspace_id=av.airspace_id WHERE av.airspace_id=? AND (a.deleted_at IS NULL OR ?<a.deleted_at) AND av.valid_from<=? AND (av.valid_to IS NULL OR av.valid_to>?)",Integer.class,id,at,at,at);}
     public void lockPlan(String id){jdbc.queryForObject("SELECT plan_id FROM response_plan WHERE plan_id=? FOR UPDATE",String.class,id);}
     public void lockVersion(String id){jdbc.queryForObject("SELECT version_id FROM response_plan_version WHERE version_id=? FOR UPDATE",String.class,id);}
     public void createPlan(String id,String airspace,long now){jdbc.update("INSERT INTO response_plan(plan_id,anchor_airspace_id,created_at) VALUES(?,?,?)",id,airspace,now);}

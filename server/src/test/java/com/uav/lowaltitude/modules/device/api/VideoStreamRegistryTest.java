@@ -8,6 +8,30 @@ import com.uav.lowaltitude.modules.device.application.VideoStreamRegistry;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 class VideoStreamRegistryTest {
+    @Test void rawLeaseSurvivesTaskSwitchButFramesDoNot() {
+        var env=new MockEnvironment();env.setActiveProfiles("test");var clock=mock(AppClock.class);
+        when(clock.nowMillis()).thenReturn(1000L);
+        var registry=new VideoStreamRegistry(env,clock,true);
+        var raw=registry.registerRaw("device-a","replay",()->{});
+        var ai=registry.register("task-a","target-a","device-a","replay");
+        assertThat(raw.streamKind()).isEqualTo("RAW");assertThat(ai.streamKind()).isEqualTo("AI");
+        registry.appendFrame(ai,new VideoStreamRegistry.Frame(1000,0,java.util.List.of()));
+        registry.register("task-b","target-b","device-a","replay");
+        assertThat(registry.findRaw("device-a").streamId()).isEqualTo(raw.streamId());
+        assertThat(registry.find("task-a")).isNull();assertThat(registry.frames(ai)).isEmpty();
+        when(clock.nowMillis()).thenReturn(61001L);assertThat(registry.findRaw("device-a")).isNull();
+    }
+    @Test void frameTimelineRejectsReplayFutureAndStaleAndExpiresOldFrames() {
+        var env=new MockEnvironment();env.setActiveProfiles("test");var clock=mock(AppClock.class);
+        when(clock.nowMillis()).thenReturn(10000L);
+        var registry=new VideoStreamRegistry(env,clock,true);
+        var ai=registry.register("t","target","d","replay");
+        registry.appendFrame(ai,new VideoStreamRegistry.Frame(10000,100,java.util.List.of()));
+        assertThatThrownBy(()->registry.appendFrame(ai,new VideoStreamRegistry.Frame(10001,101,java.util.List.of()))).hasMessageContaining("时间");
+        assertThatThrownBy(()->registry.appendFrame(ai,new VideoStreamRegistry.Frame(4999,101,java.util.List.of()))).hasMessageContaining("时间");
+        assertThatThrownBy(()->registry.appendFrame(ai,new VideoStreamRegistry.Frame(10000,100,java.util.List.of()))).hasMessageContaining("时间");
+        when(clock.nowMillis()).thenReturn(41000L);assertThat(registry.frames(ai)).isEmpty();
+    }
     @Test void capacityAndAuditFailuresDoNotPublishOrEvictLeases() {
         var env=new MockEnvironment();env.setActiveProfiles("test");var clock=mock(AppClock.class);
         var registry=new VideoStreamRegistry(env,clock,true);

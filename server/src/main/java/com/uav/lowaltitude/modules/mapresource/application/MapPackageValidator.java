@@ -69,6 +69,7 @@ public class MapPackageValidator {
             if (maxZoom < 15) invalid("离线地图至少需要包含到 Z15 的矢量瓦片");
             validateStyle(root, styleFile);
             validatePmtiles(pmtiles, bounds, minZoom, maxZoom);
+            validateImagery(archive, manifest, bounds);
 
             return new ValidatedPackage(packageName, dataVersion, "WGS84", pmtiles.getFileName().toString(),
                     sha256(manifestFile), archive.files().size(), archive.expandedBytes(), bounds[0], bounds[1],
@@ -137,12 +138,79 @@ public class MapPackageValidator {
         if (value == null || value.isNull()) return;
         if (!value.isTextual()) invalid("样式资源地址格式不正确");
         String raw = value.asText();
-        if (raw.contains("://") || raw.startsWith("//") || raw.startsWith("/")) {
+        if (unsafeLocalPath(raw)) {
             invalid("地图样式只能引用包内资源");
         }
         String probe = raw.replace("{fontstack}", "placeholder").replace("{range}", "0-255");
         Path candidate = styleFile.getParent().resolve(probe).normalize();
         if (!candidate.startsWith(root)) invalid("地图样式资源路径越界");
+    }
+
+    private void validateImagery(ExtractedArchive archive, JsonNode manifest, double[] bounds) throws IOException {
+        if (!manifest.has("imagery")) return;
+        JsonNode imagery = manifest.path("imagery");
+        if (!imagery.isObject()) invalid("imagery 必须是完整的影像配置对象");
+        String template = requiredText(imagery, "tiles", 255);
+        if (unsafeLocalPath(template)
+                || !template.matches("(?:\\./)?(?:[A-Za-z0-9_.-]+/)*\\{z}/\\{x}/\\{y}\\.(?:png|webp)")) {
+            invalid("影像 tiles 必须是包内相对 XYZ 路径，且仅包含一次 {z}/{x}/{y}，使用 PNG 或 WebP");
+        }
+        int tileSize = imagery.has("tileSize") ? zoom(imagery, "tileSize", 256, 512) : 256;
+        if (tileSize != 256 && tileSize != 512) invalid("imagery.tileSize 仅支持 256 或 512");
+        int min = zoom(imagery, "minZoom", 0, 24);
+        int max = zoom(imagery, "maxZoom", min, 24);
+        if (!imagery.path("attribution").isTextual()) invalid("imagery.attribution 必须是文字");
+        requiredText(imagery, "attribution", 2000);
+
+        // Count all requested tiles before enumeration; an impossible manifest must not drive an enormous loop.
+        long expected = 0;
+        for (int z = min; z <= max; z++) {
+            int[] range = tileRange(bounds, z);
+            expected += (long) (range[1] - range[0] + 1) * (range[3] - range[2] + 1);
+            if (expected > Math.min(10_000, archive.files().size())) {
+                invalid("影像瓦片数量超过包内可用文件数量或 10000 个文件上限");
+            }
+        }
+        for (int z = min; z <= max; z++) {
+            int[] range = tileRange(bounds, z);
+            for (int x = range[0]; x <= range[1]; x++) {
+                for (int y = range[2]; y <= range[3]; y++) {
+                    String relative = template.replace("{z}", Integer.toString(z))
+                            .replace("{x}", Integer.toString(x)).replace("{y}", Integer.toString(y));
+                    Path file = archive.directory().resolve(relative).normalize();
+                    if (!file.startsWith(archive.directory()) || !Files.isRegularFile(file)) {
+                        invalid("影像瓦片缺失：" + relative);
+                    }
+                    MapTileImageHeader.validate(file, tileSize);
+                }
+            }
+        }
+    }
+
+    private static int[] tileRange(double[] bounds, int zoom) {
+        int count = 1 << zoom;
+        return new int[] {tileX(bounds[0], count), tileX(bounds[2], count),
+                tileY(bounds[3], count), tileY(bounds[1], count)};
+    }
+
+    private static int tileX(double longitude, int count) {
+        return Math.max(0, Math.min(count - 1, (int) Math.floor((longitude + 180d) / 360d * count)));
+    }
+
+    private static int tileY(double latitude, int count) {
+        double radians = Math.toRadians(Math.max(-85.0511287798066d, Math.min(85.0511287798066d, latitude)));
+        double mercator = Math.log(Math.tan(radians) + 1d / Math.cos(radians));
+        return Math.max(0, Math.min(count - 1, (int) Math.floor((1d - mercator / Math.PI) / 2d * count)));
+    }
+
+    private static boolean unsafeLocalPath(String raw) {
+        if (raw.isBlank() || raw.indexOf('\\') >= 0 || raw.contains(":") || raw.startsWith("/")
+                || raw.contains("%") || raw.contains("?") || raw.contains("#") || raw.indexOf('\0') >= 0) return true;
+        String relative = raw.startsWith("./") ? raw.substring(2) : raw;
+        for (String part : relative.split("/", -1)) {
+            if (part.isEmpty() || part.startsWith(".")) return true;
+        }
+        return false;
     }
 
     private void validatePmtiles(Path file, double[] bounds, int minZoom, int maxZoom) throws IOException {
@@ -178,7 +246,7 @@ public class MapPackageValidator {
     }
 
     private static Path localFile(Path root, String value, String extension) {
-        if (value == null || value.isBlank() || value.indexOf('\\') >= 0 || value.contains(":") || value.startsWith("/")) {
+        if (value == null || unsafeLocalPath(value)) {
             invalid("地图包包含非法资源路径");
         }
         String normalizedValue = value.startsWith("./") ? value.substring(2) : value;
@@ -203,7 +271,7 @@ public class MapPackageValidator {
     }
 
     private static int zoom(JsonNode manifest, String field, int min, int max) {
-        if (!manifest.path(field).canConvertToInt()) invalid(field + " 必须是整数");
+        if (!manifest.path(field).isIntegralNumber() || !manifest.path(field).canConvertToInt()) invalid(field + " 必须是整数");
         int value = manifest.path(field).asInt();
         if (value < min || value > max) invalid(field + " 超出允许范围");
         return value;

@@ -92,6 +92,6 @@ class DirectDisposalAccessTest {
         return new AuthorizationRow("auth", "NO", "COUNTERMEASURE", "UAV_EVENT", "event", null, "device",
                 "LINGYUN_B", "反制规则已满足，系统自动发起。", AutomationPrincipal.USER_ID, start, null, null, null,
                 start, until.atOffset(ZoneOffset.UTC), "APPROVED", null, null, null, "demo", "org", "district",
-                "mock", 1L, null, null, "DIRECT");
+                "mock", 1L, null, null, "DIRECT", null);
     }
 }

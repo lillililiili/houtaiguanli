@@ -21,6 +21,7 @@ import com.uav.lowaltitude.modules.flight.infrastructure.FlightReadRepository;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.platform.api.ApiException;
+import com.uav.lowaltitude.platform.geo.Wgs84;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /** 自动收集设备事实；没有发现飞机或设备异常，都不能证明未起飞。 */
@@ -211,7 +212,7 @@ public class FlightDeviceCheckService {
             device.enabled()?state.connectivity():"DISABLED",health,state.lastHeartbeatAt(),state.observedAt(),abnormal,known,List.copyOf(incidents));
     }
     private boolean positionKnown(PlanInspectionDevice d) {
-        return "WGS-84".equals(d.coordinateSystem()) && d.longitude()!=null && d.latitude()!=null
+        return Wgs84.isWgs84(d.coordinateSystem()) && d.longitude()!=null && d.latitude()!=null
             && d.longitude().abs().compareTo(BigDecimal.valueOf(180))<=0 && d.latitude().abs().compareTo(BigDecimal.valueOf(90))<=0;
     }
     private boolean fresh(Long at,long window) { return at!=null && at<=clock.nowMillis() && clock.nowMillis()-at<=window; }

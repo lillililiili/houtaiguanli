@@ -59,6 +59,7 @@ public class PostgisSpatialFactAdapter implements SpatialFactPort {
                 FROM airspace_version av JOIN airspace a ON a.airspace_id=av.airspace_id
                 CROSS JOIN (SELECT ST_SetSRID(ST_MakePoint(:lon,:lat),4326) AS geom) pt
                 WHERE a.owner_org_id IS NOT NULL AND a.district_id IS NOT NULL
+                  AND (a.deleted_at IS NULL OR :as_of<a.deleted_at)
                   AND (a.source_mode='live' OR (:include_simulated AND a.source_mode IN ('mock','replay')))
                   AND av.valid_from<=:as_of AND (av.valid_to IS NULL OR :as_of<av.valid_to)
                   AND (av.boundary IS NULL OR av.boundary && pt.geom)
@@ -105,6 +106,7 @@ public class PostgisSpatialFactAdapter implements SpatialFactPort {
                   ON second_version.airspace_id=first_version.airspace_id AND first_version.airspace_version_id<second_version.airspace_version_id
                 JOIN airspace a ON a.airspace_id=first_version.airspace_id
                 WHERE first_version.valid_from<=:as_of AND (first_version.valid_to IS NULL OR :as_of<first_version.valid_to)
+                  AND (a.deleted_at IS NULL OR :as_of<a.deleted_at)
                   AND (a.source_mode='live' OR (:include_simulated AND a.source_mode IN ('mock','replay')))
                   AND second_version.valid_from<=:as_of AND (second_version.valid_to IS NULL OR :as_of<second_version.valid_to)
                 """, Map.of("as_of", asOf, "include_simulated", "mock".equals(sourceMode) || "replay".equals(sourceMode)), Long.class);

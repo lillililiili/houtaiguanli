@@ -84,6 +84,7 @@ public class UpstreamAirspaceService {
         String id=airspaces.findAirspaceIdByNo(no);
         var head=id==null?null:airspaces.lockAirspace(id,AirspaceWriteService.scopeUser(decision));
         if(id!=null&&(head==null||!deliveries.sourceMatches(id,sourceId,mode)))throw missing();
+        if(id!=null&&airspaces.deleted(id))throw conflict("AIRSPACE_DELETED","空域已在平台删除，不能继续更新或撤销；原消息回执与历史保留");
         Delivery latest=id==null?null:deliveries.latest(sourceId,id);
         if(latest!=null&&revision<=latest.revision())throw conflict("UPSTREAM_REVISION_CONFLICT","下发版本必须大于已接收版本");
         String versionId;
@@ -99,7 +100,10 @@ public class UpstreamAirspaceService {
                 var created=writes.createUpstream(data.toString(),key,sourceId,mode);
                 id=created.airspaceId();versionId=created.airspaceVersionId();
             } else {
-                if(!head.name().equals(parsed.name())||!head.ownerOrgId().equals(parsed.ownerOrgId())||!head.districtId().equals(parsed.districtId()))
+                // Platform display-name edits must not change the source's immutable identity contract.
+                Delivery lastUpsert=deliveries.latestUpsert(sourceId,id);
+                String sourceName=lastUpsert==null?head.name():tree(lastUpsert.payload()).path("name").asText();
+                if(!sourceName.equals(parsed.name())||!head.ownerOrgId().equals(parsed.ownerOrgId())||!head.districtId().equals(parsed.districtId()))
                     throw conflict("UPSTREAM_IDENTITY_CONFLICT","更新须保持原空域名称和归属");
                 data.remove(List.of("airspace_no","name","owner_org_id","district_id"));data.put("expected_version",head.version());
                 versionId=writes.addUpstreamVersion(id,data.toString(),key).airspaceVersionId();

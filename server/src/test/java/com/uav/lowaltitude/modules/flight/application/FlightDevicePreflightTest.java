@@ -65,6 +65,30 @@ class FlightDevicePreflightTest {
         assertThat(result.conclusion()).isEqualTo("PREFLIGHT_DEVICE_NORMAL");
         assertThat(result.message()).doesNotContain("未按任务起飞");
     }
+    @ParameterizedTest
+    @CsvSource({"WGS84,live,119.2,36.8", "WGS-84,replay,118.3,37.2", "wgs84,live,0,0"})
+    void equivalentWgs84NamesParticipateInDeviceCoverage(String crs,String mode,double lon,double lat) {
+        when(plan.sourceMode()).thenReturn(mode);
+        when(device.sourceMode()).thenReturn(mode);
+        when(detail.coordinateSystem()).thenReturn(crs);
+        when(detail.longitude()).thenReturn(BigDecimal.valueOf(lon));
+        when(detail.latitude()).thenReturn(BigDecimal.valueOf(lat));
+        var result=service.read("future-plan");
+        assertThat(result.uncheckedLocations()).isZero();
+        assertThat(result.rows()).hasSize(1);
+        assertThat(result.complete()).isTrue();
+        verify(spatial).distanceToRoute(argThat(target -> target.longitude().compareTo(BigDecimal.valueOf(lon))==0
+                && target.latitude().compareTo(BigDecimal.valueOf(lat))==0),eq("route"));
+    }
+    @ParameterizedTest
+    @ValueSource(strings={"GCJ02","CGCS2000","BD09","EPSG:3857",""})
+    void unsupportedDeviceCoordinatesRemainUnknown(String crs) {
+        when(detail.coordinateSystem()).thenReturn(crs);
+        var result=service.read("future-plan");
+        assertThat(result.uncheckedLocations()).isEqualTo(1);
+        assertThat(result.rows()).isEmpty();
+        verifyNoInteractions(spatial);
+    }
 
     @ParameterizedTest
     @ValueSource(strings={"live","replay"})

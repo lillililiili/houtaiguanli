@@ -172,7 +172,7 @@ public class DisposalReadService {
                         : DisposalRules.executionBlockReason(row.status(), eventKinds),
                 row.policyVersion(), policy == null ? null : policy.schemaStatus(), row.ownerOrgId(), row.districtId(),
                 row.sourceMode(), row.version(),
-                List.copyOf(actions), row.authorizationMode());
+                List.copyOf(actions), row.authorizationMode(), row.countermeasureMode());
     }
 
     private EventDto event(EventRow row) {

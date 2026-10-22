@@ -47,14 +47,14 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 class RoleActionPermissionApiTest {
 
     private static final List<String> FRONTEND_ACTIONS = List.of(
-            "device:read", "target:read", "alarm:read", "alarm:verify", "flight:read", "route:read", "airspace:read",
+            "device:read", "target:read", "alarm:read", "alarm:verify", "flight:read", "route:read", "airspace:read", "airspace:manage",
             "assessment:read", "assessment:evaluate", "assessment:revise", "assessment:escalate",
             "risk:read", "risk:verify", "handoff:read", "handoff:create", "rule:read", "fusion:read",
             "evidence:read", "evidence:preview", "evidence:ingest", "evidence:download", "evidence:hold", "evidence:destroy",
             "disposal:read", "disposal:request", "disposal:approve", "disposal:direct", "disposal:execute", "disposal:stop",
             "punishment:read");
     private static final List<String> UNAVAILABLE_ACTIONS = List.of(
-            "airport:read", "airport:manage", "flight:verify", "airspace:manage", "fusion:revise", "fusion:manage",
+            "airport:read", "airport:manage", "flight:verify", "fusion:revise", "fusion:manage",
             "risk:evaluate", "evidence:link", "punishment:file", "punishment:decide", "punishment:review", "punishment:close",
             "map:read", "map:upload", "map:activate", "map:delete", "rule:manage");
 

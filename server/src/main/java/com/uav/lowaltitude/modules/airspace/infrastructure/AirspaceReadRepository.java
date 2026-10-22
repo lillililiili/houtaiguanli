@@ -43,7 +43,8 @@ public class AirspaceReadRepository {
         where.parameters().put("size", size);
         return jdbc.query("""
                 SELECT a.airspace_id,a.airspace_no,a.name,a.source_mode,a.owner_org_id,a.district_id,
-                       a.created_at,a.updated_at,a.version,org_ref.name AS owner_org_name,dist_ref.name AS district_name
+                       a.created_at,a.updated_at,a.version,a.deleted_at,org_ref.name AS owner_org_name,dist_ref.name AS district_name,
+                """ + AirspaceWriteRepository.managementSourceSql() + " AS management_source " + """
                 FROM airspace a
                 LEFT JOIN app_org org_ref ON org_ref.org_id=a.owner_org_id
                 LEFT JOIN app_district dist_ref ON dist_ref.district_id=a.district_id
@@ -53,12 +54,13 @@ public class AirspaceReadRepository {
     }
 
     public AirspaceRow findAirspace(String airspaceId, AccessDecision access) {
-        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access);
+        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access,true);
         where.sql().append(" AND a.airspace_id=:airspace_id");
         where.parameters().put("airspace_id", airspaceId);
         List<AirspaceRow> rows = jdbc.query("""
                 SELECT a.airspace_id,a.airspace_no,a.name,a.source_mode,a.owner_org_id,a.district_id,
-                       a.created_at,a.updated_at,a.version,org_ref.name AS owner_org_name,dist_ref.name AS district_name
+                       a.created_at,a.updated_at,a.version,a.deleted_at,org_ref.name AS owner_org_name,dist_ref.name AS district_name,
+                """ + AirspaceWriteRepository.managementSourceSql() + " AS management_source " + """
                 FROM airspace a
                 LEFT JOIN app_org org_ref ON org_ref.org_id=a.owner_org_id
                 LEFT JOIN app_district dist_ref ON dist_ref.district_id=a.district_id
@@ -93,7 +95,7 @@ public class AirspaceReadRepository {
 
     public List<AirspaceVersionRow> effectiveVersions(String airspaceId, OffsetDateTime at, AccessDecision access) {
         Where where = versionWhere(airspaceId, access);
-        where.sql().append(" AND av.valid_from<=:at AND (av.valid_to IS NULL OR :at<av.valid_to)");
+        where.sql().append(" AND (a.deleted_at IS NULL OR :at<a.deleted_at) AND av.valid_from<=:at AND (av.valid_to IS NULL OR :at<av.valid_to)");
         where.parameters().put("at", at);
         return jdbc.query(versionSelect() + where.sql(), where.parameters(), (rs, number) -> versionRow(rs));
     }
@@ -104,7 +106,8 @@ public class AirspaceReadRepository {
      */
     public List<ConflictRow> conflicts(PlanRow plan, AccessDecision access) {
         if (!postgis) throw new IllegalStateException("PostGIS is required for spatial conflict facts");
-        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access);
+        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access,true);
+        where.sql().append(" AND (a.deleted_at IS NULL OR (:plan_start<a.deleted_at AND av.valid_from<a.deleted_at))");
         restrictBusinessSource(where, plan.sourceMode());
         where.parameters().put("route_version_id", plan.routeVersionId());
         where.parameters().put("plan_start", plan.startAt());
@@ -143,7 +146,8 @@ public class AirspaceReadRepository {
     /** 空域版本歧义是时间版本事实，必须在空间候选过滤之前拒绝，不能由不相交几何掩盖。 */
     public boolean hasAmbiguousEffectiveVersion(PlanRow plan, AccessDecision access) {
         if (plan.startAt() == null || plan.endAt() == null) return false;
-        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access);
+        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access,true);
+        where.sql().append(" AND (a.deleted_at IS NULL OR (:plan_start<a.deleted_at AND first_version.valid_from<a.deleted_at AND second_version.valid_from<a.deleted_at))");
         restrictBusinessSource(where, plan.sourceMode());
         where.parameters().put("plan_start", plan.startAt());
         where.parameters().put("plan_end", plan.endAt());
@@ -170,8 +174,16 @@ public class AirspaceReadRepository {
     }
 
     private static Where where(AirspaceQuery query, AccessDecision access) {
+        return where(query,access,false);
+    }
+
+    private static Where where(AirspaceQuery query, AccessDecision access,boolean includeDeleted) {
         StringBuilder sql = new StringBuilder(" WHERE a.owner_org_id IS NOT NULL AND a.district_id IS NOT NULL");
         Map<String, Object> parameters = new HashMap<>();
+        if(!includeDeleted) {
+            if(query.validAt()==null) sql.append(" AND a.deleted_at IS NULL");
+            else {sql.append(" AND (a.deleted_at IS NULL OR :lifecycle_at<a.deleted_at)");parameters.put("lifecycle_at",query.validAt());}
+        }
         // 只允许完整组织/区域元组；ALL 也不能看到未归属空域，避免无范围记录绕过隔离。
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             sql.append("""
@@ -212,7 +224,7 @@ public class AirspaceReadRepository {
     }
 
     private static Where versionWhere(String airspaceId, AccessDecision access) {
-        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access);
+        Where where = where(new AirspaceQuery(null, null, null, null, null, null), access,true);
         if (airspaceId != null) {
             where.sql().append(" AND av.airspace_id=:airspace_id");
             where.parameters().put("airspace_id", airspaceId);
@@ -237,7 +249,7 @@ public class AirspaceReadRepository {
         return new AirspaceRow(rs.getString("airspace_id"), rs.getString("airspace_no"), rs.getString("name"),
                 rs.getString("source_mode"), rs.getString("owner_org_id"), rs.getString("district_id"),
                 time(rs, "created_at"), time(rs, "updated_at"), rs.getLong("version"),
-                rs.getString("owner_org_name"), rs.getString("district_name"));
+                rs.getString("owner_org_name"), rs.getString("district_name"),rs.getString("management_source"),time(rs,"deleted_at"));
     }
 
     private static String aOrNull(ResultSet rs, String name) throws SQLException { return rs.getString(name); }
@@ -276,7 +288,7 @@ public class AirspaceReadRepository {
 
     public record AirspaceRow(String airspaceId, String airspaceNo, String name, String sourceMode,
             String ownerOrgId, String districtId, OffsetDateTime createdAt, OffsetDateTime updatedAt, long version,
-            String ownerOrgName, String districtName) {
+            String ownerOrgName, String districtName,String managementSource,OffsetDateTime deletedAt) {
     }
 
     public record AirspaceVersionRow(String airspaceVersionId, String airspaceId, int versionNo, String kindCode,

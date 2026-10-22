@@ -125,6 +125,6 @@ class PredictionSafetyStopTest {
         var at=now.atOffset(ZoneOffset.UTC);
         return new AuthorizationRow(auth,"AUTH", "COUNTERMEASURE","UAV_EVENT",event,UUID.randomUUID().toString(),device,
                 "COUNTERMEASURE_4CH","",UUID.randomUUID().toString(),at,null,null,null,at,at.plusSeconds(60),
-                status,execution,null,null,"policy","org","district","live",2,null,null,"DIRECT");
+                status,execution,null,null,"policy","org","district","live",2,null,null,"DIRECT",null);
     }
 }

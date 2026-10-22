@@ -78,7 +78,7 @@ public class AirspaceReadService {
         // 以统一业务时钟读取左闭右开有效版本；0 个版本是事实，不用“最新版本”替代。
         List<AirspaceVersionRow> current = repository.effectiveVersions(row.airspaceId(), clock.now().atOffset(ZoneOffset.UTC), access);
         if (current.size() > 1) throw new ApiException(HttpStatus.CONFLICT, "VERSION_AMBIGUOUS", "空域有效版本重叠");
-        return new AirspaceDtos.AirspaceDetailDto(row.airspaceId(), row.airspaceNo(), row.name(), row.sourceMode(), row.ownerOrgId(), row.districtId(), millis(row.createdAt()), millis(row.updatedAt()), row.version(), current.isEmpty() ? null : version(current.get(0)), row.ownerOrgName(), row.districtName());
+        return new AirspaceDtos.AirspaceDetailDto(row.airspaceId(), row.airspaceNo(), row.name(), row.sourceMode(), row.ownerOrgId(), row.districtId(), millis(row.createdAt()), millis(row.updatedAt()), row.version(), current.isEmpty() ? null : version(current.get(0)), row.ownerOrgName(), row.districtName(),row.managementSource(),editable(row),row.deletedAt()==null?null:millis(row.deletedAt()));
     }
 
     @Transactional(readOnly = true)
@@ -125,7 +125,13 @@ public class AirspaceReadService {
     private AirspaceSummaryDto summary(AirspaceRow row, AirspaceVersionDto currentVersion) {
         return new AirspaceSummaryDto(row.airspaceId(), row.airspaceNo(), row.name(), row.sourceMode(),
                 row.ownerOrgId(), row.districtId(), millis(row.createdAt()), millis(row.updatedAt()), row.version(),
-                row.ownerOrgName(), row.districtName(), currentVersion);
+                row.ownerOrgName(), row.districtName(), currentVersion,row.managementSource(),editable(row),row.deletedAt()==null?null:millis(row.deletedAt()));
+    }
+
+    private boolean editable(AirspaceRow row) {
+        if(row.deletedAt()!=null||!Set.of("LOCAL","UPSTREAM").contains(row.managementSource())) return false;
+        try {accessControl.require(PermissionCode.AIRSPACE_MANAGE);return true;}
+        catch(ApiException denied) {if("FORBIDDEN".equals(denied.getCode())) return false;throw denied;}
     }
 
     private AirspaceVersionDto currentVersion(AirspaceRow row, OffsetDateTime at, AccessDecision access) {

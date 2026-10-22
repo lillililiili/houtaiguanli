@@ -25,6 +25,97 @@ class QaVideoStreamApiTest extends EoManualTrackApiTest {
     @MockitoBean VideoMediaClient media;
     @Autowired VideoStreamRegistry streams;
 
+    @Test void deviceRawIsReadableWithoutTaskAndProtectedByDeviceScopeAndSourceIdentity() throws Exception {
+        String device=binding.opsDeviceId(),base="/api/v1/devices/"+device+"/video";
+        String registration="/api/v1/local-interface-simulator/device-video-streams/"+device;
+        mvc.perform(get(base)).andExpect(status().isUnauthorized());
+        mvc.perform(put(registration)).andExpect(status().isUnauthorized());
+        long commands=jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class);
+        String raw=data(mvc.perform(put(registration).header("Authorization","Bearer "+token)).andExpect(status().isOk())).path("stream_id").asText();
+        var lease=streams.findRaw(device);when(media.ready(lease.streamPath())).thenReturn(true);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RAW")).andExpect(jsonPath("$.data.stream_id").value(raw))
+                .andExpect(jsonPath("$.data.metadata.frames").isEmpty());
+        String resource=base+"/streams/"+raw+"/index.m3u8";
+        when(media.resource(lease.streamPath(),"index.m3u8")).thenReturn("#EXTM3U\n".getBytes(StandardCharsets.UTF_8));
+        mvc.perform(get(resource).header("Authorization","Bearer "+token)).andExpect(status().isOk());
+        String changedDistrict=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO app_district(district_id,district_code,name,enabled,created_at,updated_at,version) VALUES (?,?,?,TRUE,0,0,0)",
+                changedDistrict,"VIDEO-"+changedDistrict.substring(0,8),"视频范围测试");
+        jdbc.update("UPDATE device_business_scope SET district_id=? WHERE ops_device_id=?",changedDistrict,device);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.status").value("UNAVAILABLE"));
+        mvc.perform(get(resource).header("Authorization","Bearer "+token)).andExpect(status().isNotFound());
+        jdbc.update("UPDATE device_business_scope SET district_id=? WHERE ops_device_id=?",district,device);
+        jdbc.update("UPDATE ops_device SET simulated=FALSE WHERE device_id=?",device);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.status").value("UNAVAILABLE"));
+        mvc.perform(put(registration).header("Authorization","Bearer "+token)).andExpect(status().isConflict());
+        jdbc.update("UPDATE ops_device SET simulated=TRUE WHERE device_id=?",device);
+        mvc.perform(get(resource).param("url","http://example.invalid").header("Authorization","Bearer "+token)).andExpect(status().isBadRequest());
+        jdbc.update("UPDATE app_user SET scope_mode='NONE' WHERE account='admin1'");
+        try {
+            mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(status().isForbidden());
+            mvc.perform(get(resource).header("Authorization","Bearer "+token)).andExpect(status().isForbidden());
+            mvc.perform(put(registration).header("Authorization","Bearer "+token)).andExpect(status().isForbidden());
+        } finally {jdbc.update("UPDATE app_user SET scope_mode='ALL' WHERE account='admin1'");}
+        jdbc.update("UPDATE ops_device SET enabled=FALSE WHERE device_id=?",device);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.status").value("UNAVAILABLE"));
+        mvc.perform(get(resource).header("Authorization","Bearer "+token)).andExpect(status().isNotFound());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class)).isEqualTo(commands);
+    }
+
+    @Test void deviceAiFramesResolveStoredLinksAndResetOnTaskEndOrMediaLoss() throws Exception {
+        String target=insertVideoTarget(),task=UUID.randomUUID().toString(),command=UUID.randomUUID().toString(),device=binding.opsDeviceId();
+        long now=clock.nowMillis();
+        edges.insertCommand(command,"DEVICE-VIDEO-"+command.substring(0,8),device,null,"EO_BEGIN_TRACK","fixture","replay",true,now+10000,now);
+        edges.insertTask(task,target,null,device,command,"fixture","{}",now);
+        edges.updateCommand(command,"QUEUED","SENT",now,null,null);edges.updateCommand(command,"SENT","SUCCEEDED",now,"200",null);
+        String receipt=mapper.writeValueAsString(Map.of("event","BeginTracking","edgeId",binding.edgeId(),"timestamp",now,
+                "metadata",Map.of("taskId",task,"deviceId",binding.externalDeviceId(),"codeStatus",200)));
+        edges.addReceipt(command,edges.inbox(binding,EoEdgeEnvelope.decode(binding.reportingTopic(),receipt.getBytes(StandardCharsets.UTF_8)),now),"200",now,receipt);
+        edges.trackingReport(task,now,now);
+        String registration="/api/v1/local-interface-simulator/device-video-streams/"+device;
+        mvc.perform(put(registration).header("Authorization","Bearer "+token)).andExpect(status().isOk());
+        var raw=streams.findRaw(device);when(media.ready(raw.streamPath())).thenReturn(true);
+        mvc.perform(put("/api/v1/local-interface-simulator/video-streams/"+task).header("Authorization","Bearer "+token)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("device_id",device)))).andExpect(status().isOk());
+        var ai=streams.find(task);when(media.ready(ai.streamPath())).thenReturn(true);
+        String observation=UUID.randomUUID().toString(),link=UUID.randomUUID().toString();
+        String quality=mapper.writeValueAsString(Map.of("eo_task_id",task,"eo_target_id",target));
+        jdbc.update("INSERT INTO source_observation(observation_id,source_id,device_id,source_session_key,external_target_id,observed_at,received_at,quality,source_mode,class_code,class_source,created_at) "
+                + "VALUES (?,?,?,?,?,?,?,CAST(? AS JSON),'replay','UAV','EO_TRACKING',CURRENT_TIMESTAMP)",observation,binding.sourceId(),binding.deviceId(),task,task,
+                new java.sql.Timestamp(now),new java.sql.Timestamp(now),quality);
+        jdbc.update("INSERT INTO target_source_link(link_id,target_id,source_id,device_id,source_session_key,external_target_id,created_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",link,target,binding.sourceId(),binding.deviceId(),task,task);
+        mvc.perform(get(registration+"/observation-associations").param("task_id",task).header("Authorization","Bearer "+token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].observation_id").value(observation));
+        String body=mapper.writeValueAsString(Map.of("stream_id",ai.streamId(),"task_id",task,"frame_timestamp",now,"media_time_ms",100,
+                "detections",java.util.List.of(Map.of("detection_id","primary","x",0.1,"y",0.2,"width",0.2,"height",0.3,"observation_id",observation),
+                        Map.of("detection_id","unknown","x",0.6,"y",0.2,"width",0.2,"height",0.3,"observation_id",UUID.randomUUID().toString()))));
+        mvc.perform(put(registration+"/frames").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isOk());
+        String base="/api/v1/devices/"+device+"/video";
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.status").value("AI"))
+                .andExpect(jsonPath("$.data.metadata.frames[0].detections[0].target_id").value(target))
+                .andExpect(jsonPath("$.data.metadata.frames[0].detections[0].association_id").value(link))
+                .andExpect(jsonPath("$.data.metadata.frames[0].detections[1].association_status").value("UNLINKED"));
+        mvc.perform(put(registration+"/frames").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isConflict());
+        String invalid=body.replace("\"width\":0.2","\"width\":1.2");
+        mvc.perform(put(registration+"/frames").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(invalid)).andExpect(status().isBadRequest());
+        mvc.perform(put(registration+"/frames").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON)
+                .content(body.replace(ai.streamId(),UUID.randomUUID().toString()))).andExpect(status().isConflict());
+        // Changing the source-device reference prevents even an existing observation id from naming a target.
+        jdbc.update("UPDATE target_source_link SET device_id=NULL WHERE link_id=?",link);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.metadata.frames[0].detections[0].association_status").value("UNLINKED"));
+        jdbc.update("UPDATE target_source_link SET device_id=? WHERE link_id=?",binding.deviceId(),link);
+        // A changed link must never keep the formerly clickable identity cached in the frame.
+        jdbc.update("DELETE FROM target_source_link WHERE link_id=?",link);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.metadata.frames[0].detections[0].association_status").value("UNLINKED"));
+        when(media.ready(ai.streamPath())).thenReturn(false);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.status").value("RAW")).andExpect(jsonPath("$.data.metadata.frames").isEmpty());
+        jdbc.update("UPDATE eo_tracking_task SET status='ENDED' WHERE task_id=?",task);
+        mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.status").value("RAW"));
+        mvc.perform(get(base+"/streams/"+ai.streamId()+"/index.m3u8").header("Authorization","Bearer "+token)).andExpect(status().isNotFound());
+        mvc.perform(put(registration+"/frames").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isConflict());
+    }
+
     @Test void registrationPlaybackAndRevocationStayBoundToTask() throws Exception {
         String target=insertVideoTarget(), task=UUID.randomUUID().toString(), command=UUID.randomUUID().toString();
         long now=clock.nowMillis();

@@ -125,12 +125,13 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
                 JOIN airspace_version av ON av.airspace_id=a.airspace_id
                 CROSS JOIN (SELECT ST_SetSRID(ST_MakePoint(?,?),4326) AS geom) pt
                 WHERE e.event_id=? AND av.boundary IS NOT NULL
+                  AND (a.deleted_at IS NULL OR ?<a.deleted_at)
                   AND (a.source_mode='live'
                        OR (event_alarm.source_mode IN ('mock','replay') AND a.source_mode IN ('mock','replay')))
                   AND av.valid_from<=? AND (av.valid_to IS NULL OR ?<av.valid_to)
                   AND av.boundary && pt.geom AND ST_Intersects(av.boundary,pt.geom)
                 """, (r, n) -> new Hit(r.getString(1), r.getString(2)),
-                point.lon, point.lat, eventId, Timestamp.from(asOf.toInstant()), Timestamp.from(asOf.toInstant()));
+                point.lon, point.lat, eventId, Timestamp.from(asOf.toInstant()), Timestamp.from(asOf.toInstant()), Timestamp.from(asOf.toInstant()));
     }
     private static boolean postgres(DataSource dataSource) {
         try (var connection = dataSource.getConnection()) {

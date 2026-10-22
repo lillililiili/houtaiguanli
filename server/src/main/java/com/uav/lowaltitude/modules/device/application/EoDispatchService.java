@@ -42,12 +42,15 @@ public class EoDispatchService {
         var snapshot=tracking.snapshot(target);
         var task=edges.openTaskByTarget(target);
         var request=queue.pending(target);
+        String preferred=request==null?null:normalizeDevice(text(request,"device_id"));
+        boolean preferredVisible=preferred!=null && tracking.deviceScope(preferred,user.userId(),user.scopeMode());
         boolean operate=access.canOperateDevices(user);
         String block=policy.block(snapshot);
         var options=new ArrayList<SwitchOption>();
         var occupation=new ArrayList<String>();
         boolean protectedBusy=false,available=false;
         if(block==null && task==null) for(String id:devices(snapshot)) {
+            if(preferred!=null && !preferred.equals(id)) continue;
             if(!tracking.deviceScope(id,user.userId(),user.scopeMode())) continue;
             var occupied=edges.openTask(id);
             if(occupied==null) {
@@ -88,8 +91,9 @@ public class EoDispatchService {
         boolean canRequest=operate && block==null && task==null && (request==null
                 || "WAITING".equals(text(request,"status")) && "AUTO".equals(text(request,"origin")));
         boolean canCancel=operate && request!=null && "MANUAL".equals(text(request,"origin"));
+        if(preferred!=null && request!=null)message=(preferredVisible?"仅等待指定光电（"+tracking.deviceName(preferred)+"）。":"指定光电当前不可访问。")+message;
         return new View(target,status,message,request==null?null:text(request,"request_id"),canRequest,canCancel,
-                task==null?List.copyOf(options):List.of());
+                task==null?List.copyOf(options):List.of(),preferredVisible?preferred:null);
     }
     private static String occupationState(String block) {
         if(block==null) return "正在跟踪";
@@ -102,9 +106,14 @@ public class EoDispatchService {
     }
     @Transactional
     public View request(String target,String expectedTask,String key) {
+        return request(target,expectedTask,null,key);
+    }
+    @Transactional
+    public View request(String target,String expectedTask,String requestedDevice,String key) {
         var actor=access.requireDevicesOperate();checkKey(key);
+        String selected=normalizeDevice(requestedDevice);
         edges.lockCursor();tracking.lockActor(actor.userId());targets.lockForTracking(target);
-        String action="REQUEST:"+Objects.toString(expectedTask,"");
+        String action=requestAction(expectedTask,selected);
         if(replay(actor.userId(),key,target,action)) return view(target);
         var snapshot=tracking.snapshot(target);String block=policy.block(snapshot);
         if(block!=null) throw conflict(EoTrackingStatusService.blockMessage(block));
@@ -113,13 +122,23 @@ public class EoDispatchService {
         if(req!=null && "STOPPING".equals(text(req,"status"))) throw conflict("当前目标已经在切换，等待设备回执。");
         if(req!=null && "MANUAL".equals(text(req,"origin")) && !actor.userId().equals(text(req,"requested_by")))
             throw conflict("其他操作员已为此目标请求跟踪，请等待当前请求或取消后重新申请。");
+        String existingDevice=req==null?null:normalizeDevice(text(req,"device_id"));
+        if(existingDevice!=null && selected!=null && !existingDevice.equals(selected))
+            throw conflict("当前请求已指定另一台光电，请先取消原请求再重新选择。");
+        if(selected==null)selected=existingDevice;
+        if(selected!=null) {
+            if(!deviceMatches(snapshot,selected))throw conflict("指定光电不存在、已停用或与目标的来源及所属范围不匹配。");
+            if(!tracking.deviceScope(selected,actor.userId(),actor.scopeMode()))throw forbidden();
+        }
         String id=req==null?UUID.randomUUID().toString():text(req,"request_id");
         if(req==null) queue.create(id,target,actor.userId(),policy.now());
         else queue.manual(id,actor.userId(),policy.now());
+        if(selected!=null)queue.selectDevice(id,selected,policy.now());
         if(expectedTask!=null && !expectedTask.isBlank()) {
             var old=edges.task(expectedTask);
             if(old==null) throw conflict("原跟踪任务已变化，请重新选择。");
             String device=text(old,"ops_device_id"),oldTarget=text(old,"target_id");
+            if(selected!=null && !selected.equals(device))throw conflict("原跟踪任务不属于指定光电，请刷新后重新选择。");
             targets.target(oldTarget);
             if(!tracking.deviceScope(device,actor.userId(),actor.scopeMode())) throw forbidden();
             if(!switchable(old,snapshot,device)) throw conflict("设备占用已变化或原任务不可打断，请刷新后重新选择。");
@@ -127,7 +146,8 @@ public class EoDispatchService {
             stop(id,old,actor.userId());
         }
         queue.saveAction(actor.userId(),key,target,action,policy.now());
-        audit.record(actor.userId(),actor.account(),"eo_dispatch_requested","eo_dispatch_request",id,action,null);
+        audit.record(actor.userId(),actor.account(),"eo_dispatch_requested","eo_dispatch_request",id,
+                selected==null?action:"指定光电="+selected+"；原任务="+Objects.toString(expectedTask,""),null);
         return view(target);
     }
     @Transactional
@@ -164,12 +184,18 @@ public class EoDispatchService {
             if(!tracking.tryLock(target)) continue;
             var snapshot=tracking.snapshot(target);
             boolean manual="MANUAL".equals(text(req,"origin"));
-            if(manual && !actorAllowed(req,null)) {finish(req,"FAILED",null,"请求人的权限或目标访问范围已变化，请重新申请。");continue;}
+            String preferred=normalizeDevice(text(req,"device_id"));
+            if(manual && !actorAllowed(req,preferred)) {finish(req,"FAILED",null,"请求人的权限、设备或目标访问范围已变化，请重新申请。");continue;}
             if(policy.block(snapshot)!=null) {finish(req,manual || "STOPPING".equals(text(req,"status"))?"FAILED":"CANCELLED",null,EoTrackingStatusService.blockMessage(policy.block(snapshot)));continue;}
+            if(preferred!=null && !deviceMatches(snapshot,preferred)) {finish(req,"FAILED",null,"指定光电已停用，或设备来源、所属范围已变化，未改用其他设备。");continue;}
             if(!manual && (!policy.enabledFor(snapshot)||tracking.paused(target)||policy.demand(target).isEmpty())) {
                 finish(req,"CANCELLED",null,"当前已无有效自动观察需求。");continue;
             }
-            if(edges.targetHasOpenTask(target)) {finish(req,"STARTED",text(edges.openTaskByTarget(target),"task_id"),"目标已有跟踪任务。");continue;}
+            if(edges.targetHasOpenTask(target)) {
+                var active=edges.openTaskByTarget(target);
+                if(preferred!=null && !preferred.equals(text(active,"ops_device_id")))finish(req,"FAILED",null,"目标已由其他光电跟踪，未替换指定设备。");
+                else finish(req,"STARTED",text(active,"task_id"),"目标已有跟踪任务。");continue;
+            }
             // A request can outlive a previous task. Re-read its terminal fact under the
             // cursor/target locks, so an old queued request cannot reuse pre-stop evidence.
             if(!manual && !hasObservationAfterEnd(snapshot,edges.latestTaskByTarget(target))) {
@@ -191,7 +217,7 @@ public class EoDispatchService {
                     if(policy.now()-((Number)req.get("updated_at")).longValue()<30000) continue;
                     finish(req,"FAILED",null,"原任务已停止，但设备尚未恢复可用，未启动新目标。");continue;
                 }
-            } else for(String device:devices(snapshot)) {
+            } else for(String device:preferred==null?devices(snapshot):List.of(preferred)) {
                 if(queue.reserved(device) || manual && !actorAllowed(req,device)) continue;
                 picked=idle(snapshot,device);if(picked!=null) break;
             }
@@ -233,6 +259,12 @@ public class EoDispatchService {
     private Binding idle(Map<String,Object> snapshot,String device) {
         return edges.idleDeviceForMode(text(snapshot,"owner_org_id"),text(snapshot,"district_id"),device,EoTrackingPolicy.mode(snapshot),policy.heartbeatCutoff(),policy.now());
     }
+    private boolean deviceMatches(Map<String,Object> snapshot,String device) {
+        var binding=edges.binding(device,false);
+        return binding!=null && binding.enabled() && Objects.equals(binding.ownerOrgId(),text(snapshot,"owner_org_id"))
+                && Objects.equals(binding.districtId(),text(snapshot,"district_id"))
+                && Objects.equals(binding.sourceMode(),EoTrackingPolicy.mode(snapshot));
+    }
     private boolean switchable(Map<String,Object> task,Map<String,Object> incoming,String device) {
         if(!"OPEN".equals(text(task,"status")) || queue.reserved(device) || queue.protectedTarget(text(task,"target_id"))) return false;
         var current=edges.openTask(device);
@@ -273,8 +305,19 @@ public class EoDispatchService {
     private static void checkKey(String key) {
         if(key==null||key.length()<8||key.length()>128) throw new ApiException(HttpStatus.BAD_REQUEST,"IDEMPOTENCY_KEY_REQUIRED","请求标识必须为8至128个字符");
     }
+    private static String normalizeDevice(String value) {
+        if(value==null || value.isBlank())return null;
+        if(!value.matches("[A-Za-z0-9_.:-]{1,64}"))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","光电设备标识无效");
+        return value;
+    }
+    private static String requestAction(String expectedTask,String device) {
+        if(device==null)return "REQUEST:"+Objects.toString(expectedTask,"");
+        try {return "REQUEST_DEVICE:"+HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest((device+"\n"+Objects.toString(expectedTask,"")).getBytes(java.nio.charset.StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException impossible){throw new IllegalStateException(impossible);}
+    }
     private static ApiException conflict(String message) {return new ApiException(HttpStatus.CONFLICT,"EO_DISPATCH_CONFLICT",message);}
     private static ApiException forbidden() {return new ApiException(HttpStatus.FORBIDDEN,"DEVICE_SCOPE_FORBIDDEN","无权操作该光电设备");}
     public record SwitchOption(String taskId,String deviceId,String deviceName,String targetNo) { }
-    public record View(String targetId,String status,String message,String requestId,boolean canRequest,boolean canCancel,List<SwitchOption> switchOptions) { }
+    public record View(String targetId,String status,String message,String requestId,boolean canRequest,boolean canCancel,List<SwitchOption> switchOptions,String deviceId) { }
 }

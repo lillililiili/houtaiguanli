@@ -13,7 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.uav.lowaltitude.platform.geo.Wgs84Coordinates;
-import com.uav.lowaltitude.platform.geo.Wgs84GeoJson;
+import com.uav.lowaltitude.platform.geo.Wgs84;
 
 /**
  * GeoJSON FeatureCollection → 每要素一条解析结果（MultiPolygon EWKT + 属性）。
@@ -56,7 +56,7 @@ public class GeoJsonParser {
         catch (com.fasterxml.jackson.core.JsonProcessingException ex) { return ParseResult.fatal("INVALID_GEOJSON"); }
         if (root == null || !root.isObject() || !"FeatureCollection".equals(text(root, "type"))) return ParseResult.fatal("INVALID_GEOJSON");
         // 声明了别的坐标系就不能按 WGS-84 读：数字看起来合法，落到地图上却是另一个地方。
-        if (!Wgs84GeoJson.hasSupportedDeclarations(root)) return ParseResult.fatal("CRS_NOT_SUPPORTED");
+        if (!Wgs84.supportsGeoJson(root)) return ParseResult.fatal("CRS_NOT_SUPPORTED");
         JsonNode features = root.get("features");
         if (features == null || !features.isArray()) return ParseResult.fatal("INVALID_GEOJSON");
         if (features.size() > MAX_FEATURES) return ParseResult.fatal("IMPORT_TOO_LARGE");
@@ -75,8 +75,8 @@ public class GeoJsonParser {
         }
         JsonNode properties = node.get("properties");
         JsonNode geometry = node.get("geometry");
-        if (!Wgs84GeoJson.hasSupportedDeclarations(node)
-                || !Wgs84GeoJson.hasSupportedDeclarations(properties))
+        if (!Wgs84.supportsGeoJson(node)
+                || (properties != null && !properties.isNull() && !Wgs84.supportsGeoJson(properties)))
             issues.add(new Issue("coordinate_system", "CRS_NOT_SUPPORTED"));
         String ewkt = null, geometryJson = null;
         if (geometry == null || geometry.isNull() || !geometry.isObject()) {
@@ -120,7 +120,7 @@ public class GeoJsonParser {
     }
 
     private String geometry(JsonNode geometry, List<Issue> issues) {
-        if (!Wgs84GeoJson.hasSupportedDeclarations(geometry)) {
+        if (!Wgs84.supportsGeoJson(geometry)) {
             issues.add(new Issue("geometry", "CRS_NOT_SUPPORTED"));
             return null;
         }

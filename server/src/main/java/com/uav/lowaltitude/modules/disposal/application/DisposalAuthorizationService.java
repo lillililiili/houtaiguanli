@@ -20,6 +20,7 @@ import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.CreateRequest;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.CreatedDto;
 import com.uav.lowaltitude.modules.disposal.api.DisposalDtos.DirectResultDto;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
+import com.uav.lowaltitude.modules.disposal.domain.CountermeasureMode;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalPolicyRepository;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
@@ -48,7 +49,7 @@ public class DisposalAuthorizationService {
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private static final Set<String> CREATE_FIELDS = Set.of("action_type", "subject_kind", "subject_id",
-            "device_id", "channel", "reason");
+            "device_id", "channel", "reason", "countermeasure_mode");
     private static final Set<String> DECISION_FIELDS = Set.of("expected_version", "note");
     private static final Set<String> EXECUTE_FIELDS = Set.of("expected_version", "operation_params");
 
@@ -102,6 +103,7 @@ public class DisposalAuthorizationService {
     private CreatedDto createInternal(String rawRequest, String key, boolean direct) {
         CreateRequest request = parseCreate(rawRequest);
         DisposalRules.requireKnown(request.actionType(), DisposalRules.ACTION_TYPES, "处置动作类型无效");
+        CountermeasureMode mode = CountermeasureMode.parse(request.countermeasureMode(), request.actionType());
         // 风险单独给码（决策 18-14）：它不在主体名单里，但落进泛泛的"类型无效"就把一句能读懂的话
         // ——"风险请走通知上级"——换成了值班员看不懂的校验错误。答复保持与之前一致。
         if ("RISK".equals(request.subjectKind())) throw riskSubjectNotSupported();
@@ -148,21 +150,25 @@ public class DisposalAuthorizationService {
         repository.insert(new AuthorizationInsert(id, no, request.actionType(), request.subjectKind(), effectiveSubjectId,
                 subject.targetId(), blank(request.deviceId()) ? null : request.deviceId().trim(), request.channel(),
                 reason, actor.userId(), at, status, policy.policyCode(), subject.ownerOrgId(), subject.districtId(),
-                subject.sourceMode()));
+                subject.sourceMode()), mode == null ? null : mode.name());
         if (direct) {
             OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(request.actionType()));
             if (repository.authorizeDirect(id, 0L, at, until, "持有直接反制权限，免逐次审批") != 1) throw versionConflict();
             event(id, "DIRECT_AUTHORIZE", actor.userId(), reason, Map.of("status", DisposalRules.APPROVED,
                     "authorization_mode", "DIRECT", "permission", PermissionCode.DISPOSAL_DIRECT.value(),
-                    "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli()), at);
+                    "valid_from", at.toInstant().toEpochMilli(), "valid_until", until.toInstant().toEpochMilli(),
+                    "countermeasure_mode", mode == null ? "UNSPECIFIED" : mode.name()), at);
             audit(actor, "disposal_direct_authorized", id, "authorization_no=" + no + "; action_type=" + request.actionType()
-                    + "; subject=" + request.subjectKind() + "/" + effectiveSubjectId + "; channel=" + request.channel());
+                    + "; subject=" + request.subjectKind() + "/" + effectiveSubjectId + "; channel=" + request.channel()
+                    + "; countermeasure_mode=" + (mode == null ? "UNSPECIFIED" : mode.name()));
             return new CreatedDto(id, no, DisposalRules.APPROVED, 1L);
         }
         event(id, "REQUEST", actor.userId(), reason, Map.of("status", status, "action_type", request.actionType(),
-                "channel", request.channel(), "policy_version", policy.policyCode()), at);
+                "channel", request.channel(), "policy_version", policy.policyCode(),
+                "countermeasure_mode", mode == null ? "UNSPECIFIED" : mode.name()), at);
         audit(actor, "disposal_requested", id, "authorization_no=" + no + "; action_type=" + request.actionType()
-                + "; subject=" + request.subjectKind() + "/" + effectiveSubjectId + "; channel=" + request.channel());
+                + "; subject=" + request.subjectKind() + "/" + effectiveSubjectId + "; channel=" + request.channel()
+                + "; countermeasure_mode=" + (mode == null ? "UNSPECIFIED" : mode.name()));
         return new CreatedDto(id, no, status, 0L);
     }
 
@@ -523,7 +529,7 @@ public class DisposalAuthorizationService {
     private CreateRequest parseCreate(String raw) {
         JsonNode node = strict(raw, CREATE_FIELDS);
         return new CreateRequest(str(node, "action_type"), str(node, "subject_kind"), str(node, "subject_id"),
-                str(node, "device_id"), str(node, "channel"), str(node, "reason"));
+                str(node, "device_id"), str(node, "channel"), str(node, "reason"), str(node, "countermeasure_mode"));
     }
 
     private Decision parseDecision(String raw, boolean noteRequired) {

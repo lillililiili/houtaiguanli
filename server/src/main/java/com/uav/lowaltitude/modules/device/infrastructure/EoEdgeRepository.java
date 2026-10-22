@@ -380,6 +380,10 @@ public class EoEdgeRepository {
                 """, targetId).stream().findFirst().orElse(null);
     }
     /** Prefer the current task; otherwise retain the latest terminal state for video readers. */
+    public Map<String,Object> currentTaskByDevice(String deviceId) {
+        return jdbc.queryForList("SELECT * FROM eo_tracking_task WHERE ops_device_id=? AND status IN ('OPEN','ENDING') "
+                + "ORDER BY created_at DESC,task_id DESC FETCH FIRST 1 ROWS ONLY",deviceId).stream().findFirst().orElse(null);
+    }
     public Map<String, Object> latestTaskByTarget(String targetId) {
         return jdbc.queryForList("""
                 SELECT * FROM eo_tracking_task WHERE target_id=?

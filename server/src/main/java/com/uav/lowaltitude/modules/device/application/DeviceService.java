@@ -30,6 +30,7 @@ import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.config.AppProperties;
+import com.uav.lowaltitude.platform.geo.Wgs84;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
 
@@ -631,7 +632,7 @@ public class DeviceService {
         v.put("channel", m.channel().trim()); v.put("model", blankToNull(m.model())); v.put("vendor", blankToNull(m.vendor()));
         v.put("owner_name", blankToNull(m.ownerName())); v.put("region_name", blankToNull(m.regionName()));
         v.put("address", blankToNull(m.address())); v.put("longitude", m.longitude()); v.put("latitude", m.latitude());
-        v.put("coordinate_system", m.longitude() == null ? null : "WGS-84");
+        v.put("coordinate_system", m.longitude() == null ? null : Wgs84.DEVICE_NAME);
         v.put("altitude_m", m.altitudeM()); v.put("altitude_datum", blankToNull(m.altitudeDatum()));
         v.put("firmware_version", blankToNull(m.firmwareVersion())); v.put("installed_at", m.installedAt());
         v.put("created_at", now); v.put("updated_at", now);

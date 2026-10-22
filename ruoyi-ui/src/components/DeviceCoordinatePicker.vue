@@ -13,6 +13,7 @@ const emit = defineEmits(['update:longitude', 'update:latitude']);
 const container = ref();
 const loading = ref(false);
 const error = ref('');
+const imageryWarning = ref('');
 const outside = ref(false);
 let map;
 let marker;
@@ -65,6 +66,7 @@ let maplibre;
 async function renderMap() {
   dispose();
   error.value = '';
+  imageryWarning.value = '';
   outside.value = false;
   if (!container.value) return;
   const current = new AbortController();
@@ -86,8 +88,16 @@ async function renderMap() {
       resizeDeviceMap(map, resources);
       loading.value = false;
     });
-    map.on('error', () => {
-      if (!current.signal.aborted) { loading.value = false; error.value = '底图加载失败，请重试。'; }
+    map.on('error', event => {
+      if (current.signal.aborted) return;
+      const imageryState = resources.handleImageryError(map, event);
+      if (imageryState) {
+        if (imageryState === 'fallback') imageryWarning.value = '卫星影像读取失败，已恢复本地矢量底图';
+        return;
+      }
+      const reason = event.error;
+      if (reason?.name === 'AbortError' || reason?.code === 20 || /abort|cancelled|canceled/i.test(String(reason?.message || ''))) return;
+      loading.value = false; error.value = '底图加载失败，请重试。';
     });
     observer = new ResizeObserver(() => { if (map) resizeDeviceMap(map, resources); });
     observer.observe(container.value);
@@ -110,8 +120,9 @@ onBeforeUnmount(dispose);
       <div ref="container" class="coordinate-map-canvas" />
       <span class="coordinate-map-hint">点击地图设置设备安装点</span>
     </div>
-    <div v-if="error" class="coordinate-map-error" role="alert">{{ error }}</div>
-    <div v-else-if="outside" class="coordinate-map-error" role="status">所填坐标在当前地图覆盖范围外，请核对；原坐标未改动。</div>
+    <div v-if="error" class="coordinate-map-error" role="alert">{{ error }} <el-button link type="primary" @click="renderMap">重试</el-button></div>
+    <div v-else-if="imageryWarning" class="coordinate-map-error" role="status">{{ imageryWarning }} <el-button link type="primary" @click="renderMap">重试影像</el-button></div>
+    <div v-if="outside" class="coordinate-map-error" role="status">所填坐标在当前地图覆盖范围外，请核对；原坐标未改动。</div>
   </section>
 </template>
 
