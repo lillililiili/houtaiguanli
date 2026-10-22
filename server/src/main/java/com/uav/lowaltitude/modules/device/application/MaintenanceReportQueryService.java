@@ -18,5 +18,11 @@ public class MaintenanceReportQueryService extends BusinessReportSource {
     @Override public String basis() { return "通知创建时间；处理结果截至生成时"; }
     @Override public boolean snapshot() { return false; }
     @Override public List<Dimension> dimensions() { return List.of(new Dimension("state", "处理状态"), new Dimension("label", "异常设备 Top 10")); }
-    @Override protected Dataset dataset(Range range) { return repository.reportDataset(range, access.requireMonitoringRead()); }
+    @Override protected Dataset dataset(Range range) {
+        if (com.uav.lowaltitude.platform.report.ReportAccessContext.active()) {
+            com.uav.lowaltitude.platform.report.ReportAccessContext.requireDeviceModule("maintenance");
+            return repository.reportDataset(range,com.uav.lowaltitude.platform.security.AuthContext.require());
+        }
+        return repository.reportDataset(range, access.requireMonitoringRead());
+    }
 }

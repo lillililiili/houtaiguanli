@@ -21,6 +21,7 @@ import com.uav.lowaltitude.modules.identity.infrastructure.IdentityAdminMapper;
 import com.uav.lowaltitude.modules.identity.infrastructure.UserMapper;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.LoginResponse;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.MeResponse;
+import com.uav.lowaltitude.modules.identity.api.AuthDtos.ManagementContext;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.ProfileUpdateRequest;
 import com.uav.lowaltitude.modules.identity.api.AuthDtos.ScopeGrantResponse;
 import com.uav.lowaltitude.platform.api.ApiException;
@@ -39,6 +40,8 @@ public class AuthService {
     private final LoginFailureRecorder loginFailureRecorder;
     private final IdentityAdminMapper identityAdminMapper;
     private final AccessService accessService;
+    private final OrgEffectivePermissionService effectivePermissions;
+    private final UnitManagementAccessService unitManagement;
     private final PasswordPolicy passwordPolicy;
     private final AppProperties appProperties;
     private final AppClock appClock;
@@ -52,6 +55,8 @@ public class AuthService {
             LoginFailureRecorder loginFailureRecorder,
             IdentityAdminMapper identityAdminMapper,
             AccessService accessService,
+            OrgEffectivePermissionService effectivePermissions,
+            UnitManagementAccessService unitManagement,
             PasswordPolicy passwordPolicy,
             AppProperties appProperties,
             AppClock appClock,
@@ -63,6 +68,8 @@ public class AuthService {
         this.loginFailureRecorder = loginFailureRecorder;
         this.identityAdminMapper = identityAdminMapper;
         this.accessService = accessService;
+        this.effectivePermissions = effectivePermissions;
+        this.unitManagement = unitManagement;
         this.passwordPolicy = passwordPolicy;
         this.appProperties = appProperties;
         this.appClock = appClock;
@@ -103,10 +110,9 @@ public class AuthService {
                     appProperties.getLogin().getLockMinutes());
             throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "账号或密码错误");
         }
-        if (backend && com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.getRoleCode())
-                != com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND) {
+        if (backend && !canEnterManagement(user.getUserId(), user.getRoleCode())) {
             loginFailureRecorder.backendDenied(user, ip, userAgent);
-            throw new ApiException(HttpStatus.FORBIDDEN, "BACKEND_ACCESS_DENIED", "该账号是前台用户，不能登录后台管理系统");
+            throw new ApiException(HttpStatus.FORBIDDEN, "BACKEND_ACCESS_DENIED", "该账号没有后台管理权限");
         }
         userMapper.recordSuccessfulLogin(user.getUserId(), now, ip == null ? "" : ip);
         AppSession session = new AppSession();
@@ -139,10 +145,35 @@ public class AuthService {
         return new MeResponse(user.getUserId(), user.getAccount(), user.getName(), user.getPhone(),
                 user.getOrgId(), identityAdminMapper.findAdminUser(user.getUserId(), appClock.nowMillis()).getOrgName(),
                 user.getRoleCode(), role == null ? user.getRoleCode() : role.getName(), user.getScopeMode(), scopes,
-                accessService.menuKeys(user.getRoleCode()), accessService.permissionCodes(user.getRoleCode()),
+                effectivePermissions.menuKeys(user.getUserId()), effectivePermissions.permissionCodes(user.getUserId()),
                 user.getPermissionVersion(), user.isMustChangePassword(), appProperties.getSourceMode(),
                 DataScope.of(user.getScopeMode(), user.getScopeOrgRule()).name(), user.getVersion(),
-                com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.getRoleCode()).name());
+                com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.getRoleCode()).name(),
+                managementContext(user));
+    }
+
+    /** 仅决定能否进入管理端外壳，不能替代平台专属接口的 BackendOnly 校验。 */
+    public boolean canEnterManagement(String userId, String roleCode) {
+        return com.uav.lowaltitude.modules.identity.domain.UserType.forRole(roleCode)
+                == com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND
+                || unitManagement.orgId(userId)!=null;
+    }
+
+    private ManagementContext managementContext(AppUser user) {
+        if (com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.getRoleCode())
+                == com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND) {
+            return new ManagementContext("PLATFORM", null, accessService.menuKeys(user.getRoleCode()),
+                    accessService.permissionCodes(user.getRoleCode()));
+        }
+        String orgId = unitManagement.orgId(user.getUserId());
+        if (orgId != null) {
+            var menus=new java.util.ArrayList<String>(List.of("unit-users","unit-roles"));
+            menus.addAll(unitManagement.menuKeys(user.getUserId()));
+            var codes=new java.util.ArrayList<String>(List.of("unit-users.manage","unit-roles.manage"));
+            codes.addAll(unitManagement.permissionCodes(user.getUserId()));
+            return new ManagementContext("UNIT", orgId, List.copyOf(menus),List.copyOf(codes));
+        }
+        return new ManagementContext("NONE", null, List.of(), List.of());
     }
 
     /** 本人修改姓名和电话（ZT-28）。不动权限版本，当前会话保持有效。 */

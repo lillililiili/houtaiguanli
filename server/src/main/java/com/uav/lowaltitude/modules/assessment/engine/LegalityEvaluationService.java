@@ -373,7 +373,7 @@ public class LegalityEvaluationService {
         List<Map<String, Object>> hits = new ArrayList<>();
         for (AirspaceHit hit : airspaces) {
             Map<String, Object> h = new LinkedHashMap<>();
-            h.put("airspace_version_id", hit.airspaceVersionId()); h.put("kind_code", hit.kindCode()); h.put("relation", hit.relation()); h.put("unknown_reason", hit.unknownReason());
+            h.put("airspace_id",hit.airspaceId()); h.put("airspace_version_id", hit.airspaceVersionId()); h.put("kind_code", hit.kindCode()); h.put("relation", hit.relation()); h.put("unknown_reason", hit.unknownReason());
             hits.add(h);
         }
         snapshot.put("airspace_hits", hits);

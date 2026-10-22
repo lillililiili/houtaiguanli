@@ -11,11 +11,12 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
 /**
  * 阶段 8 的自建回放信封（`replay:<source_code>:<dataset_id>`）。字段已经是我们自己的形状，逐字搬运即可。
- * 这份解析原先内嵌在 FusionPipeline，阶段 8.5 迁到这里只是换了位置：现有回放数据集的结论必须一字不变。
+ * 既有历史读侧不变；旧原文没有坐标声明时，不再将它重新接入为新的业务位置。
  */
 @Component
 public class ReplayFrameMapper implements FrameMapper {
@@ -37,6 +38,10 @@ public class ReplayFrameMapper implements FrameMapper {
             if (frame == null || !frame.isObject()) throw new IllegalStateException("回放信封缺少 frame");
             List<Item> items = new ArrayList<>();
             for (JsonNode item : frame.withArray("items")) {
+                if (JsonCoordinateContract.hasCoordinates(item, "lon", "lat")) {
+                    try { JsonCoordinateContract.requireWgs84(root, frame, item); }
+                    catch (IllegalArgumentException ex) { throw new IllegalStateException(ex.getMessage(), ex); }
+                }
                 Double latency = number(item, "latency_ms");
                 items.add(new Item(text(item, "external_target_id"), text(item, "external_track_id"), number(item, "lon"), number(item, "lat"),
                         number(item, "position_accuracy_m"), number(item, "alt_amsl_m"), number(item, "height_agl_m"), number(item, "speed_mps"),

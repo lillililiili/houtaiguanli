@@ -15,7 +15,7 @@ vi.mock('@/api/devices.js', () => ({
 vi.mock('element-plus', async importOriginal => ({
   ...await importOriginal(),
   ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
-  ElMessageBox: { prompt: vi.fn() }
+  ElMessageBox: { prompt: vi.fn(), confirm: vi.fn() }
 }));
 
 let app, host;
@@ -39,23 +39,26 @@ beforeEach(() => {
   deviceApi.protocolStatus.mockResolvedValue({});
   deviceApi.remove.mockResolvedValue({ device_id: row.device_id, version: 4 });
   integrationApi.protocols.mockResolvedValue([]);
-  ElMessageBox.prompt.mockResolvedValue({ value: ' 设备退役 ' });
+  ElMessageBox.confirm.mockResolvedValue('confirm');
 });
 afterEach(() => { app?.unmount(); host?.remove(); });
 
 describe('设备删除交互', () => {
-  it('确认后携带版本和原因删除，并清空详情、刷新列表及统计', async () => {
+  it('无需填写原因，确认后保留版本和操作记录，刷新列表及统计', async () => {
     await mount();
     deviceApi.list.mockResolvedValue({ items: [], total: 0, page: 1, size: 10 });
     deleteButton().click(); await settle();
-    expect(deviceApi.remove).toHaveBeenCalledWith('device-1', { version: 3, reason: '设备退役' });
+    expect(ElMessageBox.prompt).not.toHaveBeenCalled();
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining('测试设备'), '删除设备', expect.objectContaining({ confirmButtonText: '确认删除', cancelButtonText: '取消' }));
+    expect(ElMessageBox.confirm.mock.calls[0][2]).not.toHaveProperty('inputValidator');
+    expect(deviceApi.remove).toHaveBeenCalledWith('device-1', { version: 3, reason: '用户在界面确认删除（系统记录，未填写原因）' });
     expect(deviceApi.list).toHaveBeenCalledTimes(2);
     expect(deviceApi.overview).toHaveBeenCalledTimes(2);
     expect(host.textContent).toContain('请选择设备');
     expect(host.textContent).not.toContain('DEV-001');
   });
   it('取消确认时不发送删除请求', async () => {
-    ElMessageBox.prompt.mockRejectedValue('cancel');
+    ElMessageBox.confirm.mockRejectedValue('cancel');
     await mount(); deleteButton().click(); await settle();
     expect(deviceApi.remove).not.toHaveBeenCalled();
     expect(ElMessage.error).not.toHaveBeenCalled();
@@ -88,10 +91,10 @@ describe('设备删除交互', () => {
   });
   it('确认弹窗未关闭时阻止重复点击', async () => {
     let confirm;
-    ElMessageBox.prompt.mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
+    ElMessageBox.confirm.mockImplementationOnce(() => new Promise(resolve => { confirm = resolve; }));
     await mount(); deleteButton().click(); deleteButton().click(); await settle();
-    expect(ElMessageBox.prompt).toHaveBeenCalledTimes(1);
-    confirm({ value: '设备退役' }); await settle();
+    expect(ElMessageBox.confirm).toHaveBeenCalledTimes(1);
+    confirm('confirm'); await settle();
     expect(deviceApi.remove).toHaveBeenCalledTimes(1);
   });
 });

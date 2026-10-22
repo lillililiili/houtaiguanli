@@ -1,0 +1,19 @@
+/* Self-hosted SIL OFL 1.1 fonts. Keep both OFL notices with these files. */
+@font-face {
+  font-family: "Noto Sans SC";
+  src: url("./NotoSansSC-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: "Noto Sans Mono";
+  src: url("./NotoSansMono-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+:root {
+  --app-font-sans: "Noto Sans SC";
+  --app-font-mono: "Noto Sans Mono", "Noto Sans SC";
+}

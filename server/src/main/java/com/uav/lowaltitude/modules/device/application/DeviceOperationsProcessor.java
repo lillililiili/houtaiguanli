@@ -31,6 +31,10 @@ public class DeviceOperationsProcessor {
     private final LingyunControlService lingyunControl;
     private final Countermeasure4ChControlService countermeasureControl;
     private final MqttCommissionCheck mqtt;
+    private com.uav.lowaltitude.modules.identity.application.UnitManagementAccessService unitManagement;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void unitManagement(com.uav.lowaltitude.modules.identity.application.UnitManagementAccessService access) { this.unitManagement=access; }
+
 
     public DeviceOperationsProcessor(DeviceRepository devices, CommissionRepository commissions,
                                      DeviceAdapterRegistry adapters, AppProperties properties,
@@ -154,6 +158,11 @@ public class DeviceOperationsProcessor {
     private void connect(String taskId) {
         Map<String, Object> row = commissions.findTask(taskId);
         if (row == null || !"CONNECTING".equals(text(row, "status"))) return;
+        devices.lockForRecovery(text(row,"device_id"));
+        commissions.lockTask(taskId);
+        row=commissions.findTask(taskId);
+        if (row == null || !"CONNECTING".equals(text(row,"status"))) return;
+        if (!managementExecutionAllowed(row)) { rejectManagementExecution(row,false); return; }
         String protocol = text(row, "resolved_protocol_code");
         AdapterResult result;
         String endpoint = null;
@@ -166,6 +175,8 @@ public class DeviceOperationsProcessor {
             DeviceAdapterPort adapter = adapter(row);
             result = adapter.connect(new DeviceAdapterPort.CommissionWork(taskId, text(row, "commission_no"),
                     text(row, "device_id"), text(row, "device_no"), protocol, adapterConfiguration(row)));
+            if(result.success() && text(row,"management_org_id")!=null)
+                endpoint=json(DeviceService.connection(devices.findProfile(text(row,"device_id"))));
         }
         long now = clock.nowMillis();
         if (commissions.completeConnect(taskId, result.success(), now, result.detail()) == 1) {
@@ -179,6 +190,11 @@ public class DeviceOperationsProcessor {
     private void commission(String taskId) {
         Map<String, Object> row = commissions.findTask(taskId);
         if (row == null || !"RUNNING".equals(text(row, "status"))) return;
+        devices.lockForRecovery(text(row,"device_id"));
+        commissions.lockTask(taskId);
+        row=commissions.findTask(taskId);
+        if (row == null || !"RUNNING".equals(text(row,"status"))) return;
+        if (!managementExecutionAllowed(row)) { rejectManagementExecution(row,true); return; }
         String protocol = text(row, "resolved_protocol_code");
         boolean mqttTask = MqttCommissionCheck.supports(protocol);
         CommissionResult result = mqttTask ? mqtt.run(text(row, "device_id"), protocol)
@@ -213,6 +229,32 @@ public class DeviceOperationsProcessor {
                     result.success() ? "INFO" : "ERROR",
                     result.detail(), now, simulated);
         }
+    }
+
+    private boolean managementExecutionAllowed(Map<String,Object> row) {
+        String org=text(row,"management_org_id");
+        if(org==null)return true; // Existing platform jobs retain their original execution contract.
+        String executor=text(row,"execution_requested_by");
+        boolean allowed=executor!=null && unitManagement!=null && org.equals(unitManagement.orgId(executor))
+                && unitManagement.allows(executor,"commissioning.op")
+                && commissions.deviceInUnit(text(row,"device_id"),org);
+        if(!allowed)return false;
+        if("RUNNING".equals(text(row,"status")) && !MqttCommissionCheck.supports(text(row,"resolved_protocol_code"))) {
+            try {
+                return objectMapper.readTree(json(DeviceService.connection(devices.findProfile(text(row,"device_id")))))
+                        .equals(objectMapper.readTree(text(row,"configuration_json")));
+            } catch(Exception invalid) { return false; }
+        }
+        return true;
+    }
+
+    private void rejectManagementExecution(Map<String,Object> row,boolean running) {
+        String id=text(row,"commission_id");long now=clock.nowMillis();
+        String detail="调测未发送：单位管理员任命、调测权限、设备归属或登记连接已变化，请重新确认后创建任务";
+        int changed=running ? commissions.completeRun(id,"UNTESTABLE",json(Map.of("source","UNIT_MANAGEMENT_AUTHORIZATION","confirmed",false)),
+                json(Map.of("result_code","MANAGEMENT_PERMISSION_REVOKED","detail",detail,"items",List.of())),now)
+                : commissions.completeConnect(id,false,now,detail);
+        if(changed==1)commissions.addEvent(UUID.randomUUID().toString(),id,"UNTESTABLE","ERROR",detail,now,bool(row,"simulated"));
     }
 
     /** 异常单重启失败/超时回到待处理；成功只进入待验证，不把指令成功写成已恢复。 */

@@ -13,6 +13,7 @@ import org.springframework.stereotype.Repository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.domain.SourceObservation;
+import com.uav.lowaltitude.modules.fusion.domain.HeadingDegrees;
 
 /** source_observation 写入与来源/设备元数据查询。几何用 EWKT 经 cast(? as geometry) 写入（H2 与 PostGIS 通用，同迁移 0006 种子写法）。 */
 @Repository
@@ -85,7 +86,7 @@ public class ObservationRepository {
         p.put("session", o.sourceSessionKey()); p.put("external", o.externalTargetId()); p.put("external_track", o.externalTrackId());
         p.put("observed", Timestamp.from(o.observedAt())); p.put("received", Timestamp.from(o.receivedAt()));
         p.put("location", o.hasPosition() ? ewkt(o.longitude(), o.latitude()) : null);
-        p.put("accuracy", o.positionAccuracyM()); p.put("amsl", o.altitudeAmslM()); p.put("agl", o.heightAglM()); p.put("speed", o.speedMps()); p.put("heading", o.headingDeg());
+        p.put("accuracy", o.positionAccuracyM()); p.put("amsl", o.altitudeAmslM()); p.put("agl", o.heightAglM()); p.put("speed", o.speedMps()); p.put("heading", HeadingDegrees.forStorage(o.headingDeg()));
         p.put("class_code", o.classCode()); p.put("class_conf", o.classConfidence()); p.put("identity", o.identityClue()); p.put("identity_conf", o.identityConfidence());
         p.put("latency", o.latencyMs()); p.put("quality", write(o.quality())); p.put("mode", o.sourceMode()); p.put("org", o.ownerOrgId()); p.put("district", o.districtId());
         p.put("created", Timestamp.from(Instant.now()));

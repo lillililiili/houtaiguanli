@@ -246,7 +246,9 @@ public class DeviceMaintenanceService {
 
     private Task dto(Row r,AuthUser actor,boolean reused) {
         boolean planVisible=false;
-        try { planVisible=r.planId()!=null&&plans.findPlan(r.planId(),access.require(PermissionCode.FLIGHT_READ))!=null; }
+        try { planVisible=com.uav.lowaltitude.platform.security.UnitOperationsContext.active()
+                ? r.planId()!=null && relatedPlans(r).stream().anyMatch(p->r.planId().equals(p.planId()))
+                : r.planId()!=null&&plans.findPlan(r.planId(),access.require(PermissionCode.FLIGHT_READ))!=null; }
         catch(ApiException error) { if(error.getStatus()!=HttpStatus.FORBIDDEN)throw error; }
         var history=noticeAttempts.forTask(r.taskId());
         var latest=history.isEmpty()?null:history.get(0);
@@ -288,6 +290,8 @@ public class DeviceMaintenanceService {
     private String casesSourceMode(String task){return cases.sourceMode(task);}
     public static Recovery asRecovery(DeviceRecoveryService.Evaluation evaluation){return new Recovery(evaluation.result(),evaluation.reason(),evaluation.checkedAt(),evaluation.reasonCodes(),evaluation.ruleVersion(),CurrentDeviceState.from(evaluation.currentState()));}
     public java.util.List<RelatedPlan> relatedPlans(Row task){
+        if(com.uav.lowaltitude.platform.security.UnitOperationsContext.active())
+            return cases.relatedPlansInUnit(task.taskId(),com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId());
         try{
             var scope=access.require(PermissionCode.FLIGHT_READ);
             return cases.planIds(task.taskId()).stream().map(id->plans.findPlan(id,scope)).filter(java.util.Objects::nonNull)

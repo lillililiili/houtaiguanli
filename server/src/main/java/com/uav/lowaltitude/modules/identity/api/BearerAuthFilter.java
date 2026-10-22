@@ -54,8 +54,7 @@ public class BearerAuthFilter extends OncePerRequestFilter {
         }
         String path = request.getRequestURI();
         if ("BACKEND".equals(request.getHeader("X-Client-Type"))
-                && com.uav.lowaltitude.modules.identity.domain.UserType.forRole(user.roleCode())
-                != com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND) {
+                && !authService.canEnterManagement(user.userId(), user.roleCode())) {
             writeError(response, HttpServletResponse.SC_FORBIDDEN, "BACKEND_ACCESS_DENIED", "该账号不能进入后台管理系统");
             return;
         }

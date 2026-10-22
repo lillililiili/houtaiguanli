@@ -14,7 +14,7 @@ class LiveRadarFrameMapperTest {
     private FrameMapper.Item movingItem(String fields) {
         String deviceId = UUID.randomUUID().toString();
         String targetId = UUID.randomUUID().toString();
-        String payload = "{\"device_id\":\"" + deviceId + "\",\"boot_micros\":42,\"frame_id\":\"7\",\"items\":[{"
+        String payload = "{\"coordinate_system\":\"WGS84\",\"device_id\":\"" + deviceId + "\",\"boot_micros\":42,\"frame_id\":\"7\",\"items\":[{"
                 + "\"external_track_id\":\"" + targetId + "\",\"classification\":\"UAV\","
                 + "\"longitude\":119.25,\"latitude\":36.75," + fields + "}]}";
         return new LiveRadarFrameMapper(new ObjectMapper()).map(new InboxRow(UUID.randomUUID().toString(),

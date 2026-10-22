@@ -2,7 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowDown, Expand, Fold, Lock, SwitchButton, User } from '@element-plus/icons-vue';
-import { navigationGroups } from '@/config/navigation.js';
+import { canAccessMenu, navigationGroups, navigationItems } from '@/config/navigation.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
+import { maintenancePermission } from '@/utils/managementAccess.js';
 import { useAuthStore } from '@/stores/auth.js';
 import { useTagsStore } from '@/stores/tags.js';
 import MaintenanceMessages from '@/components/MaintenanceMessages.vue';
@@ -17,7 +19,7 @@ const mobileOpen = ref(false);
 
 const visibleGroups = computed(() => navigationGroups.map(group => ({
   ...group,
-  children: group.children.filter(item => auth.hasMenu(item.key) && auth.hasPermission(item.permission))
+  children: group.children.filter(item => canAccessMenu(auth.user, item.key))
 })).filter(group => group.children.length));
 
 const breadcrumbs = computed(() => {
@@ -26,6 +28,12 @@ const breadcrumbs = computed(() => {
 });
 
 watch(() => route.fullPath, () => { tags.visit(route); mobileOpen.value = false; }, { immediate: true });
+watch(() => auth.user, user => {
+  tags.visited = tags.visited.filter(tag => {
+    const item = navigationItems.find(value => value.path === tag.basePath);
+    return !item || canAccessMenu(user, item.key);
+  });
+}, { immediate: true });
 
 function resize() {
   if (window.innerWidth < 900) collapsed.value = false;
@@ -73,11 +81,11 @@ function closeTag(item) {
         <button type="button" class="mobile-menu" aria-label="打开导航" @click="mobileOpen=true"><el-icon><Expand /></el-icon></button>
         <el-breadcrumb separator="/"><el-breadcrumb-item v-for="item in breadcrumbs" :key="item">{{ item }}</el-breadcrumb-item></el-breadcrumb>
         <div class="topbar-spacer" />
-        <MaintenanceMessages v-if="auth.hasPermission('monitoring.read') && auth.hasPermission('monitoring.op')" />
+        <MaintenanceMessages v-if="auth.hasPermission(maintenancePermission(auth.user, 'read')) && auth.hasPermission(maintenancePermission(auth.user, 'op'))" />
         <el-dropdown trigger="click" @command="userCommand">
           <button type="button" class="user-trigger">
             <span class="user-avatar">{{ (auth.user?.name || auth.user?.account || '管').slice(0, 1) }}</span>
-            <span class="user-copy"><b>{{ auth.user?.name || auth.user?.account }}</b><small>{{ auth.user?.role_name || '平台账号' }}</small></span>
+            <span class="user-copy"><b>{{ auth.user?.name || auth.user?.account }}</b><small>{{ isUnitAdministrator(auth.user) ? '单位管理员' : auth.user?.role_name || '平台账号' }}</small></span>
             <el-icon><ArrowDown /></el-icon>
           </button>
           <template #dropdown><el-dropdown-menu>

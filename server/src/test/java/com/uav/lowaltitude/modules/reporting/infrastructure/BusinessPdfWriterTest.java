@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import javax.imageio.ImageIO;
@@ -43,6 +44,7 @@ class BusinessPdfWriterTest {
         try (var document = Loader.loadPDF(pdf)) {
             var axis = new AxisLabels();
             axis.getText(document);
+            axis.ticks.sort(Comparator.comparing(Tick::y).reversed());
             assertThat(axis.ticks.stream().map(Tick::value).toList())
                     .containsExactlyElementsOf(Arrays.stream(labels.split("\\|")).map(Long::valueOf).toList())
                     .doesNotHaveDuplicates().isSorted();
@@ -54,7 +56,7 @@ class BusinessPdfWriterTest {
             }
             Path output = Files.createDirectories(Path.of("target/report-qa/integer-axis"));
             Files.write(output.resolve("maximum-" + maximum + ".pdf"), pdf);
-            ImageIO.write(new PDFRenderer(document).renderImageWithDPI(0, 96), "png",
+            ImageIO.write(new PDFRenderer(document).renderImageWithDPI(axis.chartPage - 1, 96), "png",
                     output.resolve("maximum-" + maximum + ".png").toFile());
         }
     }
@@ -63,10 +65,19 @@ class BusinessPdfWriterTest {
 
     private static final class AxisLabels extends PDFTextStripper {
         private final List<Tick> ticks = new ArrayList<>();
+        private float chartHeadingY = Float.NaN;
+        private int chartPage;
         private AxisLabels() throws IOException { }
         @Override protected void writeString(String text, List<TextPosition> positions) {
+            if (positions.isEmpty()) return;
             TextPosition first = positions.get(0);
-            if (Math.abs(first.getXDirAdj() - 40) < .01 && first.getFontSizeInPt() == 8 && text.matches("[0-9]+")) {
+            if (text.contains("每日趋势")) {
+                chartHeadingY = first.getYDirAdj();
+                chartPage = getCurrentPageNo();
+            }
+            if (getCurrentPageNo() == chartPage && first.getYDirAdj() > chartHeadingY
+                    && first.getYDirAdj() < chartHeadingY + 190
+                    && first.getFontSizeInPt() == 8 && text.matches("[0-9]+")) {
                 ticks.add(new Tick(Long.parseLong(text), first.getYDirAdj()));
             }
         }

@@ -5,7 +5,7 @@ import CommissionView from '@/views/operations/CommissionView.vue';
 import DeviceCatalogPreview from '@/views/operations/DeviceCatalogPreview.vue';
 import { commissionApi, deviceApi } from '@/api/devices.js';
 vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: () => true }) }));
-vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn() }, commissionApi: Object.fromEntries(['information','list','report','get','events','create','connect','configure','start'].map(key => [key,vi.fn()])) }));
+vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn(), information: vi.fn() }, commissionApi: Object.fromEntries(['information','list','report','get','events','create','connect','configure','start'].map(key => [key,vi.fn()])) }));
 let app, host;
 async function settle() { for (let i=0; i<16; i++) { await Promise.resolve(); await nextTick(); } }
 async function mount(component, props) { host=document.createElement('div'); document.body.append(host); app=createApp(component,props); app.use(ElementPlus); app.mount(host); await settle(); }
@@ -20,6 +20,13 @@ beforeEach(() => {
 });
 afterEach(()=>{ app?.unmount(); host?.remove(); document.querySelectorAll('.el-overlay').forEach(item=>item.remove()); });
 describe('参考布局中的真实业务交互',()=>{
+  it.each([false,true])('设备台账观测入口独立受监测读取权限限制：%s',async allowed=>{
+    deviceApi.information.mockResolvedValue({sections:[]});
+    await mount(DeviceCatalogPreview,{observationsAllowed:allowed,detail:{device:{device_id:'weather-a',device_no:'WX-A',device_type_code:'weather_sensor',name:'气象设备'}}});
+    const tab=[...host.querySelectorAll('[role=tab]')].find(item=>item.textContent.trim()==='气象观测');
+    if(allowed){expect(tab).toBeTruthy();tab.click();await settle();expect(deviceApi.information).toHaveBeenCalledWith('weather-a');}
+    else{expect(tab).toBeUndefined();expect(deviceApi.information).not.toHaveBeenCalled();expect(host.textContent).toContain('基础参数');}
+  });
   it('设备搜索仅缩小选择列表，不创建任务或更换当前调测对象',async()=>{
     await mount(CommissionView);
     const input=host.querySelector('input[placeholder="搜索设备名称 / 编号"]'); input.value='乙'; input.dispatchEvent(new Event('input',{bubbles:true})); await settle();

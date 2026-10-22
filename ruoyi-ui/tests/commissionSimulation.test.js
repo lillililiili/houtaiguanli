@@ -5,10 +5,10 @@ import ElementPlus from 'element-plus';
 import CommissionView from '@/views/operations/CommissionView.vue';
 import { commissionApi, deviceApi } from '@/api/devices.js';
 
-const permissions = vi.hoisted(() => ({ operate: true, devices: true }));
+const permissions = vi.hoisted(() => ({ operate: true, devices: true, user: null }));
 const realtime = vi.hoisted(() => ({ reload: null }));
 vi.mock('@/services/realtime.js', () => ({ useRealtimeRefresh: (topics, reload) => { realtime.reload = reload; return { trigger: reload }; } }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: key => (key !== 'commissioning.op' || permissions.operate) && (key !== 'devices.op' || permissions.devices), hasMenu: () => true }) }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ get user() { return permissions.user; }, hasPermission: key => (key !== 'commissioning.op' || permissions.operate) && (key !== 'devices.op' || permissions.devices), hasMenu: () => true }) }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: { list: vi.fn(), detail: vi.fn() }, commissionApi: Object.fromEntries(['information', 'list', 'report', 'get', 'events', 'create', 'connect', 'configure', 'start', 'cancel'].map(key => [key, vi.fn()])) }));
 let app, host, task;
 const device = { device_id: 'qa', name: '本机协议模拟器', device_no: 'QA', source_mode: 'live', simulated: true };
@@ -23,6 +23,7 @@ async function mount() {
 const button = text => [...host.querySelectorAll('button')].find(el => el.textContent.trim() === text);
 beforeEach(() => {
   vi.clearAllMocks(); permissions.operate = true; permissions.devices = true; task = null;
+  permissions.user = null;
   deviceApi.list.mockResolvedValue({ items: [device], total: 1 });
   deviceApi.detail.mockResolvedValue({ connection: { transport: 'TCP', host: '127.0.0.1', port: 10007 } });
   commissionApi.information.mockResolvedValue(info());
@@ -35,6 +36,18 @@ beforeEach(() => {
 });
 afterEach(() => { app?.unmount(); host?.remove(); document.querySelectorAll('.el-overlay,.el-message').forEach(el => el.remove()); vi.useRealTimers(); });
 describe('调测模拟来源使用服务端明确许可', () => {
+  it.each(['RADAR_TCP_V3_0_0', 'COUNTERMEASURE_TCP_4CH_V2_0'])('单位 %s 调测固定台账快照，仅提交版本且无设备操作权限也可调测', async protocol => {
+    permissions.user = { user_type: 'FRONTEND', management_context: { mode: 'UNIT', org_id: 'org1' } }; permissions.devices = false;
+    deviceApi.list.mockResolvedValue({ items: [{ ...device, protocol_code: protocol }], total: 1 });
+    commissionApi.connect.mockImplementation(async () => (task = { ...task, status: 'CONNECTED', version: 1, configuration: { transport: 'TCP', host: '192.0.2.55', port: 5001, timeout_millis: 2000 } }));
+    await mount(); button('创建新任务').click(); await settle(); button('建立连接').click(); await settle();
+    const address = host.querySelector('input[placeholder="建立连接后配置"]');
+    expect(address.disabled).toBe(true); expect(address.value).toBe('192.0.2.55');
+    expect([...host.querySelectorAll('.commission-form input')].every(input => input.disabled)).toBe(true);
+    button('保存配置').click(); await settle();
+    expect(commissionApi.configure).toHaveBeenCalledWith('task', { version: 1 });
+    expect(deviceApi.detail).not.toHaveBeenCalled();
+  });
   it.each([
     ['RADAR_TCP_V3_0_0', false, '192.0.2.44', 5001],
     ['COUNTERMEASURE_TCP_4CH_V2_0', false, '198.51.100.55', 6002],

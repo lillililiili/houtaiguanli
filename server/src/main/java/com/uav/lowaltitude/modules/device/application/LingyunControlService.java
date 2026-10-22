@@ -82,13 +82,13 @@ public class LingyunControlService {
             throw bad("VALIDATION_ERROR", "operation_type 必须为 0、1 或 2");
         if (operationCmd == null || !LingyunControlEnvelope.COMMANDS.contains(operationCmd))
             throw bad("VALIDATION_ERROR", "operation_cmd 不在协议 B 白名单");
-        if (operationType != 0 && !disposalGuard.mayStart(authorizationId.trim()))
+        if (operationType != 0 && !disposalGuard.mayStart(authorizationId.trim(), user.userId(), deviceId))
             throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止或当前条件不允许继续执行，请查看事件处置记录");
         String family = LingyunControlEnvelope.family(operationCmd);
         if (family == null)
             throw new ApiException(HttpStatus.BAD_REQUEST, "PROTOCOL_UNSUPPORTED", "该指令码对应的设备类型缩写尚未确认，不能下发");
         Binding binding = mqtt.binding(deviceId, true);
-        if (binding == null) throw new ApiException(HttpStatus.CONFLICT, "CONTROL_NOT_ENABLED", "该设备未登记凌云 MQTT，不能按协议 B 控制");
+        if (binding == null) throw new ApiException(HttpStatus.CONFLICT, "CONTROL_NOT_ENABLED", "该设备未登记 MQTT，不能按协议 B 控制");
         if (!family.equals(binding.deviceTypeAbbr()))
             throw bad("VALIDATION_ERROR", "指令码与设备类型不匹配");
         Map<String, Object> device = devices.find(deviceId);
@@ -142,10 +142,11 @@ public class LingyunControlService {
             Map<String, Object> initial = controls.control(commandId);
             if (initial == null || !"SENT".equals(text(initial,"status"))) return;
             boolean allowed = ((Number)initial.get("operation_type")).intValue()==0
-                    || disposalGuard.mayStart(text(initial,"control_authorization_id"));
+                    || disposalGuard.mayStart(text(initial,"control_authorization_id"), text(initial,"requested_by"), text(initial,"device_id"));
             controls.lockCommand(commandId);
             Map<String,Object> current = controls.control(commandId);
             if (current == null || !"SENT".equals(text(current,"status"))) return;
+            allowed = recheckAfterCommandLock(current, allowed);
             if (!dispatchAllowed(current, allowed)) return;
             try {
                 prepared.supervisor().publish(prepared.brokerId(), prepared.topic(), prepared.payload());
@@ -161,10 +162,11 @@ public class LingyunControlService {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || !"QUEUED".equals(text(command, "status"))) return null;
         boolean allowed = ((Number)command.get("operation_type")).intValue()==0
-                || disposalGuard.mayStart(text(command,"control_authorization_id"));
+                || disposalGuard.mayStart(text(command,"control_authorization_id"), text(command,"requested_by"), text(command,"device_id"));
         controls.lockCommand(commandId);
         command = controls.control(commandId);
         if (command == null || !"QUEUED".equals(text(command,"status"))) return null;
+        allowed = recheckAfterCommandLock(command, allowed);
         if (!dispatchAllowed(command, allowed)) return null;
         MqttSessionSupervisor supervisor = sessions.getIfAvailable();
         if (supervisor == null) throw new IllegalStateException("MQTT_DISABLED");
@@ -177,6 +179,14 @@ public class LingyunControlService {
         // Commit the send attempt before touching the network. SENT is never blindly republished.
         if (controls.updateCommand(commandId,"QUEUED","SENT",now,null,null)!=1) return null;
         return new PreparedDispatch(supervisor,text(command,"broker_id"),topic,payload);
+    }
+
+    private boolean recheckAfterCommandLock(Map<String,Object> command, boolean previouslyAllowed) {
+        // The first check has the event/authorization/device locks. Re-read current grants after
+        // any command-lock wait; stop commands must still complete after an actor loses access.
+        return previouslyAllowed && (((Number)command.get("operation_type")).intValue()==0
+                || disposalGuard.mayStart(text(command,"control_authorization_id"),
+                        text(command,"requested_by"), text(command,"device_id")));
     }
 
     private boolean dispatchAllowed(Map<String,Object> command, boolean allowed) {

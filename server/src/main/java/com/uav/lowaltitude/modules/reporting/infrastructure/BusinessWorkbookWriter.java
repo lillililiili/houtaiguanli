@@ -48,6 +48,7 @@ public class BusinessWorkbookWriter {
                 for (int c = 0; c < columns; c++) s.setColumnWidth(c, (c == columns-1 ? 40 : 24) * 256);
                 s.setRepeatingRows(new CellRangeAddress(0,0,-1,-1));
             }
+            ReportWorkbookFonts.apply(book);
             book.write(out); return out.toByteArray();
         } catch (IOException ex) { throw new IllegalStateException("Excel 报表生成失败",ex); }
     }

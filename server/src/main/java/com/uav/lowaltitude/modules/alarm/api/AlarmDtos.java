@@ -19,6 +19,16 @@ public final class AlarmDtos {
 
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
     public static final class AlarmDto {
+        private String originKind;
+        private java.util.Map<String,Object> prediction, predictionSnapshot;
+        private List<java.util.Map<String,Object>> predictionHistory;
+        public AlarmDto withPrediction(String origin,java.util.Map<String,Object> latest,java.util.Map<String,Object> first,List<java.util.Map<String,Object>> history) {
+            originKind=origin;prediction=latest;predictionSnapshot=first;predictionHistory=history;return this;
+        }
+        public String getOriginKind(){return originKind;}
+        public java.util.Map<String,Object> getPrediction(){return prediction;}
+        public java.util.Map<String,Object> getPredictionSnapshot(){return predictionSnapshot;}
+        public List<java.util.Map<String,Object>> getPredictionHistory(){return predictionHistory;}
         private final String alarmId, state, alarmType, severity, sourceCode, sourceMode, ownerOrgId, districtId, targetId;
         /** 显示字段：业务编号与名称来自同一行的目录/来源联接，页面不得再把内部 ID 当编号展示。 */
         private final String alarmNo, sourceName, ownerOrgName, districtName, targetNo;
@@ -88,7 +98,9 @@ public final class AlarmDtos {
     public record VerificationBasisDto(boolean confirmable, List<String> missing, String message, long checkedAt) { }
     public record VerificationDto(String historyId, String previousState, String resultingState, String conclusion,
             String note, long version, String actorId, long createdAt, String actorName) { }
-    public record VerifyRequest(String conclusion, String note, Long expectedVersion) { }
+    public record VerifyRequest(String conclusion, String note, Long expectedVersion, String predictionId) {
+        public VerifyRequest(String conclusion,String note,Long expectedVersion) { this(conclusion,note,expectedVersion,null); }
+    }
     /**
      * 告警升级记录：trigger_kind 为 ENGINE（系统研判）或 MANUAL（人工转告警，带操作人与说明）；
      * reasons_added 是这次新增的违规原因，reasons_after 是升级后的全部原因。

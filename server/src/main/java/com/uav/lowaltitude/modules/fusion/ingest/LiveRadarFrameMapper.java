@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
 /**
@@ -50,6 +51,10 @@ public class LiveRadarFrameMapper implements FrameMapper {
         for (JsonNode item : items) {
             String externalTrackId = identifier(item, "external_track_id");
             if (externalTrackId == null) throw new IllegalStateException("雷达轨迹缺少 external_track_id");
+            if (JsonCoordinateContract.hasCoordinates(item, "longitude", "latitude")) {
+                try { JsonCoordinateContract.requireWgs84(root, item); }
+                catch (IllegalArgumentException ex) { throw new IllegalStateException(ex.getMessage(), ex); }
+            }
             Map<String, Object> quality = new LinkedHashMap<>();
             quality.put("frame_id", frameId);
             quality.put("boot_micros", bootMicros);

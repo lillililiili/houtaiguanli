@@ -52,9 +52,10 @@ public class AdvisoryVoiceRecordingController {
     public ApiResponse<RecordingDto> upload(@RequestPart(name = "file", required = false) MultipartFile file,
             @RequestParam(name = "name", required = false) String name,
             @RequestParam(name = "transcript", required = false) String transcript,
+            @RequestParam(name = "purpose", required = false) String purpose,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             HttpServletRequest request) {
-        return ApiResponse.ok(recordings.upload(file, name, transcript, idempotencyKey,
+        return ApiResponse.ok(recordings.upload(file, name, transcript, purpose, idempotencyKey,
                 request.getRemoteAddr(), request.getHeader("User-Agent")));
     }
 

@@ -22,22 +22,53 @@ import com.uav.lowaltitude.modules.identity.domain.IdentityRows.UserAdminRow;
 
 @Mapper
 public interface IdentityAdminMapper {
+    @Insert("""
+        INSERT INTO app_role(role_code,name,description,builtin,enabled,created_at,updated_at,version,owner_org_id,name_scope)
+        VALUES(#{roleCode},#{name},#{description},FALSE,TRUE,#{now},#{now},0,#{orgId},#{orgId})
+        """)
+    int insertUnitRole(@Param("roleCode") String roleCode,@Param("name") String name,
+            @Param("description") String description,@Param("now") long now,@Param("orgId") String orgId);
+    @Select("SELECT org_id FROM app_org WHERE org_id=#{orgId} FOR UPDATE")
+    String lockManagedOrganization(@Param("orgId") String orgId);
+    @Select("SELECT role_code FROM app_role WHERE role_code=#{roleCode} FOR UPDATE")
+    String lockRoleMutation(@Param("roleCode") String roleCode);
+
+    @Select("SELECT COUNT(*) FROM app_org_delegation WHERE org_id=#{orgId}")
+    int countOrganizationDelegation(@Param("orgId") String orgId);
+
+    @Select("SELECT org_id FROM app_org_delegation WHERE administrator_user_id=#{userId}")
+    String administratorOrganization(@Param("userId") String userId);
 
     @Select("""
-            SELECT r.role_code AS roleCode, r.name, r.description, r.builtin, r.enabled, r.version,
-                   COUNT(u.user_id) AS userCount
+            SELECT p.permission_code AS permissionCode,p.module_name AS moduleName,p.route_key AS routeKey,
+              p.sort_order AS sortOrder,d.permission_level AS permissionLevel,d.menu_enabled AS menuEnabled
+            FROM app_org_permission d JOIN app_permission p ON p.permission_code=d.permission_code
+            WHERE d.org_id=#{orgId} ORDER BY p.sort_order,p.permission_code
+            """)
+    List<PermissionRow> listOrganizationPermissions(@Param("orgId") String orgId);
+
+    @Select("SELECT permission_code FROM app_org_action WHERE org_id=#{orgId} AND permission_level='OP'")
+    List<String> listOrganizationActions(@Param("orgId") String orgId);
+
+    @Select("""
+            SELECT r.role_code AS roleCode, r.name, r.description, r.builtin, r.enabled, r.version, r.owner_org_id AS ownerOrgId,
+                   r.copied_from_role_code AS copiedFromRoleCode, r.copied_from_role_name AS copiedFromRoleName,
+                   r.copied_at AS copiedAt, COUNT(u.user_id) AS userCount
             FROM app_role r LEFT JOIN app_user u ON u.role_code = r.role_code
-            GROUP BY r.role_code, r.name, r.description, r.builtin, r.enabled, r.version
+            GROUP BY r.role_code, r.name, r.description, r.builtin, r.enabled, r.version, r.owner_org_id,
+                     r.copied_from_role_code, r.copied_from_role_name, r.copied_at
             ORDER BY r.builtin DESC, r.created_at, r.role_code
             """)
     List<RoleRow> listRoles();
 
     @Select("""
-            SELECT r.role_code AS roleCode, r.name, r.description, r.builtin, r.enabled, r.version,
-                   COUNT(u.user_id) AS userCount
+            SELECT r.role_code AS roleCode, r.name, r.description, r.builtin, r.enabled, r.version, r.owner_org_id AS ownerOrgId,
+                   r.copied_from_role_code AS copiedFromRoleCode, r.copied_from_role_name AS copiedFromRoleName,
+                   r.copied_at AS copiedAt, COUNT(u.user_id) AS userCount
             FROM app_role r LEFT JOIN app_user u ON u.role_code = r.role_code
             WHERE r.role_code = #{roleCode}
-            GROUP BY r.role_code, r.name, r.description, r.builtin, r.enabled, r.version
+            GROUP BY r.role_code, r.name, r.description, r.builtin, r.enabled, r.version, r.owner_org_id,
+                     r.copied_from_role_code, r.copied_from_role_name, r.copied_at
             """)
     RoleRow findRole(@Param("roleCode") String roleCode);
 

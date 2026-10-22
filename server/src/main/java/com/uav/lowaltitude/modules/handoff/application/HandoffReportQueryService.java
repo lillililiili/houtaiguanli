@@ -22,7 +22,7 @@ public class HandoffReportQueryService extends BusinessReportSource {
         return List.of(new Dimension("state", "当前状态"), new Dimension("result", "回执状态"));
     }
     @Override protected Dataset dataset(Range range) {
-        access.require(PermissionCode.ALARM_READ);
-        return repository.reportDataset(reader, range, access.require(PermissionCode.HANDOFF_READ));
+        com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.ALARM_READ);
+        return repository.reportDataset(reader, range, com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.HANDOFF_READ));
     }
 }

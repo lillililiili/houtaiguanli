@@ -9,12 +9,15 @@ import CommissionDeviceStatus from './CommissionDeviceStatus.vue';
 import { useMaintenanceWorkflow } from './maintenance/useMaintenanceWorkflow.js';
 import { commissionApi, deviceApi } from '@/api/devices.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { maintenancePermission } from '@/utils/managementAccess.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
 import './operations-reference.css';
 import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { display, formatDeviceNo, statusType } from '@/utils/format.js';
 import { deviceCatalogParams, readDevicePages } from '@/utils/deviceCatalog.js';
 
 const auth = useAuthStore();
+const unitMode = computed(() => isUnitAdministrator(auth.user));
 const route = useRoute(), router = useRouter();
 const maintenanceId = computed(() => typeof route?.query?.maintenance_context_id === 'string' ? route.query.maintenance_context_id : '');
 const maintenance = useMaintenanceWorkflow(maintenanceId);
@@ -99,7 +102,7 @@ const statusMeta = {
 };
 const statusText = (value, simulated = false) => value === 'PASSED' && simulated ? '模拟通过（非正式）' : (statusMeta[value]?.[0] || display(value));
 const tagType = (value, simulated = false) => simulated ? 'warning' : statusMeta[value]?.[1] || statusType(value);
-const protocolLabel = task => ({ RADAR_TCP_V3_0_0: 'T02/兼容机扫雷达 TCP', COUNTERMEASURE_TCP_4CH_V2_0: '固定式四通道网络控制器', LINGYUN_MQTT_V8_6: '凌云 MQTT V8.6', EO_EDGE_MQTT_20250826: '光电边端 MQTT' })[task?.protocol_code] || task?.protocol_code || '未配置';
+const protocolLabel = task => ({ RADAR_TCP_V3_0_0: 'T02/兼容机扫雷达 TCP', COUNTERMEASURE_TCP_4CH_V2_0: '固定式四通道网络控制器', LINGYUN_MQTT_V8_6: 'MQTT V8.6', EO_EDGE_MQTT_20250826: '光电边端 MQTT' })[task?.protocol_code] || task?.protocol_code || '未配置';
 const steps = ['设备接入', '建立连接', '参数配置', '协议调测', '结果确认'];
 const stepIndex = computed(() => {
   const value = active.value?.status;
@@ -250,6 +253,10 @@ async function createTask() {
 function connectTask() { if (!canOperate.value || !taskSourceAllowed.value) return; runAction(() => commissionApi.connect(active.value.commission_id, active.value.version), isSimulation.value ? '正在建立模拟调测连接' : '正在建立连接'); }
 function saveConfig() {
   if (!canOperate.value || !taskSourceAllowed.value) return;
+  if (unitMode.value) {
+    runAction(() => commissionApi.configure(active.value.commission_id, { version: active.value.version }), '台账连接快照已保存');
+    return;
+  }
   if (mqttTask.value) {
     runAction(() => commissionApi.configure(active.value.commission_id, { version: active.value.version, transport: 'MQTT' }), 'MQTT 连接快照已保存');
     return;
@@ -258,7 +265,7 @@ function saveConfig() {
   runAction(() => commissionApi.configure(active.value.commission_id, { version: active.value.version, ...config, host: config.host.trim() }), '配置快照已保存');
 }
 function startTask() { if (!canOperate.value || !taskSourceAllowed.value) return; runAction(() => commissionApi.start(active.value.commission_id, active.value.version), isSimulation.value ? '模拟调测已进入持久化队列' : '协议调测已进入持久化队列'); }
-function cancelTask() { runAction(() => commissionApi.cancel(active.value.commission_id, active.value.version), '任务已取消'); }
+function cancelTask() { if (!canOperate.value) return; runAction(() => commissionApi.cancel(active.value.commission_id, active.value.version), '任务已取消'); }
 async function loadRecords({ quiet = false } = {}) {
   const request = ++recordsRequest;
   const id = selectedDeviceId.value;
@@ -338,7 +345,7 @@ useRealtimeRefresh(['device', 'device_state'], topics => {
   <section class="page-stack operation-page commission-reference">
     <PageHeader title="设备接入调测" description="选择设备、配置连接，查看调测结果和历史记录。">
       <el-button v-if="maintenanceId" @click="leaveMaintenance">返回本次设备异常处理</el-button>
-      <el-button v-else-if="auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read')" @click="leaveMaintenance">设备异常处理</el-button>
+      <el-button v-else-if="auth.hasMenu('maintenance') && auth.hasPermission(maintenancePermission(auth.user, 'read'))" @click="leaveMaintenance">设备异常处理</el-button>
       <el-tag v-if="active" :type="tagType(active.status,isTestSource(active))" effect="plain">{{ statusText(active.status, isTestSource(active)) }}</el-tag>
     </PageHeader>
     <ErrorAlert :message="error" @retry="bootstrap" />
@@ -361,8 +368,9 @@ useRealtimeRefresh(['device', 'device_state'], topics => {
         <template v-if="taskSupported || active">
           <h3 class="config-section-title">网络参数</h3>
           <p v-if="mqttTask" class="tree-note">MQTT 设备主动上报：平台核对自身与 MQTT 服务器的会话、设备主题订阅和最近上报，不与设备直连，也不下发指令。</p>
+          <p v-else-if="unitMode" class="tree-note">本次调测使用设备台账已登记的连接参数，建立连接后显示快照；需要调整时，请由具有设备管理操作权限的人员修改设备资料。</p>
           <p v-else-if="connectionHidden" class="tree-note">当前账号没有设备运维（devices.op）权限，看不到设备登记的连接参数；建立连接仍按登记参数进行，保存配置时请按现场资料填写本次调测参数。</p>
-          <el-form :model="config" label-position="top" class="commission-form"><template v-if="mqttTask"><el-form-item label="MQTT 服务器地址"><el-input :model-value="mqttEndpoint?.host || ''" disabled placeholder="建立连接后显示平台 MQTT 服务器" /></el-form-item><el-form-item label="端口"><el-input :model-value="mqttEndpoint?.port == null ? '' : String(mqttEndpoint.port)" disabled placeholder="建立连接后显示" /></el-form-item></template><template v-else><el-form-item label="主机 / IP 地址"><el-input v-model="config.host" :disabled="!canOperate || active?.status!=='CONNECTED'" placeholder="建立连接后配置" /></el-form-item><el-form-item label="端口"><el-input-number v-model="config.port" :min="1" :max="65535" :disabled="!canOperate || active?.status!=='CONNECTED'" controls-position="right" /></el-form-item></template><h3 class="config-section-title">接口与协议</h3><el-form-item label="传输方式"><el-input :model-value="mqttTask ? mqttTransport : config.transport" disabled /></el-form-item><el-form-item label="接入协议"><el-input :model-value="protocolLabel(active || currentDevice)" disabled /></el-form-item><h3 class="config-section-title">通信设置</h3><el-form-item v-if="mqttTask" label="判定时效"><el-input :model-value="mqttFreshness" disabled /></el-form-item><el-form-item v-else label="超时（ms）"><el-input-number v-model="config.timeout_millis" :min="100" :disabled="!canOperate || active?.status!=='CONNECTED'" controls-position="right" /></el-form-item></el-form>
+          <el-form :model="config" label-position="top" class="commission-form"><template v-if="mqttTask"><el-form-item label="MQTT 服务器地址"><el-input :model-value="mqttEndpoint?.host || ''" disabled placeholder="建立连接后显示平台 MQTT 服务器" /></el-form-item><el-form-item label="端口"><el-input :model-value="mqttEndpoint?.port == null ? '' : String(mqttEndpoint.port)" disabled placeholder="建立连接后显示" /></el-form-item></template><template v-else><el-form-item label="主机 / IP 地址"><el-input v-model="config.host" :disabled="unitMode || !canOperate || active?.status!=='CONNECTED'" placeholder="建立连接后配置" /></el-form-item><el-form-item label="端口"><el-input-number v-model="config.port" :min="1" :max="65535" :disabled="unitMode || !canOperate || active?.status!=='CONNECTED'" controls-position="right" /></el-form-item></template><h3 class="config-section-title">接口与协议</h3><el-form-item label="传输方式"><el-input :model-value="mqttTask ? mqttTransport : config.transport" disabled /></el-form-item><el-form-item label="接入协议"><el-input :model-value="protocolLabel(active || currentDevice)" disabled /></el-form-item><h3 class="config-section-title">通信设置</h3><el-form-item v-if="mqttTask" label="判定时效"><el-input :model-value="mqttFreshness" disabled /></el-form-item><el-form-item v-else label="超时（ms）"><el-input-number v-model="config.timeout_millis" :min="100" :disabled="unitMode || !canOperate || active?.status!=='CONNECTED'" controls-position="right" /></el-form-item></el-form>
           <div class="commission-action-bar">
             <el-button v-if="maintenanceId && active && !linkedToMaintenance" :disabled="!maintenance.can('LINK_COMMISSION') || actionBusy || !taskSourceAllowed" @click="linkCommission()">关联当前调测任务</el-button>
             <el-button v-if="!active || terminal.has(active.status)" type="primary" :disabled="!canOperate || !selectedDeviceId || !taskSupported || !deviceSourceAllowed" :loading="actionBusy" @click="createTask">创建新任务</el-button>

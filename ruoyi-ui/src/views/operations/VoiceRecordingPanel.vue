@@ -12,11 +12,20 @@ const catalog = ref(null);
 const loading = ref(false), error = ref(''), busy = ref('');
 const uploadRef = ref();
 const uploadOpen = ref(false), uploading = ref(false), uploadPercent = ref(0), uploadFiles = ref([]);
-const uploadForm = reactive({ file: null, name: '', transcript: '' });
+const uploadForm = reactive({ file: null, name: '', transcript: '', purpose: 'GENERAL' });
 const player = reactive({ id: '', name: '', url: '', loading: false, error: '' });
 
 const items = computed(() => catalog.value?.items || []);
-const current = computed(() => catalog.value?.current || {});
+const PURPOSES = { GENERAL: '普通告警通知', PREDICTED_AIRSPACE_ENTRY: '预测入区提醒' };
+const currentByPurpose = computed(() => catalog.value ? Object.entries(PURPOSES).map(([purpose, label]) => ({
+  purpose, label,
+  current: catalog.value.currents?.[purpose] || (purpose === 'GENERAL' ? catalog.value.current : null) || {
+    source: 'NONE', available: false,
+    message: purpose === 'PREDICTED_AIRSPACE_ENTRY'
+      ? '未设置预测入区专用录音，预测风险电话提醒暂不可用。'
+      : '没有可播放的普通告警录音。'
+  }
+})) : []);
 const canManage = computed(() => Boolean(catalog.value?.can_manage));
 const maxBytes = computed(() => Number(catalog.value?.max_size_bytes) || 10 * 1024 * 1024);
 const SOURCES = {
@@ -24,7 +33,14 @@ const SOURCES = {
   STARTUP_CONFIG: ['warning', '服务器启动时设置的录音'],
   NONE: ['danger', '未设置录音']
 };
-const source = computed(() => SOURCES[current.value.source] || ['info', '待确认']);
+const source = current => SOURCES[current.source] || ['info', '待确认'];
+const purposeOf = row => row.purpose || 'GENERAL';
+const purposeLabel = row => PURPOSES[purposeOf(row)] || '用途未提供';
+function isActive(row) {
+  const selected = catalog.value?.active_recording_ids;
+  return selected && Object.hasOwn(selected, purposeOf(row))
+    ? selected[purposeOf(row)] === row.recording_id : row.active === true;
+}
 
 let sequence = 0;
 async function load(quiet = false) {
@@ -49,7 +65,7 @@ function duration(millis) {
   return `${Math.floor(seconds / 60)} 分 ${Math.round(seconds % 60)} 秒`;
 }
 function state(row) {
-  if (row.active) return ['success', '正在使用'];
+  if (isActive(row)) return ['success', '正在使用'];
   if (row.used) return ['info', '用过，留存备查'];
   return ['', '未使用'];
 }
@@ -67,10 +83,10 @@ function replaceFile(files) {
   const [file] = files;
   if (file) uploadRef.value?.handleStart(file);
 }
-function openUpload() { resetUpload(); uploadOpen.value = true; }
+function openUpload(purpose = 'GENERAL') { resetUpload(); uploadForm.purpose = purpose; uploadOpen.value = true; }
 function resetUpload() {
   uploadFiles.value = [];
-  uploadForm.file = null; uploadForm.name = ''; uploadForm.transcript = '';
+  uploadForm.file = null; uploadForm.name = ''; uploadForm.transcript = ''; uploadForm.purpose = 'GENERAL';
   uploadPercent.value = 0;
 }
 async function submitUpload() {
@@ -79,7 +95,7 @@ async function submitUpload() {
   if (!uploadForm.name.trim() || !uploadForm.transcript.trim()) return ElMessage.warning('录音名称和录音里说的话都要填写。');
   uploading.value = true; uploadPercent.value = 0;
   try {
-    await voiceRecordingApi.upload({ file: uploadForm.file, name: uploadForm.name.trim(), transcript: uploadForm.transcript.trim() },
+    await voiceRecordingApi.upload({ file: uploadForm.file, name: uploadForm.name.trim(), transcript: uploadForm.transcript.trim(), purpose: uploadForm.purpose },
       value => { uploadPercent.value = value; });
     ElMessage.success('录音已上传。要让电话播放它，请在列表里点“选用”。');
     uploadOpen.value = false;
@@ -116,13 +132,16 @@ async function run(row, action, work, success) {
   finally { busy.value = ''; }
 }
 async function activate(row) {
-  const ok = await confirm(`选用后，告警核实属实、短信送达后拨打飞手电话时，播放“${row.name}”。已经拨过的电话不受影响；之前拨打失败、还没补拨的电话，换录音后不能再补拨。`,
+  const context = purposeOf(row) === 'PREDICTED_AIRSPACE_ENTRY' ? '预测入区风险核实后，后续飞手电话提醒' : '告警核实属实、短信送达后拨打飞手电话';
+  const ok = await confirm(`选用后，${purposeLabel(row)}使用“${row.name}”：${context}时播放。已经拨过的电话不受影响；之前拨打失败、还没补拨的电话，换录音后不能再补拨。`,
     '选用这段录音', '选用');
-  if (ok) await run(row, 'activate', () => voiceRecordingApi.setActive(row.recording_id, true, catalog.value.version), `电话通知改为播放“${row.name}”。`);
+  if (ok) await run(row, 'activate', () => voiceRecordingApi.setActive(row.recording_id, true, catalog.value.version), `${purposeLabel(row)}改为播放“${row.name}”。`);
 }
 async function deactivate(row) {
   const fallback = catalog.value?.startup_recording_name;
-  const next = fallback ? `电话改为播放服务器启动时设置的录音“${fallback}”` : '没有录音可播，告警核实后电话这一步会跳过，不会拨打飞手电话';
+  const next = purposeOf(row) === 'PREDICTED_AIRSPACE_ENTRY'
+    ? '预测入区风险电话提醒将暂不可用，需重新选用该用途的录音'
+    : fallback ? `电话改为播放服务器启动时设置的录音“${fallback}”` : '没有录音可播，告警核实后电话这一步会跳过，不会拨打飞手电话';
   const ok = await confirm(`停止使用“${row.name}”后，${next}。`, '停止使用这段录音', '停止使用');
   if (ok) await run(row, 'deactivate', () => voiceRecordingApi.setActive(row.recording_id, false, catalog.value.version), '已停止使用这段录音。');
 }
@@ -142,24 +161,25 @@ onBeforeUnmount(() => { sequence++; stopPlayer(); });
   <div class="voice-recordings">
     <ErrorAlert :message="error" @retry="load()" />
     <div v-loading="loading" class="voice-body">
-      <el-card v-if="catalog" class="voice-current" :class="{ 'is-missing': !current.available }">
+      <el-card v-for="entry in currentByPurpose" :key="entry.purpose" class="voice-current" :class="{ 'is-missing': !entry.current.available }" :data-purpose="entry.purpose">
         <div class="voice-current-head">
           <div class="voice-current-copy">
-            <span class="voice-kicker">电话里现在播放</span>
-            <h3>{{ current.name || '没有录音' }}</h3>
-            <el-tag :type="source[0]" effect="plain">{{ source[1] }}</el-tag>
+            <span class="voice-kicker">{{ entry.label }} · 电话里现在播放</span>
+            <h3>{{ entry.current.name || '没有录音' }}</h3>
+            <el-tag :type="source(entry.current)[0]" effect="plain">{{ source(entry.current)[1] }}</el-tag>
           </div>
-          <el-button v-if="canManage" type="primary" :icon="UploadFilled" @click="openUpload">上传录音</el-button>
+          <el-button v-if="canManage" type="primary" :icon="UploadFilled" @click="openUpload(entry.purpose)">{{ entry.purpose === 'GENERAL' ? '上传录音' : '上传专用录音' }}</el-button>
         </div>
-        <el-alert :title="current.message" :type="current.available ? 'success' : 'warning'" :closable="false" show-icon />
-        <el-alert v-if="!catalog.voice_enabled" class="voice-note" type="info" :closable="false" show-icon
+        <el-alert :title="entry.current.message" :type="entry.current.available ? 'success' : 'warning'" :closable="false" show-icon />
+        <el-alert v-if="entry.purpose === 'GENERAL' && !catalog.voice_enabled" class="voice-note" type="info" :closable="false" show-icon
           title="自动拨打飞手电话目前没有开启（由服务器设置决定）。录音可以先上传和选用，开启后才会播放。" />
-        <ul class="voice-rules">
+        <ul v-if="entry.purpose === 'GENERAL'" class="voice-rules">
           <li>只能上传 WAV 格式的录音，单个文件不超过 {{ bytes(maxBytes) }}；电话通道目前只能播放 WAV。</li>
-          <li>选用的录音优先；没有选用时才用服务器启动时设置的录音，两样都没有时电话这一步跳过。</li>
+          <li>普通告警优先使用该用途选用的录音；没有选用时才用服务器启动时设置的录音，两样都没有时电话这一步跳过。</li>
           <li>用于过电话的录音会留着备查，不能删除。</li>
           <li v-if="!canManage">你的账号只能查看和试听；上传、选用和删除录音需要管理员操作。</li>
         </ul>
+        <p v-else class="voice-purpose-note">预测提醒使用单独选用的录音，内容应说明预计接近禁飞区；已有实测违规告警继续使用普通告警录音。</p>
       </el-card>
 
       <el-card v-if="catalog" class="voice-list">
@@ -176,6 +196,7 @@ onBeforeUnmount(() => { sequence++; stopPlayer(); });
             <template #default="{ row }"><b class="voice-name">{{ row.name }}</b><span class="voice-sub">{{ row.original_name }}</span></template>
           </el-table-column>
           <el-table-column label="录音里说的话" min-width="240" show-overflow-tooltip prop="transcript" />
+          <el-table-column label="用途" width="140"><template #default="{ row }">{{ purposeLabel(row) }}</template></el-table-column>
           <el-table-column label="时长" width="100"><template #default="{ row }">{{ duration(row.duration_millis) }}</template></el-table-column>
           <el-table-column label="大小" width="100"><template #default="{ row }">{{ bytes(row.size_bytes) }}</template></el-table-column>
           <el-table-column label="上传" min-width="160">
@@ -186,7 +207,7 @@ onBeforeUnmount(() => { sequence++; stopPlayer(); });
             <template #default="{ row }">
               <el-button link type="primary" :loading="player.id === row.recording_id && player.loading" @click="play(row)">试听</el-button>
               <template v-if="canManage">
-                <el-button v-if="!row.active" link type="primary" :disabled="Boolean(busy)" :loading="busy === `${row.recording_id}:activate`" @click="activate(row)">选用</el-button>
+                <el-button v-if="!isActive(row)" link type="primary" :disabled="Boolean(busy)" :loading="busy === `${row.recording_id}:activate`" @click="activate(row)">选用</el-button>
                 <el-button v-else link type="warning" :disabled="Boolean(busy)" :loading="busy === `${row.recording_id}:deactivate`" @click="deactivate(row)">停止使用</el-button>
                 <el-button v-if="row.can_delete" link type="danger" :disabled="Boolean(busy)" :loading="busy === `${row.recording_id}:remove`" @click="remove(row)">删除</el-button>
               </template>
@@ -196,7 +217,7 @@ onBeforeUnmount(() => { sequence++; stopPlayer(); });
       </el-card>
     </div>
 
-    <el-dialog v-model="uploadOpen" title="上传电话通知录音" width="560px" :close-on-click-modal="!uploading" :close-on-press-escape="!uploading" :show-close="!uploading" @closed="resetUpload">
+    <el-dialog v-model="uploadOpen" :title="`上传${PURPOSES[uploadForm.purpose]}录音`" width="560px" :close-on-click-modal="!uploading" :close-on-press-escape="!uploading" :show-close="!uploading" @closed="resetUpload">
       <el-upload ref="uploadRef" v-model:file-list="uploadFiles" class="voice-uploader" drag accept=".wav,audio/wav,audio/x-wav,audio/wave"
         :auto-upload="false" :limit="1" :disabled="uploading" :on-change="chooseFile" :on-exceed="replaceFile" :on-remove="() => { uploadForm.file = null; }">
         <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
@@ -204,7 +225,8 @@ onBeforeUnmount(() => { sequence++; stopPlayer(); });
         <template #tip><div class="el-upload__tip">电话通道目前只能播放 WAV 录音，文件不超过 {{ bytes(maxBytes) }}。上传后不会马上替换正在用的录音。</div></template>
       </el-upload>
       <el-form label-position="top" class="voice-upload-form" :disabled="uploading">
-        <el-form-item label="录音名称" required><el-input v-model="uploadForm.name" maxlength="120" show-word-limit placeholder="例如：禁飞区劝离提醒" /></el-form-item>
+        <p v-if="uploadForm.purpose === 'PREDICTED_AIRSPACE_ENTRY'" class="voice-purpose-note">录音请说明这是未来入区风险提醒，避免把预测说成已经进入禁飞区。</p>
+        <el-form-item label="录音名称" required><el-input v-model="uploadForm.name" maxlength="120" show-word-limit :placeholder="uploadForm.purpose === 'PREDICTED_AIRSPACE_ENTRY' ? '例如：预计进入禁飞区提醒' : '例如：禁飞区劝离提醒'" /></el-form-item>
         <el-form-item label="录音里说的话" required>
           <el-input v-model="uploadForm.transcript" type="textarea" :rows="4" maxlength="1000" show-word-limit placeholder="把录音内容逐字写下来，便于日后核对电话里说了什么" />
         </el-form-item>
@@ -227,6 +249,7 @@ onBeforeUnmount(() => { sequence++; stopPlayer(); });
 .voice-kicker { color:#526177; font-size:12px; font-weight:700; }
 .voice-current-copy h3 { margin:6px 0 8px; font-size:18px; color:#16233a; overflow-wrap:anywhere; }
 .voice-note { margin-top:10px; }
+.voice-purpose-note { margin:12px 0 0; color:#526177; font-size:12px; line-height:1.8; }
 .voice-rules { margin:14px 0 0; padding-left:18px; color:#526177; font-size:12px; line-height:1.8; }
 .voice-count { margin-left:10px; color:#64748b; font-size:12px; }
 .voice-name,.voice-sub { display:block; overflow-wrap:anywhere; }

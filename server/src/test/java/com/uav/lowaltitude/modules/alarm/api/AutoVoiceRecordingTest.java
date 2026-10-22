@@ -26,6 +26,8 @@ class AutoVoiceRecordingTest {
         Path file=directory.resolve("fixture.wav");Files.write(file,complete);
         var recording=new AdvisoryVoiceRecording("fixture","隔离测试样本",file.toString(),"用于验证格式，不含业务语音");
         assertThat(recording.current()).isNotNull();
+        assertThat(recording.current(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY))
+                .as("ordinary startup audio cannot become predictive warning audio").isNull();
         var env = new MockEnvironment();
         env.setActiveProfiles("local");
         var adapter = new LocalAdvisoryVoiceAdapter(env, recording, new AppClock());

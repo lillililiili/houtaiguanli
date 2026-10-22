@@ -6,11 +6,12 @@ const path = recordingId => `${BASE}/${encodeURIComponent(recordingId)}`;
 /* 电话通知录音：上传、试听、选用、停止使用和删除未用过的录音。 */
 export const voiceRecordingApi = {
   catalog: () => request({ url: BASE }),
-  upload: ({ file, name, transcript }, onProgress) => {
+  upload: ({ file, name, transcript, purpose = 'GENERAL' }, onProgress) => {
     const form = new FormData();
     form.append('file', file);
     form.append('name', name);
     form.append('transcript', transcript);
+    form.append('purpose', purpose);
     return request({
       method: 'post', url: BASE, data: form, timeout: 0,
       headers: { 'Idempotency-Key': newIdempotencyKey('voice-recording-upload') },

@@ -24,11 +24,16 @@ async function render() {
   chart.setOption({
     animation: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     aria: { enabled: true, decal: { show: true } },
+    ...props.option,
     textStyle: {
       color: '#405069',
-      fontFamily: '"Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", sans-serif'
+      ...props.option.textStyle,
+      fontFamily: 'Noto Sans SC'
     },
-    ...props.option
+    ...(props.option.tooltip ? { tooltip: {
+      ...props.option.tooltip,
+      textStyle: { ...props.option.tooltip?.textStyle, fontFamily: 'Noto Sans SC' }
+    } } : {})
   }, true);
 }
 

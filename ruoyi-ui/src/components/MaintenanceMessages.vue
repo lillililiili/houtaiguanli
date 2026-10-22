@@ -5,12 +5,13 @@ import { useRouter } from 'vue-router';
 import { Bell } from '@element-plus/icons-vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { maintenancePermission } from '@/utils/managementAccess.js';
 import { maintenanceTime as formatTime } from '@/views/operations/maintenance/presentation.js';
 import { maintenanceLocation, maintenanceMeta } from '@/views/operations/maintenance/useMaintenanceWorkflow.js';
 
 const auth = useAuthStore(), router = useRouter();
 const visible = ref(false), loading = ref(false), error = ref(''), items = ref([]), unread = ref(null), page = ref(1), total = ref(0), opening = ref('');
-const canOpen = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
+const canOpen = computed(() => auth.hasMenu('maintenance') && auth.hasPermission(maintenancePermission(auth.user, 'read')));
 let alive = true, generation = 0, reading = false;
 async function reload({ quiet = false } = {}) {
   if (reading || opening.value) return;
@@ -67,7 +68,7 @@ onBeforeUnmount(() => { alive = false; generation++; window.removeEventListener(
     <template #reference><span><button class="maintenance-bell" type="button" :aria-expanded="visible" :aria-label="unread == null ? '运维消息，未读数未知' : `运维消息，${unread}条未读`" @click.stop="toggle"><el-badge :value="unread || 0" :max="99" :hidden="!unread"><el-icon :size="21"><Bell /></el-icon></el-badge></button></span></template>
     <div class="message-heading"><b>运维消息</b><el-button link type="primary" :loading="loading" @click="reload">刷新</el-button></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <p v-if="!canOpen" class="muted">查看处置单需要设备异常处理菜单及设备监测读取权限。</p>
+    <p v-if="!canOpen" class="muted">查看处置单需要设备异常处理菜单及对应读取权限。</p>
     <div v-loading="loading" class="maintenance-message-list">
       <article v-for="item in items" :key="item.task_id" :class="{unread: !item.read_at}">
         <div class="message-title"><b>{{ item.device_name }}</b><el-tag :type="maintenanceMeta(item.workflow_state).tone" size="small">{{ maintenanceMeta(item.workflow_state).label }}</el-tag></div>

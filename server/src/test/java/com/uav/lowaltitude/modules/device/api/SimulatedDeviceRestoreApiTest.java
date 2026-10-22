@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.LinkedHashMap;
@@ -61,6 +62,38 @@ class SimulatedDeviceRestoreApiTest {
 
     @AfterEach
     void clear() { AuthContext.clear(); }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"radar,replay","oe,replay","radar,live","oe,live"})
+    void mqttAndEoHttpRegistrationAndUpdateRequireExplicitWgs84(String type,String sourceMode) throws Exception {
+        Device original=onboard(sourceMode,type);
+        var before=jdbc.queryForMap("SELECT longitude,latitude,coordinate_system,version FROM ops_device WHERE device_id=?",original.id());
+        for(String declaration:new String[]{"missing",""," ","GCJ02","BD-09","CGCS2000"}) {
+            Map<String,Object> body=new LinkedHashMap<>(original.registration());
+            body.put("longitude",108.56);body.put("latitude",31.29);body.put("version",version(original));
+            if(!"missing".equals(declaration))body.put("coordinate_system",declaration);
+            JsonNode rejected=error(put("/api/v1/devices/"+original.id()).header("Idempotency-Key",UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)),status().isBadRequest());
+            assertThat(rejected.path("code").asText()).isEqualTo("MQTT_CONFIG_INVALID");
+            assertThat(jdbc.queryForMap("SELECT longitude,latitude,coordinate_system,version FROM ops_device WHERE device_id=?",original.id())).isEqualTo(before);
+            rejected=error(post("/api/v1/devices/onboard").header("Idempotency-Key",UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)),status().isBadRequest());
+            assertThat(rejected.path("code").asText()).isEqualTo("MQTT_CONFIG_INVALID");
+        }
+        for(String declaration:new String[]{"WGS84","WGS-84"}) {
+            Map<String,Object> body=new LinkedHashMap<>(original.registration());
+            body.put("longitude",-72.31);body.put("latitude",19.86);body.put("coordinate_system",declaration);body.put("version",version(original));
+            data(put("/api/v1/devices/"+original.id()).header("Idempotency-Key",UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)),status().isOk());
+            assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_id=?",String.class,original.id())).isEqualTo("WGS-84");
+            String external="wgs-"+UUID.randomUUID().toString().substring(0,16);
+            body.put("device_no",external);body.put("external_device_id",external);
+            if("oe".equals(type))body.put("edge_id","edge-"+external);
+            JsonNode created=data(post("/api/v1/devices/onboard").header("Idempotency-Key",UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)),status().isOk());
+            assertThat(created.path("coordinate_system").asText()).isEqualTo("WGS-84");
+        }
+    }
 
     @ParameterizedTest
     @ValueSource(strings = {"radar", "oe"})

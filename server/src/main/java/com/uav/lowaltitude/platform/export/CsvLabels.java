@@ -20,7 +20,8 @@ public final class CsvLabels {
             Map.of("CRITICAL", "紧急", "HIGH", "高", "MEDIUM", "中", "LOW", "低");
 
     private static final Map<String, String> ALARM_TYPE =
-            Map.of("UAV_INTRUSION", "无人机入侵", "UAV", "无人机告警", "RULE_LEGALITY", "飞行违规");
+            Map.of("UAV_INTRUSION", "无人机入侵", "UAV", "无人机告警", "RULE_LEGALITY", "飞行违规",
+                    "PREDICTED_AIRSPACE_ENTRY", "预测进入禁飞区");
 
     /**
      * 告警状态取自 uav_event。注意与风险状态**不是**同一套：同样是 PENDING_VERIFICATION，

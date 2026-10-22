@@ -21,9 +21,11 @@ class EoTrackingCommandSafetyTest {
     private final EoTrackingPolicy policy=mock(EoTrackingPolicy.class);
     @SuppressWarnings("unchecked") private final ObjectProvider<MqttSessionSupervisor> provider=mock(ObjectProvider.class);
     private final MqttSessionSupervisor mqtt=mock(MqttSessionSupervisor.class);
+    private final UserMapper users=mock(UserMapper.class);
+    private final AccessService access=mock(AccessService.class);
     private final long now=100000;
     private final Binding binding=new Binding("device","d","os","s","edge","broker","external","replay",true,now,0,"org","district");
-    private final EoEdgeCommandService service=new EoEdgeCommandService(edges,provider,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),new ObjectMapper(),new MockEnvironment(),policy,tracking,mock(UserMapper.class),mock(AccessService.class),mock(org.springframework.transaction.PlatformTransactionManager.class),mock(com.uav.lowaltitude.modules.device.infrastructure.EoDispatchRepository.class));
+    private final EoEdgeCommandService service=new EoEdgeCommandService(edges,provider,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),new ObjectMapper(),new MockEnvironment(),policy,tracking,users,access,mock(org.springframework.transaction.PlatformTransactionManager.class),mock(com.uav.lowaltitude.modules.device.infrastructure.EoDispatchRepository.class));
     @Test void sentCommandIsNeverRepublishedEvenAfterRestart() {
         when(edges.command("c")).thenReturn(command("SENT","EO_BEGIN_TRACK"));
         service.dispatch(EoEdgeCommandService.TOPIC_BEGIN,"c");
@@ -134,6 +136,38 @@ class EoTrackingCommandSafetyTest {
         assertThat(service.retryStop(task)).isFalse();
         verify(edges,never()).claimStopRetry(anyString(),anyString(),anyInt(),anyLong());
         verifyNoInteractions(provider,mqtt);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans={false,true})
+    void manualBeginRechecksUnitEffectivePermissionBeforePreparationAndBeforePublish(boolean afterPreparation) {
+        String actor=UUID.randomUUID().toString();
+        var user=new com.uav.lowaltitude.modules.identity.domain.AppUser();
+        user.setUserId(actor); user.setStatus("ACTIVE"); user.setRoleCode("UNIT-OPERATOR"); user.setScopeMode("ASSIGNED");
+        when(users.findById(actor)).thenReturn(user);
+        when(tracking.roleEnabled(user.getRoleCode())).thenReturn(true);
+        when(tracking.deviceScope("device",actor,"ASSIGNED")).thenReturn(true);
+        if (afterPreparation) {
+            when(access.permissionCodesForUser(actor)).thenReturn(List.of("devices.op"),List.of());
+        } else {
+            when(access.permissionCodesForUser(actor)).thenReturn(List.of());
+        }
+        var queued=new HashMap<>(command("QUEUED","EO_BEGIN_TRACK")); queued.put("requested_by",actor);
+        var sent=new HashMap<>(command("SENT","EO_BEGIN_TRACK")); sent.put("requested_by",actor);
+        when(edges.command("c")).thenReturn(queued,sent);
+        when(edges.binding("device",true)).thenReturn(binding);
+        when(edges.taskByBegin("c")).thenReturn(Map.of("task_id","t","target_id","target","origin","MANUAL",
+                "status","OPEN","bootstrap_json","{}"));
+        when(tracking.snapshot("target")).thenReturn(Map.of("source_mode","replay","owner_org_id","org","district_id","district"));
+        when(policy.deviceReady(binding)).thenReturn(true);
+        when(policy.bootstrap(anyMap())).thenReturn(Map.of());
+        when(edges.updateCommand("c","QUEUED","SENT",now,null,null)).thenReturn(1);
+        when(provider.getIfAvailable()).thenReturn(mqtt);
+        service.dispatch(EoEdgeCommandService.TOPIC_BEGIN,"c");
+        verify(mqtt,never()).publish(anyString(),anyString(),any());
+        verify(edges).updateCommand(eq("c"),eq(afterPreparation ? "SENT" : "QUEUED"),eq("CANCELLED"),
+                eq(now),eq("TRACK_ELIGIBILITY_CHANGED"),anyString());
+        verify(edges).updateTask("t","OPEN","FAILED",null,now);
     }
     private Map<String,Object> command(String status,String type) {return Map.of("command_id","c","status",status,"device_id","device","command_type",type,"deadline_at",now+10000,"source_mode","replay","simulated",true);}
 }

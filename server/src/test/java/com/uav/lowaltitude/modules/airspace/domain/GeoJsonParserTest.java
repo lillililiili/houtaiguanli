@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.airspace.domain.GeoJsonParser.Feature;
@@ -115,6 +117,59 @@ class GeoJsonParserTest {
         // 声明了别的坐标系就不能按 WGS-84 读：数字看起来合法，落到地图上却是另一个地方。
         assertThat(result.fatalIssue()).isEqualTo("CRS_NOT_SUPPORTED");
         assertThat(result.features()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"EPSG:4326", "urn:ogc:def:crs:EPSG::4326", "urn:ogc:def:crs:OGC:1.3:CRS84"})
+    void exactSupportedCrsNamesRemainCompatible(String name) {
+        String content = polygon(SQUARE).replace("\"features\":", "\"crs\":{\"type\":\"name\",\"properties\":{\"name\":\""
+                + name + "\"}},\"features\":");
+        assertThat(parser.parse(content).features().get(0).usable()).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"{}", "null", "\"WGS84\"",
+            "{\"type\":\"name\",\"properties\":{\"name\":\"GCJ02:4326\"}}",
+            "{\"type\":\"name\",\"properties\":{\"name\":\"not-CRS84\"}}",
+            "{\"type\":\"name\",\"properties\":{\"name\":\"\"}}",
+            "{\"type\":\"link\",\"properties\":{\"name\":\"EPSG:4326\"}}"})
+    void malformedOrSpoofedCrsCannotPassBySuffix(String crs) {
+        String content = polygon(SQUARE).replace("\"features\":", "\"crs\":" + crs + ",\"features\":");
+        assertThat(parser.parse(content).fatalIssue()).isEqualTo("CRS_NOT_SUPPORTED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GCJ-02", "BD-09", "CGCS2000"})
+    void checksDeclarationsAtEveryConsumedLevel(String datum) throws Exception {
+        for (String location : List.of("feature", "geometry", "properties")) {
+            var tree = new ObjectMapper().readTree(polygon(SQUARE));
+            var feature = tree.path("features").get(0);
+            var node = "feature".equals(location) ? feature : feature.get(location);
+            ((com.fasterxml.jackson.databind.node.ObjectNode) node).put("coordinate_system", datum);
+            var result = parser.parse(tree.toString()).features().get(0);
+            assertThat(result.usable()).as(location).isFalse();
+            assertThat(result.boundaryEwkt()).isNull();
+            assertThat(result.issues()).extracting(GeoJsonParser.Issue::reasonCode).contains("CRS_NOT_SUPPORTED");
+        }
+    }
+
+    @Test
+    void conflictingAliasesAndDuplicateDeclarationsAreRejected() {
+        String aliases = polygon(SQUARE).replace("\"features\":",
+                "\"coordinate_system\":\"WGS84\",\"coordinateSystem\":\"BD09\",\"features\":");
+        assertThat(parser.parse(aliases).fatalIssue()).isEqualTo("CRS_NOT_SUPPORTED");
+        String duplicates = polygon(SQUARE).replace("\"features\":",
+                "\"coordinate_system\":\"BD09\",\"coordinate_system\":\"WGS84\",\"features\":");
+        assertThat(parser.parse(duplicates).fatalIssue()).isEqualTo("INVALID_GEOJSON");
+        assertThat(parser.parse(polygon(SQUARE) + "{}").fatalIssue()).isEqualTo("INVALID_GEOJSON");
+    }
+
+    @Test
+    void explicitNullDatumAndNonFiniteCoordinatesAreNotKnownLocations() {
+        String datum = polygon(SQUARE).replace("\"features\":", "\"coordinate_system\":null,\"features\":");
+        assertThat(parser.parse(datum).fatalIssue()).isEqualTo("CRS_NOT_SUPPORTED");
+        String huge = polygon(SQUARE).replace("118.0", "1e1000");
+        assertThat(parser.parse(huge).features().get(0).usable()).isFalse();
     }
 
     @Test

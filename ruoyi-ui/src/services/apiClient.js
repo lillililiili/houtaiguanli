@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { userFacingMessage } from '@/utils/userMessages';
+import { managementRequestUrl } from './managementContext.js';
 
 export const SESSION_KEY = 'uav.admin.session.v1';
 const baseURL = String(import.meta.env.VITE_APP_BASE_API || (import.meta.env.DEV ? '/dev-api' : '/api')).replace(/\/$/, '');
@@ -32,6 +33,7 @@ export function newIdempotencyKey(prefix = 'admin') {
 const client = axios.create({ baseURL, timeout: 15000 });
 
 client.interceptors.request.use(config => {
+  config.url = managementRequestUrl(config.url);
   config.headers['X-Client-Type'] = 'BACKEND';
   const token = readToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;

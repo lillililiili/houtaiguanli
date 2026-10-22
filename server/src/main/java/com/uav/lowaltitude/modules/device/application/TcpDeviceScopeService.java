@@ -21,6 +21,7 @@ public class TcpDeviceScopeService {
     }
 
     public Map<String,Object> validateTuple(String requestedOrg,String requestedDistrict) {
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.requireOwner(requestedOrg);
         String org=blank(requestedOrg),district=blank(requestedDistrict);
         if(org==null || district==null)throw bad("请选择所属单位及区域");
         access.requireTuple(org,district);
@@ -31,6 +32,7 @@ public class TcpDeviceScopeService {
 
     public void bind(String id,String requestedOrg,String requestedDistrict,long now) {
         var previous=repository.scope(id);
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.requireOwner(requestedOrg);
         String org=blank(requestedOrg),district=blank(requestedDistrict);
         if(org==null && district==null && previous==null)return; // Existing low-level registration contract.
         var device=repository.device(id);

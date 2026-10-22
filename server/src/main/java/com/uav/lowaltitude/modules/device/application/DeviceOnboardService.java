@@ -56,9 +56,17 @@ public class DeviceOnboardService {
         if (request.port() == null || request.port() < 1 || request.port() > 65535)
             throw bad("端口必须在 1 到 65535 之间");
         String cidrs = required(request.allowedCidrs(), "设备网络 CIDR");
-        String org = required(request.ownerOrgId(), "所属单位");
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.requireOwner(request.ownerOrgId());
+        String org = com.uav.lowaltitude.platform.security.UnitOperationsContext.active()
+                ? com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId() : required(request.ownerOrgId(), "所属单位");
         String district = required(request.districtId(), "所属区域");
         scopes.validateTuple(org,district);
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(
+                    request.longitude(), request.latitude(), request.coordinateSystem());
+        } catch (IllegalArgumentException ex) {
+            throw bad(ex.getMessage());
+        }
         boolean simulated = Boolean.TRUE.equals(request.simulated());
         if (simulated) simulation.validate(user, request);
         retiredNumbers.reject(deviceNo);
@@ -71,6 +79,7 @@ public class DeviceOnboardService {
                 throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号或接入编码已存在");
             throw ex;
         }
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.registerNewSource(source.sourceId());
         if (simulated) simulation.markSource(source.sourceId());
         ConnectionProfile connection = new ConnectionProfile("TCP", host, request.port(), blank(request.path()),
                 blank(request.dataFormat()) == null ? "BINARY" : request.dataFormat().trim(), "UTF-8", "Token",
@@ -90,7 +99,7 @@ public class DeviceOnboardService {
                 catalog.typeCode(), catalog.typeName(), catalog.channel(), blank(request.model()),
                 blank(request.vendor()), blank(request.ownerName()), blank(request.regionName()),
                 blank(request.address()), request.longitude(), request.latitude(),
-                request.longitude() == null ? null : "WGS-84", request.altitudeM(), blank(request.altitudeDatum()),
+                request.coordinateSystem(), request.altitudeM(), blank(request.altitudeDatum()),
                 blank(request.firmwareVersion()), null, connection, protocol, cidrs);
         DeviceDetail created;
         try {
@@ -131,5 +140,5 @@ public class DeviceOnboardService {
                                  String firmwareVersion, String loginRole, String recognitionCodeRef,
                                  Boolean rtkEnabled, Boolean coordinateTransformEnabled, Integer deviceAddress,
                                  String wireEncoding, Integer pollIntervalMillis,
-                                 String ownerOrgId, String districtId, Boolean simulated) { }
+                                 String ownerOrgId, String districtId, Boolean simulated, String coordinateSystem) { }
 }

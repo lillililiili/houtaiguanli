@@ -51,7 +51,7 @@ describe('设备地图坐标与离线资源', () => {
     expect(fetch.mock.calls[1][0]).toBe(`${window.location.origin}/map-config.json`);
   });
 
-  it('使用同包 XYZ 瓦片且仍由包头确认地图范围，中文字体优先使用本机字体', async () => {
+  it('使用同包 XYZ 瓦片且仍由包头确认地图范围，中文字体使用应用加载的开源字体', async () => {
     stubOptimizedPackage('./xyz/{z}/{x}/{y}.pbf');
     const { style, bounds } = await loadDeviceMapStyle(new AbortController().signal);
     expect(style.sources.protomaps.tiles).toEqual([`${window.location.origin}/map-data/alternate/xyz/{z}/{x}/{y}.pbf`]);
@@ -77,6 +77,7 @@ describe('设备地图坐标与离线资源', () => {
       const container = { clientWidth: width, clientHeight: height };
       const resources = { bounds, maxZoom: 18, style: {} };
       const options = deviceMapOptions(container, resources, null);
+      expect(options.localIdeographFontFamily).toBe('Noto Sans SC');
       const world = 512 * 2 ** options.minZoom;
       const toY = latitude => (1 - Math.asinh(Math.tan(latitude * Math.PI / 180)) / Math.PI) / 2;
       expect((bounds[2] - bounds[0]) / 360 * world).toBeGreaterThanOrEqual(width);

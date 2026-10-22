@@ -103,7 +103,7 @@ public class LingyunMqttReplayExporter implements ApplicationRunner {
         if (source != null && source.startsWith(LingyunSenseDataMapper.PREFIX)) {
             String[] segments = source.split(":");
             if (segments.length < 3 || segments[1].isBlank() || segments[2].isBlank()) {
-                throw new IllegalStateException("凌云来源格式应为 lingyun:<设备类型>:<设备号>: " + source);
+                throw new IllegalStateException("来源格式应为 lingyun:<设备类型>:<设备号>: " + source);
             }
             return "bridge/" + PROVIDER_CODE + "/device_data/" + segments[1] + "/" + segments[2];
         }

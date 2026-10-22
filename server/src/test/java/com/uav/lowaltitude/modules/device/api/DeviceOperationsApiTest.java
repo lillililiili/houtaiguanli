@@ -37,6 +37,43 @@ class DeviceOperationsApiTest {
     @Autowired OutboxWorker outboxWorker;
     @Autowired com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRepository;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings={" ", "GCJ02", "BD-09", "CGCS2000"})
+    void coordinateDeclarationIsRequiredForCreationAndUpdateWithoutRewritingHistory(String coordinateSystem) throws Exception {
+        String token=login("admin1");
+        var body=(com.fasterxml.jackson.databind.node.ObjectNode)objectMapper.readTree(deviceBody("COORD-"+UUID.randomUUID(),"坐标校验"));
+        JsonNode created=objectMapper.readTree(mvc.perform(post("/api/v1/devices").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("device");
+        String id=created.path("device_id").asText();
+        var before=jdbc.queryForMap("SELECT longitude,latitude,coordinate_system,version FROM ops_device WHERE device_id=?",id);
+        body.put("version",created.path("version").asLong());
+        if(coordinateSystem==null)body.remove("coordinate_system");else body.put("coordinate_system",coordinateSystem);
+        body.put("longitude",101.53).put("latitude",22.67);
+        mvc.perform(put("/api/v1/devices/"+id).header("Authorization",bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                .content(body.toString())).andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        assertThat(jdbc.queryForMap("SELECT longitude,latitude,coordinate_system,version FROM ops_device WHERE device_id=?",id)).isEqualTo(before);
+        body.put("device_no","REJECT-"+UUID.randomUUID());
+        mvc.perform(post("/api/v1/devices").header("Authorization",bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                .content(body.toString())).andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_device WHERE device_no=?",Long.class,body.path("device_no").asText())).isZero();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"WGS84","WGS-84"," wgs84 "})
+    void validDeclarationsAreCanonicalizedAndPositionMayRemainAbsent(String coordinateSystem) throws Exception {
+        String token=login("admin1");
+        var body=(com.fasterxml.jackson.databind.node.ObjectNode)objectMapper.readTree(deviceBody("VALID-"+UUID.randomUUID(),"坐标校验"));
+        body.put("coordinate_system",coordinateSystem).put("longitude",-73.72).put("latitude",-28.42);
+        mvc.perform(post("/api/v1/devices").header("Authorization",bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                .content(body.toString())).andExpect(status().isOk()).andExpect(jsonPath("$.data.coordinate_system").value("WGS-84"));
+        body.put("device_no","NO-POS-"+UUID.randomUUID());body.remove(java.util.List.of("longitude","latitude","coordinate_system"));
+        mvc.perform(post("/api/v1/devices").header("Authorization",bearer(token)).contentType(MediaType.APPLICATION_JSON)
+                .content(body.toString())).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_no=?",java.math.BigDecimal.class,body.path("device_no").asText())).isNull();
+    }
+
     @Test
     void mockRebootSnapshotsWithoutDispatchDoNotPermanentlyBlockCatalogRetirement() throws Exception {
         String token = login("admin1");

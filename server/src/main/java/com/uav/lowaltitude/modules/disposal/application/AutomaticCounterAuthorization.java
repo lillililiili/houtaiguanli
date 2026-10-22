@@ -21,6 +21,9 @@ import com.uav.lowaltitude.modules.alarm.application.AutomaticCounterNotificatio
 /** Durable provenance for newly issued automatic counters; historical automatic authorizations stay inert. */
 @Component
 public class AutomaticCounterAuthorization {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     public static final String CONTRACT = "RULE_COUNTER_V2";
     private final DisposalRepository authorizations;
     private final AutomationRuntimeRepository runs;
@@ -54,6 +57,7 @@ public class AutomaticCounterAuthorization {
     }
 
     public RunRow passingRun(String eventId, String runId) {
+        if (predictions != null && predictions.blocksAutomatic("counter",eventId)) return null;
         if (!eligibility.allowsRun("counter", eventId, runId)) return null;
         RunRow run = runs.run(runId);
         return run != null && "counter".equals(run.category()) && eventId.equals(run.eventId())
@@ -62,6 +66,7 @@ public class AutomaticCounterAuthorization {
 
     /** A later observation may have a different run ID; it must retain the originally authorized rule version. */
     public boolean mayStart(AuthorizationRow row) {
+        if (row != null && predictions != null && predictions.blocksAutomatic("counter",row.subjectId())) return false;
         RunRow original = origin(row);
         if (original == null || !Set.of("APPROVED", "EXECUTING").contains(row.status())
                 || authorizations.automaticStopCovered(row.authorizationId())) return false;
@@ -88,6 +93,7 @@ public class AutomaticCounterAuthorization {
     }
 
     RunRow origin(AuthorizationRow row) {
+        if (row != null && predictions != null && predictions.blocksAutomatic("counter",row.subjectId())) return null;
         if (row == null || !AutomationPrincipal.USER_ID.equals(row.requestedBy())
                 || !"DIRECT".equals(row.authorizationMode()) || !"UAV_EVENT".equals(row.subjectKind())
                 || !"COUNTERMEASURE".equals(row.actionType()) || !"COUNTERMEASURE_4CH".equals(row.channel())

@@ -139,7 +139,7 @@ public class AutomationRuleService {
         var health=runtime.health();
         return new Group(head.category(),head.version(),settings(head),repo.rules(head.category()),
             AutomationRuleCatalog.GROUPS.get(head.category()),health.status(),health.message(),
-            access.permissionCodes(AuthContext.require().roleCode()).contains("responsePlans.auth"));
+            access.permissionCodesForUser(AuthContext.require().userId()).contains("responsePlans.auth"));
     }
     private Settings settings(Head head) {
         var scopes=repo.scopes(head.category());

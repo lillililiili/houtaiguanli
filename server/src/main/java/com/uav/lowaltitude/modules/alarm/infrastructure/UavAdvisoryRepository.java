@@ -8,6 +8,9 @@ import com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Action;
 
 @Repository
 public class UavAdvisoryRepository {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private final JdbcTemplate jdbc;
     private final NoCounterRepository noCounter;
     private final AutoSmsRepository facts;
@@ -31,6 +34,10 @@ public class UavAdvisoryRepository {
     /** 调用方须先完成数据范围校验；动作执行链还须先锁定关联事件。 */
     public String counterBlockReason(String eventId) {
         if(noCounter.active(eventId))return NoCounterRepository.ACTIVE_REASON;
+        if(predictions!=null) {
+            String block=predictions.counterBlock(eventId,true);
+            if(block!=null)return block;
+        }
         var event=jdbc.queryForMap("SELECT state_code,alarm_id FROM uav_event WHERE event_id=?",eventId);
         AutoSmsRepository.Facts current;
         try { current=facts.facts(eventId); }
@@ -51,6 +58,11 @@ public class UavAdvisoryRepository {
     }
     /** 仅用于新建反制入口；执行已有授权仍单独检查 counterBlockReason，不能被自身授权阻断。 */
     public String counterLaunchBlockReason(String eventId) {
+        if(predictions!=null) {
+            String block=predictions.counterBlock(eventId,false);
+            if(block!=null&&!block.isEmpty())return block;
+            if(predictions.hasOtherActiveCounter(eventId,null))return "同次风险已有未了结的反制授权，请查看关联处置进度";
+        }
         long active=disposal.activeCount("UAV_EVENT",eventId,"COUNTERMEASURE");
         if(active>0 && active>=policies.active().maxActivePerSubject())
             return "该告警已有未了结的反制授权，请查看当前处置进度";

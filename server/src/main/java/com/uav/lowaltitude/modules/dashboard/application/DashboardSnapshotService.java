@@ -262,7 +262,10 @@ public class DashboardSnapshotService {
             query.add("occurred_from", from);
             query.add("occurred_to", to);
         }
-        if (state != null) query.add("state", state);
+        if (state != null) {
+            query.add("state", state);
+            query.add("current_pending", "true");
+        }
         if (sourceMode != null) query.add("source_mode", sourceMode);
         return alarms.list(query).total();
     }

@@ -34,9 +34,20 @@ public class AccessService {
     }
 
     private final IdentityAdminMapper mapper;
+    private final OrgEffectivePermissionService effective;
 
     public AccessService(IdentityAdminMapper mapper) {
+        this(mapper, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AccessService(IdentityAdminMapper mapper, OrgEffectivePermissionService effective) {
         this.mapper = mapper;
+        this.effective = effective;
+    }
+
+    public List<String> permissionCodesForUser(String userId) {
+        return effective == null ? List.of() : effective.permissionCodes(userId);
     }
 
     public void require(String permissionCode) {
@@ -48,7 +59,7 @@ public class AccessService {
                 || Set.of("organizations.auth", "responsePlans.auth", "rule:manage", "map:upload", "map:activate", "map:delete").contains(permissionCode)) {
             requireBackend();
         }
-        if (!permissionCodes(user.roleCode()).contains(permissionCode)) {
+        if (!permissionCodesForUser(user.userId()).contains(permissionCode)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "当前账号没有执行此操作的权限");
         }
     }
@@ -68,6 +79,8 @@ public class AccessService {
 
     public boolean canAccessTuple(String orgId, String districtId) {
         AuthUser user = AuthContext.require();
+        String managedOrg = effective == null ? null : effective.managedOrgId(user.userId());
+        if (managedOrg != null && !managedOrg.equals(orgId)) return false;
         if ("ALL".equals(user.scopeMode())) return true;
         if (!"ASSIGNED".equals(user.scopeMode()) || orgId == null || districtId == null) return false;
         return mapper.countUserScopeTuple(user.userId(), orgId, districtId) > 0;
@@ -80,6 +93,10 @@ public class AccessService {
     }
 
     public List<String> menuKeys(String roleCode) {
+        return roleMenuKeys(mapper, roleCode);
+    }
+
+    static List<String> roleMenuKeys(IdentityAdminMapper mapper, String roleCode) {
         if (UserType.BACKEND_ROLE.equals(roleCode)) {
             return List.of("devices", "monitor", "maintenance", "commission", "interfaces", "maps", "stats", "users", "responsePlans", "roles", "archive");
         }
@@ -101,6 +118,10 @@ public class AccessService {
     }
 
     public List<String> permissionCodes(String roleCode) {
+        return rolePermissionCodes(mapper, roleCode);
+    }
+
+    static List<String> rolePermissionCodes(IdentityAdminMapper mapper, String roleCode) {
         List<String> codes = new ArrayList<>();
         if (UserType.BACKEND_ROLE.equals(roleCode)) {
             for (String module : BACKEND_MODULES) {

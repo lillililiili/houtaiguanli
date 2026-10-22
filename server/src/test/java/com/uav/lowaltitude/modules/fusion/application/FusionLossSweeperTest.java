@@ -36,8 +36,9 @@ import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.I
         "spring.datasource.url=jdbc:h2:mem:fusion_loss_sweeper;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
 })
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture.Sources.class)
 class FusionLossSweeperTest {
-    private static final String RADAR = "seed-stage8-source-radar";
+    private static final String RADAR = com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture.RADAR_SOURCE;
     private static final double METERS_PER_DEG_LAT = 111_320.0;
     private static final int UAV = 30;
 
@@ -239,6 +240,7 @@ class FusionLossSweeperTest {
             object.put("height", 80);
             object.put("extension", Map.of("objectType", UAV));
             Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("coordinate_system", "WGS84");
             payload.put("deviceId", sourceId);
             payload.put("msgCnt", msgCnt++);
             payload.put("ptTime", observedAt.toEpochMilli());

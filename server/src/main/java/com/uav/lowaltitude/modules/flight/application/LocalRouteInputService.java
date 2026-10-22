@@ -19,6 +19,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
 import com.uav.lowaltitude.modules.identity.application.AccessControlService;
@@ -61,7 +63,8 @@ public class LocalRouteInputService {
         this.idempotency = idempotency;
         this.messages = messages;
         this.jdbc = jdbc;
-        this.json = json;
+        this.json = json.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
         this.clock = clock;
         this.audit = audit;
     }
@@ -141,6 +144,8 @@ public class LocalRouteInputService {
 
     private String lineString(JsonNode geometry) {
         if (geometry == null || !geometry.isObject() || !"LineString".equals(geometry.path("type").asText())) throw bad("航线几何必须是 LineString");
+        if (!com.uav.lowaltitude.platform.geo.Wgs84GeoJson.hasSupportedDeclarations(geometry))
+            throw bad("航线几何仅支持 WGS84 坐标系");
         JsonNode coordinates = geometry.get("coordinates");
         if (coordinates == null || !coordinates.isArray() || coordinates.size() < 2) throw bad("航线至少需要两个坐标点");
         List<String> points = new ArrayList<>();

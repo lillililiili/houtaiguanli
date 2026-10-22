@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, reactive } from 'vue'
-import ElementPlus, { ElMessage } from 'element-plus'
+import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import OrganizationDialog from '@/views/system/organization/OrganizationDialog.vue'
 import UsersView from '@/views/system/UsersView.vue'
 import { directoryApi } from '@/api/organizationDirectory'
@@ -9,18 +9,20 @@ import { systemApi } from '@/api/system'
 const auth = vi.hoisted(() => ({ user: { menu_keys: ['organizations'], permission_codes: ['organizations.read'] }, hasPermission(code) { return this.user.permission_codes.includes(code) } }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 vi.mock('@/api/organizationDirectory', () => ({ directoryApi: { profile: vi.fn(), profiles: vi.fn(), contacts: vi.fn(), contact: vi.fn(), bindings: vi.fn(), options: vi.fn(), saveProfile: vi.fn() } }))
-vi.mock('@/api/system', () => ({ systemApi: { users: vi.fn(), organizations: vi.fn(), roles: vi.fn(), updateOrganization: vi.fn(), createOrganization: vi.fn() } }))
-vi.mock('element-plus', async original => ({ ...await original(), ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
-let app, host
+vi.mock('@/api/system', () => ({ systemApi: { users: vi.fn(), organizations: vi.fn(), roles: vi.fn(), updateOrganization: vi.fn(), createOrganization: vi.fn(), deleteOrganization: vi.fn() } }))
+vi.mock('element-plus', async original => ({ ...await original(), ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn() }, ElMessageBox: { confirm: vi.fn(), prompt: vi.fn() } }))
+let app, host, vm
 const profile = { org_id: 'org-1', name: '已维护单位', parent_id: 'parent', parent_name: '上级单位', org_code: 'ORG-1', organization_type: 'OPERATOR', address: '原单位地址', credit_code: 'CODE-1', remarks: '原备注', responsibilities: '已维护业务说明', version: 7 }
 async function settle() { for (let i = 0; i < 16; i++) { await Promise.resolve(); await nextTick() } }
-async function mount(component, props = {}) { host = document.createElement('div'); document.body.append(host); app = createApp(component, props); app.use(ElementPlus); app.mount(host); await settle() }
+async function mount(component, props = {}) { host = document.createElement('div'); document.body.append(host); app = createApp(component, props); app.use(ElementPlus); vm = app.mount(host); await settle() }
 const button = label => [...document.querySelectorAll('button')].find(node => node.textContent.trim() === label)
 const formLabels = () => [...document.querySelectorAll('.el-form-item__label')].map(node => node.textContent.trim())
 const fieldValues = () => [...document.querySelectorAll('textarea, .el-input__inner, .el-textarea__inner')].map(node => node.value)
 const props = () => ({ visible: true, row: profile, mode: 'view', canReadDirectory: true, canEditDirectory: true })
 beforeEach(() => {
   vi.clearAllMocks()
+  ElMessageBox.confirm.mockReset()
+  systemApi.deleteOrganization.mockReset()
   auth.user = { menu_keys: ['organizations'], permission_codes: ['organizations.read'] }
   directoryApi.profile.mockResolvedValue(profile)
   directoryApi.profiles.mockResolvedValue({ items: [profile], total: 1 })
@@ -30,6 +32,69 @@ beforeEach(() => {
   directoryApi.saveProfile.mockResolvedValue({ ...profile, name: '修改后的单位', version: 8 })
 })
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = '' })
+
+describe('删除单位', () => {
+  async function mountManager() {
+    auth.user = { menu_keys: ['users'], permission_codes: ['users.read', 'users.auth'] }
+    systemApi.organizations.mockResolvedValue([profile])
+    systemApi.roles.mockResolvedValue([])
+    systemApi.users.mockResolvedValue({ items: [], total: 0 })
+    await mount(UsersView)
+    vm.$.setupState.selectOrg(profile)
+    await settle()
+  }
+  it('单位菜单提供删除入口；确认后携带版本删除，切回全部单位并刷新', async () => {
+    await mountManager()
+    expect(document.body.textContent).toContain('删除单位')
+    ElMessageBox.confirm.mockResolvedValue('confirm')
+    systemApi.deleteOrganization.mockResolvedValue({ org_id: profile.org_id })
+    systemApi.organizations.mockResolvedValue([])
+    await vm.$.setupState.handleOrgCommand('delete', profile); await settle()
+    expect(ElMessageBox.prompt).not.toHaveBeenCalled()
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining(profile.name), '删除单位', expect.objectContaining({ confirmButtonText: '确认删除', cancelButtonText: '取消' }))
+    expect(systemApi.deleteOrganization).toHaveBeenCalledWith(profile.org_id, profile.version)
+    expect(vm.$.setupState.selectedOrgId).toBe('__all__')
+    expect(vm.$.setupState.organizations).toEqual([])
+  })
+  it.each(['cancel', 'close'])('%s不提交删除，不改变选中单位', async action => {
+    await mountManager(); ElMessageBox.confirm.mockRejectedValue(action)
+    await vm.$.setupState.handleOrgCommand('delete', profile)
+    expect(systemApi.deleteOrganization).not.toHaveBeenCalled()
+    expect(vm.$.setupState.selectedOrgId).toBe(profile.org_id)
+    expect(ElMessage.error).not.toHaveBeenCalled()
+  })
+  it.each(['单位仍有人员，不能删除。', '单位已更新，请刷新后重试。'])('服务端拒绝时保留单位并显示实际原因：%s', async message => {
+    await mountManager(); ElMessageBox.confirm.mockResolvedValue('confirm')
+    systemApi.deleteOrganization.mockRejectedValue(new Error(message))
+    await vm.$.setupState.handleOrgCommand('delete', profile)
+    expect(ElMessage.error).toHaveBeenCalledWith(message)
+    expect(ElMessage.success).not.toHaveBeenCalled()
+    expect(vm.$.setupState.selectedOrgId).toBe(profile.org_id)
+    expect(systemApi.organizations).toHaveBeenCalledTimes(2)
+  })
+  it.each(['read-only', 'root', 'no-version'])('%s不能提交删除', async boundary => {
+    if (boundary === 'read-only') await mount(UsersView)
+    else await mountManager()
+    const row = { ...profile, ...(boundary === 'root' ? { org_id: '__all__' } : boundary === 'no-version' ? { version: undefined } : {}) }
+    await vm.$.setupState.handleOrgCommand('delete', row)
+    expect(ElMessageBox.confirm).not.toHaveBeenCalled()
+    expect(systemApi.deleteOrganization).not.toHaveBeenCalled()
+  })
+  it('确认和请求期间重复点击只提交一次，确认绑定原单位及版本', async () => {
+    await mountManager()
+    let confirm
+    ElMessageBox.confirm.mockImplementation(() => new Promise(resolve => { confirm = resolve }))
+    systemApi.deleteOrganization.mockResolvedValue({})
+    const original = { ...profile, org_id: `org-${crypto.randomUUID()}`, version: 12 }
+    const first = vm.$.setupState.handleOrgCommand('delete', original)
+    original.version = 13
+    await vm.$.setupState.handleOrgCommand('delete', { ...profile, org_id: 'another-org' })
+    confirm('confirm'); await first
+    expect(ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(systemApi.deleteOrganization).toHaveBeenCalledTimes(1)
+    expect(systemApi.deleteOrganization).toHaveBeenCalledWith(original.org_id, 12)
+  })
+})
 describe('用户管理内的单位资料', () => {
   it('查看单位复用基本资料表单，全部只读且无页签或维护入口', async () => {
     await mount(OrganizationDialog, props())

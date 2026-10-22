@@ -9,6 +9,11 @@ import ReportChart from '@/components/ReportChart.vue';
 import ReportDetailTable from '@/components/ReportDetailTable.vue';
 import { businessReportApi, businessReportFilename, createLatestRequestGuard, reportLabel, reportPreviewMatchesScope } from '@/api/reports.js';
 import { isFuturePickerDate, normalizeAnchor, pickerValue, shanghaiToday } from '@/utils/reportPeriods.js';
+import { useAuthStore } from '@/stores/auth.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
+
+const auth = useAuthStore();
+const canExport = computed(() => !isUnitAdministrator(auth.user) || auth.hasPermission('statistics.op'));
 
 const categories = [
   { value: 'OVERVIEW', label: '综合运行', description: '目标、告警、风险与飞行活动的整体概览' },
@@ -110,7 +115,7 @@ async function loadPreview() {
   finally { if (guard.isCurrent(current)) loading.value = false; }
 }
 async function exportReport(format) {
-  if (!ready.value || exporting.value) return;
+  if (!canExport.value || !ready.value || exporting.value) return;
   const filter = { ...params.value }, filename = businessReportFilename(preview.value, format);
   exporting.value = format;
   try { await businessReportApi.exportFile(filter, format, filename); ElMessage.success(`${format === 'pdf' ? 'PDF' : 'Excel'} 报表已下载。`); }
@@ -126,8 +131,8 @@ onBeforeUnmount(() => guard.begin());
   <section class="page-stack report-page">
     <PageHeader title="报表管理" description="按业务类型和统计周期生成报表；Excel 用于数据分析，PDF 用于图文汇报。">
       <el-button :icon="RefreshRight" :loading="loading" @click="loadPreview">刷新预览</el-button>
-      <el-button :icon="Download" :loading="exporting === 'xlsx'" :disabled="!ready || !!exporting" @click="exportReport('xlsx')">导出 Excel</el-button>
-      <el-button type="primary" :icon="Download" :loading="exporting === 'pdf'" :disabled="!ready || !!exporting" @click="exportReport('pdf')">下载 PDF</el-button>
+      <el-button :icon="Download" :loading="exporting === 'xlsx'" :disabled="!canExport || !ready || !!exporting" @click="exportReport('xlsx')">导出 Excel</el-button>
+      <el-button type="primary" :icon="Download" :loading="exporting === 'pdf'" :disabled="!canExport || !ready || !!exporting" @click="exportReport('pdf')">下载 PDF</el-button>
     </PageHeader>
     <section class="report-controls" aria-label="报表类型与周期">
       <div class="category-heading"><strong>报表类型</strong><span>{{ description }}</span></div>

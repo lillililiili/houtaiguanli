@@ -49,8 +49,8 @@ public class EmergencyStopRepository {
                 + " AND status IN ('APPROVED','EXECUTING') ORDER BY authorization_id", String.class, deviceId, eventId);
     }
     public Map<String,Object> latest(String eventId) {
-        return first(jdbc.queryForList("SELECT s.*,u.name AS requested_by_name FROM disposal_emergency_stop s"
-                + " JOIN app_user u ON u.user_id=s.requested_by WHERE s.event_id=? ORDER BY requested_at DESC,stop_id DESC LIMIT 1", eventId));
+        return first(jdbc.queryForList("SELECT s.*,COALESCE(u.name,'预测预警自动停止') AS requested_by_name FROM disposal_emergency_stop s"
+                + " LEFT JOIN app_user u ON u.user_id=s.requested_by WHERE s.event_id=? ORDER BY requested_at DESC,stop_id DESC LIMIT 1", eventId));
     }
     public Map<String,Object> stop(String eventId, String stopId) {
         return first(jdbc.queryForList("SELECT * FROM disposal_emergency_stop WHERE event_id=? AND stop_id=?", eventId, stopId));
@@ -61,8 +61,8 @@ public class EmergencyStopRepository {
                 + " LEFT JOIN device_command c ON c.command_id=d.command_id WHERE d.stop_id=? ORDER BY d.device_id", stopId);
     }
     public List<Map<String,Object>> events(String stopId) {
-        return jdbc.queryForList("SELECT e.*,u.name AS actor_name FROM disposal_emergency_stop_event e"
-                + " JOIN app_user u ON u.user_id=e.actor_id WHERE e.stop_id=? ORDER BY occurred_at,event_id", stopId);
+        return jdbc.queryForList("SELECT e.*,COALESCE(u.name,'预测预警自动停止') AS actor_name FROM disposal_emergency_stop_event e"
+                + " LEFT JOIN app_user u ON u.user_id=e.actor_id WHERE e.stop_id=? ORDER BY occurred_at,event_id", stopId);
     }
     public Map<String,Object> request(String actor, String key) {
         return first(jdbc.queryForList("SELECT * FROM disposal_emergency_stop_request WHERE actor_id=? AND request_key=?", actor, key));
@@ -74,6 +74,10 @@ public class EmergencyStopRepository {
     public void insert(String stopId, String eventId, String actor, long at, String note) {
         jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note) VALUES (?,?,?,?,TRUE,?)",
                 stopId,eventId,actor,at,note);
+    }
+    public void insertPredictionStop(String stopId,String eventId,long at,String note) {
+        jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note,request_origin)"
+                +" VALUES (?,?,NULL,?,FALSE,?,'SYSTEM_PREDICTION_STOP')",stopId,eventId,at,note);
     }
     public void cover(String stopId, String auth) {
         jdbc.update("INSERT INTO disposal_emergency_stop_authorization(stop_id,authorization_id) VALUES (?,?)",stopId,auth);

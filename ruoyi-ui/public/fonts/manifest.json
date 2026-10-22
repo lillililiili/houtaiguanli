@@ -1,0 +1,25 @@
+{
+  "license": "OFL-1.1",
+  "fonts": [
+    {
+      "file": "NotoSansSC-Regular.woff2",
+      "family": "Noto Sans SC",
+      "sha256": "41aee3081b8f60cb29e8fee720e73b2d67836c98c0f8482bdc4f3895c0cf170a",
+      "licenseFile": "NotoSansSC-OFL.txt",
+      "licenseSha256": "7accca2f29220c9ab44e4950799b821f36ebf5bbe6b5fb5342724b32228a8daf",
+      "source": "https://github.com/google/fonts/tree/main/ofl/notosanssc",
+      "sourceSha256": "fb829f76ebb72904eb2aed150d58d0362c1674e0b0c8d629f1e2884590fcd737",
+      "conversion": "Existing PDF font at weight 400; corrected static Regular names; full glyph set compressed with fontTools 4.67.0 to WOFF2. Browser synthesizes heavier weights."
+    },
+    {
+      "file": "NotoSansMono-Variable.woff2",
+      "family": "Noto Sans Mono",
+      "sha256": "f7089cb55300b64436b362bc1e39ed97c1d2464eba5e20f4f8ab43a5add0534d",
+      "licenseFile": "NotoSansMono-OFL.txt",
+      "licenseSha256": "cee9892f9f0cc8fe882c9e9537ee6a89621d86ee7ceaf70b02e2b2b1c25c061a",
+      "source": "https://github.com/google/fonts/blob/main/ofl/notosansmono/NotoSansMono%5Bwdth%2Cwght%5D.ttf",
+      "sourceSha256": "2cb2adb378a8f574213e23df697050b83c54c27df465a2015552740b2769a081",
+      "conversion": "fontTools 4.67.0: wdth=100; wght=100..900 retained; full glyph set compressed to WOFF2."
+    }
+  ]
+}

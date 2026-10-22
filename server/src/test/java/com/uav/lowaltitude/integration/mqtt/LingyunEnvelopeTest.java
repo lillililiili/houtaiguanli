@@ -10,7 +10,7 @@ class LingyunEnvelopeTest {
     @ParameterizedTest
     @ValueSource(strings={"radar","5ga","tdoa","aoa","dcd","rid"})
     void parsesEnvelopeWithoutInventingOrValidatingObjectCoordinates(String type) {
-        String raw="{\"deviceId\":\"external-1\",\"ptTime\":1000,\"msgCnt\":2147483647,\"objects\":[{\"longitude\":999}]}";
+        String raw="{\"coordinate_system\":\"WGS84\",\"deviceId\":\"external-1\",\"ptTime\":1000,\"msgCnt\":2147483647,\"objects\":[{\"longitude\":999}]}";
         var decoded=LingyunEnvelope.decode("bridge/provider/device_data/"+type+"/external-1",raw.getBytes(StandardCharsets.UTF_8));
         assertThat(decoded.json()).isEqualTo(raw);
         assertThat(decoded.msgCnt()).isEqualTo(Integer.MAX_VALUE);

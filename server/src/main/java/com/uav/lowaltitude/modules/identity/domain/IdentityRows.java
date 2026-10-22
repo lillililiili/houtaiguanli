@@ -13,6 +13,10 @@ public final class IdentityRows {
         private boolean enabled;
         private int userCount;
         private int version;
+        private String ownerOrgId;
+        private String copiedFromRoleCode;
+        private String copiedFromRoleName;
+        private Long copiedAt;
 
         public String getRoleCode() { return roleCode; }
         public void setRoleCode(String roleCode) { this.roleCode = roleCode; }
@@ -28,6 +32,14 @@ public final class IdentityRows {
         public void setUserCount(int userCount) { this.userCount = userCount; }
         public int getVersion() { return version; }
         public void setVersion(int version) { this.version = version; }
+        public String getOwnerOrgId() { return ownerOrgId; }
+        public void setOwnerOrgId(String ownerOrgId) { this.ownerOrgId = ownerOrgId; }
+        public String getCopiedFromRoleCode() { return copiedFromRoleCode; }
+        public void setCopiedFromRoleCode(String value) { copiedFromRoleCode = value; }
+        public String getCopiedFromRoleName() { return copiedFromRoleName; }
+        public void setCopiedFromRoleName(String value) { copiedFromRoleName = value; }
+        public Long getCopiedAt() { return copiedAt; }
+        public void setCopiedAt(Long value) { copiedAt = value; }
     }
 
     /** 动作权限目录行（决策 15-1）。与 MODULE 矩阵行分开：矩阵整组提交，动作逐项授予。 */

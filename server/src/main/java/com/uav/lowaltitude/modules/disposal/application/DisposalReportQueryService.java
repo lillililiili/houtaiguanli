@@ -28,7 +28,7 @@ public class DisposalReportQueryService extends BusinessReportSource {
                 row.severity(), row.region(), row.sourceMode(), row.related(), row.result(), note);
     }
     @Override protected Dataset dataset(Range range) {
-        access.require(PermissionCode.ALARM_READ);
-        return repository.reportDataset(reader, range, access.require(PermissionCode.DISPOSAL_READ));
+        com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.ALARM_READ);
+        return repository.reportDataset(reader, range, com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.DISPOSAL_READ));
     }
 }

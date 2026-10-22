@@ -30,6 +30,7 @@ import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.I
         "spring.datasource.url=jdbc:h2:mem:stage85_order;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
 })
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture.Sources.class)
 class FrameOrderIndependenceTest {
 
     /** 同一物理目标、同一毫秒，被三路各看见一次。 */
@@ -73,7 +74,7 @@ class FrameOrderIndependenceTest {
     /** 一条凌云协议 A 报文：三路给同一个位置，只有外部目标号不同（各源自己的编号）。 */
     private InboxRow frame(String sourceId, int index) {
         String inboxId = UUID.randomUUID().toString();
-        String payload = "{\"deviceId\":\"ORD" + index + "\",\"msgCnt\":" + index + ",\"ptTime\":" + OBSERVED_AT + ",\"objects\":[{"
+        String payload = "{\"coordinate_system\":\"WGS84\",\"deviceId\":\"ORD" + index + "\",\"msgCnt\":" + index + ",\"ptTime\":" + OBSERVED_AT + ",\"objects\":[{"
                 + "\"objectId\":\"ORDER-" + index + "\",\"time\":" + OBSERVED_AT + ",\"longitude\":" + LON + ",\"latitude\":" + LAT
                 + ",\"speed\":12.0,\"extension\":{\"objectType\":30,\"uavSN\":\"SN-ORDER\",\"pilotLon\":118.60,\"pilotLat\":37.40}}]}";
         jdbc.update("insert into inbox_message (inbox_id,source,source_msg_id,received_at,source_id,payload_hash,payload,status,fusion_attempts)"

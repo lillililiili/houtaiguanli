@@ -186,6 +186,12 @@ public class EoEdgeCommandService {
                     edges.updateCommand(commandId,"SENT","CANCELLED",clock.nowMillis(),"TRACK_STOPPED_BEFORE_SEND","发送前任务已停止");
                     return;
                 }
+                var binding = edges.binding(text(current, "device_id"), true);
+                if (!"AUTO".equals(text(task, "origin")) && (binding == null || !operatorAllowed(current, binding))) {
+                    edges.updateCommand(commandId,"SENT","CANCELLED",clock.nowMillis(),"TRACK_ELIGIBILITY_CHANGED","发送前执行人权限或范围已变化");
+                    edges.updateTask(text(task,"task_id"),"OPEN","FAILED",null,clock.nowMillis());
+                    return;
+                }
             }
             if (TOPIC_END.equals(topic)) {
                 var binding = edges.binding(text(current, "device_id"), true);
@@ -305,8 +311,10 @@ public class EoEdgeCommandService {
     private boolean operatorAllowed(Map<String,Object> command,Binding binding) {
         String id=text(command,"requested_by");
         if(id==null) return false;
+        // The user-level read refreshes the mapper session before reading account/scope flags too.
+        var permissions=access.permissionCodesForUser(id);
         var user=users.findById(id);
-        return user!=null && !user.isMustChangePassword() && "ACTIVE".equals(user.getStatus()) && tracking.roleEnabled(user.getRoleCode()) && access.permissionCodes(user.getRoleCode()).contains("devices.op")
+        return user!=null && !user.isMustChangePassword() && "ACTIVE".equals(user.getStatus()) && tracking.roleEnabled(user.getRoleCode()) && permissions.contains("devices.op")
                 && tracking.deviceScope(binding.opsDeviceId(),id,user.getScopeMode());
     }
     /** Recheck immediately before publication: a newly protected task cannot be preempted. */

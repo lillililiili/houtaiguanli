@@ -33,7 +33,7 @@ class LocalQaRadarApiTest {
         var body=new LinkedHashMap<String,Object>();
         body.put("owner_org_id",jdbc.queryForObject("select org_id from app_org where enabled order by org_id fetch first 1 rows only",String.class));
         body.put("district_id",jdbc.queryForObject("select district_id from app_district where enabled order by district_id fetch first 1 rows only",String.class));
-        body.put("longitude",110+Math.random()*10);body.put("latitude",30+Math.random()*10);return body;
+        body.put("longitude",110+Math.random()*10);body.put("latitude",30+Math.random()*10);body.put("coordinate_system","WGS84");return body;
     }
     JsonNode send(Map<String,Object> body,int status) throws Exception {
         return json.readTree(mvc.perform(post(PATH).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())
@@ -94,6 +94,15 @@ class LocalQaRadarApiTest {
         var body=input();body.put("longitude",181);send(body,400);
         body.put("longitude",110);body.put("latitude",null);send(body,400);
         body.put("latitude",31);body.put("owner_org_id",UUID.randomUUID().toString());send(body,400);
+        assertThat(jdbc.queryForObject("select count(*) from ops_device where device_no='QA-LOCAL-RADAR-TCP'",Long.class)).isZero();
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings={" ", "GCJ-02", "BD09", "CGCS2000"})
+    void requiresDeclaredWgs84BeforeRegisteringRadar(String coordinateSystem) throws Exception {
+        var body=input();
+        if(coordinateSystem==null)body.remove("coordinate_system");else body.put("coordinate_system",coordinateSystem);
+        send(body,400);
         assertThat(jdbc.queryForObject("select count(*) from ops_device where device_no='QA-LOCAL-RADAR-TCP'",Long.class)).isZero();
     }
     @Test void deniesUnauthenticatedAndBusinessAccounts() throws Exception {

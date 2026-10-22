@@ -19,6 +19,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 统一的是对象关联和历史摘要；每条业务仍由原有状态机判断能否通知。 */
 @Service
 public class NotificationDirectoryService {
+ private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+ @org.springframework.beans.factory.annotation.Autowired
+ public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions){this.predictions=predictions;}
  @org.springframework.beans.factory.annotation.Autowired(required=false)
  private com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport simulator;
  private boolean simulatorChannel(String type,String endpoint){return "API".equals(type)&&com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport.ENDPOINT.equals(endpoint)&&simulator!=null&&simulator.enabled();}
@@ -69,8 +72,9 @@ public class NotificationDirectoryService {
   * 或执行飞手没有电话时为 true，页面据此写明“缺飞手联系方式”。事件尚无精确关联计划、联系方式待核验、
   * 联系人停用或单位对不上都不算缺失，仍按原通知原因显示。纯读取，不改变任何发送资格。
   */
- public boolean pilotContactMissing(String eventId){String planId=repo.eventPlan(eventId,repo.latestEventEvaluation(eventId));if(planId==null)return false;var plan=repo.subjectInternal(planId);return plan!=null&&(plan.pilotId()==null||blank(plan.pilotPhone())==null);}
- public RecipientSnapshot forPilotEvent(String purpose,String eventId,String evaluationId){String plan=repo.eventPlan(eventId,evaluationId);if(plan==null)return missing(null,null,"当前事件尚无精确关联任务，不能把单位联系人当作执行飞手");var target=forPilotPlan(purpose,plan);var original=repo.advisoryTaskSnapshot(purpose,eventId);if(original!=null&&(!Objects.equals(original.recipientId(),target.recipientId())||!Objects.equals(original.contactVersion(),target.contactVersion())||!Objects.equals(original.configVersion(),target.configVersion())))return blocked(target,"接收飞手或通知配置已变更，不能沿用同一通知编号更换对象重发");return target;}
+ public boolean pilotContactMissing(String eventId){String planId=pilotPlan(eventId,repo.latestEventEvaluation(eventId));if(planId==null)return false;var plan=repo.subjectInternal(planId);return plan!=null&&(plan.pilotId()==null||blank(plan.pilotPhone())==null);}
+ public RecipientSnapshot forPilotEvent(String purpose,String eventId,String evaluationId){String plan=pilotPlan(eventId,evaluationId);if(plan==null)return missing(null,null,"当前事件尚无精确关联任务，不能把单位联系人当作执行飞手");var target=forPilotPlan(purpose,plan);var original=repo.advisoryTaskSnapshot(purpose,eventId);if(original!=null&&(!Objects.equals(original.recipientId(),target.recipientId())||!Objects.equals(original.contactVersion(),target.contactVersion())||!Objects.equals(original.configVersion(),target.configVersion())))return blocked(target,"接收飞手或通知配置已变更，不能沿用同一通知编号更换对象重发");return target;}
+ private String pilotPlan(String eventId,String evaluationId){return predictions!=null&&predictions.isPrediction(eventId)?predictions.pilotPlan(eventId,evaluationId):repo.eventPlan(eventId,evaluationId);}
  @Transactional public void freezeAdvisoryTask(String purpose,String eventId,RecipientSnapshot target){repo.freezeAdvisoryTask(purpose,eventId,target);}
  @Transactional public void freezeAdvisoryRecord(String purpose,String recordId,RecipientSnapshot target){repo.freezeAdvisoryRecord(purpose,recordId,target);}
  public RecipientSnapshot advisoryHistoryRecipient(String purpose,String eventId){return repo.advisoryTaskSnapshot(purpose,eventId);}

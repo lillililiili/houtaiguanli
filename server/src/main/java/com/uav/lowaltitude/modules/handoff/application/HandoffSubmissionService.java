@@ -61,6 +61,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class HandoffSubmissionService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository legacyFollowups;
     private static final Set<String> BODY_FIELDS = Set.of("source_kind", "source_id", "handoff_type", "recipient_id", "expected_version");
     private static final int HISTORY_LIMIT = 1000;
@@ -202,6 +205,8 @@ public class HandoffSubmissionService {
      */
     private CreatedDto createFromEvent(CreateRequest request, String sourceId, String recipientId,
                                        AccessDecision alarmDecision, String key) {
+        if(predictions!=null&&predictions.isPrediction(sourceId))
+            throw new ApiException(HttpStatus.CONFLICT,"PREDICTION_NOT_PUNISHMENT_EVIDENCE","预测风险不代表实际违法，请使用独立核实的实测告警办理处罚移送");
         // 锁事件但不改它：锁只用来串行化同一事件的并发提交并冻结版本核对；提交交接不是事件状态迁移。
         UavEventRepository.EventRow event = events.lock(sourceId, alarmDecision);
         if (event == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "源对象不存在或不可见");
@@ -418,6 +423,7 @@ public class HandoffSubmissionService {
     /** 反制停止确认或旧干扰完成后自动建立交接；通知渠道与规则沿用，启动成功不能作为停止事实。 */
     @Transactional
     public void automaticAfterDisposal(String eventId) {
+        if(predictions!=null&&predictions.isPrediction(eventId))return;
         if (eventId == null || eventId.isBlank()) return;
         String existing = repository.existingPunishment(eventId);
         // Earlier deployments may have frozen a human notification decision; never decide or send it automatically.
@@ -481,6 +487,7 @@ public class HandoffSubmissionService {
 
     /** 只补发仍停在“等待规则”的那一次。已经发出、失败或人工接管的记录不再自动重试。 */
     private void sendWaitingPunishment(String handoffId, String eventId) {
+        if(predictions!=null&&predictions.isPrediction(eventId))return;
         var row = repository.lockNotification(handoffId, SYSTEM_SCOPE);
         if (row == null || repository.hasDelivered(handoffId)) return;
         var latest = repository.latestDelivery(handoffId);

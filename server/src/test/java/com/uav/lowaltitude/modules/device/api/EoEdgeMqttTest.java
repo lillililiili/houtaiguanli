@@ -459,7 +459,7 @@ class EoEdgeMqttTest {
                 + "\"tiltOrientAngle\":2.0,\"focalLen\":4.8,\"detectDist\":10.0,\"zoomIndex\":32}}}";
     }
     private static String beginReport(Binding b, String taskId, int code, long timestamp, String className) {
-        return "{\"event\":\"BeginTracking\",\"edgeId\":\"" + b.edgeId() + "\",\"timestamp\":" + timestamp + ",\"metadata\":{"
+        return "{\"coordinate_system\":\"WGS84\",\"event\":\"BeginTracking\",\"edgeId\":\"" + b.edgeId() + "\",\"timestamp\":" + timestamp + ",\"metadata\":{"
                 + "\"taskId\":\"" + taskId + "\",\"deviceId\":\"" + b.externalDeviceId() + "\",\"codeStatus\":" + code + ","
                 + "\"message\":\"\",\"workState\":1,\"objectData\":{\"latitude\":1,\"longitude\":2,\"altitude\":3,\"speedX\":0,"
                 + "\"speedY\":0,\"speedZ\":0,\"dataId\":\"x\",\"length\":1,\"width\":1,\"height\":1,\"objectType\":30,\"probability\":0.5},"

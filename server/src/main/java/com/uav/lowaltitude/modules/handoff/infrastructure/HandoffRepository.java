@@ -39,7 +39,7 @@ public class HandoffRepository {
             + " LEFT JOIN handoff_delivery d ON d.handoff_id=h.handoff_id"
             + " AND d.attempt_no=(SELECT MAX(dd.attempt_no) FROM handoff_delivery dd WHERE dd.handoff_id=h.handoff_id)"
             + " LEFT JOIN app_district rd ON rd.district_id=h.district_id" + w.sql;
-        return ReportDatasetReader.window(sql, w.params, range, reader.epoch("e.created_at"));
+        return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.params, range, reader.epoch("e.created_at")), "h.owner_org_id");
     }
     private final NamedParameterJdbcTemplate jdbc;
 

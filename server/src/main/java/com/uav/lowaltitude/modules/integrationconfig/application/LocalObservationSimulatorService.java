@@ -15,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.platform.geo.Wgs84Coordinates;
 import com.uav.lowaltitude.modules.device.application.DeviceAccessPolicy;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository;
 import com.uav.lowaltitude.modules.identity.application.AccessService;
@@ -63,6 +64,9 @@ public class LocalObservationSimulatorService {
         access.requireTuple(input.ownerOrgId(), input.districtId());
         validateScope(input.ownerOrgId(), input.districtId());
         validateCoordinate(input.longitude(), input.latitude());
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(input.longitude(), input.latitude(), input.coordinateSystem());
+        } catch (IllegalArgumentException ex) { throw bad(ex.getMessage()); }
         String hash = hash(input);
         Registration previous = repository.registration(input.messageId());
         if (previous != null) {
@@ -92,6 +96,9 @@ public class LocalObservationSimulatorService {
         access.requireTuple(input.ownerOrgId(), input.districtId());
         validateScope(input.ownerOrgId(), input.districtId());
         validateCoordinate(input.longitude(), input.latitude());
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(input.longitude(), input.latitude(), input.coordinateSystem());
+        } catch (IllegalArgumentException ex) { throw bad(ex.getMessage()); }
         String hash = hash(input);
         WeatherRegistration previous = repository.weatherRegistration(input.messageId());
         if (previous != null) {
@@ -125,6 +132,7 @@ public class LocalObservationSimulatorService {
         payloadInput.put("observed_at", input.observedAt());
         payloadInput.put("owner_org_id", binding.ownerOrgId());
         payloadInput.put("district_id", binding.districtId());
+        if (input.coordinateSystem() != null) payloadInput.put("coordinate_system", input.coordinateSystem());
         payloadInput.put("items", input.items());
         String payload = encode(payloadInput);
         String hash = sha256(payload);
@@ -146,6 +154,8 @@ public class LocalObservationSimulatorService {
             throw missing("气象设备不存在、已停用或不在当前权限范围内");
         }
         validateCoordinate(input.longitude(), input.latitude());
+        try { Wgs84Coordinates.requirePoint(input.longitude(), input.latitude(), input.coordinateSystem()); }
+        catch (IllegalArgumentException ex) { throw bad(ex.getMessage()); }
         String payload = encode(input);
         String hash = sha256(payload);
         ExistingWeatherObservation previous = repository.weatherObservation(input.messageId());
@@ -176,7 +186,11 @@ public class LocalObservationSimulatorService {
     }
 
     private void validateTargetItems(TargetObservationsInput input) {
+        if (input.coordinateSystem() != null && !Wgs84Coordinates.isWgs84(input.coordinateSystem()))
+            throw bad("坐标系仅支持 WGS-84");
         for (TargetItem item : input.items()) {
+            if (item.coordinateSystem() != null && !Wgs84Coordinates.isWgs84(item.coordinateSystem()))
+                throw bad("坐标系仅支持 WGS-84");
             if (item.objectCount() != null && item.objectCount() <= 0) throw bad("object_count 必须为正整数");
             boolean hasPosition = item.longitude() != null || item.latitude() != null;
             if (hasPosition && (item.longitude() == null || item.latitude() == null)) throw bad("目标经纬度必须成对提供");
@@ -185,6 +199,10 @@ public class LocalObservationSimulatorService {
             range(item.headingDeg(), BigDecimal.ZERO, new BigDecimal("360"), "heading_deg", false);
             range(item.classConfidence(), BigDecimal.ZERO, BigDecimal.ONE, "class_confidence", true);
             boolean hasPilot = item.pilotLongitude() != null || item.pilotLatitude() != null;
+            if (hasPosition || hasPilot) {
+                String declaration = item.coordinateSystem() == null ? input.coordinateSystem() : item.coordinateSystem();
+                if (!Wgs84Coordinates.isWgs84(declaration)) throw bad("提供经纬度时必须明确声明坐标系为 WGS-84");
+            }
             if (hasPilot && (item.pilotLongitude() == null || item.pilotLatitude() == null)) throw bad("飞手经纬度必须成对提供");
             if (hasPilot) validateCoordinate(item.pilotLongitude(), item.pilotLatitude());
         }

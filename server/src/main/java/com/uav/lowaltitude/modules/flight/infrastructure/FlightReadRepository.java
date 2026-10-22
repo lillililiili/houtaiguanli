@@ -39,7 +39,7 @@ public class FlightReadRepository {
             + "COALESCE(v.conclusion,'NOT_VERIFIED') AS result,v.note AS note"
             + planFrom() + " LEFT JOIN flight_plan_verification v ON v.plan_id=p.plan_id"
             + " AND v.revision_no=(SELECT MAX(vv.revision_no) FROM flight_plan_verification vv WHERE vv.plan_id=p.plan_id)" + w.sql;
-        return ReportDatasetReader.window(sql, w.parameters, range, time);
+        return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.parameters, range, time), "p.owner_org_id");
     }
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -141,15 +141,15 @@ public class FlightReadRepository {
         Where where = planWhere(PlanQuery.empty(), access);
         add(where, "p.plan_id", "plan_id", planId);
         return jdbc.query("SELECT p.pilot_name,p.operator_name,p.takeoff_site_name,p.landing_site_name,"
-                + "p.takeoff_longitude,p.takeoff_latitude,p.landing_longitude,p.landing_latitude" + planFrom() + where.sql,
+                + "p.takeoff_longitude,p.takeoff_latitude,p.landing_longitude,p.landing_latitude,p.filing_coordinate_system" + planFrom() + where.sql,
             where.parameters, (rs,n) -> new FilingRow(rs.getString("pilot_name"),rs.getString("operator_name"),
                 rs.getString("takeoff_site_name"),rs.getString("landing_site_name"),rs.getBigDecimal("takeoff_longitude"),
-                rs.getBigDecimal("takeoff_latitude"),rs.getBigDecimal("landing_longitude"),rs.getBigDecimal("landing_latitude")))
+                rs.getBigDecimal("takeoff_latitude"),rs.getBigDecimal("landing_longitude"),rs.getBigDecimal("landing_latitude"),rs.getString("filing_coordinate_system")))
             .stream().findFirst().orElse(null);
     }
 
     public record FilingRow(String pilotName,String operatorName,String takeoffSiteName,String landingSiteName,
-            BigDecimal takeoffLongitude,BigDecimal takeoffLatitude,BigDecimal landingLongitude,BigDecimal landingLatitude) { }
+            BigDecimal takeoffLongitude,BigDecimal takeoffLatitude,BigDecimal landingLongitude,BigDecimal landingLatitude,String coordinateSystem) { }
 
     public List<RouteRow> listRoutes(RouteQuery query, AccessDecision access, int offset, int size) {
         Where where = routeWhere(query, access, "r");

@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 import com.uav.lowaltitude.modules.fusion.domain.IdentitySerials;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
@@ -44,6 +45,11 @@ public class NormalizedObservationMapper implements FrameMapper {
         for (JsonNode node : items) {
             String external = identifierAny(node, "external_target_id", "externalTargetId");
             if (external == null) throw new IllegalStateException("规范化观测缺少 external_target_id");
+            if (JsonCoordinateContract.hasCoordinates(node, "longitude", "latitude", "pilot_longitude",
+                    "pilot_latitude", "pilotLongitude", "pilotLatitude")) {
+                try { JsonCoordinateContract.requireWgs84(root, node); }
+                catch (IllegalArgumentException ex) { throw new IllegalStateException(ex.getMessage(), ex); }
+            }
             Double longitude = number(node, "longitude"), latitude = number(node, "latitude");
             if ((longitude == null) != (latitude == null)) throw new IllegalStateException("规范化观测经纬度必须成对提供");
             Map<String, Object> quality = new LinkedHashMap<>();

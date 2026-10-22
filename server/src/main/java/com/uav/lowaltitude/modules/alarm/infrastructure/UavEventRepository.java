@@ -35,7 +35,7 @@ public class UavEventRepository {
             + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
             + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id" + AlarmReadRepository.LATEST_ESCALATION
             + " LEFT JOIN app_district rd ON rd.district_id=e.district_id" + w.sql;
-        return ReportDatasetReader.window(sql, w.parameters, range, time);
+        return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.parameters, range, time), "e.owner_org_id");
     }
     private final NamedParameterJdbcTemplate jdbc;
 

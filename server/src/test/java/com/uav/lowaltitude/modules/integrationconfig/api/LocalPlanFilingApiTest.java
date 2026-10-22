@@ -10,6 +10,48 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 /** Reuses authenticated simulated-plan setup; all writes roll back per test. */
 class LocalPlanFilingApiTest extends LocalInterfaceSimulatorApiTest {
+ @org.junit.jupiter.params.ParameterizedTest
+ @org.junit.jupiter.params.provider.CsvSource({"-73.4,-23.2","151.2,-33.8"})
+ void savedCoordinateDeclarationSurvivesReadAndResubmission(double longitude,double latitude) throws Exception {
+  var data=filing(false);data.put("coordinate_system"," WGS-84 ");data.put("takeoff_longitude",longitude);data.put("takeoff_latitude",latitude);
+  var body=plan("filing-cycle-"+UUID.randomUUID());body.put("filing",data);
+  String id=send("/plans",body,200).path("subject_id").asText();
+  var detail=read(BASE+"/plans/"+id+"/filing").path("plan");
+  assertThat(detail.path("filing").path("coordinate_system").asText()).isEqualTo("WGS84");
+  assertThat(jdbc.queryForObject("select filing_coordinate_system from flight_plan where plan_id=?",String.class,id)).isEqualTo("WGS84");
+  var next=json.convertValue(detail.path("filing"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
+  next.put("source_id",detail.path("source").path("source_id").asText());next.put("pilot_name","回读后补录");
+  send("/plans/"+id+"/filing",Map.of("message_id","filing-edit-"+UUID.randomUUID(),"expected_version",detail.path("version").asLong(),"filing",next),200);
+  var reread=read("/api/v1/flight-plans/"+id).path("filing");
+  assertThat(reread.path("coordinate_system").asText()).isEqualTo("WGS84");
+  assertThat(reread.path("takeoff_longitude").asDouble()).isEqualTo(longitude);
+  assertThat(reread.path("takeoff_latitude").asDouble()).isEqualTo(latitude);
+  assertThat(reread.path("pilot_name").asText()).isEqualTo("回读后补录");
+ }
+ @Test void historicalCoordinateDeclarationRemainsUnknownOnRead() throws Exception {
+  String id=send("/plans",plan("filing-legacy-"+UUID.randomUUID()),200).path("subject_id").asText();
+  jdbc.update("update flight_plan set takeoff_longitude=?,takeoff_latitude=? where plan_id=?",12.3,-35.4,id);
+  var before=jdbc.queryForMap("select takeoff_longitude,takeoff_latitude,filing_coordinate_system,version from flight_plan where plan_id=?",id);
+  assertThat(before.get("filing_coordinate_system")).isNull();
+  for(String path:List.of("/api/v1/flight-plans/"+id,BASE+"/plans/"+id+"/filing")){
+   var result=read(path);var detail=path.endsWith("/filing")?result.path("plan"):result;
+   assertThat(detail.path("filing").path("coordinate_system").isMissingNode()||detail.path("filing").path("coordinate_system").isNull()).isTrue();
+   assertThat(detail.path("filing").path("takeoff_longitude").asDouble()).isEqualTo(12.3);
+  }
+  assertThat(jdbc.queryForMap("select takeoff_longitude,takeoff_latitude,filing_coordinate_system,version from flight_plan where plan_id=?",id)).isEqualTo(before);
+ }
+ @Test void filingCoordinatesRequireExplicitWgs84AndAcceptOtherHemispheres() throws Exception {
+  long before=jdbc.queryForObject("select count(*) from flight_plan",Long.class);
+  for(String declaration:new String[]{null,"GCJ-02","BD09","CGCS2000",""}){
+   var data=filing(false);data.put("coordinate_system",declaration);var body=plan("filing-crs-"+UUID.randomUUID());body.put("filing",data);
+   send("/plans",body,400);
+  }
+  assertThat(jdbc.queryForObject("select count(*) from flight_plan",Long.class)).isEqualTo(before);
+  var data=filing(false);data.put("coordinate_system","WGS-84");data.put("takeoff_longitude",-73.4);data.put("takeoff_latitude",-23.2);
+  var body=plan("filing-other-position");body.put("filing",data);
+  String id=send("/plans",body,200).path("subject_id").asText();
+  assertThat(read("/api/v1/flight-plans/"+id).path("filing").path("takeoff_longitude").asDouble()).isEqualTo(-73.4);
+ }
  @Test void dedicatedSimulatorSourceIsRegisteredOnWriteAndNeverReenabledByInput() throws Exception {
   String source=com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.SIMULATOR_SOURCE_ID;
   long count=jdbc.queryForObject("select count(*) from integration_source",Long.class);
@@ -154,6 +196,7 @@ class LocalPlanFilingApiTest extends LocalInterfaceSimulatorApiTest {
  Map<String,Object> filing(boolean linked) throws Exception {
   String source=jdbc.queryForObject("select source_id from integration_source where enabled=true and source_mode in ('mock','replay') fetch first 1 rows only",String.class);
   var data=new HashMap<String,Object>();data.put("source_id",source);data.put("operator_name","模拟申报单位");data.put("pilot_name","模拟申报飞手");data.put("takeoff_site_name","模拟起飞点");data.put("landing_site_name","模拟降落点");data.put("takeoff_longitude",118.25);data.put("takeoff_latitude",37.25);data.put("landing_longitude",118.26);data.put("landing_latitude",37.26);
+  data.put("coordinate_system","WGS84");
   if(linked){String org=jdbc.queryForObject("select org_id from app_org where org_code='ORG-DEV'",String.class);
    var pilot=write("/api/v1/contacts",Map.of("org_id",org,"name","测试飞手档案","roles",List.of("PILOT"),"enabled",true));
    var binding=write("/api/v1/plan-source-bindings",Map.of("source_id",source,"org_id",org,"external_org_code",UUID.randomUUID().toString(),"enabled",true));

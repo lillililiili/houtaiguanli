@@ -31,7 +31,7 @@ public class EventReportQueryService extends BusinessReportSource {
         return List.of(new Dimension("state", "当前状态"), new Dimension("kind", "事件类型"));
     }
     @Override protected Dataset dataset(Range range) {
-        return repository.reportDataset(reader, range, access.require(PermissionCode.ALARM_READ));
+        return repository.reportDataset(reader, range, com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.ALARM_READ));
     }
     @Override public Summary summarize(Range range) {
         return ReportDatasetReader.summarizeRows(rows(range), range, key(), title(), basis(), snapshot(), dimensions());
@@ -40,10 +40,10 @@ public class EventReportQueryService extends BusinessReportSource {
         return ReportDatasetReader.pageRows(rows(range), page, size);
     }
     private List<Row> rows(Range range) {
-        AccessDecision alarms = access.require(PermissionCode.ALARM_READ);
+        AccessDecision alarms = com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.ALARM_READ);
         // 反制进度和告警页、告警导出一样，只写给有处置查看权限的人。
         AccessDecision disposals;
-        try { disposals = access.require(PermissionCode.DISPOSAL_READ); } catch (ApiException denied) { disposals = null; }
+        try { disposals = com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.DISPOSAL_READ); } catch (ApiException denied) { disposals = null; }
         AccessDecision disposalScope = disposals;
         return reader.rows(repository.reportDataset(reader, range, alarms), range.sourceScope()).stream().map(row -> {
             String progress = advisory.progressLabel(row.id(), alarms, disposalScope);

@@ -16,6 +16,9 @@ final class LiveRadarPromotionAssembler {
 
     static Map<String, Object> frame(String sourceCode, TrackBatch batch, Map<String, BigDecimal[]> derivedLonLat) {
         Map<String, Object> frame = new LinkedHashMap<>();
+        // The binary protocol has no CRS field. Only approved RTK-derived
+        // positions reach this assembler (t02-replay-contract §8.1).
+        frame.put("coordinate_system", "WGS84");
         frame.put("device_id", sourceCode);
         frame.put("boot_micros", batch.radarBootMicros());
         frame.put("frame_id", batch.payloadFrameId());

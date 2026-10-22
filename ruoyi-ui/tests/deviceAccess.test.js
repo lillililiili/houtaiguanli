@@ -6,10 +6,10 @@ import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { weatherSensorsApi } from '@/api/externalInterfaces.js';
 
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }));
-const permissions = vi.hoisted(() => ({ operate: true, connections: true, editConnections: true }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasMenu: () => false, hasPermission: code => code === 'interfaces.op' ? permissions.connections && permissions.editConnections : code === 'interfaces.read' ? permissions.connections : code !== 'devices.op' || permissions.operate }) }));
+const permissions = vi.hoisted(() => ({ operate: true, connections: true, editConnections: true, user: null }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ get user() { return permissions.user; }, hasMenu: () => false, hasPermission: code => code === 'interfaces.op' ? permissions.connections && permissions.editConnections : code === 'interfaces.read' ? permissions.connections : code !== 'devices.op' || permissions.operate }) }));
 vi.mock('@/api/devices.js', () => ({
-  deviceApi: { list: vi.fn(), options: vi.fn(), onboardingOptions: vi.fn(), overview: vi.fn(), detail: vi.fn(), protocolStatus: vi.fn(), onboard: vi.fn(), update: vi.fn() },
+  deviceApi: { list: vi.fn(), options: vi.fn(), onboardingOptions: vi.fn(), overview: vi.fn(), catalogOverview: vi.fn(), detail: vi.fn(), protocolStatus: vi.fn(), onboard: vi.fn(), update: vi.fn() },
   integrationApi: { protocols: vi.fn() },
   mqttApi: { options: vi.fn(), scopes: vi.fn(), list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn() }
 }));
@@ -33,14 +33,16 @@ async function choose(label, value) {
 async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp(DevicesView); app.component('router-link',{template:'<a><slot /></a>'}); app.use(ElementPlus); app.mount(host); await settle(); }
 beforeEach(() => {
   vi.clearAllMocks(); permissions.operate = true; permissions.connections = true; permissions.editConnections = true;
+  permissions.user = null;
   deviceApi.list.mockResolvedValue({ items: [], total: 0, page: 1, size: 10 });
   deviceApi.options.mockResolvedValue({ types: [], channels: [], regions: [], vendors: [] });
   deviceApi.overview.mockResolvedValue({ total: 0 });
+  deviceApi.catalogOverview.mockResolvedValue({ total: 0 });
   deviceApi.onboardingOptions.mockResolvedValue({ manual_radar_simulation_allowed: true });
   deviceApi.detail.mockResolvedValue({ device: { device_id: 'new-1', version: 1 } });
   deviceApi.onboard.mockResolvedValue({ device: { device_id: 'new-1' } });
   integrationApi.protocols.mockResolvedValue([
-    ['LINGYUN_MQTT_V8_6', '凌云 MQTT'], ['RADAR_TCP_V3_0_0', '雷达 TCP'], ['EO_EDGE_MQTT_20250826', '光电 MQTT'], ['COUNTERMEASURE_TCP_4CH_V2_0', '四通道 TCP']
+    ['LINGYUN_MQTT_V8_6', 'MQTT'], ['RADAR_TCP_V3_0_0', '雷达 TCP'], ['EO_EDGE_MQTT_20250826', '光电 MQTT'], ['COUNTERMEASURE_TCP_4CH_V2_0', '四通道 TCP']
   ].map(([protocol_code, name]) => ({ protocol_code, name, version: '1' })));
   mqttApi.options.mockResolvedValue([{ broker_id: 'b1', name: '东区连接', source_mode: 'live', owner_org_id: 'org1', district_id: 'd1', enabled: true }]);
   mqttApi.scopes.mockResolvedValue([{ org_id: 'org1', org_name: '单位', district_id: 'd1', district_name: '东区' }]);
@@ -52,6 +54,21 @@ afterEach(async () => {
   // Element Plus releases the dialog scroll lock 200 ms after unmount.
   await new Promise(resolve => setTimeout(resolve, 220));
   host?.remove(); document.body.innerHTML = '';
+});
+
+it.each([false, true])('单位设备管理独立概览和操作边界：%s', async operate => {
+  permissions.user = { user_type: 'FRONTEND', management_context: { mode: 'UNIT', org_id: 'org1' } };
+  permissions.operate = operate; permissions.connections = false;
+  mqttApi.scopes.mockResolvedValue([{ org_id: 'org1', org_name: '本单位', district_id: 'd1', district_name: '东区' }, { org_id: 'foreign', org_name: '其他单位', district_id: 'd2', district_name: '西区' }]);
+  await mount();
+  expect(deviceApi.catalogOverview).toHaveBeenCalledTimes(1);
+  expect(deviceApi.overview).not.toHaveBeenCalled();
+  if (!operate) { expect(button('接入设备').disabled).toBe(true); expect(deviceApi.onboard).not.toHaveBeenCalled(); return; }
+  await click('接入设备');
+  expect(dialog().textContent).not.toContain('天气传感器');
+  await click('雷达'); await choose('所属单位 / 区域', '本单位 / 东区');
+  expect([...document.querySelectorAll('.el-select-dropdown__item')].map(el => el.textContent)).not.toContain('其他单位 / 西区');
+  expect(weatherSensorsApi.create).not.toHaveBeenCalled();
 });
 
 it('台账类型筛选提交后端返回的代码，不能把中文名称当作代码', async () => {
@@ -124,7 +141,7 @@ it.each([
     await fill('控制器地址', '9'); await choose('线缆编码', 'ASCII_HEX_COMPACT');
   } else {
     await fill('雷达识别码引用', 'env:RADAR_TEST_CODE');
-    expect([...document.querySelectorAll('.el-select-dropdown__item')].some(el => el.textContent.includes('凌云 MQTT'))).toBe(false);
+    expect([...document.querySelectorAll('.el-select-dropdown__item')].some(el => el.textContent === 'MQTT')).toBe(false);
   }
   await click('保存接入配置');
   expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: protocol, owner_org_id: org,
@@ -228,7 +245,7 @@ it('TCP 接入保存型号和安装位置，连续提交只调用一次', async 
   await choose('所属单位 / 区域', '单位 / 东区');
   button('保存接入配置').click(); button('保存接入配置').click(); await settle();
   expect(deviceApi.onboard).toHaveBeenCalledOnce();
-  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: 'RADAR_TCP_V3_0_0', model: 'R2', address: '东门楼顶', host: '192.0.2.20', port: 5001, longitude: 118.65924, latitude: 37.43, owner_org_id: 'org1', district_id: 'd1' }), expect.any(String));
+  expect(deviceApi.onboard).toHaveBeenCalledWith(expect.objectContaining({ protocol_code: 'RADAR_TCP_V3_0_0', model: 'R2', address: '东门楼顶', host: '192.0.2.20', port: 5001, longitude: 118.65924, latitude: 37.43, coordinate_system: 'WGS-84', owner_org_id: 'org1', district_id: 'd1' }), expect.any(String));
   complete({ device: { device_id: 'new-1' } }); await settle();
 });
 
@@ -238,4 +255,21 @@ it('地图坐标必须成对填写，避免设备落到不完整位置', async (
   await fill('端口', '5001'); await fill('允许网段', '192.0.2.0/24'); await fill('安装经度', '118.6592400');
   await choose('所属单位 / 区域', '单位 / 东区'); await click('保存接入配置');
   expect(deviceApi.onboard).not.toHaveBeenCalled();
+});
+
+it.each(['GCJ02', 'BD-09', undefined])('已有 %s 坐标不随资料保存重标 WGS-84，重新录入后才可保存', async coordinateSystem => {
+  const row = { device_id: 'coordinate-check', device_no: 'position-check', name: '坐标检查设备', version: 3, owner_org_id: 'org1', district_id: 'd1' };
+  deviceApi.list.mockResolvedValue({ items: [row], total: 1, page: 1, size: 10 });
+  deviceApi.detail.mockResolvedValue({ device: row, protocol_code: 'RADAR_TCP_V3_0_0',
+    longitude: 111.72, latitude: 29.31, coordinate_system: coordinateSystem, allowed_cidrs: '192.0.2.0/24',
+    connection: { host: '192.0.2.23', port: 5001 } });
+  deviceApi.update.mockResolvedValue({ device: row });
+  await mount(); await click('编辑');
+  expect(dialog().textContent).toContain('无法按 WGS-84 保存');
+  await fill('设备名称', '更新资料'); await click('保存');
+  expect(deviceApi.update).not.toHaveBeenCalled();
+  await click('清空坐标');
+  await fill('安装经度', '113.46'); await fill('安装纬度', '30.58'); await click('保存');
+  expect(deviceApi.update).toHaveBeenCalledWith(row.device_id,
+    expect.objectContaining({ longitude: 113.46, latitude: 30.58, coordinate_system: 'WGS-84', name: '更新资料' }), expect.any(String));
 });

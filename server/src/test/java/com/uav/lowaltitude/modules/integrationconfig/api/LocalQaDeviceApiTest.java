@@ -132,7 +132,7 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
     @Test void halfOrOutOfRangePositionIsRejectedBeforeAnythingIsRegistered() throws Exception {
         long before=jdbc.queryForObject("select count(*) from ops_device",Long.class);
         var half=new HashMap<String,Object>(scope());half.put("longitude",118.6);
-        assertThat(rejected(half)).contains("经度和纬度要一起填");
+        assertThat(rejected(half)).contains("经度和纬度必须同时填写");
         assertThat(rejected(positioned(new java.math.BigDecimal("181"),new java.math.BigDecimal("37.46")))).contains("经度必须在 -180 到 180 之间");
         assertThat(rejected(positioned(new java.math.BigDecimal("118.6"),new java.math.BigDecimal("-90.5")))).contains("纬度必须在 -90 到 90 之间");
         assertThat(jdbc.queryForObject("select count(*) from ops_device",Long.class)).isEqualTo(before);
@@ -177,7 +177,17 @@ class LocalQaDeviceApiTest extends LocalInterfaceSimulatorApiTest {
         return Map.of("owner_org_id",org,"district_id",district);
     }
     Map<String,Object> positioned(java.math.BigDecimal longitude,java.math.BigDecimal latitude) {
-        var body=new HashMap<String,Object>(scope());body.put("longitude",longitude);body.put("latitude",latitude);return body;
+        var body=new HashMap<String,Object>(scope());body.put("longitude",longitude);body.put("latitude",latitude);body.put("coordinate_system","WGS-84");return body;
+    }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings={" ", "GCJ02", "BD-09", "CGCS2000"})
+    void refusesMissingOrForeignCoordinateSystemWithoutPreparingDevice(String coordinateSystem) throws Exception {
+        var body=positioned(new java.math.BigDecimal("112.73"),new java.math.BigDecimal("29.18"));
+        if(coordinateSystem==null)body.remove("coordinate_system");else body.put("coordinate_system",coordinateSystem);
+        long before=jdbc.queryForObject("select count(*) from ops_device",Long.class);
+        assertThat(rejected(body)).contains("WGS-84");
+        assertThat(jdbc.queryForObject("select count(*) from ops_device",Long.class)).isEqualTo(before);
     }
     String rejected(Map<String,?> body) throws Exception {
         return mvc.perform(post(PATH).header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())

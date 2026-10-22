@@ -3,7 +3,7 @@ import NProgress from 'nprogress';
 import AdminLayout from '@/layout/AdminLayout.vue';
 import { canAccessMenu, firstAccessiblePath } from '@/config/navigation.js';
 import { useAuthStore } from '@/stores/auth.js';
-import { isBackendUser } from '@/utils/userType.js';
+import { canEnterManagement } from '@/utils/userType.js';
 import { legacyMaintenanceTarget } from '@/utils/maintenanceNavigation.js';
 
 const routes = [
@@ -17,6 +17,8 @@ const routes = [
       { path: 'no-permission', name: 'NoPermission', component: () => import('@/views/errors/NoPermissionView.vue'), meta: { title: '暂无后台权限' } },
       { path: 'forbidden', name: 'Forbidden', component: () => import('@/views/errors/ForbiddenView.vue'), meta: { title: '无权访问' } },
       { path: 'profile', name: 'Profile', component: () => import('@/views/profile/ProfileView.vue'), meta: { title: '个人资料' } },
+      { path: 'unit/users', name: 'UnitUsers', component: () => import('@/views/unit/UnitUsersView.vue'), meta: { title: '本单位人员', menuKey: 'unit-users' } },
+      { path: 'unit/roles', name: 'UnitRoles', component: () => import('@/views/unit/UnitRolesView.vue'), meta: { title: '本单位角色', menuKey: 'unit-roles' } },
       { path: 'operations/devices', name: 'Devices', component: () => import('@/views/operations/DevicesView.vue'), meta: { title: '设备管理', menuKey: 'devices', permission: 'devices.read' } },
       { path: 'operations/monitor', name: 'Monitor', component: () => import('@/views/operations/MonitorView.vue'), meta: { title: '设备实时监测', menuKey: 'monitor', permission: 'monitoring.read' } },
       { path: 'operations/maintenance', name: 'Maintenance', component: () => import('@/views/operations/MaintenanceView.vue'), meta: { title: '设备异常处理', menuKey: 'maintenance', permission: 'monitoring.read' } },
@@ -70,7 +72,7 @@ router.beforeEach(async to => {
   if (auth.sessionExpired && auth.canReloginInPlace) return false;
   if (auth.token && !auth.user && auth.restoreError) return { path: '/service-unavailable', query: { from: to.fullPath } };
   if (!auth.authenticated) return loginRoute(to.fullPath, hadSession);
-  if (!isBackendUser(auth.user)) { auth.clear(); return { path: '/login', query: { denied: '1' } }; }
+  if (!canEnterManagement(auth.user)) { auth.clear(); return { path: '/login', query: { denied: '1' } }; }
   if (auth.mustChangePassword && to.path !== '/change-password') return '/change-password';
   // 主动改密在个人资料里，旧地址转过去。
   if (!auth.mustChangePassword && to.path === '/change-password') return { path: '/profile', query: { section: 'password' } };

@@ -39,7 +39,13 @@ final class AlarmAttentionSql {
             + " AND newer_r.evaluated_at<=:attention_now AND (newer_r.evaluated_at>r.evaluated_at"
             + " OR (newer_r.evaluated_at=r.evaluated_at AND newer_r.evaluation_id>r.evaluation_id))))";
     // Since 2026-10-14 an emergency stop needs no site-check registration, so an unconfirmed stop no longer keeps the alarm current.
+    private static final String PREDICTED = "SELECT 1 FROM prediction_event_link pl JOIN prediction_episode pp ON pp.episode_id=pl.episode_id WHERE pl.event_id=e.event_id AND pl.role='PREDICTED'";
+    private static final String STOP_UNCONFIRMED = "EXISTS(SELECT 1 FROM disposal_emergency_stop ps JOIN disposal_emergency_stop_device pd ON pd.stop_id=ps.stop_id LEFT JOIN device_command pc ON pc.command_id=pd.command_id WHERE ps.event_id=e.event_id AND ps.request_origin='SYSTEM_PREDICTION_STOP' AND pd.stop_status<>'NOT_REQUIRED' AND (pc.command_id IS NULL OR pc.status<>'SUCCEEDED'))";
+    static final String DEVICE_WORK_REMAINS = "(" + EXECUTING + " OR " + STOP_UNCONFIRMED + ")";
     static final String GROUP_RANK = "CASE WHEN " + EXECUTING + " THEN 0"
+            + " WHEN " + STOP_UNCONFIRMED + " THEN 0"
+            + " WHEN EXISTS(" + PREDICTED + " AND pp.status='CLEARED') THEN 2"
+            + " WHEN EXISTS(" + PREDICTED + " AND (pp.status='UNKNOWN' OR pp.current_evidence_valid=FALSE OR pp.valid_until<=:prediction_now) AND pp.status<>'ENTERED') THEN 1"
             + " WHEN e.state_code='FALSE_POSITIVE' OR " + COMPLETED + " OR (" + DEPARTED + ") THEN 2"
             + " WHEN " + KNOWN_OBSERVATION + " AND obs.observed_at>:observation_since THEN 0 ELSE 1 END";
     static final String GROUP = "CASE (" + GROUP_RANK + ") WHEN 0 THEN 'CURRENT' WHEN 1 THEN 'AWAITING_CONFIRMATION' ELSE 'HISTORY' END";

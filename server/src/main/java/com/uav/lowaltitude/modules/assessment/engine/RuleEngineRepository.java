@@ -45,6 +45,12 @@ public class RuleEngineRepository {
     private final boolean postgis;
     private final boolean localSimulatorPlanBridge;
     private static final String LOCAL_PLAN_SIMULATOR = "local-flight-plan-simulator";
+    private com.uav.lowaltitude.modules.prediction.application.PredictionActualEntryBridge predictionEntries;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void predictionEntries(com.uav.lowaltitude.modules.prediction.application.PredictionActualEntryBridge predictionEntries) {
+        this.predictionEntries=predictionEntries;
+    }
 
     public RuleEngineRepository(JdbcTemplate jdbcTemplate, DataSource dataSource, com.uav.lowaltitude.platform.config.SimulationPolicy simulation, Environment environment) {
         this.simulation=simulation;
@@ -485,6 +491,7 @@ public class RuleEngineRepository {
         }
         if (alarmId != null) {
             jdbc.update("UPDATE rule_evaluation SET alarm_id=:value WHERE evaluation_id=:id AND alarm_id IS NULL", params(evaluationId, alarmId));
+            if(predictionEntries!=null)predictionEntries.linkEvaluation(evaluationId,alarmId);
         }
         if (alarmOutcomeJson != null) {
             jdbc.update("UPDATE rule_evaluation SET alarm_outcome=CAST(:value AS JSON) WHERE evaluation_id=:id AND alarm_outcome IS NULL", params(evaluationId, alarmOutcomeJson));

@@ -33,6 +33,7 @@ import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
+import com.uav.lowaltitude.platform.geo.Wgs84Coordinates;
 import com.uav.lowaltitude.platform.security.AuthContext;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -44,10 +45,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Service
 public class AirportService {
     static final String MODULE = "airport";
-    private static final Set<String> AIRPORT_FIELDS = Set.of("icao_code", "name", "longitude", "latitude", "elevation_amsl_m", "owner_org_id", "district_id", "note");
+    private static final Set<String> AIRPORT_FIELDS = Set.of("icao_code", "name", "longitude", "latitude", "coordinate_system", "elevation_amsl_m", "owner_org_id", "district_id", "note");
     private static final Set<String> RUNWAY_FIELDS = Set.of("designator", "heading_deg", "length_m", "centerline");
     private static final Set<String> PROCEDURE_FIELDS = Set.of("kind", "name", "centerline", "protect_width_m", "min_altitude_m", "max_altitude_m", "altitude_datum");
-    private static final Set<String> PROTECTED_FIELDS = Set.of("name", "kind", "longitude", "latitude", "radius_m");
+    private static final Set<String> PROTECTED_FIELDS = Set.of("name", "kind", "longitude", "latitude", "coordinate_system", "radius_m");
     private static final Set<String> NOTIFICATION_FIELDS = Set.of("name", "role", "channel_kind");
     private static final Set<String> PROCEDURE_KINDS = Set.of("APPROACH", "DEPARTURE");
     private static final Set<String> CHANNEL_KINDS = Set.of("PHONE", "RADIO", "SYSTEM", "OTHER");
@@ -101,6 +102,7 @@ public class AirportService {
         String name = text(body, "name", NAME_MAX);
         double longitude = coordinate(body, "longitude", -180, 180);
         double latitude = coordinate(body, "latitude", -90, 90);
+        requireCoordinateSystem(body);
         String ownerOrgId = text(body, "owner_org_id", ID_MAX), districtId = text(body, "district_id", ID_MAX);
         BigDecimal elevation = optionalNumber(body, "elevation_amsl_m");
         String note = optionalText(body, "note", NOTE_MAX);
@@ -126,7 +128,7 @@ public class AirportService {
         BigDecimal heading = number(body, "heading_deg");
         if (heading.compareTo(BigDecimal.ZERO) < 0 || heading.compareTo(new BigDecimal("360")) >= 0) throw invalid("heading_deg 参数无效");
         BigDecimal length = optionalNumber(body, "length_m");
-        String centerline = optionalText(body, "centerline", 4000);
+        String centerline = lineString(optionalText(body, "centerline", 4000));
         idempotency.claim(idempotencyKey, framed("airport-runway") + framed(airport.airportId()) + framed(designator));
         if (repository.childExists("airport_runway", "designator", airport.airportId(), designator)) throw conflict("RUNWAY_EXISTS", "该跑道编号已存在");
         String runwayId = UUID.randomUUID().toString();
@@ -143,7 +145,7 @@ public class AirportService {
         JsonNode body = object(rawBody, PROCEDURE_FIELDS, Set.of("min_altitude_m", "max_altitude_m", "altitude_datum"));
         String kind = enumerated(body, "kind", PROCEDURE_KINDS);
         String name = text(body, "name", NAME_MAX);
-        String centerline = text(body, "centerline", 8000);
+        String centerline = lineString(text(body, "centerline", 8000));
         BigDecimal width = number(body, "protect_width_m");
         if (width.compareTo(BigDecimal.ZERO) <= 0) throw invalid("protect_width_m 参数无效");
         BigDecimal min = optionalNumber(body, "min_altitude_m"), max = optionalNumber(body, "max_altitude_m");
@@ -166,6 +168,7 @@ public class AirportService {
         JsonNode body = object(rawBody, PROTECTED_FIELDS, Set.of());
         String name = text(body, "name", NAME_MAX), kind = text(body, "kind", 32);
         double longitude = coordinate(body, "longitude", -180, 180), latitude = coordinate(body, "latitude", -90, 90);
+        requireCoordinateSystem(body);
         BigDecimal radius = number(body, "radius_m");
         if (radius.compareTo(BigDecimal.ZERO) <= 0) throw invalid("radius_m 参数无效");
         idempotency.claim(idempotencyKey, framed("airport-protected") + framed(airport.airportId()) + framed(name));
@@ -268,8 +271,18 @@ public class AirportService {
 
     private static double coordinate(JsonNode node, String field, double min, double max) {
         double value = number(node, field).doubleValue();
-        if (value < min || value > max) throw invalid(field + " 参数无效");
+        if (!Double.isFinite(value) || value < min || value > max) throw invalid(field + " 参数无效");
         return value;
+    }
+
+    private static void requireCoordinateSystem(JsonNode node) {
+        if (!Wgs84Coordinates.isWgs84(text(node, "coordinate_system", 32)))
+            throw invalid("坐标系仅支持 WGS84");
+    }
+
+    private static String lineString(String value) {
+        try { return LineStringParser.parse(value); }
+        catch (IllegalArgumentException ex) { throw invalid(ex.getMessage()); }
     }
 
     private static Page page(MultiValueMap<String, String> parameters) {

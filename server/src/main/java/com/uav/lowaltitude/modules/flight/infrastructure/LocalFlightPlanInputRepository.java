@@ -21,8 +21,8 @@ public class LocalFlightPlanInputRepository {
  public boolean sourceAvailable(String id){return jdbc.queryForObject("SELECT COUNT(*) FROM integration_source WHERE source_id=? AND enabled=TRUE AND source_mode IN ('mock','replay')",Long.class,id)>0;}
  public String sourceName(String id){return jdbc.query("SELECT name FROM integration_source WHERE source_id=?",(r,n)->r.getString(1),id).stream().findFirst().orElse(id);}
  public boolean sourceExists(String id){return jdbc.queryForObject("SELECT COUNT(*) FROM integration_source WHERE source_id=?",Long.class,id)>0;}
- public int updateFiling(String id,long version,com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing b,long now){return jdbc.update("UPDATE flight_plan SET source_id=?,operator_name=?,pilot_name=?,takeoff_site_name=?,landing_site_name=?,takeoff_longitude=?,takeoff_latitude=?,landing_longitude=?,landing_latitude=?,updated_at=?,version=version+1 WHERE plan_id=? AND version=? AND source_mode IN ('mock','replay')",
-  blank(b.sourceId()),blank(b.operatorName()),blank(b.pilotName()),blank(b.takeoffSiteName()),blank(b.landingSiteName()),b.takeoffLongitude(),b.takeoffLatitude(),b.landingLongitude(),b.landingLatitude(),at(now),id,version);}
+ public int updateFiling(String id,long version,com.uav.lowaltitude.modules.flight.api.LocalPlanFilingDtos.Filing b,long now){return jdbc.update("UPDATE flight_plan SET source_id=?,operator_name=?,pilot_name=?,takeoff_site_name=?,landing_site_name=?,takeoff_longitude=?,takeoff_latitude=?,landing_longitude=?,landing_latitude=?,filing_coordinate_system=?,updated_at=?,version=version+1 WHERE plan_id=? AND version=? AND source_mode IN ('mock','replay')",
+  blank(b.sourceId()),blank(b.operatorName()),blank(b.pilotName()),blank(b.takeoffSiteName()),blank(b.landingSiteName()),b.takeoffLongitude(),b.takeoffLatitude(),b.landingLongitude(),b.landingLatitude(),b.coordinateSystem()==null?null:"WGS84",at(now),id,version);}
  private static String blank(String value){return value==null||value.isBlank()?null:value.trim();}
  private static java.time.OffsetDateTime at(long ms){return Instant.ofEpochMilli(ms).atOffset(ZoneOffset.UTC);}
 }

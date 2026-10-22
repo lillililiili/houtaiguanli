@@ -20,7 +20,7 @@ class LocalAdvisoryScenarioTest {
     }
     @Test void voiceCanReturnAnsweredWithoutPlaybackCompletion() {
         var recording=new AdvisoryVoiceRecording.Recording("qa","测试","测试","sha");
-        var configured=mock(AdvisoryVoiceRecording.class);when(configured.current()).thenReturn(recording);
+        var configured=mock(AdvisoryVoiceRecording.class);when(configured.content(recording)).thenReturn(new byte[]{1});
         var adapter=new LocalAdvisoryVoiceAdapter(environment("test"),configured,new AppClock());
         var result=adapter.simulate("mock",recording,"auto-advisory-voice:qa-event");
         assertThat(result.status()).isEqualTo("ANSWERED");assertThat(result.answeredAt()).isNotNull();

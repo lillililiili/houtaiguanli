@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled, OfficeBuilding, Plus } from '@element-plus/icons-vue'
 import OrganizationDialog from './organization/OrganizationDialog.vue'
+import UnitDelegationDialog from './organization/UnitDelegationDialog.vue'
 import DistrictsDialog from './DistrictsDialog.vue'
 import { directoryApi } from '@/api/organizationDirectory'
 import { hasUserAccess, hasOrganizationAccess } from '@/config/navigation'
@@ -11,7 +12,9 @@ import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
 import { useAuthStore } from '@/stores/auth'
 import { formatTime } from '@/utils/format'
+import { confirmDeletion } from '@/utils/deleteConfirmation'
 import { userTypeLabel } from '@/utils/userType'
+import { roleDisplayName, roleCopySource, userRoleDisplayName } from '@/utils/rolePresentation'
 import { DATA_SCOPE_OPTIONS, DEFAULT_DATA_SCOPE, dataScopeHint, dataScopeLabel, followsOrganization, isAssignableDataScope } from '@/utils/dataScope'
 
 const auth = useAuthStore()
@@ -56,8 +59,10 @@ watch(() => ({ ...userDialog.form }), (form, previous) => {
   Object.keys(userErrors).forEach(key => { if (form[key] !== previous?.[key]) delete userErrors[key] })
 })
 const orgDialog = reactive({ visible: false, row: null, parent: null, mode: 'view' })
+const deletingOrgId = ref('')
 const resetDialog = reactive({ visible: false, busy: false, row: null, password: '' })
 const districtDialogVisible = ref(false)
+const delegationDialog = reactive({ visible: false, organization: null })
 const canOperate = computed(() => auth.hasPermission('users.op'))
 const canReadUsers = computed(() => hasUserAccess(auth.user))
 const canReadDirectory = computed(() => auth.hasPermission('organizations.read'))
@@ -65,7 +70,10 @@ const canEditDirectory = computed(() => canReadDirectory.value && auth.hasPermis
 const canEditBasic = computed(() => canReadUsers.value && auth.hasPermission('users.auth'))
 const canManageOrganization = computed(() => canEditDirectory.value || canEditBasic.value)
 const selectedOrg = computed(() => organizations.value.find(item => item.org_id === selectedOrgId.value))
-const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false && !item.builtin && !['ROLE-ADMIN', 'ROLE-BACKEND'].includes(item.role_code)))
+const formOrganization = computed(() => organizations.value.find(item => item.org_id === userDialog.form.org_id))
+const activeRoles = computed(() => roles.value.filter(item => item.enabled !== false && !item.builtin
+  && !['ROLE-ADMIN', 'ROLE-BACKEND'].includes(item.role_code)
+  && (formOrganization.value?.delegation_managed ? item.owner_org_id === userDialog.form.org_id : !item.owner_org_id || item.owner_org_id === userDialog.form.org_id)))
 const backendForm = computed(() => userDialog.form.user_type === 'BACKEND')
 const typeChanged = computed(() => userDialog.mode === 'edit' && userDialog.form.user_type !== rowUserType(userDialog.row))
 function rowUserType(row) { return row?.user_type || (isAdmin(row) || row?.role_code === 'ROLE-BACKEND' ? 'BACKEND' : 'FRONTEND') }
@@ -77,6 +85,11 @@ function changeUserType(type) {
 const scopeChanged = computed(() => userDialog.mode === 'edit' && userDialog.form.data_scope !== userDialog.row?.data_scope)
 const scopeNeedsRelogin = computed(() => scopeChanged.value
   || (userDialog.mode === 'edit' && userDialog.form.org_id !== userDialog.row?.org_id && followsOrganization(userDialog.form.data_scope)))
+watch(() => userDialog.form.org_id, (next, previous) => {
+  if (!previous || !next || next === previous || !userDialog.visible || backendForm.value) return
+  if (!activeRoles.value.some(item => item.role_code === userDialog.form.role_code)) userDialog.form.role_code = ''
+  if (formOrganization.value?.delegation_managed) userDialog.form.data_scope = 'OWN_ORG'
+})
 
 const treeData = computed(() => {
   const nodes = new Map(organizations.value.map(item => [item.org_id, { ...item, label: item.name, children: [] }]))
@@ -92,6 +105,11 @@ const treeData = computed(() => {
 })
 
 function statusLabel(value) { return value === 'ACTIVE' ? '启用' : '停用' }
+function roleLabel(role) {
+  if (!role.owner_org_id) return roleDisplayName(role)
+  const owner = organizations.value.find(item => item.org_id === role.owner_org_id)
+  return roleCopySource(role) ? `${roleDisplayName(role)} · ${owner?.name || '单位角色'}` : `${role.name}（${owner?.name || '单位角色'}）`
+}
 function isAdmin(row) { return row?.role_code === 'ROLE-ADMIN' }
 function passwordError(password, account = '') {
   if (password.length < 6 || password.length > 32) return '临时密码须为 6–32 位。'
@@ -167,6 +185,7 @@ function openUser(mode, row = null) {
     user_type: rowUserType(row),
     data_scope: row ? row.data_scope : DEFAULT_DATA_SCOPE
   }
+  if (formOrganization.value?.delegation_managed && userDialog.form.user_type === 'FRONTEND') userDialog.form.data_scope = 'OWN_ORG'
   userDialog.visible = true
 }
 async function saveUser() {
@@ -218,8 +237,8 @@ async function resetPassword() {
 }
 async function removeUser(row) {
   try {
-    const { value } = await ElMessageBox.prompt(`账号“${row.account}”将被删除，历史记录仍会保留。`, '删除用户', { inputPlaceholder: '请输入删除原因', inputValidator: value => !!value.trim() || '删除原因为必填项', type: 'warning' })
-    await systemApi.deleteUser(row.user_id, row.version, value.trim())
+    const record = await confirmDeletion(`账号“${row.account}”将被删除，历史记录仍会保留。`, '删除用户')
+    await systemApi.deleteUser(row.user_id, row.version, record)
     ElMessage.success('用户已删除，历史记录保留，相关会话已撤销。')
     await refreshAll()
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '删除失败。') }
@@ -233,10 +252,30 @@ async function orgSaved(result) {
   if (result?.org_id) selectedOrgId.value = result.org_id
   await refreshAll()
 }
+async function removeOrganization(row) {
+  if (!canEditBasic.value || deletingOrgId.value || !row?.org_id || row.org_id === ALL_ORGS) return
+  const { org_id: id, version, name } = row
+  if (!Number.isInteger(version)) return ElMessage.warning('单位版本信息不完整，请刷新后重试。')
+  deletingOrgId.value = id
+  try {
+    await confirmDeletion(`确认删除单位“${name}”？存在人员、下级单位、授权或业务关联时不能删除。`, '删除单位')
+    await systemApi.deleteOrganization(id, version)
+    if (selectedOrgId.value === id) { selectedOrgId.value = ALL_ORGS; filters.page = 1 }
+    ElMessage.success('单位已删除。')
+    await refreshAll()
+  } catch (e) {
+    if (e !== 'cancel' && e !== 'close') {
+      ElMessage.error(e.message || '单位删除失败。')
+      await refreshAll()
+    }
+  } finally { deletingOrgId.value = '' }
+}
 function handleOrgCommand(command, row) {
   if (command === 'add') openOrg(null, row)
   else if (command === 'edit') openOrg(row)
   else if (command === 'view') openOrg(row, null, 'view')
+  else if (command === 'delegation' && canEditBasic.value) Object.assign(delegationDialog, { visible: true, organization: row })
+  else if (command === 'delete') return removeOrganization(row)
 }
 
 watch(() => [filters.roleCode, filters.status, filters.user_type], search)
@@ -268,6 +307,8 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
                   <el-dropdown-item command="view">查看单位</el-dropdown-item>
                   <el-dropdown-item command="add" :disabled="!canManageOrganization">新增下级单位</el-dropdown-item>
                   <el-dropdown-item command="edit" :disabled="!canManageOrganization">编辑单位</el-dropdown-item>
+                  <el-dropdown-item command="delegation" :disabled="!canEditBasic" divided>单位授权</el-dropdown-item>
+                  <el-dropdown-item command="delete" :disabled="!canEditBasic || Boolean(deletingOrgId)" divided><span class="org-delete-label">删除单位</span></el-dropdown-item>
                 </el-dropdown-menu></template>
               </el-dropdown>
               </span>
@@ -280,16 +321,16 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
         <el-form v-if="canReadUsers" class="filter-bar" inline @submit.prevent="search">
           <el-form-item label="用户"><el-input v-model="filters.keyword" clearable placeholder="账号、姓名或联系电话" @keyup.enter="search" /></el-form-item>
           <el-form-item label="用户类型"><el-select v-model="filters.user_type" clearable placeholder="全部类型"><el-option label="前台用户" value="FRONTEND" /><el-option label="后台用户" value="BACKEND" /></el-select></el-form-item>
-          <el-form-item label="角色"><el-select v-model="filters.roleCode" clearable placeholder="全部角色"><el-option v-for="role in roles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
+          <el-form-item label="角色"><el-select v-model="filters.roleCode" clearable placeholder="全部角色"><el-option v-for="role in roles" :key="role.role_code" :label="roleLabel(role)" :value="role.role_code" /></el-select></el-form-item>
           <el-form-item label="状态"><el-select v-model="filters.status" clearable placeholder="全部状态"><el-option label="启用" value="ACTIVE" /><el-option label="停用" value="DISABLED" /></el-select></el-form-item>
           <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
         </el-form>
-        <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><div class="unit-toolbar-actions"><el-button v-if="selectedOrg" @click="openOrg(selectedOrg, null, 'view')">查看单位</el-button><el-button @click="refreshAll">刷新</el-button></div></div>
+        <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><div class="unit-toolbar-actions"><el-button v-if="selectedOrg && canEditBasic" @click="handleOrgCommand('delegation', selectedOrg)">单位授权</el-button><el-button v-if="selectedOrg" @click="openOrg(selectedOrg, null, 'view')">查看单位</el-button><el-button @click="refreshAll">刷新</el-button></div></div>
         <el-empty v-if="!canReadUsers" description="选择左侧单位后点击查看单位，维护单位资料。当前账号没有用户列表读取权限。" />
         <div v-else class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
           <el-table-column label="用户类型" min-width="100"><template #default="{ row }">{{ userTypeLabel(rowUserType(row)) }}</template></el-table-column>
-          <el-table-column prop="role_name" label="角色" min-width="130" /><el-table-column prop="org_name" label="单位" min-width="140" />
+          <el-table-column prop="role_name" label="角色" min-width="150"><template #default="{ row }">{{ userRoleDisplayName(row, roles) }}</template></el-table-column><el-table-column prop="org_name" label="单位" min-width="140" />
           <el-table-column label="数据范围" min-width="128"><template #default="{ row }">{{ dataScopeLabel(row.data_scope) }}</template></el-table-column>
           <el-table-column label="状态" width="82"><template #default="{ row }"><el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">{{ statusLabel(row.status) }}</el-tag></template></el-table-column>
           <el-table-column label="最后登录" min-width="168"><template #default="{ row }">{{ row.last_login_at ? formatTime(row.last_login_at) : '从未登录' }}</template></el-table-column>
@@ -311,15 +352,16 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
         <el-form-item label="联系电话"><el-input v-model="userDialog.form.phone" maxlength="32" /></el-form-item>
         <el-form-item label="所属单位" required :error="userErrors.org_id"><el-select v-model="userDialog.form.org_id" filterable><el-option v-for="org in organizations" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item>
         <el-form-item label="用户类型" required><el-radio-group v-model="userDialog.form.user_type" :disabled="isAdmin(userDialog.row)" @change="changeUserType"><el-radio label="FRONTEND">前台用户</el-radio><el-radio label="BACKEND">后台用户</el-radio></el-radio-group></el-form-item>
-        <el-form-item v-if="!backendForm" label="角色" required :error="userErrors.role_code"><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="role.name" :value="role.role_code" /></el-select></el-form-item>
+        <el-form-item v-if="!backendForm" label="角色" required :error="userErrors.role_code"><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="roleLabel(role)" :value="role.role_code" /></el-select></el-form-item>
         <el-alert v-else class="dialog-grid__wide" title="后台用户拥有全部后台菜单和管理功能，无需配置业务角色。" type="info" :closable="false" />
         <el-form-item v-if="userDialog.mode === 'create'" label="临时密码" required :error="userErrors.temporary_password"><el-input v-model="userDialog.form.temporary_password" type="password" show-password autocomplete="new-password" maxlength="32" /><small>6–32 位，包含大小写字母、数字和特殊字符。</small></el-form-item>
         <el-form-item label="数据范围" required class="dialog-grid__wide">
-          <el-radio-group v-model="userDialog.form.data_scope" :disabled="backendForm">
+          <el-radio-group v-model="userDialog.form.data_scope" :disabled="backendForm || formOrganization?.delegation_managed">
             <el-radio v-for="option in DATA_SCOPE_OPTIONS" :key="option.value" :label="option.value">{{ option.label }}</el-radio>
           </el-radio-group>
           <small v-if="isAdmin(userDialog.row)">超级管理员固定能看到全部单位的数据。</small>
           <small v-else-if="backendForm">后台用户固定管理全部单位；不自动获得前台反制操作授权。</small>
+          <small v-else-if="formOrganization?.delegation_managed">该单位已启用分权管理，前台人员固定查看本单位数据。</small>
           <small v-else-if="!isAssignableDataScope(userDialog.form.data_scope)">当前为“{{ dataScopeLabel(userDialog.form.data_scope) }}”（早期审批设置）。不选就保持原样；选择后改为按所属单位确定范围。</small>
           <small v-else>{{ dataScopeHint(userDialog.form.data_scope) }}告警、统计、导出和证据都按这个范围显示。</small>
         </el-form-item>
@@ -335,10 +377,12 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
     </el-dialog>
     <OrganizationDialog v-model:visible="orgDialog.visible" :row="orgDialog.row" :parent="orgDialog.parent" :mode="orgDialog.mode" :organizations="organizations" :can-read-directory="canReadDirectory" :can-edit-directory="canEditDirectory" :can-edit-basic="canEditBasic" @saved="orgSaved" />
     <DistrictsDialog v-if="canReadUsers" v-model:visible="districtDialogVisible" :can-edit="canEditBasic" />
+    <UnitDelegationDialog v-if="delegationDialog.visible" v-model:visible="delegationDialog.visible" :organization="delegationDialog.organization" @saved="refreshAll" />
   </div>
 </template>
 
 <style scoped>
+.org-delete-label{color:var(--el-color-danger)}
 .unit-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;flex:none}.unit-toolbar-actions .el-button+.el-button{margin-left:0}.table-toolbar{flex-wrap:wrap;gap:12px}:deep(.el-table .cell){white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
 .user-management{display:grid;grid-template-columns:292px minmax(0,1fr);min-height:0;overflow:hidden}
 .org-panel{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:linear-gradient(180deg,#fbfdff 0%,#f6f9fd 100%)}

@@ -23,8 +23,10 @@ public final class LocalInterfaceDtos {
  public record WeatherInput(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @Size(max=36) String planId,@NotBlank @Size(max=128) String areaName,
   @NotNull @Positive Long publishedAt,@NotEmpty @Size(max=48) List<@Valid Period> periods,@Size(max=36) String districtId,
-  @Size(min=4,max=com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.MAX_VERTICES+1) List<List<Double>> polygon){
-  public WeatherInput(String messageId,String planId,String areaName,Long publishedAt,List<Period> periods){this(messageId,planId,areaName,publishedAt,periods,null,null);}
+  @Size(min=4,max=com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.MAX_VERTICES+1) List<List<Double>> polygon,
+  @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+  @Size(max=32) String coordinateSystem){
+  public WeatherInput(String messageId,String planId,String areaName,Long publishedAt,List<Period> periods){this(messageId,planId,areaName,publishedAt,periods,null,null,null);}
  }
  public record Period(@NotNull @Positive Long from,@NotNull @Positive Long to,@NotBlank @Size(max=128) String summary,
   @NotNull @DecimalMin("-90") @DecimalMax("60") Double temperatureC,

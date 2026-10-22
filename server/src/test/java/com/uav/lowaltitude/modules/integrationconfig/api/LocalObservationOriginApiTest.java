@@ -46,19 +46,33 @@ class LocalObservationOriginApiTest {
         jdbc.update("INSERT INTO app_district(district_id,district_code,name,enabled,created_at,updated_at) VALUES(?,?,'origin test district',TRUE,?,?)",district,district,now,now);
     }
 
-    @Test void oldRequestsKeepTheirOriginalHashAndRemainUnmapped() throws Exception {
+    @Test void declaredCoordinateSystemIsIncludedInRegistrationHashAndIdentityRemainsUnmapped() throws Exception {
         Map<String,Object> body=input();
         JsonNode registered=send(body,200);
         assertThat(send(body,200)).isEqualTo(registered);
         var row=jdbc.queryForMap("SELECT request_hash,origin_ops_device_id FROM simulator_observation_source WHERE source_id=?",registered.path("source_id").asText());
         String oldHash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(
-                new LegacyInput((String)body.get("message_id"),(String)body.get("name"),(BigDecimal)body.get("longitude"),
-                        (BigDecimal)body.get("latitude"),org,district))));
+                new RegistrationSnapshot((String)body.get("message_id"),(String)body.get("name"),(BigDecimal)body.get("longitude"),
+                        (BigDecimal)body.get("latitude"),org,district,"WGS84"))));
         assertThat(row.get("request_hash")).isEqualTo(oldHash);
         assertThat(row.get("origin_ops_device_id")).isNull();
         body.put("origin_ops_device_id",origin());
         send(body,409);
         assertThat(jdbc.queryForObject("SELECT origin_ops_device_id FROM simulator_observation_source WHERE source_id=?",String.class,registered.path("source_id").asText())).isNull();
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @ValueSource(strings={" ", "GCJ02", "BD-09", "CGCS2000"})
+    void observationAndWeatherRegistrationsRejectUndeclaredOrForeignCoordinates(String coordinateSystem) throws Exception {
+        for(String path:new String[]{URL,"/api/v1/local-interface-simulator/weather-devices"}) {
+            Map<String,Object> body=input();body.put("device_no","WX-"+id());
+            if(coordinateSystem==null)body.remove("coordinate_system");else body.put("coordinate_system",coordinateSystem);
+            mvc.perform(post(path).header("Authorization",token).contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsString(body))).andExpect(status().isBadRequest());
+            String table=URL.equals(path)?"simulator_observation_source":"simulator_weather_device";
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM "+table+" WHERE message_id=?",Long.class,body.get("message_id"))).isZero();
+        }
     }
 
     @Test void mappedRegistrationBindsIdentityIntoIdempotencyAndDoesNotMutateOriginal() throws Exception {
@@ -107,7 +121,7 @@ class LocalObservationOriginApiTest {
         Map<String,Object> body=new LinkedHashMap<>();
         body.put("message_id",id());body.put("name","explicit normalized observation");
         body.put("longitude",new BigDecimal("118.2"));body.put("latitude",new BigDecimal("37.1"));
-        body.put("owner_org_id",org);body.put("district_id",district);return body;
+        body.put("owner_org_id",org);body.put("district_id",district);body.put("coordinate_system","WGS84");return body;
     }
 
     private String origin() {
@@ -126,5 +140,5 @@ class LocalObservationOriginApiTest {
                 .andReturn().getResponse().getContentAsString()).path("data");
     }
     private static String id(){return UUID.randomUUID().toString();}
-    private record LegacyInput(String messageId,String name,BigDecimal longitude,BigDecimal latitude,String ownerOrgId,String districtId) { }
+    private record RegistrationSnapshot(String messageId,String name,BigDecimal longitude,BigDecimal latitude,String ownerOrgId,String districtId,String coordinateSystem) { }
 }

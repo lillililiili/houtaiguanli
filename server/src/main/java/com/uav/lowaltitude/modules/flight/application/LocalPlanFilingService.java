@@ -22,7 +22,7 @@ public class LocalPlanFilingService {
  @Transactional public Map<String,Object> save(String id,long version,Filing data){
   var plan=flights.flightPlan(id);simulated(plan.sourceMode());
   if(plan.version()!=version)throw conflict("VERSION_CONFLICT","任务已更新，请重新读取后补录");
-  if((data.takeoffLongitude()==null)!=(data.takeoffLatitude()==null)||(data.landingLongitude()==null)!=(data.landingLatitude()==null))throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","起降点经纬度必须成对填写");
+  validateCoordinates(data);
   String source=blank(data.sourceId());
   if(plan.source()!=null&&!Objects.equals(plan.source().sourceId(),source))throw conflict("PLAN_SOURCE_IMMUTABLE","已有任务来源不可替换或清空");
   validateSource(data);validateCarried(data);
@@ -83,8 +83,15 @@ public class LocalPlanFilingService {
   return directory.createContact(new ContactInput(operator,blank(data.pilotName()),List.of("PILOT"),blank(data.pilotPhone()),null,null,true,null,now,basis,null),UUID.randomUUID().toString()).contactId();
  }
  public void validateSource(Filing data){
+  validateCoordinates(data);
   String source=blank(data.sourceId());
   if(source!=null&&!repository.sourceAvailable(source))throw conflict("SIMULATION_SOURCE_REQUIRED","请选择已启用的模拟或回放任务来源");
+ }
+ public static void validateCoordinates(Filing data){
+  try{
+   com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(data.takeoffLongitude(),data.takeoffLatitude(),data.coordinateSystem());
+   com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(data.landingLongitude(),data.landingLatitude(),data.coordinateSystem());
+  }catch(IllegalArgumentException e){throw bad("起降点："+e.getMessage());}
  }
  @Transactional(readOnly=true) public Options options(){
   var warnings=new ArrayList<String>();List<Option> orgs=List.of();List<Pilot> pilots=List.of();List<SourceBinding> bindings=List.of();

@@ -2,13 +2,14 @@
 import { computed, ref } from 'vue';
 import { deviceApi } from '@/api/devices.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
 import { formatTime } from '@/utils/format.js';
 
 const props = defineProps({ task: { type: Object, default: null } });
 const emit = defineEmits(['refresh']);
 const auth = useAuthStore();
 const busy = ref(false), error = ref('');
-const canEnd = computed(() => auth.hasPermission('devices.op') && ['OPEN', 'ENDING'].includes(props.task?.status));
+const canEnd = computed(() => !isUnitAdministrator(auth.user) && auth.hasPermission('devices.op') && ['OPEN', 'ENDING'].includes(props.task?.status));
 async function endTracking() {
   if (busy.value || !canEnd.value) return;
   const taskId = props.task.task_id;

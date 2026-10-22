@@ -16,9 +16,12 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 public class DatabaseAccessControlService implements AccessControlService {
 
     private final AccessControlMapper accessControlMapper;
+    private final OrgEffectivePermissionService effective;
 
-    public DatabaseAccessControlService(AccessControlMapper accessControlMapper) {
+    public DatabaseAccessControlService(AccessControlMapper accessControlMapper,
+                                        OrgEffectivePermissionService effective) {
         this.accessControlMapper = accessControlMapper;
+        this.effective = effective;
     }
 
     @Override
@@ -28,6 +31,9 @@ public class DatabaseAccessControlService implements AccessControlService {
             throw new ApiException(HttpStatus.FORBIDDEN, "PASSWORD_CHANGE_REQUIRED", "请先修改临时密码");
         }
         if (!FrontendActionPolicy.isAvailable(current.roleCode(), permission.value())) {
+            throw forbidden();
+        }
+        if (!effective.permissionCodes(current.userId()).contains(permission.value())) {
             throw forbidden();
         }
         String storedScopeMode = accessControlMapper.findGrantedScopeMode(

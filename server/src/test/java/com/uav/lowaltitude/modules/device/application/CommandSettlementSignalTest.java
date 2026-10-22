@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -15,8 +16,12 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.mock.env.MockEnvironment;
@@ -45,9 +50,11 @@ class CommandSettlementSignalTest {
     private final DisposalCommandGuard guard = mock(DisposalCommandGuard.class);
 
     private final Countermeasure4ChControlRepository fourChannelControls = mock(Countermeasure4ChControlRepository.class);
+    private final DeviceAdapterRegistry adapters = mock(DeviceAdapterRegistry.class);
+    private final CountermeasureStartAttempts startAttempts = mock(CountermeasureStartAttempts.class);
     private final Countermeasure4ChControlService fourChannel = new Countermeasure4ChControlService(
-            mock(DeviceAccessPolicy.class), devices, fourChannelControls, mock(DeviceAdapterRegistry.class), clock,
-            mock(AuditService.class), new ObjectMapper(), events, new MockEnvironment(), guard, mock(CountermeasureStartAttempts.class));
+            mock(DeviceAccessPolicy.class), devices, fourChannelControls, adapters, clock,
+            mock(AuditService.class), new ObjectMapper(), events, new MockEnvironment(), guard, startAttempts);
 
     private final LingyunControlRepository lingyunControls = mock(LingyunControlRepository.class);
     @SuppressWarnings("unchecked")
@@ -61,7 +68,7 @@ class CommandSettlementSignalTest {
     @Test
     void fourChannelStartCancelledForOfflineDeviceSettlesDisposal() {
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth")).thenReturn(true);
+        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
         when(devices.find("device")).thenReturn(device("OFFLINE"));
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("DEVICE_NOT_OPERABLE"), anyString())).thenReturn(1);
@@ -74,7 +81,7 @@ class CommandSettlementSignalTest {
     @Test
     void fourChannelStartCancelledAfterAuthorizationStoppedSettlesDisposal() {
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth")).thenReturn(false);
+        when(guard.mayStart("auth", "executor", "device")).thenReturn(false);
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("AUTHORIZATION_STOPPED"), anyString())).thenReturn(1);
 
@@ -84,9 +91,50 @@ class CommandSettlementSignalTest {
     }
 
     @Test
+    void fourChannelRevocationDuringCommandLockWaitPreventsAnySendAttempt() {
+        AtomicBoolean authorized = new AtomicBoolean(true);
+        when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
+        when(guard.mayStart("auth", "executor", "device")).thenAnswer(call -> authorized.get());
+        doAnswer(call -> { authorized.set(false); return null; }).when(fourChannelControls).lockCommand("c");
+        when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
+                eq("AUTHORIZATION_STOPPED"), anyString())).thenReturn(1);
+
+        fourChannel.dispatch("c");
+
+        verify(events).publishEvent(new DeviceCommandFinished("c"));
+        verify(startAttempts, never()).reserve(anyString(), anyString(), anyString(), anyLong());
+        verify(adapters, never()).require(any(), anyString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 2})
+    void lingyunRevocationDuringPrepareOrPublicationLockWaitPreventsPublishing(int revokedAtLock) {
+        AtomicBoolean authorized = new AtomicBoolean(true);
+        AtomicInteger locks = new AtomicInteger();
+        when(lingyunControls.control("c")).thenReturn(
+                lingyunCommand("QUEUED", now + 10_000), lingyunCommand("QUEUED", now + 10_000),
+                lingyunCommand("SENT", now + 10_000), lingyunCommand("SENT", now + 10_000));
+        when(guard.mayStart("auth", "executor", "device")).thenAnswer(call -> authorized.get());
+        doAnswer(call -> {
+            if (locks.incrementAndGet() == revokedAtLock) authorized.set(false);
+            return null;
+        }).when(lingyunControls).lockCommand("c");
+        when(devices.find("device")).thenReturn(device("ONLINE"));
+        when(sessions.getIfAvailable()).thenReturn(supervisor);
+        when(lingyunControls.updateCommand("c", "QUEUED", "SENT", now, null, null)).thenReturn(1);
+        when(lingyunControls.updateCommand(eq("c"), eq(revokedAtLock == 1 ? "QUEUED" : "SENT"),
+                eq("CANCELLED"), anyLong(), eq("AUTHORIZATION_STOPPED"), anyString())).thenReturn(1);
+
+        lingyun.dispatch("c");
+
+        verify(events).publishEvent(new DeviceCommandFinished("c"));
+        verify(supervisor, never()).publish(anyString(), anyString(), any());
+    }
+
+    @Test
     void lostRaceDoesNotSignalAgain() {
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth")).thenReturn(true);
+        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
         when(devices.find("device")).thenReturn(device("OFFLINE"));
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("DEVICE_NOT_OPERABLE"), anyString())).thenReturn(0);
@@ -99,7 +147,7 @@ class CommandSettlementSignalTest {
     @Test
     void lingyunStartCancelledForOfflineDeviceSettlesDisposal() {
         when(lingyunControls.control("c")).thenReturn(lingyunCommand("QUEUED", now + 10_000));
-        when(guard.mayStart("auth")).thenReturn(true);
+        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
         when(devices.find("device")).thenReturn(device("OFFLINE"));
         when(lingyunControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("DEVICE_NOT_OPERABLE"), anyString())).thenReturn(1);
@@ -112,7 +160,7 @@ class CommandSettlementSignalTest {
     @Test
     void lingyunExpiredSendWindowSettlesDisposal() {
         when(lingyunControls.control("c")).thenReturn(lingyunCommand("QUEUED", now));
-        when(guard.mayStart("auth")).thenReturn(true);
+        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
         when(lingyunControls.updateCommand(eq("c"), eq("QUEUED"), eq("TIMED_OUT"), anyLong(),
                 eq("COMMAND_EXPIRED"), anyString())).thenReturn(1);
 
@@ -126,7 +174,7 @@ class CommandSettlementSignalTest {
         when(lingyunControls.control("c")).thenReturn(
                 lingyunCommand("QUEUED", now + 10_000), lingyunCommand("QUEUED", now + 10_000),
                 lingyunCommand("SENT", now + 10_000), lingyunCommand("SENT", now + 10_000));
-        when(guard.mayStart("auth")).thenReturn(true);
+        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
         when(devices.find("device")).thenReturn(device("ONLINE"));
         when(sessions.getIfAvailable()).thenReturn(supervisor);
         when(lingyunControls.updateCommand("c", "QUEUED", "SENT", now, null, null)).thenReturn(1);
@@ -146,6 +194,7 @@ class CommandSettlementSignalTest {
         command.put("action", Countermeasure4ChControlService.ACTION_MASK);
         command.put("mask", 15);
         command.put("control_authorization_id", "auth");
+        command.put("requested_by", "executor");
         command.put("device_id", "device");
         return command;
     }
@@ -157,6 +206,7 @@ class CommandSettlementSignalTest {
         command.put("operation_type", 1);
         command.put("operation_cmd", 1);
         command.put("control_authorization_id", "auth");
+        command.put("requested_by", "executor");
         command.put("deadline_at", deadline);
         command.put("device_id", "device");
         command.put("provider_code", "lingyun");

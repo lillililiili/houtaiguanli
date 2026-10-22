@@ -97,7 +97,12 @@ public final class SystemDtos {
     }
 
     public record OrganizationResponse(
-            String orgId, String parentId, String orgCode, String name, boolean enabled, int version) {
+            String orgId, String parentId, String orgCode, String name, boolean enabled, int version,
+            boolean delegationManaged) {
+        public OrganizationResponse(String orgId, String parentId, String orgCode, String name,
+                boolean enabled, int version) {
+            this(orgId,parentId,orgCode,name,enabled,version,false);
+        }
     }
 
     public record OrganizationCreateRequest(
@@ -142,7 +147,11 @@ public final class SystemDtos {
 
     public record RoleSummaryResponse(
             String roleCode, String name, String description, boolean builtin,
-            boolean enabled, int userCount, int version) {
+            boolean enabled, int userCount, int version, String ownerOrgId, RoleCopyOrigin copyOrigin) {
+        public RoleSummaryResponse(String roleCode, String name, String description, boolean builtin,
+                boolean enabled, int userCount, int version) {
+            this(roleCode,name,description,builtin,enabled,userCount,version,null,null);
+        }
     }
 
     public record RoleResponse(
@@ -150,8 +159,16 @@ public final class SystemDtos {
             boolean enabled, int userCount, int version, List<PermissionResponse> permissions,
             /* 只列该角色**已授**的动作行（决策 15-1）：把全目录都列出来、未授的标 NONE，
                会让页面分不清"没授给它"和"系统里没这一项"。 */
-            List<RoleActionResponse> actions) {
+            List<RoleActionResponse> actions, String ownerOrgId, RoleCopyOrigin copyOrigin) {
+        public RoleResponse(String roleCode, String name, String description, boolean builtin,
+                boolean enabled, int userCount, int version, List<PermissionResponse> permissions,
+                List<RoleActionResponse> actions) {
+            this(roleCode,name,description,builtin,enabled,userCount,version,permissions,actions,null,null);
+        }
     }
+
+    /** Immutable provenance only; source roles may subsequently be renamed or removed. */
+    public record RoleCopyOrigin(String sourceRoleCode, String sourceRoleName, long copiedAt) { }
 
     public record RoleActionResponse(String permissionCode, String level) { }
 
@@ -169,7 +186,11 @@ public final class SystemDtos {
             @NotBlank @Size(max = 64) String name,
             @Size(max = 512) String description,
             @NotEmpty @Valid List<PermissionAssignment> permissions,
-            @Size(max = 1000) String reason) {
+            @Size(max = 1000) String reason,
+            @Size(max = 36) String ownerOrgId) {
+        public RoleCreateRequest(String name,String description,List<PermissionAssignment> permissions,String reason) {
+            this(name,description,permissions,reason,null);
+        }
     }
 
     public record RoleUpdateRequest(@Size(max = 512) String description, @Min(0) int expectedVersion) {

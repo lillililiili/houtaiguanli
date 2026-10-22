@@ -7,12 +7,16 @@ import MaintenanceReportHistory from './maintenance/MaintenanceReportHistory.vue
 import IncidentRebootPanel from './maintenance/IncidentRebootPanel.vue';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { maintenancePermission } from '@/utils/managementAccess.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
 import { useRealtimeRefresh } from '@/services/realtime.js';
 import { formatDeviceNo } from '@/utils/format.js';
 import { maintenanceLocation, maintenanceMeta, maintenanceState, useMaintenanceWorkflow } from './maintenance/useMaintenanceWorkflow.js';
 import { alarmLabel, connectionLabel, finishedMaintenance, healthLabel, maintenanceActionLabel, maintenanceEventLabel, maintenanceNextStep, maintenanceTime, primaryMaintenanceAction } from './maintenance/presentation.js';
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore();
+const canOperate = computed(() => auth.hasPermission(maintenancePermission(auth.user, 'op')));
+const unitMode = computed(() => isUnitAdministrator(auth.user));
 const taskId = computed(() => typeof route.query.task_id === 'string' ? route.query.task_id : '');
 const deviceFilter = computed(() => typeof route.query.device_id === 'string' ? route.query.device_id : '');
 const model = useMaintenanceWorkflow(taskId);
@@ -20,14 +24,14 @@ const { workflow, loading, error, busy, actionError, pending, lastSuccessAt } = 
 const task = computed(() => workflow.value?.task || {});
 const currentState = computed(() => workflow.value?.current_device_state || task.value.current_device_state || {});
 const meta = computed(() => maintenanceMeta(workflow.value?.state));
-const primary = computed(() => primaryMaintenanceAction(workflow.value));
+const primary = computed(() => !unitMode.value || canOperate.value ? primaryMaintenanceAction(workflow.value) : null);
 const nextStep = computed(() => maintenanceNextStep(workflow.value));
 const waitingForRecovery = computed(() => ['PENDING', 'PROCESSING', 'PENDING_VERIFICATION'].includes(workflow.value?.state));
 const operatorGuidance = computed(() => workflow.value?.state === 'PENDING'
   ? '点击“接手处理”登记办理人，按当前异常检查供电、网络和设备故障，必要时联系维护人员。'
   : '按当前异常检查供电、网络和设备故障，必要时联系维护人员。处理说明可选填。');
 const completed = computed(() => finishedMaintenance(workflow.value?.state));
-const canDiagnose = computed(() => auth.hasMenu('commission') && auth.hasPermission('commissioning.read') && auth.hasPermission('devices.read'));
+const canDiagnose = computed(() => auth.hasMenu('commission') && auth.hasPermission('commissioning.read') && (unitMode.value || auth.hasPermission('devices.read')));
 const canMonitor = computed(() => auth.hasMenu('monitor') && auth.hasPermission('monitoring.read'));
 const items = ref([]), total = ref(0), page = ref(1), filter = ref('ACTIVE');
 const listLoading = ref(false), listError = ref(''), listSuccessAt = ref(null);
@@ -35,7 +39,7 @@ const note = ref('');
 const rebootLocked = ref(false);
 const operationLocked = computed(() => busy.value || !!pending.value || rebootLocked.value);
 const submittingLabel = computed(() => ({ START: '正在接手处理…', CONFIRM_COMPLETE: '正在确认办结…', SAVE_PROGRESS: '正在保存记录…' })[pending.value?.body?.action] || '正在提交…');
-const canReboot = computed(() => auth.hasPermission('monitoring.op') && workflow.value?.open_incidents?.some(item => item.allowed_actions?.includes('REBOOT')));
+const canReboot = computed(() => !unitMode.value && canOperate.value && workflow.value?.open_incidents?.some(item => item.allowed_actions?.includes('REBOOT')));
 const relatedOpen = ref([]);
 const statusOptions = [
   ['ACTIVE', '未办结'], ['NOT_STARTED', '待处理'], ['PROCESSING', '处理中'],
@@ -85,7 +89,7 @@ function openTask(item) {
   void router.push(maintenanceLocation({ task_id: item.task_id, ...(deviceFilter.value ? { device_id: deviceFilter.value } : {}) }));
 }
 async function action(name) {
-  if (rebootLocked.value) return;
+  if (!canOperate.value || rebootLocked.value) return;
   const submittedNote = note.value.trim();
   const result = await model.act(name, ['SAVE_PROGRESS', 'CONFIRM_COMPLETE'].includes(name) ? { note: submittedNote } : {});
   if (!result) return;
@@ -94,6 +98,7 @@ async function action(name) {
   void loadList();
 }
 async function retry() {
+  if (!canOperate.value) return;
   const request = pending.value;
   const result = await model.retry();
   if (!result) return;
@@ -175,10 +180,10 @@ onBeforeUnmount(() => { alive = false; ++listGeneration; });
               <div v-if="workflow.recovery" class="recovery-fact" :class="{passed:workflow.recovery.result==='PASS' && (!stateOutdated || completed)}"><b>{{ completed?'办结时的恢复依据':stateOutdated?'恢复状态待确认':workflow.recovery.result==='PASS'?'✓ 恢复核验通过':'等待恢复条件满足' }}</b><p>{{ workflow.recovery.reason || workflow.blocked_reason || '等待新的设备上报。' }}</p><small>{{ completed?'办结核验':'最近核验' }} {{ maintenanceTime(workflow.recovery.checked_at || workflow.recovery.evaluated_at) }}</small><div v-if="recoveryEvidence" class="recovery-evidence"><p>核验时：{{ connectionLabel(recoveryEvidence.connectivity) }} · {{ healthLabel(recoveryEvidence.health_code, recoveryEvidence.connectivity) }} · {{ alarmLabel(recoveryEvidence.has_alarm) }}<span v-if="recoveryEvidence.simulated"> · 模拟依据</span></p><p>心跳依据 {{ maintenanceTime(recoveryEvidence.last_heartbeat_at) }}</p><p>健康依据 {{ maintenanceTime(recoveryEvidence.health_observed_at) }}</p><p>告警依据 {{ maintenanceTime(recoveryEvidence.alarm_observed_at) }}</p></div><p v-if="completed">以上为办结时保存的依据，不随当前设备状态变化。</p></div>
             </section>
             <el-collapse v-model="relatedOpen" class="case-related">
-              <el-collapse-item v-if="!completed" title="记录处理情况（选填）" name="note"><label for="maintenance-note">检查或处理说明</label><el-input id="maintenance-note" v-model="note" :disabled="operationLocked" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="可记录检查供电、网络或联系设备维护人员的情况" /><el-button :disabled="operationLocked || !model.can('SAVE_PROGRESS') || !note.trim()" :loading="busy" @click="action('SAVE_PROGRESS')">记录处理</el-button><p class="muted">不填写也可自动核验恢复；保存说明不会办结处置单。</p></el-collapse-item>
+              <el-collapse-item v-if="!completed && canOperate" title="记录处理情况（选填）" name="note"><label for="maintenance-note">检查或处理说明</label><el-input id="maintenance-note" v-model="note" :disabled="operationLocked" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="可记录检查供电、网络或联系设备维护人员的情况" /><el-button :disabled="operationLocked || !model.can('SAVE_PROGRESS') || !note.trim()" :loading="busy" @click="action('SAVE_PROGRESS')">记录处理</el-button><p class="muted">不填写也可自动核验恢复；保存说明不会办结处置单。</p></el-collapse-item>
               <el-collapse-item :title="`处理记录（${events.length}）`" name="events"><el-timeline><el-timeline-item v-for="event in events" :key="event.event_id" :timestamp="maintenanceTime(event.occurred_at)"><b>{{ maintenanceEventLabel(event.action) }}</b> · {{ event.actor_name || '系统' }}<p>{{ event.note }}</p></el-timeline-item></el-timeline><p v-if="!events.length" class="muted">暂无后续处理记录。</p></el-collapse-item>
               <el-collapse-item title="关联任务、异常与原始上报" name="related"><p>上报人：{{ task.reported_by_name || '系统' }}</p><p>上报时连接：{{ connectionLabel(task.connectivity) }}；健康：{{ healthLabel(task.health_code, task.connectivity) }}</p><p v-if="task.handling_note">处理结果：{{ task.handling_note }}</p><h4>关联任务</h4><p v-for="item in relatedPlans" :key="item.plan_id">{{ [item.plan_no, item.plan_name].filter(Boolean).join(' ') || '已关联飞行任务' }}</p><p v-if="!relatedPlans.length">无可见关联任务；设备异常可独立办理。</p><h4>关联异常</h4><p v-for="item in relatedIncidents" :key="item.incident_id">{{ item.reason }} · {{ maintenanceTime(item.detected_at) }}</p><p v-if="!relatedIncidents.length">暂无可见关联异常记录。</p><MaintenanceReportHistory :reports="workflow.related_reports || []" :plans="relatedPlans" :notifications="task.notification_attempts || []" /><details class="tech-details"><summary>详细信息</summary><p>处置单内部编号：{{ task.task_id }}</p><p v-for="item in relatedPlans" :key="`plan-${item.plan_id}`">任务内部编号：{{ item.plan_id }}</p></details></el-collapse-item>
-              <el-collapse-item v-if="canDiagnose || canMonitor || canReboot" title="高级诊断（按需使用）" name="diagnose"><p>查看详细运行状态、连接配置或协议调测。日常恢复无需创建调测任务。</p><div class="advanced-actions"><el-button v-if="canMonitor" :disabled="operationLocked" @click="monitor">查看设备监测</el-button><el-button v-if="canDiagnose" :disabled="operationLocked" @click="diagnose">设备接入调测</el-button></div><IncidentRebootPanel :key="taskId" :device-name="task.device_name" :incidents="workflow.open_incidents || []" :disabled="stateOutdated || busy || !!pending || completed" @lock="rebootLocked=$event" @refresh="refresh" /></el-collapse-item>
+              <el-collapse-item v-if="canDiagnose || canMonitor || canReboot" title="高级诊断（按需使用）" name="diagnose"><p>查看详细运行状态、连接配置或协议调测。日常恢复无需创建调测任务。</p><div class="advanced-actions"><el-button v-if="canMonitor" :disabled="operationLocked" @click="monitor">查看设备监测</el-button><el-button v-if="canDiagnose" :disabled="operationLocked" @click="diagnose">设备接入调测</el-button></div><IncidentRebootPanel v-if="!unitMode" :key="taskId" :device-name="task.device_name" :incidents="workflow.open_incidents || []" :disabled="stateOutdated || busy || !!pending || completed" @lock="rebootLocked=$event" @refresh="refresh" /></el-collapse-item>
             </el-collapse>
           </div>
           <footer class="case-next-step" aria-live="polite">
@@ -188,12 +193,12 @@ onBeforeUnmount(() => { alive = false; ++listGeneration; });
                 <p class="system-check-guidance"><b>系统正在检查</b>：每约 5 秒核对在线心跳、健康状态、设备告警及操作状态，满足恢复条件后提示“待确认办结”。</p>
               </template>
               <template v-else><b>{{ completed?'办理结果':'下一步' }}</b><p>{{ stateOutdated?'当前状态更新失败，请刷新后继续。':nextStep }}</p></template>
-              <small v-if="!completed && !auth.hasPermission('monitoring.op')">当前账号只能查看；接手和办结需要设备监测操作权限。</small>
+              <small v-if="!completed && !canOperate">当前账号只能查看；接手和办结需要设备异常处理操作权限。</small>
               <p v-if="actionError" class="action-error">{{ actionError }}</p>
             </div>
             <el-button v-if="busy" type="primary" size="large" loading disabled>{{ submittingLabel }}</el-button>
-            <el-button v-else-if="pending" type="primary" @click="retry">按原请求重试确认</el-button>
-            <el-button v-else-if="primary && !completed" type="primary" size="large" :disabled="operationLocked || !model.can(primary)" @click="action(primary)">{{ maintenanceActionLabel(primary) }}</el-button>
+            <el-button v-else-if="pending" type="primary" :disabled="!canOperate" @click="retry">按原请求重试确认</el-button>
+            <el-button v-else-if="primary && !completed" type="primary" size="large" :disabled="!canOperate || operationLocked || !model.can(primary)" @click="action(primary)">{{ maintenanceActionLabel(primary) }}</el-button>
             <span v-else-if="!completed" class="automatic-status">{{ stateOutdated?'状态待更新':waitingForRecovery?'等待设备恢复':'暂无可执行操作' }}</span>
           </footer>
         </template>

@@ -23,6 +23,6 @@ public class TargetReportQueryService extends BusinessReportSource {
     }
     @Override protected Dataset dataset(Range range) {
 
-        return repository.reportDataset(reader, range, access.require(PermissionCode.TARGET_READ));
+        return repository.reportDataset(reader, range, com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.TARGET_READ));
     }
 }

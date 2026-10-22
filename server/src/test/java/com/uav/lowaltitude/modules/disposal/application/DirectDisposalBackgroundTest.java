@@ -104,6 +104,15 @@ class DirectDisposalBackgroundTest {
         assertThat(guard.mayStart(id)).isFalse();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"USER", "ROLE", "PASSWORD", "SCOPE", "DEVICES", "DIRECT"})
+    void secondCheckInSameTransactionDoesNotReuseCachedAccountRoleOrActionGrant(String revoked) {
+        String id = authorization("DIRECT", "EXECUTING", "LINGYUN_B", 300);
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isTrue();
+        revoke(revoked);
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isFalse();
+    }
+
     @Test void queuedDirectCommandStopsAtAuthorizationExpiry() {
         assertThat(guard.mayStart(authorization("DIRECT", "EXECUTING", "LINGYUN_B", -1))).isFalse();
     }
@@ -136,9 +145,44 @@ class DirectDisposalBackgroundTest {
         assertThat(guard.mayStart(authorization("DIRECT", status, "LINGYUN_B", 300))).isFalse();
     }
 
-    @Test void reviewAndUnknownProtocolAuthorizationsKeepExistingGuardBehavior() {
-        assertThat(guard.mayStart(authorization("REVIEW", "EXECUTING", "LINGYUN_B", 300))).isTrue();
-        assertThat(guard.mayStart("external-protocol-authorization")).isTrue();
+    @Test void reviewRequiresActualExecutorAndExternalProtocolStillRequiresDevicePermission() {
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values (?,'disposal:execute','OP',false,current_timestamp)", role);
+        String id = authorization("REVIEW", "EXECUTING", "LINGYUN_B", 300);
+        assertThat(guard.mayStart(id)).isFalse();
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isTrue();
+        assertThat(guard.mayStart("external-protocol-authorization")).isFalse();
+        assertThat(guard.mayStart("external-protocol-authorization", userId, scopedDeviceId)).isTrue();
+        jdbc.update("delete from app_role_permission where role_code=? and permission_code='disposal:execute'", role);
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DIRECT", "REVIEW"})
+    void unitCeilingRevocationPreventsQueuedStartEvenWhenOriginalRoleStillGrantsIt(String mode) {
+        String action = "DIRECT".equals(mode) ? "disposal:direct" : "disposal:execute";
+        if ("REVIEW".equals(mode)) {
+            jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values (?,'disposal:execute','OP',false,current_timestamp)", role);
+        }
+        jdbc.update("update app_user set org_id=?,scope_org_rule='OWN_ORG' where user_id=?", ORG, userId);
+        jdbc.update("update app_role set owner_org_id=?,name_scope=? where role_code=?", ORG, ORG, role);
+        jdbc.update("insert into app_org_delegation(org_id,administrator_user_id,version,created_at,updated_at) values (?,NULL,0,0,0)", ORG);
+        jdbc.update("insert into app_org_permission(org_id,permission_code,permission_level,menu_enabled) values (?,'devices','OP',false)", ORG);
+        jdbc.update("insert into app_org_action(org_id,permission_code,permission_level) values (?,?,'OP')", ORG, action);
+        String id = authorization(mode, "EXECUTING", "LINGYUN_B", 300);
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isTrue();
+        jdbc.update("delete from app_org_action where org_id=? and permission_code=?", ORG, action);
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isFalse();
+        assertThat(jdbc.queryForObject("select permission_level from app_role_permission where role_code=? and permission_code=?",
+                String.class, role, action)).isEqualTo("OP");
+    }
+
+    @Test void reviewedCommandUsesExecutorRatherThanBorrowingApplicantsPermissions() {
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled,created_at) values (?,'disposal:execute','OP',false,current_timestamp)", role);
+        String id = authorization("REVIEW", "EXECUTING", "LINGYUN_B", 300);
+        assertThat(guard.mayStart(id, userId, scopedDeviceId)).isTrue();
+        assertThat(guard.mayStart(id, UUID.randomUUID().toString(), scopedDeviceId)).isFalse();
+        assertThat(guard.mayStart(id, null, scopedDeviceId)).isFalse();
+        assertThat(guard.mayStart(id, userId, UUID.randomUUID().toString())).isFalse();
     }
 
     @ParameterizedTest

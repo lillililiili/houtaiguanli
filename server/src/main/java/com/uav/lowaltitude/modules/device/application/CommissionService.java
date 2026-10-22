@@ -101,6 +101,7 @@ public class CommissionService {
         p.put("created_at", now);
         p.put("updated_at", now);
         repository.insertTask(p);
+        repository.recordManagementOrigin(id,com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId(),user.userId());
         repository.addEvent(UUID.randomUUID().toString(), id, "CREATED", "INFO",
                 "调测任务已创建，等待建立连接", now, asBoolean(device.get("simulated")));
         audit.record(user.userId(), user.account(), "commission_create", "commission_task", id, deviceId, null);
@@ -125,6 +126,7 @@ public class CommissionService {
                 mqttTask ? "正在核对平台 MQTT 会话和设备主题订阅" + (before.simulated() ? "（模拟器设备）" : "")
                         : before.simulated() ? "模拟适配器正在建立逻辑连接" : "协议适配器正在建立只读连接",
                 now, before.simulated());
+        repository.recordManagementOrigin(id,com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId(),user.userId());
         devices.addOutbox(UUID.randomUUID().toString(), "commission.connect", id, now, now + 600L);
         audit.record(user.userId(), user.account(), "commission_connect", "commission_task", id, null, null);
         return required(id, user);
@@ -143,6 +145,14 @@ public class CommissionService {
                 throw new ApiException(HttpStatus.CONFLICT, "MQTT_BINDING_MISSING", "设备未绑定 MQTT 连接，不能保存调测快照");
             json = write(endpoint);
             message = "MQTT 连接快照已保存（" + endpoint.get("host") + ":" + endpoint.get("port") + "），任务可以开始";
+        } else if(com.uav.lowaltitude.platform.security.UnitOperationsContext.active()) {
+            JsonNode requested=objectMapper.valueToTree(configuration);
+            if(requested!=null && requested.properties().stream().anyMatch(e->!e.getValue().isNull()))
+                throw new ApiException(HttpStatus.BAD_REQUEST,"UNIT_COMMISSION_CONFIGURATION_FIXED","单位调测使用台账登记连接；请仅确认版本，需要修改参数时到设备管理办理");
+            ConnectionProfile registered=DeviceService.connection(devices.findProfile(before.deviceId()));
+            validate(registered,isLogicalSimulation(before));
+            json=write(registered);
+            message="已确认该设备台账登记的连接快照；单位调测不可临时更换连接参数";
         } else {
             validate(configuration, isLogicalSimulation(before));
             json = write(configuration);
@@ -161,12 +171,18 @@ public class CommissionService {
         simulation.requireSourceMode(before.sourceMode());
         if(before.simulated()) simulation.requireSimulation();
         if (!"READY".equals(before.status())) throw illegal("任务仅可从 READY 开始调测");
+        if(com.uav.lowaltitude.platform.security.UnitOperationsContext.active() && !MqttCommissionCheck.supports(before.protocolCode())) {
+            JsonNode registered=parse(write(DeviceService.connection(devices.findProfile(before.deviceId()))));
+            if(!java.util.Objects.equals(registered,before.configuration()))
+                throw new ApiException(HttpStatus.CONFLICT,"UNIT_COMMISSION_CONFIGURATION_CHANGED","台账连接与调测快照不同，请重新创建调测任务");
+        }
         long now = clock.nowMillis();
         if (repository.transition(id, version, "READY", "RUNNING", now) != 1) throw conflict();
         repository.markStarted(id, now);
         repository.addEvent(UUID.randomUUID().toString(), id, "RUNNING", "INFO",
                 before.simulated() ? "模拟调测已开始；结果不代表真实设备验收" : "协议链路调测已开始",
                 now, before.simulated());
+        repository.recordManagementOrigin(id,com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId(),user.userId());
         devices.addOutbox(UUID.randomUUID().toString(), "commission.run", id, now, now + 800L);
         audit.record(user.userId(), user.account(), "commission_start", "commission_task", id, null, null);
         return required(id, user);

@@ -62,6 +62,15 @@ class AutomaticCounterAuthorizationTest {
         verify(notifications, times(2)).allows(event);
     }
 
+    @Test void linkedObservedEventCannotResumeRuleCounterV2() {
+        var predictions=mock(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate.class);
+        guard.setPredictionEventGate(predictions);
+        when(predictions.blocksAutomatic("counter",event)).thenReturn(true);
+        assertThat(guard.passingRun(event,runId)).isNull();
+        assertThat(guard.mayStart(row("APPROVED","live","COUNTERMEASURE","COUNTERMEASURE_4CH"))).isFalse();
+        verifyNoInteractions(authorizations,runs,eligibility,notifications);
+    }
+
     @ParameterizedTest @ValueSource(strings = {"{}", "{\"automation_contract\":\"RULE_COUNTER_V1\"}", "not-json",
             "{\"automation_contract\":\"RULE_COUNTER_V2\",\"group_version\":\"17\"}"})
     void historicalMissingOrMalformedBindingCannotBecomeExecutable(String snapshot) {

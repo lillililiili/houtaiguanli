@@ -136,13 +136,36 @@ class EvidencePreviewApiTest {
         grantAction(token, "evidence:read", "evidence:ingest");
         var request = multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "position.jpg", "image/jpeg", EvidenceTestFiles.bytes("position.jpg")))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district)
-                .param("capture_longitude", "118.3").param("capture_latitude", "37.4")
+                .param("capture_longitude", "118.3").param("capture_latitude", "37.4").param("coordinate_system", "WGS84")
                 .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString());
         mvc.perform(request).andExpect(status().isCreated()).andExpect(jsonPath("$.data.capture_longitude").value(118.3))
                 .andExpect(jsonPath("$.data.capture_latitude").value(37.4)).andExpect(jsonPath("$.data.capture_provenance").value("UPLOADER_DECLARED"));
         mvc.perform(multipart("/api/v1/evidence-files").file(new MockMultipartFile("file", "bad.jpg", "image/jpeg", EvidenceTestFiles.bytes("bad.jpg")))
                 .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district).param("capture_latitude", "37.4")
                 .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void captureCoordinatesRequireWgs84AndDoNotWriteRejectedFiles() throws Exception {
+        String token = reader("ASSIGNED", org, district);
+        grantAction(token, "evidence:read", "evidence:ingest");
+        long before = jdbc.queryForObject("select count(*) from evidence_file", Long.class);
+        for (String declaration : new String[] {null, "GCJ-02", "BD09", "CGCS2000", ""}) {
+            var request = multipart("/api/v1/evidence-files")
+                    .file(new MockMultipartFile("file", "point.jpg", "image/jpeg", EvidenceTestFiles.bytes("point.jpg")))
+                    .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district)
+                    .param("capture_longitude", "-73.4").param("capture_latitude", "-23.2")
+                    .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString());
+            if (declaration != null) request.param("coordinate_system", declaration);
+            mvc.perform(request).andExpect(status().isBadRequest());
+        }
+        assertThat(jdbc.queryForObject("select count(*) from evidence_file", Long.class)).isEqualTo(before);
+        mvc.perform(multipart("/api/v1/evidence-files")
+                .file(new MockMultipartFile("file", "point.jpg", "image/jpeg", EvidenceTestFiles.bytes("point.jpg")))
+                .param("kind_code", "EO_STILL").param("owner_org_id", org).param("district_id", district)
+                .param("capture_longitude", "-73.4").param("capture_latitude", "-23.2").param("coordinate_system", "WGS-84")
+                .header("Authorization", bearer(token)).header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.capture_longitude").value(-73.4));
     }
 
     @Test

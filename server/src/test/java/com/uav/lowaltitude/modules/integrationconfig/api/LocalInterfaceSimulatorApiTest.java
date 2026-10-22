@@ -246,6 +246,33 @@ class LocalInterfaceSimulatorApiTest {
   }
   assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn='SIM-NO-OWNER'",Long.class)).isZero();
  }
+ @Test void embeddedRouteRejectsForeignAndMalformedCoordinateDeclarations() throws Exception {
+  var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
+  long before=jdbc.queryForObject("select count(*) from route",Long.class);
+  for(var declaration:List.of(Map.of("coordinate_system","GCJ-02"),Map.of("coordinateSystem","BD09"),
+    Map.of("crs",Map.of("type","name","properties",Map.of("name","EPSG:4490"))),
+    Map.of("crs",Map.of("type","name","properties",Map.of("name","fake4326"))))){
+   var geometry=new LinkedHashMap<String,Object>();geometry.put("type","LineString");geometry.put("coordinates",List.of(List.of(-73.4,-23.2),List.of(-73.3,-23.1)));geometry.putAll(declaration);
+   var body=plan("route-crs-"+UUID.randomUUID());body.remove("route_version_id");
+   body.put("route",Map.of("name","坐标声明核对","geometry",geometry,"corridor_width_m",100,"owner_org_id",scope.get("owner_org_id"),"district_id",scope.get("district_id")));
+   send("/plans",body,400);
+  }
+  assertThat(jdbc.queryForObject("select count(*) from route",Long.class)).isEqualTo(before);
+  var body=plan("route-wgs-"+UUID.randomUUID());body.remove("route_version_id");
+  body.put("route",Map.of("name","另一地区WGS84航线","geometry",Map.of("type","LineString","coordinate_system","WGS84","coordinates",List.of(List.of(-73.4,-23.2),List.of(-73.3,-23.1))),"corridor_width_m",100,"owner_org_id",scope.get("owner_org_id"),"district_id",scope.get("district_id")));
+  send("/plans",body,200);
+ }
+ @Test void standaloneRouteRejectsDuplicateDeclarationsAndTrailingJsonWithoutWriting() throws Exception {
+  long before=jdbc.queryForObject("select count(*) from route",Long.class);
+  for(String raw:List.of(
+    "{\"message_id\":\"duplicate-crs\",\"geometry\":{\"type\":\"LineString\",\"coordinate_system\":\"GCJ-02\",\"coordinate_system\":\"WGS84\",\"coordinates\":[[12,20],[13,21]]}}",
+    "{\"message_id\":\"trailing-crs\"} {\"coordinate_system\":\"WGS84\"}")){
+   mvc.perform(post(BASE+"/routes").header("Authorization",token).header("Idempotency-Key",UUID.randomUUID().toString())
+     .contentType(MediaType.APPLICATION_JSON).content(raw)).andExpect(status().isBadRequest())
+     .andExpect(jsonPath("$.error.message").value("航线报文无法解析"));
+  }
+  assertThat(jdbc.queryForObject("select count(*) from route",Long.class)).isEqualTo(before);
+ }
  @Test void explicitReplayPlanKeepsSourceAndMessageIdentity() throws Exception {
   var body=plan("input-plan-replay");body.put("source_mode","replay");
   var first=send("/plans",body,200);String id=first.path("subject_id").asText();
@@ -560,9 +587,9 @@ class LocalInterfaceSimulatorApiTest {
  @Test void weatherReadbackUsesRegisteredDeviceAndLatestObservationTime() throws Exception {
   var scope=jdbc.queryForMap("select owner_org_id,district_id from flight_plan where owner_org_id is not null fetch first 1 rows only");
   String id=send("/weather-devices",Map.of("message_id","station-"+UUID.randomUUID(),"device_no","S-"+UUID.randomUUID(),"name","测试气象站",
-    "longitude",118.61,"latitude",37.46,"owner_org_id",scope.get("owner_org_id"),"district_id",scope.get("district_id")),200).path("device_id").asText();
+    "longitude",118.61,"latitude",37.46,"coordinate_system","WGS84","owner_org_id",scope.get("owner_org_id"),"district_id",scope.get("district_id")),200).path("device_id").asText();
   long now=System.currentTimeMillis();
-  for(long at:List.of(now,now-1000)) send("/weather-observations",Map.of("message_id","weather-"+UUID.randomUUID(),"device_id",id,"observed_at",at,"longitude",118.61,"latitude",37.46,"temperature_c",22),200);
+  for(long at:List.of(now,now-1000)) send("/weather-observations",Map.of("message_id","weather-"+UUID.randomUUID(),"device_id",id,"observed_at",at,"longitude",118.61,"latitude",37.46,"temperature_c",22,"coordinate_system","WGS84"),200);
   mvc.perform(get(BASE+"/weather-devices/"+id+"/observations").header("Authorization",token)).andExpect(status().isOk())
    .andExpect(jsonPath("$.data.total").value(2)).andExpect(jsonPath("$.data.latest.observed_at").value(now))
    .andExpect(jsonPath("$.data.source_mode").value("replay")).andExpect(jsonPath("$.data.simulated").value(true));
@@ -583,7 +610,10 @@ class LocalInterfaceSimulatorApiTest {
   var input=forecast("map-weather-"+UUID.randomUUID(),scope.get("name").toString(),published,p);input.put("plan_id",planId);
   var ring=List.of(List.of(lon-.01,lat-.01),List.of(lon+.01,lat-.01),List.of(lon+.01,lat+.01),List.of(lon-.01,lat+.01),List.of(lon-.01,lat-.01));
   input.put("polygon",ring);
+  input.put("coordinate_system","WGS84");
   var receipt=send("/weather",input,200);send("/weather",input,200);
+  assertThat(receipt.path("payload").path("coordinate_system").asText()).isEqualTo("WGS84");
+  assertThat(json.readTree(jdbc.queryForObject("select payload from local_interface_message where message_id=?",String.class,receipt.path("message_id").asText())).path("coordinate_system").asText()).isEqualTo("WGS84");
   String riskId=jdbc.queryForObject("select risk_id from flight_risk where plan_id=?",String.class,planId);
   var path="/api/v1/risks/"+riskId+"/weather-fact";
   mvc.perform(get(path).header("Authorization",token)).andExpect(status().isOk())
@@ -612,12 +642,25 @@ class LocalInterfaceSimulatorApiTest {
  @Test void weatherFootprintRejectsInvalidCoordinatesAndRainfall() throws Exception {
   long now=System.currentTimeMillis();
   var input=forecast("bad-map-"+UUID.randomUUID(),"测试区域",now,period(now,now+600000,"雷雨",12));
+  input.put("coordinate_system","WGS84");
   for(var ring:List.of(List.of(List.of(118.,37.),List.of(119.,38.),List.of(118.,38.),List.of(119.,37.),List.of(118.,37.)),
     List.of(List.of(181.,37.),List.of(182.,37.),List.of(182.,38.),List.of(181.,37.)),
     List.of(List.of(118.,37.),List.of(119.,37.),List.of(119.,38.)))) {
    input.put("polygon",ring);send("/weather",input,400);
   }
   input.remove("polygon");var p=new HashMap<String,Object>(period(now,now+600000,"雷雨",12));p.put("precipitation_rate_mm_h",-1);input.put("periods",List.of(p));send("/weather",input,400);
+ }
+ @Test void forecastFootprintRequiresWgs84WhileARegionalForecastMayOmitIt() throws Exception {
+  long now=System.currentTimeMillis();
+  long before=jdbc.queryForObject("select count(*) from local_interface_message where kind='WEATHER_FORECAST'",Long.class);
+  for(String declaration:new String[]{null,"GCJ-02","BD09","CGCS2000",""}){
+   var input=forecast("forecast-crs-"+UUID.randomUUID(),"测试区域",now,period(now,now+600000,"多云",3));
+   input.put("polygon",List.of(List.of(-73.4,-23.2),List.of(-73.3,-23.2),List.of(-73.3,-23.1),List.of(-73.4,-23.2)));
+   input.put("coordinate_system",declaration);send("/weather",input,400);
+  }
+  assertThat(jdbc.queryForObject("select count(*) from local_interface_message where kind='WEATHER_FORECAST'",Long.class)).isEqualTo(before);
+  var regional=forecast("forecast-region-"+UUID.randomUUID(),"测试区域",now,period(now,now+600000,"多云",3));
+  send("/weather",regional,200);
  }
 
  static Map<String,Object> forecast(String message,String area,long published,Map<String,Object> period) {

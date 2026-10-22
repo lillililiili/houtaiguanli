@@ -7,7 +7,7 @@ import { applyMenuEnabled, applyMenuLevel, inconsistentMenus } from '@/views/sys
 
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }))
 vi.mock('@/api/system', () => ({ systemApi: {
-  roles: vi.fn(), role: vi.fn(), permissions: vi.fn(), permissionActions: vi.fn(),
+  roles: vi.fn(), role: vi.fn(), organizations: vi.fn(), permissions: vi.fn(), permissionActions: vi.fn(),
   updateRolePermissions: vi.fn(), createRole: vi.fn()
 } }))
 vi.mock('element-plus', async importOriginal => ({
@@ -36,6 +36,7 @@ function button(text, root = document.body) { return [...root.querySelectorAll('
 
 beforeEach(() => {
   vi.clearAllMocks()
+  systemApi.organizations.mockResolvedValue([])
   role = { role_code: `ROLE-CUSTOM-${crypto.randomUUID()}`, name: '业务角色', builtin: false, version: 4, user_count: 0, actions: [],
     permissions: Object.entries({ ...businessRoutes, ...adminRoutes, futureAdmin: 'future-admin', airspace: null }).map(([permission_code, route_key]) => ({
       permission_code, route_key, module_name: '任意目录名称', level: 'NONE', menu_enabled: false

@@ -44,6 +44,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @Service
 public class DisposalAuthorizationService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private static final Set<String> CREATE_FIELDS = Set.of("action_type", "subject_kind", "subject_id",
             "device_id", "channel", "reason");
     private static final Set<String> DECISION_FIELDS = Set.of("expected_version", "note");
@@ -120,6 +123,13 @@ public class DisposalAuthorizationService {
         // 若按调用方递进来的旧 ID 落库，"这个目标有没有未了结的授权"就会查不到自己，
         // 并发上限形同虚设，态势页也看不到已经批出去的处置。
         String effectiveSubjectId = subject.subjectId();
+        if ("UAV_EVENT".equals(request.subjectKind()) && predictions != null
+                && Set.of("COUNTERMEASURE","JAMMING").contains(request.actionType())) {
+            String block=predictions.counterBlock(effectiveSubjectId,false);
+            if(block!=null&&!block.isEmpty())throw conflict("PREDICTION_COUNTER_BLOCKED",block);
+            if(predictions.hasOtherActiveCounter(effectiveSubjectId,null))
+                throw conflict("ACTIVE_AUTHORIZATION_EXISTS","同次风险已有未了结的反制授权");
+        }
         // 急停后不再要求登记现场停机核查（2026-10-14 用户确认）：同一事件可以马上再申请。
         // 停用、离线、状态未知、异常或故障的设备在申请时就拒绝（BUG-03），不留一条执行不了却占着名额的授权。
         String unavailable = gateway.requestBlockReason(request.deviceId());
@@ -166,6 +176,10 @@ public class DisposalAuthorizationService {
         idempotency.claim(key, "disposal:approve:" + id + ":" + body.expectedVersion());
         requireVersion(row, body.expectedVersion());
         DisposalRules.requireTransition(DisposalRules.APPROVE, row.status());
+        if(predictions!=null&&"UAV_EVENT".equals(row.subjectKind())) {
+            String block=predictions.counterBlock(row.subjectId(),false);
+            if(block!=null&&!block.isEmpty())throw conflict("PREDICTION_COUNTER_BLOCKED",block);
+        }
         DisposalPolicy policy = policies.active();
         AuthUser actor = AuthContext.require();
         DisposalRules.requireTwoPerson(policy, row.requestedBy(), actor.userId());
@@ -300,7 +314,7 @@ public class DisposalAuthorizationService {
         } else if (DisposalRules.LINGYUN_B.equals(row.channel())) {
             if (!gateway.bound(row.deviceId())) {
                 event(id, DisposalExecutionGateway.EVENT_NOT_BOUND, actor.userId(),
-                        "该设备未登记凌云 MQTT，无法尝试停止", Map.of("device_id", nullSafe(row.deviceId())), at);
+                        "该设备未登记 MQTT，无法尝试停止", Map.of("device_id", nullSafe(row.deviceId())), at);
                 stopResult = DisposalRules.STOP_NOT_BOUND;
             } else {
                 event(id, "DEVICE_STOP_UNAVAILABLE", actor.userId(), "设备协议未提供急停，授权已撤销但设备可能仍在动作",
@@ -358,6 +372,7 @@ public class DisposalAuthorizationService {
     private Subject resolveSubject(String kind, String subjectId, String actionType, DisposalPolicy policy) {
         if ("UAV_EVENT".equals(kind)) {
             AccessDecision alarmDecision = access.require(PermissionCode.ALARM_READ);
+            if(predictions!=null)predictions.lockEpisode(subjectId);
             // 锁主体但不改它：锁只用来串行化同一事件的并发申请，让下面的并发上限预检可靠。
             UavEventRepository.EventRow row = events.lock(subjectId, alarmDecision);
             if (row == null) throw notFound();
@@ -447,6 +462,13 @@ public class DisposalAuthorizationService {
     }
 
     private AuthorizationRow locked(String id, AccessDecision decision) {
+        if(predictions!=null) {
+            AuthorizationRow initial=repository.findUnlocked(id);
+            if(initial!=null&&"UAV_EVENT".equals(initial.subjectKind())) {
+                predictions.lockEpisode(initial.subjectId());
+                emergencyStops.lockEvent(initial.subjectId());
+            }
+        }
         AuthorizationRow row = repository.lock(id, decision);
         if (row == null) throw notFound();
         return row;

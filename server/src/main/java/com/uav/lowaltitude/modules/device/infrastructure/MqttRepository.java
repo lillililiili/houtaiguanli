@@ -138,7 +138,7 @@ public class MqttRepository {
                 INSERT INTO ops_device(device_id,source_id,external_device_id,device_no,name,device_type_code,device_type_name,
                     channel,model,vendor,source_mode,simulated,created_at,updated_at,owner_name,region_name,
                     longitude,latitude,coordinate_system,altitude_m)
-                SELECT ?,?,?,?,?,?,?,'凌云 MQTT',?,?,?,?,?,?,o.name,d.name,?,?,?,?
+                SELECT ?,?,?,?,?,?,?,'MQTT',?,?,?,?,?,?,o.name,d.name,?,?,?,?
                 FROM app_org o CROSS JOIN app_district d
                 WHERE o.org_id=? AND d.district_id=?
                 """,opsId,opsSource,p.externalDeviceId(),p.deviceNo(),p.name(),p.deviceTypeAbbr(),typeName,

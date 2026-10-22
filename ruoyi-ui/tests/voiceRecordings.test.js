@@ -137,6 +137,8 @@ it('上传只收 WAV，名称和录音里说的话一起提交', async () => {
   await mount(VoiceRecordingPanel);
   button('上传录音').click(); await settle();
   const dialog = document.querySelector('.el-dialog');
+  expect(dialog.querySelector('.el-dialog__title').textContent).toBe('上传普通告警通知录音');
+  expect(dialog.querySelector('input[type=radio]')).toBeNull();
   const input = dialog.querySelector('input[type=file]');
   Object.defineProperty(input, 'files', { configurable: true, value: [new File(['ID3'], 'notice.mp3', { type: 'audio/mpeg' })] });
   input.dispatchEvent(new Event('change')); await settle();
@@ -147,10 +149,75 @@ it('上传只收 WAV，名称和录音里说的话一起提交', async () => {
   const wav = new File(['RIFF....WAVE'], '夜间劝离.wav', { type: 'audio/wav' });
   Object.defineProperty(input, 'files', { configurable: true, value: [wav] });
   input.dispatchEvent(new Event('change')); await settle();
-  const [name, transcript] = dialog.querySelectorAll('.voice-upload-form input, .voice-upload-form textarea');
+  const name = dialog.querySelector('.voice-upload-form input[type=text]');
+  const transcript = dialog.querySelector('.voice-upload-form textarea');
   expect(name.value).toBe('夜间劝离');
   type(transcript, ' 您已进入管控区域，请立即降落。 '); await settle();
   button('上传', dialog).click(); await settle();
-  expect(voiceRecordingApi.upload).toHaveBeenCalledWith({ file: wav, name: '夜间劝离', transcript: '您已进入管控区域，请立即降落。' }, expect.any(Function));
+  expect(voiceRecordingApi.upload).toHaveBeenCalledWith({ file: wav, name: '夜间劝离', transcript: '您已进入管控区域，请立即降落。', purpose: 'GENERAL' }, expect.any(Function));
   expect(voiceRecordingApi.catalog).toHaveBeenCalledTimes(2);
+});
+
+it('普通和预测各自展示当前录音，预测缺失时不借用普通或启动录音', async () => {
+  const general = { source: 'UPLOADED', available: true, name: '普通劝离录音', message: '普通告警使用该录音' };
+  voiceRecordingApi.catalog.mockResolvedValue(catalog({
+    current: general, currents: { GENERAL: general }, startup_recording_name: '服务器默认录音'
+  }));
+  await mount(VoiceRecordingPanel);
+  const predicted = host.querySelector('[data-purpose=PREDICTED_AIRSPACE_ENTRY]');
+  expect(host.querySelector('[data-purpose=GENERAL]').textContent).toContain('普通劝离录音');
+  expect(predicted.textContent).toContain('预测风险电话提醒暂不可用');
+  expect(predicted.querySelector('h3').textContent).toBe('没有录音');
+  expect(predicted.textContent).not.toContain('普通劝离录音');
+  expect(predicted.textContent).not.toContain('服务器默认录音');
+});
+
+it('两种用途可各有当前录音，状态按每用途映射显示', async () => {
+  voiceRecordingApi.catalog.mockResolvedValue(catalog({
+    active_recording_ids: { GENERAL: 'general-a', PREDICTED_AIRSPACE_ENTRY: 'prediction-b' },
+    items: [
+      recording({ recording_id: 'general-a', purpose: 'GENERAL', active: false, can_delete: false }),
+      recording({ recording_id: 'prediction-b', name: '前方接近提醒', purpose: 'PREDICTED_AIRSPACE_ENTRY', active: false, can_delete: false })
+    ],
+    currents: {
+      GENERAL: { source: 'UPLOADED', available: true, name: '普通录音', message: '普通用途可用' },
+      PREDICTED_AIRSPACE_ENTRY: { source: 'UPLOADED', available: true, name: '前方接近提醒', message: '预测用途可用' }
+    }
+  }));
+  await mount(VoiceRecordingPanel);
+  expect(rowButtons('停止使用')).toHaveLength(2);
+  expect(rowButtons('选用')).toHaveLength(0);
+  expect(host.querySelector('[data-purpose=PREDICTED_AIRSPACE_ENTRY] h3').textContent).toBe('前方接近提醒');
+});
+
+it('停用预测录音明确该用途不可用，保持全局版本且不提示普通录音回退', async () => {
+  voiceRecordingApi.catalog.mockResolvedValue(catalog({
+    version: 19, startup_recording_name: '普通启动录音',
+    items: [recording({ recording_id: 'prediction-stop', purpose: 'PREDICTED_AIRSPACE_ENTRY', active: true })]
+  }));
+  voiceRecordingApi.setActive.mockResolvedValue(catalog({ version: 20 }));
+  await mount(VoiceRecordingPanel);
+  rowButton('停止使用').click(); await settle();
+  expect(ElMessageBox.confirm.mock.calls[0][0]).toContain('预测入区风险电话提醒将暂不可用');
+  expect(ElMessageBox.confirm.mock.calls[0][0]).not.toContain('普通启动录音');
+  expect(voiceRecordingApi.setActive).toHaveBeenCalledWith('prediction-stop', false, 19);
+});
+
+it('预测专用入口固定上传用途，文件、文稿和用途一起提交', async () => {
+  voiceRecordingApi.upload.mockResolvedValue(recording({ purpose: 'PREDICTED_AIRSPACE_ENTRY' }));
+  await mount(VoiceRecordingPanel);
+  button('上传专用录音', host.querySelector('[data-purpose=PREDICTED_AIRSPACE_ENTRY]')).click(); await settle();
+  const dialog = document.querySelector('.el-dialog');
+  expect(dialog.querySelector('.el-dialog__title').textContent).toBe('上传预测入区提醒录音');
+  expect(dialog.querySelector('input[type=radio]')).toBeNull();
+  expect(dialog.textContent).toContain('避免把预测说成已经进入禁飞区');
+  const wav = new File(['RIFF....WAVE'], '接近风险.wav', { type: 'audio/wav' });
+  const input = dialog.querySelector('input[type=file]');
+  Object.defineProperty(input, 'files', { configurable: true, value: [wav] });
+  input.dispatchEvent(new Event('change')); await settle();
+  type(dialog.querySelector('.voice-upload-form textarea'), ' 预计即将接近禁飞区，请调整航向。 ');
+  await settle(); button('上传', dialog).click(); await settle();
+  expect(voiceRecordingApi.upload).toHaveBeenCalledWith({
+    file: wav, name: '接近风险', transcript: '预计即将接近禁飞区，请调整航向。', purpose: 'PREDICTED_AIRSPACE_ENTRY'
+  }, expect.any(Function));
 });

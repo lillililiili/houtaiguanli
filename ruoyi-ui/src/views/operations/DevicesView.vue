@@ -13,9 +13,11 @@ import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
 import { useRealtimeRefresh } from '@/services/realtime.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
 import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.js';
 import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { deviceCatalogParams } from '@/utils/deviceCatalog.js';
+import { confirmDeletion } from '@/utils/deleteConfirmation.js';
 import { warmDeviceMapResources } from '@/services/deviceLocationMap.js';
 
 const MQTT_PROTOCOL = 'LINGYUN_MQTT_V8_6';
@@ -33,6 +35,9 @@ const deviceTypes = [
 ];
 const selectedType = ref('');
 const auth = useAuthStore();
+const unitMode = computed(() => isUnitAdministrator(auth.user));
+const availableDeviceTypes = computed(() => unitMode.value ? deviceTypes.filter(type => type.code !== 'weather_sensor') : deviceTypes);
+const readOverview = params => unitMode.value ? deviceApi.catalogOverview(params) : deviceApi.overview(params);
 const canOperate = computed(() => auth.hasPermission('devices.op'));
 const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' });
 const options = ref({ types: [], channels: [], regions: [], vendors: [] });
@@ -76,8 +81,15 @@ const deviceForm = reactive({
   recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false, device_address: 1,
   wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live', scope_key: '',
   device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-  longitude: null, latitude: null, version: null, simulated: false
+  longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false
 });
+const unsupportedCoordinateSystem = computed(() => (deviceForm.longitude != null || deviceForm.latitude != null)
+  && !['WGS84', 'WGS-84'].includes(String(deviceForm.coordinate_system || '').trim().toUpperCase()));
+function clearDevicePosition() {
+  deviceForm.longitude = null; deviceForm.latitude = null; deviceForm.coordinate_system = 'WGS-84';
+}
+function chooseDeviceLongitude(value) { deviceForm.longitude = value; deviceForm.coordinate_system = 'WGS-84'; }
+function chooseDeviceLatitude(value) { deviceForm.latitude = value; deviceForm.coordinate_system = 'WGS-84'; }
 const isWeather = computed(() => selectedType.value === 'weather_sensor');
 const usesDemoConfiguration = computed(() => !deviceDialog.editing
   && Boolean(deviceTypes.find(type => type.code === selectedType.value)?.protocols.length)
@@ -105,7 +117,7 @@ function overviewParams() {
 async function loadOverview() {
   const sequence = ++overviewSequence;
   try {
-    const summary = await deviceApi.overview(overviewParams());
+    const summary = await readOverview(overviewParams());
     if (alive && sequence === overviewSequence) overview.value = summary;
   } catch (e) { if (alive && sequence === overviewSequence && !error.value) error.value = e.message; }
 }
@@ -182,7 +194,7 @@ async function bootstrap() {
   loading.value = true; error.value = '';
   const sequence = ++overviewSequence;
   try {
-    const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), deviceApi.overview(overviewParams()), integrationApi.protocols()]);
+    const [filterOptions, summary, protocolList] = await Promise.all([deviceApi.options(), readOverview(overviewParams()), integrationApi.protocols()]);
     if (!alive) return;
     options.value = filterOptions; protocols.value = protocolList;
     if (sequence === overviewSequence) overview.value = summary;
@@ -199,7 +211,7 @@ function resetDeviceForm() {
     allowed_cidrs: '', recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false,
     device_address: 1, wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live',
     scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-    longitude: null, latitude: null, version: null, simulated: false });
+    longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false });
   coordinatePickerOpen.value = false;
 }
 
@@ -227,14 +239,15 @@ async function refreshAccessOptions() {
       deviceDialog.editing ? Promise.resolve({}) : deviceApi.onboardingOptions().catch(() => ({}))
     ]);
     if (!alive || sequence !== accessOptionsSequence) return;
-    brokers.value = brokerOptions; scopes.value = scopeOptions;
+    brokers.value = unitMode.value ? brokerOptions.filter(item => item.owner_org_id === auth.user.management_context.org_id) : brokerOptions;
+    scopes.value = unitMode.value ? scopeOptions.filter(item => item.org_id === auth.user.management_context.org_id) : scopeOptions;
     manualRadarSimulationAllowed.value = onboardingOptions.manual_radar_simulation_allowed === true;
   } catch (e) { if (alive && sequence === accessOptionsSequence) deviceDialog.optionsError = e.message || '接入资料读取失败，请重试'; }
   finally { if (sequence === accessOptionsSequence) deviceDialog.optionsLoading = false; }
 }
 
 async function openDevice(row = null) {
-  if (!canOperate.value || deviceDialog.opening) return;
+  if (!canOperate.value || deviceDialog.opening || unitMode.value && row?.device_type_code === 'weather_sensor') return;
   deviceDialog.opening = true; selectedType.value = '';
   deviceDialog.editing = Boolean(row); deviceDialog.row = row; deviceDialog.current = null; resetDeviceForm();
   try {
@@ -250,6 +263,8 @@ async function openDevice(row = null) {
         protocol_code: current.protocol_code || '', device_no: current.device?.device_no || '', name: current.device?.name || '',
         vendor: current.vendor || '', region_name: current.region_name || '', model: current.model || '', address: current.address || '',
         longitude: current.longitude ?? current.device?.longitude ?? null, latitude: current.latitude ?? current.device?.latitude ?? null,
+        coordinate_system: current.longitude != null || current.latitude != null || current.device?.longitude != null || current.device?.latitude != null
+          ? current.coordinate_system ?? current.device?.coordinate_system ?? null : 'WGS-84',
         scope_key: current.device?.owner_org_id && current.device?.district_id ? `${current.device.owner_org_id}/${current.device.district_id}` : '',
         host: connection.host || '', port: connection.port ?? null, allowed_cidrs: current.allowed_cidrs || '',
         recognition_code_ref: protocol.recognition_code_ref || '', rtk_enabled: Boolean(protocol.rtk_enabled),
@@ -281,20 +296,21 @@ function tcpConnection(values, current) {
 function locationValues() {
   const longitude = deviceForm.longitude == null || deviceForm.longitude === '' ? null : Number(deviceForm.longitude);
   const latitude = deviceForm.latitude == null || deviceForm.latitude === '' ? null : Number(deviceForm.latitude);
-  if (longitude == null && latitude == null) return { longitude: null, latitude: null };
+  if (longitude == null && latitude == null) return { longitude: null, latitude: null, coordinate_system: null };
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) throw new Error('经度和纬度必须同时填写');
   if (longitude < -180 || longitude > 180) throw new Error('经度必须在 -180 到 180 之间');
   if (latitude < -90 || latitude > 90) throw new Error('纬度必须在 -90 到 90 之间');
-  return { longitude, latitude };
+  if (unsupportedCoordinateSystem.value) throw new Error('已有坐标系未声明为 WGS-84，请清空后录入已核实的 WGS-84 坐标，或重新地图选点');
+  return { longitude, latitude, coordinate_system: 'WGS-84' };
 }
 
-function mqttPayload(values, version) {
+function mqttPayload(values, version, location) {
   const broker = brokers.value.find(item => item.broker_id === values.broker_id);
   const [owner_org_id, district_id] = values.scope_key.split('/');
   if (!broker || broker.source_mode !== values.source_mode || broker.owner_org_id !== owner_org_id || broker.district_id !== district_id) throw new Error('原接入通道与设备来源或所属范围不一致，请检查接入资料后重试。');
   const common = { protocol_code: values.protocol_code, broker_id: broker.broker_id, external_device_id: values.external_device_id.trim(),
     source_mode: values.source_mode, owner_org_id, district_id, device_no: values.device_no.trim(), name: values.name.trim(),
-    vendor: values.vendor || null, model: values.model || null, longitude: values.longitude ?? null, latitude: values.latitude ?? null, version };
+    vendor: values.vendor || null, model: values.model || null, ...location, version };
   return values.protocol_code === EO_PROTOCOL ? { ...common, edge_id: values.edge_id.trim() }
     : { ...common, provider_code: values.provider_code.trim(), device_type_abbr: values.device_type_abbr };
 }
@@ -321,7 +337,7 @@ async function saveDevice() {
       const sensor = deviceDialog.editing ? await weatherSensorsApi.update(deviceDialog.row.device_id, payload) : await weatherSensorsApi.create(payload);
       saved = { device: sensor };
     } else if (isMqttTransport.value) {
-      const payload = mqttPayload(deviceForm, current?.device?.version);
+      const payload = mqttPayload(deviceForm, current?.device?.version, location);
       saved = await deviceApi.update(deviceDialog.row.device_id, payload, key);
     } else if (deviceDialog.editing) {
       saved = await deviceApi.update(deviceDialog.row.device_id, {
@@ -330,7 +346,7 @@ async function saveDevice() {
         device_type_name: current.device.device_type_name, channel: current.device.channel, vendor: deviceForm.vendor || null,
         model: deviceForm.model || null, owner_name: current.owner_name || null, region_name: deviceForm.region_name || null,
         address: deviceForm.address || null, longitude: location.longitude, latitude: location.latitude,
-        coordinate_system: location.longitude == null ? null : 'WGS-84', allowed_cidrs: deviceForm.allowed_cidrs.trim(), connection: tcpConnection(deviceForm, current),
+        coordinate_system: location.coordinate_system, allowed_cidrs: deviceForm.allowed_cidrs.trim(), connection: tcpConnection(deviceForm, current),
         protocol_configuration: { login_role: 'DATA', recognition_code_ref: deviceForm.recognition_code_ref || null,
           rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
           device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }
@@ -340,7 +356,7 @@ async function saveDevice() {
         simulated: isRadar.value && manualRadarSimulationAllowed.value && deviceForm.simulated,
         host: deviceForm.host.trim(), port: deviceForm.port, allowed_cidrs: deviceForm.allowed_cidrs.trim(), vendor: deviceForm.vendor || null,
         region_name: deviceForm.region_name || null, model: deviceForm.model || null, address: deviceForm.address || null,
-        longitude: location.longitude, latitude: location.latitude, recognition_code_ref: deviceForm.recognition_code_ref || null,
+        ...location, recognition_code_ref: deviceForm.recognition_code_ref || null,
         rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
         device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }, key);
     }
@@ -365,11 +381,8 @@ async function deleteDevice(row) {
   if (row.enabled) { ElMessage.warning('请先停用设备，再执行删除'); return; }
   deletingId.value = row.device_id;
   try {
-    const { value } = await ElMessageBox.prompt(`确认删除设备“${row.name}”（${formatDeviceNo(row.device_no)}）？删除后将从台账和监控列表移除，保留历史记录及设备编号，不能重新启用。请输入删除原因：`, '删除设备', {
-      type: 'warning', inputType: 'textarea', confirmButtonText: '确认删除', cancelButtonText: '取消',
-      inputValidator: value => (value?.trim().length >= 2 && value.trim().length <= 500) || '删除原因需填写 2–500 个字符'
-    });
-    await deviceApi.remove(row.device_id, { version: row.version, reason: value.trim() });
+    const record = await confirmDeletion(`确认删除设备“${row.name}”（${formatDeviceNo(row.device_no)}）？删除后将从台账和监控列表移除，保留历史记录及设备编号，不能重新启用。`, '删除设备');
+    await deviceApi.remove(row.device_id, { version: row.version, reason: record });
     ++listSequence;
     if (selectedId.value === row.device_id) {
       selectedId.value = '';
@@ -423,20 +436,20 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
           <el-table-column label="状态 / 健康" width="105"><template #default="{row}"><el-tag :type="statusType(row.connectivity)" effect="plain">{{ statusText(row.connectivity) }}</el-tag><span class="cell-secondary">{{ healthText(row.health_code) }}</span></template></el-table-column>
           <el-table-column prop="last_heartbeat_at" label="最后心跳" min-width="165"><template #default="{row}"><span class="mono">{{ formatTime(row.last_heartbeat_at) }}</span></template></el-table-column>
           <el-table-column label="状态" width="76"><template #default="{row}"><el-tag :type="row.enabled?'success':'info'" effect="plain">{{ row.enabled?'启用':'停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId)" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId) || (row.device_type_code==='weather_sensor' && !row.enabled)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
+          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId) || (unitMode && row.device_type_code === 'weather_sensor')" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId) || (row.device_type_code==='weather_sensor' && !row.enabled)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
         </el-table></div>
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
 
-      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" @refresh="loadDetail(selectedId)" />
+      <DeviceCatalogPreview :detail="detail" :loading="detailLoading" :error="detailError" :observations-allowed="!unitMode || auth.hasPermission('monitoring.read')" @refresh="loadDetail(selectedId)" />
     </div>
 
-    <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing ? `编辑设备 · ${formatDeviceNo(deviceForm.device_no)}` : '接入设备'" width="min(990px, 94vw)" top="5vh" class="device-access-dialog" destroy-on-close :close-on-click-modal="!deviceDialog.saving" :close-on-press-escape="!deviceDialog.saving" :show-close="!deviceDialog.saving">
+    <el-dialog v-model="deviceDialog.visible" :title="deviceDialog.editing ? `编辑设备 · ${formatDeviceNo(deviceForm.device_no)}` : '接入设备'" width="min(990px, 94vw)" class="device-access-dialog" destroy-on-close :close-on-click-modal="!deviceDialog.saving" :close-on-press-escape="!deviceDialog.saving" :show-close="!deviceDialog.saving">
       <el-form ref="deviceFormRef" :model="deviceForm" label-position="top" :disabled="deviceDialog.saving" class="access-form">
         <section class="access-section">
           <div class="access-section-title"><span class="access-step-number">1</span><h3>选择设备类型</h3><small>{{ deviceDialog.editing ? '接入身份创建后不可修改' : '不同类型展示对应配置' }}</small></div>
           <div class="access-type-grid" role="group" aria-label="设备类型">
-            <button v-for="item in deviceTypes" :key="item.code" type="button" class="access-type" :class="{ selected: selectedType === item.code }" :aria-pressed="selectedType === item.code" :disabled="deviceDialog.editing || deviceDialog.saving" @click="selectDeviceType(item)">{{ item.name }}</button>
+            <button v-for="item in availableDeviceTypes" :key="item.code" type="button" class="access-type" :class="{ selected: selectedType === item.code }" :aria-pressed="selectedType === item.code" :disabled="deviceDialog.editing || deviceDialog.saving" @click="selectDeviceType(item)">{{ item.name }}</button>
           </div>
         </section>
         <el-alert v-if="usesDemoConfiguration" class="demo-access-note" title="此类型沿用现有演示配置" description="请启动现有演示环境和模拟器，在设备列表中选择已登记设备进行资料编辑、实时监测及接入调测。若缺少模拟设备或上报，请检查演示环境；无需在此新增 MQTT 连接或重复登记设备。" type="info" :closable="false" show-icon />
@@ -451,12 +464,13 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
               <el-form-item label="所属单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择所属单位及区域'}]"><el-select v-model="deviceForm.scope_key" :disabled="deviceDialog.editing && (isWeather || isMqttTransport || Boolean(deviceDialog.current?.device?.owner_org_id))" placeholder="请选择单位及区域"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
               <el-form-item v-if="!isMqttTransport" label="安装位置"><el-input v-model="deviceForm.address" maxlength="256" placeholder="例如：园区东门楼顶" /></el-form-item>
               <div v-if="!isWeather" class="wide coordinate-section">
-                <div class="coordinate-section-heading"><div><b>地图位置</b><span>可选，使用 WGS-84 坐标；地图选点后自动填入</span></div><el-button size="small" type="primary" plain @click="coordinatePickerOpen = !coordinatePickerOpen">{{ coordinatePickerOpen ? '收起地图' : '打开地图选点' }}</el-button></div>
+                <div class="coordinate-section-heading"><div><b>地图位置</b><span>可选，仅接收 WGS-84 坐标；手工录入前请核实坐标系，地图选点自动使用 WGS-84</span></div><div><el-button size="small" @click="clearDevicePosition">清空坐标</el-button><el-button size="small" type="primary" plain @click="coordinatePickerOpen = !coordinatePickerOpen">{{ coordinatePickerOpen ? '收起地图' : '打开地图选点' }}</el-button></div></div>
+                <el-alert v-if="unsupportedCoordinateSystem" type="warning" :closable="false" show-icon :title="`已有坐标系：${deviceForm.coordinate_system || '未声明'}，无法按 WGS-84 保存`" description="请清空后录入已核实的 WGS-84 坐标，或重新地图选点；系统不会自动转换坐标。" />
                 <div class="coordinate-fields">
                   <el-form-item label="安装经度"><el-input-number v-model="deviceForm.longitude" :min="-180" :max="180" :precision="7" :step="0.000001" controls-position="right" placeholder="例如：118.6592400" /></el-form-item>
                   <el-form-item label="安装纬度"><el-input-number v-model="deviceForm.latitude" :min="-90" :max="90" :precision="7" :step="0.000001" controls-position="right" placeholder="例如：37.4300000" /></el-form-item>
                 </div>
-                <DeviceCoordinatePicker v-if="coordinatePickerOpen" v-model:longitude="deviceForm.longitude" v-model:latitude="deviceForm.latitude" :disabled="deviceDialog.saving" />
+                <DeviceCoordinatePicker v-if="coordinatePickerOpen" :longitude="unsupportedCoordinateSystem ? null : deviceForm.longitude" :latitude="unsupportedCoordinateSystem ? null : deviceForm.latitude" :disabled="deviceDialog.saving" @update:longitude="chooseDeviceLongitude" @update:latitude="chooseDeviceLatitude" />
               </div>
             </div>
             <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载接入资料</el-button></el-alert>
@@ -510,9 +524,6 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
 .devices-list-panel .table-scroll { height: auto; }
 .devices-list-panel .pagination-row { flex-wrap: wrap; }
 .device-number { display: inline-block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; vertical-align: bottom; }
-:global(.device-access-dialog) { display: flex; flex-direction: column; max-height: 90vh; }
-:global(.device-access-dialog .el-dialog__body) { overflow-y: auto; min-height: 0; }
-:global(.device-access-dialog .el-dialog__header), :global(.device-access-dialog .el-dialog__footer) { flex-shrink: 0; }
 .access-section { padding: 16px 0; border-bottom: 1px solid var(--admin-border); }
 .access-section:first-child { padding-top: 0; }
 .access-section:last-child { border-bottom: 0; }
@@ -532,7 +543,7 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
 .access-form :deep(.el-select), .access-form :deep(.el-input-number) { width: 100%; }
 .coordinate-section { grid-column: 1 / -1; margin-top: 2px; padding: 12px; border: 1px solid #e6edf6; border-radius: 7px; background: #fbfdff; }
 .coordinate-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.coordinate-section-heading > div { display: flex; flex-direction: column; gap: 3px; }
+.coordinate-section-heading > div:first-child { display: flex; flex-direction: column; gap: 3px; }
 .coordinate-section-heading span { color: var(--admin-muted); font-size: 12px; }
 .coordinate-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .coordinate-fields :deep(.el-form-item) { margin-bottom: 12px; }

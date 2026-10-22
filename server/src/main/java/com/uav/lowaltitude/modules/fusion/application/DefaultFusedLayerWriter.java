@@ -27,6 +27,7 @@ import com.uav.lowaltitude.modules.fusion.domain.AttributeSelector.UnknownField;
 import com.uav.lowaltitude.modules.fusion.domain.DegradationEvaluator;
 import com.uav.lowaltitude.modules.fusion.domain.DegradationEvaluator.Degradation;
 import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser;
+import com.uav.lowaltitude.modules.fusion.domain.HeadingDegrees;
 import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser.Contribution;
 import com.uav.lowaltitude.modules.fusion.domain.WeightedFuser.FusedState;
 import com.uav.lowaltitude.modules.fusion.infrastructure.DegradationRepository;
@@ -72,6 +73,10 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
     private final ObjectMapper json;
     private final FusionConfigLoader simulatorParameters;
     private final IdentityRepository identities;
+    private com.uav.lowaltitude.modules.prediction.application.PredictionJobQueue predictionJobs;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void predictionJobs(com.uav.lowaltitude.modules.prediction.application.PredictionJobQueue queue) { this.predictionJobs = queue; }
 
     public DefaultFusedLayerWriter(FusionConfigService config, FusedTrackRepository tracks, DegradationRepository states, FusionEventEmitter events,
             FusionEventContextRepository eventContext, AppClock clock, ObjectMapper json, FusionConfigLoader simulatorParameters, IdentityRepository identities) {
@@ -148,6 +153,8 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
         // 关闭融合轨迹放在本帧的点写完之后：与逐个写时"先写点、再关轨迹"的顺序一致。
         for (int i = 0; i < batch.endedTracks.size(); i++) tracks.endTrack(batch.endedTracks.get(i), batch.endedAt.get(i));
         tracks.upsertLatestStates(batch.latest);
+        if (predictionJobs != null) predictionJobs.register(batch.points.stream()
+                .filter(point -> "MEAS".equals(point.pointKind())).map(FusedPoint::trackId).distinct().toList(), clock.nowMillis());
         states.upsertSelections(batch.selectionWrites);
         states.upsertDegradations(batch.degradationWrites);
         for (ClassChange change : batch.classChanges) reviseClass(change, now);
@@ -254,14 +261,14 @@ public class DefaultFusedLayerWriter implements FusedLayerWriter {
             if (amsl != null) unknown.removeIf(u -> "altitude_amsl_m".equals(u.field()));
             if (agl != null) unknown.removeIf(u -> "height_agl_m".equals(u.field()));
             LatestState kept = new LatestState(frame.targetId(), lonLat == null ? null : lonLat[0], lonLat == null ? null : lonLat[1], amsl,
-                    agl, decimal(fused.speedMps(), SPEED_SCALE), decimal(fused.headingDeg(), METRIC_SCALE), classConfidence,
+                    agl, decimal(fused.speedMps(), SPEED_SCALE), HeadingDegrees.forStorage(fused.headingDeg()), classConfidence,
                     decimal(degradation.fusionConfidence(), CONF_SCALE), observedAt, now, write(unknownList(unknown)), now,
                     pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], pilot == null ? null : observedAt, pilotDecided);
             batch.latest.add(kept);
             return kept;
         }
         LatestState state = new LatestState(frame.targetId(), fused.longitude(), fused.latitude(), decimal(fused.altitudeAmslM(), METRIC_SCALE), decimal(fused.heightAglM(), METRIC_SCALE),
-                decimal(fused.speedMps(), SPEED_SCALE), decimal(fused.headingDeg(), METRIC_SCALE), classConfidence, decimal(degradation.fusionConfidence(), CONF_SCALE),
+                decimal(fused.speedMps(), SPEED_SCALE), HeadingDegrees.forStorage(fused.headingDeg()), classConfidence, decimal(degradation.fusionConfidence(), CONF_SCALE),
                 observedAt, now, write(unknownList(unknown)), now,
                 pilot == null ? null : pilot[0], pilot == null ? null : pilot[1], pilot == null ? null : observedAt, pilotDecided);
         batch.latest.add(state);

@@ -76,6 +76,32 @@ class AirportApiTest {
     }
 
     @Test
+    void coordinateDeclarationsAndEwktAreValidatedBeforeSaving() throws Exception {
+        long before = jdbc.queryForObject("select count(*) from airport", Long.class);
+        for (String declaration : new String[] {"GCJ02", "BD09", "CGCS2000", ""})
+            mvc.perform(create(manager, body(icao).replace("WGS84", declaration), "k-" + UUID.randomUUID()))
+                    .andExpect(status().isBadRequest());
+        mvc.perform(create(manager, body(icao).replace("\"coordinate_system\":\"WGS84\",", ""), "k-" + UUID.randomUUID()))
+                .andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("select count(*) from airport", Long.class)).isEqualTo(before);
+        String airportId = created(create(manager, body(icao).replace("118.788", "-73.4").replace("37.585", "-23.2"),
+                "k-" + UUID.randomUUID())).path("airport_id").asText();
+        for (String line : new String[] {"SRID=4490;LINESTRING (118 37,119 38)",
+                "SRID=4326;LINESTRING (118 97,119 38)", "LINESTRING (118 37,119 38)"}) {
+            mvc.perform(child("/api/v1/airports/" + airportId + "/runways", manager,
+                    "{\"designator\":\"18\",\"heading_deg\":180,\"centerline\":\"" + line + "\"}"))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(child("/api/v1/airports/" + airportId + "/procedure-routes", manager,
+                    "{\"kind\":\"APPROACH\",\"name\":\"测试进近\",\"protect_width_m\":100,\"centerline\":\"" + line + "\"}"))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(child("/api/v1/airports/" + airportId + "/protected-targets", manager,
+                "{\"name\":\"保护目标\",\"kind\":\"TOWER\",\"longitude\":-73.4,\"latitude\":-23.2,\"coordinate_system\":\"BD09\",\"radius_m\":800}"))
+                .andExpect(status().isBadRequest());
+        assertThat(data("/api/v1/airports/" + airportId, reader).path("runways")).isEmpty();
+    }
+
+    @Test
     void subResourcesAreAppendOnlyAndVisibleInDetail() throws Exception {
         String airportId = created(create(manager, body(icao), "k-" + UUID.randomUUID())).path("airport_id").asText();
         created(child("/api/v1/airports/" + airportId + "/runways", manager,
@@ -84,7 +110,7 @@ class AirportApiTest {
                 "{\"kind\":\"APPROACH\",\"name\":\"18 号进近\",\"centerline\":\"SRID=4326;LINESTRING (118.788 37.560,118.788 37.575)\","
                         + "\"protect_width_m\":600,\"min_altitude_m\":0,\"max_altitude_m\":300,\"altitude_datum\":\"AMSL\"}"));
         created(child("/api/v1/airports/" + airportId + "/protected-targets", manager,
-                "{\"name\":\"塔台\",\"kind\":\"TOWER\",\"longitude\":118.79,\"latitude\":37.586,\"radius_m\":800}"));
+                "{\"name\":\"塔台\",\"kind\":\"TOWER\",\"longitude\":118.79,\"latitude\":37.586,\"coordinate_system\":\"WGS84\",\"radius_m\":800}"));
         created(child("/api/v1/airports/" + airportId + "/notification-targets", manager,
                 "{\"name\":\"塔台值班席\",\"role\":\"塔台管制\",\"channel_kind\":\"PHONE\"}"));
 
@@ -123,7 +149,7 @@ class AirportApiTest {
     }
 
     private String body(String icaoCode) {
-        return "{\"icao_code\":\"" + icaoCode + "\",\"name\":\"测试机场\",\"longitude\":118.788,\"latitude\":37.585,"
+        return "{\"icao_code\":\"" + icaoCode + "\",\"name\":\"测试机场\",\"longitude\":118.788,\"latitude\":37.585,\"coordinate_system\":\"WGS84\","
                 + "\"elevation_amsl_m\":6,\"owner_org_id\":\"" + org + "\",\"district_id\":\"" + district + "\",\"note\":\"演示数据\"}";
     }
 

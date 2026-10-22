@@ -37,6 +37,7 @@ class DirectDisposalAccessTest {
     @Mock AutomationRuntimeEligibility automation;
     @Mock AutomaticCounterAuthorization automatic;
     @Mock com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows;
+    @Mock com.uav.lowaltitude.modules.identity.application.OrgEffectivePermissionService effective;
 
     @Test
     void automationPrincipalCannotStartEvenWhenCurrentRulesPass() {
@@ -73,7 +74,7 @@ class DirectDisposalAccessTest {
     }
 
     private DirectDisposalAccess access() {
-        return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), deviceRows, automatic);
+        return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), deviceRows, automatic, effective);
     }
 
     @Test void newlyBoundAutomaticCounterUsesTheSystemActorWithoutImpersonatingAHuman() {

@@ -26,6 +26,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 后台自动短信独立于页面和登录会话。claim/完成各自提交，渠道调用不占数据库事务。 */
 @Service
 public class AutoSmsService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private static final AccessDecision SYSTEM_SCOPE=new AccessDecision("system:auto-advisory-sms",ScopeMode.ALL);
     private static final String TRIGGER="ALARM_EVENT";
     /** 告警超过自动通知时效后，有人核对了最新情况并登记发送；只这一条任务不再按时效拦截。 */
@@ -61,13 +64,30 @@ public class AutoSmsService {
         Claim claim=tx.execute(s->claim(eventId));
         if(claim==null)return;
         AdvisorySmsPort.Delivery delivery=null;
-        try { delivery=sms.simulateAutomatic(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey()); }
+        try {
+            // Prediction cancellation and provider acceptance share the episode lock. Once accepted,
+            // cancellation retains the original token so a late real receipt remains consumable.
+            delivery=predictions!=null&&predictions.manualCounterOnly(eventId)?tx.execute(s->{
+                predictions.lockEpisode(eventId);
+                String block=predictions.notificationBlock(eventId);
+                if(predictions.notificationClaimInterrupted(eventId,claim.predictionRevision()))
+                    block="本次待发短信已因预测风险变化取消，等待当前条件重新检查";
+                if(block!=null&&!block.isEmpty()) {
+                    Task task=tasks.find(eventId);
+                    if(task!=null&&claim.token().equals(task.token())&&"SENDING".equals(task.status()))
+                        tasks.block(eventId,"WAITING",block,TRIGGER,null,null,clock.nowMillis());
+                    return null;
+                }
+                return sms.simulateAutomatic(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey());
+            }):sms.simulateAutomatic(claim.mode(),claim.recipient().recipientName(),content(eventId),claim.providerKey());
+        }
         catch(RuntimeException failed) { /* 通道可能已受理，未知结果独立持久化，不能盲目重发。 */ }
         final AdvisorySmsPort.Delivery receipt=delivery;
         if(receipt!=null&&"SUBMITTED".equals(receipt.status()))return;
         tx.executeWithoutResult(s->finish(claim,receipt));
     }
     private Claim claim(String eventId) {
+        if(predictions!=null)predictions.lockEpisode(eventId);
         EventRow event=events.lock(eventId,SYSTEM_SCOPE);if(event==null)return null;
         long now=clock.nowMillis();
         Task current=tasks.find(eventId);
@@ -84,7 +104,8 @@ public class AutoSmsService {
         String token=UUID.randomUUID().toString();
         tasks.claim(eventId,token,eligible.source(),eligible.evaluation(),eligible.observedAt(),now);
         directory.freezeAdvisoryTask("ADVISORY_SMS",eventId,recipient);
-        return new Claim(eventId,event.sourceMode(),token,tasks.find(eventId).providerKey(),recipient);
+        return new Claim(eventId,event.sourceMode(),token,tasks.find(eventId).providerKey(),recipient,
+                predictions==null?null:predictions.notificationRevision(eventId));
     }
     private void finish(Claim claim,AdvisorySmsPort.Delivery delivery) {
         finish(claim,delivery,null);
@@ -165,6 +186,10 @@ public class AutoSmsService {
      */
     private Eligibility eligible(EventRow event,Task task,boolean ignoreStale) {
         String source=task!=null&&RECHECK.equals(task.triggerSource())?RECHECK:TRIGGER;
+        if(predictions!=null) {
+            String block=predictions.notificationBlock(event.eventId());
+            if(block!=null&&!block.isEmpty())return new Eligibility(false,"BLOCKED",block,source,null,null);
+        }
         if(records.noCounterActive(event.eventId()))return new Eligibility(false,"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON,source,null,null);
         if("FALSE_POSITIVE".equals(event.state()))return new Eligibility(false,"BLOCKED","已核实为误报，不发送飞手短信",source,null,null);
         // 没有可通知的飞手是事实本身（2026-10-18 rose 确认，流程 3、4）：先于“等待核实”“超过时效”和通道说明给出，
@@ -201,10 +226,20 @@ public class AutoSmsService {
     private static String pilotReason(com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot pilot) {
         return pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能发送短信";
     }
-    private static String content(String id){return "【低空安全提醒·模拟】发现疑似违规飞行，请按现场管理要求停止违规飞行，安全飞离相关区域或降落，并配合核查。";}
+    private String content(String id){
+        if(predictions!=null&&predictions.isPrediction(id))
+            return "【低空安全预警·模拟】根据当前可靠观测，预计30秒内进入禁飞区。请立即调整航向，避开禁飞区并配合核查；预测不代表已经进入。";
+        return "【低空安全提醒·模拟】发现疑似违规飞行，请按现场管理要求停止违规飞行，安全飞离相关区域或降落，并配合核查。";
+    }
     /** 只读：上级计划没有提供执行飞手或飞手电话（BLOCK-03）。不影响发送资格，阻断仍按 eligible 的原因。 */
     public boolean pilotContactMissing(EventRow event){return directory.pilotContactMissing(event.eventId());}
     public com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot currentRecipient(EventRow event){return directory.currentPilotEvent("ADVISORY_SMS",event.eventId());}
     public com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient(EventRow event){var recorded=directory.advisoryHistoryRecipient("ADVISORY_SMS",event.eventId());if(recorded!=null)return recorded;var task=tasks.find(event.eventId());if(task!=null&&task.attempts()>0)return null;var evaluation=tasks.latestEvaluation(event.eventId());return directory.forPilotEvent("ADVISORY_SMS",event.eventId(),evaluation==null?null:evaluation.id());}
-    private record Claim(String eventId,String mode,String token,String providerKey,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient) { }
+    private record Claim(String eventId,String mode,String token,String providerKey,
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,Long predictionRevision) {
+        Claim(String eventId,String mode,String token,String providerKey,
+                com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient) {
+            this(eventId,mode,token,providerKey,recipient,null);
+        }
+    }
 }

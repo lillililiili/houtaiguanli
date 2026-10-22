@@ -11,6 +11,7 @@ export const deviceApi = {
   remove: (id, body, key = newIdempotencyKey('device-delete')) => mutation('delete', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
   setEnabled: (id, body, key = newIdempotencyKey('device-enabled')) => mutation('patch', `/v1/devices/${encodeURIComponent(id)}/enabled`, body, { idempotencyKey: key }),
   overview: (params = {}) => request({ url: `/v1/device-monitor/overview${queryString(params)}` }),
+  catalogOverview: (params = {}) => request({ url: `/v1/devices/overview${queryString(params)}` }),
   information: id => request({ url: `/v1/device-monitor/devices/${encodeURIComponent(id)}/information` }),
   trends: (id, params) => request({ url: `/v1/device-monitor/devices/${encodeURIComponent(id)}/trends${queryString(params)}` }),
   tree: params => request({ url: `/v1/device-monitor/tree${queryString(params)}` }),

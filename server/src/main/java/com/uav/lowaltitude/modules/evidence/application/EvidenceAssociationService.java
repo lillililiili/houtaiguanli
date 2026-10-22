@@ -51,6 +51,7 @@ import com.uav.lowaltitude.modules.identity.application.IdempotencyGuard;
 import com.uav.lowaltitude.modules.identity.domain.AccessDecision;
 import com.uav.lowaltitude.modules.identity.domain.PermissionCode;
 import com.uav.lowaltitude.platform.api.ApiException;
+import com.uav.lowaltitude.platform.geo.Wgs84Coordinates;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.config.AppProperties;
 import com.uav.lowaltitude.platform.security.AuthContext;
@@ -270,7 +271,10 @@ public class EvidenceAssociationService {
         String device = IngestRequest.one(form, "source_device_id", false);
         String longitude = IngestRequest.one(form, "capture_longitude", false);
         String latitude = IngestRequest.one(form, "capture_latitude", false);
+        String coordinateSystem = IngestRequest.one(form, "coordinate_system", false);
         if ((longitude == null) != (latitude == null)) throw invalid("采集经纬度必须成对提供");
+        if ((longitude != null || coordinateSystem != null) && !Wgs84Coordinates.isWgs84(coordinateSystem))
+            throw invalid("采集坐标必须明确声明 coordinate_system 为 WGS84");
         String name = null;
         if (device != null) {
             access.require(PermissionCode.DEVICE_READ);
@@ -283,7 +287,7 @@ public class EvidenceAssociationService {
         if (longitude != null) {
             try { lon = Double.valueOf(longitude); lat = Double.valueOf(latitude); }
             catch (NumberFormatException ex) { throw invalid("采集坐标必须为 WGS84 经纬度"); }
-            if (!Double.isFinite(lon) || !Double.isFinite(lat) || lon < -180 || lon > 180 || lat < -90 || lat > 90) throw invalid("采集坐标超出有效经纬度范围");
+            if (!Wgs84Coordinates.isValidPoint(lon, lat)) throw invalid("采集坐标超出有效经纬度范围");
         }
         return new CaptureProvenance(device, name, lon, lat, device == null && lon == null ? null : "UPLOADER_DECLARED");
     }
@@ -739,7 +743,7 @@ public class EvidenceAssociationService {
             if (file == null || file.isEmpty()) throw invalid("必须上传文件");
             if (file.getSize() > MAX_BYTES) throw new ApiException(HttpStatus.BAD_REQUEST, "FILE_TOO_LARGE", "文件超过 32 MiB");
             Set<String> allowed = Set.of("kind_code", "owner_org_id", "district_id", "captured_at",
-                    "subject_kind", "subject_id", "source_mode", "source_device_id", "capture_longitude", "capture_latitude");
+                    "subject_kind", "subject_id", "source_mode", "source_device_id", "capture_longitude", "capture_latitude", "coordinate_system");
             form.keySet().stream().filter(key -> !allowed.contains(key) && !"file".equals(key)).findFirst()
                     .ifPresent(key -> { throw invalid("参数无效"); });
             String kind = one(form, "kind_code", true);

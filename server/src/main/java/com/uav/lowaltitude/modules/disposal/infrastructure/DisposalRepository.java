@@ -37,7 +37,7 @@ public class DisposalRepository {
             + " AND e.owner_org_id=a.owner_org_id AND e.district_id=a.district_id"
             + " JOIN alarm ea ON ea.alarm_id=e.alarm_id AND ea.owner_org_id=e.owner_org_id AND ea.district_id=e.district_id"
             + " LEFT JOIN app_district rd ON rd.district_id=a.district_id" + w.sql;
-        return ReportDatasetReader.window(sql, w.params, range, reader.epoch("e.created_at"));
+        return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.params, range, reader.epoch("e.created_at")), "a.owner_org_id");
     }
     /** 姓名随行取出：页面要显示人名而不是内部 ID，逐条再查一次用户就是列表页的 N+1（决策 13-26）。 */
     private static final String JOINS = " LEFT JOIN app_user ru ON ru.user_id=a.requested_by"

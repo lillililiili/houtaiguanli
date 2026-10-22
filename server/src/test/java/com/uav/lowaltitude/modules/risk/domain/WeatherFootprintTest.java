@@ -28,7 +28,7 @@ class WeatherFootprintTest {
             var validator = factory.getValidator();
             for (int count : new int[]{659, 1000, 1001}) {
                 var input = new com.uav.lowaltitude.modules.integrationconfig.api.LocalInterfaceDtos.WeatherInput(
-                    "boundary-test", null, "模拟区域", 1L, List.of(), null, circle(118.6,37.4,count));
+                    "boundary-test", null, "模拟区域", 1L, List.of(), null, circle(118.6,37.4,count), "WGS84");
                 assertThat(validator.validateProperty(input,"polygon").isEmpty()).isEqualTo(count<=1000);
             }
         }

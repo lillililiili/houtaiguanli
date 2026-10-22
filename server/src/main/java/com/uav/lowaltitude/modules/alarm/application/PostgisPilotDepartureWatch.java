@@ -18,6 +18,9 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     /** 研判看的那一帧不能比最新位置早太多，否则不能代表现在的情况。规则引擎对持续目标约 5 秒重评一次。 */
     static final long CURRENT_EVALUATION_MILLIS = 30_000L;
     private final JdbcTemplate jdbc;
@@ -39,6 +42,10 @@ public class PostgisPilotDepartureWatch implements PilotDepartureWatch {
     }
     @Override
     public Assessment assessment(String eventId, long smsAcceptedAt, long since, long now) {
+        if(predictions!=null) {
+            Assessment prediction=predictions.assessment(eventId,since,now);
+            if(prediction!=null)return prediction;
+        }
         if (!postgis || since < smsAcceptedAt) return new Assessment(Presence.UNKNOWN, null, null);
         Point before = point(eventId, null, smsAcceptedAt);
         Point after = point(eventId, since, now);

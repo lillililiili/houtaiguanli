@@ -1,10 +1,14 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { confirmDeletion } from '@/utils/deleteConfirmation'
 import PageHeader from '@/components/PageHeader.vue'
 import ErrorAlert from '@/components/ErrorAlert.vue'
 import { systemApi } from '@/api/system'
+import { unitAdministrationApi } from '@/api/unitAdministration'
+import { permissionRank } from '@/views/unit/permissionDraft'
 import { useAuthStore } from '@/stores/auth'
+import { roleDisplayName, roleCopySource } from '@/utils/rolePresentation'
 import { isBusinessMenu } from '@/config/businessMenus'
 import { applyMenuEnabled, applyMenuLevel, inconsistentMenus } from './roles/menuPermissionDraft'
 
@@ -15,13 +19,20 @@ const query = ref('')
 const roles = ref([])
 const catalog = ref([])
 const actionCatalog = ref([])
+const organizationNames = ref({})
+const organizations = ref([])
+const roleContext = ref('global'), contextOrgId = ref('')
+const unitOrganizations = computed(() => organizations.value.filter(org => org.delegation_managed || roles.value.some(role => role.owner_org_id === org.org_id)))
+const contextRoles = computed(() => roles.value.filter(role => roleContext.value === 'global' ? !role.owner_org_id : Boolean(contextOrgId.value) && role.owner_org_id === contextOrgId.value))
+const unitCeiling = ref(null)
+const createCeiling = ref(null)
 const selectedCode = ref('')
 const activePermissionTab = ref('menu')
 const detail = ref(null)
 const permissions = ref([])
 const actionDraft = reactive({})
 const actionBaseline = ref('{}')
-const createDialog = reactive({ visible: false, busy: false, form: { name: '', description: '' }, permissions: [] })
+const createDialog = reactive({ visible: false, busy: false, owner_org_id: null, form: { name: '', description: '' }, permissions: [] })
 const protectedCodes = new Set(['users', 'roles', 'audit', 'countermeasure'])
 const levels = [{ value: 'NONE', label: '无权限' }, { value: 'READ', label: '查看' }, { value: 'OP', label: '操作' }, { value: 'AUTH', label: '授权' }]
 const actionLevels = [{ value: 'NONE', label: '无' }, { value: 'OP', label: '允许' }]
@@ -41,7 +52,7 @@ const canOperate = computed(() => auth.hasPermission('roles.auth'))
 const locked = computed(() => detail.value?.role_code === 'ROLE-ADMIN')
 const filteredRoles = computed(() => {
   const text = query.value.trim().toLowerCase()
-  return roles.value.filter(item => !text || [item.name, item.description].some(value => String(value || '').toLowerCase().includes(text)))
+  return contextRoles.value.filter(item => !text || [roleDisplayName(item), roleCopySource(item), item.description, roleScope(item), item.owner_org_id ? roleOrganization(item) : ''].some(value => String(value || '').toLowerCase().includes(text)))
 })
 const menuPermissions = computed(() => permissions.value.filter(isBusinessMenu))
 const createMenuPermissions = computed(() => createDialog.permissions.filter(isBusinessMenu))
@@ -59,11 +70,16 @@ const dirty = computed(() => {
   return JSON.stringify(permissions.value) !== JSON.stringify(detail.value.permissions || []) || JSON.stringify(actionDraft) !== actionBaseline.value
 })
 
+function roleScope(role) { return role.owner_org_id ? '单位角色' : '全局角色' }
+function roleOrganization(role) {
+  return organizationNames.value[role.owner_org_id]?.trim() || `单位名称暂缺（${role.owner_org_id}）`
+}
 function menuLabel(item) {
   return menuLabels[item.permission_code] || menuLabels[item.route_key] || item.module_name || item.name || '未命名菜单'
 }
 function permissionLimit(row, asCreate = false) {
   if (!asCreate && locked.value) return '固定权限'
+  if (asCreate ? createCeiling.value : unitCeiling.value) return `单位上限：${levels.find(item => item.value === maximumLevel(row.permission_code, asCreate))?.label || '无权限'}`
   return protectedCodes.has(row.permission_code) ? '仅超级管理员' : '可配置'
 }
 function permissionLimitType(row, asCreate = false) {
@@ -93,10 +109,17 @@ function actionDescription(action) {
   if (action.permission_code === 'disposal:direct') return '免逐次审批；仍校验反制范围、时效及设备权限。'
   return actionDisplay[action.permission_code]?.description || ''
 }
-function isPermissionLocked(row) { return locked.value || protectedCodes.has(row.permission_code) }
+function maximumLevel(code, asCreate = false) { const ceiling = asCreate ? createCeiling.value : unitCeiling.value; return ceiling ? ceiling.permissions?.find(item => item.permission_code === code)?.level || 'NONE' : 'AUTH' }
+function exceedsUnitLevel(code, level, asCreate = false) { return permissionRank(level) > permissionRank(maximumLevel(code, asCreate)) }
+function unitActionAllowed(code) {
+  if (!unitCeiling.value) return true
+  const level = unitCeiling.value.actions?.find(item => item.permission_code === code)?.level
+  return code === 'disposal:direct' ? level === 'OP' : ['READ', 'OP', 'AUTH'].includes(level)
+}
+function isPermissionLocked(row) { return locked.value || protectedCodes.has(row.permission_code) || maximumLevel(row.permission_code) === 'NONE' }
 // 只归超级管理员的动作：页面上锁定，保存时也不随整组提交（BUG-01）。
 function isProtectedAction(code) { return code === 'map:activate' || ['users', 'roles', 'audit', 'countermeasure'].includes(String(code || '').split(':')[0]) }
-function isActionLocked(action) { return locked.value || isProtectedAction(action.permission_code) }
+function isActionLocked(action) { return locked.value || isProtectedAction(action.permission_code) || !unitActionAllowed(action.permission_code) }
 const setLevel = applyMenuLevel
 const setMenu = applyMenuEnabled
 function warnInconsistentMenus(rows) {
@@ -108,7 +131,12 @@ function setDeviceControl(value) { setBusinessDeviceLevel(value === 'OP' ? 'OP' 
 
 async function loadRoles() {
   roles.value = (await systemApi.roles()).filter(item => item.role_code !== 'ROLE-BACKEND')
-  if (!roles.value.some(item => item.role_code === selectedCode.value)) selectedCode.value = roles.value.find(item => item.role_code === 'ROLE-ADMIN')?.role_code || roles.value[0]?.role_code || ''
+  organizations.value = await systemApi.organizations()
+  organizationNames.value = Object.fromEntries(organizations.value.map(item => [item.org_id, item.name]))
+  selectContextRole()
+}
+function selectContextRole() {
+  if (!contextRoles.value.some(item => item.role_code === selectedCode.value)) selectedCode.value = contextRoles.value.find(item => item.role_code === 'ROLE-ADMIN')?.role_code || contextRoles.value[0]?.role_code || ''
 }
 function resetDraft(data) {
   detail.value = data
@@ -118,13 +146,21 @@ function resetDraft(data) {
   businessActionCatalog.value.forEach(group => group.actions.forEach(action => { actionDraft[action.permission_code] = granted[action.permission_code] || 'NONE' }))
   actionBaseline.value = JSON.stringify(actionDraft)
 }
+let roleSequence = 0
 async function loadRole(code = selectedCode.value) {
-  if (!code) return resetDraft(null)
+  const current = ++roleSequence
+  if (!code) { unitCeiling.value = null; loading.value = false; return resetDraft(null) }
   loading.value = true
   error.value = ''
-  try { resetDraft(await systemApi.role(code)) }
-  catch (e) { error.value = e.message || '角色详情加载失败。' }
-  finally { loading.value = false }
+  try {
+    const data = await systemApi.role(code)
+    const ceiling = data.owner_org_id ? await unitAdministrationApi.delegation(data.owner_org_id) : null
+    if (current !== roleSequence) return
+    unitCeiling.value = ceiling
+    resetDraft(data)
+  }
+  catch (e) { if (current === roleSequence) { error.value = e.message || '角色详情加载失败。'; resetDraft(null) } }
+  finally { if (current === roleSequence) loading.value = false }
 }
 async function loadAll() {
   loading.value = true
@@ -159,18 +195,30 @@ async function savePermissions() {
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '权限保存失败。') }
 }
 
-function openCreate() {
+async function openCreate() {
+  const owner = roleContext.value === 'unit' ? contextOrgId.value : null
+  if (!canOperate.value || roleContext.value === 'unit' && !owner) return
+  let ceiling = null
+  if (owner) {
+    try { ceiling = await unitAdministrationApi.delegation(owner) }
+    catch (e) { ElMessage.error(e.message || '单位授权读取失败。'); return }
+    if (roleContext.value !== 'unit' || contextOrgId.value !== owner) return
+  }
+  createCeiling.value = ceiling
+  createDialog.owner_org_id = owner
   createDialog.form = { name: '', description: '' }
-  createDialog.permissions = catalog.value.map(item => ({ ...item, level: 'NONE', menu_enabled: false }))
+  createDialog.permissions = (ceiling?.catalog?.permissions || catalog.value).map(item => ({ ...item, level: 'NONE', menu_enabled: false }))
   createDialog.visible = true
 }
 async function createRole() {
+  if (createDialog.busy) return
   if (!createDialog.form.name.trim()) return ElMessage.warning('角色名称不能为空。')
   const mismatched = inconsistentMenus(createMenuPermissions.value, row => protectedCodes.has(row.permission_code))
   if (mismatched.length) return warnInconsistentMenus(mismatched)
   createDialog.busy = true
   try {
     const saved = await systemApi.createRole({
+      ...(createDialog.owner_org_id ? { owner_org_id: createDialog.owner_org_id } : {}),
       name: createDialog.form.name.trim(), description: createDialog.form.description.trim(),
       permissions: createDialog.permissions.map(item => ({ permission_code: item.permission_code, level: item.level, menu_enabled: item.menu_enabled }))
     })
@@ -194,32 +242,35 @@ async function editDescription() {
 async function removeRole() {
   if (detail.value.user_count) return ElMessage.warning('请先调整仍在使用该角色的用户。')
   try {
-    const { value } = await ElMessageBox.prompt('删除会立即生效且不可撤销，请填写原因。', `删除角色 · ${detail.value.name}`, { inputType: 'textarea', inputPlaceholder: '删除原因', inputValidator: value => !!value.trim() || '删除原因为必填项', type: 'warning' })
-    await systemApi.deleteRole(detail.value.role_code, detail.value.version, value.trim())
+    const record = await confirmDeletion('删除会立即生效且不可撤销，历史授权记录保留。', `删除角色 · ${detail.value.name}`)
+    await systemApi.deleteRole(detail.value.role_code, detail.value.version, record)
     selectedCode.value = 'ROLE-ADMIN'
     await loadRoles(); await loadRole()
     ElMessage.success('角色已删除。')
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '删除失败。') }
 }
 
-watch(selectedCode, code => { if (code && detail.value?.role_code !== code) loadRole(code) })
+watch([roleContext, contextOrgId], () => { query.value = ''; selectContextRole(); if (!selectedCode.value) loadRole('') })
+watch(selectedCode, code => { if (detail.value?.role_code !== code) loadRole(code) })
 onMounted(loadAll)
 </script>
 
 <template>
   <div class="page-stack page-stack--viewport">
     <PageHeader title="角色管理" description="配置前台用户的业务角色；后台用户固定拥有全部后台功能。">
-      <el-button type="primary" :disabled="!canOperate" @click="openCreate">新增角色</el-button>
+      <el-button type="primary" :disabled="!canOperate || (roleContext === 'unit' && !contextOrgId)" @click="openCreate">{{ roleContext === 'unit' ? '新增单位角色' : '新增角色' }}</el-button>
     </PageHeader>
     <ErrorAlert :message="error" @retry="loadAll" />
+    <el-tabs v-model="roleContext" class="role-context-tabs"><el-tab-pane label="全局角色" name="global" /><el-tab-pane label="单位角色" name="unit" /></el-tabs>
+    <div v-if="roleContext === 'unit'" class="role-context-unit"><label for="role-owner">选择单位</label><el-select id="role-owner" v-model="contextOrgId" filterable clearable placeholder="先选择单位，再查看或新增角色" aria-label="选择角色所属单位"><el-option v-for="org in unitOrganizations" :key="org.org_id" :value="org.org_id" :label="org.name || org.org_id" /></el-select></div>
     <section v-loading="loading" class="content-card roles-layout viewport-fill">
       <aside class="role-sidebar">
         <header class="role-sidebar__header">
           <div class="role-sidebar__title">
-            <div><strong>角色列表</strong><small>选择角色后配置权限</small></div>
-            <span class="role-count">{{ roles.length }}</span>
+            <div><strong>角色列表</strong><small>同名角色按归属独立维护</small></div>
+            <span class="role-count">{{ contextRoles.length }}</span>
           </div>
-          <el-input v-model="query" clearable aria-label="搜索角色" placeholder="搜索角色名称或说明" />
+          <el-input v-model="query" clearable aria-label="搜索角色" placeholder="搜索角色、单位或说明" />
         </header>
         <nav class="role-list" aria-label="角色列表">
           <button
@@ -230,15 +281,23 @@ onMounted(loadAll)
             :aria-current="selectedCode === role.role_code ? 'true' : undefined"
             @click="selectedCode = role.role_code"
           >
-            <span class="role-item__title"><strong>{{ role.name }}</strong><span :class="['role-type', { 'is-custom': !role.builtin }]">{{ role.builtin ? '内置' : '自定义' }}</span></span>
-            <small>{{ role.user_count }} 名用户</small>
+            <span class="role-item__meta"><span :class="['role-scope', { 'is-unit': role.owner_org_id }]">{{ roleScope(role) }}</span><small>{{ role.user_count }} 名用户</small></span>
+            <span class="role-item__title"><strong>{{ roleDisplayName(role) }}</strong><span v-if="role.builtin" class="role-type">内置</span></span>
+            <span v-if="roleCopySource(role)" class="role-copy-source">{{ roleCopySource(role) }}</span>
+            <span v-if="role.owner_org_id" class="role-item__organization"><span>所属单位</span><strong>{{ roleOrganization(role) }}</strong></span>
           </button>
-          <el-empty v-if="!filteredRoles.length" :image-size="60" description="未找到匹配角色" />
+          <el-empty v-if="!filteredRoles.length" :image-size="60" :description="roleContext === 'unit' && !contextOrgId ? '请先选择单位' : '未找到匹配角色'" />
         </nav>
       </aside>
       <main v-if="detail" class="role-detail">
         <header class="role-summary">
-          <div><h2>{{ detail.name }} <el-tag v-if="detail.builtin" size="small">内置角色</el-tag></h2><p>{{ detail.description || '暂无角色说明' }}</p></div>
+          <div class="role-summary__identity">
+            <div class="role-summary__heading"><h2>{{ roleDisplayName(detail) }}</h2><span :class="['role-scope', { 'is-unit': detail.owner_org_id }]">{{ roleScope(detail) }}</span><el-tag v-if="detail.builtin" size="small">内置角色</el-tag></div>
+            <div v-if="roleCopySource(detail)" class="role-copy-note"><strong>{{ roleCopySource(detail) }}</strong><p>来源名称仅记录创建时的信息；本角色的权限独立维护。</p></div>
+            <div v-if="detail.owner_org_id" class="role-summary__organization"><span>所属单位</span><strong>{{ roleOrganization(detail) }}</strong><p>本单位专属角色，权限不能超过单位授权上限。</p></div>
+            <p v-else class="role-summary__scope-note">平台统一维护，与同名单位角色分别配置权限。</p>
+            <p>{{ detail.description || '暂无角色说明' }}</p>
+          </div>
           <div v-if="!detail.builtin" class="role-summary__actions"><el-button :disabled="!canOperate" @click="editDescription">编辑说明</el-button><el-button type="danger" plain :disabled="!canOperate || detail.user_count>0" @click="removeRole">删除角色</el-button></div>
         </header>
         <el-tabs v-model="activePermissionTab" class="permission-tabs">
@@ -261,7 +320,7 @@ onMounted(loadAll)
                 <div class="permission-matrix__level" role="cell">
                   <span v-if="locked">全部</span>
                   <el-select v-else :model-value="row.level" :disabled="isPermissionLocked(row)" @change="value=>setLevel(row,value)">
-                    <el-option v-for="level in levels" :key="level.value" :label="level.label" :value="level.value" />
+                    <el-option v-for="level in levels" :key="level.value" :label="level.label" :value="level.value" :disabled="exceedsUnitLevel(row.permission_code, level.value)" />
                   </el-select>
                 </div>
                 <div class="permission-matrix__limit" role="cell">
@@ -275,8 +334,8 @@ onMounted(loadAll)
             <div class="permission-intro"><div><h3>动作权限</h3><p>每项选择“无”或“允许”；允许仅授予该项动作，仍受数据范围和业务条件限制。</p></div></div>
             <section v-if="businessDevicePermission" class="action-group business-device-permission">
               <h4>前台设备操作</h4>
-              <div class="action-row"><span class="action-row__label"><span>查看前台设备</span><small>申请反制选择执行设备、光电追踪需要开启；取消查看会同时取消控制。</small></span><el-radio-group :model-value="deviceReadAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="查看前台设备" @change="setDeviceRead"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
-              <div class="action-row"><span class="action-row__label"><span>控制设备</span><small>允许控制时同时允许查看；反制仍须单独授权，不开放后台设备管理。</small></span><el-radio-group :model-value="deviceControlAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="控制设备" @change="setDeviceControl"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
+              <div class="action-row"><span class="action-row__label"><span>查看前台设备</span><small>申请反制选择执行设备、光电追踪需要开启；取消查看会同时取消控制。</small></span><el-radio-group :model-value="deviceReadAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="查看前台设备" @change="setDeviceRead"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value" :disabled="level.value === 'OP' && exceedsUnitLevel('devices', 'READ')">{{ level.label }}</el-radio></el-radio-group></div>
+              <div class="action-row"><span class="action-row__label"><span>控制设备</span><small>允许控制时同时允许查看；反制仍须单独授权，不开放后台设备管理。</small></span><el-radio-group :model-value="deviceControlAllowed ? 'OP' : 'NONE'" :disabled="locked || !canOperate" size="small" aria-label="控制设备" @change="setDeviceControl"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value" :disabled="level.value === 'OP' && exceedsUnitLevel('devices', 'OP')">{{ level.label }}</el-radio></el-radio-group></div>
             </section>
             <div v-if="businessActionCatalog.length" class="action-grid"><section v-for="group in businessActionCatalog" :key="group.module_code" class="action-group"><h4>{{ moduleLabel(group) }}</h4>
               <div v-for="action in group.actions" :key="action.permission_code" class="action-row"><span class="action-row__label"><span>{{ actionLabel(action) }}</span><small v-if="actionDescription(action)">{{ actionDescription(action) }}</small></span><el-radio-group :model-value="actionSelection(action)" :disabled="isActionLocked(action) || !canOperate" size="small" :aria-label="actionLabel(action)" @change="value => actionDraft[action.permission_code] = value"><el-radio v-for="level in actionLevels" :key="level.value" :label="level.value">{{ level.label }}</el-radio></el-radio-group></div>
@@ -287,7 +346,7 @@ onMounted(loadAll)
       </main><el-empty v-else description="请选择角色" />
     </section>
 
-    <el-dialog v-model="createDialog.visible" title="新增自定义角色" width="860px" destroy-on-close>
+    <el-dialog v-model="createDialog.visible" :title="createDialog.owner_org_id ? `新增单位角色 · ${organizationNames[createDialog.owner_org_id] || createDialog.owner_org_id}` : '新增全局角色'" width="860px" destroy-on-close>
       <el-form label-position="top" class="role-fields"><el-form-item label="角色名称" required><el-input v-model="createDialog.form.name" /></el-form-item><el-form-item label="角色说明"><el-input v-model="createDialog.form.description" /></el-form-item></el-form>
       <div class="permission-intro"><div><h3>前台菜单权限</h3><p>配置新角色可进入的业务前台菜单；工作台固定可见。</p></div></div>
       <div class="permission-matrix is-dialog" role="table" aria-label="初始菜单权限">
@@ -298,13 +357,13 @@ onMounted(loadAll)
         </div>
         <div v-for="row in createMenuPermissions" :key="row.permission_code" class="permission-matrix__row" role="row">
           <div class="permission-matrix__entry" role="cell">
-            <el-checkbox :model-value="row.menu_enabled" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setMenu(row,value)">
+            <el-checkbox :model-value="row.menu_enabled" :disabled="protectedCodes.has(row.permission_code) || maximumLevel(row.permission_code, true) === 'NONE'" @change="value=>setMenu(row,value)">
               <span class="permission-matrix__meta" :data-permission-code="row.permission_code"><strong>{{ menuLabel(row) }}</strong></span>
             </el-checkbox>
           </div>
           <div class="permission-matrix__level" role="cell">
-            <el-select :model-value="row.level" :disabled="protectedCodes.has(row.permission_code)" @change="value=>setLevel(row,value)">
-              <el-option v-for="level in levels" :key="level.value" :label="level.label" :value="level.value" />
+            <el-select :model-value="row.level" :disabled="protectedCodes.has(row.permission_code) || maximumLevel(row.permission_code, true) === 'NONE'" @change="value=>setLevel(row,value)">
+              <el-option v-for="level in levels" :key="level.value" :label="level.label" :value="level.value" :disabled="exceedsUnitLevel(row.permission_code, level.value, true)" />
             </el-select>
           </div>
           <div class="permission-matrix__limit" role="cell">
@@ -318,12 +377,14 @@ onMounted(loadAll)
 </template>
 
 <style scoped>
+.role-copy-source{font-size:12px;line-height:1.6;color:var(--admin-muted);overflow-wrap:anywhere}.role-copy-note{margin-top:12px;overflow-wrap:anywhere}.role-copy-note strong{font-size:13px;color:var(--admin-text)}.role-copy-note p{font-size:12px}
+.role-context-tabs :deep(.el-tabs__header){margin:0}.role-context-unit{display:flex;align-items:center;gap:14px}.role-context-unit .el-select{width:min(500px,100%)}
 .action-row .el-radio-group{display:flex;flex:none;flex-wrap:nowrap;gap:14px}.action-row :deep(.el-radio){margin-right:0}.action-row :deep(.el-radio__label){padding-left:5px}.business-device-permission{margin-bottom:12px}
 .roles-layout{display:grid;grid-template-columns:minmax(248px,276px) minmax(0,1fr);grid-template-rows:minmax(0,1fr);min-height:0;border:1px solid var(--admin-border);border-radius:10px;overflow:hidden;background:var(--admin-card);box-shadow:var(--admin-shadow)}
-.role-sidebar{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:#f8fafc}.role-sidebar__header{flex:none;padding:16px;border-bottom:1px solid var(--admin-border);background:var(--admin-card)}.role-sidebar__title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.role-sidebar__title strong,.role-sidebar__title small{display:block}.role-sidebar__title strong{color:var(--admin-text);font-size:15px}.role-sidebar__title small{margin-top:4px;color:var(--admin-muted);font-size:12px}.role-count{display:grid;min-width:28px;height:24px;padding:0 8px;place-items:center;border-radius:12px;color:var(--admin-primary);background:var(--admin-primary-soft);font:700 12px/1 Consolas,monospace}
-.role-list{display:flex;min-height:0;flex:1;flex-direction:column;gap:8px;padding:10px;overflow:auto}.role-item{position:relative;display:grid;width:100%;min-height:82px;gap:6px;padding:11px 12px 11px 15px;border:1px solid transparent;border-radius:8px;color:var(--admin-text);background:transparent;text-align:left;cursor:pointer;transition:border-color .16s ease,background-color .16s ease,box-shadow .16s ease}.role-item::before{position:absolute;top:10px;bottom:10px;left:0;width:3px;border-radius:0 3px 3px 0;background:transparent;content:""}.role-item:hover{border-color:#bfdbfe;background:var(--admin-card);box-shadow:0 4px 12px rgba(30,64,175,.06)}.role-item:active{background:#e7f0ff}.role-item.active{border-color:#93c5fd;background:#eff6ff;box-shadow:0 5px 14px rgba(30,64,175,.09)}.role-item.active::before{background:var(--admin-secondary)}.role-item__title{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px}.role-item__title strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.role-item code{overflow-wrap:anywhere;color:#42526b;font:12px/1.3 Consolas,"SFMono-Regular",monospace}.role-item small{color:var(--admin-muted);font-size:12px}.role-type{flex:none;padding:2px 6px;border:1px solid #bfdbfe;border-radius:4px;color:var(--admin-primary);background:var(--admin-primary-soft);font-size:11px;line-height:1.25}.role-type.is-custom{border-color:var(--admin-border);color:var(--admin-muted);background:var(--admin-card)}
+.role-sidebar{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:#f8fafc}.role-sidebar__header{flex:none;padding:16px;border-bottom:1px solid var(--admin-border);background:var(--admin-card)}.role-sidebar__title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.role-sidebar__title strong,.role-sidebar__title small{display:block}.role-sidebar__title strong{color:var(--admin-text);font-size:15px}.role-sidebar__title small{margin-top:4px;color:var(--admin-muted);font-size:12px}.role-count{display:grid;min-width:28px;height:24px;padding:0 8px;place-items:center;border-radius:12px;color:var(--admin-primary);background:var(--admin-primary-soft);font:700 12px/1 var(--app-font-mono)}
+.role-list{display:flex;min-height:0;flex:1;flex-direction:column;gap:8px;padding:10px;overflow:auto}.role-item{position:relative;display:grid;width:100%;min-height:82px;gap:6px;padding:11px 12px 11px 15px;border:1px solid transparent;border-radius:8px;color:var(--admin-text);background:transparent;text-align:left;cursor:pointer;transition:border-color .16s ease,background-color .16s ease,box-shadow .16s ease}.role-item::before{position:absolute;top:10px;bottom:10px;left:0;width:3px;border-radius:0 3px 3px 0;background:transparent;content:""}.role-item:hover{border-color:#bfdbfe;background:var(--admin-card);box-shadow:0 4px 12px rgba(30,64,175,.06)}.role-item:active{background:#e7f0ff}.role-item.active{border-color:#93c5fd;background:#eff6ff;box-shadow:0 5px 14px rgba(30,64,175,.09)}.role-item.active::before{background:var(--admin-secondary)}.role-item__title{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:8px}.role-item__title strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}.role-item code{overflow-wrap:anywhere;color:#42526b;font:12px/1.3 var(--app-font-mono)}.role-item small{color:var(--admin-muted);font-size:12px}.role-type{flex:none;padding:2px 6px;border:1px solid #bfdbfe;border-radius:4px;color:var(--admin-primary);background:var(--admin-primary-soft);font-size:11px;line-height:1.25}.role-type.is-custom{border-color:var(--admin-border);color:var(--admin-muted);background:var(--admin-card)}
 .role-detail{min-width:0;min-height:0;padding:20px;overflow:auto}.role-summary,.save-bar,.permission-intro{display:flex;align-items:center;justify-content:space-between;gap:16px}.role-summary{align-items:flex-start;padding-bottom:18px;border-bottom:1px solid var(--admin-border)}.role-summary h2,.role-summary p,.permission-intro h3,.permission-intro p{margin:0}.role-summary h2{color:var(--admin-text);font-size:20px;line-height:1.4}.role-summary p{margin-top:6px;color:var(--admin-muted);line-height:1.6}.role-summary__actions,.save-actions{display:flex;flex:none;align-items:center;gap:8px}
-.permission-tabs{margin-top:4px}.permission-tabs :deep(.el-tabs__header){margin:0 0 16px}.permission-tabs :deep(.el-tabs__item){height:48px;padding:0 22px;color:var(--admin-muted);font-weight:600}.permission-tabs :deep(.el-tabs__item.is-active){color:var(--admin-primary)}.permission-tabs :deep(.el-tabs__active-bar){height:3px;border-radius:3px 3px 0 0;background:var(--admin-secondary)}.permission-tab-label{display:inline-flex;align-items:center;gap:8px}.permission-tab-count{display:grid;min-width:22px;height:20px;padding:0 6px;place-items:center;border-radius:10px;color:#526176;background:#edf2f7;font:700 11px/1 Consolas,monospace}.permission-tabs :deep(.el-tabs__item.is-active) .permission-tab-count{color:var(--admin-primary);background:var(--admin-primary-soft)}.permission-intro{align-items:flex-end;margin-bottom:12px}.permission-intro h3{color:var(--admin-text);font-size:16px}.permission-intro p{margin-top:5px;color:var(--admin-muted);font-size:12px;line-height:1.6}
+.permission-tabs{margin-top:4px}.permission-tabs :deep(.el-tabs__header){margin:0 0 16px}.permission-tabs :deep(.el-tabs__item){height:48px;padding:0 22px;color:var(--admin-muted);font-weight:600}.permission-tabs :deep(.el-tabs__item.is-active){color:var(--admin-primary)}.permission-tabs :deep(.el-tabs__active-bar){height:3px;border-radius:3px 3px 0 0;background:var(--admin-secondary)}.permission-tab-label{display:inline-flex;align-items:center;gap:8px}.permission-tab-count{display:grid;min-width:22px;height:20px;padding:0 6px;place-items:center;border-radius:10px;color:#526176;background:#edf2f7;font:700 11px/1 var(--app-font-mono)}.permission-tabs :deep(.el-tabs__item.is-active) .permission-tab-count{color:var(--admin-primary);background:var(--admin-primary-soft)}.permission-intro{align-items:flex-end;margin-bottom:12px}.permission-intro h3{color:var(--admin-text);font-size:16px}.permission-intro p{margin-top:5px;color:var(--admin-muted);font-size:12px;line-height:1.6}
 .permission-matrix{overflow:hidden;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-card)}.permission-matrix.is-dialog{max-height:360px;overflow:auto}.permission-matrix.is-dialog .permission-matrix__head{position:sticky;top:0;z-index:1}
 .permission-matrix__head,.permission-matrix__row{display:grid;grid-template-columns:minmax(200px,280px) 188px 132px minmax(0,1fr);align-items:center;column-gap:8px;padding:0 16px}
 .permission-matrix__head{min-height:40px;border-bottom:1px solid var(--admin-border);color:#2d3f57;background:linear-gradient(180deg,#f6f9fc,#eef3f8);font-size:13px;font-weight:750}
@@ -331,7 +392,7 @@ onMounted(loadAll)
 .permission-matrix__entry{min-width:0}.permission-matrix__entry :deep(.el-checkbox){display:flex;align-items:flex-start;height:auto;white-space:normal}.permission-matrix__entry :deep(.el-checkbox__label){padding-left:8px;line-height:1.35}
 .permission-matrix__meta{display:flex;flex-direction:column;gap:2px}.permission-matrix__meta strong{color:var(--admin-text);font-size:14px;font-weight:650}
 .permission-matrix__level .el-select{width:100%}.permission-matrix__limit{justify-self:start}.permission-matrix__empty{padding:36px 16px;color:var(--admin-muted);text-align:center}
-.code-note{display:block;margin-top:0;color:var(--admin-muted);font-family:ui-monospace,monospace;font-size:11px}.action-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}.action-group{padding:14px;border:1px solid var(--admin-border);border-radius:8px;background:#fbfcfe}.action-group h4{margin:0 0 8px;padding-bottom:10px;border-bottom:1px solid var(--admin-border);color:var(--admin-text)}.action-row{display:flex;min-height:40px;align-items:center;justify-content:space-between;gap:10px;padding:4px 0}.action-row>span{min-width:0;white-space:normal;overflow-wrap:anywhere}.action-row__label{display:flex;flex-direction:column;gap:3px}.action-row__label small{color:var(--admin-muted);font-size:11px;line-height:1.45}.action-row .el-select{width:104px;flex:none}.save-bar{position:sticky;z-index:2;bottom:-20px;margin:20px -20px -20px;padding:14px 20px;border-top:1px solid var(--admin-border);background:rgba(255,255,255,.96);box-shadow:0 -6px 16px rgba(23,32,51,.04)}.save-bar>span{margin-right:auto;color:var(--admin-muted)}.role-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.code-note{display:block;margin-top:0;color:var(--admin-muted);font-family:var(--app-font-mono);font-size:11px}.action-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}.action-group{padding:14px;border:1px solid var(--admin-border);border-radius:8px;background:#fbfcfe}.action-group h4{margin:0 0 8px;padding-bottom:10px;border-bottom:1px solid var(--admin-border);color:var(--admin-text)}.action-row{display:flex;min-height:40px;align-items:center;justify-content:space-between;gap:10px;padding:4px 0}.action-row>span{min-width:0;white-space:normal;overflow-wrap:anywhere}.action-row__label{display:flex;flex-direction:column;gap:3px}.action-row__label small{color:var(--admin-muted);font-size:11px;line-height:1.45}.action-row .el-select{width:104px;flex:none}.save-bar{position:sticky;z-index:2;bottom:-20px;margin:20px -20px -20px;padding:14px 20px;border-top:1px solid var(--admin-border);background:rgba(255,255,255,.96);box-shadow:0 -6px 16px rgba(23,32,51,.04)}.save-bar>span{margin-right:auto;color:var(--admin-muted)}.role-fields{display:grid;grid-template-columns:1fr 1fr;gap:18px}
 @media(max-width:1100px){.roles-layout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.role-sidebar{border-right:0;border-bottom:1px solid var(--admin-border)}.role-list{max-height:210px}.role-summary,.save-bar{align-items:flex-start;flex-direction:column}.save-actions{width:100%;justify-content:flex-end}.role-fields{grid-template-columns:1fr}}
 @media(max-width:900px){.roles-layout{min-height:680px;grid-template-rows:auto auto}.role-list{max-height:272px}}
 @media(max-width:560px){.role-detail{padding:16px}.role-summary__actions,.save-actions{width:100%;flex-wrap:wrap}.permission-tabs :deep(.el-tabs__item){padding:0 14px}.action-grid{grid-template-columns:1fr}.save-bar{bottom:-16px;margin:16px -16px -16px;padding:12px 16px}.permission-matrix__head{display:none}.permission-matrix__head,.permission-matrix__row{grid-template-columns:1fr;justify-items:start;gap:8px;padding:12px 14px}.permission-matrix__level{width:100%}}
@@ -339,4 +400,14 @@ onMounted(loadAll)
 .role-sidebar{background:linear-gradient(rgba(238,242,246,.94),rgba(238,242,246,.94)),url('/assets/img/admin/aviation-ambient.webp') center/cover}.role-sidebar__header{background:rgba(255,255,255,.84);backdrop-filter:blur(10px)}
 .role-item{border-radius:10px}.role-item:hover{border-color:#d3e3f5;background:rgba(255,255,255,.78);box-shadow:var(--admin-shadow-soft)}.role-item.active{border-color:#c5dcfa;background:#fff;box-shadow:0 7px 18px rgba(30,74,128,.1)}.role-item.active::before{background:var(--admin-primary)}
 .role-type{border-color:#c6defd}.permission-tabs :deep(.el-tabs__active-bar){background:linear-gradient(90deg,var(--admin-primary),var(--admin-secondary))}.action-group{border-radius:10px;background:var(--admin-card-soft)}.save-bar{background:rgba(255,255,255,.92);backdrop-filter:blur(12px)}
+.role-item{flex-shrink:0;grid-template-columns:minmax(0,1fr);justify-content:stretch;align-content:start}
+.role-item__meta{display:flex;align-items:center;justify-content:space-between;gap:8px}.role-item__meta small{white-space:nowrap}
+.role-scope{display:inline-flex;align-items:center;flex:none;padding:3px 8px;border:1px solid var(--admin-border);border-radius:5px;color:var(--admin-muted);background:var(--admin-card-soft);font-size:12px;font-weight:650;line-height:1.4;white-space:nowrap}
+.role-scope.is-unit{border-color:var(--admin-primary);color:var(--admin-primary-strong);background:var(--admin-primary-soft)}
+.role-item__title strong{white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+.role-item__organization{display:flex;flex-direction:column;gap:2px;padding:7px 9px;border-left:3px solid var(--admin-primary);border-radius:4px;background:var(--admin-primary-soft);overflow-wrap:anywhere}
+.role-item__organization>span,.role-summary__organization>span{font-size:12px;color:var(--admin-muted)}.role-item__organization strong{font-size:14px;line-height:1.5;color:var(--admin-primary-strong)}
+.role-summary__identity{min-width:0;flex:1}.role-summary__heading{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.role-summary__heading h2{overflow-wrap:anywhere}
+.role-summary__organization{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:baseline;gap:4px 10px;margin-top:12px;padding:10px 12px;border-left:3px solid var(--admin-primary);border-radius:5px;background:var(--admin-primary-soft)}
+.role-summary__organization strong{color:var(--admin-primary-strong);font-size:16px;line-height:1.5;overflow-wrap:anywhere}.role-summary__organization p{grid-column:1/-1;margin:0;font-size:12px}
 </style>

@@ -23,6 +23,6 @@ public class FlightReportQueryService extends BusinessReportSource {
     }
     @Override protected Dataset dataset(Range range) {
 
-        return repository.reportDataset(reader, range, access.require(PermissionCode.FLIGHT_READ));
+        return repository.reportDataset(reader, range, com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.FLIGHT_READ));
     }
 }

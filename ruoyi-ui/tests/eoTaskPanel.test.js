@@ -4,8 +4,8 @@ import ElementPlus from 'element-plus';
 import EoTaskPanel from '@/views/operations/EoTaskPanel.vue';
 import { deviceApi } from '@/api/devices.js';
 
-const permission = vi.hoisted(() => ({ allowed: true }));
-vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => permission.allowed }) }));
+const permission = vi.hoisted(() => ({ allowed: true, user: null }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ get user() { return permission.user; }, hasPermission: () => permission.allowed }) }));
 vi.mock('@/api/devices.js', () => ({ deviceApi: { endEoTrack: vi.fn() } }));
 let app, host, props;
 async function settle() { for (let n = 0; n < 12; n++) { await Promise.resolve(); await nextTick(); } }
@@ -14,7 +14,14 @@ async function mount(status = 'OPEN') {
   props = reactive({ task: { task_id: crypto.randomUUID(), status, created_at: Date.now() }, onRefresh: vi.fn() });
   app = createApp({ render: () => h(EoTaskPanel, props) }); app.use(ElementPlus); app.mount(host); await settle();
 }
-afterEach(() => { app?.unmount(); host?.remove(); vi.resetAllMocks(); permission.allowed = true; });
+afterEach(() => { app?.unmount(); host?.remove(); vi.resetAllMocks(); permission.allowed = true; permission.user = null; });
+it.each(['OPEN','ENDING'])('单位后台设备管理权限不授予光电停止控制：%s', async status => {
+  permission.user = { user_type: 'FRONTEND', management_context: { mode: 'UNIT', org_id: 'unit-other' } };
+  await mount(status);
+  expect(host.querySelector('button')).toBeNull();
+  expect(host.textContent).toContain('占用');
+  expect(deviceApi.endEoTrack).not.toHaveBeenCalled();
+});
 it('读取不结束任务，点击提交一次且等待回读和设备回执', async () => {
   await mount(); expect(deviceApi.endEoTrack).not.toHaveBeenCalled();
   let finish; deviceApi.endEoTrack.mockReturnValue(new Promise(resolve => { finish = resolve; }));

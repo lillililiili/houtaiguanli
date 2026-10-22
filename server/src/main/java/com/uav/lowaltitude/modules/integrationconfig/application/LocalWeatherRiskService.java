@@ -74,6 +74,8 @@ public class LocalWeatherRiskService {
         } catch(com.fasterxml.jackson.core.JsonProcessingException ex) { throw new IllegalStateException(ex); }
     }
     static void validate(Input p,long now) {
+        if(!com.uav.lowaltitude.platform.geo.Wgs84Coordinates.isWgs84(p.coordinateSystem()))
+            throw bad("气象范围必须明确声明 coordinate_system 为 WGS84");
         if(p.publishedAt()>now || p.validFrom()<p.publishedAt() || p.validTo()<=p.validFrom()
                 || p.validTo()-p.publishedAt()>7*86400000L)throw bad("气象发布时间不能在未来，有效时段须有序且在发布时间后7天内");
         var ring=p.polygon();int n=ring.size()-1;

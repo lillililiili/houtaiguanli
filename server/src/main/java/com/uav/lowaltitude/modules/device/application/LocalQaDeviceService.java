@@ -39,16 +39,13 @@ public class LocalQaDeviceService {
     }
     /** 反制设备长期部署在某个单位与区县，不跟飞行计划绑定（2026-10-05 业务确认）。
      *  位置只用于地图上画作用范围示意：新登记时带上；已登记但还没有位置的补上，已有位置的不改（新-4）。 */
-    @Transactional public DeviceDetail prepare(String ownerOrgId,String districtId,String planId,BigDecimal longitude,BigDecimal latitude,String key) {
-        return prepare(ownerOrgId,districtId,planId,longitude,latitude,null,key);
-    }
     /** coverageRadiusM：模拟器场景配置的反制作用半径；设备还没有覆盖范围时补上，已有的（含设备管理里配的）不改（#25）。 */
-    @Transactional public DeviceDetail prepare(String ownerOrgId,String districtId,String planId,BigDecimal longitude,BigDecimal latitude,
+    @Transactional public DeviceDetail prepare(String ownerOrgId,String districtId,String planId,BigDecimal longitude,BigDecimal latitude,String coordinateSystem,
             BigDecimal coverageRadiusM,String key) {
         access.require("interfaces.op");access.require("devices.auth");
         var actor=AuthContext.require();
         if(!"ALL".equals(actor.scopeMode()))throw new ApiException(HttpStatus.FORBIDDEN,"QA_GLOBAL_SCOPE_REQUIRED","本地测试设备准备需要全局管理范围");
-        Position position=position(longitude,latitude);
+        Position position=position(longitude,latitude,coordinateSystem);
         BigDecimal radius=radius(coverageRadiusM);
         Scope scope;
         if(!blank(ownerOrgId)||!blank(districtId)) {
@@ -127,13 +124,13 @@ public class LocalQaDeviceService {
         return value.setScale(2,RoundingMode.HALF_UP);
     }
     /** 经纬度要么都不传，要么都传且在 WGS-84 范围内；存到 7 位小数，和设备表一致。 */
-    private static Position position(BigDecimal longitude,BigDecimal latitude) {
+    private static Position position(BigDecimal longitude,BigDecimal latitude,String coordinateSystem) {
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(longitude,latitude,coordinateSystem);
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR",ex.getMessage());
+        }
         if(longitude==null&&latitude==null)return null;
-        if(longitude==null||latitude==null)throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","反制设备位置的经度和纬度要一起填");
-        if(longitude.compareTo(BigDecimal.valueOf(-180))<0||longitude.compareTo(BigDecimal.valueOf(180))>0)
-            throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","反制设备经度必须在 -180 到 180 之间");
-        if(latitude.compareTo(BigDecimal.valueOf(-90))<0||latitude.compareTo(BigDecimal.valueOf(90))>0)
-            throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","反制设备纬度必须在 -90 到 90 之间");
         return new Position(longitude.setScale(7,RoundingMode.HALF_UP),latitude.setScale(7,RoundingMode.HALF_UP));
     }
     private record Position(BigDecimal longitude,BigDecimal latitude) {

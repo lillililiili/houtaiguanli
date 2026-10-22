@@ -25,7 +25,7 @@ class LingyunSenseDataMapperTest {
     }
 
     private static String senseData(String extension) {
-        return "{\"deviceId\":\"227\",\"msgCnt\":8920,\"ptTime\":" + (TIME - 20) + ",\"objects\":[{\"objectId\":\"583\",\"time\":" + TIME
+        return "{\"coordinate_system\":\"WGS84\",\"deviceId\":\"227\",\"msgCnt\":8920,\"ptTime\":" + (TIME - 20) + ",\"objects\":[{\"objectId\":\"583\",\"time\":" + TIME
                 + ",\"longitude\":118.15742,\"latitude\":37.446735,\"altitude\":212.2,\"height\":100,\"speed\":13.5,\"extension\":" + extension + "}]}";
     }
 
@@ -119,7 +119,7 @@ class LingyunSenseDataMapperTest {
 
     @Test
     void twoTaskIdsInOneFrameFailTheWholeFrame() {
-        String mixed = "{\"deviceId\":\"227\",\"msgCnt\":1,\"ptTime\":" + TIME + ",\"objects\":["
+        String mixed = "{\"coordinate_system\":\"WGS84\",\"deviceId\":\"227\",\"msgCnt\":1,\"ptTime\":" + TIME + ",\"objects\":["
                 + "{\"objectId\":\"1\",\"time\":" + TIME + ",\"longitude\":118.1,\"latitude\":37.4,\"extension\":{\"taskId\":\"T-1\"}},"
                 + "{\"objectId\":\"2\",\"time\":" + TIME + ",\"longitude\":118.2,\"latitude\":37.5,\"extension\":{\"taskId\":\"T-2\"}}]}";
         // 会话键参与 link 身份：两个任务并成一条 link 是静默错误，宁可整帧失败让 A 看见。
@@ -127,7 +127,7 @@ class LingyunSenseDataMapperTest {
                 .isInstanceOf(IllegalStateException.class).hasMessageContaining("MIXED_TASK_ID");
 
         // 只有一个任务 id、其余对象没给，不算冲突：整帧照常使用那一个。
-        String single = "{\"deviceId\":\"227\",\"msgCnt\":1,\"ptTime\":" + TIME + ",\"objects\":["
+        String single = "{\"coordinate_system\":\"WGS84\",\"deviceId\":\"227\",\"msgCnt\":1,\"ptTime\":" + TIME + ",\"objects\":["
                 + "{\"objectId\":\"1\",\"time\":" + TIME + ",\"longitude\":118.1,\"latitude\":37.4,\"extension\":{\"taskId\":\"T-1\"}},"
                 + "{\"objectId\":\"2\",\"time\":" + TIME + ",\"longitude\":118.2,\"latitude\":37.5,\"extension\":{}}]}";
         assertThat(mapper.map(inbox("5ga", single)).sessionKey()).isEqualTo("T-1");

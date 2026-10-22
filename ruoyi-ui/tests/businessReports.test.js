@@ -3,6 +3,8 @@ import { createApp, nextTick } from 'vue';
 import ElementPlus from 'element-plus';
 import ReportsView from '@/views/operations/ReportsView.vue';
 import { businessReportApi, businessReportFilename } from '@/api/reports.js';
+const auth = vi.hoisted(() => ({ user: null, allowed: false }));
+vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ get user() { return auth.user; }, hasPermission: code => code === 'statistics.op' && auth.allowed }) }));
 
 vi.mock('@/components/ReportChart.vue', () => ({ default: { template: '<div class="chart-stub" />' } }));
 vi.mock('@/api/reports.js', async importOriginal => {
@@ -26,6 +28,7 @@ function button(text) { return [...host.querySelectorAll('button')].find(b => b.
 async function category(value) { host.querySelector('input[value="' + value + '"]').click(); await settle(); }
 beforeEach(() => {
   pending.length = 0; vi.clearAllMocks();
+  auth.user = null; auth.allowed = false;
   businessReportApi.preview.mockImplementation(params => new Promise((resolve, reject) => pending.push({ params, resolve, reject })));
   businessReportApi.details.mockResolvedValue({ items: [], total: 0, page: 1, size: 20 });
   businessReportApi.exportFile.mockResolvedValue();
@@ -33,6 +36,14 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); });
 
 describe('业务报表', () => {
+  it.each([false, true])('单位后台报表操作授权为%s时独立控制导出，不使用前台同名权限', async allowed => {
+    auth.user = { user_type: 'FRONTEND', permission_codes: ['statistics.op'], management_context: { mode: 'UNIT', org_id: 'unit-a' } }; auth.allowed = allowed;
+    await mount(); pending[0].resolve(makePreview(pending[0].params)); await settle();
+    expect(button('下载 PDF').disabled).toBe(!allowed);
+    expect(button('导出 Excel').disabled).toBe(!allowed);
+    button('下载 PDF').click(); await settle();
+    expect(businessReportApi.exportFile).toHaveBeenCalledTimes(allowed ? 1 : 0);
+  });
   it('轨迹统计超限时保留业务汇总和导出，不把未知时长显示成零', async () => {
     await mount();
     pending[0].resolve({ ...makePreview(pending[0].params),

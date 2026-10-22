@@ -43,6 +43,7 @@ class LocalWeatherRiskApiTest {
         body.put("reason_text","QA大风风险时效检查，非真实预警");
         body.put("published_at",now-60000);body.put("valid_from",now-30000);body.put("valid_to",now+300000);
         body.put("polygon",List.of(List.of(118.6,37.4),List.of(118.7,37.4),List.of(118.7,37.5),List.of(118.6,37.4)));
+        body.put("coordinate_system","WGS84");
         body.put("wind_speed_mps",12);return body;
     }
     JsonNode send(Object body,int expected) throws Exception {
@@ -59,6 +60,16 @@ class LocalWeatherRiskApiTest {
         assertThat(jdbc.queryForObject("select count(*) from weather_risk_fact where risk_id=?",Long.class,id)).isEqualTo(1);
         body.put("severity","LOW");send(body,409);
         assertThat(jdbc.queryForObject("select severity from flight_risk where risk_id=?",String.class,id)).isEqualTo("HIGH");
+    }
+    @Test void rejectsMissingOrForeignCoordinateSystemBeforeRiskCreation() throws Exception {
+        long before=jdbc.queryForObject("select count(*) from flight_risk",Long.class);
+        for(String declaration:new String[]{null,"GCJ-02","BD09","CGCS2000",""}) {
+            var body=input("weather-crs-"+UUID.randomUUID());body.put("coordinate_system",declaration);send(body,400);
+        }
+        assertThat(jdbc.queryForObject("select count(*) from flight_risk",Long.class)).isEqualTo(before);
+        var other=input("weather-other-position");other.put("coordinate_system","WGS-84");
+        other.put("polygon",List.of(List.of(-73.4,-23.2),List.of(-73.3,-23.2),List.of(-73.3,-23.1),List.of(-73.4,-23.2)));
+        send(other,200);
     }
     /** ZT-47：有效时段结束的气象风险标为已过期并移出当前风险，核验与通知历史不变（过期不等于解除）。 */
     @Test void expiredEvidenceIsMarkedExpiredAndLeavesCurrentRisksWithoutChangingHistory() throws Exception {

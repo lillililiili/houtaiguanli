@@ -20,8 +20,8 @@ public class LocalQaRadarController {
     private final LocalQaRadarService service;
     public LocalQaRadarController(LocalQaRadarService service) { this.service=service; }
     public record Input(@NotBlank String ownerOrgId,@NotBlank String districtId,
-                        @NotNull BigDecimal longitude,@NotNull BigDecimal latitude) { }
+                        @NotNull BigDecimal longitude,@NotNull BigDecimal latitude, String coordinateSystem) { }
     @PostMapping public ApiResponse<DeviceDetail> prepare(@Valid @RequestBody Input body,@RequestHeader("Idempotency-Key") String key) {
-        return ApiResponse.ok(service.prepare(body.ownerOrgId(),body.districtId(),body.longitude(),body.latitude(),key));
+        return ApiResponse.ok(service.prepare(body.ownerOrgId(),body.districtId(),body.longitude(),body.latitude(),body.coordinateSystem(),key));
     }
 }

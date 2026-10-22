@@ -30,6 +30,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavAdvisoryService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private final com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository followups;
     private final AutoSmsService automatic;
     private final AutoVoiceService voice;
@@ -226,6 +229,7 @@ public class UavAdvisoryService {
     /** 调用方持有受限事件/授权范围；锁定事件并读取当前系统依据。 */
     @Transactional
     public void requireCounter(String eventId, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {
+        if(predictions!=null)predictions.lockEpisode(eventId);
         EventRow event=events.lock(eventId,scope);
         if(event==null) throw notFound();
         String reason=repository.counterBlockReason(eventId);
@@ -258,9 +262,24 @@ public class UavAdvisoryService {
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
     private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
+        if (!"CONFIRMED".equals(event.state())) return null;
         if(this.voice.departureSnapshot(event.eventId())!=null)return null;
+        String notificationEventId=event.eventId();
+        var prediction=predictions==null?null:predictions.facts(event.eventId());
+        if(prediction!=null&&"OBSERVED".equals(prediction.role())) {
+            String ownerId=predictions.notificationOwner(event.eventId());
+            if(ownerId!=null&&!ownerId.equals(event.eventId())) {
+                // The existing episode relation selects the notification cycle. Read its receipts
+                // only for phase projection; public summaries and records retain their own event.
+                EventRow owner=events.find(ownerId,new AccessDecision("system:notification-phase",ScopeMode.ALL));
+                if(!sameNotificationSubject(event,owner)||!"CONFIRMED".equals(owner.state()))return null;
+                notificationEventId=ownerId;
+                sms=automatic.overview(owner,false);
+                voice=this.voice.overview(owner,false);
+            }
+        }
         long now = clock.nowMillis();
-        Long smsAt = automatic.deliveredAt(event.eventId());
+        Long smsAt = automatic.deliveredAt(notificationEventId);
         Long playedAt = voice == null ? null : voice.playbackCompletedAt() != null ? voice.playbackCompletedAt() : voice.updatedAt();
         PilotDepartureWatch.Presence afterSms = null;
         PilotDepartureWatch.Presence afterCall = null;
@@ -270,6 +289,12 @@ public class UavAdvisoryService {
             afterCall = presenceAfterCall(event.eventId(), smsAt, playedAt, now);
         return NotifyFlow.phase(event.state(), sms == null ? null : sms.status(), sms == null ? null : sms.reason(), smsAt,
                 voice == null ? null : voice.status(), voice == null ? null : voice.reason(), playedAt, now, afterSms, afterCall);
+    }
+    private static boolean sameNotificationSubject(EventRow event,EventRow owner) {
+        return owner!=null&&event.targetId()!=null&&event.targetId().equals(owner.targetId())
+                &&event.ownerOrgId()!=null&&event.ownerOrgId().equals(owner.ownerOrgId())
+                &&event.districtId()!=null&&event.districtId().equals(owner.districtId())
+                &&event.sourceMode()!=null&&event.sourceMode().equals(owner.sourceMode());
     }
     private String phaseName(NotifyFlow.Phase phase) { return phase == null ? null : phase.name(); }
     /**
@@ -284,6 +309,8 @@ public class UavAdvisoryService {
                 voice.answeredAt(), voice.playbackCompletedAt(), voice.recipientSnapshot());
     }
     private AutoHandoff autoHandoff(EventRow event, DepartureObservation observation) {
+        if(predictions!=null&&predictions.isPrediction(event.eventId()))
+            return new AutoHandoff(false,"NOT_REQUIRED","预测预警不作为实际违法事实，不自动移送处罚",null,null,null,null,null);
         String eventId = event.eventId();
         String handoffId = handoffs.existingPunishment(eventId);
         if(handoffId!=null){

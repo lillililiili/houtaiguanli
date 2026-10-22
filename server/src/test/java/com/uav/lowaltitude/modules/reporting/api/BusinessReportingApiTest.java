@@ -68,27 +68,47 @@ class BusinessReportingApiTest {
     void simulatedMqttDeviceAndMaintenanceStayExcludedEvenWithAllSharedTuples() throws Exception {
         String auth="Bearer "+token();
         String user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);
-        var sourceDevice=jdbc.queryForMap("SELECT device_id,source_id,external_device_id FROM device"
-                +" WHERE source_mode='replay' AND external_device_id IS NOT NULL FETCH FIRST 1 ROWS ONLY");
-        var device=java.util.Map.of("device_id","report-ops","source_id","report-source");
-        jdbc.update("INSERT INTO ops_integration_source(source_id,source_code,name,source_mode,created_at,updated_at)"
-                +" VALUES('report-source','REPORT-SOURCE','报表测试来源','replay',0,0)");
-        jdbc.update("INSERT INTO ops_device(device_id,source_id,external_device_id,device_no,name,device_type_name,channel,source_mode,created_at,updated_at)"
-                +" VALUES('report-ops','report-source',?,'REPORT-DEVICE','报表设备','雷达','MQTT','replay',0,0)",sourceDevice.get("external_device_id"));
-        var plan=jdbc.queryForMap("SELECT plan_id,owner_org_id,district_id FROM flight_plan WHERE owner_org_id IS NOT NULL AND district_id IS NOT NULL FETCH FIRST 1 ROWS ONLY");
-        String org=plan.get("owner_org_id").toString(), district=plan.get("district_id").toString();
-        jdbc.update("INSERT INTO app_district(district_id,district_code,name,enabled,created_at,updated_at,version) VALUES('report-other','REPORT-OTHER','另一报表区域',TRUE,0,0,0)");
+        // This case owns its provenance and scope fixtures; no replay/demo seeder is required.
+        String tag=java.util.UUID.randomUUID().toString().substring(0,12);
+        String org="report-org-"+tag, district="report-district-"+tag, otherDistrict="report-other-"+tag;
+        String source="report-source-"+tag, sourceDevice="report-device-"+tag, external="report-external-"+tag;
+        String opsSource="report-ops-source-"+tag, device="report-ops-"+tag, broker="report-broker-"+tag;
+        String route="report-route-"+tag, routeVersion="report-route-v-"+tag, plan="report-plan-"+tag;
+        String task="report-task-"+tag, liveDevice="report-live-device-"+tag, liveTask="report-live-task-"+tag;
+        long now=System.currentTimeMillis();
+        jdbc.update("INSERT INTO app_org(org_id,org_code,name,enabled,created_at,updated_at,version) VALUES(?,?,?,TRUE,0,0,0)",org,org,"报表来源隔离单位");
+        for(String id:java.util.List.of(district,otherDistrict)) jdbc.update(
+                "INSERT INTO app_district(district_id,district_code,name,enabled,created_at,updated_at,version) VALUES(?,?,?,TRUE,0,0,0)",id,id,id);
+        jdbc.update("INSERT INTO route(route_id,route_no,name,enabled,source_mode,owner_org_id,district_id,created_at,updated_at,version) VALUES(?,?,?,TRUE,'live',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",
+                route,route,"报表范围航线",org,district);
+        boolean postgres=Boolean.TRUE.equals(jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Boolean>)
+                connection->connection.getMetaData().getDatabaseProductName().contains("PostgreSQL")));
+        String geometry=postgres?"ST_GeomFromText('LINESTRING(117 36,117.01 36.01)',4326)"
+                :"CAST('SRID=4326;LINESTRING(117 36,117.01 36.01)' AS GEOMETRY)";
+        jdbc.update("INSERT INTO route_version(route_version_id,route_id,version_no,centerline,valid_from,created_at) VALUES(?,?,1,"+geometry+",CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",routeVersion,route);
+        jdbc.update("INSERT INTO flight_plan(plan_id,plan_no,status_code,source_mode,route_version_id,owner_org_id,district_id,created_at,updated_at,version) VALUES(?,?,'APPROVED','live',?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",
+                plan,plan,routeVersion,org,district);
+        jdbc.update("INSERT INTO integration_source(source_id,source_code,name,protocol_code,source_mode,created_at,updated_at) VALUES(?,?,?,'LINGYUN_MQTT_V8_6','replay',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",source,source,"报表模拟感知来源");
+        jdbc.update("INSERT INTO device(device_id,source_id,external_device_id,device_no,name,device_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,?,?,'RADAR','replay',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
+                sourceDevice,source,external,sourceDevice,"报表模拟感知设备",org,district);
+        jdbc.update("INSERT INTO ops_integration_source(source_id,source_code,name,protocol_code,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,'LINGYUN_MQTT_V8_6','replay',TRUE,0,0)",opsSource,opsSource,"报表模拟运维来源");
+        jdbc.update("INSERT INTO ops_device(device_id,source_id,external_device_id,device_no,name,device_type_name,channel,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,?,?,'雷达','MQTT','replay',TRUE,0,0)",
+                device,opsSource,external,device,"报表模拟设备");
         jdbc.update("INSERT INTO mqtt_broker(broker_id,name,host,port,tls,client_id,allowed_cidrs,source_mode,owner_org_id,district_id,created_at,updated_at)"
-                +" VALUES('report-broker','报表隔离测试','127.0.0.1',1883,FALSE,'report-test-client','127.0.0.1/32','replay',?,?,0,0)",org,district);
+                +" VALUES(?,'报表隔离测试','127.0.0.1',1883,FALSE,?,'127.0.0.1/32','replay',?,?,0,0)",broker,broker,org,district);
         jdbc.update("INSERT INTO mqtt_device_binding(ops_device_id,device_id,ops_source_id,source_id,broker_id,provider_code,device_type_abbr,external_device_id,source_mode)"
-                +" VALUES(?,?,?,?,'report-broker','report-test','radar',?,'replay')",
-                device.get("device_id"),sourceDevice.get("device_id"),device.get("source_id"),sourceDevice.get("source_id"),sourceDevice.get("external_device_id"));
-        jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",
-                device.get("device_id"),org,"report-other");
-        jdbc.update("INSERT INTO ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,device_name,reason,simulated,status,active_key,reported_by,reported_by_name,reported_at,version)"
-                +" VALUES('report-task',?,?,?,?, '范围测试设备','范围测试异常',TRUE,'PENDING','report-task-key',?,'范围测试人',?,1)",
-                plan.get("plan_id"),device.get("device_id"),org,district,user,System.currentTimeMillis());
-        jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED' WHERE user_id=?",user);
+                +" VALUES(?,?,?,?,?,'report-test','radar',?,'replay')",device,sourceDevice,opsSource,source,broker,external);
+        // A real-source control proves that an empty/broken report cannot satisfy the exclusion assertion.
+        jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,'雷达','TCP','live',FALSE,0,0)",
+                liveDevice,liveDevice,"报表真实来源对照设备");
+        for(String id:java.util.List.of(device,liveDevice)) {
+            jdbc.update("INSERT INTO device_business_scope(ops_device_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)",id,org,otherDistrict);
+            String taskId=id.equals(device)?task:liveTask;
+            jdbc.update("INSERT INTO ops_device_maintenance_task(task_id,plan_id,device_id,owner_org_id,district_id,device_name,reason,simulated,status,active_key,reported_by,reported_by_name,reported_at,version)"
+                    +" VALUES(?,?,?,?,?,'范围测试设备','范围测试异常',?,'PENDING',? ,?,'范围测试人',?,1)",
+                    taskId,plan,id,org,district,id.equals(device),taskId,user,now);
+        }
+        jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED',scope_org_rule=NULL WHERE user_id=?",user);
         jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=?",user);
         jdbc.update("INSERT INTO app_user_data_scope(user_id,org_id,district_id) VALUES(?,?,?)",user,org,district);
         sqlSession.clearCache();
@@ -96,13 +116,18 @@ class BusinessReportingApiTest {
         JsonNode hidden=json.readTree(mvc.perform(get(uri).header("Authorization",auth)
                 .param("report_category","DEVICE_OPERATIONS").param("period_type","DAILY").param("anchor_date",today())
                 .param("section","maintenance")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
-        assertThat(hidden.path("data").path("items").toString()).doesNotContain("report-task");
-        jdbc.update("INSERT INTO app_user_data_scope(user_id,org_id,district_id) VALUES(?,?,?)",user,org,"report-other");
+        assertThat(hidden.path("data").path("items").toString()).doesNotContain(task);
+        jdbc.update("INSERT INTO app_user_data_scope(user_id,org_id,district_id) VALUES(?,?,?)",user,org,otherDistrict);
         sqlSession.clearCache();
-        JsonNode visible=json.readTree(mvc.perform(get(uri).header("Authorization",auth)
-                .param("report_category","DEVICE_OPERATIONS").param("period_type","DAILY").param("anchor_date",today())
-                .param("section","maintenance")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
-        assertThat(visible.path("data").path("items").toString()).doesNotContain("report-task");
+        for(String section:java.util.List.of("devices","maintenance")) {
+            JsonNode visible=json.readTree(mvc.perform(get(uri).header("Authorization",auth)
+                    .param("report_category","DEVICE_OPERATIONS").param("period_type","DAILY").param("anchor_date",today())
+                    .param("section",section)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString());
+            assertThat(visible.path("data").path("items").toString())
+                    .contains(section.equals("devices")?liveDevice:liveTask)
+                    .doesNotContain(section.equals("devices")?device:task);
+            assertThat(visible.path("data").path("total").asLong()).isEqualTo(1);
+        }
     }
 
     @Test

@@ -72,7 +72,7 @@ public class DeviceMaintenanceWorkflowService {
         if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("提交编号长度必须为 8–128 字符");
         String action=request.action(),note=request.note()==null?null:request.note().trim();
         if(note!=null&&note.length()>1000)throw bad("说明最多 1000 字");
-        devices.lockForRecovery(task.deviceId());repository.lock(taskId);task=required(taskId,actor);
+        devices.lockForRecovery(task.deviceId());repository.lock(taskId);access.requireMonitoringOperate();task=required(taskId,actor);
         String requestJson=write(request);var replay=repository.replay(actor.userId(),key.trim());
         if(replay!=null){
             if(!taskId.equals(replay.taskId())||!requestJson.equals(replay.request()))throw conflict("IDEMPOTENCY_KEY_REUSED","同一提交编号不能用于不同请求");

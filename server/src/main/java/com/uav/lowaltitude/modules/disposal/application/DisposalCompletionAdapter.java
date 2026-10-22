@@ -9,6 +9,9 @@ import com.uav.lowaltitude.modules.handoff.domain.DisposalCompletionPort;
 /* 前提是不是成立与"谁在看"无关：换个人来看不该让同一个事件忽然变得可以处罚。 */
 @Component
 public class DisposalCompletionAdapter implements DisposalCompletionPort {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private final DisposalRepository repository;
 
     public DisposalCompletionAdapter(DisposalRepository repository) { this.repository = repository; }
@@ -35,6 +38,7 @@ public class DisposalCompletionAdapter implements DisposalCompletionPort {
 
     @Override
     public PunishmentCompletion punishmentCompletion(String eventId) {
+        if(predictions!=null&&predictions.isPrediction(eventId))return null;
         var row = repository.punishmentCompletion(eventId);
         return row == null ? null : new PunishmentCompletion(row.requestedBy(), row.triggerSource(),row.authorizationId(),row.completedAt());
     }

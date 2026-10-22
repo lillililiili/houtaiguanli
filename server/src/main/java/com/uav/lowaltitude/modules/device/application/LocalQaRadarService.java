@@ -39,14 +39,18 @@ public class LocalQaRadarService {
     }
 
     @Transactional
-    public DeviceDetail prepare(String org,String district,BigDecimal longitude,BigDecimal latitude,String key) {
+    public DeviceDetail prepare(String org,String district,BigDecimal longitude,BigDecimal latitude,String coordinateSystem,String key) {
         access.requireBackend();access.require("interfaces.op");access.require("devices.auth");access.require("devices.op");
         var actor=AuthContext.require();
         if(!"ALL".equals(actor.scopeMode()))throw new ApiException(HttpStatus.FORBIDDEN,"QA_GLOBAL_SCOPE_REQUIRED","本机模拟雷达登记需要全局管理范围");
         var tuple=scopes.validateTuple(org,district);
-        if(longitude==null||latitude==null||longitude.abs().compareTo(BigDecimal.valueOf(180))>0
-                ||latitude.abs().compareTo(BigDecimal.valueOf(90))>0)
+        if(longitude==null||latitude==null)
             throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","请填写有效的 WGS-84 经度和纬度");
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(longitude,latitude,coordinateSystem);
+        } catch (IllegalArgumentException ex) {
+            throw new ApiException(HttpStatus.BAD_REQUEST,"VALIDATION_ERROR",ex.getMessage());
+        }
         // Locks an existing scope row, including the very first registration. DB uniqueness also guards other scopes.
         repository.lockScope(org);
         var rows=repository.existing(DEVICE_NO);

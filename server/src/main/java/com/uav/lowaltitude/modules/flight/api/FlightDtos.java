@@ -75,7 +75,8 @@ public final class FlightDtos {
 
     /** 仅计划详情返回报备事实；不把所属机构或航线端点代替未报备的信息。 */
     public record PlanFilingDto(String pilotName, String operatorName, String takeoffSiteName, String landingSiteName,
-            BigDecimal takeoffLongitude, BigDecimal takeoffLatitude, BigDecimal landingLongitude, BigDecimal landingLatitude) { }
+            BigDecimal takeoffLongitude, BigDecimal takeoffLatitude, BigDecimal landingLongitude, BigDecimal landingLatitude,
+            String coordinateSystem) { }
 
     public record RouteDto(
             String routeId, String routeNo, String name, boolean enabled, SourceDto source, String sourceMode,

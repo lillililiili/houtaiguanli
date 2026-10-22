@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia';
 import { authApi } from '@/api/auth.js';
 import { readToken, writeToken } from '@/services/apiClient.js';
-import { isBackendUser } from '@/utils/userType.js';
+import { canEnterManagement } from '@/utils/userType.js';
+import { managementMenu, managementPermission } from '@/utils/managementAccess.js';
+import { setManagementContext } from '@/services/managementContext.js';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -12,14 +14,15 @@ export const useAuthStore = defineStore('auth', {
   getters: {
     authenticated: state => Boolean(state.token && state.user),
     mustChangePassword: state => Boolean(state.user?.must_change_password),
-    hasPermission: state => code => Boolean(state.user?.permission_codes?.includes(code)),
-    hasMenu: state => key => Boolean(state.user?.menu_keys?.includes(key)),
+    hasPermission: state => code => managementPermission(state.user, code),
+    hasMenu: state => key => managementMenu(state.user, key),
     canReloginInPlace: state => Boolean(state.user?.account && state.reloginHosts > 0)
   },
   actions: {
     clear() {
       this.token = '';
       this.user = null;
+      setManagementContext(null);
       this.restoreError = '';
       this.sessionExpired = false;
       this.expiredWhileSubmitting = false;
@@ -27,19 +30,20 @@ export const useAuthStore = defineStore('auth', {
     },
     async loadCurrentUser() {
       const user = await authApi.me();
-      if (!isBackendUser(user)) {
+      if (!canEnterManagement(user)) {
         this.clear();
-        const error = new Error('该账号是前台用户，不能登录后台管理系统');
+        const error = new Error('该账号没有后台管理或单位管理资格');
         error.code = 'BACKEND_ACCESS_DENIED';
         throw error;
       }
       this.user = user;
+      setManagementContext(user.management_context);
       this.restoreError = '';
       return this.user;
     },
     async restore() {
       this.token = readToken();
-      if (!this.token) { this.user = null; return null; }
+      if (!this.token) { this.user = null; setManagementContext(null); return null; }
       if (!this.restoring) {
         this.restoring = this.loadCurrentUser().catch(error => {
           // 已就地标记过期的会话留给重新登录弹窗处理，不清掉页面（ZT-29）。
@@ -83,6 +87,7 @@ export const useAuthStore = defineStore('auth', {
     /** 本人只改姓名和电话；带上当前版本号，别处改过时服务端返回冲突。 */
     async updateProfile({ name, phone }) {
       this.user = await authApi.updateProfile({ name, phone, expected_version: this.user?.version ?? 0 });
+      setManagementContext(this.user.management_context);
       return this.user;
     },
     async changePassword(currentPassword, newPassword) {

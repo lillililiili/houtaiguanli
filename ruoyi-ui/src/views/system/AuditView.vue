@@ -152,7 +152,7 @@ onBeforeUnmount(() => { alive = false; listSequence++ })
       <div class="audit-footer"><span>默认按时间倒序，单次 CSV 导出上限 50,000 条。{{ filters.includeAutomatic ? '' : '已隐藏系统自动记录（模拟观测、设备状态上报、自动核验等）。' }}</span><el-pagination v-model:current-page="filters.page" v-model:page-size="filters.size" background layout="total, sizes, prev, pager, next" :page-sizes="[10,20,50,100]" :total="total" @current-change="load" @size-change="filters.page=1;load()" /></div>
     </section>
 
-    <el-dialog v-model="detailDialog.visible" title="审计日志详情" width="min(760px, calc(100vw - 32px))" top="8vh">
+    <el-dialog v-model="detailDialog.visible" title="审计日志详情" width="min(760px, calc(100vw - 32px))">
       <div v-loading="detailDialog.loading" class="audit-detail-body">
         <template v-if="detailDialog.row">
           <el-descriptions class="audit-detail-metadata" :column="2" border>

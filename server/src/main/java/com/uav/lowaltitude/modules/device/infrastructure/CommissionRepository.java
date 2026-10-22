@@ -82,6 +82,11 @@ public class CommissionRepository {
     }
 
     private static String scope(Map<String, Object> p, AuthUser actor) {
+        String org = com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId();
+        if (org != null) {
+            p.put("unit_commission_org",org);
+            return " AND EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE JOIN app_district dd ON dd.district_id=bs.district_id AND dd.enabled=TRUE WHERE bs.ops_device_id=d.device_id AND bs.owner_org_id=:unit_commission_org)";
+        }
         if (actor == null) return " AND 1=0";
         if ("ALL".equals(actor.scopeMode())) return "";
         if (!"ASSIGNED".equals(actor.scopeMode())) return " AND 1=0";
@@ -93,6 +98,18 @@ public class CommissionRepository {
                  JOIN app_district district ON district.district_id=bs.district_id AND district.enabled=TRUE
                  WHERE bs.ops_device_id=d.device_id AND us.user_id=:scope_user)
                 """;
+    }
+
+    public void recordManagementOrigin(String id,String org,String actor) {
+        jdbc.update("UPDATE commission_task SET management_org_id=?,execution_requested_by=? WHERE commission_id=?",org,actor,id);
+    }
+
+    public void lockTask(String id) {
+        jdbc.queryForList("SELECT commission_id FROM commission_task WHERE commission_id=? FOR UPDATE",id);
+    }
+
+    public boolean deviceInUnit(String deviceId,String org) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM device_business_scope bs JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE JOIN app_district dd ON dd.district_id=bs.district_id AND dd.enabled=TRUE JOIN ops_device d ON d.device_id=bs.ops_device_id AND d.deleted_at IS NULL AND d.enabled=TRUE WHERE bs.ops_device_id=? AND bs.owner_org_id=?",Long.class,deviceId,org)>0;
     }
 
     public int transition(String id, long version, String from, String to, long now) {

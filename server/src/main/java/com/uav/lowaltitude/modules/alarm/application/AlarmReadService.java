@@ -42,7 +42,7 @@ public class AlarmReadService {
     // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group、violation_reason。
     private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "target_no", "occurred_from", "occurred_to",
             "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group",
-            "violation_reason");
+            "violation_reason", "origin_kind", "prediction_status", "current_pending");
     private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
     /** 筛选和展示使用当次告警保存的原因，不按当前规则版本抹去历史原因。 */
     private static final Set<String> VIOLATION_REASONS = Set.of(RuleCodes.NO_AUTHORIZATION, RuleCodes.INSIDE_RESTRICTED_AIRSPACE, RuleCodes.AIRSPACE_ALTITUDE_EXCEEDED,
@@ -54,6 +54,9 @@ public class AlarmReadService {
     private final AppClock clock;
     private final ObjectMapper json;
     private final UavAdvisoryService advisory;
+    private com.uav.lowaltitude.modules.prediction.application.PredictionReadService predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void predictions(com.uav.lowaltitude.modules.prediction.application.PredictionReadService service) { this.predictions=service; }
 
     public AlarmReadService(AccessControlService access, AlarmReadRepository repository, AuditService audit,
             AppClock clock, ObjectMapper json, UavAdvisoryService advisory) {
@@ -91,7 +94,11 @@ public class AlarmReadService {
             if (row.eventId() != null && !progress.containsKey(row.eventId()))
                 progress.put(row.eventId(), advisory.progressLabel(row.eventId(), decision, disposalDecision));
         }
-        List<List<String>> cells = rows.stream().map(row -> exportRow(row, progress.get(row.eventId()))).toList();
+        Map<String,List<String>> predictionSummaries=predictions==null?Map.of()
+                :predictions.exportSummaries(rows.stream().map(AlarmRow::eventId).toList());
+        List<List<String>> cells = rows.stream().map(row -> exportRow(row, progress.get(row.eventId()),
+                row.eventId()==null?java.util.Arrays.asList(null,null,null)
+                        :predictionSummaries.getOrDefault(row.eventId(),java.util.Arrays.asList(null,null,null)))).toList();
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarms", "alarms_exported", "alarm", null,
                 "filters=" + describe(query, sort, order) + "; rows=" + cells.size(), "SUCCESS", "", "");
@@ -105,22 +112,24 @@ public class AlarmReadService {
      * 否则待定是否反制、已移送处罚在表里都只剩“告警已确认”。
      */
     private static final List<String> EXPORT_HEADERS = List.of(
-            "编号", "告警类别", "违规原因", "等级", "核实状态", "处置进度", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组", "任务匹配提示");
+            "编号", "告警类别", "违规原因", "等级", "核实状态", "处置进度", "发生时间", "接收时间", "目标编号", "所属组织", "所属区域", "来源", "观测状态", "关注分组", "任务匹配提示", "预测来源", "预测生命周期", "预测变化原因");
 
     private AccessDecision optional(PermissionCode permission) {
         try { return access.require(permission); } catch (ApiException denied) { return null; }
     }
 
-    private List<String> exportRow(AlarmRow row, String progress) {
+    private List<String> exportRow(AlarmRow row, String progress,List<String> predictionSummary) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。
         // 违规原因与列表同源（UX-61）：升级过取最近一次升级的累计原因，否则取告警明细的 violation_reasons。
-        return java.util.Arrays.asList(row.displayNo(),
+        var cells = new java.util.ArrayList<String>(java.util.Arrays.asList(row.displayNo(),
                 com.uav.lowaltitude.platform.export.CsvLabels.alarmType(row.alarmType()),
                 com.uav.lowaltitude.platform.export.CsvLabels.violationReasons(violations(row)),
                 com.uav.lowaltitude.platform.export.CsvLabels.severity(row.severity()),
                 com.uav.lowaltitude.platform.export.CsvLabels.uavEventState(row.state()), progress,
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
-                row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()), null);
+                row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()), null));
+        cells.addAll(predictionSummary);
+        return cells;
     }
 
     private static String observationLabel(String status) {
@@ -143,6 +152,7 @@ public class AlarmReadService {
         return "state=" + query.state() + ",severity=" + query.severity() + ",alarm_type=" + query.alarmType()
                 + ",attention_group=" + (query.attentionGroups() == null ? null : String.join("|", query.attentionGroups()))
                 + ",violation_reason=" + query.violationReason()
+                + ",current_pending=" + query.currentPending()
                 + ",district_id=" + query.districtId() + ",target_id=" + query.targetId() + ",target_no=" + query.targetNo()
                 + ",sort=" + sort + ",order=" + order;
     }
@@ -161,8 +171,8 @@ public class AlarmReadService {
             if (!repository.targetReadable(query.targetId(), targetDecision)) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权筛选该关联目标");
         }
         long total = repository.count(query, decision);
-        return new PageDto<>(repository.list(query, decision, page.offset(), page.size(), sort, order).stream()
-                .map(this::dto).toList(), page.page(), page.size(), total);
+        var items=repository.list(query, decision, page.offset(), page.size(), sort, order).stream().map(this::baseDto).toList();
+        return new PageDto<>(predictions==null?items:predictions.enrichList(items),page.page(),page.size(),total);
     }
 
     /**
@@ -231,14 +241,19 @@ public class AlarmReadService {
     }
 
     private AlarmDto dto(AlarmRow row) {
+        var result=baseDto(row);
+        return predictions == null ? result : predictions.enrich(result,row.eventId(),result.getTargetId()!=null);
+    }
+    private AlarmDto baseDto(AlarmRow row) {
         // target_id 是独立敏感引用：没有 target:read 时宁可省略，也不能以 0 坐标或可猜 ID 替代。
         String targetId = targetReferenceVisible(row.targetId(), row.ownerOrgId(), row.districtId()) ? row.targetId() : null;
         List<String> violations = violations(row);
-        return new AlarmDto(row.alarmId(), row.eventId(), row.state(), row.alarmType(), row.severity(), millis(row.occurredAt()),
+        AlarmDto result = new AlarmDto(row.alarmId(), row.eventId(), row.state(), row.alarmType(), row.severity(), millis(row.occurredAt()),
                 requiredMillis(row.receivedAt()), row.sourceCode(), row.sourceMode(), row.ownerOrgId(), row.districtId(), targetId,
                 row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
                 row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()),
                 row.observationStatus(), row.attentionGroup(), null);
+        return result;
     }
 
     /** 违规原因：升级过取最近一次升级的累计结果，否则取告警明细里的 violation_reasons；只给原因代码，不外露明细 JSON。 */
@@ -289,7 +304,25 @@ public class AlarmReadService {
         private AlarmQuery query() {
             return new AlarmQuery(optional("state", 32), optional("severity", 16), optional("target_id", 36), timeFrom(), timeTo(),
                     optional("owner_org_id", 36), optional("district_id", 36), optional("source_mode", 8), optional("alarm_type", 32),
-                    attentionGroups(), violationReason(), optional("target_no", 64));
+                    attentionGroups(), violationReason(), optional("target_no", 64), predictionOrigin(), predictionStatus(), currentPending());
+        }
+        private boolean currentPending() {
+            String value=optional("current_pending",5);
+            if(value==null || "false".equals(value)) return false;
+            String state=optional("state",32);
+            if(!"true".equals(value) || state==null || !Set.of("PENDING_VERIFICATION","CONFIRMED").contains(state))
+                throw invalid("current_pending 仅用于待核实或待处置查询");
+            return true;
+        }
+        private String predictionOrigin() {
+            String value=optional("origin_kind",64);
+            if(value!=null && !Set.of("PREDICTED_AIRSPACE_ENTRY","OBSERVED_AIRSPACE_ENTRY","OBSERVED").contains(value)) throw invalid("origin_kind 参数无效");
+            return value;
+        }
+        private String predictionStatus() {
+            String value=optional("prediction_status",32);
+            if(value!=null && !Set.of("ACTIVE","UNKNOWN","WITHDRAWN","ENTERED").contains(value)) throw invalid("prediction_status 参数无效");
+            return "WITHDRAWN".equals(value)?"CLEARED":value;
         }
         private String violationReason() {
             String value = optional("violation_reason", 64);

@@ -20,7 +20,7 @@ class EoTrackingReportMapperTest {
     }
 
     private static String report(String event, int workState, String aiStatus) {
-        return "{\"event\":\"" + event + "\",\"edgeId\":\"1421840000010157\",\"timestamp\":" + TIME + ",\"metadata\":{"
+        return "{\"coordinate_system\":\"WGS84\",\"event\":\"" + event + "\",\"edgeId\":\"1421840000010157\",\"timestamp\":" + TIME + ",\"metadata\":{"
                 + "\"taskId\":\"T-9030\",\"deviceId\":\"D-1\",\"codeStatus\":200,\"workState\":" + workState + ","
                 + "\"objectData\":{\"latitude\":5.6,\"longitude\":3.15,\"altitude\":53.5,\"dataId\":\"583\",\"objectType\":40,\"probability\":0.567},"
                 + "\"cameraStatus\":{\"hfov\":5.6,\"focalLen\":88,\"detectDist\":164.4}"

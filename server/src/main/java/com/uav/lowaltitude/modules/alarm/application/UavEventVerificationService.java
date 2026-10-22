@@ -40,6 +40,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavEventVerificationService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private final AccessControlService access;
     private final UavEventRepository repository;
     private final AlarmReadRepository alarms;
@@ -86,23 +89,33 @@ public class UavEventVerificationService {
         String conclusion = requiredConclusion(request);
         String note = optionalNote(request);
         long expectedVersion = requiredVersion(request);
+        if(predictions!=null)predictions.lockEpisode(id);
         EventRow event = repository.lock(id, read);
         if (event == null) throw notFound();
         // 先完成读/写权限与范围锁定才声明幂等键，越权者不能靠重放键探测已提交请求。
-        idempotency.claim(idempotencyKey, stableOperation(id, conclusion, note, expectedVersion));
+        idempotency.claim(idempotencyKey, stableOperation(id, conclusion, note, expectedVersion)
+                +(request.predictionId()==null?"":part(request.predictionId())));
         if (event.version() != expectedVersion) throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
         String next = UavEventState.next(event.state(), conclusion);
         // 人工核实为属实前检查依据；核实为误报不受限。自动核实另走 AlarmRuleVerification，不经过这里。
         if ("CONFIRMED".equals(conclusion)) {
-            UavVerificationBasis.Result result = UavVerificationBasis.evaluate(basis.facts(id, clock.nowMillis()));
-            if (!result.confirmable()) throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "VERIFICATION_BASIS_MISSING", result.message());
+            String predictionBlock=predictions==null?null:predictions.confirmationBlock(id);
+            if(predictionBlock!=null) {
+                if(!predictionBlock.isEmpty())throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY,"VERIFICATION_BASIS_MISSING",predictionBlock);
+                predictions.requireSelectedPrediction(id,request.predictionId());
+            } else {
+                UavVerificationBasis.Result result = UavVerificationBasis.evaluate(basis.facts(id, clock.nowMillis()));
+                if (!result.confirmable()) throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "VERIFICATION_BASIS_MISSING", result.message());
+            }
         }
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         // 条件更新为 0 行代表竞争写入，绝不追加一条与实际状态不一致的核实历史。
         if (repository.update(id, expectedVersion, next, at) != 1) throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
         AuthUser actor = AuthContext.require();
-        repository.appendHistory(UUID.randomUUID().toString(), id, event.state(), next, conclusion, note,
+        String historyId=UUID.randomUUID().toString();
+        repository.appendHistory(historyId, id, event.state(), next, conclusion, note,
                 expectedVersion + 1, actor.userId(), at);
+        if(predictions!=null&&"CONFIRMED".equals(conclusion))predictions.freezeVerification(historyId,id,request.predictionId());
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarm", "uav_event_verified", "uav_event", id,
                 "conclusion=" + conclusion + "; version=" + (expectedVersion + 1), "SUCCESS", "", "");
         return dto(new EventRow(event.eventId(), event.alarmId(), event.targetId(), next, event.ownerOrgId(), event.districtId(), event.createdAt(), at, expectedVersion + 1, event.sourceMode()));
@@ -123,6 +136,8 @@ public class UavEventVerificationService {
         access.require(PermissionCode.ASSESSMENT_READ);
         access.require(PermissionCode.ASSESSMENT_ESCALATE);
         String eventId = repository.eventIdForAlarm(alarmId);
+        if(predictions!=null&&predictions.isPrediction(eventId))
+            throw new ApiException(HttpStatus.CONFLICT,"PREDICTION_MANUAL_VERIFICATION_REQUIRED","预测风险须在预警中人工核实，不能沿用实际违法复核结论");
         EventRow event = eventId == null ? null : repository.lock(eventId, read);
         if (event == null) throw notFound();
         if (!repository.reviewedIllegal(eventId, evaluationId))
@@ -142,6 +157,10 @@ public class UavEventVerificationService {
     /** 只给能核实的人：依据随目标数据时效变化，每次读取现算；页面据此提示“缺少依据”，提交时服务端再算一次。 */
     private VerificationBasisDto verificationBasis(String eventId) {
         long now = clock.nowMillis();
+        String predictionBlock=predictions==null?null:predictions.confirmationBlock(eventId);
+        if(predictionBlock!=null)return new VerificationBasisDto(predictionBlock.isEmpty(),
+                predictionBlock.isEmpty()?List.of():List.of("PREDICTION_EVIDENCE_UNAVAILABLE"),
+                predictionBlock.isEmpty()?null:predictionBlock,now);
         UavVerificationBasis.Result result = UavVerificationBasis.evaluate(basis.facts(eventId, now));
         return new VerificationBasisDto(result.confirmable(), result.missing(), result.message(), now);
     }
@@ -158,18 +177,19 @@ public class UavEventVerificationService {
     private VerifyRequest request(String rawBody) {
         try (JsonParser parser = objectMapper.getFactory().createParser(rawBody == null ? "" : rawBody)) {
             if (parser.nextToken() != JsonToken.START_OBJECT) throw new IllegalArgumentException();
-            Set<String> seen = new HashSet<>(); String conclusion = null, note = null; Long version = null;
+            Set<String> seen = new HashSet<>(); String conclusion = null, note = null, predictionId = null; Long version = null;
             while (parser.nextToken() != JsonToken.END_OBJECT) {
                 if (parser.currentToken() != JsonToken.FIELD_NAME) throw new IllegalArgumentException();
                 String field = parser.currentName();
-                if (!Set.of("conclusion", "note", "expected_version").contains(field) || !seen.add(field)) throw new IllegalArgumentException();
+                if (!Set.of("conclusion", "note", "expected_version","prediction_id").contains(field) || !seen.add(field)) throw new IllegalArgumentException();
                 JsonToken value = parser.nextToken();
                 if ("conclusion".equals(field)) { if (value != JsonToken.VALUE_STRING) throw new IllegalArgumentException(); conclusion = parser.getText(); }
                 else if ("note".equals(field)) { if (value != JsonToken.VALUE_STRING) throw new IllegalArgumentException(); note = parser.getText(); }
+                else if ("prediction_id".equals(field)) { if(value!=JsonToken.VALUE_STRING)throw new IllegalArgumentException();predictionId=parser.getText();if(predictionId.isBlank()||predictionId.length()>36)throw new IllegalArgumentException(); }
                 else { if (!value.isNumeric() || !parser.isExpectedNumberIntToken()) throw new IllegalArgumentException(); version = parser.getLongValue(); }
             }
             if (parser.nextToken() != null || !seen.containsAll(Set.of("conclusion", "expected_version"))) throw new IllegalArgumentException();
-            return new VerifyRequest(conclusion, note, version);
+            return new VerifyRequest(conclusion, note, version,predictionId);
         } catch (Exception ex) { throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "请求参数格式不正确"); }
     }
     private static long millis(OffsetDateTime value) { return value.toInstant().toEpochMilli(); }

@@ -48,11 +48,11 @@ public class MqttConfigurationService {
     }
     public List<Broker> list() {
         permissions.requireInterfacesRead();
-        return repository.brokers().stream().filter(b -> access.canAccessTuple(b.ownerOrgId(),b.districtId())).toList();
+        return repository.brokers().stream().filter(b -> unitOwns(b.ownerOrgId()) && access.canAccessTuple(b.ownerOrgId(),b.districtId())).toList();
     }
     public List<BrokerOption> options() {
         permissions.requireDevicesOperate();
-        return repository.brokers().stream().filter(b -> access.canAccessTuple(b.ownerOrgId(),b.districtId()))
+        return repository.brokers().stream().filter(b -> unitOwns(b.ownerOrgId()) && access.canAccessTuple(b.ownerOrgId(),b.districtId()))
                 .map(b -> new BrokerOption(b.brokerId(),b.name(),b.sourceMode(),b.ownerOrgId(),b.districtId(),b.enabled())).toList();
     }
     public record BrokerOption(String brokerId,String name,String sourceMode,String ownerOrgId,String districtId,boolean enabled) { }
@@ -62,7 +62,7 @@ public class MqttConfigurationService {
     }
     public List<Map<String,Object>> scopes() {
         permissions.requireScopeOptionsRead();
-        return repository.scopeOptions().stream().filter(r -> access.canAccessTuple((String)r.get("org_id"),(String)r.get("district_id"))).toList();
+        return repository.scopeOptions().stream().filter(r -> unitOwns((String)r.get("org_id")) && access.canAccessTuple((String)r.get("org_id"),(String)r.get("district_id"))).toList();
     }
     /** 管理端据此给出“数据来源”选项：模拟回放只在显式测试环境（local+qa 或 test）开放，正式环境只有真实来源。 */
     public Capabilities capabilities() {
@@ -230,12 +230,17 @@ public class MqttConfigurationService {
             visible.put("last_error", "连接异常，详细诊断需设备操作权限");
         return visible;
     }
+    private static boolean unitOwns(String org) {
+        return !com.uav.lowaltitude.platform.security.UnitOperationsContext.active()
+                || java.util.Objects.equals(org,com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId());
+    }
     private Broker requiredBroker(String id,boolean lock) {
         Broker broker=repository.broker(id,lock);
         if(broker==null) throw new ApiException(HttpStatus.NOT_FOUND,"MQTT_BROKER_NOT_FOUND","MQTT 连接不存在");
         scope(broker.ownerOrgId(),broker.districtId()); return broker;
     }
     private void scope(String org,String district) {
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.requireOwner(org);
         access.requireTuple(org,district);
         if(!repository.scopeExists(org,district)) throw bad("请选择有效的组织和区域 ID");
     }
@@ -252,11 +257,9 @@ public class MqttConfigurationService {
         required(p.deviceNo(),64); required(p.name(),128); required(p.brokerId(),36);
         required(p.ownerOrgId(),36); required(p.districtId(),36); mode(p.sourceMode());
         if((p.vendor()!=null && p.vendor().length()>128) || (p.model()!=null && p.model().length()>128)) throw bad("厂家或型号过长");
-        if ((p.longitude() == null) != (p.latitude() == null)) throw bad("经纬度必须同时填写或同时为空");
-        if (p.longitude() != null && (p.longitude().compareTo(java.math.BigDecimal.valueOf(-180)) < 0
-                || p.longitude().compareTo(java.math.BigDecimal.valueOf(180)) > 0)) throw bad("经度范围必须为 -180 到 180");
-        if (p.latitude() != null && (p.latitude().compareTo(java.math.BigDecimal.valueOf(-90)) < 0
-                || p.latitude().compareTo(java.math.BigDecimal.valueOf(90)) > 0)) throw bad("纬度范围必须为 -90 到 90");
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(p.longitude(),p.latitude(),p.coordinateSystem());
+        } catch (IllegalArgumentException ex) { throw bad(ex.getMessage()); }
         if(eo(p)) { segment(p.edgeId(),64); segment(p.externalDeviceId(),32); return; }
         boolean simulatorOnly = "replay".equals(p.sourceMode()) && SIMULATOR_ONLY_TYPES.contains(p.deviceTypeAbbr());
         if(!LingyunEnvelope.PROTOCOL.equals(p.protocolCode())

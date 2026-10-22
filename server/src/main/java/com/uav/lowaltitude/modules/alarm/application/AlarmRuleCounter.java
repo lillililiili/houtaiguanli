@@ -43,6 +43,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @Service
 public class AlarmRuleCounter {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private static final Logger log = LoggerFactory.getLogger(AlarmRuleCounter.class);
     private static final AccessDecision SCOPE = new AccessDecision("system:auto-counter", ScopeMode.ALL);
     private static final String REASON = "反制规则已满足，系统自动发起。";
@@ -84,6 +87,7 @@ public class AlarmRuleCounter {
 
     @Transactional
     public void launchIfPassed(String eventId, String runId) {
+        if (predictions != null && predictions.blocksAutomatic("counter",eventId)) return;
         if (eventId == null || eventId.isBlank() || runId == null || runId.isBlank()) return;
         RunRow run = automatic.passingRun(eventId, runId);
         if (run == null) return;

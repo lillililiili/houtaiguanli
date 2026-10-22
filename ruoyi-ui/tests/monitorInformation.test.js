@@ -5,6 +5,7 @@ import ElementPlus from 'element-plus';
 import MonitorView from '@/views/operations/MonitorView.vue';
 import { deviceApi } from '@/api/devices.js';
 import { deviceMaintenanceApi } from '@/api/deviceMaintenance.js';
+import { useAuthStore } from '@/stores/auth.js';
 
 vi.mock('@/api/deviceMaintenance.js', () => ({ deviceMaintenanceApi: { list: vi.fn() } }));
 // 实时推送：记录页面订阅的重读函数，测试里按需模拟后端推来的变化信号。
@@ -21,9 +22,10 @@ vi.mock('@/api/devices.js', () => ({ deviceApi: Object.fromEntries(
 let app, host;
 const devices = ['A', 'B'].map(id => ({ device_id: id, device_no: id, name: `设备${id}`, channel: 'MQTT' }));
 async function settle() { for (let i = 0; i < 18; i++) { await Promise.resolve(); await nextTick(); } }
-async function mount() {
+async function mount(user = null) {
   host = document.createElement('div'); document.body.append(host);
-  app = createApp(MonitorView); app.use(createPinia()); app.use(ElementPlus); app.mount(host); await settle();
+  const pinia = createPinia();
+  app = createApp(MonitorView); app.use(pinia); useAuthStore(pinia).user = user; app.use(ElementPlus); app.mount(host); await settle();
 }
 async function click(text) { [...host.querySelectorAll('button')].find(button => button.textContent.includes(text)).click(); await settle(); }
 /* 模拟后端推来一次变化信号；返回各订阅的重读结果（失败时为错误，实时刷新据此退避重试）。 */
@@ -52,6 +54,15 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); vi.useRealTimers(); vi.resetAllMocks(); realtime.subscriptions.length = 0; });
 
 describe('实时监测设备状态', () => {
+  it('单位实时监测不读取业务目标，也不因设备管理操作权限显示光电控制', async () => {
+    deviceApi.tree.mockResolvedValue({ items: [{ ...devices[0], protocol_code: 'RADAR_TCP_V3_0_0' }] });
+    deviceApi.protocolStatus.mockResolvedValue({ protocol_code: 'EO_EDGE_MQTT_20250826', details: { open_task: { task_id: 'eo-active', status: 'OPEN', target_id: 'target-local' } } });
+    await mount({ user_type: 'FRONTEND', management_context: { mode: 'UNIT', org_id: 'unit-a', menu_keys: ['monitoring', 'devices'], permission_codes: ['monitoring.read', 'devices.read', 'devices.op'] } });
+    expect(deviceApi.state).toHaveBeenCalledWith('A');
+    expect(deviceApi.targets).not.toHaveBeenCalled();
+    expect(host.textContent).not.toContain('结束当前跟踪');
+    expect(host.textContent).not.toContain('最新雷达目标');
+  });
   it('设备深链接只读取指定设备，不退回设备树第一项', async () => {
     realtime.route.query = { device_id: 'B' }; await mount();
     expect(deviceApi.state).toHaveBeenCalledWith('B'); expect(deviceApi.state).not.toHaveBeenCalledWith('A');

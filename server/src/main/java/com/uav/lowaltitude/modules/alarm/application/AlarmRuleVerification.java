@@ -14,6 +14,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** 核实规则通过后，把仍待核实的告警事件记为属实。不创建反制授权，也不发送处罚通知。 */
 @Service
 public class AlarmRuleVerification {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     public static final String NOTE = "核实规则已满足，系统核实属实。";
     private final JdbcTemplate jdbc;
     private final UavEventRepository events;
@@ -26,6 +29,7 @@ public class AlarmRuleVerification {
     }
     @Transactional
     public void confirmIfPassed(String eventId, String runId) {
+        if (predictions != null && predictions.blocksAutomatic("verify",eventId)) return;
         if (eventId == null || eventId.isBlank() || runId == null || runId.isBlank()) return;
         var rows = jdbc.query("SELECT state_code, version FROM uav_event WHERE event_id=?",
                 (rs, n) -> new State(rs.getString("state_code"), rs.getLong("version")), eventId);

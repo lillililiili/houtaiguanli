@@ -18,7 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.uav.lowaltitude.integration.mock.LocalStage8FusionReplaySeeder;
+import com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.FusedLayerWriter;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.FusionDomainKey;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.PointKind;
@@ -29,16 +29,17 @@ import com.uav.lowaltitude.modules.fusion.FusionContracts.TrackStatus;
 /**
  * 阶段 10（决策 10-1，契约 §4/§8）：fusion_event 的 STATUS_STABLE / UNDETERMINED payload 是最新状态摘要，
  * 给 A 的光电跟踪触发用。取不到的键不出现、不写 null；飞手位置有则出键；告警/风险只读现状。
- * 上下文启动时 LocalStage8FusionReplaySeeder 已用真实 DefaultFusedLayerWriter 回放 v2 数据集（独立 H2 库，不与别的用例共享）。
+ * 显式导入当前 WGS-84 合成夹具并用真实 DefaultFusedLayerWriter 回放；冻结旧数据集不变。
  */
 @SpringBootTest(properties = {
         "app.dev-seed.enabled=true", "app.fusion.enabled=false", "app.fusion.replay.run-on-start=false",
         "spring.datasource.url=jdbc:h2:mem:stage10_fusion_event;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
 })
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(Wgs84FusionTestFixture.Replay.class)
 class FusionEventPayloadTest {
-    private static final String TDOA_SOURCE = "seed-stage8-source-tdoa", EO_SOURCE = "seed-stage8-source-eo";
-    private static final FusionDomainKey DOMAIN = new FusionDomainKey("replay", LocalStage8FusionReplaySeeder.ORG, LocalStage8FusionReplaySeeder.DISTRICT);
+    private static final String TDOA_SOURCE = Wgs84FusionTestFixture.TDOA_SOURCE, EO_SOURCE = Wgs84FusionTestFixture.EO_SOURCE;
+    private static final FusionDomainKey DOMAIN = new FusionDomainKey("replay", Wgs84FusionTestFixture.ORG, Wgs84FusionTestFixture.DISTRICT);
     private static final Instant T0 = Instant.parse("2026-09-07T01:00:00Z");
     /** 兜底上限，不是业务阈值：不可判定由 fusion_config 的 degradation.* 参数决定，这里只保证循环有尽头。 */
     private static final int MAX_SOURCELESS_FRAMES = 50;
@@ -118,13 +119,13 @@ class FusionEventPayloadTest {
         String targetNo = "S10-" + targetId.substring(0, 8);
         Timestamp now = Timestamp.from(T0);
         jdbc.update("insert into target (target_id,target_no,source_mode,owner_org_id,district_id,created_at,updated_at,version,unified) values (?,?,'replay',?,?,?,?,0,true)",
-                targetId, targetNo, LocalStage8FusionReplaySeeder.ORG, LocalStage8FusionReplaySeeder.DISTRICT, now, now);
+                targetId, targetNo, Wgs84FusionTestFixture.ORG, Wgs84FusionTestFixture.DISTRICT, now, now);
         String alarmId = UUID.randomUUID().toString();
         jdbc.update("insert into alarm (alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at)"
                 + " values (?,?,?,?,'UAV','HIGH',?,?,'replay',?,?,?)", alarmId, targetId, TDOA_SOURCE, "s10-" + alarmId, now, now,
-                LocalStage8FusionReplaySeeder.ORG, LocalStage8FusionReplaySeeder.DISTRICT, now);
+                Wgs84FusionTestFixture.ORG, Wgs84FusionTestFixture.DISTRICT, now);
         jdbc.update("insert into uav_event (event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values (?,?,'PENDING_VERIFICATION',?,?,?,?,0)",
-                UUID.randomUUID().toString(), alarmId, LocalStage8FusionReplaySeeder.ORG, LocalStage8FusionReplaySeeder.DISTRICT, now, now);
+                UUID.randomUUID().toString(), alarmId, Wgs84FusionTestFixture.ORG, Wgs84FusionTestFixture.DISTRICT, now, now);
         risk(targetId, "MEDIUM", "PENDING_VERIFICATION", now);
         risk(targetId, "HIGH", "PENDING_NOTIFICATION", now);
         risk(targetId, "CRITICAL", "EXCLUDED", now);
@@ -208,7 +209,7 @@ class FusionEventPayloadTest {
         String targetId = UUID.randomUUID().toString();
         Timestamp now = Timestamp.from(T0);
         jdbc.update("insert into target (target_id,target_no,source_mode,owner_org_id,district_id,object_type_code,created_at,updated_at,version,unified) values (?,?,'replay',?,?,?,?,?,0,true)",
-                targetId, "S10-" + targetId.substring(0, 8), LocalStage8FusionReplaySeeder.ORG, LocalStage8FusionReplaySeeder.DISTRICT, objectTypeCode, now, now);
+                targetId, "S10-" + targetId.substring(0, 8), Wgs84FusionTestFixture.ORG, Wgs84FusionTestFixture.DISTRICT, objectTypeCode, now, now);
         return targetId;
     }
 

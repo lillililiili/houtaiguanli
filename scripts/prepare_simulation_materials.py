@@ -267,7 +267,7 @@ class Preparation:
                 'route': {'name': '验收模拟资料配套航线', 'geometry': {'type': 'LineString', 'coordinates': [[118.6236,37.464],[118.62408,37.464]]},
                           'corridor_width_m': 100, 'min_altitude_m': 0, 'max_altitude_m': 150, 'altitude_datum': 'AMSL',
                           'owner_org_id': org, 'district_id': district},
-                'filing': {**filing, 'operator_name': ORG_NAME, 'pilot_name': CONTACTS['pilot'][0],
+                'filing': {**filing, 'coordinate_system': 'WGS84', 'operator_name': ORG_NAME, 'pilot_name': CONTACTS['pilot'][0],
                            'takeoff_site_name': '验收模拟起飞点', 'landing_site_name': '验收模拟降落点',
                            'takeoff_longitude': 118.6236, 'takeoff_latitude': 37.464,
                            'landing_longitude': 118.62408, 'landing_latitude': 37.464}}

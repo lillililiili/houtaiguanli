@@ -31,7 +31,8 @@ public class BusinessReportExportService {
         audit.recordStandalone(user.userId(),user.account(),user.roleCode(),"statistics","stats_export_requested",
                 "report",category,"format="+extension.toUpperCase()+";category="+category+";period="+period
                 +";from="+p.from()+";to="+p.to()+";scope="+user.scopeMode()+";source="+p.sourceMode()
-                +";simulated="+p.simulated()+";report_scope="+p.reportScope(),"SUCCESS",ip,agent);
+                +";simulated="+p.simulated()+";report_scope="+p.reportScope()
+                +";management_org="+com.uav.lowaltitude.platform.report.ReportAccessContext.orgId(),"SUCCESS",ip,agent);
         return new File(filename,bytes,asPdf?"application/pdf":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     }
 }

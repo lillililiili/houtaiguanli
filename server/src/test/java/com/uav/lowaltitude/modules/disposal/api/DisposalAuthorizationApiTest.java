@@ -378,25 +378,38 @@ class DisposalAuthorizationApiTest {
         // 否则等于对一个已经不存在的航迹动手。
         String current = target(ORG, DISTRICT);
         String historical = target(ORG, DISTRICT, Instant.now().minusSeconds(4 * 3600));
-        String lineage = lineage(current);
-        if (lineage == null) return;   // 没有可用谱系夹具时不做假断言
-        jdbc.update("insert into target_current_alias (historical_target_id,current_target_id,lineage_id,updated_at)"
-                + " values (?,?,?,current_timestamp)", historical, current, lineage);
-        // historical 自己已经过期，但解析到 current 之后是新鲜的——应当放行。
-        mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
-                        .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
-                                + historical + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"旧 ID 派驱离\"}"))
-                .andExpect(status().isCreated());
-        // 落库的主体必须是解析后的当前目标，不是调用方递进来的旧 ID。
-        assertThat(jdbc.queryForObject("select subject_id from disposal_authorization where subject_id=?",
-                String.class, current)).isEqualTo(current);
-        jdbc.update("delete from target_current_alias where historical_target_id=?", historical);
+        String lineage = lineage(current, historical);
+        try {
+            jdbc.update("insert into target_current_alias (historical_target_id,current_target_id,lineage_id,updated_at)"
+                    + " values (?,?,?,current_timestamp)", historical, current, lineage);
+            // historical 自己已经过期，但解析到 current 之后是新鲜的——应当放行。
+            mvc.perform(post("/api/v1/disposal-authorizations").header("Authorization", bearer(requester))
+                            .header("Idempotency-Key", key()).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"action_type\":\"DISPERSAL\",\"subject_kind\":\"TARGET\",\"subject_id\":\""
+                                    + historical + "\",\"channel\":\"COUNTERMEASURE_4CH\",\"device_id\":\"unbound-test-device\",\"reason\":\"旧 ID 派驱离\"}"))
+                    .andExpect(status().isCreated());
+            // 落库的主体必须是解析后的当前目标，不是调用方递进来的旧 ID。
+            assertThat(jdbc.queryForObject("select subject_id from disposal_authorization where subject_id=?",
+                    String.class, current)).isEqualTo(current);
+            assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?",
+                    Integer.class, historical)).isZero();
+        } finally {
+            jdbc.update("delete from target_current_alias where historical_target_id=?", historical);
+            jdbc.update("delete from target_lineage where lineage_id=?", lineage);
+        }
     }
 
-    private String lineage(String targetId) {
-        java.util.List<String> ids = jdbc.queryForList("select lineage_id from target_lineage limit 1", String.class);
-        return ids.isEmpty() ? null : ids.get(0);
+    /** Self-contained merge evidence; the fusion configuration comes from migrations, not replay business seeds. */
+    private String lineage(String current, String historical) throws Exception {
+        String id = UUID.randomUUID().toString();
+        Timestamp at = Timestamp.from(Instant.now());
+        String config = jdbc.queryForObject("select config_version from fusion_config order by config_version fetch first 1 row only", String.class);
+        jdbc.update("insert into target_lineage (lineage_id,op,occurred_at,survivor_target_id,origin_target_id,"
+                        + "member_target_ids,source_target_ids,basis,algo_version,config_version,operator_kind,snapshots,created_at)"
+                        + " values (?,'MERGE',?,?,?,CAST(? AS JSON),CAST(? AS JSON),CAST('{}' AS JSON),'test',?,'SYSTEM',CAST('{}' AS JSON),?)",
+                id, at, current, historical, objectMapper.writeValueAsString(List.of(current, historical)),
+                objectMapper.writeValueAsString(List.of(historical)), config, at);
+        return id;
     }
 
     @Test

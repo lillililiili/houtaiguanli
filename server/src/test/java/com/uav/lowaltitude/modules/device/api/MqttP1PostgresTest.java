@@ -62,7 +62,7 @@ class MqttP1PostgresTest {
         assertThat(jdbc.queryForObject("SELECT altitude_m FROM ops_device WHERE device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("20");
         assertThat(jdbc.queryForObject("SELECT vendor FROM ops_device WHERE device_id=?",String.class,id)).isEqualTo("new-vendor");
         assertThat(edge?eo.updateDevice(eoBinding,metadata,2):mqtt.updateDevice(mqttBinding,metadata,2)).isZero();
-        var coordinates=new com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Registration(null,null,null,null,null,"replay",null,null,null,"after","new-vendor","new-model",1L,null,new java.math.BigDecimal("118.7"),new java.math.BigDecimal("37.5"),null);
+        var coordinates=new com.uav.lowaltitude.modules.device.domain.MqttConfiguration.Registration(null,null,null,null,null,"replay",null,null,null,"after","new-vendor","new-model",1L,null,new java.math.BigDecimal("118.7"),new java.math.BigDecimal("37.5"),null,"WGS84");
         assertThat(edge?eo.updateDevice(eoBinding,coordinates,3):mqtt.updateDevice(mqttBinding,coordinates,3)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("118.7");
         assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_id=?",String.class,id)).isEqualTo("WGS-84");

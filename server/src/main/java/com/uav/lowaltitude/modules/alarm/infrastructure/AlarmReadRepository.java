@@ -41,7 +41,7 @@ public class AlarmReadRepository {
         String sql = "SELECT a.alarm_id AS id,COALESCE(a.alarm_no,a.source_alarm_id) AS label," + time + " AS at_ms,"
             + "e.state_code AS state,a.alarm_type AS kind," + CURRENT_SEVERITY + " AS severity,dist_ref.name AS region,a.source_mode,"
             + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note" + from() + w.sql;
-        return ReportDatasetReader.window(sql, w.parameters, range, time);
+        return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.parameters, range, time), "a.owner_org_id");
     }
     private final NamedParameterJdbcTemplate jdbc;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
@@ -60,12 +60,13 @@ public class AlarmReadRepository {
         long lifetime = fusionConfig.params(null).integer("identity", "terminate_after_ms");
         if (lifetime <= 0) throw new IllegalStateException("Invalid target observation lifetime");
         parameters.put("attention_now", now.atOffset(ZoneOffset.UTC));
+        parameters.put("prediction_now", now.toEpochMilli());
         parameters.put("observation_since", now.minusMillis(lifetime).atOffset(ZoneOffset.UTC));
     }
 
     public long count(AlarmQuery query, AccessDecision access) {
         Where where = where(query, access);
-        if (query.attentionGroups() != null) putAttentionTime(where.parameters);
+        if (query.attentionGroups() != null || query.predictionStatus() != null) putAttentionTime(where.parameters);
         Long total = jdbc.queryForObject("SELECT COUNT(*)" + from() + where.sql, where.parameters, Long.class);
         return total == null ? 0 : total;
     }
@@ -220,6 +221,20 @@ public class AlarmReadRepository {
             parameters.put("scope_user_id", access.userId());
         }
         add(sql, parameters, "e.state_code", "state", query.state());
+        if (query.currentPending()) {
+            // Verification history remains immutable; only an explicitly requested current queue
+            // excludes a completed predictive cycle. Independently observed events are untouched.
+            sql.append(" AND (NOT EXISTS(SELECT 1 FROM prediction_event_link pending_link"
+                    + " JOIN prediction_episode pending_episode ON pending_episode.episode_id=pending_link.episode_id"
+                    + " WHERE pending_link.event_id=e.event_id AND pending_link.role='PREDICTED'"
+                    + " AND pending_episode.target_id=a.target_id AND pending_episode.owner_org_id=a.owner_org_id"
+                    + " AND pending_episode.district_id=a.district_id AND pending_episode.source_mode=a.source_mode"
+                    + " AND (pending_episode.status='CLEARED' OR pending_episode.active_key IS NULL");
+            if ("PENDING_VERIFICATION".equals(query.state())) sql.append(" OR pending_episode.status='ENTERED'");
+            sql.append("))");
+            if ("CONFIRMED".equals(query.state())) sql.append(" OR ").append(AlarmAttentionSql.DEVICE_WORK_REMAINS);
+            sql.append(")");
+        }
         add(sql, parameters, CURRENT_SEVERITY, "severity", query.severity());
         add(sql, parameters, "a.target_id", "target_id", query.targetId());
         if (query.targetNo() != null) {
@@ -232,6 +247,16 @@ public class AlarmReadRepository {
         add(sql, parameters, "a.district_id", "district_id", query.districtId());
         add(sql, parameters, "a.source_mode", "source_mode", query.sourceMode());
         add(sql, parameters, "a.alarm_type", "alarm_type", query.alarmType());
+        if (query.originKind()!=null) {
+            if ("PREDICTED_AIRSPACE_ENTRY".equals(query.originKind())) sql.append(" AND a.alarm_type='PREDICTED_AIRSPACE_ENTRY'");
+            else if ("OBSERVED".equals(query.originKind())) sql.append(" AND a.alarm_type<>'PREDICTED_AIRSPACE_ENTRY'");
+            else sql.append(" AND EXISTS(SELECT 1 FROM prediction_event_link pl WHERE pl.event_id=e.event_id AND pl.role='OBSERVED')");
+        }
+        if (query.predictionStatus()!=null) {
+            sql.append(" AND EXISTS(SELECT 1 FROM prediction_event_link pl JOIN prediction_episode pp ON pp.episode_id=pl.episode_id WHERE pl.event_id=e.event_id"
+                    + " AND (CASE WHEN pp.status='ACTIVE' AND pp.valid_until<=:prediction_now THEN 'UNKNOWN' ELSE pp.status END)=:prediction_status)");
+            parameters.put("prediction_status",query.predictionStatus());
+        }
         if (query.attentionGroups() != null) {
             // 与每行返回的 attention_group 同一个分类表达式，筛出来的和页面分组一致；时刻参数由调用方放入。
             sql.append(" AND (").append(AlarmAttentionSql.GROUP).append(") IN (:attention_groups)");
@@ -292,7 +317,19 @@ public class AlarmReadRepository {
             /* 2026-10-07：按关注分组筛（待处置统计、状态筛选）；null 表示不限。 */
             List<String> attentionGroups,
             /* 2026-10-07：按当前违规原因代码筛（告警页"违规类别"）；null 表示不限。 */
-            String violationReason, String targetNo) {
+            String violationReason, String targetNo, String originKind, String predictionStatus, boolean currentPending) {
+        public AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
+                OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
+                String alarmType, List<String> attentionGroups, String violationReason, String targetNo,
+                String originKind, String predictionStatus) {
+            this(state,severity,targetId,occurredFrom,occurredTo,ownerOrgId,districtId,sourceMode,alarmType,
+                    attentionGroups,violationReason,targetNo,originKind,predictionStatus,false);
+        }
+        public AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
+                OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
+                String alarmType, List<String> attentionGroups, String violationReason, String targetNo) {
+            this(state,severity,targetId,occurredFrom,occurredTo,ownerOrgId,districtId,sourceMode,alarmType,attentionGroups,violationReason,targetNo,null,null);
+        }
         public AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
                 OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
                 String alarmType, List<String> attentionGroups, String violationReason) {

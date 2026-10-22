@@ -35,7 +35,7 @@ class NormalizedObservationCountTest {
     private FrameMapper.Frame frame(String countField) throws Exception {
         String source = UUID.randomUUID().toString();
         long at = java.time.Instant.now().toEpochMilli();
-        String payload = "{\"source_id\":\"" + source + "\",\"owner_org_id\":\"org\",\"district_id\":\"district\","
+        String payload = "{\"coordinate_system\":\"WGS84\",\"source_id\":\"" + source + "\",\"owner_org_id\":\"org\",\"district_id\":\"district\","
                 + "\"observed_at\":" + at + ",\"items\":[{\"external_target_id\":\"" + UUID.randomUUID()
                 + "\",\"longitude\":117.5,\"latitude\":36.8,\"class_code\":\"BIRD\"," + countField + "}]}";
         return mapper.map(new InboxRow(UUID.randomUUID().toString(), NormalizedObservationMapper.PREFIX + source,

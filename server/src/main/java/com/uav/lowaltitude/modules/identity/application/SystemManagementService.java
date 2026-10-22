@@ -171,6 +171,7 @@ public class SystemManagementService {
         idempotencyGuard.claim(idempotencyKey, "user-profile:" + userId + ":" + request);
         accessService.require("users.auth");
         UserAdminRow current = requireUserRow(userId);
+        lockUserOrganizations(current.getOrgId(), request.orgId());
         OrgRow org = requireEnabledOrg(request.orgId());
         var currentType = com.uav.lowaltitude.modules.identity.domain.UserType.forRole(current.getRoleCode());
         String nextType = request.userType() == null ? currentType.name() : request.userType();
@@ -208,6 +209,10 @@ public class SystemManagementService {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员的数据范围固定为全部单位");
         }
         boolean orgChanged = !org.getOrgId().equals(current.getOrgId());
+        if (mapper.administratorOrganization(userId) != null && (orgChanged || !"FRONTEND".equals(nextType))) {
+            throw bad("UNIT_ADMIN_APPOINTMENT_PROTECTED", "请先在单位授权中撤任或更换管理员，再调整所属单位或账号类型");
+        }
+        validateManagedAssignment(org.getOrgId(), roleCode, nextScope);
         long now = appClock.nowMillis();
         int version = request.expectedVersion();
         if (mapper.updateUserProfile(userId, request.name().trim(), nullable(request.phone()), org.getOrgId(),
@@ -251,6 +256,10 @@ public class SystemManagementService {
         idempotencyGuard.claim(idempotencyKey, "user-status:" + userId + ":" + request);
         accessService.require("users.auth");
         UserAdminRow current = requireUserRow(userId);
+        lockUserOrganizations(current.getOrgId());
+        if (mapper.administratorOrganization(userId) != null && !"ACTIVE".equals(request.status())) {
+            throw bad("UNIT_ADMIN_APPOINTMENT_PROTECTED", "请先在单位授权中撤任或更换管理员");
+        }
         if ("ROLE-ADMIN".equals(current.getRoleCode())) {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员账号不能停用、启用或转移");
         }
@@ -271,6 +280,7 @@ public class SystemManagementService {
             throw bad("SELF_RESET_FORBIDDEN", "请使用修改密码功能变更当前账号密码");
         }
         AppUser user = requireUser(userId);
+        lockUserOrganizations(user.getOrgId());
         if ("ROLE-ADMIN".equals(user.getRoleCode())) {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员密码只能通过本人改密或一次性维护恢复模式重置");
         }
@@ -298,6 +308,8 @@ public class SystemManagementService {
         }
         RoleRow role = requireEnabledRole(request.roleCode());
         OrgRow org = requireEnabledOrg(request.orgId());
+        lockUserOrganizations(org.getOrgId());
+        validateManagedAssignment(org.getOrgId(), role.getRoleCode(), DataScope.ALL);
         List<ScopeGrantInput> scopes = List.of();
         passwordPolicy.validateTemporary(request.temporaryPassword(), account);
         String changeId = UUID.randomUUID().toString();
@@ -339,6 +351,7 @@ public class SystemManagementService {
         String userType = request.userType() == null ? "FRONTEND" : request.userType();
         RoleRow role = roleForUserType(userType, request.roleCode());
         OrgRow org = requireEnabledOrg(request.orgId());
+        lockUserOrganizations(org.getOrgId());
         DataScope dataScope = request.dataScope() == null ? DEFAULT_DATA_SCOPE
                 : assignableDataScope(request.dataScope());
         if ("BACKEND".equals(userType)) {
@@ -347,6 +360,7 @@ public class SystemManagementService {
             }
             dataScope = DataScope.ALL;
         }
+        validateManagedAssignment(org.getOrgId(), role.getRoleCode(), dataScope);
         passwordPolicy.validateTemporary(request.temporaryPassword(), account);
         String userId = UUID.randomUUID().toString();
         long now = appClock.nowMillis();
@@ -371,6 +385,7 @@ public class SystemManagementService {
         idempotencyGuard.claim(idempotencyKey, "user-access-direct:" + userId + ":" + request);
         accessService.require("users.auth");
         UserAdminRow user = requireUserRow(userId);
+        lockUserOrganizations(user.getOrgId());
         if ("ROLE-ADMIN".equals(user.getRoleCode())) {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员角色不能修改");
         }
@@ -378,6 +393,7 @@ public class SystemManagementService {
             throw bad("BACKEND_ROLE_FIXED", "后台用户无需配置业务角色，请通过用户资料修改用户类型");
         }
         RoleRow role = requireAssignableRole(request.roleCode());
+        validateManagedAssignment(user.getOrgId(), role.getRoleCode(), dataScope(user));
         if (role.getRoleCode().equals(user.getRoleCode())) throw bad("NO_CHANGES", "角色没有变化");
         if (mapper.updateUserAccess(userId, role.getRoleCode(), user.getScopeMode(), appClock.nowMillis(),
                 request.expectedVersion()) != 1) conflict();
@@ -395,6 +411,10 @@ public class SystemManagementService {
                 "user-delete:" + userId + ":" + expectedVersion + ":" + reason);
         accessService.require("users.auth");
         UserAdminRow user = requireUserRow(userId);
+        lockUserOrganizations(user.getOrgId());
+        if (mapper.administratorOrganization(userId) != null) {
+            throw bad("UNIT_ADMIN_APPOINTMENT_PROTECTED", "请先在单位授权中撤任或更换管理员，再删除账号");
+        }
         if ("ROLE-ADMIN".equals(user.getRoleCode())) {
             throw bad("SUPER_ADMIN_PROTECTED", "超级管理员账号不能删除");
         }
@@ -416,7 +436,12 @@ public class SystemManagementService {
         idempotencyGuard.claim(idempotencyKey, "user-access:" + userId + ":" + request);
         accessService.require("users.auth");
         UserAdminRow user = requireUserRow(userId);
+        lockUserOrganizations(user.getOrgId());
+        if (mapper.countOrganizationDelegation(user.getOrgId()) > 0) {
+            throw bad("UNIT_LEGACY_ACCESS_UNSUPPORTED", "已纳管单位请使用当前人员管理接口");
+        }
         requireEnabledRole(request.roleCode());
+        validateManagedAssignment(user.getOrgId(), request.roleCode(), dataScope(user));
         List<ScopeGrantInput> scopes = mapper.listUserScopes(userId).stream()
                 .map(s -> new ScopeGrantInput(s.getOrgId(), s.getDistrictId())).toList();
         UserAccessSnapshot before = new UserAccessSnapshot(user.getRoleCode(), user.getScopeMode(), scopes);
@@ -546,13 +571,22 @@ public class SystemManagementService {
     public RoleResponse createRole(RoleCreateRequest request, String idempotencyKey, RequestMeta meta) {
         String reason = request.reason() == null || request.reason().isBlank()
                 ? directChangeReason("创建角色") : request.reason().trim();
-        idempotencyGuard.claim(idempotencyKey, "role-create:" + request.name() + ":" + reason);
         accessService.require("roles.auth");
+        String owner=nullable(request.ownerOrgId());
+        if(owner!=null) {
+            lockUserOrganizations(owner);
+            requireEnabledOrg(owner);
+            if(mapper.countOrganizationDelegation(owner)!=1)
+                throw bad("UNIT_DELEGATION_REQUIRED","请先为该单位启用单位管理，再创建单位角色");
+        }
+        idempotencyGuard.claim(idempotencyKey, "role-create:" + request + ":" + reason);
         String roleCode = "ROLE-CUSTOM-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
         List<PermissionAssignment> permissions = validateRolePermissions(roleCode, request.permissions());
+        if(owner!=null) validateUnitRoleCeiling(owner,permissions,null);
         long now = appClock.nowMillis();
         try {
-            mapper.insertRole(roleCode, request.name().trim(), normalized(request.description()), now);
+            if(owner==null) mapper.insertRole(roleCode, request.name().trim(), normalized(request.description()), now);
+            else mapper.insertUnitRole(roleCode,request.name().trim(),normalized(request.description()),now,owner);
             mapper.insertEmptyRolePermissions(roleCode);
             for (PermissionAssignment permission : permissions) {
                 mapper.updateRolePermission(roleCode, permission.permissionCode(), permission.level(),
@@ -561,8 +595,10 @@ public class SystemManagementService {
         } catch (DuplicateKeyException ex) {
             throw conflict("DUPLICATE_ROLE", "角色名称已存在");
         }
-        audit("roles", "role_created", "role", roleCode,
-                json(Map.of("name", request.name().trim(), "permissions", permissions, "reason", reason)), meta);
+        Map<String,Object> detail=new LinkedHashMap<>();
+        detail.put("name",request.name().trim()); detail.put("permissions",permissions);
+        detail.put("reason",reason); detail.put("owner_org_id",owner);
+        audit("roles", "role_created", "role", roleCode,json(detail), meta);
         return toRole(requireRole(roleCode));
     }
 
@@ -571,7 +607,7 @@ public class SystemManagementService {
             RequestMeta meta) {
         idempotencyGuard.claim(idempotencyKey, "role-update:" + roleCode + ":" + request);
         accessService.require("roles.auth");
-        RoleRow role = requireRole(roleCode);
+        RoleRow role = lockRoleMutation(roleCode);
         if (role.isBuiltin() || BUILTIN_ROLES.contains(roleCode)) {
             throw bad("BUILTIN_ROLE_PROTECTED", "超级管理员角色不能修改");
         }
@@ -586,7 +622,7 @@ public class SystemManagementService {
             String idempotencyKey, RequestMeta meta) {
         idempotencyGuard.claim(idempotencyKey, "role-permissions-direct:" + roleCode + ":" + request);
         accessService.require("roles.auth");
-        RoleRow role = requireRole(roleCode);
+        RoleRow role = lockRoleMutation(roleCode);
         // 超级管理员的动作权限同样固定：允许改它等于允许把自己锁在系统外（决策 15-2）。
         // 单独用 ROLE_LOCKED 而不是复用 BUILTIN_ROLE_PROTECTED，是因为前端要能分辨"这是内置角色不给改"
         // 与"这次提交里带了动作行"两种情况。
@@ -636,7 +672,7 @@ public class SystemManagementService {
             RequestMeta meta) {
         idempotencyGuard.claim(idempotencyKey, "role-delete-direct:" + roleCode + ":" + expectedVersion + ":" + reason);
         accessService.require("roles.auth");
-        RoleRow role = requireRole(roleCode);
+        RoleRow role = lockRoleMutation(roleCode);
         if (role.isBuiltin() || BUILTIN_ROLES.contains(roleCode)) {
             throw bad("BUILTIN_ROLE_PROTECTED", "超级管理员角色不能删除");
         }
@@ -753,6 +789,9 @@ public class SystemManagementService {
         }
         requireEnabledRole(pending.getRoleCode());
         requireEnabledOrg(pending.getOrgId());
+        lockUserOrganizations(pending.getOrgId());
+        validateManagedAssignment(pending.getOrgId(), pending.getRoleCode(),
+                DataScope.of(pending.getScopeMode(), null));
         List<ScopeGrantInput> scopes = readScopes(pending.getScopeGrants());
         validateScopes(pending.getScopeMode(), scopes);
         String userId = UUID.randomUUID().toString();
@@ -764,9 +803,11 @@ public class SystemManagementService {
 
     private void approveUserAccess(AccessChangeRow change) {
         UserAdminRow user = requireUserRow(change.getSubjectId());
+        lockUserOrganizations(user.getOrgId());
         if (user.getVersion() != change.getSubjectVersion()) conflict();
         UserAccessSnapshot after = read(change.getAfterSnapshot(), UserAccessSnapshot.class);
         requireEnabledRole(after.roleCode());
+        validateManagedAssignment(user.getOrgId(), after.roleCode(), DataScope.of(after.scopeMode(), null));
         List<ScopeGrantInput> scopes = validateScopes(after.scopeMode(), after.scopeGrants());
         if ("ROLE-ADMIN".equals(user.getRoleCode()) && !"ROLE-ADMIN".equals(after.roleCode())
                 && "ACTIVE".equals(user.getStatus()) && mapper.countActiveAdmins() <= 1) {
@@ -781,7 +822,7 @@ public class SystemManagementService {
     }
 
     private void approveRoleAccess(AccessChangeRow change) {
-        RoleRow role = requireRole(change.getSubjectId());
+        RoleRow role = lockRoleMutation(change.getSubjectId());
         if (role.getVersion() != change.getSubjectVersion()) conflict();
         RoleAccessSnapshot snapshot = read(change.getAfterSnapshot(), RoleAccessSnapshot.class);
         List<PermissionAssignment> permissions = validateRolePermissions(role.getRoleCode(), snapshot.permissions());
@@ -795,7 +836,7 @@ public class SystemManagementService {
     }
 
     private void approveRoleDelete(AccessChangeRow change) {
-        RoleRow role = requireRole(change.getSubjectId());
+        RoleRow role = lockRoleMutation(change.getSubjectId());
         if (role.getVersion() != change.getSubjectVersion()) conflict();
         if (role.isBuiltin() || role.getUserCount() > 0) throw conflict("ROLE_IN_USE", "角色不可删除或仍有用户");
         mapper.deleteRolePermissions(role.getRoleCode());
@@ -839,6 +880,9 @@ public class SystemManagementService {
     }
 
     private List<PermissionAssignment> validateRolePermissions(String roleCode, List<PermissionAssignment> input) {
+        RoleRow existing = mapper.findRole(roleCode);
+        String owner = existing == null ? null : existing.getOwnerOrgId();
+        if (owner != null) lockUserOrganizations(owner);
         Map<String, PermissionRow> catalog = new LinkedHashMap<>();
         for (PermissionRow row : mapper.listPermissionCatalog()) catalog.put(row.getPermissionCode(), row);
         if (input == null || input.size() != catalog.size()) {
@@ -866,7 +910,56 @@ public class SystemManagementService {
             }
             result.add(new PermissionAssignment(item.permissionCode(), level, menu));
         }
+        if (owner != null) validateUnitRoleCeiling(owner, result, null);
         return result;
+    }
+
+    /** Platform entry points must obey the same scoped-role and unit ceiling invariants. */
+    private void lockUserOrganizations(String... orgIds) {
+        java.util.Arrays.stream(orgIds).filter(java.util.Objects::nonNull).distinct().sorted()
+                .forEach(mapper::lockManagedOrganization);
+    }
+
+    private void validateManagedAssignment(String orgId, String roleCode, DataScope scope) {
+        RoleRow role = requireRole(roleCode);
+        if (role.getOwnerOrgId() != null && !role.getOwnerOrgId().equals(orgId)) {
+            throw bad("ROLE_ORGANIZATION_MISMATCH", "该角色属于其他单位");
+        }
+        if (com.uav.lowaltitude.modules.identity.domain.UserType.forRole(roleCode)
+                == com.uav.lowaltitude.modules.identity.domain.UserType.BACKEND
+                || com.uav.lowaltitude.modules.automationrule.application.AutomationPrincipal.ROLE.equals(roleCode)) return;
+        if (mapper.countOrganizationDelegation(orgId) > 0
+                && (!orgId.equals(role.getOwnerOrgId()) || scope != DataScope.OWN_ORG)) {
+            throw bad("UNIT_MEMBER_SCOPE_FIXED", "已纳管单位的前台人员必须使用本单位角色，数据范围固定为本单位");
+        }
+    }
+
+    private RoleRow lockRoleMutation(String roleCode) {
+        RoleRow role = requireRole(roleCode);
+        if (role.getOwnerOrgId() != null) lockUserOrganizations(role.getOwnerOrgId());
+        mapper.lockRoleMutation(roleCode);
+        return requireRole(roleCode);
+    }
+
+    private void validateUnitRoleCeiling(String orgId, List<PermissionAssignment> permissions,
+            List<ActionAssignment> actions) {
+        Map<String, PermissionRow> caps = new LinkedHashMap<>();
+        mapper.listOrganizationPermissions(orgId).forEach(p -> caps.put(p.getPermissionCode(), p));
+        for (PermissionAssignment p : permissions) {
+            PermissionRow cap = caps.get(p.permissionCode());
+            if (AccessService.level(p.level()) > AccessService.level(cap == null ? "NONE" : cap.getPermissionLevel())
+                    || (p.menuEnabled() && (cap == null || !cap.isMenuEnabled()))) {
+                throw bad("UNIT_PERMISSION_CEILING", "角色权限不能超过单位授权上限，请先调整单位授权");
+            }
+        }
+        if (actions != null) {
+            Set<String> allowed = new HashSet<>(mapper.listOrganizationActions(orgId));
+            for (ActionAssignment a : actions) {
+                if (!"NONE".equals(a.level()) && (!"OP".equals(a.level()) || !allowed.contains(a.permissionCode()))) {
+                    throw bad("UNIT_PERMISSION_CEILING", "角色动作不能超过单位授权上限");
+                }
+            }
+        }
     }
 
     private void validateOrgParent(String orgId, String parentId) {
@@ -902,7 +995,7 @@ public class SystemManagementService {
 
     private OrganizationResponse toOrganization(OrgRow row) {
         return new OrganizationResponse(row.getOrgId(), row.getParentId(), row.getOrgCode(), row.getName(),
-                row.isEnabled(), row.getVersion());
+                row.isEnabled(), row.getVersion(), mapper.countOrganizationDelegation(row.getOrgId()) > 0);
     }
 
     private DistrictResponse toDistrict(DistrictRow row) {
@@ -912,7 +1005,7 @@ public class SystemManagementService {
 
     private RoleSummaryResponse toRoleSummary(RoleRow row) {
         return new RoleSummaryResponse(row.getRoleCode(), row.getName(), row.getDescription(), row.isBuiltin(),
-                row.isEnabled(), row.getUserCount(), row.getVersion());
+                row.isEnabled(), row.getUserCount(), row.getVersion(), row.getOwnerOrgId(), RoleCopyOrigins.from(row));
     }
 
     private RoleResponse toRole(RoleRow row) {
@@ -920,7 +1013,7 @@ public class SystemManagementService {
                 row.isEnabled(), row.getUserCount(), row.getVersion(),
                 mapper.listPermissionsForRole(row.getRoleCode()).stream().map(this::toPermission).toList(),
                 mapper.listActionsForRole(row.getRoleCode()).stream()
-                        .map(a -> new RoleActionResponse(a.getPermissionCode(), a.getLevel())).toList());
+                        .map(a -> new RoleActionResponse(a.getPermissionCode(), a.getLevel())).toList(), row.getOwnerOrgId(), RoleCopyOrigins.from(row));
     }
 
     /* ---- 动作权限（决策 15-1 / 15-2）---- */
@@ -949,6 +1042,11 @@ public class SystemManagementService {
      * 返回实际授出去的行，供审计记录——只记"改过动作"而不记改成了什么，事后没法回答"这个人当时凭什么能批"。
      */
     private List<ActionAssignment> replaceRoleActions(String roleCode, List<ActionAssignment> input) {
+        RoleRow role = mapper.findRole(roleCode);
+        if (role != null && role.getOwnerOrgId() != null) {
+            lockUserOrganizations(role.getOwnerOrgId());
+            validateUnitRoleCeiling(role.getOwnerOrgId(), List.of(), input);
+        }
         Map<String, ActionRow> catalog = new LinkedHashMap<>();
         for (ActionRow row : mapper.listActionCatalog()) catalog.put(row.getPermissionCode(), row);
         List<ActionAssignment> granted = new ArrayList<>();

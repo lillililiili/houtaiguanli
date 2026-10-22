@@ -11,9 +11,18 @@ vi.mock('@/services/realtime.js',()=>({useRealtimeRefresh:(topics,reload)=>({tri
 let app,host;
 async function settle(){for(let i=0;i<20;i++){await Promise.resolve();await nextTick();}}
 async function mount(){host=document.createElement('div');document.body.append(host);app=createApp(MaintenanceMessages);app.use(ElementPlus);app.mount(host);await settle();host.querySelector('button').click();await settle();}
-beforeEach(()=>{vi.clearAllMocks();mocks.hasMenu.mockReturnValue(true);deviceMaintenanceApi.messages.mockResolvedValue({items:[{task_id:'T1',device_id:'D1',device_name:'目标设备',reason:'连接异常',reported_at:1000,workflow_state:'PENDING'}],page:1,size:6,total:1,unread_count:1});deviceMaintenanceApi.readMessage.mockResolvedValue({});});
+beforeEach(()=>{vi.clearAllMocks();mocks.user=null;mocks.hasPermission.mockReturnValue(true);mocks.hasMenu.mockReturnValue(true);deviceMaintenanceApi.messages.mockResolvedValue({items:[{task_id:'T1',device_id:'D1',device_name:'目标设备',reason:'连接异常',reported_at:1000,workflow_state:'PENDING'}],page:1,size:6,total:1,unread_count:1});deviceMaintenanceApi.readMessage.mockResolvedValue({});});
 afterEach(()=>{app?.unmount();host?.remove();document.body.innerHTML='';});
 describe('运维消息入口',()=>{
+ it('单位管理员使用异常处理独立权限打开待办，不需要监测授权',async()=>{
+   mocks.user={user_type:'FRONTEND',management_context:{mode:'UNIT',org_id:'org-a'}};
+   mocks.hasPermission.mockImplementation(code=>code==='maintenance.read');
+   await mount();
+   const action=[...document.querySelectorAll('button')].find(el=>el.textContent.trim()==='去处理');
+   expect(action.disabled).toBe(false); action.click(); await settle();
+   expect(deviceMaintenanceApi.readMessage).toHaveBeenCalledWith('T1');
+   expect(mocks.push).toHaveBeenCalledWith({path:'/operations/maintenance',query:{task_id:'T1',device_id:'D1'}});
+ });
  it('只请求待办，已读但待确认办结的消息继续显示',async()=>{
    deviceMaintenanceApi.messages.mockResolvedValue({items:[{task_id:'read-task',device_name:'已读待办设备',workflow_state:'READY_TO_COMPLETE',read_at:1000}],total:1,unread_count:0});
    await mount();

@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 
 /**
  * Protocol C envelope only. Object/aiStatus semantics belong to fusion.
@@ -69,6 +70,20 @@ public record EoEdgeEnvelope(String event, String edgeId, String deviceId, Long 
         String key = timestamp + ":" + event + ":" + deviceId + ":" + (taskId == null ? "-" : taskId);
         return new EoEdgeEnvelope(event, edgeId, deviceId, timestamp, taskId, codeStatus, workState, raw, hash(bytes),
                 key, supported, trackingReport);
+    }
+
+    /** A report may also settle a real device command; reject only its observation. */
+    public String observationCoordinateError() {
+        if (!trackingReport || !Integer.valueOf(200).equals(codeStatus) || !Integer.valueOf(1).equals(workState))
+            return null;
+        try {
+            JsonNode root = JSON.readTree(json);
+            JsonNode metadata = root.path("metadata"), aiStatus = metadata.get("aiStatus");
+            if (JsonCoordinateContract.hasCoordinates(aiStatus, "longitude", "latitude"))
+                JsonCoordinateContract.requireWgs84(root, metadata, aiStatus);
+            return null;
+        } catch (IllegalArgumentException ex) { return ex.getMessage(); }
+        catch (java.io.IOException ex) { throw new IllegalStateException("已解码光电报文无法读取", ex); }
     }
 
     public static byte[] encode(String event, String edgeId, long timestamp, Map<String, Object> metadata) {

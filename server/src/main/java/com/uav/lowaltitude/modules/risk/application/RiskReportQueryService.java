@@ -23,6 +23,6 @@ public class RiskReportQueryService extends BusinessReportSource {
     }
     @Override protected Dataset dataset(Range range) {
 
-        return repository.reportDataset(reader, range, access.require(PermissionCode.RISK_READ));
+        return repository.reportDataset(reader, range, com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.RISK_READ));
     }
 }

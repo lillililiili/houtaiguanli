@@ -32,5 +32,6 @@ public class LocalWeatherRiskController {
         @NotNull @Size(min=4,max=101) List<@NotNull @Size(min=2,max=2) List<@NotNull Double>> polygon,
         @DecimalMin("0") @DecimalMax("150") BigDecimal windSpeedMps,
         @DecimalMin("0") @DecimalMax("360") BigDecimal windFromDegrees,
-        @DecimalMin("0") @DecimalMax("1000000") BigDecimal visibilityM) { }
+        @DecimalMin("0") @DecimalMax("1000000") BigDecimal visibilityM,
+        @NotBlank @Size(max=32) String coordinateSystem) { }
 }

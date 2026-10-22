@@ -45,6 +45,7 @@ public class LocalInterfaceSimulatorService {
    if(!visible(canonical))throw missing();
    return dto(canonical);
   }
+  if(p.filing()!=null)com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService.validateCoordinates(p.filing());
   String mode=p.sourceMode()==null?"mock":p.sourceMode();
   if(Set.of("mock","replay").contains(mode))for(Row candidate:repository.planCandidates(actor.userId(),p.uavSn(),p.startAt(),p.endAt(),mode)){
    if(com.uav.lowaltitude.modules.integrationconfig.domain.LocalPlanIdentity.same(tree(candidate.payload()),tree(encode(p)))){
@@ -83,6 +84,7 @@ public class LocalInterfaceSimulatorService {
   var payload=Map.of("plan_id",id,"update",request);
   var previous=repository.existing(actor.userId(),"PLAN_FILING",request.messageId());
   if(previous!=null)return replay(previous,payload);
+  com.uav.lowaltitude.modules.flight.application.LocalPlanFilingService.validateCoordinates(request.filing());
   preparePlanSource(request.filing());
   var result=filing.save(id,request.expectedVersion(),request.filing());
   return save(request.messageId(),"PLAN_FILING",id,actor.userId(),payload,result);
@@ -93,6 +95,8 @@ public class LocalInterfaceSimulatorService {
   if(p.planId()!=null&&!p.planId().isBlank())requireSimulated(flights.flightPlan(p.planId()).sourceMode());
   Row previous=repository.existing(actor.userId(),"WEATHER_FORECAST",p.messageId());if(previous!=null)return replay(previous,p);
   if(p.publishedAt()>clock.nowMillis()+30000)throw bad("预报发布时间不能在未来");
+  if((p.polygon()!=null||p.coordinateSystem()!=null)&&!com.uav.lowaltitude.platform.geo.Wgs84Coordinates.isWgs84(p.coordinateSystem()))
+   throw bad("预报范围必须明确声明 coordinate_system 为 WGS84");
   try{com.uav.lowaltitude.modules.risk.domain.WeatherFootprint.validate(p.polygon());}catch(IllegalArgumentException ex){throw bad(ex.getMessage());}
   long last=0;
   for(Period period:p.periods()){

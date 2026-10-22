@@ -87,7 +87,7 @@ class AdvisoryVoiceRecordingApiTest {
     void clean() throws IOException {
         org.mockito.Mockito.lenient().when(departure.assess(anyString(), anyLong(), anyLong()))
                 .thenReturn(PilotDepartureWatch.Presence.STILL_PRESENT);
-        jdbc.update("UPDATE advisory_voice_recording_setting SET active_recording_id=NULL,updated_by=NULL,updated_at=NULL,version=0 WHERE setting_id='global'");
+        jdbc.update("UPDATE advisory_voice_recording_setting SET active_recording_id=NULL,predicted_active_recording_id=NULL,updated_by=NULL,updated_at=NULL,version=0 WHERE setting_id='global'");
         jdbc.update("DELETE FROM advisory_voice_recording");
         Path root = storage.resolve("advisory-voice-recordings");
         if (Files.exists(root)) {
@@ -101,6 +101,55 @@ class AdvisoryVoiceRecordingApiTest {
     void removeTemporaryFiles() throws IOException {
         for (Path path : temporary) Files.deleteIfExists(path);
         temporary.clear();
+    }
+
+    @Test
+    void predictionAudioIsSelectedIndependentlyAndNeverFallsBackToGeneralOrStartup() throws Exception {
+        String token=login();
+        String general=uploadId(token,"普通告警-"+suffix(),wav(8000,1,5000));
+        active(token,general,true,0,key()).andExpect(status().isOk());
+        assertThat(recordings.current(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY)).isNull();
+        byte[] predictiveAudio=wav(16000,1,6700);
+        String predicted=data(mvc.perform(multipart(BASE)
+                .file(new MockMultipartFile("file","prediction.wav","audio/wav",predictiveAudio))
+                .param("name","预计入区-"+suffix()).param("transcript","预计30秒内进入禁飞区，请调整航向。")
+                .param("purpose","PREDICTED_AIRSPACE_ENTRY")
+                .header("Authorization",bearer(token)).header("Idempotency-Key",key()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.purpose").value("PREDICTED_AIRSPACE_ENTRY")))
+                .path("recording_id").asText();
+        active(token,predicted,true,1,key()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.active_recording_id").value(general))
+                .andExpect(jsonPath("$.data.active_recording_ids.GENERAL").value(general))
+                .andExpect(jsonPath("$.data.active_recording_ids.PREDICTED_AIRSPACE_ENTRY").value(predicted))
+                .andExpect(jsonPath("$.data.currents.PREDICTED_AIRSPACE_ENTRY.available").value(true));
+        var selected=recordings.current(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY);
+        assertThat(selected.id()).isEqualTo(predicted);
+        assertThat(recordings.content(selected)).isEqualTo(predictiveAudio);
+        assertThat(recordings.current().id()).isEqualTo(general);
+        var environment=new org.springframework.mock.env.MockEnvironment();environment.setActiveProfiles("test");
+        var adapter=new com.uav.lowaltitude.integration.mock.LocalAdvisoryVoiceAdapter(environment,recordings,new com.uav.lowaltitude.platform.time.AppClock());
+        assertThat(adapter.simulate("replay",selected,key()).status()).isEqualTo("SIMULATED_PLAYED");
+        mvc.perform(delete(BASE+"/{id}",predicted).header("Authorization",bearer(token)).header("Idempotency-Key",key()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("VOICE_RECORDING_IN_USE"));
+
+        // A corrupt predictive file cannot silently play the still-valid ordinary recording.
+        String objectKey=jdbc.queryForObject("SELECT object_key FROM advisory_voice_recording WHERE recording_id=?",String.class,predicted);
+        Files.writeString(storage.resolve(objectKey),"corrupt");
+        assertThat(recordings.current(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY)).isNull();
+        assertThat(recordings.content(selected)).isNull();
+        assertThat(recordings.current().id()).isEqualTo(general);
+        active(token,predicted,false,2,key()).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.currents.PREDICTED_AIRSPACE_ENTRY.available").value(false));
+        assertThat(recordings.current(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY)).isNull();
+    }
+
+    @Test
+    void unknownRecordingPurposeCannotBeUploaded() throws Exception {
+        mvc.perform(multipart(BASE).file(new MockMultipartFile("file","warning.wav","audio/wav",wav(8000,1,4200)))
+                .param("name","不明确用途").param("transcript","提醒").param("purpose","OTHER")
+                .header("Authorization",bearer(login())).header("Idempotency-Key",key()))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        assertThat(repository.list()).isEmpty();
     }
 
     @Test

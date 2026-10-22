@@ -19,7 +19,7 @@ const orgs = [{ org_id: 'org-a', name: '甲单位', parent_id: null }, { org_id:
 const row = (overrides = {}) => ({ user_id: 'u-1', account: 'duty-a', name: '值班员甲', phone: '', org_id: 'org-a', org_name: '甲单位', role_code: 'ROLE-DUTY', role_name: '值班员', status: 'ACTIVE', data_scope: 'OWN_ORG', version: 4, ...overrides })
 let app, host
 async function settle() { for (let i = 0; i < 16; i++) { await Promise.resolve(); await nextTick() } }
-async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp(UsersView); app.use(ElementPlus); app.mount(host); await settle() }
+async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp(UsersView); app.use(ElementPlus); const vm = app.mount(host); await settle(); return vm }
 const buttons = label => [...document.querySelectorAll('button')].filter(node => node.textContent.trim() === label)
 const dialog = () => [...document.querySelectorAll('.el-dialog')].find(node => node.offsetParent !== null || node.style.display !== 'none')
 const radio = label => [...dialog().querySelectorAll('.el-radio')].find(node => node.textContent.trim() === label)
@@ -116,6 +116,27 @@ describe('账号数据范围', { timeout: 30_000 }, () => {
     expect(radio('全部单位').classList.contains('is-checked')).toBe(true)
     expect(radio('本单位').classList.contains('is-disabled')).toBe(true)
     expect(dialog().textContent).toContain('超级管理员固定能看到全部单位的数据')
+  })
+
+  it('已纳管单位只提供本单位角色，并固定本单位数据范围', async () => {
+    systemApi.organizations.mockResolvedValue(orgs.map(org => ({ ...org, delegation_managed: org.org_id === 'org-a' })))
+    systemApi.roles.mockResolvedValue([
+      { role_code: 'GLOBAL-DUTY', name: '全局值班角色', enabled: true },
+      { role_code: 'LOCAL-A', name: '甲单位值班角色', enabled: true, owner_org_id: 'org-a' },
+      { role_code: 'LOCAL-CHILD', name: '下级单位专用角色', enabled: true, owner_org_id: 'org-a1' }
+    ])
+    systemApi.users.mockResolvedValue({ items: [row({ role_code: 'LOCAL-A', data_scope: 'OWN_ORG' })], total: 1 })
+    const vm = await mount()
+    buttons('修改')[0].click(); await settle()
+    expect(radio('本单位').classList.contains('is-checked')).toBe(true)
+    expect(radio('全部单位').querySelector('input').disabled).toBe(true)
+    expect(radio('本单位及下级单位').querySelector('input').disabled).toBe(true)
+    expect(dialog().textContent).toContain('固定查看本单位数据')
+    expect(vm.$.setupState.activeRoles.map(item => item.role_code)).toEqual(['LOCAL-A'])
+    expect(vm.$.setupState.roleLabel({ name: '值班员', owner_org_id: 'org-a' })).toBe('值班员（甲单位）')
+    expect(vm.$.setupState.roleLabel({ name: '值班员', owner_org_id: 'org-a1' })).toBe('值班员（甲单位下属队）')
+    buttons('保存并立即生效')[0].click(); await settle()
+    expect(systemApi.updateUser).toHaveBeenCalledWith('u-1', expect.objectContaining({ role_code: 'LOCAL-A', org_id: 'org-a' }))
   })
 })
 

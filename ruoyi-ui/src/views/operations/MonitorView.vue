@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth.js';
+import { isUnitAdministrator } from '@/utils/userType.js';
+import { maintenancePermission } from '@/utils/managementAccess.js';
 import { maintenanceLocation } from './maintenance/useMaintenanceWorkflow.js';
 import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { useRealtimeRefresh } from '@/services/realtime.js';
@@ -17,7 +19,8 @@ import { display, formatDeviceNo, statusText, statusType } from '@/utils/format.
 
 const route = useRoute(), router = useRouter(), auth = useAuthStore();
 const requestedDevice = computed(() => typeof route?.query?.device_id === 'string' ? route.query.device_id : '');
-const canOpenMaintenance = computed(() => auth.hasMenu('maintenance') && auth.hasPermission('monitoring.read'));
+const unitMode = computed(() => isUnitAdministrator(auth.user));
+const canOpenMaintenance = computed(() => auth.hasMenu('maintenance') && auth.hasPermission(maintenancePermission(auth.user, 'read')));
 const filters = reactive({ keyword: '', channel: '', type_code: '' });
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0 });
 const tree = ref([]);
@@ -75,7 +78,7 @@ const EVENT_LABELS = {
   DEVICE_ENABLED: '设备启用', DEVICE_DISABLED: '设备停用', SENSING_PROFILE_UPDATED: '感知配置更新', SENSING_PROFILE_DELETED: '感知配置删除',
   REBOOT_QUEUED: '重启排队', REBOOT_SUCCEEDED: '重启成功', REBOOT_FAILED: '重启失败', REBOOT_TIMED_OUT: '重启超时',
   INCIDENT_OPENED: '运维异常发现', EO_TRACK_QUEUED: '光电跟踪排队', EO_COMMAND_TIMED_OUT: '光电指令超时',
-  LINGYUN_CONTROL_QUEUED: '凌云控制排队', LINGYUN_CONTROL_SUCCEEDED: '凌云控制成功', LINGYUN_CONTROL_FAILED: '凌云控制失败', LINGYUN_CONTROL_TIMED_OUT: '凌云控制超时',
+  LINGYUN_CONTROL_QUEUED: '控制排队', LINGYUN_CONTROL_SUCCEEDED: '控制成功', LINGYUN_CONTROL_FAILED: '控制失败', LINGYUN_CONTROL_TIMED_OUT: '控制超时',
   COUNTERMEASURE_4CH_QUEUED: '四通道指令排队', COUNTERMEASURE_4CH_SUCCEEDED: '四通道指令成功', COUNTERMEASURE_4CH_FAILED: '四通道指令失败', COUNTERMEASURE_4CH_TIMED_OUT: '四通道指令超时'
 };
 const EVENT_LEVELS = { INFO: '信息', WARN: '警告', WARNING: '警告', ERROR: '错误', CRITICAL: '严重', DEBUG: '调试' };
@@ -127,7 +130,7 @@ async function loadSelected(showBusy = false, manual = false) {
     const [deviceState, protocol, targetPage] = await Promise.all([
       deviceApi.state(deviceId),
       deviceApi.protocolStatus(deviceId),
-      !statusOnly && selected.value?.protocol_code === 'RADAR_TCP_V3_0_0' ? deviceApi.targets({ device_id: deviceId, active: true, page: 1, size: 20 }) : Promise.resolve(null)
+      !unitMode.value && !statusOnly && selected.value?.protocol_code === 'RADAR_TCP_V3_0_0' ? deviceApi.targets({ device_id: deviceId, active: true, page: 1, size: 20 }) : Promise.resolve(null)
     ]);
     if (!alive || generation !== selectedGeneration || deviceId !== selectedId.value) return null;
     state.value = statusOnly && state.value ? { ...deviceState, metrics: state.value.metrics } : deviceState;
@@ -246,7 +249,7 @@ useRealtimeRefresh(['device', 'device_state'], async () => {
           </template>
         </el-card>
 
-        <el-card v-if="selected?.protocol_code==='RADAR_TCP_V3_0_0'">
+        <el-card v-if="!unitMode && selected?.protocol_code==='RADAR_TCP_V3_0_0'">
           <template #header><div class="table-toolbar"><b>最近活动航迹</b><span class="muted">仅展示原始坐标</span></div></template>
           <el-table :data="radarTargets" max-height="210"><el-table-column prop="external_track_id" label="航迹 ID" min-width="110" /><el-table-column prop="category_code" label="分类" width="90" /><el-table-column label="X / Y / Z（m）" min-width="170"><template #default="{row}">{{ display(row.raw_xm) }} / {{ display(row.raw_ym) }} / {{ display(row.raw_zm) }}</template></el-table-column><el-table-column prop="snr_db" label="SNR" width="75" /></el-table>
         </el-card>

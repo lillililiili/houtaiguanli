@@ -50,6 +50,12 @@ public class AlarmMergePolicy {
     private final AlarmMergeRepository repository;
     private final AlarmIngestionService ingestion;
     private final ObjectMapper json;
+    private com.uav.lowaltitude.modules.prediction.application.PredictionActualEntryBridge predictionEntries;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void predictionEntries(com.uav.lowaltitude.modules.prediction.application.PredictionActualEntryBridge predictionEntries) {
+        this.predictionEntries=predictionEntries;
+    }
 
     public AlarmMergePolicy(AlarmMergeRepository repository, AlarmIngestionService ingestion, ObjectMapper json) {
         this.repository = repository; this.ingestion = ingestion; this.json = json;
@@ -58,6 +64,7 @@ public class AlarmMergePolicy {
     /** 引擎 ACTIVE 模式下 C03 得出 ABNORMAL/ILLEGAL 后调用；与研判同一事务。 */
     @Transactional
     public MergeOutcome apply(MergeInput in, RuleParams params) {
+        if(predictionEntries!=null)predictionEntries.lockTargetEpisodes(in.targetId());
         MemberRow existing = repository.memberOfEvaluation(in.evaluationId());
         // 同一研判重复进入（例如事务重试）只回放既有成员，不再建第二条告警、成员或升级记录。
         if (existing != null) return replay(existing);
@@ -94,6 +101,7 @@ public class AlarmMergePolicy {
                         if (repository.recordHit(group.groupId(), group.version(), higher(group.currentSeverity(), change.after()), group.latestAlarmId(),
                                 at.plusMinutes(dedupMinutes), at) != 1) throw conflict();
                         repository.insertMember(UUID.randomUUID().toString(), group.groupId(), in.evaluationId(), current.alarmId(), KIND_ESCALATED, change.before(), change.after(), at);
+                        linkPrediction(in,current.alarmId());
                         return new MergeOutcome(KIND_ESCALATED, current.alarmId(), current.eventId(), group.groupId(), change.after(), null);
                     }
                 } else if (delta > 0 && withinUpgrade) {
@@ -102,6 +110,7 @@ public class AlarmMergePolicy {
                     if (alarm == null) return blocked(in, severity, "告警入库被拒绝");
                     if (repository.recordHit(group.groupId(), group.version(), severity, alarm.alarmId(), at.plusMinutes(dedupMinutes), at) != 1) throw conflict();
                     repository.insertMember(UUID.randomUUID().toString(), group.groupId(), in.evaluationId(), alarm.alarmId(), KIND_UPGRADED, group.currentSeverity(), severity, at);
+                    linkPrediction(in,alarm.alarmId());
                     return new MergeOutcome(KIND_UPGRADED, alarm.alarmId(), alarm.eventId(), group.groupId(), severity, null);
                 }
                 // 没有更高等级、也没有新原因（或误报告警后更高但已过升级窗）：只计数并延长去重窗，不建告警。
@@ -109,6 +118,7 @@ public class AlarmMergePolicy {
                 String kind = delta < 0 ? KIND_DOWNGRADED : KIND_MERGED;
                 if (repository.recordHit(group.groupId(), group.version(), group.currentSeverity(), group.latestAlarmId(), at.plusMinutes(dedupMinutes), at) != 1) throw conflict();
                 repository.insertMember(UUID.randomUUID().toString(), group.groupId(), in.evaluationId(), null, kind, group.currentSeverity(), severity, at);
+                if(live(current))linkPrediction(in,current.alarmId());
                 return new MergeOutcome(kind, null, null, group.groupId(), group.currentSeverity(), null);
             }
         }
@@ -118,6 +128,7 @@ public class AlarmMergePolicy {
         repository.insertGroup(new GroupRow(groupId, in.targetId(), AlarmIngestionService.ALARM_TYPE_RULE_LEGALITY, in.ruleSetId(), "OPEN", severity,
                 alarm.alarmId(), alarm.alarmId(), 1, at, at.plusMinutes(dedupMinutes), at, in.ownerOrgId(), in.districtId(), 0));
         repository.insertMember(UUID.randomUUID().toString(), groupId, in.evaluationId(), alarm.alarmId(), KIND_CREATED, null, severity, at);
+        linkPrediction(in,alarm.alarmId());
         return new MergeOutcome(KIND_CREATED, alarm.alarmId(), alarm.eventId(), groupId, severity, null);
     }
 
@@ -128,6 +139,7 @@ public class AlarmMergePolicy {
      */
     @Transactional
     public MergeOutcome escalateManually(MergeInput in, String actorId, String note) {
+        if(predictionEntries!=null)predictionEntries.lockTargetEpisodes(in.targetId());
         MemberRow existing = repository.memberOfEvaluation(in.evaluationId());
         if (existing != null && existing.alarmId() != null) return replay(existing);
         String severity = "ILLEGAL".equals(in.legalStatus())
@@ -144,6 +156,7 @@ public class AlarmMergePolicy {
             if (repository.recordHit(group.groupId(), group.version(), higher(group.currentSeverity(), change.after()), group.latestAlarmId(),
                     group.windowExpiresAt(), at) != 1) throw conflict();
             if (existing == null) repository.insertMember(UUID.randomUUID().toString(), group.groupId(), in.evaluationId(), current.alarmId(), KIND_MANUAL, change.before(), change.after(), at);
+            linkPrediction(in,current.alarmId());
             return new MergeOutcome(KIND_MANUAL, current.alarmId(), current.eventId(), group.groupId(), change.after(), null);
         }
         IngestResult alarm = ingestion.ingest(fact(in, severity, KIND_MANUAL, "manual", "manual:" + in.evaluationId()));
@@ -158,7 +171,12 @@ public class AlarmMergePolicy {
                     alarm.alarmId(), alarm.alarmId(), 1, at, at, at, in.ownerOrgId(), in.districtId(), 0));
         }
         if (existing == null) repository.insertMember(UUID.randomUUID().toString(), groupId, in.evaluationId(), alarm.alarmId(), KIND_MANUAL, group == null ? null : group.currentSeverity(), severity, at);
+        linkPrediction(in,alarm.alarmId());
         return new MergeOutcome(KIND_MANUAL, alarm.alarmId(), alarm.eventId(), groupId, severity, null);
+    }
+
+    private void linkPrediction(MergeInput in,String alarmId) {
+        if(predictionEntries!=null)predictionEntries.linkEvaluation(in.evaluationId(),alarmId);
     }
 
     /** 到期自动关闭：window_expires_at + auto_close_min < now 且目标最近 ACTIVE 研判非 ABNORMAL/ILLEGAL。只改组，不碰 alarm/uav_event。 */

@@ -39,6 +39,7 @@ async function writeNote(text) {
 }
 beforeEach(() => {
   vi.clearAllMocks(); access.hasPermission.mockReturnValue(true); access.hasMenu.mockReturnValue(true);
+  access.user = null;
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   activeFlow = makeFlow();
   deviceMaintenanceApi.workflow.mockImplementation(async () => structuredClone(activeFlow));
@@ -47,6 +48,18 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); host?.remove(); document.body.innerHTML = ''; vi.useRealTimers(); });
 
 describe('设备异常工作台的两步办理', () => {
+  it.each([false, true])('单位异常处理以独立管理授权办理，监测业务权限不授予操作：%s', async operate => {
+    access.user = { user_type: 'FRONTEND', permission_codes: ['monitoring.op', 'devices.op'], management_context: { mode: 'UNIT', org_id: 'unit-a' } };
+    access.hasPermission.mockImplementation(code => ['maintenance.read', 'commissioning.read', ...(operate ? ['maintenance.op'] : [])].includes(code));
+    activeFlow.open_incidents = [{ incident_id: 'incident-a', allowed_actions: ['REBOOT'] }];
+    deviceMaintenanceApi.act.mockResolvedValue(makeFlow('case-radar', 'PROCESSING'));
+    await mount();
+    expect(button('重启设备')).toBeUndefined();
+    expect(host.querySelector('.incident-reboot')).toBeNull();
+    expect(button('设备接入调测')).toBeTruthy();
+    if (operate) { expect(button('接手处理').disabled).toBe(false); button('接手处理').click(); await settle(); expect(deviceMaintenanceApi.act).toHaveBeenCalledTimes(1); }
+    else { expect(button('接手处理')).toBeUndefined(); expect(host.querySelector('#maintenance-note')).toBeNull(); expect(deviceMaintenanceApi.act).not.toHaveBeenCalled(); }
+  });
   it('没有变化不重复读取，SSE 更新保留备注且刷新按钮不转圈', async () => {
     activeFlow = makeFlow('case-other', 'PROCESSING'); await mount('task_id=case-other');
     await writeNote('待核对电源');

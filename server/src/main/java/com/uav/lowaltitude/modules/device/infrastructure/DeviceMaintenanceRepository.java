@@ -200,6 +200,12 @@ public class DeviceMaintenanceRepository {
         String base = " WHERE d.deleted_at IS NULL"
                 + " AND (t.workflow_version=2 OR (EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=t.owner_org_id AND o.enabled=TRUE)"
                 + " AND EXISTS(SELECT 1 FROM app_district dd WHERE dd.district_id=t.district_id AND dd.enabled=TRUE)))";
+        String unitOrg = com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId();
+        if(unitOrg == null) unitOrg = com.uav.lowaltitude.platform.report.ReportAccessContext.orgId();
+        if(unitOrg != null) {
+            p.put("unit_maintenance_org",unitOrg);
+            return base + " AND (t.workflow_version=2 OR t.owner_org_id=:unit_maintenance_org) AND EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE JOIN app_district dd ON dd.district_id=bs.district_id AND dd.enabled=TRUE WHERE bs.ops_device_id=d.device_id AND bs.owner_org_id=:unit_maintenance_org)";
+        }
         if ("ALL".equals(actor.scopeMode())) return base;
         if (!"ASSIGNED".equals(actor.scopeMode())) return base+" AND 1=0";
         p.put("scope_actor",actor.userId());

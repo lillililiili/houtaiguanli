@@ -30,6 +30,14 @@ public final class AuthDtos {
     public record ScopeGrantResponse(String orgId, String orgName, String districtId, String districtName) {
     }
 
+    /** 管理工作区独立于前台业务角色；单位身份不授予平台后台接口权限。 */
+    public record ManagementContext(
+            String mode,
+            String orgId,
+            List<String> menuKeys,
+            List<String> permissionCodes) {
+    }
+
     public record MeResponse(
             String userId,
             String account,
@@ -50,7 +58,8 @@ public final class AuthDtos {
             String dataScope,
             // ZT-28：本人改资料时作为 expected_version 回传。
             int version,
-            String userType) {
+            String userType,
+            ManagementContext managementContext) {
     }
 
     /** 本人可改的资料只有姓名和电话；单位、角色、数据范围由管理员在用户管理里调整。 */

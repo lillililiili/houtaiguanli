@@ -13,6 +13,12 @@ public class DeviceMaintenanceCaseRepository {
     private final com.fasterxml.jackson.databind.ObjectMapper json;
     private final com.uav.lowaltitude.platform.time.AppClock clock;
     private final long discoveryFreshnessMillis;
+
+    /** Related labels in the restricted maintenance workspace remain exact-unit, independent of flight menu grants. */
+    public List<RelatedPlan> relatedPlansInUnit(String taskId,String orgId) {
+        return jdbc.query("SELECT p.plan_id,p.plan_no FROM flight_plan p JOIN app_org o ON o.org_id=p.owner_org_id AND o.enabled=TRUE JOIN app_district d ON d.district_id=p.district_id AND d.enabled=TRUE WHERE p.owner_org_id=? AND (EXISTS(SELECT 1 FROM ops_maintenance_plan l WHERE l.task_id=? AND l.plan_id=p.plan_id) OR EXISTS(SELECT 1 FROM ops_device_maintenance_task t WHERE t.task_id=? AND t.plan_id=p.plan_id)) ORDER BY p.plan_no,p.plan_id",
+                (r,i)->new RelatedPlan(r.getString(1),r.getString(2)),orgId,taskId,taskId);
+    }
     public DeviceMaintenanceCaseRepository(JdbcTemplate jdbc,com.fasterxml.jackson.databind.ObjectMapper json,
             com.uav.lowaltitude.platform.time.AppClock clock,
             @org.springframework.beans.factory.annotation.Value("${app.device-maintenance.recovery-max-age-seconds:300}") long freshnessSeconds){

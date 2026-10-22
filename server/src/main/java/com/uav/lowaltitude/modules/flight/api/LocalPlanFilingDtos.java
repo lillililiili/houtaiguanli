@@ -21,7 +21,9 @@ public final class LocalPlanFilingDtos {
   // D-2（2026-10-08）：上级任务直接带来的飞手手机号和报送单位，平台收任务时据此找或建档案并关联，不设录入页。
   @Pattern(regexp="[+0-9 ()-]{6,64}",message="飞手手机号格式不正确") String pilotPhone,
   @Size(max=64,message="报送单位编码最多 64 个字符") String reportingOrgCode,
-  @Size(max=128,message="报送单位名称最多 128 字") String reportingOrgName) { }
+  @Size(max=128,message="报送单位名称最多 128 字") String reportingOrgName,
+  @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+  @Size(max=32) String coordinateSystem) { }
  public record Update(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,64}") String messageId,
   @NotNull @Min(0) Long expectedVersion,@NotNull @Valid Filing filing) { }
  public record Source(String sourceId,String sourceName,String sourceMode) { }

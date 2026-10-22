@@ -18,7 +18,7 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
-import com.uav.lowaltitude.integration.replay.FusionReplayDatasetGenerator;
+import com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.FusedLayerWriter;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.SourceEstimate;
 import com.uav.lowaltitude.modules.fusion.FusionContracts.TargetFrameResult;
@@ -33,6 +33,7 @@ import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository;
         "spring.datasource.url=jdbc:h2:mem:stage8_pipeline;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
 })
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(Wgs84FusionTestFixture.Replay.class)
 class FusionPipelineReplayTest {
 
     /** 记录型融合层写入器：E2 落地前用它证明 E1 把正确的 TargetFrameResult 交了出去。 */
@@ -128,7 +129,7 @@ class FusionPipelineReplayTest {
         String targetId = targetByExternal("R-T1");
         // single-missing 场景：TDOA 空窗 6 帧，雷达继续；无任务EO不参与，目标不得因此换ID。
         long radarLinks = jdbc.queryForObject("select count(*) from target_source_link l join integration_source s on s.source_id=l.source_id"
-                + " where l.target_id=? and s.source_code=?", Long.class, targetId, FusionReplayDatasetGenerator.RADAR);
+                + " where l.target_id=? and s.source_code=?", Long.class, targetId, Wgs84FusionTestFixture.RADAR);
         assertThat(radarLinks).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select count(distinct target_id) from target_source_link where external_target_id in ('R-T1','D-T1','E-T1')", Long.class)).isEqualTo(1L);
         assertThat(jdbc.queryForObject("select status from target_track_status where target_id=?", String.class, targetId)).isIn("TENTATIVE", "STABLE", "SHORT_LOST", "TERMINATED");
@@ -240,7 +241,7 @@ class FusionPipelineReplayTest {
         assertThat(targetId).isNotNull();
         assertThat(targetByExternal("E-L")).isNull();
         Long lateObservations = jdbc.queryForObject("select count(*) from source_observation o join integration_source s on s.source_id=o.source_id"
-                + " where s.source_code=? and o.external_target_id='E-L'", Long.class, FusionReplayDatasetGenerator.EO);
+                + " where s.source_code=? and o.external_target_id='E-L'", Long.class, Wgs84FusionTestFixture.EO);
         assertThat(lateObservations).isPositive();
         // 无有效任务的迟到EO保留原始观测时间，不建raw轨迹、关联或回退目标状态。
         Long earlier = jdbc.queryForObject("select count(*) from source_observation o where o.external_target_id='E-L'"
@@ -264,7 +265,7 @@ class FusionPipelineReplayTest {
         // 阶段 8.5：凌云协议里没有精度字段，观测的 position_accuracy_m 为空，精度由 fusion_config 的缺省值补上并标记，
         // 数值与阶段 8 显式给的一致（TDOA 60 m），所以上面的估计精度断言不变。
         Long tdoaWithoutAccuracy = jdbc.queryForObject("select count(*) from source_observation o join integration_source s on s.source_id=o.source_id"
-                + " where s.source_code=? and o.position_accuracy_m is null", Long.class, FusionReplayDatasetGenerator.TDOA);
+                + " where s.source_code=? and o.position_accuracy_m is null", Long.class, Wgs84FusionTestFixture.TDOA);
         assertThat(tdoaWithoutAccuracy).isPositive();
     }
 
@@ -327,7 +328,7 @@ class FusionPipelineReplayTest {
         // 不产生观测，但 inbox 必须走到 DONE。判成 FAILED 会累计 fusion_attempts，
         // 空闲周期一多就把一台正常设备的帧推到重试上限（决策 10-16）。
         String sourceId = jdbc.queryForObject("select source_id from integration_source where source_code=?"
-                , String.class, FusionReplayDatasetGenerator.RADAR);
+                , String.class, Wgs84FusionTestFixture.RADAR);
         String inboxId = UUID.randomUUID().toString();
         long observedAt = System.currentTimeMillis();
         String payload = "{\"deviceId\":\"IDLE\",\"msgCnt\":7,\"ptTime\":" + observedAt + ",\"objects\":[]}";

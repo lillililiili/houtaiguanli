@@ -26,6 +26,7 @@ import com.uav.lowaltitude.platform.storage.ObjectStoragePort;
 public class AdvisoryVoiceRecording {
     /** 电话通道只支持完整可读的 WAV（RIFF/WAVE）音频，单个文件上限 10 MiB。 */
     public static final long MAX_BYTES=10L*1024*1024;
+    public static final String GENERAL="GENERAL", PREDICTED_AIRSPACE_ENTRY="PREDICTED_AIRSPACE_ENTRY";
     public enum Source { UPLOADED, STARTUP_CONFIG, NONE }
     private final String id,name,path,transcript;
     private final AdvisoryVoiceRecordingRepository uploaded;
@@ -43,6 +44,7 @@ public class AdvisoryVoiceRecording {
     }
     /** 当前可以播放的录音；没有或文件不可用时返回 null。 */
     public Recording current() {return resolve().recording();}
+    public Recording current(String purpose) {return resolve(purpose).recording();}
     /** Distinguish absent configuration from a configured recording whose file cannot currently be read. */
     public boolean hasConfiguration() {
         return (uploaded != null && uploaded.active() != null)
@@ -50,8 +52,14 @@ public class AdvisoryVoiceRecording {
     }
     /** 当前生效来源及录音；只读。uploadedId/uploadedName 只在后台选用了上传录音时出现。 */
     public Resolution resolve() {
-        Row active=uploaded==null?null:uploaded.active();
+        return resolve(GENERAL);
+    }
+    public Resolution resolve(String purpose) {
+        if(!GENERAL.equals(purpose)&&!PREDICTED_AIRSPACE_ENTRY.equals(purpose))throw new IllegalArgumentException("Unknown recording purpose");
+        Row active=uploaded==null?null:GENERAL.equals(purpose)?uploaded.active():uploaded.active(purpose);
         if(active!=null)return new Resolution(Source.UPLOADED,verified(active),active.recordingId(),active.name());
+        // Startup audio has no predictive-purpose declaration and must never be used for a forecast.
+        if(PREDICTED_AIRSPACE_ENTRY.equals(purpose))return new Resolution(Source.NONE,null,null,null);
         Recording configured=configured();
         return new Resolution(configured==null?Source.NONE:Source.STARTUP_CONFIG,configured,null,null);
     }
@@ -70,7 +78,9 @@ public class AdvisoryVoiceRecording {
     /** 读取当前通知任务绑定的真实录音字节；仅接受当前生效录音的完整元数据匹配。 */
     public byte[] content(Recording recording) {
         if (recording == null) return null;
-        Row active = uploaded == null ? null : uploaded.active();
+        Row selected = uploaded == null ? null : uploaded.find(recording.id());
+        Row active = selected == null ? (uploaded == null ? null : uploaded.active()) : uploaded.active(selected.purpose());
+        if(selected!=null&&active==null)return null;
         if (active != null) {
             return same(active.recordingId(), active.name(), active.transcript(), active.sha256(), recording)
                     ? content(active) : null;

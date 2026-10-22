@@ -196,6 +196,25 @@ class DeviceProtocolApiTest {
         jdbc.update("DELETE FROM integration_source WHERE source_code=?", deviceNo);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings={" ", "GCJ-02", "BD09", "CGCS2000", "WGS84", "WGS-84"})
+    void tcpOnboardingRequiresExplicitWgs84BeforeSourceCreation(String coordinateSystem) throws Exception {
+        String token=login();
+        String org=jdbc.queryForObject("SELECT org_id FROM app_org WHERE org_code='ORG-DEV'",String.class);
+        String district=jdbc.queryForObject("SELECT district_id FROM app_district ORDER BY district_id FETCH FIRST 1 ROW ONLY",String.class);
+        String deviceNo="COORD-"+UUID.randomUUID();
+        var body=mapper.createObjectNode().put("protocol_code","RADAR_TCP_V3_0_0").put("device_no",deviceNo).put("name","位置声明")
+                .put("host","192.0.2.88").put("port",5001).put("allowed_cidrs","192.0.2.0/24")
+                .put("owner_org_id",org).put("district_id",district).put("longitude",119.27).put("latitude",32.56);
+        if(coordinateSystem!=null)body.put("coordinate_system",coordinateSystem);
+        boolean valid="WGS84".equals(coordinateSystem)||"WGS-84".equals(coordinateSystem);
+        mvc.perform(post("/api/v1/devices/onboard").header("Authorization",bearer(token))
+                .contentType(MediaType.APPLICATION_JSON).content(body.toString())).andExpect(status().is(valid?200:400));
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ops_integration_source WHERE source_code=?",Long.class,deviceNo)).isEqualTo(valid?1L:0L);
+        if(valid)assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_no=?",String.class,deviceNo)).isEqualTo("WGS-84");
+    }
+
     @Test void tcpOnboardRequiresExplicitValidScopeAndRollsBackInvalidTuple() throws Exception {
         String token=login();
         var body=mapper.createObjectNode().put("protocol_code","RADAR_TCP_V3_0_0")

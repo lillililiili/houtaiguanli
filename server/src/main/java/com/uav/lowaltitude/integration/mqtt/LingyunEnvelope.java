@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.uav.lowaltitude.integration.device.DeviceProtocolCodes;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 
 /** Only the protocol envelope is interpreted here. Object semantics belong to fusion. */
 public record LingyunEnvelope(String provider, String type, String externalId, boolean sensing,
@@ -61,6 +62,8 @@ public record LingyunEnvelope(String provider, String type, String externalId, b
         if (sense) {
             if (ptTime == null || !root.path("objects").isArray()) throw new Rejected("INVALID_ENVELOPE");
             int count = (int) integer(root, "msgCnt", Integer.MAX_VALUE);
+            try { JsonCoordinateContract.requireSenseData(root); }
+            catch (IllegalArgumentException ex) { throw new Rejected(ex.getMessage()); }
             return new LingyunEnvelope(parts[1], parts[3], parts[4], true, raw, hash(bytes), ptTime, count, null,
                     null, null, null);
         }
@@ -72,6 +75,10 @@ public record LingyunEnvelope(String provider, String type, String externalId, b
         int state = (int) integer(root, "workState", 2);
         Double longitude = optionalNumber(root, "deviceLongitude");
         Double latitude = optionalNumber(root, "deviceLatitude");
+        if (longitude != null || latitude != null) {
+            try { JsonCoordinateContract.requireWgs84(root); }
+            catch (IllegalArgumentException ex) { throw new Rejected(ex.getMessage()); }
+        }
         if ((longitude == null) != (latitude == null)) throw new Rejected("INVALID_ENVELOPE");
         if (longitude != null && (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90))
             throw new Rejected("INVALID_ENVELOPE");

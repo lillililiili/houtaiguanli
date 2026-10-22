@@ -263,7 +263,7 @@ class EmergencyStopApiTest {
         assertThat(notes.get(0).get("actor_id")).isEqualTo(operatorId);
         assertThat(notes.get(0).get("note").toString()).contains("另一起处置按了急停").doesNotContain("核查");
         // 排队中的启动、续链和手动执行都不再因为这次急停被拦。
-        assertThat(commandGuard.mayStart(waiting)).isTrue();
+        assertThat(commandGuard.mayStart(waiting, operatorId, device)).isTrue();
 
         // 全关还在排队：设备忙，这次不下发、授权仍是已批准；不是急停核查拦的。
         long version = jdbc.queryForObject("select version from disposal_authorization where authorization_id=?", Long.class, waiting);
@@ -309,7 +309,8 @@ class EmergencyStopApiTest {
     @Test
     void emergencyStopCancelsSentStartCommandSoLateDeliveryCannotRestartDevice() throws Exception {
         String device = fourChannel(), authorization = authorization("COUNTERMEASURE", true);
-        String command = data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
+        bindStartingDevice(authorization, device);
+        String command = data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", operator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", 15, "reason", "原始反制下发"))
                 .andExpect(status().isAccepted())).path("command_id").asText();
         jdbc.update("update device_command set status='SENT' where command_id=?", command);
@@ -680,7 +681,8 @@ class EmergencyStopApiTest {
     }
 
     String directFourChannel(String device, String authorization, int mask) throws Exception {
-        return data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", backendOperator, key(),
+        if (mask != 0) bindStartingDevice(authorization, device);
+        return data(request("/api/v1/devices/" + device + "/commands/countermeasure-4ch", mask == 0 ? backendOperator : operator, key(),
                 Map.of("authorization_id", authorization, "action", "SET_MASK", "mask", mask, "reason", "直接设备命令回归测试"))
                 .andExpect(status().isAccepted())).path("command_id").asText();
     }
@@ -689,6 +691,7 @@ class EmergencyStopApiTest {
     @org.junit.jupiter.params.provider.ValueSource(ints={0,15})
     void sharedFrontendDeviceOperationReturnsItsOwnReceiptWithoutBackendAccess(int mask) throws Exception {
         String device=fourChannel(), authorization=authorization("COUNTERMEASURE",true), requestKey=key();
+        bindStartingDevice(authorization, device);
         var body=Map.of("authorization_id",authorization,"action","SET_MASK","mask",mask,"reason","共享设备提交回执");
         String command=data(request("/api/v1/devices/"+device+"/commands/countermeasure-4ch",operator,requestKey,body)
                 .andExpect(status().isAccepted())).path("command_id").asText();
@@ -700,6 +703,22 @@ class EmergencyStopApiTest {
                 .andExpect(status().isForbidden());
         request("/api/v1/devices/"+device+"/commands/countermeasure-4ch",requester,key(),body).andExpect(status().isForbidden());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?",Integer.class,device)).isEqualTo(1);
+    }
+
+    @Test
+    void backendDevicePermissionCannotBorrowReviewedAuthorizationToStart() throws Exception {
+        String device=fourChannel(), authorization=authorization("COUNTERMEASURE",true);
+        bindStartingDevice(authorization, device);
+        request("/api/v1/devices/"+device+"/commands/countermeasure-4ch",backendOperator,key(),
+                Map.of("authorization_id",authorization,"action","SET_MASK","mask",15,"reason","后台身份不隐含业务执行权"))
+                .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command WHERE device_id=?",Integer.class,device)).isZero();
+    }
+
+    /** Adapt the isolated historical execution fixture to the actual device before testing a new start. */
+    private void bindStartingDevice(String authorization, String device) {
+        jdbc.update("UPDATE disposal_authorization SET device_id=?,channel='COUNTERMEASURE_4CH' WHERE authorization_id=?",
+                device, authorization);
     }
 
     @Test

@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.uav.lowaltitude.modules.identity.application.AccessService;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.report.BusinessReportSource;
+import com.uav.lowaltitude.platform.report.ReportAccessContext;
 import com.uav.lowaltitude.platform.time.AppClock;
 import static com.uav.lowaltitude.platform.report.BusinessReportSource.*;
 
@@ -55,7 +56,7 @@ public class BusinessReportingService {
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Preview preview(String categoryText, String type, String anchor, String sourceMode) {
-        access.requireBusinessData("statistics.read");
+        ReportAccessContext.requireReport(access);
         SourceScope scope = scopes.resolve(sourceMode);
         Category category = Category.parse(categoryText);
         var period = periods.resolve(type, anchor);
@@ -65,7 +66,7 @@ public class BusinessReportingService {
             BusinessReportSource source = sources.get(key);
             try { sections.add(source.summarize(range)); }
             catch (ApiException ex) {
-                if (category != Category.OVERVIEW || ex.getStatus() != HttpStatus.FORBIDDEN) throw ex;
+                if ((!ReportAccessContext.active() && category != Category.OVERVIEW) || ex.getStatus() != HttpStatus.FORBIDDEN) throw ex;
                 sections.add(new Summary(key, source.title(), source.basis(), source.snapshot(), false,
                         null, List.of(), List.of(), List.of()));
             }
@@ -91,7 +92,7 @@ public class BusinessReportingService {
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Page details(String categoryText, String type, String anchor, String section, int page, int size, String sourceMode) {
-        access.requireBusinessData("statistics.read");
+        ReportAccessContext.requireReport(access);
         SourceScope scope = scopes.resolve(sourceMode);
         Category category = Category.parse(categoryText);
         if (category == Category.OVERVIEW || !category.keys.contains(section)) throw bad("此报表不包含该明细分区");
@@ -99,7 +100,7 @@ public class BusinessReportingService {
         var period = periods.resolve(type, anchor);
         // A category requires every constituent permission, even when requesting only one detail section.
         Range range = new Range(period.from(), period.to(), scope);
-        for (String key : category.keys) sources.get(key).requireAccess(range);
+        if (!ReportAccessContext.active()) for (String key : category.keys) sources.get(key).requireAccess(range);
         return sources.get(section).details(range, page, size);
     }
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -111,11 +112,11 @@ public class BusinessReportingService {
         Preview preview = preview(category, type, anchor, sourceMode);
         Map<String,Page> details = new LinkedHashMap<>();
         if (!category.equals("OVERVIEW")) {
-            long total = preview.sections().stream().mapToLong(s -> s.total()).sum();
+            long total = preview.sections().stream().filter(Summary::accessible).mapToLong(s -> s.total() == null ? 0 : s.total()).sum();
             if (!pdf && total > 50000) throw bad("明细超过 50000 条，请改用周报或日报缩短统计周期");
             Range range = new Range(java.time.LocalDate.parse(preview.from()), java.time.LocalDate.parse(preview.to()), scopes.resolve(sourceMode));
             for (Summary section : preview.sections())
-                details.put(section.key(), sources.get(section.key()).details(range, 1, pdf ? 50 : 50000));
+                if (section.accessible()) details.put(section.key(), sources.get(section.key()).details(range, 1, pdf ? 50 : 50000));
         }
         return new ExportData(preview, details);
     }

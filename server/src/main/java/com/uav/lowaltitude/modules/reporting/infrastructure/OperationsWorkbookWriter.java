@@ -45,6 +45,7 @@ public class OperationsWorkbookWriter {
             regionSheet(workbook, styles, period, report);
             ObservationWorkbookSheet.append(workbook, report.observationMetrics());
             workbook.setActiveSheet(0);
+            ReportWorkbookFonts.apply(workbook);
             workbook.write(output);
             return output.toByteArray();
         } catch (IOException ex) {

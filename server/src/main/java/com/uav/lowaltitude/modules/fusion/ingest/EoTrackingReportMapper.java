@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
 /**
@@ -67,6 +68,10 @@ public class EoTrackingReportMapper implements FrameMapper {
             return Frame.empty(sessionKey, timestamp, inbox.source(), observedAt);
         }
         if (taskId == null) throw new IllegalStateException("BeginTracking 上报缺少 taskId");
+        if (JsonCoordinateContract.hasCoordinates(aiStatus, "longitude", "latitude")) {
+            try { JsonCoordinateContract.requireWgs84(root, metadata, aiStatus); }
+            catch (IllegalArgumentException ex) { throw new IllegalStateException(ex.getMessage(), ex); }
+        }
 
         Map<String, Object> quality = new LinkedHashMap<>();
         quality.put("event", event);

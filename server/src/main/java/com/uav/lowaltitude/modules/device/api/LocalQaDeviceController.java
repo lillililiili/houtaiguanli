@@ -16,11 +16,11 @@ import com.uav.lowaltitude.platform.api.ApiResponse;
 public class LocalQaDeviceController {
     private final LocalQaDeviceService service;
     public LocalQaDeviceController(LocalQaDeviceService service) { this.service=service; }
-    /** 反制设备归属单位与区县；旧调用方仍可传 plan_id，只借用计划的单位与区县。经纬度可选，只用于地图上画作用范围示意。
+    /** 反制设备归属单位与区县；旧调用方仍可传 plan_id，只借用计划的单位与区县。经纬度可选；提供时须声明 coordinate_system=WGS84/WGS-84。
      *  coverage_radius_m 可选：模拟器场景里配置的反制作用半径（米），设备还没有覆盖范围时登记为圆形覆盖，供“是否覆盖目标”判断。 */
     public record Input(String ownerOrgId, String districtId, String planId, BigDecimal longitude, BigDecimal latitude,
-                        BigDecimal coverageRadiusM) { }
+                        BigDecimal coverageRadiusM, String coordinateSystem) { }
     @PostMapping public ApiResponse<DeviceDetail> prepare(@Valid @RequestBody Input input,@RequestHeader("Idempotency-Key") String key) {
-        return ApiResponse.ok(service.prepare(input.ownerOrgId(),input.districtId(),input.planId(),input.longitude(),input.latitude(),input.coverageRadiusM(),key));
+        return ApiResponse.ok(service.prepare(input.ownerOrgId(),input.districtId(),input.planId(),input.longitude(),input.latitude(),input.coordinateSystem(),input.coverageRadiusM(),key));
     }
 }

@@ -26,12 +26,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
         "spring.datasource.url=jdbc:h2:mem:stage10_export;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1"
 })
 @ActiveProfiles("test")
+@org.springframework.context.annotation.Import(com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture.Sources.class)
 class LingyunMqttReplayExporterTest {
 
     @Autowired FusionReplayDatasetGenerator generator;
     @Autowired FusionReplayRunner runner;
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
+    @Autowired com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture fixture;
 
     /**
      * 直接构造而不是注入：导出器带 local profile 与开关双门禁，为了拿到 bean 而在测试里打开 local，
@@ -81,7 +83,9 @@ class LingyunMqttReplayExporterTest {
 
     @Test
     void payloadHashMatchesWhatTheReplaySeedWroteIntoInbox() throws Exception {
-        // 种子已在上下文启动时把 v2 数据集写进 inbox；逐行比对 sha256(payload) 与库里的 payload_hash。
+        // Explicit archive load only; frozen messages are not fed into the current strict coordinate mapper.
+        fixture.registerLegacySources();
+        runner.loadV2();
         int checked = 0;
         for (String line : exporter().lines()) {
             JsonNode node = json.readTree(line);

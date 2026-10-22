@@ -1,4 +1,5 @@
 package com.uav.lowaltitude.modules.device.infrastructure;
+import org.springframework.http.HttpStatus;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -533,6 +534,7 @@ public class DeviceRepository {
 
     // Monitoring logs use the same explicit, enabled organization/district tuple as device information.
     private String eventScope(Map<String, Object> params) {
+        if(managementOrg()!=null) return unitDeviceScope(params);
         var actor = com.uav.lowaltitude.platform.security.AuthContext.get();
         if (actor == null) return " AND 1=0";
         if ("ALL".equals(actor.scopeMode())) return "";
@@ -744,7 +746,16 @@ public class DeviceRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    public void requireSourceInUnit(String source,String org) {
+        Long outside=jdbc.queryForObject("SELECT COUNT(*) FROM ops_device d WHERE d.source_id=? AND NOT EXISTS(SELECT 1 FROM device_business_scope bs WHERE bs.ops_device_id=d.device_id AND bs.owner_org_id=?)",Long.class,source,org);
+        if(source==null || outside==null || outside>0) throw new com.uav.lowaltitude.platform.api.ApiException(HttpStatus.FORBIDDEN,"UNIT_SOURCE_FORBIDDEN","接入来源关联了本单位外的设备，请由平台维护");
+    }
+
     public boolean canDeleteInScope(String id, String userId, String scopeMode) {
+        if(managementOrg()!=null) {
+            Map<String,Object> p=new HashMap<>(); p.put("unit_device_id",id);
+            return named.queryForObject("SELECT COUNT(*) FROM ops_device d WHERE d.device_id=:unit_device_id"+unitDeviceScope(p),p,Long.class)>0;
+        }
         if ("ALL".equals(scopeMode)) return true;
         if (!"ASSIGNED".equals(scopeMode)) return false;
         return jdbc.queryForObject("""
@@ -960,11 +971,22 @@ public class DeviceRepository {
     }
 
     // All device protocols share the same explicit organization/district authorization tuple.
+    private static String managementOrg() {
+        String org = com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId();
+        return org != null ? org : com.uav.lowaltitude.platform.report.ReportAccessContext.orgId();
+    }
+
+    private static String unitDeviceScope(Map<String,Object> params) {
+        params.put("unit_device_org", managementOrg());
+        return " AND EXISTS(SELECT 1 FROM device_business_scope bs JOIN app_org o ON o.org_id=bs.owner_org_id AND o.enabled=TRUE JOIN app_district dd ON dd.district_id=bs.district_id AND dd.enabled=TRUE WHERE bs.ops_device_id=d.device_id AND bs.owner_org_id=:unit_device_org)";
+    }
+
     private String deviceScope(Map<String,Object> params) {
         return deviceScope(params, com.uav.lowaltitude.platform.security.AuthContext.get());
     }
 
     private String deviceScope(Map<String,Object> params, com.uav.lowaltitude.platform.security.AuthUser actor) {
+        if(managementOrg()!=null) return unitDeviceScope(params);
         if(actor==null || "ALL".equals(actor.scopeMode())) return "";
         if(!"ASSIGNED".equals(actor.scopeMode())) return " AND 1=0";
         params.put("device_scope_actor",actor.userId());

@@ -54,7 +54,7 @@ class AdvisoryVoiceRecordingStartupFallbackTest {
 
     @AfterEach
     void reset() {
-        jdbc.update("UPDATE advisory_voice_recording_setting SET active_recording_id=NULL,updated_by=NULL,updated_at=NULL,version=0 WHERE setting_id='global'");
+        jdbc.update("UPDATE advisory_voice_recording_setting SET active_recording_id=NULL,predicted_active_recording_id=NULL,updated_by=NULL,updated_at=NULL,version=0 WHERE setting_id='global'");
     }
 
     @Test

@@ -11,6 +11,9 @@ import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeM
 /** Read-only dispatch guard. Never takes a group lock while device code holds an event/authorization lock. */
 @Service
 public class AutomationRuntimeEligibility {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private final AutomationRuleRepository config;
     private final AutomationRuntimeRepository runs;
     private final AutomationRuntimeFactsRepository facts;
@@ -20,6 +23,8 @@ public class AutomationRuntimeEligibility {
     private final AutomationRuntimeEvaluator evaluator=new AutomationRuntimeEvaluator();
     public AutomationRuntimeEligibility(AutomationRuleRepository config,AutomationRuntimeRepository runs,AutomationRuntimeFactsRepository facts,AutomationRuntimePolicy policy,ObjectMapper json,AppClock clock){this.config=config;this.runs=runs;this.facts=facts;this.policy=policy;this.json=json;this.clock=clock;}
     public Decision check(String category,String eventId){
+        if(predictions!=null&&predictions.blocksAutomatic(category,eventId))
+            return new Decision("PAUSED","预测风险须人工核实和人工发起反制，不能自动移送处罚",List.of(),Map.of(),null);
         if(!policy.enabled())return new Decision("PAUSED","自动规则引擎未启用",List.of(),Map.of(),null);
         var head=config.head(category,false);var state=runs.state(category,eventId);
         if(state==null||state.version()!=head.version())return new Decision("WAITING","等待按当前规则版本重新判定",List.of(),Map.of(),null);
@@ -43,12 +48,13 @@ public class AutomationRuntimeEligibility {
         return after!=null&&runId.equals(after.runId())&&before.version()==after.version()&&"PASS".equals(after.status());
     }
     /** Existing jobs retain their previous deployment behavior until this engine is explicitly enabled. */
-    public boolean legacyActionAllowed(String eventId,String code){return !policy.enabled()||allows("dispose",eventId,code);}
+    public boolean legacyActionAllowed(String eventId,String code){return !(predictions!=null&&predictions.blocksAutomatic("dispose",eventId))&&(!policy.enabled()||allows("dispose",eventId,code));}
     /** No enabled rule leaves the existing alarm flow unchanged. A passing rule is the only automatic go-ahead. */
     public boolean passed(String category,String eventId){return enabled(category)&&block(category,eventId)==null;}
     public String punishNotifyBlock(String eventId){return block("dispose",eventId);}
     public String counterBlock(String eventId){return block("counter",eventId);}
     public String block(String category,String eventId){
+        if(predictions!=null&&predictions.blocksAutomatic(category,eventId))return "本次预测衍生风险不允许自动执行该动作";
         if(!enabled(category))return null;
         String noun=switch(category){case "verify"->"核实";case "counter"->"反制";default->"通知处罚";};
         if(eventId==null||eventId.isBlank())return noun+"规则缺少来源事件，不能放行";

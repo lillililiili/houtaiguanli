@@ -88,7 +88,7 @@ class EoEdgeEnvelopeTest {
                 + "\"tiltOrientAngle\":2.0,\"focalLen\":4.8,\"detectDist\":10.0,\"zoomIndex\":32}}}";
     }
     private static String beginReport(int code) {
-        return "{\"event\":\"BeginTracking\",\"edgeId\":\"1421840000010157\",\"timestamp\":1731731306000,\"metadata\":{"
+        return "{\"coordinate_system\":\"WGS84\",\"event\":\"BeginTracking\",\"edgeId\":\"1421840000010157\",\"timestamp\":1731731306000,\"metadata\":{"
                 + "\"taskId\":\"d0652e40-aa9c-4629-9bab-559e961c9030\",\"deviceId\":\"4218400000101573981238947000262\","
                 + "\"codeStatus\":" + code + ",\"message\":\"\",\"workState\":1,"
                 + "\"objectData\":{\"latitude\":1.0,\"longitude\":2.0,\"altitude\":3.0,\"speedX\":0,\"speedY\":0,\"speedZ\":0,"

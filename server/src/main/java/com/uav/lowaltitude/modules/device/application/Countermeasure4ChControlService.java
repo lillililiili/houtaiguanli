@@ -75,6 +75,37 @@ public class Countermeasure4ChControlService {
         return enqueue(user, deviceId, idempotencyKey, authorizationId, action, channel, mask, reason);
     }
 
+    /** Internal safety-only path: no user impersonation and no ability to enqueue an ON mask. */
+    @Transactional
+    public String enqueuePredictionStop(String deviceId, String key, String authorizationId, String reason) {
+        if(key==null||key.isBlank()||authorizationId==null||authorizationId.isBlank()
+                ||reason==null||reason.isBlank()||reason.length()>500)
+            throw bad("VALIDATION_ERROR","预测停止必须携带原授权和停止原因");
+        devices.lockForRecovery(deviceId);
+        String commandId=UUID.nameUUIDFromBytes(("prediction-stop:"+key).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        var existing=controls.control(commandId);
+        if(existing!=null) {
+            if(!deviceId.equals(text(existing,"device_id"))||!authorizationId.equals(text(existing,"control_authorization_id"))
+                    ||!Integer.valueOf(0).equals(existing.get("mask")))
+                throw new ApiException(HttpStatus.CONFLICT,"IDEMPOTENCY_CONFLICT","系统停止编号对应了其他指令");
+            return commandId;
+        }
+        Map<String,Object> device=devices.find(deviceId);
+        if(device==null||!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(device,"protocol_code"))
+                ||!"live".equals(text(device,"source_mode")))
+            throw new ApiException(HttpStatus.CONFLICT,"CONTROL_NOT_ENABLED","设备不支持四通道远程全关");
+        if(!bool(device,"enabled")||!"ONLINE".equals(text(device,"connectivity")))
+            throw new ApiException(HttpStatus.CONFLICT,"DEVICE_NOT_OPERABLE","设备离线或停用，远程停止尚未下发");
+        long now=clock.nowMillis();boolean simulated=bool(device,"simulated");
+        controls.insert(commandId,"CM4-"+now+"-"+commandId.substring(0,6).toUpperCase(),deviceId,null,reason,
+                text(device,"source_mode"),simulated,now+timeoutMillis,now,ACTION_MASK,null,
+                Countermeasure4ChCodec.MASK_ALL_OFF,authorizationId);
+        controls.addOutbox(UUID.randomUUID().toString(),commandId,now);
+        controls.addEvent(deviceId,"COUNTERMEASURE_4CH_QUEUED","INFO","预测风险变化，系统已排队全关，等待真实回执",now,simulated);
+        audit.record(null,"PREDICTION_SAFETY","countermeasure_4ch_requested","device_command",commandId,authorizationId,null);
+        return commandId;
+    }
+
     private String enqueue(AuthUser user, String deviceId, String idempotencyKey, String authorizationId,
                            String action, String channel, Integer mask, String reason) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 96)
@@ -99,7 +130,7 @@ public class Countermeasure4ChControlService {
             storedChannel = channel == null ? null : channel.trim();
             storedMask = Countermeasure4ChCodec.channelBit(storedChannel);
         }
-        if (starts(normalizedAction,storedMask) && !disposalGuard.mayStart(authorizationId.trim()))
+        if (starts(normalizedAction,storedMask) && !disposalGuard.mayStart(authorizationId.trim(), user.userId(), deviceId))
             throw new ApiException(HttpStatus.CONFLICT,"AUTHORIZATION_STOPPED","该处置已停止或当前条件不允许继续执行，请查看事件处置记录");
         devices.lockForRecovery(deviceId);
         Map<String, Object> device = devices.find(deviceId);
@@ -143,7 +174,7 @@ public class Countermeasure4ChControlService {
         if (command == null || terminal(text(command, "status"))) return;
         // Authorization first, command second: same lock order as emergency stop and direct enqueue.
         boolean allowed = !starts(text(command,"action"),number(command,"mask"))
-                || disposalGuard.mayStart(text(command,"control_authorization_id"));
+                || disposalGuard.mayStart(text(command,"control_authorization_id"), text(command,"requested_by"), text(command,"device_id"));
         controls.lockCommand(commandId);
         command = controls.control(commandId);
         if (command == null || terminal(text(command,"status"))) return;
@@ -153,6 +184,10 @@ public class Countermeasure4ChControlService {
             uncertainStart(commandId, command);
             return;
         }
+        // Waiting for the command lock may outlive an account/role/unit-permission change.
+        // The first check already acquired the event -> authorization -> device locks.
+        if (allowed && starting) allowed = disposalGuard.mayStart(text(command,"control_authorization_id"),
+                text(command,"requested_by"), text(command,"device_id"));
         if (!allowed) {
             if (controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
                     "AUTHORIZATION_STOPPED","处置已停止或当前条件不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
@@ -226,7 +261,7 @@ public class Countermeasure4ChControlService {
         if (command == null || terminal(text(command, "status"))) return;
         boolean starting = starts(text(command,"action"),number(command,"mask"));
         // Keep dispatch's authorization -> command lock order. A timeout cannot erase committed send intent.
-        if (starting) disposalGuard.mayStart(text(command,"control_authorization_id"));
+        if (starting) disposalGuard.mayStart(text(command,"control_authorization_id"), text(command,"requested_by"), text(command,"device_id"));
         controls.lockCommand(commandId);
         command = controls.control(commandId);
         if (command == null || terminal(text(command,"status"))) return;

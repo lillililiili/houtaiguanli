@@ -114,7 +114,7 @@ public class FlightReadService {
         var filing = repository.findFiling(row.planId(), access);
         if (filing == null) throw notFound("FLIGHT_PLAN_NOT_FOUND", "飞行任务不存在");
         return plan(row, new PlanFilingDto(filing.pilotName(),filing.operatorName(),filing.takeoffSiteName(),filing.landingSiteName(),
-            filing.takeoffLongitude(),filing.takeoffLatitude(),filing.landingLongitude(),filing.landingLatitude()));
+            filing.takeoffLongitude(),filing.takeoffLatitude(),filing.landingLongitude(),filing.landingLatitude(),filing.coordinateSystem()));
     }
 
     /** 本人数据范围内最近一次收到或更新上级（live 来源）计划的时间；从未收到时为 null。 */

@@ -18,13 +18,13 @@ public class DeviceProtocolService {
         access.requireDevicesRead();
         return List.of(
                 new ProtocolDescriptor(DeviceProtocolCodes.LINGYUN_MQTT_V8_6,
-                        "凌云协议 A MQTT（雷达 / 5G-A / TDOA / AOA / 协议破解 / RemoteID）", "8.6",
+                        "协议 A MQTT（雷达 / 5G-A / TDOA / AOA / 协议破解 / RemoteID）", "8.6",
                         List.of("DEVICE_STATIC_RECEIVE", "SENSE_INBOX_RECEIVE", "LINGYUN_CONTROL"),
                         List.of(new Field("broker_id", "id", true, "选择已登记 MQTT 连接"),
                                 new Field("source_mode", "enum", true, "replay 模拟回放 / live 真实来源，待联调"),
                                 new Field("emergency_stop", "note", false, "急停：设备协议未提供")),
                         Map.of("transport", "MQTT", "qos", 1, "control_protocol", "B V2.4"), true),
-                new ProtocolDescriptor(DeviceProtocolCodes.EO_EDGE_MQTT_20250826, "凌云协议 C 光电边端协同", "20250826",
+                new ProtocolDescriptor(DeviceProtocolCodes.EO_EDGE_MQTT_20250826, "协议 C 光电边端协同", "20250826",
                         List.of("HEARTBEAT_RECEIVE", "TRACK_BEGIN", "TRACK_END", "CAMERA_STATUS"),
                         List.of(new Field("broker_id", "id", true, "选择已登记 MQTT 连接"),
                                 new Field("edge_id", "string", true, "平台作为边缘中心的 edgeId"),

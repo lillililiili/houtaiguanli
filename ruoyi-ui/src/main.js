@@ -8,10 +8,11 @@ import '@/assets/styles/index.css';
 import App from './App.vue';
 import router from './router/index.js';
 import permission from './directives/permission.js';
+import { startWithAppFonts } from './services/appFonts.js';
 
 const app = createApp(App);
 app.use(createPinia());
 app.use(router);
 app.use(ElementPlus, { locale: zhCn });
 app.directive('permission', permission);
-app.mount('#app');
+startWithAppFonts(() => app.mount('#app'));

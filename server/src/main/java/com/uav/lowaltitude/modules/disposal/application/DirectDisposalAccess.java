@@ -23,17 +23,20 @@ public class DirectDisposalAccess {
     private final AppClock clock;
     private final com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows;
     private final AutomaticCounterAuthorization automatic;
+    private final com.uav.lowaltitude.modules.identity.application.OrgEffectivePermissionService effective;
 
     public DirectDisposalAccess(IdentityAdminMapper identity, DisposalRepository authorizations,
                                 DeviceAccessPolicy devices, AppClock clock,
                                 com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository deviceRows,
-                                AutomaticCounterAuthorization automatic) {
+                                AutomaticCounterAuthorization automatic,
+                                com.uav.lowaltitude.modules.identity.application.OrgEffectivePermissionService effective) {
         this.identity = identity;
         this.authorizations = authorizations;
         this.devices = devices;
         this.clock = clock;
         this.deviceRows = deviceRows;
         this.automatic = automatic;
+        this.effective = effective;
     }
 
     public AuthUser eligibleRequester(AuthorizationRow row, boolean needsDeviceControl) {
@@ -47,6 +50,7 @@ public class DirectDisposalAccess {
                 return automatic.mayStart(row) ? authorizations.actor(row.requestedBy()) : null;
             } catch (RuntimeException unavailable) { return null; }
         }
+        var permissions = effective.permissionCodes(row.requestedBy());
         var user = identity.findAdminUser(row.requestedBy(), clock.nowMillis());
         if (user == null || !"ACTIVE".equals(user.getStatus()) || user.isMustChangePassword()) return null;
         var role = identity.findRole(user.getRoleCode());
@@ -54,7 +58,7 @@ public class DirectDisposalAccess {
         // 管理员也必须有显式 OP 授权；目录存在、READ/AUTH 或其他处置权限都不能替代。
         boolean direct = identity.listActionsForRole(user.getRoleCode()).stream().anyMatch(grant ->
                 "disposal:direct".equals(grant.getPermissionCode()) && "OP".equals(grant.getLevel()));
-        if (!direct) return null;
+        if (!direct || !permissions.contains("disposal:direct")) return null;
         ScopeMode scope = "ALL".equals(user.getScopeMode()) ? ScopeMode.ALL
                 : "ASSIGNED".equals(user.getScopeMode()) ? ScopeMode.ASSIGNED : null;
         if (scope == null || authorizations.find(row.authorizationId(), new AccessDecision(user.getUserId(), scope)) == null)
@@ -65,5 +69,22 @@ public class DirectDisposalAccess {
         if (needsDeviceControl && !devices.canOperateDevices(actor)) return null;
         if (needsDeviceControl && row.deviceId() != null && deviceRows.findForActor(row.deviceId(), actor) == null) return null;
         return actor;
+    }
+
+    /** Approval and command execution may have different actors; only the persisted executor is checked. */
+    public AuthUser eligibleExecutor(AuthorizationRow row, String executorId, String deviceId) {
+        if (executorId == null || executorId.isBlank() || AutomationPrincipal.USER_ID.equals(executorId)) return null;
+        var permissions = effective.permissionCodes(executorId);
+        var user = identity.findAdminUser(executorId, clock.nowMillis());
+        if (user == null || !"ACTIVE".equals(user.getStatus()) || user.isMustChangePassword()) return null;
+        if (!permissions.contains("devices.op") || (row != null && !permissions.contains("disposal:execute"))) return null;
+        ScopeMode scope = "ALL".equals(user.getScopeMode()) ? ScopeMode.ALL
+                : "ASSIGNED".equals(user.getScopeMode()) ? ScopeMode.ASSIGNED : null;
+        if (scope == null || (row != null
+                && authorizations.find(row.authorizationId(), new AccessDecision(executorId, scope)) == null)) return null;
+        AuthUser actor = authorizations.actor(executorId);
+        if (actor == null || actor.mustChangePassword() || !user.getRoleCode().equals(actor.roleCode())
+                || !user.getScopeMode().equals(actor.scopeMode())) return null;
+        return deviceId != null && deviceRows.findForActor(deviceId, actor) != null ? actor : null;
     }
 }

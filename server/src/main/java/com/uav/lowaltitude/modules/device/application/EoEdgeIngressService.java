@@ -97,6 +97,13 @@ public class EoEdgeIngressService {
             completeBegin(binding, task, m, receivedAt, false, null);
             return new TrackingResult("ACCEPTED", "COMMAND_FAILED", null);
         }
+        String coordinateError = m.observationCoordinateError();
+        if (coordinateError != null) {
+            // The device's successful command receipt remains a fact. The
+            // untrusted position must not enter fusion or refresh sensing state.
+            completeBegin(binding, task, m, receivedAt, true, null);
+            return new TrackingResult("REJECTED", coordinateError, null);
+        }
         String existing = edges.existingHash(binding.source(), m.sourceMsgId());
         if (existing != null) {
             String outcome = existing.equals(m.hash()) ? "DUPLICATE" : "CONFLICT";

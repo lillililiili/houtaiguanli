@@ -3,6 +3,16 @@ export function isBackendUser(user) {
   return user?.user_type === 'BACKEND' || (!user?.user_type && user?.role_code === 'ROLE-ADMIN')
 }
 
+export function isUnitAdministrator(user) {
+  return user?.user_type === 'FRONTEND'
+    && user?.management_context?.mode === 'UNIT'
+    && Boolean(user.management_context.org_id)
+}
+
+export function canEnterManagement(user) {
+  return isBackendUser(user) || isUnitAdministrator(user)
+}
+
 export function userTypeLabel(type) {
   return type === 'BACKEND' ? '后台用户' : '前台用户'
 }

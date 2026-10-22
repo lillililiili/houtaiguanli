@@ -38,7 +38,7 @@ class Stage85ContractTest {
         assertThat(rows).filteredOn(r -> SourceTypeCatalogFixture.PROTOCOL_TYPES.contains(r.get("source_type"))
                 && !SourceTypeCatalogFixture.CONFIRMED_TYPES.contains(r.get("source_type"))).allSatisfy(r -> {
             // 三路字段现在有出处（凌云协议 A），但联调前不得标 CONFIRMED。
-            assertThat(String.valueOf(r.get("spec_ref"))).contains("凌云协议");
+            assertThat(String.valueOf(r.get("spec_ref"))).contains("协议/协议A-").doesNotContain("凌云");
         });
     }
 

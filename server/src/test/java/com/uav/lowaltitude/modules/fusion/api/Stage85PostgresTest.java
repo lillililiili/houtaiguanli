@@ -40,9 +40,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.uav.lowaltitude.modules.fusion.application.LiveRadarSourceObservationPort;
-import com.uav.lowaltitude.integration.mock.LocalStage8FusionReplaySeeder;
-import com.uav.lowaltitude.integration.replay.FusionReplayDatasetGenerator;
-import com.uav.lowaltitude.integration.replay.FusionReplayRunner;
+import com.uav.lowaltitude.testsupport.Wgs84FusionTestFixture;
 import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository;
 import com.uav.lowaltitude.modules.fusion.application.FusionPipeline;
 import com.uav.lowaltitude.modules.fusion.application.FusionProperties;
@@ -66,6 +64,7 @@ import com.uav.lowaltitude.testsupport.SourceTypeCatalogFixture;
  * 它们落地后按文末 TODO 补齐并重跑。现在就写死这些断言只会让本类在迁移落地前整体失败，掩盖真正的回归。
  */
 @SpringBootTest
+@org.springframework.context.annotation.Import(Wgs84FusionTestFixture.Sources.class)
 @AutoConfigureMockMvc
 @ActiveProfiles(value = {"test", "postgres-test"}, inheritProfiles = false)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
@@ -86,7 +85,7 @@ class Stage85PostgresTest {
     /** 契约 §2 的来源类型码表与 070 新增三行：口径统一在 {@link SourceTypeCatalogFixture}（阶段 10.3）。 */
     private static final List<String> SOURCE_TYPES = SourceTypeCatalogFixture.PROTOCOL_TYPES;
     private static final List<String> STAGE85_SOURCE_TYPES = SourceTypeCatalogFixture.STAGE85_TYPES;
-    private static final String LINGYUN_SPEC = "设备资料/凌云协议/协议A-设备数据及感知数据接入协议v8.6.pdf";
+    private static final String LINGYUN_SPEC = "设备资料/协议/协议A-设备数据及感知数据接入协议v8.6.pdf";
 
     private static boolean schemaCreated;
 
@@ -98,9 +97,8 @@ class Stage85PostgresTest {
     @Autowired AppClock clock;
     @Autowired FusedTrackRepository fusedTracks;
     @Autowired RuleEngineRepository ruleEngine;
-    @Autowired FusionReplayRunner replayRunner;
+    @Autowired Wgs84FusionTestFixture wgs84Fixture;
     @Autowired FusionPipeline pipeline;
-    @Autowired FusionReplayDatasetGenerator datasetGenerator;
     @Autowired FusionProperties fusionProperties;
     @Autowired ObservationReadRepository observationReads;
     @Autowired TargetReadRepository targetReads;
@@ -468,11 +466,11 @@ class Stage85PostgresTest {
     @Order(2)
     void lingyunDatasetV2FlowsThroughTheWholePipelineOnPostgis() throws Exception {
         seedDirectAccessSources();
-        replayRunner.loadV2();
+        wgs84Fixture.loadV2();
         drainWithDiagnostics();
 
         // 四个直连前缀的信封都进了库，且没有失败帧——有 FAILED 就说明映射炸了，后面的断言都没意义。
-        String v2Sources = inClause(FusionReplayDatasetGenerator.INBOX_SOURCES.values());
+        String v2Sources = inClause(wgs84Fixture.datasetV2().records().stream().map(record -> record.inboxSource()).distinct().toList());
         assertThat(jdbc.queryForObject("select count(*) from inbox_message where source in " + v2Sources, Long.class))
                 .as("v2 数据集应已落库").isPositive();
         assertThat(jdbc.queryForList("select source,source_msg_id,last_error from inbox_message where status='FAILED'"))
@@ -494,7 +492,7 @@ class Stage85PostgresTest {
 
         // 重跑数据集不重复入库：哈希的用处正在于此（同键同哈希幂等）。
         long before = jdbc.queryForObject("select count(*) from inbox_message", Long.class);
-        replayRunner.loadV2();
+        wgs84Fixture.loadV2();
         assertThat(jdbc.queryForObject("select count(*) from inbox_message", Long.class)).as("重跑不得写入第二份").isEqualTo(before);
 
         // 一个物理目标只产出一个 unified 目标：关联做不好就会一物多目标，这是融合的第一条底线。
@@ -524,11 +522,11 @@ class Stage85PostgresTest {
         // 光电只在 BeginTracking 期间有观测：EndTracking / HeartBeat 不产观测（但帧仍 DONE）。
         long eoObservations = jdbc.queryForObject("select count(*) from source_observation where external_target_id='T-EO-TRACK'", Long.class);
         long eoFrames = jdbc.queryForObject("select count(*) from inbox_message where source=?", Long.class,
-                FusionReplayDatasetGenerator.INBOX_SOURCES.get(FusionReplayDatasetGenerator.EO));
+                Wgs84FusionTestFixture.INBOX_SOURCES.get(Wgs84FusionTestFixture.EO));
         assertThat(eoObservations).as("跟踪期间应有光电观测").isPositive();
         assertThat(eoObservations).as("光电只在跟踪期间有观测，心跳与结束事件不产观测").isLessThan(eoFrames);
         assertThat(jdbc.queryForObject("select count(*) from inbox_message where source=? and status<>'DONE'", Long.class,
-                FusionReplayDatasetGenerator.INBOX_SOURCES.get(FusionReplayDatasetGenerator.EO)))
+                Wgs84FusionTestFixture.INBOX_SOURCES.get(Wgs84FusionTestFixture.EO)))
                 .as("不产观测不等于失败：这些帧仍要正常收尾").isZero();
 
         // E1 先验清单 ③：quality 的结构化字段在 jsonb 上读回是对象/数值，不是被转义的字符串。
@@ -572,28 +570,13 @@ class Stage85PostgresTest {
     }
 
     private void seedDirectAccessSources() {
-        jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version)"
-                + " select ?,?,?,true,0,0,0 where not exists (select 1 from app_org where org_id=?)",
-                LocalStage8FusionReplaySeeder.ORG, "DEMO-PLATFORM", "演示平台机构", LocalStage8FusionReplaySeeder.ORG);
-        jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version)"
-                + " select ?,?,?,true,0,0,0 where not exists (select 1 from app_district where district_id=?)",
-                LocalStage8FusionReplaySeeder.DISTRICT, "DEMO-DONGYING", "东营演示区域", LocalStage8FusionReplaySeeder.DISTRICT);
-        for (LocalStage8FusionReplaySeeder.SourceSeed seed : LocalStage8FusionReplaySeeder.SOURCES) {
-            jdbc.update("insert into integration_source (source_id,source_code,name,enabled,source_mode,source_type,created_at,updated_at,version)"
-                    + " select ?,?,?,true,'replay',?,?,?,0 where not exists (select 1 from integration_source where source_id=?)",
-                    seed.sourceId(), seed.sourceCode(), seed.name(), seed.sourceType(), T0, T0, seed.sourceId());
-            jdbc.update("insert into device (device_id,source_id,external_device_id,device_no,name,device_type_code,enabled,source_mode,"
-                    + "owner_org_id,district_id,created_at,updated_at,version)"
-                    + " select ?,?,?,?,?,?,true,'replay',?,?,?,?,0 where not exists (select 1 from device where device_id=?)",
-                    seed.deviceId(), seed.sourceId(), "external-" + seed.sourceCode(), seed.deviceNo(), seed.name(), seed.sourceType(),
-                    LocalStage8FusionReplaySeeder.ORG, LocalStage8FusionReplaySeeder.DISTRICT, T0, T0, seed.deviceId());
-        }
+        wgs84Fixture.registerSources();
     }
 
     /** 按 `FusionReplayRunner.payloadJson` 的同一规范化（键字典序、无空格）重算 v2 每条记录的 SHA-256。 */
     private Map<String, String> expectedV2Hashes() throws Exception {
         Map<String, String> expected = new java.util.LinkedHashMap<>();
-        for (var record : datasetGenerator.generateV2().records()) {
+        for (var record : wgs84Fixture.datasetV2().records()) {
             String payload = json.writer().with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
                     .writeValueAsString(new java.util.TreeMap<>(record.payload()));
             expected.put(record.inboxSource() + "#" + record.recordNo(), sha256(payload));
@@ -613,7 +596,7 @@ class Stage85PostgresTest {
     @Order(3)
     void allThreeReadRepositoriesTakeThePostgisBranchAndReturnCoordinates() {
         seedDirectAccessSources();
-        replayRunner.loadV2();
+        wgs84Fixture.loadV2();
         drainWithDiagnostics();
 
         // 找一条既有观测位置又有飞手位置的目标：tdoa-pilot 场景就是为此造的。

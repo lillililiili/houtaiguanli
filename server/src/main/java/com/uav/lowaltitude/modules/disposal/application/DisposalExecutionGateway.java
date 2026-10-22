@@ -87,7 +87,7 @@ public class DisposalExecutionGateway {
         }
         // ② 设备没登记凌云 MQTT——补救方是运维。
         if (!bound(deviceId)) {
-            return new Rejected(EVENT_NOT_BOUND, "DEVICE_NOT_BOUND", "该设备未登记凌云 MQTT，不能按协议 B 下发处置指令");
+            return new Rejected(EVENT_NOT_BOUND, "DEVICE_NOT_BOUND", "该设备未登记 MQTT，不能按协议 B 下发处置指令");
         }
         // ③ 设备未启用或不在线——补救方是现场。
         Map<String, Object> device = devices.find(deviceId);
@@ -110,7 +110,7 @@ public class DisposalExecutionGateway {
                     "指令码 " + command.operationCmd() + " 对应的设备类型缩写尚未确认，协议面未开通，不能下发");
         }
         if (!bound(deviceId)) {
-            return new Rejected(EVENT_NOT_BOUND, "DEVICE_NOT_BOUND", "该设备未登记凌云 MQTT，不能按协议 B 下发处置指令");
+            return new Rejected(EVENT_NOT_BOUND, "DEVICE_NOT_BOUND", "该设备未登记 MQTT，不能按协议 B 下发处置指令");
         }
         Map<String, Object> device = devices.find(deviceId);
         if (device != null && !operable(device)) {
@@ -180,9 +180,11 @@ public class DisposalExecutionGateway {
             return noCapability(DisposalRules.COUNTERMEASURE_4CH);
         if (!operable(device))
             return new Rejected(EVENT_OFFLINE, "DEVICE_OFFLINE", "设备未启用或不在线，无法下发全关");
-        String commandId = countermeasure.enqueueUnchecked(user, deviceId, idempotencyKey, authorizationId,
-                Countermeasure4ChControlService.ACTION_MASK, null, Countermeasure4ChCodec.MASK_ALL_OFF,
-                reason == null || reason.isBlank() ? "处置停止：四通道全关" : reason);
+        String stopReason=reason == null || reason.isBlank() ? "处置停止：四通道全关" : reason;
+        String commandId = user == null
+                ? countermeasure.enqueuePredictionStop(deviceId,idempotencyKey,authorizationId,stopReason)
+                : countermeasure.enqueueUnchecked(user, deviceId, idempotencyKey, authorizationId,
+                    Countermeasure4ChControlService.ACTION_MASK, null, Countermeasure4ChCodec.MASK_ALL_OFF,stopReason);
         return new Accepted(commandId);
     }
 

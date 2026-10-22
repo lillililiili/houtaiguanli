@@ -104,7 +104,7 @@ public class ReportingService {
         boolean legalityAllowed = targetsAllowed && allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.ASSESSMENT_READ);
         boolean risksAllowed = targetsAllowed && allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.RISK_READ);
         boolean casesAllowed = allowed(com.uav.lowaltitude.modules.identity.domain.PermissionCode.PUNISHMENT_READ);
-        boolean devicesAllowed = access.permissionCodes(user.roleCode()).contains("devices.read");
+        boolean devicesAllowed = access.permissionCodesForUser(user.userId()).contains("devices.read");
         var targets = targetsAllowed ? repository.targets(range.from(),range.to(),scope) : List.<ReportingRepository.TargetFact>of();
         var cases = casesAllowed ? repository.cases(range.from(),range.to(),scope) : List.<ReportingRepository.CaseFact>of();
         TargetStates states = states(targets, legalityAllowed);

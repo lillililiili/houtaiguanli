@@ -6,7 +6,7 @@ import { systemApi } from '@/api/system.js'
 
 vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => true }) }))
 vi.mock('@/api/system.js', () => ({ systemApi: {
-  roles: vi.fn(), role: vi.fn(), permissions: vi.fn(), permissionActions: vi.fn(), updateRolePermissions: vi.fn()
+  roles: vi.fn(), role: vi.fn(), organizations: vi.fn(), permissions: vi.fn(), permissionActions: vi.fn(), updateRolePermissions: vi.fn()
 } }))
 vi.mock('element-plus', async importOriginal => ({
   ...await importOriginal(),
@@ -40,6 +40,7 @@ function directRow() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  systemApi.organizations.mockResolvedValue([])
   systemApi.permissions.mockResolvedValue([])
   systemApi.roles.mockResolvedValue([customRole])
   systemApi.role.mockResolvedValue(customRole)

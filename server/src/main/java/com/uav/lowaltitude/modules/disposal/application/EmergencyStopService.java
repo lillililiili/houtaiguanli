@@ -31,6 +31,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class EmergencyStopService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
     private static final Set<String> ACTIVE=Set.of("REQUESTED","APPROVED","EXECUTING");
     private static final String PENDING="操作员急停本次处置，原因待补充";
     private static final String SHARED_DEVICE_NOTE="同一台设备上另一起处置按了急停，已向设备下发全关（整台设备的输出都会关掉）。"
@@ -66,6 +69,68 @@ public class EmergencyStopService {
     public Overview overview(String eventId) {
         scope(eventId,false);
         return view(eventId);
+    }
+    /**
+     * Called only by the prediction lifecycle worker. Invalidates every old authorization before
+     * requesting a physical stop, so a later reliable observation cannot resurrect queued work.
+     */
+    @Transactional
+    public void stopForPrediction(String eventId,String reason,long revision) {
+        if(predictions==null||!predictions.isPrediction(eventId))
+            throw new IllegalArgumentException("A prediction episode is required for a system safety stop");
+        predictions.lockEpisode(eventId);
+        stops.lockEvent(eventId);
+        List<AuthorizationRow> rows=new ArrayList<>();
+        for(String id:stops.authorizationIds(eventId)) {
+            AuthorizationRow row=authorizations.lockForSystem(id);
+            if(row!=null)rows.add(row);
+        }
+        List<AuthorizationRow> current=current(rows);
+        if(current.isEmpty())return;
+        for(String device:current.stream().map(AuthorizationRow::deviceId).filter(Objects::nonNull).distinct().sorted().toList())
+            stops.lockDevice(device);
+        String note="预测风险变化，系统停止本次处置："+Objects.toString(reason,"依据待确认");
+        if(note.length()>500)note=note.substring(0,500);
+        String id=UUID.nameUUIDFromBytes(("prediction-stop:"+eventId+":"+revision).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        long now=clock.nowMillis();
+        if(stops.stop(eventId,id)!=null)return;
+        stops.insertPredictionStop(id,eventId,now,note);
+        Set<String> taskDevices=new HashSet<>();Map<String,String> allOff=new TreeMap<>();
+        current=new ArrayList<>(current);
+        current.sort(Comparator.comparing((AuthorizationRow r)->!physical(r)));
+        for(AuthorizationRow row:current) {
+            stops.cover(id,row.authorizationId());
+            if(ACTIVE.contains(row.status())) {
+                if(authorizations.transition(row.authorizationId(),row.version(),"STOPPED",clock.now().atOffset(ZoneOffset.UTC),
+                        null,"STOPPED_BY_PREDICTION",note)!=1)throw conflict("VERSION_CONFLICT","处置状态已变化");
+                authorizations.insertEvent(UUID.randomUUID().toString(),row.authorizationId(),"STOP",null,note,
+                        "{\"status\":\"STOPPED\",\"origin\":\"SYSTEM_PREDICTION_STOP\"}",clock.now().atOffset(ZoneOffset.UTC));
+            }
+            commands.cancelAuthorizationStarts(row.authorizationId(),now);
+            String device=row.deviceId()==null?"manual-"+row.authorizationId():row.deviceId();
+            if(!taskDevices.add(device))continue;
+            Map<String,Object> hardware=row.deviceId()==null?null:devices.find(row.deviceId());
+            Dispatch dispatched=physical(row)?dispatchSystem(row,id,hardware,note)
+                    :new Dispatch(null,"NOT_REQUIRED","尚未执行，已永久撤销原授权并阻止启动");
+            stops.task(id,device,row.authorizationId(),hardware==null?MANUAL_TASK_NAME:text(hardware,"name"),row.channel(),
+                    hardware==null?row.sourceMode():text(hardware,"source_mode"),hardware==null||bool(hardware,"simulated"),
+                    dispatched.commandId(),dispatched.status(),dispatched.detail());
+            if("QUEUED".equals(dispatched.status()))allOff.put(row.deviceId(),dispatched.commandId());
+        }
+        stops.event(UUID.randomUUID().toString(),id,"STOP",null,now,note);
+        audit.record(null,"PREDICTION_SAFETY","SYSTEM","disposal","prediction_safety_stop","disposal_emergency_stop",id,
+                "event_id="+eventId+"; revision="+revision+"; "+note,"SUCCESS","","");
+        noteSharedDevice(eventId,allOff,null);
+    }
+
+    private Dispatch dispatchSystem(AuthorizationRow row,String stopId,Map<String,Object> hardware,String note) {
+        if(hardware==null||!"COUNTERMEASURE_4CH".equals(row.channel())||!"live".equals(text(hardware,"source_mode"))
+                ||!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(hardware,"protocol_code")))
+            return new Dispatch(null,"UNSUPPORTED",UNSUPPORTED_DETAIL);
+        var result=gateway.stop4ch(null,row.deviceId(),"pstop-"+stopId+"-"+row.authorizationId(),row.authorizationId(),note);
+        if(result instanceof DisposalExecutionGateway.Accepted accepted)return new Dispatch(accepted.commandId(),"QUEUED","已排队全关，等待设备真实停止回执");
+        var rejected=(DisposalExecutionGateway.Rejected)result;
+        return new Dispatch(null,"DEVICE_OFFLINE".equals(rejected.eventKind())?"OFFLINE":"UNSUPPORTED",rejected.detail());
     }
     @Transactional
     public Overview stop(String eventId,String key,String raw) {
@@ -254,6 +319,7 @@ public class EmergencyStopService {
     private void scope(String eventId,boolean write) {
         AccessDecision decision=access.require(write?PermissionCode.DISPOSAL_STOP:PermissionCode.DISPOSAL_READ);
         if(write)stops.lockActor(AuthContext.require().userId());
+        if(write&&predictions!=null)predictions.lockEpisode(eventId);
         if((write?events.lock(eventId,decision):events.find(eventId,decision))==null) throw missing();
     }
     private List<AuthorizationRow> rows(String eventId,boolean lock) {

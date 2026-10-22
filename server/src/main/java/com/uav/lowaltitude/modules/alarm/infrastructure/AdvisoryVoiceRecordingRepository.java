@@ -22,8 +22,10 @@ public class AdvisoryVoiceRecordingRepository {
         return rows.isEmpty()?null:rows.get(0);
     }
     /** 后台当前选用的录音；没有选用时返回 null。 */
-    public Row active() {
-        var rows=jdbc.query("SELECT r.*,FALSE AS used FROM advisory_voice_recording_setting s JOIN advisory_voice_recording r ON r.recording_id=s.active_recording_id WHERE s.setting_id='global'",this::row);
+    public Row active() { return active("GENERAL"); }
+    public Row active(String purpose) {
+        var rows=jdbc.query("SELECT r.*,FALSE AS used FROM advisory_voice_recording_setting s JOIN advisory_voice_recording r ON r.recording_id=s."
+                +activeColumn(purpose)+" WHERE s.setting_id='global' AND r.purpose=?",this::row,purpose);
         return rows.isEmpty()?null:rows.get(0);
     }
     public String findNameBySha256(String sha256) {
@@ -31,27 +33,48 @@ public class AdvisoryVoiceRecordingRepository {
         return rows.isEmpty()?null:rows.get(0);
     }
     public Setting setting(boolean lock) {
-        return jdbc.queryForObject("SELECT active_recording_id,updated_at,version FROM advisory_voice_recording_setting WHERE setting_id='global'"+(lock?" FOR UPDATE":""),
-                (r,n)->new Setting(r.getString("active_recording_id"),number(r,"updated_at"),r.getInt("version")));
+        return jdbc.queryForObject("SELECT active_recording_id,predicted_active_recording_id,updated_at,version FROM advisory_voice_recording_setting WHERE setting_id='global'"+(lock?" FOR UPDATE":""),
+                (r,n)->new Setting(r.getString("active_recording_id"),number(r,"updated_at"),r.getInt("version"),r.getString("predicted_active_recording_id")));
     }
     public void insert(Row row) {
-        jdbc.update("INSERT INTO advisory_voice_recording(recording_id,name,transcript,original_name,content_type,object_key,size_bytes,sha256,duration_millis,sample_rate,channels,uploaded_by,uploaded_by_name,uploaded_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        jdbc.update("INSERT INTO advisory_voice_recording(recording_id,name,transcript,original_name,content_type,object_key,size_bytes,sha256,duration_millis,sample_rate,channels,uploaded_by,uploaded_by_name,uploaded_at,purpose) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row.recordingId(),row.name(),row.transcript(),row.originalName(),row.contentType(),row.objectKey(),row.sizeBytes(),row.sha256(),
-                row.durationMillis(),row.sampleRate(),row.channels(),row.uploadedBy(),row.uploadedByName(),row.uploadedAt());
+                row.durationMillis(),row.sampleRate(),row.channels(),row.uploadedBy(),row.uploadedByName(),row.uploadedAt(),row.purpose());
     }
     /** 条件更新：版本不符说明已被他人修改，返回 0。recordingId 为 null 表示不再选用上传录音。 */
     public int updateActive(String recordingId,String userId,long now,int expectedVersion) {
-        return jdbc.update("UPDATE advisory_voice_recording_setting SET active_recording_id=?,updated_by=?,updated_at=?,version=version+1 WHERE setting_id='global' AND version=?",
+        return updateActive("GENERAL",recordingId,userId,now,expectedVersion);
+    }
+    public int updateActive(String purpose,String recordingId,String userId,long now,int expectedVersion) {
+        return jdbc.update("UPDATE advisory_voice_recording_setting SET "+activeColumn(purpose)+"=?,updated_by=?,updated_at=?,version=version+1 WHERE setting_id='global' AND version=?",
                 recordingId,userId,now,expectedVersion);
     }
     public int delete(String id) {return jdbc.update("DELETE FROM advisory_voice_recording WHERE recording_id=?",id);}
     private Row row(ResultSet r,int n)throws SQLException {
         return new Row(r.getString("recording_id"),r.getString("name"),r.getString("transcript"),r.getString("original_name"),r.getString("content_type"),
                 r.getString("object_key"),r.getLong("size_bytes"),r.getString("sha256"),r.getLong("duration_millis"),r.getInt("sample_rate"),r.getInt("channels"),
-                r.getString("uploaded_by"),r.getString("uploaded_by_name"),r.getLong("uploaded_at"),r.getBoolean("used"));
+                r.getString("uploaded_by"),r.getString("uploaded_by_name"),r.getLong("uploaded_at"),r.getBoolean("used"),r.getString("purpose"));
+    }
+    private static String activeColumn(String purpose) {
+        return switch(purpose) {
+            case "GENERAL" -> "active_recording_id";
+            case "PREDICTED_AIRSPACE_ENTRY" -> "predicted_active_recording_id";
+            default -> throw new IllegalArgumentException("Unknown recording purpose");
+        };
     }
     private static Long number(ResultSet r,String c)throws SQLException {long v=r.getLong(c);return r.wasNull()?null:v;}
     public record Row(String recordingId,String name,String transcript,String originalName,String contentType,String objectKey,long sizeBytes,String sha256,
-            long durationMillis,int sampleRate,int channels,String uploadedBy,String uploadedByName,long uploadedAt,boolean used) { }
-    public record Setting(String activeRecordingId,Long updatedAt,int version) { }
+            long durationMillis,int sampleRate,int channels,String uploadedBy,String uploadedByName,long uploadedAt,boolean used,String purpose) {
+        public Row(String recordingId,String name,String transcript,String originalName,String contentType,String objectKey,long sizeBytes,String sha256,
+                long durationMillis,int sampleRate,int channels,String uploadedBy,String uploadedByName,long uploadedAt,boolean used) {
+            this(recordingId,name,transcript,originalName,contentType,objectKey,sizeBytes,sha256,durationMillis,sampleRate,channels,uploadedBy,uploadedByName,uploadedAt,used,"GENERAL");
+        }
+    }
+    public record Setting(String activeRecordingId,Long updatedAt,int version,String predictedActiveRecordingId) {
+        public Setting(String activeRecordingId,Long updatedAt,int version) {this(activeRecordingId,updatedAt,version,null);}
+        public String activeFor(String purpose) {
+            activeColumn(purpose);
+            return "GENERAL".equals(purpose)?activeRecordingId:predictedActiveRecordingId;
+        }
+    }
 }

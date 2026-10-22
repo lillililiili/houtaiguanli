@@ -7,6 +7,7 @@ import ErrorAlert from '@/components/ErrorAlert.vue';
 import MetricCards from '@/components/MetricCards.vue';
 import { mapApi } from '@/api/maps.js';
 import { useAuthStore } from '@/stores/auth.js';
+import { confirmDeletion } from '@/utils/deleteConfirmation.js';
 
 const auth = useAuthStore();
 const catalog = ref({ items: [], runtime: {} });
@@ -128,11 +129,10 @@ async function rollback() {
 }
 async function remove(row) {
   try {
-    const { value } = await ElMessageBox.prompt(`将永久删除“${row.package_name}”的地图文件并从可用版本中移除；审计记录仍会保留。当前启用版与回滚保留版不可删除。`, '删除地图包', {
-      type: 'warning', inputType: 'textarea', inputPlaceholder: '请输入删除原因',
-      inputValidator: value => Boolean(value?.trim()) || '删除原因为必填项', confirmButtonText: '确认永久删除'
+    const record = await confirmDeletion(`将永久删除“${row.package_name}”的地图文件并从可用版本中移除；审计记录仍会保留。当前启用版与回滚保留版不可删除。`, '删除地图包', {
+      confirmButtonText: '确认永久删除'
     });
-    catalog.value = await mapApi.remove(row.package_id, row.version, value.trim());
+    catalog.value = await mapApi.remove(row.package_id, row.version, record);
     ElMessage.success('地图包已删除。');
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(e.message || '地图包删除失败。'); }
 }

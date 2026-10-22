@@ -10,6 +10,10 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.uav.lowaltitude.platform.geo.Wgs84Coordinates;
+import com.uav.lowaltitude.platform.geo.Wgs84GeoJson;
 
 /**
  * GeoJSON FeatureCollection → 每要素一条解析结果（MultiPolygon EWKT + 属性）。
@@ -23,11 +27,13 @@ public class GeoJsonParser {
     public static final int MAX_FEATURES = 200;
     public static final int MAX_BYTES = 2 * 1024 * 1024;
     private static final int MIN_RING_POINTS = 4;
-    private static final double LON_MIN = -180, LON_MAX = 180, LAT_MIN = -90, LAT_MAX = 90;
 
     private final ObjectMapper json;
 
-    public GeoJsonParser(ObjectMapper json) { this.json = json; }
+    public GeoJsonParser(ObjectMapper json) {
+        this.json = json.copy().enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    }
 
     public record Issue(String field, String reasonCode) { }
 
@@ -50,7 +56,7 @@ public class GeoJsonParser {
         catch (com.fasterxml.jackson.core.JsonProcessingException ex) { return ParseResult.fatal("INVALID_GEOJSON"); }
         if (root == null || !root.isObject() || !"FeatureCollection".equals(text(root, "type"))) return ParseResult.fatal("INVALID_GEOJSON");
         // 声明了别的坐标系就不能按 WGS-84 读：数字看起来合法，落到地图上却是另一个地方。
-        if (!wgs84(root)) return ParseResult.fatal("CRS_NOT_SUPPORTED");
+        if (!Wgs84GeoJson.hasSupportedDeclarations(root)) return ParseResult.fatal("CRS_NOT_SUPPORTED");
         JsonNode features = root.get("features");
         if (features == null || !features.isArray()) return ParseResult.fatal("INVALID_GEOJSON");
         if (features.size() > MAX_FEATURES) return ParseResult.fatal("IMPORT_TOO_LARGE");
@@ -63,8 +69,15 @@ public class GeoJsonParser {
 
     private Feature feature(int seq, JsonNode node) {
         List<Issue> issues = new ArrayList<>();
+        if (node == null || !node.isObject()) {
+            return new Feature(seq, null, null, null, null, null, null, null, null, null, null,
+                    List.of(new Issue("geometry", "GEOMETRY_INVALID")));
+        }
         JsonNode properties = node.get("properties");
         JsonNode geometry = node.get("geometry");
+        if (!Wgs84GeoJson.hasSupportedDeclarations(node)
+                || !Wgs84GeoJson.hasSupportedDeclarations(properties))
+            issues.add(new Issue("coordinate_system", "CRS_NOT_SUPPORTED"));
         String ewkt = null, geometryJson = null;
         if (geometry == null || geometry.isNull() || !geometry.isObject()) {
             issues.add(new Issue("geometry", "GEOMETRY_MISSING"));
@@ -107,6 +120,10 @@ public class GeoJsonParser {
     }
 
     private String geometry(JsonNode geometry, List<Issue> issues) {
+        if (!Wgs84GeoJson.hasSupportedDeclarations(geometry)) {
+            issues.add(new Issue("geometry", "CRS_NOT_SUPPORTED"));
+            return null;
+        }
         String type = text(geometry, "type");
         // 先判类型再看坐标：GeometryCollection 之类根本没有 coordinates，先查坐标会把它报成"几何无效"，
         // 而操作者需要知道的是"这种几何类型不支持"。类型校验也不能交给列类型——
@@ -153,7 +170,7 @@ public class GeoJsonParser {
                 return null;
             }
             double longitude = point.get(0).doubleValue(), latitude = point.get(1).doubleValue();
-            if (longitude < LON_MIN || longitude > LON_MAX || latitude < LAT_MIN || latitude > LAT_MAX) {
+            if (!Wgs84Coordinates.isValidPoint(longitude, latitude)) {
                 issues.add(new Issue("geometry", "COORDINATE_OUT_OF_RANGE"));
                 return null;
             }
@@ -164,14 +181,6 @@ public class GeoJsonParser {
         // 未闭合的环不是多边形：数据库的 ST_IsValid 也会拒绝，提前拦下才能在预览里说清原因。
         if (!firstLon.equals(lastLon) || !firstLat.equals(lastLat)) { issues.add(new Issue("geometry", "RING_NOT_CLOSED")); return null; }
         return "(" + String.join(",", points) + ")";
-    }
-
-    /** 未声明 crs 视为 WGS-84（GeoJSON 规范默认）；显式声明其他坐标系一律拒绝。 */
-    private static boolean wgs84(JsonNode root) {
-        JsonNode crs = root.get("crs");
-        if (crs == null || crs.isNull()) return true;
-        String name = crs.path("properties").path("name").asText("");
-        return name.isEmpty() || name.contains("CRS84") || name.endsWith("4326");
     }
 
     private static String number(double value) {

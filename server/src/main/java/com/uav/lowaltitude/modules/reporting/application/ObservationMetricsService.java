@@ -30,8 +30,9 @@ public class ObservationMetricsService {
     public Result business(LocalDate from, LocalDate to, boolean simulated) { return read(from,to,null,simulated ? List.of("mock","replay") : List.of("live")); }
     private Result read(LocalDate from, LocalDate to, String org, List<String> modes) {
         try {
-            var decision = access.require(PermissionCode.TARGET_READ);
-            return repository.read(from,to,clock.now().toEpochMilli(),new Scope(decision.scopeMode()==ScopeMode.ALL,decision.userId(),org),modes);
+            var decision = com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.TARGET_READ);
+            String reportOrg=com.uav.lowaltitude.platform.report.ReportAccessContext.orgId();
+            return repository.read(from,to,clock.now().toEpochMilli(),new Scope(decision.scopeMode()==ScopeMode.ALL,decision.userId(),reportOrg==null?org:reportOrg),modes);
         } catch (ApiException ex) {
             if (ex.getStatus()!=HttpStatus.FORBIDDEN) throw ex;
             return Result.unavailable("无目标读取权限");

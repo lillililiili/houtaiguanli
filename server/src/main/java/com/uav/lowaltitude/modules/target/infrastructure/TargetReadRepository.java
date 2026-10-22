@@ -42,7 +42,7 @@ public class TargetReadRepository {
             + "CAST(NULL AS VARCHAR) AS state,t.object_type_code AS kind,CAST(NULL AS VARCHAR) AS severity,"
             + "dist_ref.name AS region,t.source_mode,CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
             + " " + TARGET_FROM + w.sql;
-        return ReportDatasetReader.window(sql, w.parameters, range, time);
+        return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.parameters, range, time), "t.owner_org_id");
     }
 
     private static final String TARGET_FROM = """

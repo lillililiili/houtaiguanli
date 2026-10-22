@@ -5,6 +5,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
@@ -58,7 +60,12 @@ public class AdvisoryVoiceRecordingService {
     public CatalogDto catalog() {requireRead();return catalogInternal();}
     /** 只收完整可读的 WAV：电话通道（模拟外呼与本机模拟）都按 WAV 校验，其他格式会让电话这一步无法执行。 */
     public RecordingDto upload(MultipartFile file,String name,String transcript,String key,String ip,String userAgent) {
+        return upload(file,name,transcript,null,key,ip,userAgent);
+    }
+    public RecordingDto upload(MultipartFile file,String name,String transcript,String purpose,String key,String ip,String userAgent) {
         AuthUser actor=requireManage();
+        String use=purpose==null?AdvisoryVoiceRecording.GENERAL:purpose;
+        if(!List.of(AdvisoryVoiceRecording.GENERAL,AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY).contains(use))throw invalid("录音用途无效");
         String title=text(name,"录音名称",120),words=text(transcript,"录音里说的话",1000);
         if(file==null||file.isEmpty())throw invalid("请选择要上传的录音文件");
         if(file.getSize()>AdvisoryVoiceRecording.MAX_BYTES)throw tooLarge();
@@ -74,15 +81,16 @@ public class AdvisoryVoiceRecordingService {
         AtomicBoolean stored=new AtomicBoolean();
         try {
             return tx.execute(status->{
-                idempotency.claim(key,"advisory-voice-recording-upload:"+sha+":"+title+":"+words);
+                idempotency.claim(key,"advisory-voice-recording-upload:"+sha+":"+title+":"+words
+                        +(AdvisoryVoiceRecording.GENERAL.equals(use)?"":":"+use));
                 String existing=repository.findNameBySha256(sha);
                 if(existing!=null)throw duplicate(existing);
                 var object=storage.putNew(objectKey,new ByteArrayInputStream(data));stored.set(true);
                 if(object.sizeBytes()!=data.length||!sha.equals(object.sha256()))throw new IllegalStateException("Stored recording differs from upload");
-                Row row=new Row(id,title,words,original,"audio/wav",objectKey,data.length,sha,wave.durationMillis(),wave.sampleRate(),wave.channels(),actor.userId(),actor.name(),now,false);
+                Row row=new Row(id,title,words,original,"audio/wav",objectKey,data.length,sha,wave.durationMillis(),wave.sampleRate(),wave.channels(),actor.userId(),actor.name(),now,false,use);
                 try {repository.insert(row);}
                 catch(DuplicateKeyException concurrent) {throw duplicate(title);}
-                audit(actor,"advisory_voice_recording_uploaded",id,"name="+title+"; sha256="+sha+"; size_bytes="+data.length+"; duration_ms="+wave.durationMillis(),ip,userAgent);
+                audit(actor,"advisory_voice_recording_uploaded",id,"name="+title+"; purpose="+use+"; sha256="+sha+"; size_bytes="+data.length+"; duration_ms="+wave.durationMillis(),ip,userAgent);
                 return dto(row,null);
             });
         } catch(RuntimeException failed) {
@@ -98,13 +106,14 @@ public class AdvisoryVoiceRecordingService {
             Setting setting=repository.setting(true);
             if(setting.version()!=expectedVersion)throw versionConflict();
             Row row=find(recordingId);
+            String current=setting.activeFor(row.purpose());
             if(active) {
-                if(recordingId.equals(setting.activeRecordingId()))throw conflict("VOICE_RECORDING_ALREADY_ACTIVE","这段录音已经在使用中");
+                if(recordingId.equals(current))throw conflict("VOICE_RECORDING_ALREADY_ACTIVE","这段录音已经在使用中");
                 if(recordings.verified(row)==null)throw conflict("VOICE_RECORDING_FILE_UNAVAILABLE","这段录音的文件缺失或已损坏，不能选用；请重新上传");
-            } else if(!recordingId.equals(setting.activeRecordingId()))throw conflict("VOICE_RECORDING_NOT_ACTIVE","这段录音当前没有在使用");
-            if(repository.updateActive(active?recordingId:null,actor.userId(),clock.nowMillis(),expectedVersion)!=1)throw versionConflict();
-            String previous=active&&setting.activeRecordingId()!=null?"; previous_recording_id="+setting.activeRecordingId():"";
-            audit(actor,active?"advisory_voice_recording_activated":"advisory_voice_recording_deactivated",recordingId,"name="+row.name()+"; sha256="+row.sha256()+previous,ip,userAgent);
+            } else if(!recordingId.equals(current))throw conflict("VOICE_RECORDING_NOT_ACTIVE","这段录音当前没有在使用");
+            if(repository.updateActive(row.purpose(),active?recordingId:null,actor.userId(),clock.nowMillis(),expectedVersion)!=1)throw versionConflict();
+            String previous=active&&current!=null?"; previous_recording_id="+current:"";
+            audit(actor,active?"advisory_voice_recording_activated":"advisory_voice_recording_deactivated",recordingId,"name="+row.name()+"; purpose="+row.purpose()+"; sha256="+row.sha256()+previous,ip,userAgent);
         });
         return catalogInternal();
     }
@@ -115,7 +124,7 @@ public class AdvisoryVoiceRecordingService {
             idempotency.claim(key,"advisory-voice-recording-delete:"+recordingId);
             Setting setting=repository.setting(true);
             Row row=find(recordingId);
-            if(recordingId.equals(setting.activeRecordingId()))throw conflict("VOICE_RECORDING_IN_USE","正在使用的录音不能删除；请先改选其他录音或停止使用");
+            if(recordingId.equals(setting.activeFor(row.purpose())))throw conflict("VOICE_RECORDING_IN_USE","正在使用的录音不能删除；请先改选其他录音或停止使用");
             if(row.used())throw conflict("VOICE_RECORDING_USED","这段录音已经用于电话通知，要留着备查，不能删除");
             if(repository.delete(recordingId)!=1)throw notFound();
             audit(actor,"advisory_voice_recording_deleted",recordingId,"name="+row.name()+"; sha256="+row.sha256(),ip,userAgent);
@@ -133,10 +142,17 @@ public class AdvisoryVoiceRecordingService {
     }
     private CatalogDto catalogInternal() {
         Setting setting=repository.setting(false);
-        List<RecordingDto> items=repository.list().stream().map(row->dto(row,setting.activeRecordingId())).toList();
+        List<RecordingDto> items=repository.list().stream().map(row->dto(row,setting.activeFor(row.purpose()))).toList();
         var startup=recordings.startup();
-        return new CatalogDto(items,setting.activeRecordingId(),setting.version(),current(recordings.resolve()),startup==null?null:startup.name(),
-                policy.enabled(),canManage(),AdvisoryVoiceRecording.MAX_BYTES,FORMATS);
+        Map<String,String> activeIds=new LinkedHashMap<>();
+        if(setting.activeRecordingId()!=null)activeIds.put(AdvisoryVoiceRecording.GENERAL,setting.activeRecordingId());
+        if(setting.predictedActiveRecordingId()!=null)activeIds.put(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY,setting.predictedActiveRecordingId());
+        CurrentDto general=current(recordings.resolve()),predicted=current(recordings.resolve(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY));
+        if("NONE".equals(predicted.source()))predicted=new CurrentDto("NONE",false,null,null,
+                "尚未选用预测进入禁飞区专用录音，预测预警电话暂不可用。请上传并选用说明“预计进入禁飞区”的录音；不会改播普通告警录音。");
+        return new CatalogDto(items,setting.activeRecordingId(),setting.version(),general,startup==null?null:startup.name(),
+                policy.enabled(),canManage(),AdvisoryVoiceRecording.MAX_BYTES,FORMATS,activeIds,
+                Map.of(AdvisoryVoiceRecording.GENERAL,general,AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY,predicted));
     }
     private static CurrentDto current(Resolution resolution) {
         return switch(resolution.source()) {
@@ -152,7 +168,7 @@ public class AdvisoryVoiceRecordingService {
     private static RecordingDto dto(Row row,String activeId) {
         boolean active=row.recordingId().equals(activeId);
         return new RecordingDto(row.recordingId(),row.name(),row.transcript(),row.originalName(),row.contentType(),row.sizeBytes(),row.sha256(),
-                row.durationMillis(),row.sampleRate(),row.channels(),row.uploadedByName(),row.uploadedAt(),active,row.used(),!active&&!row.used());
+                row.durationMillis(),row.sampleRate(),row.channels(),row.uploadedByName(),row.uploadedAt(),active,row.used(),!active&&!row.used(),row.purpose());
     }
     private AuthUser requireRead() {access.requireBusinessData("interfaces.read");return AuthContext.require();}
     private AuthUser requireManage() {

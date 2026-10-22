@@ -30,7 +30,7 @@ public class ManualRadarSimulation {
 
     public boolean allowed(AuthUser user) {
         return simulation.allowed() && enabled && "ALL".equals(user.scopeMode())
-                && access.permissionCodes(user.roleCode()).containsAll(List.of("interfaces.op", "devices.auth", "devices.op"));
+                && access.permissionCodesForUser(user.userId()).containsAll(List.of("interfaces.op", "devices.auth", "devices.op"));
     }
 
     public void validate(AuthUser user, DeviceOnboardService.OnboardRequest request) {

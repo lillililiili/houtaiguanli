@@ -15,6 +15,7 @@ import org.springframework.stereotype.Component;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.uav.lowaltitude.integration.geo.JsonCoordinateContract;
 import com.uav.lowaltitude.modules.fusion.domain.IdentitySerials;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
 
@@ -57,6 +58,8 @@ public class LingyunSenseDataMapper implements FrameMapper {
         JsonNode root = read(inbox.payloadJson());
         JsonNode objects = root.get("objects");
         if (objects == null || !objects.isArray()) throw new IllegalStateException("SenseData 缺少 objects 数组");
+        try { JsonCoordinateContract.requireSenseData(root); }
+        catch (IllegalArgumentException ex) { throw new IllegalStateException(ex.getMessage(), ex); }
         String deviceTypeAbbr = deviceTypeAbbr(inbox.source());
         boolean positionInvalid = WITHOUT_POSITION.contains(deviceTypeAbbr);
         Long msgCnt = integer(root, "msgCnt");
@@ -182,7 +185,7 @@ public class LingyunSenseDataMapper implements FrameMapper {
     /** source 形如 `lingyun:<deviceTypeAbbr>:<deviceId>`；取第二段。 */
     static String deviceTypeAbbr(String source) {
         String[] segments = (source == null ? "" : source).split(":");
-        if (segments.length < 3 || segments[1].isBlank()) throw new IllegalStateException("凌云来源格式应为 lingyun:<设备类型>:<设备号>: " + source);
+        if (segments.length < 3 || segments[1].isBlank()) throw new IllegalStateException("来源格式应为 lingyun:<设备类型>:<设备号>: " + source);
         return segments[1].trim().toLowerCase();
     }
 

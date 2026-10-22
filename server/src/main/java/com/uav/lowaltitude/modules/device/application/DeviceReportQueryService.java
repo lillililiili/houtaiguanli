@@ -18,5 +18,10 @@ public class DeviceReportQueryService extends BusinessReportSource {
     @Override public String basis() { return "当前设备状态快照，不代表历史周期在线率"; }
     @Override public boolean snapshot() { return true; }
     @Override public List<Dimension> dimensions() { return List.of(new Dimension("state", "连接状态"), new Dimension("kind", "设备类型"), new Dimension("result", "健康状态")); }
-    @Override protected Dataset dataset(Range range) { access.requireDevicesRead(); return repository.reportDataset(); }
+    @Override protected Dataset dataset(Range range) {
+        if (com.uav.lowaltitude.platform.report.ReportAccessContext.active())
+            com.uav.lowaltitude.platform.report.ReportAccessContext.requireDeviceModule("devices");
+        else access.requireDevicesRead();
+        return repository.reportDataset();
+    }
 }

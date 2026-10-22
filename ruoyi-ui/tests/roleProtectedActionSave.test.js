@@ -6,7 +6,7 @@ import { systemApi } from '@/api/system.js'
 
 vi.mock('@/stores/auth.js', () => ({ useAuthStore: () => ({ hasPermission: () => access.editable }) }))
 vi.mock('@/api/system.js', () => ({ systemApi: {
-  roles: vi.fn(), role: vi.fn(), permissions: vi.fn(), permissionActions: vi.fn(), updateRolePermissions: vi.fn()
+  roles: vi.fn(), role: vi.fn(), organizations: vi.fn(), permissions: vi.fn(), permissionActions: vi.fn(), updateRolePermissions: vi.fn()
 } }))
 vi.mock('element-plus', async importOriginal => ({
   ...await importOriginal(),
@@ -47,6 +47,7 @@ async function choose(label, option) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  systemApi.organizations.mockResolvedValue([])
   access.editable = true
   systemApi.permissions.mockResolvedValue([])
   systemApi.roles.mockResolvedValue([customRole])

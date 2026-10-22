@@ -1,6 +1,15 @@
 import { Cpu, Monitor, Connection, User, UserFilled, DocumentChecked, DataAnalysis, MapLocation } from '@element-plus/icons-vue';
+import { isUnitAdministrator } from '@/utils/userType.js';
+import { managementModules } from '@/utils/managementAccess.js';
 
 export const navigationGroups = [
+  {
+    title: '单位管理', key: 'unit', icon: UserFilled,
+    children: [
+      { title: '本单位人员', key: 'unit-users', path: '/unit/users', permission: 'unit-users.manage', icon: User },
+      { title: '本单位角色', key: 'unit-roles', path: '/unit/roles', permission: 'unit-roles.manage', icon: UserFilled }
+    ]
+  },
   {
     title: '运维管理', key: 'operations', icon: Cpu,
     children: [
@@ -33,9 +42,18 @@ export function hasOrganizationAccess(user) {
   return user?.menu_keys?.includes('organizations') && user?.permission_codes?.includes('organizations.read') || false;
 }
 export function accessibleItems(user) {
+  if (isUnitAdministrator(user)) {
+    const context = user.management_context;
+    return navigationItems.filter(item => {
+      const module = managementModules.find(module => module.menu_key === item.key);
+      if (!item.key.startsWith('unit-') && !module) return false;
+      return context.menu_keys?.includes(module?.module_key || item.key)
+        && context.permission_codes?.includes(module ? `${module.module_key}.read` : item.permission);
+    });
+  }
   const keys = new Set(user?.menu_keys || []);
   const permissions = new Set(user?.permission_codes || []);
-  return navigationItems.filter(item => item.key === 'users' ? hasUserAccess(user) || hasOrganizationAccess(user) : keys.has(item.key) && permissions.has(item.permission));
+  return navigationItems.filter(item => !item.key.startsWith('unit-') && (item.key === 'users' ? hasUserAccess(user) || hasOrganizationAccess(user) : keys.has(item.key) && permissions.has(item.permission)));
 }
 
 export function firstAccessiblePath(user) {

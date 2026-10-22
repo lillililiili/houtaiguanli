@@ -78,7 +78,7 @@ async function retry() {
   align-items: center;
   gap: 12px;
   color: #d7e9f9;
-  font: 700 12px/1 Bahnschrift, "Segoe UI", sans-serif;
+  font: 700 12px/1 var(--app-font-sans);
   letter-spacing: .16em;
 }
 .service-down__brand img {
@@ -128,7 +128,7 @@ async function retry() {
 .service-down__kicker {
   margin: 0 0 8px;
   color: var(--admin-accent);
-  font: 700 11px/1.4 Bahnschrift, "Segoe UI", sans-serif;
+  font: 700 11px/1.4 var(--app-font-sans);
   letter-spacing: .18em;
 }
 .service-down h1 {

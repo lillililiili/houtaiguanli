@@ -29,7 +29,7 @@ MQTT 场景的设备、来源、主题、批次、启动入口均保持原样。
 
 ## 接口与边界
 
-- 新增 `POST /api/v1/local-interface-simulator/radar-device`。请求为 `owner_org_id`、`district_id`、`longitude`、`latitude`，要求 `Idempotency-Key`，沿用 `{ok,data,error}` 与字符串 ID。
+- 新增 `POST /api/v1/local-interface-simulator/radar-device`。请求为 `owner_org_id`、`district_id`、`longitude`、`latitude`、`coordinate_system`（`WGS84` 或 `WGS-84`，2026-10-20 起必填且拒绝其他坐标系），要求 `Idempotency-Key`，沿用 `{ok,data,error}` 与字符串 ID。
 - 仅启用 `local+qa` 或隔离 `test`、且 `app.qa.device-setup.enabled=true` 时注册；生产 profile 始终禁用。服务端检查后台身份、`interfaces.op`、`devices.op`、`devices.auth` 和全局范围，所属单位/区域必须有效。
 - 同一身份重复登记返回已有设备；登记按所属单位行加事务锁，数据库来源唯一约束兜底。来源、范围、连接配置冲突或设备停用时拒绝覆盖；再次启动不移动已登记的位置。
 - 来源为 `live`（实际 TCP 传输）且 `simulated=true`，成功登记审计为 `local_qa_device_prepare`。上线和状态仍来自实际协议接入；不写验收数据库、不启用 dev-seed。

@@ -292,6 +292,12 @@ public class DeviceService {
     @Transactional
     public DeviceDetail create(DeviceMutation mutation,String ownerOrgId,String districtId) {
         AuthUser user = access.requireDevicesOperate();
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.requireOwner(ownerOrgId);
+        if (com.uav.lowaltitude.platform.security.UnitOperationsContext.active()) {
+            ownerOrgId = com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId();
+            if (!com.uav.lowaltitude.platform.security.UnitOperationsContext.ownsNewSource(mutation.sourceId()))
+                throw new ApiException(HttpStatus.FORBIDDEN,"UNIT_SOURCE_FORBIDDEN","请通过本单位设备接入登记专属来源");
+        }
         rejectWeatherMutation(mutation);
         validate(mutation);
         retiredNumbers.reject(mutation.deviceNo());
@@ -324,6 +330,13 @@ public class DeviceService {
     @Transactional
     public DeviceDetail update(String id,long version,DeviceMutation mutation,String ownerOrgId,String districtId) {
         AuthUser user = access.requireDevicesOperate();
+        com.uav.lowaltitude.platform.security.UnitOperationsContext.requireOwner(ownerOrgId);
+        if (com.uav.lowaltitude.platform.security.UnitOperationsContext.active()) {
+            ownerOrgId=com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId();
+            if (!java.util.Objects.equals(text(requiredDevice(id),"source_id"),mutation.sourceId()))
+                throw new ApiException(HttpStatus.FORBIDDEN,"UNIT_SOURCE_FORBIDDEN","单位管理不能更换设备接入来源");
+            repository.requireSourceInUnit(mutation.sourceId(),ownerOrgId);
+        }
         rejectWeatherMutation(mutation);
         if ("weather_sensor".equals(text(requiredDevice(id), "device_type_code")))
             throw bad("WEATHER_REGISTRATION_REQUIRED", "请通过天气传感器档案修改设备");
@@ -369,6 +382,7 @@ public class DeviceService {
                 (enabled ? "设备已启用：" : "设备已停用：") + reason.trim(), now, "mock".equals(properties.getSourceMode()));
         String sourceId = text(device, "source_id");
         if (sourceId != null) {
+            if(com.uav.lowaltitude.platform.security.UnitOperationsContext.active()) repository.requireSourceInUnit(sourceId,com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId());
             boolean anyEnabled = repository.countEnabledOnSource(sourceId) > 0;
             sources.syncEnabled(sourceId, anyEnabled, reason.trim());
         }
@@ -578,12 +592,11 @@ public class DeviceService {
             throw bad("VALIDATION_ERROR", "必须绑定接入来源并填写来源设备 ID");
         if ((blankToNull(m.sourceId()) == null) != (blankToNull(m.externalDeviceId()) == null))
             throw bad("VALIDATION_ERROR", "source_id 与 external_device_id 必须同时填写或同时为空");
-        if ((m.longitude() == null) != (m.latitude() == null))
-            throw bad("VALIDATION_ERROR", "经度和纬度必须同时填写或同时为空");
-        if (m.longitude() != null && (m.longitude().compareTo(BigDecimal.valueOf(-180)) < 0 || m.longitude().compareTo(BigDecimal.valueOf(180)) > 0))
-            throw bad("VALIDATION_ERROR", "经度必须在 -180 到 180 之间");
-        if (m.latitude() != null && (m.latitude().compareTo(BigDecimal.valueOf(-90)) < 0 || m.latitude().compareTo(BigDecimal.valueOf(90)) > 0))
-            throw bad("VALIDATION_ERROR", "纬度必须在 -90 到 90 之间");
+        try {
+            com.uav.lowaltitude.platform.geo.Wgs84Coordinates.requirePoint(m.longitude(), m.latitude(), m.coordinateSystem());
+        } catch (IllegalArgumentException ex) {
+            throw bad("VALIDATION_ERROR", ex.getMessage());
+        }
         ConnectionProfile c = m.connection();
         if (c != null && c.port() != null && (c.port() < 1 || c.port() > 65535))
             throw bad("VALIDATION_ERROR", "端口必须在 1 到 65535 之间");
@@ -618,7 +631,7 @@ public class DeviceService {
         v.put("channel", m.channel().trim()); v.put("model", blankToNull(m.model())); v.put("vendor", blankToNull(m.vendor()));
         v.put("owner_name", blankToNull(m.ownerName())); v.put("region_name", blankToNull(m.regionName()));
         v.put("address", blankToNull(m.address())); v.put("longitude", m.longitude()); v.put("latitude", m.latitude());
-        v.put("coordinate_system", m.longitude() == null ? null : (blankToNull(m.coordinateSystem()) == null ? "WGS-84" : m.coordinateSystem().trim()));
+        v.put("coordinate_system", m.longitude() == null ? null : "WGS-84");
         v.put("altitude_m", m.altitudeM()); v.put("altitude_datum", blankToNull(m.altitudeDatum()));
         v.put("firmware_version", blankToNull(m.firmwareVersion())); v.put("installed_at", m.installedAt());
         v.put("created_at", now); v.put("updated_at", now);
@@ -791,7 +804,7 @@ public class DeviceService {
                 text(r, "block_reason"), bool(r, "simulated"), text(r, "reboot_command_id"));
     }
 
-    private ConnectionProfile connection(Map<String, Object> r) {
+    static ConnectionProfile connection(Map<String, Object> r) {
         if (r == null) return null;
         return new ConnectionProfile(text(r, "transport"), text(r, "host"), integer(r, "port"), text(r, "path"),
                 text(r, "data_format"), text(r, "charset_name"), text(r, "auth_mode"), text(r, "credential_ref"),

@@ -23,7 +23,8 @@ public final class LocalObservationSimulatorDtos {
             @NotNull BigDecimal latitude,
             @NotBlank @Size(max = 36) String ownerOrgId,
             @NotBlank @Size(max = 36) String districtId,
-            @JsonInclude(JsonInclude.Include.NON_NULL) @Size(max = 36) String originOpsDeviceId) { }
+            @JsonInclude(JsonInclude.Include.NON_NULL) @Size(max = 36) String originOpsDeviceId,
+            String coordinateSystem) { }
 
     public record WeatherDeviceInput(
             @NotBlank @Size(max = 64) String messageId,
@@ -32,7 +33,8 @@ public final class LocalObservationSimulatorDtos {
             @NotNull BigDecimal longitude,
             @NotNull BigDecimal latitude,
             @NotBlank @Size(max = 36) String ownerOrgId,
-            @NotBlank @Size(max = 36) String districtId) { }
+            @NotBlank @Size(max = 36) String districtId,
+            String coordinateSystem) { }
 
     public record TargetObservationsInput(
             @NotBlank @Size(max = 64) String messageId,
@@ -40,7 +42,8 @@ public final class LocalObservationSimulatorDtos {
             @NotNull @Positive Long observedAt,
             @Size(max = 36) String ownerOrgId,
             @Size(max = 36) String districtId,
-            @NotEmpty @Size(max = 100) List<@Valid TargetItem> items) { }
+            @NotEmpty @Size(max = 100) List<@Valid TargetItem> items,
+            String coordinateSystem) { }
 
     public record TargetItem(
             @NotBlank @Size(max = 128) String externalTargetId,
@@ -57,7 +60,8 @@ public final class LocalObservationSimulatorDtos {
             String subtype,
             BigDecimal pilotLongitude,
             BigDecimal pilotLatitude,
-            @Positive Integer objectCount) { }
+            @Positive Integer objectCount,
+            String coordinateSystem) { }
 
     public record WeatherObservationInput(
             @NotBlank @Size(max = 64) String messageId,
@@ -72,7 +76,8 @@ public final class LocalObservationSimulatorDtos {
             BigDecimal humidityPercent,
             BigDecimal pressureHpa,
             BigDecimal precipitationMm,
-            BigDecimal visibilityM) { }
+            BigDecimal visibilityM,
+            String coordinateSystem) { }
 
     public record RegisteredDevice(String sourceId, String deviceId, String messageId) { }
 

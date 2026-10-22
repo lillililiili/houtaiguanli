@@ -31,7 +31,7 @@ export function deviceMapOptions(container, resources, position) {
     minZoom, maxZoom, maxBounds: [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
     bearing: 0, pitch: 0, dragRotate: false, pitchWithRotate: false, touchPitch: false,
     renderWorldCopies: false, attributionControl: { compact: true },
-    localIdeographFontFamily: 'Microsoft YaHei, sans-serif'
+    localIdeographFontFamily: 'Noto Sans SC'
   };
 }
 
@@ -73,6 +73,7 @@ function vectorTileTemplate(value, manifestUrl) {
 }
 
 function preferLocalIdeographs(style) {
+  // 中文使用应用启动前加载的自托管 Noto Sans SC，避免依赖操作系统字体。
   const ranges = new Set(['U+2E80-9FFF', 'U+F900-FAFF', 'U+FF00-FFEF']);
   const stacks = style['font-faces'];
   if (!stacks) return;

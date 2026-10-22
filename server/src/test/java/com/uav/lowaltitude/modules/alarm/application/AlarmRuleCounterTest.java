@@ -68,6 +68,15 @@ class AlarmRuleCounterTest {
     }
 
     @Test
+    void predictionEpisodeCannotLaunchEvenIfRulesCouldPass() {
+        var gate=org.mockito.Mockito.mock(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate.class);
+        counter.setPredictionEventGate(gate);
+        when(gate.blocksAutomatic("counter","event-1")).thenReturn(true);
+        counter.launchIfPassed("event-1","run-1");
+        org.mockito.Mockito.verifyNoInteractions(events,repository,automatic,eligibility,gateway);
+    }
+
+    @Test
     void manualDecisionPhaseDoesNotReplaceAutomaticNotificationReadiness() {
         ready();
         when(notifications.allows("event-1")).thenReturn(false);
