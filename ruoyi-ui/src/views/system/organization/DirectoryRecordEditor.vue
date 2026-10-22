@@ -1,12 +1,12 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElDialog, ElMessage } from 'element-plus'
 import { systemApi } from '@/api/system'
 import DirectorySelect from './DirectorySelect.vue'
 import { directoryApi } from '@/api/organizationDirectory'
 import { contactRoles, organizationTypes, configurationError, requiresReload } from '@/utils/directoryConfiguration'
 
-const props = defineProps({ visible: Boolean, embedded: Boolean, readonly: Boolean, basicOnly: Boolean, parent: { type: Object, default: null }, organizations: { type: Array, default: () => [] }, kind: { type: String, required: true }, row: { type: Object, default: null }, organization: { type: Object, default: null }, canEdit: Boolean })
+const props = defineProps({ visible: Boolean, embedded: Boolean, readonly: Boolean, basicOnly: Boolean, lockOrganization: Boolean, parent: { type: Object, default: null }, organizations: { type: Array, default: () => [] }, kind: { type: String, required: true }, row: { type: Object, default: null }, organization: { type: Object, default: null }, canEdit: Boolean })
 const emit = defineEmits(['update:visible', 'saved', 'refresh', 'busy'])
 
 const form = reactive({})
@@ -14,6 +14,7 @@ const busy = ref(false)
 watch(busy, value => emit('busy', value), { flush: 'sync' })
 const error = ref('')
 const blocked = ref(false)
+let sequence = 0
 const normalizedPhone = value => String(value || '').replace(/[ ()-]/g, '')
 const phoneChanged = computed(() => props.kind === 'contact' && props.row && normalizedPhone(form.phone) !== normalizedPhone(props.row.phone))
 watch(() => form.phone, (value, previous) => {
@@ -22,7 +23,8 @@ watch(() => form.phone, (value, previous) => {
   form.verification_basis = ''
 }, { flush: 'sync' })
 const title = computed(() => `${props.readonly ? '查看' : props.row ? '编辑' : '新增'}${({ profile: '单位', contact: '联系人', binding: '来源映射' })[props.kind]}`)
-watch(() => [props.visible, props.kind, props.row], () => {
+watch(() => [props.visible, props.kind, props.row, props.organization?.org_id], () => {
+  sequence++
   if (!props.visible) return
   const row = props.row || {}
   Object.keys(form).forEach(key => delete form[key])
@@ -44,6 +46,9 @@ async function save() {
   if (props.kind === 'contact' && (!form.org_id || !form.roles.length)) { error.value = '请选择所属单位和联系用途。'; return }
   if (props.kind === 'contact' && form.verified_at && !form.verification_basis.trim()) { error.value = '填写核实时间时，请同时说明核实依据。'; return }
   if (props.kind === 'binding' && (!form.source_id || !form.external_org_code.trim() || !form.org_id)) { error.value = '请选择来源系统、所属单位并填写来源系统中的单位编码。'; return }
+  const current = sequence
+  const editing = Boolean(props.row)
+  const kind = props.kind
   let body
   if (props.kind === 'profile') body = {
     name: form.name.trim(), parent_id: form.parent_id || null, organization_type: form.organization_type,
@@ -55,6 +60,7 @@ async function save() {
     verified_at: !phoneChanged.value && form.verified_at ? Number(form.verified_at) : null, verification_basis: phoneChanged.value ? '' : form.verification_basis.trim()
   }
   else body = { source_id: form.source_id, external_org_code: form.external_org_code.trim(), org_id: form.org_id, enabled: form.enabled }
+  if (props.lockOrganization && props.organization && props.kind !== 'profile') body.org_id = props.organization.org_id
   if (props.row) body.expected_version = props.row.version
   busy.value = true
   try {
@@ -63,18 +69,20 @@ async function save() {
     const result = props.basicOnly && props.kind === 'profile'
       ? await (id ? systemApi.updateOrganization(id, { name: body.name, parent_id: body.parent_id, expected_version: body.expected_version }) : systemApi.createOrganization({ name: body.name, parent_id: body.parent_id }))
       : await directoryApi[method](id, body)
+    if (current !== sequence) return
     // 先解除忙碌状态再请求关闭：嵌入单位弹窗时，外层在忙碌期间会拒绝关闭（#8）。
     busy.value = false
     emit('saved', result)
     emit('update:visible', false)
-    ElMessage.success(props.row ? '资料已保存，历史通知快照保持原样。' : ({ profile: '单位已新建。', contact: '联系人已新增。', binding: '来源映射已新增。' })[props.kind])
-  } catch (e) { error.value = configurationError(e); blocked.value = requiresReload(e) }
-  finally { busy.value = false }
+    ElMessage.success(editing ? '资料已保存，历史通知快照保持原样。' : ({ profile: '单位已新建。', contact: '联系人已新增。', binding: '来源映射已新增。' })[kind])
+  } catch (e) { if (current === sequence) { error.value = configurationError(e); blocked.value = requiresReload(e) } }
+  finally { if (current === sequence) busy.value = false }
 }
+onBeforeUnmount(() => { sequence++ })
 </script>
 
 <template>
-  <component :is="embedded ? 'section' : ElDialog" :model-value="visible" :title="title" width="min(760px, calc(100vw - 32px))" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy" class="directory-record-dialog" @update:model-value="value => !value && close()">
+  <component :is="embedded ? 'section' : ElDialog" :model-value="visible" :append-to-body="!embedded" :title="title" width="min(760px, calc(100vw - 32px))" :close-on-click-modal="!busy" :close-on-press-escape="!busy" :show-close="!busy" class="directory-record-dialog" @update:model-value="value => !value && close()">
     <el-alert v-if="!canEdit && !readonly" title="当前账号只能查看资料，保存需要单位资料维护权限。" type="info" :closable="false" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <el-alert v-if="kind === 'contact' && row" type="info" :closable="false" :title="`已关联通知配置 ${row.notification_count ?? 0} 项，待发任务 ${row.pending_count ?? 0} 项，历史通知 ${row.history_count ?? 0} 项。停用或修改联系方式后，待发任务由后端重新校验；历史接收快照不变。`" />
@@ -92,7 +100,7 @@ async function save() {
         </template>
         <template v-else-if="kind === 'contact'">
           <el-form-item label="联系人姓名" required><el-input v-model="form.name" /></el-form-item>
-          <el-form-item label="所属单位" required><DirectorySelect v-model="form.org_id" kind="organizations" :current-label="row?.org_name || organization?.name || ''" /></el-form-item>
+          <el-form-item label="所属单位" required><span v-if="lockOrganization">{{ organization?.name || row?.org_name || form.org_id }}</span><DirectorySelect v-else v-model="form.org_id" kind="organizations" :current-label="row?.org_name || organization?.name || ''" /></el-form-item>
           <el-form-item class="wide" label="联系用途" required><el-checkbox-group v-model="form.roles"><el-checkbox v-for="role in contactRoles" :key="role.value" :label="role.value">{{ role.label }}</el-checkbox></el-checkbox-group></el-form-item>
           <el-form-item label="联系电话"><el-input v-model="form.phone" /></el-form-item>
           <el-form-item label="电子邮箱"><el-input v-model="form.email" /></el-form-item>
@@ -106,7 +114,7 @@ async function save() {
         <template v-else>
           <el-form-item label="来源系统" required><DirectorySelect v-model="form.source_id" kind="sources" :current-label="row?.source_name || ''" /></el-form-item>
           <el-form-item label="来源系统中的单位编码" required><el-input v-model="form.external_org_code" type="textarea" autosize /></el-form-item>
-          <el-form-item label="对应单位" required><DirectorySelect v-model="form.org_id" kind="organizations" :current-label="row?.org_name || organization?.name || ''" /></el-form-item>
+          <el-form-item label="对应单位" required><span v-if="lockOrganization">{{ organization?.name || row?.org_name || form.org_id }}</span><DirectorySelect v-else v-model="form.org_id" kind="organizations" :current-label="row?.org_name || organization?.name || ''" /></el-form-item>
           <el-form-item label="映射可用状态"><el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
           <p class="form-note wide">同一来源系统可以报送多个单位，按来源与单位编码精确关联。停用映射后，新关联和待发通知按后端条件校验；旧任务和通知材料不会改写。</p>
         </template>
@@ -116,9 +124,9 @@ async function save() {
       <el-button v-if="blocked" type="primary" @click="reload">重新加载并核对</el-button>
       <el-button v-else-if="canEdit" type="primary" :loading="busy" @click="save">保存</el-button></div>
     <template v-if="!embedded" #footer>
-      <el-button :disabled="busy" @click="close">取消</el-button>
+      <el-button :disabled="busy" @click="close">{{ readonly ? '关闭' : '取消' }}</el-button>
       <el-button v-if="blocked" type="primary" @click="reload">重新加载并核对</el-button>
-      <el-button v-else-if="canEdit" type="primary" :loading="busy" @click="save">保存</el-button>
+      <el-button v-else-if="canEdit && !readonly" type="primary" :loading="busy" @click="save">保存</el-button>
     </template>
   </component>
 </template>

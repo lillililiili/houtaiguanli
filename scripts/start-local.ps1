@@ -18,6 +18,7 @@ param(
     [ValidateRange(1024, 65535)]
     [int]$QaVideoApiPort = 9997,
     [string]$BusinessRoot = '',
+    [string]$MapDataDir = '',
     [string]$SimulatorRoot = '',
     [string]$JavaHome = '',
     [string]$JavaTempDir = 'C:\Temp',
@@ -46,6 +47,10 @@ $simulatorDir = if ($SimulatorRoot) { (Resolve-Path -LiteralPath $SimulatorRoot)
 if (-not $businessDir) { $businessDir = '' }
 if (-not $simulatorDir) { $simulatorDir = '' }
 . (Join-Path $PSScriptRoot 'local-service-state.ps1')
+. (Join-Path $PSScriptRoot 'local-map-directory.ps1')
+$mapDataDirectory = Resolve-LocalMapDataDirectory -MapDataDir $MapDataDir -BusinessRoot $businessDir -ServerRoot $serverDir
+$mapEnvironmentCommand = Get-LocalMapEnvironmentCommand -MapDataDirectory $mapDataDirectory
+$runBusiness = -not $SkipBusinessFrontend -and $businessDir -and (Test-Path -LiteralPath (Join-Path $businessDir 'package.json'))
 $runtimeDir = Get-LocalRuntimeDirectory -RepositoryRoot $repoRoot
 $stateFile = Join-Path $runtimeDir 'services.json'
 $powershell = (Get-Process -Id $PID).Path
@@ -373,15 +378,30 @@ function Test-ApiRoute {
     }
 }
 
+function Assert-RunningMapService {
+    param([string]$Name, [int]$Port, [string]$WorkingDirectory)
+    $recorded = if ($services.Contains($Name)) { $services[$Name] } else { $null }
+    try { $ownedIds = @(Get-OwnedProcessTree -Service $recorded | ForEach-Object { [int]$_.pid }) }
+    catch { $ownedIds = @() }
+    # A failed listener inventory cannot establish ownership.
+    try {
+        $listenerIds = @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+            Where-Object { $_.LocalPort -eq $Port } | Select-Object -ExpandProperty OwningProcess -Unique)
+    } catch { $listenerIds = @() }
+    Assert-LocalMapServiceReuse -Name $Name -Service $recorded -MapDataDirectory $mapDataDirectory -WorkingDirectory $WorkingDirectory -OwnedProcessIds $ownedIds -ListenerProcessIds $listenerIds
+}
+
 function Reuse-Or-Start {
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$ProbeUri,
         [Parameter(Mandatory)][string]$WorkingDirectory,
         [Parameter(Mandatory)][AllowEmptyString()][string]$Command,
-        [switch]$RequireMapConfig
+        [switch]$RequireMapConfig,
+        [switch]$RequireSharedMapDirectory
     )
     if (Test-Endpoint -Uri $ProbeUri -RequireMapConfig:$RequireMapConfig) {
+        if ($RequireSharedMapDirectory) { Assert-RunningMapService -Name $Name -Port ([Uri]$ProbeUri).Port -WorkingDirectory $WorkingDirectory }
         Write-Host "[复用] $Name 已在运行：$ProbeUri"
         if ($services.Contains($Name) -and (Test-OwnedService $services[$Name])) { return $services[$Name] }
         return [ordered]@{ name = $Name; kind = 'process'; reused = $true; probe = $ProbeUri; started_at = $null }
@@ -391,6 +411,7 @@ function Reuse-Or-Start {
     $started = Start-LoggedService -Name $Name -WorkingDirectory $WorkingDirectory -Command $Command
     $started.probe = $ProbeUri
     $started.port = $port
+    if ($RequireSharedMapDirectory) { $started.map_data_dir = $mapDataDirectory }
     return $started
 }
 
@@ -398,6 +419,16 @@ New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
 $operationLock = [IO.File]::Open((Join-Path $runtimeDir 'operation.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 try {
 $services = Read-LocalServiceState -Path $stateFile
+# Fail before changing dependencies when a pre-existing API/map provider cannot be safely reused.
+Write-Host "共享地图目录：$mapDataDirectory"
+if (Test-Endpoint -Uri "http://127.0.0.1:$ApiPort/actuator/health/readiness") {
+    Assert-RunningMapService -Name 'api' -Port $ApiPort -WorkingDirectory $serverDir
+}
+$existingBusinessOrigin = Find-MapProviderOrigin -Port $BusinessPort
+if ($existingBusinessOrigin) {
+    if (-not $businessDir) { throw '已发现业务地图服务，但未提供其代码目录；请通过 -BusinessRoot 指定，并停止、重启本项目相关服务后重试。' }
+    Assert-RunningMapService -Name 'business' -Port $BusinessPort -WorkingDirectory $businessDir
+}
 Assert-Command docker
 Assert-Command node
 Assert-Command npm
@@ -536,6 +567,7 @@ $backendVideoEnvironment = if ($WithQaVideo) {
 } else { '' }
 $backendVideoArguments = if ($WithQaVideo) { ' --app.video.qa-enabled=true' } else { '' }
 $backendCommand = @"
+${mapEnvironmentCommand}
 ${backendVideoEnvironment}
 `$env:DB_URL = 'jdbc:postgresql://127.0.0.1:5432/houtaiguanli'
 `$env:APP_DEV_SEED_ENABLED = 'false'
@@ -558,7 +590,7 @@ if ($apiNeedsSimulatorRoute -or $apiNeedsQaVideoRoute) {
 }
 Write-Host "[3/5] 启动后端（$springProfiles，演示种子保持关闭）..."
 $backendCommand = $backendCommand.Replace('127.0.0.1:5432', "127.0.0.1:$DbPort").Replace('127.0.0.1:8081', "127.0.0.1:$ApiPort")
-Register-LocalService -Name 'api' -Service (Reuse-Or-Start -Name 'api' -ProbeUri "http://127.0.0.1:$ApiPort/actuator/health/readiness" -WorkingDirectory $serverDir -Command $backendCommand)
+Register-LocalService -Name 'api' -Service (Reuse-Or-Start -Name 'api' -ProbeUri "http://127.0.0.1:$ApiPort/actuator/health/readiness" -WorkingDirectory $serverDir -Command $backendCommand -RequireSharedMapDirectory)
 
 if (-not $SkipFrontendInstall -and -not (Test-Path -LiteralPath (Join-Path $adminDir 'node_modules'))) {
     Write-Host '安装管理前端依赖...'
@@ -567,13 +599,17 @@ if (-not $SkipFrontendInstall -and -not (Test-Path -LiteralPath (Join-Path $admi
     if ($LASTEXITCODE -ne 0) { throw '管理前端依赖安装失败。' }
 }
 
-$runBusiness = -not $SkipBusinessFrontend -and (Test-Path -LiteralPath (Join-Path $businessDir 'package.json'))
 $existingBusinessOrigin = Find-MapProviderOrigin -Port $BusinessPort
 $businessOrigin = if ($existingBusinessOrigin) { $existingBusinessOrigin } else { "http://127.0.0.1:$BusinessPort" }
+$useBusiness = $runBusiness -or [bool]$existingBusinessOrigin
+if ($existingBusinessOrigin) {
+    if (-not $businessDir) { throw '已发现业务地图服务，但未提供其代码目录；请通过 -BusinessRoot 指定，并停止、重启本项目相关服务后重试。' }
+    Assert-RunningMapService -Name 'business' -Port $BusinessPort -WorkingDirectory $businessDir
+}
 if ($runBusiness) {
     if ($existingBusinessOrigin) {
         Write-Host "[复用] 业务前台地图服务已就绪：$existingBusinessOrigin"
-        Register-LocalService -Name 'business' -Service (Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command '' -RequireMapConfig)
+        Register-LocalService -Name 'business' -Service (Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command '' -RequireMapConfig -RequireSharedMapDirectory)
     }
     else {
         if (Test-LocalPort -Port $BusinessPort) {
@@ -585,9 +621,9 @@ if ($runBusiness) {
             try { npm ci } finally { Pop-Location }
             if ($LASTEXITCODE -ne 0) { throw '业务前台依赖安装失败。' }
         }
-        $businessCommand = "`$env:APP_API_PROXY_TARGET = 'http://127.0.0.1:$ApiPort'`n& 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1' '--port' '$BusinessPort' '--strictPort'"
+        $businessCommand = $mapEnvironmentCommand + "`$env:APP_API_PROXY_TARGET = 'http://127.0.0.1:$ApiPort'`n& 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1' '--port' '$BusinessPort' '--strictPort'"
         Write-Host '[4/5] 启动业务前台（地图资源提供方）...'
-        Register-LocalService -Name 'business' -Service (Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command $businessCommand -RequireMapConfig)
+        Register-LocalService -Name 'business' -Service (Reuse-Or-Start -Name 'business' -ProbeUri "$businessOrigin/map-config.json" -WorkingDirectory $businessDir -Command $businessCommand -RequireMapConfig -RequireSharedMapDirectory)
     }
 }
 else {
@@ -600,7 +636,8 @@ $adminCommand = @"
 & 'npm.cmd' 'run' 'dev' '--' '--host' '127.0.0.1' '--port' '$AdminPort' '--strictPort'
 "@
 Write-Host '[4/5] 启动管理前端（地图代理指向业务前台）...'
-Register-LocalService -Name 'admin' -Service (Reuse-Or-Start -Name 'admin' -ProbeUri "http://127.0.0.1:$AdminPort/map-config.json" -WorkingDirectory $adminDir -Command $adminCommand -RequireMapConfig)
+$adminProbeUri = if ($useBusiness) { "http://127.0.0.1:$AdminPort/map-config.json" } else { "http://127.0.0.1:$AdminPort/" }
+Register-LocalService -Name 'admin' -Service (Reuse-Or-Start -Name 'admin' -ProbeUri $adminProbeUri -WorkingDirectory $adminDir -Command $adminCommand -RequireMapConfig:$useBusiness)
 
 if ($WithSimulator) {
     $simulatorVideoEnvironment = if ($WithQaVideo) {
@@ -627,11 +664,11 @@ Write-Host "进程清单：$stateFile"
 if (-not $SkipWait) {
     Wait-Http -Name 'API readiness' -Uri "http://127.0.0.1:$ApiPort/actuator/health/readiness"
     Wait-Http -Name '管理前端' -Uri "http://127.0.0.1:$AdminPort/"
-    if ($services.Contains('business')) {
+    if ($useBusiness) {
         Wait-Http -Name '业务前台' -Uri "$businessOrigin/"
         Wait-Http -Name '业务前台地图配置' -Uri "$businessOrigin/map-config.json"
     }
-    if ($existingBusinessOrigin -or $services.Contains('business')) {
+    if ($useBusiness) {
         Wait-Http -Name '管理端地图代理' -Uri "http://127.0.0.1:$AdminPort/map-config.json"
     }
     if ($services.Contains('simulator')) { Wait-Http -Name '设备模拟器' -Uri "http://127.0.0.1:$SimulatorPort/" }
@@ -659,7 +696,7 @@ else {
         '--simulator', "http://127.0.0.1:$SimulatorPort",
         '--report', (Join-Path $runtimeDir 'startup-check.json')
     )
-    if ($services.Contains('business')) { $checkArgs += @('--business-dir', $businessDir) }
+    if ($useBusiness) { $checkArgs += @('--business-dir', $businessDir) }
     else { $checkArgs += '--skip-business' }
     if (-not $services.Contains('simulator')) { $checkArgs += '--skip-simulator' }
     & node @checkArgs

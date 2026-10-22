@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import PageHeader from '@/components/PageHeader.vue';
@@ -23,7 +23,12 @@ const rules = {
 const changed = computed(() => form.name.trim() !== (auth.user?.name || '') || form.phone.trim() !== (auth.user?.phone || ''));
 
 function tabOf(section) { return section === 'password' ? 'password' : 'basic'; }
-function fill(user) { form.name = user?.name || ''; form.phone = user?.phone || ''; saveError.value = ''; }
+function fill(user) {
+  form.name = user?.name || '';
+  form.phone = user?.phone || '';
+  saveError.value = '';
+  nextTick(() => formRef.value?.clearValidate());
+}
 // 同一账号的资料刷新（例如登录过期后重新登录）不覆盖正在填写的内容，换了账号才重新带入。
 watch(() => auth.user?.user_id, () => fill(auth.user), { immediate: true });
 watch(() => route.query.section, section => { activeTab.value = tabOf(section); });

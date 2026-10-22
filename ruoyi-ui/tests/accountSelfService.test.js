@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick, reactive } from 'vue'
-import ElementPlus, { ElMessage } from 'element-plus'
+// Node 使用 CJS 入口，使 async-validator 的默认导出与真实表单校验一致。
+import ElementPlus from 'element-plus/lib/index.js'
+import { ElMessage } from 'element-plus'
 import ProfileView from '@/views/profile/ProfileView.vue'
 import ChangePasswordForm from '@/components/ChangePasswordForm.vue'
 import SessionExpiredDialog from '@/components/SessionExpiredDialog.vue'
@@ -44,6 +46,48 @@ describe('个人资料', { timeout: 20_000 }, () => {
     for (const label of ['账号', '角色', '所属单位', '数据范围']) expect(input(label).disabled).toBe(true)
     expect(input('数据范围').value).toBe('本单位')
     expect(button('保存').disabled).toBe(true)
+  })
+
+  it.each([
+    { label: '姓名', key: 'name', original: '值班员乙', invalid: '', message: '请输入姓名' },
+    { label: '联系电话', key: 'phone', original: '+86 (546) 1234567', invalid: '无效电话', message: '联系电话只能填写数字' }
+  ])('恢复 $label 原值清除旧校验，切换页签后也不残留', async ({ label, key, original, invalid, message }) => {
+    mocks.auth.user[key] = original
+    await mount(ProfileView)
+    await type(label, invalid)
+    button('保存').click(); await settle()
+    await errorShown(label, message)
+    expect(mocks.auth.updateProfile).not.toHaveBeenCalled()
+
+    button('恢复原值').click(); await settle()
+    expect(input(label).value).toBe(original)
+    expect(button('保存').disabled).toBe(true)
+    expect(button('恢复原值').disabled).toBe(true)
+    await vi.waitFor(() => expect(errorOf(label)).toBe(''))
+    expect(field(label).classList.contains('is-error')).toBe(false)
+
+    for (const tab of ['修改密码', '基本资料']) {
+      [...host.querySelectorAll('.el-tabs__item')].find(node => node.textContent.trim() === tab).click()
+      await settle()
+    }
+    expect(errorOf(label)).toBe('')
+    await type(label, invalid)
+    button('保存').click(); await settle()
+    await errorShown(label, message)
+    expect(mocks.auth.updateProfile).not.toHaveBeenCalled()
+  })
+
+  it('更换账号带入新资料时清除上个账号的字段错误', async () => {
+    await mount(ProfileView)
+    await type('姓名', '')
+    button('保存').click(); await settle()
+    await errorShown('姓名', '请输入姓名')
+    mocks.auth.user = { ...baseUser, user_id: 'other-account', name: '另一位值班员', phone: '' }
+    await settle()
+    expect(input('姓名').value).toBe('另一位值班员')
+    await vi.waitFor(() => expect(errorOf('姓名')).toBe(''))
+    expect(button('保存').disabled).toBe(true)
+    expect(mocks.auth.updateProfile).not.toHaveBeenCalled()
   })
 
   it('保存去掉首尾空格，成功后提示', async () => {

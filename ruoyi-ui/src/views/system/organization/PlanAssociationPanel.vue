@@ -1,17 +1,18 @@
 <script setup>
-import { onBeforeUnmount, reactive, ref } from 'vue'
+import { onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import DirectorySelect from './DirectorySelect.vue'
 import SourceBindingSelect from './SourceBindingSelect.vue'
 import { directoryApi } from '@/api/organizationDirectory'
 import { associationText, configurationError, requiresReload } from '@/utils/directoryConfiguration'
 const props = defineProps({ canEdit: Boolean })
-const emit = defineEmits(['saved'])
+const emit = defineEmits(['saved', 'busy'])
 const planId = ref('')
 const planLabel = ref('')
 const data = ref(null)
 const loading = ref(false)
 const saving = ref(false)
+watch(saving, value => emit('busy', value), { flush: 'sync' })
 const error = ref('')
 const blocked = ref(false)
 const form = reactive({ source_binding_id: '', operator_org_id: '', pilot_contact_id: '', reason: '' })
@@ -50,7 +51,7 @@ onBeforeUnmount(() => { sequence++ })
 <template>
   <section class="plan-association" v-loading="loading">
     <el-form label-position="top">
-      <el-form-item label="查找当前有权维护的任务"><DirectorySelect v-model="planId" kind="plans" :disabled="saving" :current-label="planLabel" placeholder="输入任务名称或任务编号检索" @select="choosePlan" /></el-form-item>
+      <el-form-item label="查找当前有权访问的任务"><DirectorySelect v-model="planId" kind="plans" :disabled="saving" :current-label="planLabel" placeholder="输入任务名称或任务编号检索" @select="choosePlan" /></el-form-item>
     </el-form>
     <el-alert v-if="error" :title="error" type="error" :closable="false"><template #default><el-button :disabled="loading || saving" link type="primary" @click="load">重新读取任务并核对</el-button></template></el-alert>
     <el-empty v-if="!planId" description="选择一份任务，关联报送单位、执行单位和飞手。" />
@@ -61,7 +62,7 @@ onBeforeUnmount(() => { sequence++ })
         <el-descriptions-item label="当前执行单位">{{ data.operator_org_name || '待关联' }}</el-descriptions-item><el-descriptions-item label="当前关联飞手">{{ data.pilot_name || '未提供' }}</el-descriptions-item>
         <el-descriptions-item label="当前飞手联系方式">{{ data.pilot_contact_hint || '未关联有效联系方式' }}</el-descriptions-item><el-descriptions-item label="记录版本">{{ data.version }}</el-descriptions-item>
       </el-descriptions>
-      <el-form label-position="top" :disabled="!canEdit || saving || blocked" class="association-form" @submit.prevent="save">
+      <el-form v-if="canEdit" label-position="top" :disabled="saving || blocked" class="association-form" @submit.prevent="save">
         <el-form-item label="报送单位来源映射"><SourceBindingSelect v-model="form.source_binding_id" :source-id="data.source_id || ''" :current-label="data.reporting_org_name ? `${data.source_name || '来源系统'} · ${data.reporting_org_name}` : ''" /></el-form-item>
         <div class="form-grid">
           <el-form-item label="执行单位"><DirectorySelect v-model="form.operator_org_id" kind="organizations" :current-label="data.operator_org_name || ''" @select="form.pilot_contact_id = ''" /></el-form-item>
@@ -70,8 +71,8 @@ onBeforeUnmount(() => { sequence++ })
         <el-form-item label="关联依据" required><el-input v-model="form.reason" type="textarea" :rows="2" placeholder="填写可核对的报送材料、外部编码或人工核对依据" /></el-form-item>
         <p class="form-note">报送单位由来源系统与外部单位编码的映射确定。保存后由后端校验飞手身份、联系方式和用途，不会仅凭同名自动关联或替代历史接收人。</p>
         <el-button v-if="canEdit" type="primary" :loading="saving" :disabled="blocked" @click="save">保存任务关联</el-button>
-        <p v-else class="readonly-note">当前账号可查看关联，修改需要单位资料维护权限及该任务的数据权限。</p>
       </el-form>
+      <p v-else class="readonly-note">当前账号可查看关联，修改需要单位资料维护权限及该任务的数据权限。</p>
     </template>
   </section>
 </template>

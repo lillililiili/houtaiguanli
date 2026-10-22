@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MoreFilled, OfficeBuilding, Plus } from '@element-plus/icons-vue'
 import OrganizationDialog from './organization/OrganizationDialog.vue'
@@ -22,6 +22,11 @@ const users = ref([])
 const roles = ref([])
 const organizations = ref([])
 const total = ref(0)
+let alive = true
+let listSequence = 0
+let catalogSequence = 0
+const currentListRequest = sequence => alive && sequence === listSequence
+const currentCatalogRequest = sequence => alive && sequence === catalogSequence
 const selectedOrgId = ref(ALL_ORGS)
 const filters = reactive({ keyword: '', roleCode: '', user_type: '', status: '', page: 1, size: 20 })
 const userDialog = reactive({ visible: false, busy: false, mode: 'create', row: null, form: {} })
@@ -96,8 +101,10 @@ function passwordError(password, account = '') {
 }
 
 async function loadCatalog() {
+  const sequence = ++catalogSequence
   if (canReadUsers.value) {
     const [roleRows, orgRows] = await Promise.all([systemApi.roles(), systemApi.organizations()])
+    if (!currentCatalogRequest(sequence)) return false
     roles.value = roleRows || []; organizations.value = orgRows || []
   } else if (hasOrganizationAccess(auth.user)) {
     const all = []
@@ -105,34 +112,45 @@ async function loadCatalog() {
     let hasMore = true
     while (hasMore) {
       const result = await directoryApi.profiles({ page, size: 100 })
+      if (!currentCatalogRequest(sequence)) return false
       all.push(...(result.items || []))
       hasMore = all.length < result.total && Boolean(result.items?.length)
       page++
     }
     organizations.value = all
   }
+  if (!currentCatalogRequest(sequence)) return false
   if (selectedOrgId.value !== ALL_ORGS && !organizations.value.some(item => item.org_id === selectedOrgId.value)) selectedOrgId.value = ALL_ORGS
+  return true
 }
 async function loadUsers() {
+  if (!alive) return
+  const sequence = ++listSequence
+  error.value = ''
   if (!canReadUsers.value) { users.value = []; total.value = 0; loading.value = false; return }
   loading.value = true
-  error.value = ''
   try {
     const result = await systemApi.users({
       keyword: filters.keyword.trim(), roleCode: filters.roleCode, user_type: filters.user_type, status: filters.status,
       orgId: selectedOrgId.value === ALL_ORGS ? '' : selectedOrgId.value,
       page: filters.page, size: filters.size
     })
+    if (!currentListRequest(sequence)) return
     users.value = result.items || []
     total.value = result.total || 0
-  } catch (e) { error.value = e.message || '用户列表加载失败。' }
-  finally { loading.value = false }
+  } catch (e) { if (currentListRequest(sequence)) error.value = e.message || '用户列表加载失败。' }
+  finally { if (currentListRequest(sequence)) loading.value = false }
 }
 async function refreshAll() {
+  if (!alive) return
+  const sequence = ++listSequence
   loading.value = true
   error.value = ''
-  try { await loadCatalog(); await loadUsers() }
-  catch (e) { error.value = e.message || '系统管理数据加载失败。'; loading.value = false }
+  // 目录可以独立加载；完成后按此刻的筛选查询，不能复用刷新开始时的单位或分页。
+  try { if (await loadCatalog()) await loadUsers() }
+  catch (e) {
+    if (currentListRequest(sequence)) { error.value = e.message || '系统管理数据加载失败。'; loading.value = false }
+  }
 }
 function search() { filters.page = 1; loadUsers() }
 function resetFilters() { Object.assign(filters, { keyword: '', roleCode: '', user_type: '', status: '', page: 1 }); loadUsers() }
@@ -223,6 +241,7 @@ function handleOrgCommand(command, row) {
 
 watch(() => [filters.roleCode, filters.status, filters.user_type], search)
 onMounted(refreshAll)
+onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
 </script>
 
 <template>

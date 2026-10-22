@@ -5,6 +5,7 @@ param(
     [switch]$SkipFrontendInstall,
     [switch]$WithQaVideo,
     [string]$BusinessRoot = '',
+    [string]$MapDataDir = '',
     [string]$SimulatorRoot = '',
     [string]$JavaHome = '',
     [ValidateRange(20, 600)]
@@ -26,6 +27,7 @@ if ($SkipBusinessFrontend) { $startParams.SkipBusinessFrontend = $true }
 if ($SkipFrontendInstall) { $startParams.SkipFrontendInstall = $true }
 if ($WithQaVideo) { $startParams.WithQaVideo = $true }
 if ($BusinessRoot) { $startParams.BusinessRoot = $BusinessRoot }
+if ($MapDataDir) { $startParams.MapDataDir = $MapDataDir }
 if ($SimulatorRoot) { $startParams.SimulatorRoot = $SimulatorRoot }
 if ($JavaHome) { $startParams.JavaHome = $JavaHome }
 

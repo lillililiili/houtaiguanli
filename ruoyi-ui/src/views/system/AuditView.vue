@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import PageHeader from '@/components/PageHeader.vue'
 import ErrorAlert from '@/components/ErrorAlert.vue'
@@ -13,6 +13,9 @@ const exporting = ref(false)
 const error = ref('')
 const rows = ref([])
 const total = ref(0)
+let alive = true
+let listSequence = 0
+const currentListRequest = sequence => alive && sequence === listSequence
 const detailDialog = reactive({ visible: false, loading: false, row: null })
 // 系统自动高频记录（模拟观测、设备状态上报、自动核验等）默认不显示，打开开关后照常列出；不删除、不停写。
 const filters = reactive({ range: [], account: '', module: '', action: '', result: '', includeAutomatic: false, page: 1, size: 20 })
@@ -90,14 +93,17 @@ function roleText(row) { return row.role_name || ({ 'ROLE-ADMIN': '超级管理�
 function ipText(value) { return value?.trim() || '未记录' }
 
 async function load() {
+  if (!alive) return
+  const sequence = ++listSequence
   loading.value = true
   error.value = ''
   try {
     const data = await systemApi.audits(params())
+    if (!currentListRequest(sequence)) return
     rows.value = data.items || []
     total.value = data.total || 0
-  } catch (e) { error.value = e.message || '审计日志加载失败。' }
-  finally { loading.value = false }
+  } catch (e) { if (currentListRequest(sequence)) error.value = e.message || '审计日志加载失败。' }
+  finally { if (currentListRequest(sequence)) loading.value = false }
 }
 function search() { filters.page = 1; load() }
 function reset() { Object.assign(filters, { range: [], account: '', module: '', action: '', result: '', includeAutomatic: false, page: 1 }); load() }
@@ -115,6 +121,7 @@ async function exportCsv() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => { alive = false; listSequence++ })
 </script>
 
 <template>

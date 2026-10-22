@@ -5,6 +5,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.core.env.Environment;
@@ -46,7 +49,17 @@ public class FlightDeviceCheckService {
         this.healthFreshnessMillis=environment.getProperty("app.device-maintenance.recovery-max-age-seconds",Long.class,300L)*1000;
     }
     public record DeviceRow(String deviceId,String name,boolean simulated,BigDecimal distanceM,String connectivity,
-            String healthCode,Long lastHeartbeatAt,Long observedAt,boolean abnormal,boolean complete,List<Incident> incidents) { }
+            String healthCode,Long lastHeartbeatAt,Long observedAt,boolean abnormal,boolean complete,List<Incident> incidents,
+            MaintenanceProgress maintenance) {
+        public DeviceRow(String deviceId,String name,boolean simulated,BigDecimal distanceM,String connectivity,
+                String healthCode,Long lastHeartbeatAt,Long observedAt,boolean abnormal,boolean complete,List<Incident> incidents) {
+            this(deviceId,name,simulated,distanceM,connectivity,healthCode,lastHeartbeatAt,observedAt,abnormal,complete,incidents,null);
+        }
+        DeviceRow withMaintenance(MaintenanceProgress value) {
+            return new DeviceRow(deviceId,name,simulated,distanceM,connectivity,healthCode,lastHeartbeatAt,observedAt,abnormal,complete,incidents,value);
+        }
+    }
+    public record MaintenanceProgress(String taskId,String workflowState) { }
     public record Check(String planId,String conclusion,String message,long checkedAt,String selectionBasis,
             boolean complete,int uncheckedLocations,int uncheckedCoverage,List<DeviceRow> rows,boolean mqttSimulation) { }
 
@@ -60,7 +73,35 @@ public class FlightDeviceCheckService {
     /** Only background application services call this entry point; no synthetic login context. */
     public Check scheduled(FlightReadRepository.PlanRow plan) { return inspectPlan(plan,true); }
 
+    /** 列表与详情复用同一检查，按请求缓存同范围设备和航线空间关系，不能靠旧定时检查是否启用决定待办。 */
+    @Transactional(readOnly=true)
+    public Map<String,Check> readForAttention(List<FlightReadRepository.PlanRow> visiblePlans) {
+        Map<String,Check> result=new LinkedHashMap<>();
+        InspectionCache cache=new InspectionCache();
+        try {
+            for(var plan:visiblePlans) result.put(plan.planId(),inspectPlan(plan,false,cache));
+        } catch(ApiException error) {
+            if(error.getStatus()==HttpStatus.FORBIDDEN)return Map.of();
+            throw error;
+        }
+        return result;
+    }
+
+    private record DeviceScope(String org,String district) { }
+    private record RouteDevice(String route,String device) { }
+    private record CoverageResult(BigDecimal distance,Boolean covered) { }
+    private static class InspectionCache {
+        final Map<DeviceScope,List<PlanInspectionDevice>> inputs=new HashMap<>();
+        final Map<String,Boolean> routes=new HashMap<>();
+        final Map<RouteDevice,CoverageResult> coverage=new HashMap<>();
+        final Map<String,MaintenanceProgress> maintenance=new HashMap<>();
+    }
+
     private Check inspectPlan(FlightReadRepository.PlanRow plan,boolean scheduled) {
+        return inspectPlan(plan,scheduled,new InspectionCache());
+    }
+
+    private Check inspectPlan(FlightReadRepository.PlanRow plan,boolean scheduled,InspectionCache cache) {
         String planId=plan.planId();
         boolean simulatorPlan=localSimulatorDeviceBridge
             && LOCAL_SIMULATOR_PLAN_SOURCE_ID.equals(plan.sourceId()) && "mock".equals(plan.sourceMode());
@@ -68,7 +109,7 @@ public class FlightDeviceCheckService {
         var routeAccess=scheduled ? new com.uav.lowaltitude.modules.identity.domain.AccessDecision(null,
             com.uav.lowaltitude.modules.identity.domain.ScopeMode.ALL) : access.require(PermissionCode.ROUTE_READ);
         long now=clock.nowMillis();
-        if(plan.routeVersionId()==null || plans.findRouteVersion(plan.routeVersionId(),routeAccess)==null)
+        if(plan.routeVersionId()==null || !cache.routes.computeIfAbsent(plan.routeVersionId(),id->plans.findRouteVersion(id,routeAccess)!=null))
             return unknown(planId,now,"缺少可用航线，无法查找附近设备。",mqttSimulation);
         if(plan.sourceMode()==null || plan.startAt()==null || plan.endAt()==null)
             return unknown(planId,now,"任务时段或数据来源不完整，暂不能检查。",mqttSimulation);
@@ -83,7 +124,12 @@ public class FlightDeviceCheckService {
         boolean replaySimulation="replay".equals(plan.sourceMode());
         // The same tuple-bound fact projection serves both callers. Interactive reads additionally
         // require devices.read and retain the current user's device scope, not backend monitoring access.
-        var inputs=devices.inspectPlanDevices(plan.ownerOrgId(),plan.districtId(),scheduled);
+        var inputs=cache.inputs.computeIfAbsent(new DeviceScope(plan.ownerOrgId(),plan.districtId()),scope->{
+            var loaded=devices.inspectPlanDevices(scope.org(),scope.district(),scheduled);
+            if(!scheduled)for(var task:plans.openDeviceCases(loaded.stream().map(d->d.device().deviceId()).toList()))
+                cache.maintenance.put(task.deviceId(),new MaintenanceProgress(task.taskId(),task.workflowState()));
+            return loaded;
+        });
         boolean complete=true;
         List<DeviceRow> rows=new ArrayList<>();int unchecked=0,uncheckedCoverage=0;
         for(var detail:inputs) {
@@ -98,12 +144,13 @@ public class FlightDeviceCheckService {
                         || !SENSORS.contains(device.deviceTypeCode().toUpperCase(Locale.ROOT))
                         || ((replaySimulation || simulatorPlan) && !device.enabled()))continue;
                 if(!positionKnown(detail)){unchecked++;continue;}
-                var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());
-                if(distance.distanceM()==null){uncheckedCoverage++;continue;}
-                Boolean covered=coversRoute(detail,plan.routeVersionId(),distance.distanceM());
-                if(covered==null){uncheckedCoverage++;continue;}
-                if(!covered)continue;
-                rows.add(inspect(detail,distance.distanceM(),from,to,preflight,true));
+                var coverage=cache.coverage.computeIfAbsent(new RouteDevice(plan.routeVersionId(),device.deviceId()),key->{
+                    var distance=spatial.distanceToRoute(new TargetState(null,null,null,detail.longitude(),detail.latitude(),null,null,null,null,null,null,null),plan.routeVersionId());
+                    return new CoverageResult(distance.distanceM(),distance.distanceM()==null?null:coversRoute(detail,plan.routeVersionId(),distance.distanceM()));
+                });
+                if(coverage.covered()==null){uncheckedCoverage++;continue;}
+                if(!coverage.covered())continue;
+                rows.add(inspect(detail,coverage.distance(),from,to,preflight,true).withMaintenance(cache.maintenance.get(device.deviceId())));
         }
         rows.sort(java.util.Comparator.comparingInt(row -> row.abnormal()?0:row.complete()?2:1));
         complete=complete && unchecked==0 && uncheckedCoverage==0 && !rows.isEmpty() && rows.stream().allMatch(DeviceRow::complete);

@@ -57,6 +57,7 @@ class FlightAttentionPagingPostgresTest {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @MockitoSpyBean FlightReadRepository repository;
+    @Autowired com.uav.lowaltitude.modules.device.infrastructure.DeviceMaintenanceRepository maintenance;
     private String org, district, route, role, session, prefix;
     private OffsetDateTime now;
     private List<Plan> population;
@@ -271,6 +272,27 @@ class FlightAttentionPagingPostgresTest {
         result.addAll(plans.stream().filter(p->List.of("COMPLETED","CANCELLED").contains(p.state)).sorted(NEWEST).toList());
         return result;
     }
+    @ParameterizedTest
+    @ValueSource(strings={"live","replay"})
+    void unlinkedDeviceCaseProjectionUsesFrozenSourceAndOpenState(String mode) {
+        String sensor=id(),task=id();
+        boolean simulated="replay".equals(mode);
+        jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_code,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at)"
+                +" VALUES(?,?,?,'RADAR','雷达','隔离测试',TRUE,?,?,0,0,0)",sensor,sensor,"设备",mode,simulated);
+        maintenance.insert(new com.uav.lowaltitude.modules.device.infrastructure.DeviceMaintenanceRepository.Row(
+                task,null,sensor,org,district,null,sensor,"设备","故障","ONLINE","BAD",1L,1L,simulated,
+                "PENDING",null,"系统自动检查",1L,null,null,null,1));
+        assertThat(repository.openDeviceCases(List.of(sensor))).singleElement().satisfies(row->assertThat(row.taskId()).isEqualTo(task));
+        assertThat(repository.openDeviceCases(List.of(id()))).isEmpty();
+        jdbc.update("UPDATE ops_device_maintenance_task SET workflow_state='READY_TO_COMPLETE' WHERE task_id=?",task);
+        assertThat(repository.openDeviceCases(List.of(sensor))).singleElement().satisfies(row->assertThat(row.workflowState()).isEqualTo("READY_TO_COMPLETE"));
+        jdbc.update("UPDATE ops_device_maintenance_task SET workflow_source_mode=? WHERE task_id=?","live".equals(mode)?"replay":"live",task);
+        assertThat(repository.openDeviceCases(List.of(sensor))).isEmpty();
+        jdbc.update("UPDATE ops_device_maintenance_task SET workflow_source_mode=?,active_key=NULL,status='HANDLED',workflow_state='COMPLETED',"
+                +"handled_by=(SELECT user_id FROM app_session WHERE session_id=?),handled_at=2,handling_note='确认恢复' WHERE task_id=?",mode,session,task);
+        assertThat(repository.openDeviceCases(List.of(sensor))).isEmpty();
+    }
+
     private JsonNode read(String query) throws Exception {
         return json.readTree(mvc.perform(get("/api/v1/flight-plans?order=attention"+query).header("Authorization","Bearer "+session))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");

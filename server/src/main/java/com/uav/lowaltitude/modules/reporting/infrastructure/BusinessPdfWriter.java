@@ -5,6 +5,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.LongStream;
 import org.apache.pdfbox.pdmodel.*;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
@@ -151,11 +152,15 @@ public class BusinessPdfWriter {
         }
         void trend(List<Day> days) throws IOException {
             space(185);text("每日趋势（数量）",LEFT,y-10,11,Color.DARK_GRAY);y-=25;
-            float top=y,base=y-105,x=LEFT+25,w=WIDTH-35;long max=Math.max(1,days.stream().mapToLong(Day::value).max().orElse(1));
+            long max=Math.max(1,days.stream().mapToLong(Day::value).max().orElse(1));
+            long[] ticks=LongStream.of(0,max/2,max).distinct().toArray();
+            float axisWidth=Math.max(25,font.getStringWidth(Long.toString(max))*8/1000+10);
+            float top=y,base=y-105,x=LEFT+axisWidth,w=WIDTH-axisWidth-10;
             stream.setStrokingColor(Color.LIGHT_GRAY);stream.setLineWidth(.5f);
-            for(int tick=0;tick<=2;tick++) {
-                float gy=base+tick*52.5f;stream.moveTo(x,gy);stream.lineTo(x+w,gy);stream.stroke();
-                text(Long.toString(Math.round(max*tick/2.0)),LEFT,gy-3,8,Color.GRAY);
+            // Count labels stay integral and distinct; position each grid line at its actual value.
+            for(long tick:ticks) {
+                float gy=base+105f*tick/max;stream.moveTo(x,gy);stream.lineTo(x+w,gy);stream.stroke();
+                text(Long.toString(tick),LEFT,gy-3,8,Color.GRAY);
             }
             stream.setStrokingColor(Color.decode("#1677ff"));stream.setLineWidth(1.5f);
             for(int i=0;i<days.size();i++) {
