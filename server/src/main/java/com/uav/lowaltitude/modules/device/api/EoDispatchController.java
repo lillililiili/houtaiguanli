@@ -14,11 +14,11 @@ public class EoDispatchController {
     @PostMapping
     public ApiResponse<EoDispatchService.View> request(@PathVariable String targetId,
             @RequestHeader("Idempotency-Key") String key,@RequestBody(required=false) Request body) {
-        return ApiResponse.ok(service.request(targetId,body==null?null:body.expectedTaskId(),key));
+        return ApiResponse.ok(service.request(targetId,body==null?null:body.expectedTaskId(),body==null?null:body.deviceId(),key));
     }
     @PostMapping("/cancel")
     public ApiResponse<EoDispatchService.View> cancel(@PathVariable String targetId,@RequestHeader("Idempotency-Key") String key) {
         return ApiResponse.ok(service.cancel(targetId,key));
     }
-    public record Request(String expectedTaskId) { }
+    public record Request(String expectedTaskId,String deviceId) { }
 }

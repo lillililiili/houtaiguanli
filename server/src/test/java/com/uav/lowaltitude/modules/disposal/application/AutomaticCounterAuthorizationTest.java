@@ -175,6 +175,6 @@ class AutomaticCounterAuthorizationTest {
     private AuthorizationRow row(String status, String mode, String action, String channel) {
         var at = NOW.atOffset(ZoneOffset.UTC);
         return new AuthorizationRow("auth", "AUTH", action, "UAV_EVENT", event, target, device, channel, "", AutomationPrincipal.USER_ID,
-                at, null, null, null, at, at.plusMinutes(10), status, null, null, null, "policy", "org", "district", mode, 1, null, null, "DIRECT");
+                at, null, null, null, at, at.plusMinutes(10), status, null, null, null, "policy", "org", "district", mode, 1, null, null, "DIRECT", null);
     }
 }

@@ -14,6 +14,7 @@ import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.MqttRepository;
 import com.uav.lowaltitude.integration.mqtt.LingyunControlEnvelope;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalPolicy;
+import com.uav.lowaltitude.modules.disposal.domain.CountermeasureMode;
 import com.uav.lowaltitude.modules.disposal.domain.DisposalRules;
 import com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository;
 import com.uav.lowaltitude.platform.api.ApiException;
@@ -29,7 +30,7 @@ import com.uav.lowaltitude.platform.security.AuthUser;
  * A 已按协议 A/B 附录开通 dec/ifr/bsc（500xx/600xx/70001）。family() 仍返回 null 的码
  * （例如协议标明「未有真实设备」的 50000）继续走 PROTOCOL_NOT_OPENED。
  * 四种处置动作要真正 enqueue，还须绑定同族 MQTT 设备且在线；类型不符由 A 以 400 原样透出（13-14）。
- * 四通道走 A 的原生 TCP 设置，不经凌云 MQTT；驱离/诱骗不能走该通道。
+ * 四通道走 A 的原生 TCP 设置；反制可选择迫降/驱离，独立 DISPERSAL/DECOY 动作不走该通道。
  */
 @Component
 public class DisposalExecutionGateway {
@@ -77,7 +78,7 @@ public class DisposalExecutionGateway {
      */
     public Result dispatch(String deviceId, String idempotencyKey, String authorizationId, DisposalPolicy policy,
                            String actionType, Map<String, Object> operationParams, String reason) {
-        DisposalPolicy.Command command = policy.command(actionType);
+        DisposalPolicy.Command command = command(authorizationId, policy, actionType);
         // 顺序有意：先判"指令码开没开通"。它一旦没开通，补绑定、把设备弄上线都没用——
         // 先报 NOT_BOUND 会把运维支去做一件做完仍然执行不了的事。三条各自独立成立时，报最靠前那条。
         // ① 指令码在 A 的协议面还没开通——补救方是厂家。已开通的 60002/60003/70001/50002 会落到后面两刀。
@@ -104,7 +105,7 @@ public class DisposalExecutionGateway {
     /** 链式自动下发：用既定执行人，不读当前会话。自检顺序与 {@link #dispatch} 相同。 */
     public Result dispatchAs(AuthUser user, String deviceId, String idempotencyKey, String authorizationId,
                              DisposalPolicy policy, String actionType, Map<String, Object> operationParams, String reason) {
-        DisposalPolicy.Command command = policy.command(actionType);
+        DisposalPolicy.Command command = command(authorizationId, policy, actionType);
         if (LingyunControlEnvelope.family(command.operationCmd()) == null) {
             return new Rejected(EVENT_PROTOCOL_NOT_OPENED, "DEVICE_CONTROL_UNAVAILABLE",
                     "指令码 " + command.operationCmd() + " 对应的设备类型缩写尚未确认，协议面未开通，不能下发");
@@ -124,14 +125,14 @@ public class DisposalExecutionGateway {
     }
 
     /**
-     * 经四通道网络控制器下发。COUNTERMEASURE→全开 0x0F，JAMMING→驱离 0x0D。
+     * 经四通道网络控制器下发。反制优先使用申请时的模式；旧 COUNTERMEASURE→0x0F、JAMMING→0x0D。
      * DISPERSAL/DECOY 不是该设备的能力，400 且不发射。
      */
     public Result dispatch4ch(String deviceId, String idempotencyKey, String authorizationId, String actionType,
                               String reason) {
         if (DisposalRules.DISPERSAL.equals(actionType) || DisposalRules.DECOY.equals(actionType))
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
-                    "四通道网络控制器不能执行驱离或诱骗，请改用驱鸟炮或诱骗设备");
+                    "所选动作不属于四通道反制设备能力，请使用反制动作并选择迫降或驱离");
         Map<String, Object> device = devices.find(deviceId);
         if (device == null)
             throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
@@ -142,8 +143,7 @@ public class DisposalExecutionGateway {
         if (knownFault(device)) return fault();
         if (devices.hasActiveWork(deviceId)) return busy();
         if (disposals.deviceRunningOther(deviceId, authorizationId)) return running();
-        int mask = DisposalRules.JAMMING.equals(actionType)
-                ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
+        int mask = mask(authorizationId, actionType);
         String commandId = countermeasure.enqueue(deviceId, idempotencyKey, authorizationId,
                 Countermeasure4ChControlService.ACTION_MASK, null, mask, reason);
         return new Accepted(commandId);
@@ -153,7 +153,7 @@ public class DisposalExecutionGateway {
                                 String actionType, String reason) {
         if (DisposalRules.DISPERSAL.equals(actionType) || DisposalRules.DECOY.equals(actionType))
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
-                    "四通道网络控制器不能执行驱离或诱骗，请改用驱鸟炮或诱骗设备");
+                    "所选动作不属于四通道反制设备能力，请使用反制动作并选择迫降或驱离");
         Map<String, Object> device = devices.find(deviceId);
         if (device == null)
             throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "设备不存在");
@@ -164,11 +164,27 @@ public class DisposalExecutionGateway {
         if (knownFault(device)) return fault();
         if (devices.hasActiveWork(deviceId)) return busy();
         if (disposals.deviceRunningOther(deviceId, authorizationId)) return running();
-        int mask = DisposalRules.JAMMING.equals(actionType)
-                ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
+        int mask = mask(authorizationId, actionType);
         String commandId = countermeasure.enqueueUnchecked(user, deviceId, idempotencyKey, authorizationId,
                 Countermeasure4ChControlService.ACTION_MASK, null, mask, reason);
         return new Accepted(commandId);
+    }
+
+    /** 只读申请时保存的模式，执行参数不能覆盖审批内容。旧授权继续原动作/策略映射。 */
+    private CountermeasureMode mode(String authorizationId, String actionType) {
+        var row = disposals.findUnlocked(authorizationId);
+        return CountermeasureMode.parse(row == null ? null : row.countermeasureMode(), actionType);
+    }
+
+    private DisposalPolicy.Command command(String authorizationId, DisposalPolicy policy, String actionType) {
+        CountermeasureMode mode = mode(authorizationId, actionType);
+        return mode == null ? policy.command(actionType) : mode.command();
+    }
+
+    private int mask(String authorizationId, String actionType) {
+        CountermeasureMode mode = mode(authorizationId, actionType);
+        return mode != null ? mode.mask() : DisposalRules.JAMMING.equals(actionType)
+                ? Countermeasure4ChCodec.MASK_DRIVE_AWAY : Countermeasure4ChCodec.MASK_FORCE_LAND;
     }
 
     /** 停止：四通道尝试全关 0x00。不根据凌云 MQTT 绑定判断。失败只记事件，由调用方决定授权结局。 */

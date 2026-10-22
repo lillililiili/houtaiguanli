@@ -67,6 +67,80 @@ public class AirspaceWriteService {
     }
 
     @Transactional
+    public CreatedAirspaceDto createLocal(String rawBody,String idempotencyKey) {
+        requireManage();
+        requireLocalAltitude(strictObject(rawBody,CREATE_FIELDS));
+        return createInternal(rawBody,idempotencyKey,null,"live");
+    }
+
+    @Transactional
+    public CreatedAirspaceDto updateLocal(String id,String rawBody,String idempotencyKey) {
+        AccessDecision decision=requireManage();
+        Set<String> fields=new java.util.HashSet<>(VERSION_FIELDS); fields.add("name");
+        JsonNode node=strictObject(rawBody,fields);
+        requireLocalAltitude(node);
+        String name=requiredText(node,"name",NAME_MAX);
+        String identifier=identifier(id);
+        AirspaceHead head=repository.lockAirspace(identifier,scopeUser(decision));
+        if(head==null) throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","空域不存在或不可见");
+        requirePlatformWritable(identifier);
+        com.fasterxml.jackson.databind.node.ObjectNode versionBody=node.deepCopy(); versionBody.remove("name");
+        // The local update claims its complete request, including metadata, before invoking the version primitive.
+        idempotency.claim(idempotencyKey,framed("airspace-local-update")+framed(identifier)+framed(node.toString()));
+        CreatedVersionDto saved=addVersionInternal(identifier,versionBody.toString(),idempotencyKey,false,false);
+        repository.renameAirspace(identifier,name);
+        AuthUser actor=AuthContext.require();
+        audit.record(actor.userId(),actor.account(),actor.roleCode(),MODULE,"airspace_updated",OBJECT_TYPE,identifier,
+            "old_name="+head.name()+"; new_name="+name+"; version="+saved.version(),"SUCCESS","","");
+        return new CreatedAirspaceDto(saved.airspaceId(),saved.airspaceVersionId(),saved.versionNo(),saved.version());
+    }
+
+    @Transactional
+    public com.uav.lowaltitude.modules.airspace.api.AirspaceWriteDtos.DeletedAirspaceDto deleteLocal(String id,String rawBody,String key) {
+        AccessDecision decision=requireManage();
+        JsonNode body=strictObject(rawBody,Set.of("expected_version","change_reason"));
+        String reason=requiredText(body,"change_reason",REASON_MAX);
+        JsonNode expected=body.get("expected_version");
+        if(expected==null||!expected.isIntegralNumber()||!expected.canConvertToLong()||expected.longValue()<0) throw validation("expected_version 无效");
+        String identifier=identifier(id);
+        AirspaceHead head=repository.lockAirspace(identifier,scopeUser(decision));
+        if(head==null) throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","空域不存在或不可见");
+        requirePlatformWritable(identifier);
+        idempotency.claim(key,framed("airspace-local-delete")+framed(identifier)+framed(body.toString()));
+        if(repository.deleted(identifier)) throw new ApiException(HttpStatus.CONFLICT,"AIRSPACE_DELETED","空域已删除，历史记录只读");
+        if(head.version()!=expected.longValue()) throw versionConflict();
+        Instant now=clock.now();
+        if(repository.retireAirspace(identifier,expected.longValue(),now)!=1) throw versionConflict();
+        AuthUser actor=AuthContext.require();
+        audit.record(actor.userId(),actor.account(),actor.roleCode(),MODULE,"airspace_deleted",OBJECT_TYPE,identifier,
+            "change_reason="+reason+"; expected_version="+expected.longValue(),"SUCCESS","","");
+        return new com.uav.lowaltitude.modules.airspace.api.AirspaceWriteDtos.DeletedAirspaceDto(identifier,head.version()+1,now.toEpochMilli());
+    }
+
+    @Transactional(readOnly=true)
+    public com.uav.lowaltitude.modules.airspace.api.AirspaceWriteDtos.ManagementContextDto managementContext() {
+        AccessDecision decision=requireManage();
+        return new com.uav.lowaltitude.modules.airspace.api.AirspaceWriteDtos.ManagementContextDto(repository.managementScopes(scopeUser(decision)));
+    }
+
+    private void requirePlatformWritable(String id) {
+        requireNotDeleted(id);
+        String source=repository.managementSource(id);
+        if(!Set.of("LOCAL","UPSTREAM").contains(source)) throw new ApiException(HttpStatus.CONFLICT,"LEGACY_READ_ONLY","该空域来源依据不完整，不能在平台维护");
+    }
+
+    private void requireLocalAltitude(JsonNode node) {
+        Altitude value=altitude(node);
+        if(value.min()==null||!"AMSL".equals(value.datum())) throw validation("本地立体空域必须完整填写 AMSL 海拔上下限");
+        if(value.min().compareTo(value.max())>=0) throw validation("本地立体空域海拔上限必须高于下限");
+        for (BigDecimal height : List.of(value.min(),value.max())) {
+            if (height.stripTrailingZeros().scale()>2 || height.abs().compareTo(BigDecimal.valueOf(100_000_000))>=0) {
+                throw validation("海拔最多保留两位小数，绝对值必须小于100000000米");
+            }
+        }
+    }
+
+    @Transactional
     public CreatedAirspaceDto create(String rawBody, String idempotencyKey) {
         return createInternal(rawBody, idempotencyKey, null, "live");
     }
@@ -80,8 +154,11 @@ public class AirspaceWriteService {
         AccessDecision decision = requireManage();
         CreateRequest request = parseCreate(rawBody);
         requireScope(decision, request.ownerOrgId(), request.districtId());
-        idempotency.claim(idempotencyKey, framed("airspace-create") + framed(request.airspaceNo()) + framed(request.name())
-                + framed(request.kindCode()) + framed(Long.toString(request.validFrom().toEpochMilli())));
+        String operation = sourceId == null
+                ? framed("airspace-create") + framed(strictObject(rawBody,CREATE_FIELDS).toString())
+                : framed("airspace-create") + framed(request.airspaceNo()) + framed(request.name())
+                    + framed(request.kindCode()) + framed(Long.toString(request.validFrom().toEpochMilli()));
+        idempotency.claim(idempotencyKey, operation);
         if (repository.airspaceNoExists(request.airspaceNo())) {
             throw new ApiException(HttpStatus.CONFLICT, "AIRSPACE_NO_EXISTS", "空域编号已存在");
         }
@@ -114,15 +191,24 @@ public class AirspaceWriteService {
     }
 
     private CreatedVersionDto addVersionInternal(String airspaceId, String rawBody, String idempotencyKey, boolean upstream) {
+        return addVersionInternal(airspaceId,rawBody,idempotencyKey,upstream,true);
+    }
+
+    private CreatedVersionDto addVersionInternal(String airspaceId, String rawBody, String idempotencyKey, boolean upstream,boolean claim) {
         AccessDecision decision = requireManage();
         VersionRequest request = parseVersion(rawBody);
         String id = identifier(airspaceId);
         AirspaceHead head = repository.lockAirspace(id, scopeUser(decision));
         if (head == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "空域不存在或不可见");
-        if (!upstream) requireLegacyWritable(id);
-        idempotency.claim(idempotencyKey, framed("airspace-version") + framed(id) + framed(request.kindCode())
-                + framed(Long.toString(request.validFrom().toEpochMilli())) + framed(request.changeReason())
-                + framed(Long.toString(request.expectedVersion())));
+        if (upstream) requireNotDeleted(id); else requirePlatformWritable(id);
+        if (claim) {
+            String operation = upstream
+                    ? framed("airspace-version") + framed(id) + framed(request.kindCode())
+                        + framed(Long.toString(request.validFrom().toEpochMilli())) + framed(request.changeReason())
+                        + framed(Long.toString(request.expectedVersion()))
+                    : framed("airspace-version") + framed(id) + framed(strictObject(rawBody,VERSION_FIELDS).toString());
+            idempotency.claim(idempotencyKey, operation);
+        }
         if (head.version() != request.expectedVersion()) throw versionConflict();
 
         VersionRow open = repository.findOpenVersion(id, request.validFrom());
@@ -161,9 +247,8 @@ public class AirspaceWriteService {
         return decision;
     }
 
-    void requireLegacyWritable(String id) {
-        if (repository.upstreamManaged(id)) throw new ApiException(HttpStatus.CONFLICT,
-                "UPSTREAM_MANAGED", "上级下发空域只能由原来源更新或撤销");
+    private void requireNotDeleted(String id) {
+        if(repository.deleted(id)) throw new ApiException(HttpStatus.CONFLICT,"AIRSPACE_DELETED","空域已删除，历史记录只读");
     }
 
     static String scopeUser(AccessDecision decision) {
@@ -171,6 +256,7 @@ public class AirspaceWriteService {
     }
 
     private void requireScope(AccessDecision decision, String ownerOrgId, String districtId) {
+        if(!repository.scopeExists(ownerOrgId,districtId)) throw new ApiException(HttpStatus.NOT_FOUND,"NOT_FOUND","归属不存在或已停用");
         if (decision.scopeMode() != ScopeMode.ASSIGNED) return;
         if (!repository.scopeGranted(decision.userId(), ownerOrgId, districtId)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "归属不在可见范围内");
@@ -250,6 +336,7 @@ public class AirspaceWriteService {
             String reason = feature.issues().isEmpty() ? "GEOMETRY_INVALID" : feature.issues().get(0).reasonCode();
             throw invalidGeoJson("边界几何无效：" + reason);
         }
+        if(!repository.validBoundary(feature.boundaryEwkt())) throw invalidGeoJson("边界拓扑无效");
         return feature.boundaryEwkt();
     }
 

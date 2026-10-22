@@ -38,6 +38,11 @@ public class EoDispatchRepository {
     public void manual(String id,String actor,long now) {
         jdbc.update("UPDATE eo_dispatch_request SET origin='MANUAL',requested_by=?,updated_at=? WHERE request_id=? AND status='WAITING'",actor,now,id);
     }
+    /** WAITING device_id is a preference, not a reservation; only STOPPING owns a device. */
+    public void selectDevice(String id,String device,long now) {
+        if(jdbc.update("UPDATE eo_dispatch_request SET device_id=?,updated_at=? WHERE request_id=? AND status='WAITING'",device,now,id)!=1)
+            throw new IllegalStateException("EO_DISPATCH_CHANGED");
+    }
     public void reserve(String id,String device,String task,long now) {
         if(jdbc.update("UPDATE eo_dispatch_request SET status='STOPPING',device_id=?,stop_task_id=?,updated_at=? WHERE request_id=? AND status='WAITING'",device,task,now,id)!=1)
             throw new IllegalStateException("EO_DISPATCH_CHANGED");

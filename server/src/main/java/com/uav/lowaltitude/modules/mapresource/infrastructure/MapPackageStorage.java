@@ -36,7 +36,7 @@ import com.uav.lowaltitude.platform.config.MapPackageProperties;
 @Component
 public class MapPackageStorage {
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
-            ".json", ".pmtiles", ".pbf", ".png", ".otf", ".txt");
+            ".json", ".pmtiles", ".pbf", ".png", ".webp", ".otf", ".txt");
 
     private final Path root;
     private final long maxUploadBytes;
@@ -230,7 +230,12 @@ public class MapPackageStorage {
 
     private Path safeEntry(String name) {
         if (name == null || name.isBlank() || name.indexOf('\0') >= 0 || name.indexOf('\\') >= 0
-                || name.startsWith("/") || name.contains(":")) throw invalid("地图包包含非法路径");
+                || name.startsWith("/") || name.contains(":") || name.contains("%")
+                || name.contains("?") || name.contains("#")) throw invalid("地图包包含非法路径");
+        String entryName = name.startsWith("./") ? name.substring(2) : name;
+        for (String part : entryName.split("/", -1)) {
+            if (part.equals("..") || part.startsWith(".")) throw invalid("地图包包含非法路径：" + name);
+        }
         Path relative = Path.of(name).normalize();
         if (relative.isAbsolute() || relative.getNameCount() == 0 || relative.startsWith("..")
                 || relative.toString().startsWith(".")) throw invalid("地图包包含非法路径：" + name);

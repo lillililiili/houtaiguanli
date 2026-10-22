@@ -100,9 +100,9 @@ class UpstreamAirspaceApiTest {
         mvc.perform(get("/api/v1/local-interface-simulator/airspaces/context").header("Authorization","Bearer "+token))
             .andExpect(status().isForbidden());
     }
-    @Test void manualEndpointsAreClosedAndLiveIsNotSilentlySimulated() throws Exception {
+    @Test void localCrudRejectsUpstreamEnvelopeAndLiveIsNotSilentlySimulated() throws Exception {
         mvc.perform(post("/api/v1/airspaces").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(input(1).toString()))
-            .andExpect(status().isMethodNotAllowed());
+            .andExpect(status().isBadRequest());
         mvc.perform(post("/api/v1/airspaces/import-batches").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content("{}"))
             .andExpect(status().isMethodNotAllowed());
         mvc.perform(get("/api/v1/airspaces/import-batches/missing").header("Authorization","Bearer "+token))
@@ -115,6 +115,51 @@ class UpstreamAirspaceApiTest {
     @Test void permissionsAreCheckedBeforeParsing() throws Exception {
         jdbc.update("delete from app_role_permission where role_code=? and permission_code='airspace:manage'",role);
         send(input(1)).andExpect(status().isForbidden());
+    }
+
+    @Test void localEditRetainsSourceAndLaterPushesWorkUntilLocalDeletion() throws Exception {
+        var original=input(1);
+        String receipt=send(original).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String id=json.readTree(receipt).path("data").path("airspace_id").asText();
+        var edit=original.deepCopy();edit.remove(java.util.List.of("message_id","revision","action","airspace_no","owner_org_id","district_id"));
+        edit.put("name","平台编辑后的名称").put("expected_version",0).put("valid_from",from+2000)
+            .put("min_altitude_m",-12.5).put("max_altitude_m",250).put("altitude_datum","AMSL");
+        String key=UUID.randomUUID().toString();
+        mvc.perform(put("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content(edit.toString()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.version_no").value(2));
+        mvc.perform(put("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content(edit.toString()))
+            .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_REPLAY"));
+        var second=input(2).put("valid_from",from+3000);
+        send(second.deepCopy().put("name","平台编辑后的名称")).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("UPSTREAM_IDENTITY_CONFLICT"));
+        send(second).andExpect(status().isOk());
+        var withdraw=json.createObjectNode().put("message_id",UUID.randomUUID().toString()).put("revision",3).put("action","WITHDRAW")
+            .put("airspace_no",no).put("effective_at",from+4000).put("change_reason","上级撤销");
+        send(withdraw).andExpect(status().isOk());
+        send(input(4).put("valid_from",from+5000)).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token))
+            .andExpect(jsonPath("$.data.name").value("平台编辑后的名称")).andExpect(jsonPath("$.data.management_source").value("UPSTREAM")).andExpect(jsonPath("$.data.editable").value(true));
+        assertThat(jdbc.queryForList("SELECT o.origin_kind FROM airspace_version_origin o JOIN airspace_version v ON v.airspace_version_id=o.airspace_version_id WHERE v.airspace_id=? ORDER BY v.version_no",String.class,id))
+            .containsExactly("UPSTREAM","MANUAL","UPSTREAM","UPSTREAM");
+        mvc.perform(delete("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":4,\"change_reason\":\"本地删除\"}"))
+            .andExpect(status().isOk());
+        send(input(5).put("valid_from",from+6000)).andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("AIRSPACE_DELETED"));
+        assertThat(send(original).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).isEqualTo(receipt);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM airspace_version WHERE airspace_id=?",Integer.class,id)).isEqualTo(4);
+        mvc.perform(get("/api/v1/airspaces").param("owner_org_id",org).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.total").value(0));
+    }
+
+    @Test void maintainingUpstreamStillRequiresPermissionAndOriginalScope() throws Exception {
+        String id=json.readTree(send(input(1)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("airspace_id").asText();
+        jdbc.update("delete from app_role_permission where role_code=? and permission_code='airspace:manage'",role);
+        mvc.perform(delete("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0,\"change_reason\":\"delete\"}"))
+            .andExpect(status().isForbidden());
+        mvc.perform(put("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content("{}"))
+            .andExpect(status().isForbidden());
+        jdbc.update("insert into app_role_permission(role_code,permission_code,permission_level,menu_enabled) values(?,'airspace:manage','OP',false)",role);
+        jdbc.update("delete from app_user_data_scope where user_id=?",user);
+        mvc.perform(delete("/api/v1/airspaces/"+id).header("Authorization","Bearer "+token).header("Idempotency-Key",UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0,\"change_reason\":\"delete\"}"))
+            .andExpect(status().isForbidden());
+        assertThat(jdbc.queryForObject("SELECT deleted_at FROM airspace WHERE airspace_id=?",java.sql.Timestamp.class,id)).isNull();
     }
 
     @Test void concurrentSameMessageProducesOneReceipt() throws Exception {

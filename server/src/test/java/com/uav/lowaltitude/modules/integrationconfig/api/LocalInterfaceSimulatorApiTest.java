@@ -216,6 +216,20 @@ class LocalInterfaceSimulatorApiTest {
  private void insertFixture(String table,Map<String,Object> row){
   jdbc.update("insert into "+table+"("+String.join(",",row.keySet())+") values("+String.join(",",Collections.nCopies(row.size(),"?"))+")",row.values().toArray());
  }
+ @Test void embeddedRouteRejectsNonWgs84WithoutPersistingPlanOrRoute() throws Exception {
+  var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
+  long start=System.currentTimeMillis()+300000;
+  for(var declaration:List.of(Map.of("coordinate_system","GCJ02"),Map.of("crs",Map.of("type","name","properties",Map.of("name","EPSG:4490"))))) {
+   var geometry=new LinkedHashMap<String,Object>();geometry.put("type","LineString");geometry.put("coordinates",List.of(List.of(119.2,36.8),List.of(119.21,36.81)));geometry.putAll(declaration);
+   var route=new LinkedHashMap<String,Object>();route.put("name","坐标基准校验");route.put("geometry",geometry);route.put("corridor_width_m",100);route.put("owner_org_id",scope.get("owner_org_id"));route.put("district_id",scope.get("district_id"));
+   String id="datum-"+UUID.randomUUID();
+   var body=new LinkedHashMap<String,Object>();body.put("message_id",id);body.put("route",route);body.put("uav_sn",id);body.put("start_at",start);body.put("end_at",start+3600000);
+   var routes=jdbc.queryForList("select route_id from route order by route_id");
+   send("/plans",body,400);
+   assertThat(jdbc.queryForList("select route_id from route order by route_id")).isEqualTo(routes);
+   assertThat(jdbc.queryForObject("select count(*) from flight_plan where uav_sn=?",Long.class,id)).isZero();
+  }
+ }
  @Test void planInputAcceptsEmbeddedRouteGeometryWithoutPriorRouteRegistration() throws Exception {
   var scope=jdbc.queryForMap("select owner_org_id,district_id from route where source_mode='mock' and enabled=true and owner_org_id is not null fetch first 1 rows only");
   long start=System.currentTimeMillis()+300000,end=start+3600000;

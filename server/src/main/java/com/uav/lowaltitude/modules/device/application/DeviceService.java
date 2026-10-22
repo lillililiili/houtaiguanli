@@ -1,5 +1,7 @@
 package com.uav.lowaltitude.modules.device.application;
 
+import com.uav.lowaltitude.platform.geo.Wgs84;
+
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -580,6 +582,8 @@ public class DeviceService {
             throw bad("VALIDATION_ERROR", "source_id 与 external_device_id 必须同时填写或同时为空");
         if ((m.longitude() == null) != (m.latitude() == null))
             throw bad("VALIDATION_ERROR", "经度和纬度必须同时填写或同时为空");
+        if (blankToNull(m.coordinateSystem()) != null && !Wgs84.isWgs84(m.coordinateSystem()))
+            throw bad("VALIDATION_ERROR", "设备坐标只支持 WGS-84，请先按来源依据转换后再提交");
         if (m.longitude() != null && (m.longitude().compareTo(BigDecimal.valueOf(-180)) < 0 || m.longitude().compareTo(BigDecimal.valueOf(180)) > 0))
             throw bad("VALIDATION_ERROR", "经度必须在 -180 到 180 之间");
         if (m.latitude() != null && (m.latitude().compareTo(BigDecimal.valueOf(-90)) < 0 || m.latitude().compareTo(BigDecimal.valueOf(90)) > 0))
@@ -618,7 +622,7 @@ public class DeviceService {
         v.put("channel", m.channel().trim()); v.put("model", blankToNull(m.model())); v.put("vendor", blankToNull(m.vendor()));
         v.put("owner_name", blankToNull(m.ownerName())); v.put("region_name", blankToNull(m.regionName()));
         v.put("address", blankToNull(m.address())); v.put("longitude", m.longitude()); v.put("latitude", m.latitude());
-        v.put("coordinate_system", m.longitude() == null ? null : (blankToNull(m.coordinateSystem()) == null ? "WGS-84" : m.coordinateSystem().trim()));
+        v.put("coordinate_system", m.longitude() == null ? null : Wgs84.DEVICE_NAME);
         v.put("altitude_m", m.altitudeM()); v.put("altitude_datum", blankToNull(m.altitudeDatum()));
         v.put("firmware_version", blankToNull(m.firmwareVersion())); v.put("installed_at", m.installedAt());
         v.put("created_at", now); v.put("updated_at", now);

@@ -36,6 +36,10 @@ public class UpstreamAirspaceRepository {
         var rows=jdbc.query("SELECT * FROM airspace_delivery WHERE source_id=? AND airspace_id=? ORDER BY revision DESC FETCH FIRST 1 ROWS ONLY",ROW,source,airspace);
         return rows.isEmpty()?null:rows.get(0);
     }
+    public Delivery latestUpsert(String source,String airspace) {
+        var rows=jdbc.query("SELECT * FROM airspace_delivery WHERE source_id=? AND airspace_id=? AND action='UPSERT' ORDER BY revision DESC FETCH FIRST 1 ROWS ONLY",ROW,source,airspace);
+        return rows.isEmpty()?null:rows.get(0);
+    }
     public void insert(Delivery d,String actor) {
         jdbc.update("INSERT INTO airspace_delivery(source_id,message_id,airspace_id,airspace_version_id,revision,action,effective_at,payload,received_at,actor_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
             d.sourceId(),d.messageId(),d.airspaceId(),d.versionId(),d.revision(),d.action(),d.effectiveAt(),d.payload(),d.receivedAt(),actor);

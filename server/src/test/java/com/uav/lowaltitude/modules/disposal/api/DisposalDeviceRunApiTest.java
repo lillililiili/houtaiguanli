@@ -84,6 +84,57 @@ class DisposalDeviceRunApiTest {
                 Integer.class, eventId)).isEqualTo(1);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"FORCE_LAND,15", "DRIVE_AWAY,13"})
+    void selectedModeIsSavedReadBackAndUsedForDirectExecution(String mode, int expectedMask) throws Exception {
+        String base = "/api/v1/disposal-authorizations";
+        String requestKey = key();
+        var body = Map.of("subject_kind", "UAV_EVENT", "subject_id", eventId, "action_type", "COUNTERMEASURE",
+                "channel", "COUNTERMEASURE_4CH", "device_id", device, "countermeasure_mode", mode);
+        String id = data(request(base + "/direct-execute", actor, requestKey, body)
+                .andExpect(status().isCreated())).path("authorization_id").asText();
+        assertThat(mask(commandOf(id))).isEqualTo(expectedMask);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(base + "/" + id)
+                .header("Authorization", "Bearer " + actor)).andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.countermeasure_mode").value(mode))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.action_type").value("COUNTERMEASURE"));
+        request(base + "/direct-execute", actor, requestKey, body).andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("select count(*) from device_command where authorization_id=?", Integer.class, id)).isEqualTo(1);
+        deviceReplies(commandOf(id), "SUCCEEDED");
+        request("/api/v1/uav-events/" + eventId + "/emergency-stop", operator, key(), Map.of()).andExpect(status().isOk());
+        assertThat(allOffCommands()).hasSize(1);
+        assertThat(statusOf(id)).isEqualTo("STOPPED");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"FORCE_LAND,15", "DRIVE_AWAY,13"})
+    void approvalAndExecutionKeepTheRequestedMode(String mode, int expectedMask) throws Exception {
+        String base = "/api/v1/disposal-authorizations";
+        String requester = user("disposal:request", "disposal:read");
+        String id = data(request(base, requester, key(), Map.of("subject_kind", "UAV_EVENT", "subject_id", eventId,
+                "action_type", "COUNTERMEASURE", "channel", "COUNTERMEASURE_4CH", "device_id", device,
+                "countermeasure_mode", mode)).andExpect(status().isCreated())).path("authorization_id").asText();
+        assertThat(jdbc.queryForObject("select countermeasure_mode from disposal_authorization where authorization_id=?", String.class, id)).isEqualTo(mode);
+        request(base + "/" + id + "/approve", operator, key(), Map.of("expected_version", 0)).andExpect(status().isOk());
+        request(base + "/" + id + "/execute", operator, key(), Map.of("expected_version", 1, "countermeasure_mode", "OTHER"))
+                .andExpect(status().isBadRequest());
+        request(base + "/" + id + "/execute", operator, key(), Map.of("expected_version", 1)).andExpect(status().isOk());
+        assertThat(mask(commandOf(id))).isEqualTo(expectedMask);
+    }
+
+    @Test void unknownOrMisappliedModesDoNotCreateAuthorizationOrCommand() throws Exception {
+        for (String mode : List.of("", "drive_away", "UNKNOWN")) {
+            request("/api/v1/disposal-authorizations/direct-execute", actor, key(), Map.of("subject_kind", "UAV_EVENT",
+                    "subject_id", eventId, "action_type", "COUNTERMEASURE", "channel", "COUNTERMEASURE_4CH",
+                    "device_id", device, "countermeasure_mode", mode)).andExpect(status().isBadRequest());
+        }
+        request("/api/v1/disposal-authorizations/direct-execute", actor, key(), Map.of("subject_kind", "UAV_EVENT",
+                "subject_id", eventId, "action_type", "JAMMING", "channel", "COUNTERMEASURE_4CH",
+                "device_id", device, "countermeasure_mode", "DRIVE_AWAY")).andExpect(status().isBadRequest());
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where subject_id=?", Integer.class, eventId)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from device_command where device_id=?", Integer.class, device)).isZero();
+    }
+
     @Test
     void emergencyStopWorksWithoutASecondAuthorizationAndNoAutoStopFollows() throws Exception {
         String counter = directCounter();

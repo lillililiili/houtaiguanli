@@ -180,6 +180,6 @@ class DisposalReceiptSyncTest {
         return new AuthorizationRow(id, "AUTH-" + id, action, "UAV_EVENT", "event-1", null, "device-1",
                 DisposalRules.COUNTERMEASURE_4CH, "反制", "automation-rule-runner", AT, null, null, null,
                 AT, AT.plusMinutes(10), DisposalRules.EXECUTING, commandId, null, null, "demo", "org", "district",
-                "replay", 1L, null, null, "DIRECT");
+                "replay", 1L, null, null, "DIRECT", null);
     }
 }

@@ -25,6 +25,47 @@ class GeoJsonParserTest {
     private static final String SQUARE = "[[[118.0,37.0],[118.1,37.0],[118.1,37.1],[118.0,37.1],[118.0,37.0]]]";
 
     @Test
+    void rejectsConflictingOrMalformedCoordinateDeclarationsAtEveryGeoJsonLevel() throws Exception {
+        var json = new ObjectMapper();
+        for (String level : new String[]{"", "/features/0", "/features/0/geometry"}) {
+            for (String declaration : new String[]{
+                    "\"EPSG:4490\"", "null", "{}",
+                    "{\"type\":\"name\",\"properties\":{\"name\":\"EPSG:4490\"}}",
+                    "{\"type\":\"name\",\"properties\":{\"name\":\"EPSG:14326\"}}",
+                    "{\"type\":\"name\",\"properties\":{\"name\":\"FAKE:CRS84\"}}"}) {
+                var root = json.readTree(polygon(SQUARE));
+                ((com.fasterxml.jackson.databind.node.ObjectNode) root.at(level)).set("crs", json.readTree(declaration));
+                var result = parser.parse(root.toString());
+                assertThat(result.fatalIssue() != null || result.features().stream().noneMatch(Feature::usable))
+                        .as("level=%s, crs=%s", level, declaration).isTrue();
+            }
+            for (String field : new String[]{"coordinate_system", "coordinateSystem"}) {
+                var root = json.readTree(polygon(SQUARE));
+                ((com.fasterxml.jackson.databind.node.ObjectNode) root.at(level)).put(field, "GCJ02");
+                var result = parser.parse(root.toString());
+                assertThat(result.fatalIssue() != null || result.features().stream().noneMatch(Feature::usable))
+                        .as("level=%s, field=%s", level, field).isTrue();
+            }
+        }
+    }
+
+    @Test
+    void acceptsExactWgs84NamesAndPreservesDifferentCoordinatesAndHoles() throws Exception {
+        var json = new ObjectMapper();
+        for (String name : new String[]{"EPSG:4326", "urn:ogc:def:crs:EPSG::4326", "urn:ogc:def:crs:OGC:1.3:CRS84"}) {
+            for (String level : new String[]{"", "/features/0", "/features/0/geometry"}) {
+                var root = json.readTree(polygon("[[[119.2,36.8],[119.3,36.8],[119.3,36.9],[119.2,36.8]]]"));
+                var crs = json.createObjectNode().put("type", "name");
+                crs.putObject("properties").put("name", name);
+                ((com.fasterxml.jackson.databind.node.ObjectNode) root.at(level)).set("crs", crs);
+                var result = parser.parse(root.toString());
+                assertThat(result.fatalIssue()).isNull();
+                assertThat(result.features().get(0).boundaryEwkt()).contains("119.2 36.8");
+            }
+        }
+    }
+
+    @Test
     void polygonIsPromotedToMultiPolygonEwkt() {
         ParseResult result = parser.parse(polygon(SQUARE));
         assertThat(result.features()).hasSize(1);

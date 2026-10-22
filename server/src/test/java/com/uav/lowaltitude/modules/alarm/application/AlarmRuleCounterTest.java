@@ -248,7 +248,7 @@ class AlarmRuleCounterTest {
         return new DisposalRepository.AuthorizationRow(id, "AUTH-" + id, DisposalRules.COUNTERMEASURE, "UAV_EVENT", "event-1",
                 "target-1", "cm4", DisposalRules.COUNTERMEASURE_4CH, "反制规则已满足，系统自动发起。", requester, from, null, null,
                 null, from, from.plusMinutes(10), status, commandId, resultCode, null, "demo-v1", "org", "district", "mock",
-                1L, null, null, AutomationPrincipal.USER_ID.equals(requester) ? "DIRECT" : "REVIEW");
+                1L, null, null, AutomationPrincipal.USER_ID.equals(requester) ? "DIRECT" : "REVIEW", null);
     }
 
     private static DisposalPolicy policy() {

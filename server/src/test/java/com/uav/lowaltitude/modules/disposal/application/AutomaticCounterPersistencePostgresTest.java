@@ -149,7 +149,7 @@ class AutomaticCounterPersistencePostgresTest {
         var at = OffsetDateTime.now(ZoneOffset.UTC);
         return new AuthorizationRow(authorization, authorization, "COUNTERMEASURE", "UAV_EVENT", "event", "target", device,
                 "COUNTERMEASURE_4CH", "", AutomationPrincipal.USER_ID, at, null, null, null, at, at.plusMinutes(5), "FAILED", command,
-                "AUTHORIZATION_STOPPED", null, "policy", ORG, DISTRICT, "replay", 1, null, null, "DIRECT");
+                "AUTHORIZATION_STOPPED", null, "policy", ORG, DISTRICT, "replay", 1, null, null, "DIRECT", null);
     }
     private static String key() { return UUID.randomUUID().toString(); }
 }

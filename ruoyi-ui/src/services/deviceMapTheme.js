@@ -13,7 +13,6 @@ function shade(hex, ratio) {
 }
 
 export function applyDeviceMapTheme(style, { imagery = null } = {}) {
-  const tintOpacity = imagery ? 0.42 : 1;
   for (const layer of style.layers || []) {
     if (layer.type === 'background') {
       layer.paint = { ...layer.paint, 'background-color': PALETTE.background };
@@ -31,8 +30,8 @@ export function applyDeviceMapTheme(style, { imagery = null } = {}) {
           ['urban_area', 'hospital', 'school', 'university', 'college'], PALETTE.urban,
           PALETTE.land];
       }
-      if (source === 'landcover' || source === 'landuse') paint['fill-opacity'] = tintOpacity;
-      if (source === 'buildings') { paint['fill-color'] = PALETTE.building; if (imagery) paint['fill-opacity'] = 0.6; }
+      if (source === 'landcover' || source === 'landuse') paint['fill-opacity'] = 1;
+      if (source === 'buildings') paint['fill-color'] = PALETTE.building;
       if (source === 'water') {
         paint['fill-color'] = ['match', ['get', 'kind'], 'river', PALETTE.waterLine,
           ['lake', 'water', 'reservoir', 'pond', 'basin', 'canal'], shade(PALETTE.water, 0.22), PALETTE.water];
@@ -61,26 +60,29 @@ export function applyDeviceMapTheme(style, { imagery = null } = {}) {
 
 function injectImagery(style, imagery) {
   style.sources.imagery = {
-    type: 'raster', tiles: [imagery.tiles], tileSize: 256,
+    type: 'raster', tiles: [imagery.tiles], tileSize: imagery.tileSize ?? 256,
     minzoom: imagery.minzoom, maxzoom: imagery.maxzoom, bounds: imagery.bounds, attribution: imagery.attribution
   };
   const layers = style.layers || [];
-  const earthAt = layers.findIndex(layer => layer.id === 'earth');
-  layers.splice(earthAt < 0 ? 1 : earthAt + 1, 0,
+  // 地表面层保留在下方，供透明缺测和影像失败时显示；道路、边界与地名继续叠加。
+  const ground = layer => layer.type === 'background' || (layer.source === 'protomaps' && layer.type === 'fill');
+  style.layers = [...layers.filter(ground),
     {
-      id: 'theme_imagery', type: 'raster', source: 'imagery', minzoom: 6,
+      id: 'theme_imagery', type: 'raster', source: 'imagery',
       paint: {
-        'raster-saturation': -0.72, 'raster-contrast': 0.22,
-        'raster-brightness-min': 0.04, 'raster-brightness-max': 0.82,
+        'raster-saturation': 0, 'raster-contrast': 0,
+        'raster-brightness-min': 0, 'raster-brightness-max': 1,
         'raster-fade-duration': 0,
-        'raster-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.9, imagery.maxzoom, 0.9, imagery.maxzoom + 2, 0.3]
+        'raster-opacity': 1
       }
-    },
-    {
-      id: 'theme_imagery_tint', type: 'fill', source: 'protomaps', 'source-layer': 'earth',
-      filter: ['==', ['geometry-type'], 'Polygon'],
-      paint: { 'fill-color': PALETTE.land, 'fill-antialias': false,
-        'fill-opacity': ['interpolate', ['linear'], ['zoom'], 6, 0.5, imagery.maxzoom + 2, 0.75] }
-    });
-  style.layers = layers;
+    }, ...layers.filter(layer => !ground(layer))];
+}
+
+export function handleDeviceImageryError(map, event) {
+  if (event?.sourceId !== 'imagery') return null;
+  const error = event.error;
+  if (error?.name === 'AbortError' || error?.code === 20 || /abort|cancelled|canceled/i.test(String(error?.message || ''))) return 'cancelled';
+  if (map.getLayer('theme_imagery')) map.removeLayer('theme_imagery');
+  if (map.getSource('imagery')) map.removeSource('imagery');
+  return 'fallback';
 }

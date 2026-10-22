@@ -31,6 +31,7 @@ import com.uav.lowaltitude.modules.integrationconfig.infrastructure.LocalInterfa
 import com.uav.lowaltitude.modules.integrationconfig.infrastructure.LocalInterfaceRepository.Row;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
+import com.uav.lowaltitude.platform.geo.Wgs84;
 import com.uav.lowaltitude.platform.security.AuthContext;
 import com.uav.lowaltitude.platform.security.AuthUser;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -141,6 +142,7 @@ public class LocalRouteInputService {
 
     private String lineString(JsonNode geometry) {
         if (geometry == null || !geometry.isObject() || !"LineString".equals(geometry.path("type").asText())) throw bad("航线几何必须是 LineString");
+        if (!Wgs84.supportsGeoJson(geometry)) throw bad("航线坐标只支持 WGS-84，请先按来源依据转换后再提交");
         JsonNode coordinates = geometry.get("coordinates");
         if (coordinates == null || !coordinates.isArray() || coordinates.size() < 2) throw bad("航线至少需要两个坐标点");
         List<String> points = new ArrayList<>();

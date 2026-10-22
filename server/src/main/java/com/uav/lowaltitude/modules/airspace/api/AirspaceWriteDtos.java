@@ -10,6 +10,10 @@ public final class AirspaceWriteDtos {
 
     public record CreatedAirspaceDto(String airspaceId, String airspaceVersionId, int versionNo, long version) { }
 
+    public record DeletedAirspaceDto(String airspaceId, long version, long deletedAt) { }
+    public record ManagementScopeDto(String ownerOrgId,String ownerOrgName,String districtId,String districtName) { }
+    public record ManagementContextDto(List<ManagementScopeDto> scopes) { }
+
     public record CreatedVersionDto(String airspaceId, String airspaceVersionId, int versionNo, long version,
             String supersededVersionId, Long supersededValidTo) { }
 

@@ -1,9 +1,10 @@
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import { PMTiles, Protocol } from 'pmtiles';
-import { applyDeviceMapTheme } from './deviceMapTheme.js';
+import { applyDeviceMapTheme, handleDeviceImageryError } from './deviceMapTheme.js';
 import { warmMapResource, warmMapStyleAssets } from './mapResourceWarmup.js';
 
 const protocol = new Protocol();
+const IMAGERY_PROTOCOL = 'offlineimagery://';
 
 export function positionInMapBounds(position, bounds) {
   return Boolean(position && bounds && position[0] >= bounds[0] && position[0] <= bounds[2]
@@ -45,7 +46,7 @@ export function devicePosition(device) {
   if (values.some(value => value == null || String(value).trim() === '' || !['string', 'number'].includes(typeof value))) return null;
   const [longitude, latitude] = values.map(Number);
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || Math.abs(longitude) > 180 || Math.abs(latitude) > 85.051129) return null;
-  if (!['WGS84', 'WGS-84'].includes(device.coordinate_system)) return null;
+  if (typeof device.coordinate_system !== 'string' || !['WGS84', 'WGS-84'].includes(device.coordinate_system.trim().toUpperCase())) return null;
   return [longitude, latitude];
 }
 
@@ -70,6 +71,34 @@ function vectorTileTemplate(value, manifestUrl) {
       || !/\/\{z\}\/\{x\}\/\{y\}\.(?:pbf|mvt)$/.test(path)
       || (path.match(/\{/g) || []).length !== 3) throw new Error('地图矢量瓦片地址无效');
   return `${url.origin}${path}`;
+}
+
+function readImagery(manifest, manifestUrl, bounds) {
+  if (manifest.imagery == null) return null;
+  const { tiles, minZoom = 7, maxZoom = 12, tileSize = 256, attribution = '' } = manifest.imagery;
+  const url = new URL(localUrl(tiles, manifestUrl));
+  const path = url.pathname.replaceAll('%7B', '{').replaceAll('%7D', '}');
+  if (url.username || url.password || url.search || url.hash
+      || !path.startsWith(new URL('.', manifestUrl).pathname)
+      || !/\/\{z\}\/\{x\}\/\{y\}\.(?:png|jpg|jpeg|webp)$/.test(path)
+      || (path.match(/\{/g) || []).length !== 3
+      || !Number.isInteger(minZoom) || !Number.isInteger(maxZoom) || minZoom < 0 || maxZoom > 24 || minZoom > maxZoom
+      || ![256, 512].includes(tileSize) || typeof attribution !== 'string') {
+    throw new Error('地图影像清单无效，请检查包内瓦片路径、缩放范围和尺寸');
+  }
+  return { tiles: `${url.origin}${path}`, minzoom: minZoom, maxzoom: maxZoom, tileSize, attribution, bounds };
+}
+
+// 普通瓦片请求的 404 会被 MapLibre 吞掉；完整离线包缺块应进入明确的影像回退提示。
+export async function readDeviceImageryTile(request, controller) {
+  const url = localUrl(request.url.slice(IMAGERY_PROTOCOL.length));
+  const response = await fetch(url, { signal: controller.signal, redirect: 'error' });
+  if (!response.ok || response.status === 204) throw new Error(`本地卫星影像读取失败（HTTP ${response.status}）`);
+  const contentType = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+  if (contentType && !contentType.startsWith('image/') && contentType !== 'application/octet-stream') throw new Error('本地卫星影像返回了非图片内容');
+  const data = await response.arrayBuffer();
+  if (!data.byteLength) throw new Error('本地卫星影像文件为空');
+  return { data, cacheControl: response.headers.get('Cache-Control'), expires: response.headers.get('Expires') };
 }
 
 function preferLocalIdeographs(style) {
@@ -115,16 +144,11 @@ export async function loadDeviceMapStyle(signal) {
     for (const face of faces) face.url = localUrl(face.url, styleUrl);
   }
   preferLocalIdeographs(style);
-  const imagery = manifest.imagery?.tiles ? {
-    tiles: localUrl(manifest.imagery.tiles, manifestUrl),
-    minzoom: manifest.imagery.minZoom ?? 7,
-    maxzoom: manifest.imagery.maxZoom ?? 12,
-    bounds,
-    attribution: manifest.imagery.attribution || ''
-  } : null;
+  const imagery = readImagery(manifest, manifestUrl, bounds);
+  if (imagery) imagery.tiles = `${IMAGERY_PROTOCOL}${imagery.tiles}`;
   applyDeviceMapTheme(style, { imagery });
   warmMapStyleAssets(style, signal);
-  return { style, bounds, maxZoom: manifest.displayMaxZoom ?? 18 };
+  return { style, bounds, maxZoom: manifest.displayMaxZoom ?? 18, handleImageryError: handleDeviceImageryError };
 }
 
 // Start the static resource chain alongside device APIs. Each actual map still
@@ -140,6 +164,7 @@ export function loadDeviceMapEngine() {
     const maplibre = lib.default || lib;
     maplibre.setWorkerUrl(workerUrl);
     maplibre.addProtocol('pmtiles', protocol.tile);
+    maplibre.addProtocol('offlineimagery', readDeviceImageryTile);
     return maplibre;
   }).catch(error => { enginePromise = null; throw error; });
   return enginePromise;

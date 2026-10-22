@@ -590,6 +590,51 @@ class EoManualTrackApiTest {
         assertThat(edges.openTaskByTarget(next)).isNull();
     }
 
+    @Test void devicePinnedDispatchWaitsForThatDeviceDespiteAnotherIdleCamera() throws Exception {
+        String oldTarget=insertTarget(true);
+        Binding other=register("other-"+UUID.randomUUID().toString().substring(0,8),"other-camera");
+        long otherNow=clock.nowMillis();
+        jdbc.update("UPDATE ops_device_state SET connectivity='ONLINE',last_heartbeat_at=? WHERE device_id=?",otherNow,other.opsDeviceId());
+        jdbc.update("UPDATE eo_device_binding SET work_state=0,last_heartbeat_at=? WHERE ops_device_id=?",otherNow,other.opsDeviceId());
+        String task=mapper.readTree(mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",oldTarget)
+                .header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(java.util.Map.of("device_id",binding.opsDeviceId()))))
+                .andExpect(status().isAccepted()).andReturn().getResponse().getContentAsString()).path("data").path("task_id").asText();
+        long now=clock.nowMillis();String begin=String.valueOf(edges.task(task).get("begin_command_id"));
+        edges.updateCommand(begin,"QUEUED","SENT",now,null,null);edges.updateCommand(begin,"SENT","SUCCEEDED",now,"200",null);edges.trackingReport(task,now,now);
+        String next=insertTarget(true),requestKey=key();String payload=mapper.writeValueAsString(java.util.Map.of("device_id",binding.opsDeviceId()));
+        mvc.perform(post("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()).header("Idempotency-Key",requestKey)
+                .contentType(MediaType.APPLICATION_JSON).content(payload)).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT device_id FROM eo_dispatch_request WHERE active_target_id=?",String.class,next)).isEqualTo(binding.opsDeviceId());
+        mvc.perform(post("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()).header("Idempotency-Key",requestKey)
+                .contentType(MediaType.APPLICATION_JSON).content(payload)).andExpect(status().isOk());
+        mvc.perform(post("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()).header("Idempotency-Key",requestKey)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(java.util.Map.of("device_id",other.opsDeviceId())))).andExpect(status().isConflict());
+        scheduler.poll();assertThat(edges.openTaskByTarget(next)).isNull();assertThat(edges.openTask(other.opsDeviceId())).isNull();
+        mvc.perform(get("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()))
+                .andExpect(jsonPath("$.data.device_id").value(binding.opsDeviceId())).andExpect(jsonPath("$.data.message").value(containsString("指定")));
+        mvc.perform(post("/api/v1/eo-tracking-tasks/{id}/end",task).header("Authorization",bearer()).header("Idempotency-Key",key())).andExpect(status().isAccepted());
+        String end=String.valueOf(edges.task(task).get("end_command_id"));edges.updateCommand(end,"QUEUED","SENT",clock.nowMillis(),null,null);receiveStop(task,200);
+        refreshStopDevice();scheduler.poll();
+        assertThat(edges.openTaskByTarget(next)).isNotNull();
+        assertThat(edges.openTaskByTarget(next).get("ops_device_id")).isEqualTo(binding.opsDeviceId());
+        assertThat(edges.openTask(other.opsDeviceId())).isNull();
+    }
+
+    @Test void pinnedDispatchRejectsWrongDeviceSwitchAndUnknownDeviceWithoutCreatingWork() throws Exception {
+        String old=insertTarget(true),task=startManualTask(old),next=insertTarget(true);
+        String unknown=UUID.randomUUID().toString();long commands=jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class);
+        mvc.perform(post("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()).header("Idempotency-Key",key())
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(java.util.Map.of("device_id",unknown,"expected_task_id",task))))
+                .andExpect(status().isConflict());
+        mvc.perform(post("/api/v1/targets/{id}/eo-dispatch",next).header("Authorization",bearer()).header("Idempotency-Key",key())
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(java.util.Map.of("device_id",unknown))))
+                .andExpect(status().isConflict());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_dispatch_request WHERE active_target_id=?",Long.class,next)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class)).isEqualTo(commands);
+        assertThat(edges.task(task).get("end_command_id")).isNull();
+    }
+
     private String startManualTask(String target) throws Exception {
         return mapper.readTree(mvc.perform(post("/api/v1/targets/{id}/eo-tracking-tasks",target)
                 .header("Authorization",bearer()).header("Idempotency-Key",key())

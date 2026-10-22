@@ -46,7 +46,7 @@ public class DisposalRepository {
     private static final String COLUMNS = "a.authorization_id,a.authorization_no,a.action_type,a.subject_kind,a.subject_id,"
             + "a.target_id,a.device_id,a.channel,a.reason,a.requested_by,a.requested_at,a.approved_by,a.approved_at,"
             + "a.decision_note,a.valid_from,a.valid_until,a.status,a.execution_command_id,a.result_code,a.result_detail,"
-            + "a.policy_version,a.owner_org_id,a.district_id,a.source_mode,a.version,a.authorization_mode";
+            + "a.policy_version,a.owner_org_id,a.district_id,a.source_mode,a.version,a.authorization_mode,a.countermeasure_mode";
 
     private final NamedParameterJdbcTemplate jdbc;
     /** 只用于"建当日计数行"这一步：见 nextSequence 的说明，它必须跑在调用方事务之外。 */
@@ -99,11 +99,16 @@ public class DisposalRepository {
     /* ---- 写 ---- */
 
     public void insert(AuthorizationInsert row) {
+        insert(row, null);
+    }
+
+    public void insert(AuthorizationInsert row, String countermeasureMode) {
         Map<String, Object> p = insertParams(row);
+        p.put("countermeasureMode", countermeasureMode);
         jdbc.update("INSERT INTO disposal_authorization (authorization_id,authorization_no,action_type,subject_kind,subject_id,"
                 + "target_id,device_id,channel,reason,requested_by,requested_at,status,policy_version,owner_org_id,district_id,"
-                + "source_mode,version,created_at,updated_at) VALUES (:id,:no,:action,:kind,:subject,:target,:device,:channel,"
-                + ":reason,:by,:at,:status,:policy,:org,:district,:mode,0,:at,:at)", p);
+                + "source_mode,version,created_at,updated_at,countermeasure_mode) VALUES (:id,:no,:action,:kind,:subject,:target,:device,:channel,"
+                + ":reason,:by,:at,:status,:policy,:org,:district,:mode,0,:at,:at,:countermeasureMode)", p);
     }
 
     /**
@@ -772,7 +777,8 @@ public class DisposalRepository {
                 rs.getString("execution_command_id"), rs.getString("result_code"), rs.getString("result_detail"),
                 rs.getString("policy_version"), rs.getString("owner_org_id"), rs.getString("district_id"),
                 rs.getString("source_mode"), rs.getLong("version"),
-                name(rs, "requested_by_name"), name(rs, "approved_by_name"), rs.getString("authorization_mode"));
+                name(rs, "requested_by_name"), name(rs, "approved_by_name"), rs.getString("authorization_mode"),
+                rs.getString("countermeasure_mode"));
     }
 
     /** 姓名列在部分查询里不存在（如到期扫描），取不到就当没有，不让缺一列把整条读崩。 */
@@ -805,7 +811,8 @@ public class DisposalRepository {
             OffsetDateTime requestedAt, String approvedBy, OffsetDateTime approvedAt, String decisionNote,
             OffsetDateTime validFrom, OffsetDateTime validUntil, String status, String executionCommandId,
             String resultCode, String resultDetail, String policyVersion, String ownerOrgId, String districtId,
-            String sourceMode, long version, String requestedByName, String approvedByName, String authorizationMode) { }
+            String sourceMode, long version, String requestedByName, String approvedByName, String authorizationMode,
+            String countermeasureMode) { }
 
     public record EventRow(String eventId, String authorizationId, String eventKind, String actorId, String note,
             String snapshot, OffsetDateTime occurredAt) { }

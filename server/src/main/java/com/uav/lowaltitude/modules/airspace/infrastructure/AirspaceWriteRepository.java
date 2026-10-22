@@ -32,6 +32,10 @@ public class AirspaceWriteRepository {
 
     public boolean postgis() { return postgis; }
 
+    public boolean validBoundary(String ewkt) {
+        return !postgis || Boolean.TRUE.equals(jdbc.queryForObject("SELECT ST_IsValid(ST_GeomFromEWKT(:boundary)) AND NOT ST_IsEmpty(ST_GeomFromEWKT(:boundary))",Map.of("boundary",ewkt),Boolean.class));
+    }
+
     public record AirspaceHead(String airspaceId, String airspaceNo, String name, String ownerOrgId, String districtId, long version) { }
     public record VersionRow(String airspaceVersionId, String airspaceId, int versionNo, String kindCode, BigDecimal minAltitudeM,
             BigDecimal maxAltitudeM, String altitudeDatum, Instant validFrom, Instant validTo, String changeReason, Instant createdAt) { }
@@ -103,8 +107,35 @@ public class AirspaceWriteRepository {
     }
 
     public boolean upstreamManaged(String airspaceId) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM airspace_delivery WHERE airspace_id=:id",
-                Map.of("id", airspaceId), Long.class) > 0;
+        return "UPSTREAM".equals(managementSource(airspaceId));
+    }
+
+    /** A missing provenance row is not evidence of manual ownership. */
+    public static String managementSourceSql() {
+        return "CASE WHEN a.source_id IS NOT NULL OR EXISTS(SELECT 1 FROM airspace_delivery ad WHERE ad.airspace_id=a.airspace_id)"
+            + " OR EXISTS(SELECT 1 FROM airspace_version avs JOIN airspace_version_origin avo ON avo.airspace_version_id=avs.airspace_version_id WHERE avs.airspace_id=a.airspace_id AND avo.origin_kind='UPSTREAM') THEN 'UPSTREAM'"
+            + " WHEN EXISTS(SELECT 1 FROM airspace_version avs WHERE avs.airspace_id=a.airspace_id)"
+            + " AND NOT EXISTS(SELECT 1 FROM airspace_version avs LEFT JOIN airspace_version_origin avo ON avo.airspace_version_id=avs.airspace_version_id WHERE avs.airspace_id=a.airspace_id AND (avo.origin_kind IS NULL OR avo.origin_kind<>'MANUAL')) THEN 'LOCAL' ELSE 'LEGACY' END";
+    }
+
+    public String managementSource(String id) {
+        return jdbc.queryForObject("SELECT "+managementSourceSql()+" FROM airspace a WHERE a.airspace_id=:id",Map.of("id",id),String.class);
+    }
+    public boolean deleted(String id) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM airspace WHERE airspace_id=:id AND deleted_at IS NOT NULL",Map.of("id",id),Long.class)>0;
+    }
+    public boolean scopeExists(String org,String district) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM app_org o CROSS JOIN app_district d WHERE o.org_id=:org AND d.district_id=:district AND o.enabled=TRUE AND d.enabled=TRUE",Map.of("org",org,"district",district),Long.class)>0;
+    }
+    public List<com.uav.lowaltitude.modules.airspace.api.AirspaceWriteDtos.ManagementScopeDto> managementScopes(String scopeUser) {
+        String sql="SELECT o.org_id,o.name AS org_name,d.district_id,d.name AS district_name FROM app_org o CROSS JOIN app_district d WHERE o.enabled=TRUE AND d.enabled=TRUE";
+        Map<String,Object> p=new HashMap<>();
+        if(scopeUser!=null) {sql+=" AND EXISTS(SELECT 1 FROM app_user_data_scope s WHERE s.user_id=:user AND s.org_id=o.org_id AND s.district_id=d.district_id)";p.put("user",scopeUser);}
+        return jdbc.query(sql+" ORDER BY o.name,o.org_id,d.name,d.district_id",p,(r,i)->new com.uav.lowaltitude.modules.airspace.api.AirspaceWriteDtos.ManagementScopeDto(r.getString("org_id"),r.getString("org_name"),r.getString("district_id"),r.getString("district_name")));
+    }
+    public void renameAirspace(String id,String name) { jdbc.update("UPDATE airspace SET name=:name WHERE airspace_id=:id",Map.of("id",id,"name",name)); }
+    public int retireAirspace(String id,long version,Instant at) {
+        return jdbc.update("UPDATE airspace SET deleted_at=:at,updated_at=:at,version=version+1 WHERE airspace_id=:id AND version=:version AND deleted_at IS NULL",Map.of("id",id,"version",version,"at",Timestamp.from(at)));
     }
 
     public int bumpAirspaceVersion(String airspaceId, long expectedVersion, Instant at) {

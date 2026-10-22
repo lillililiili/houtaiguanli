@@ -6,7 +6,7 @@ import java.util.Set;
 public final class FrontendActionPolicy {
     private static final Set<String> ACTIONS = Set.of(
             "device:read", "target:read", "alarm:read", "alarm:verify",
-            "flight:read", "route:read", "airspace:read",
+            "flight:read", "route:read", "airspace:read", "airspace:manage",
             "assessment:read", "assessment:evaluate", "assessment:revise", "assessment:escalate",
             "risk:read", "risk:verify", "handoff:read", "handoff:create", "rule:read", "fusion:read",
             "evidence:read", "evidence:preview", "evidence:ingest", "evidence:download",
