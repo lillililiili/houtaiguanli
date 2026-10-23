@@ -260,6 +260,122 @@ class QaVideoStreamApiTest extends EoManualTrackApiTest {
         mvc.perform(delete(url).header("Authorization","Bearer "+token)).andExpect(status().isOk());
     }
 
+    @Autowired com.uav.lowaltitude.modules.device.application.TargetVideoService videoService;
+    @Autowired com.uav.lowaltitude.modules.evidence.application.EvidenceAssociationService evidenceService;
+    @Autowired com.uav.lowaltitude.platform.audit.AuditService auditService;
+    @Autowired org.springframework.transaction.support.TransactionTemplate tx;
+
+    /** 告警核实属实、反制开始时系统自动截图并录像，挂到告警事件、目标、光电设备和反制授权上；没有画面如实记下；同一触发只做一次。 */
+    @Test void alarmConfirmationAndCounterStartCaptureStillAndClipAutomatically() throws Exception {
+        java.nio.file.Path dir=java.nio.file.Files.createTempDirectory("eo-auto-test");
+        java.nio.file.Path jpg=dir.resolve("frame.jpg"), mp4=dir.resolve("clip.mp4"), script=dir.resolve("fake-ffmpeg.sh");
+        java.nio.file.Files.write(jpg,EvidenceTestFiles.bytes("frame.jpg"));
+        java.nio.file.Files.write(mp4,EvidenceTestFiles.bytes("clip.mp4"));
+        // 代替 ffmpeg：按输出文件扩展名写入有效样本，并记下收到的拉流地址。
+        java.nio.file.Files.writeString(script,"#!/bin/sh\nfor last; do :; done\necho \"$@\" >> '"+dir.resolve("args.txt")+"'\n"
+                +"case \"$last\" in *.jpg) cp '"+jpg+"' \"$last\";; *) cp '"+mp4+"' \"$last\";; esac\n");
+        script.toFile().setExecutable(true);
+        var service=new com.uav.lowaltitude.modules.device.application.EoAutoCaptureService(jdbc,videoService,evidenceService,
+                auditService,tx,clock,true,script.toString(),5);
+
+        String target=insertVideoTarget(), event=insertEvent(target), streamPath=startTracking(target);
+        when(media.ready(streamPath)).thenReturn(true);
+        when(media.rtspReadUrl(streamPath)).thenReturn("rtsp://127.0.0.1:8554/"+streamPath);
+        String confirm=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO uav_event_verification(history_id,event_id,version,previous_state,resulting_state,conclusion,note,actor_id,created_at) "
+                + "VALUES (?,?,1,'PENDING_VERIFICATION','CONFIRMED','CONFIRMED','',(SELECT user_id FROM app_user WHERE account='admin1'),?)",confirm,event,new java.sql.Timestamp(clock.nowMillis()));
+        service.poll();
+        awaitFiles(event,2);
+        var rows=jdbc.queryForList("SELECT f.kind_code,f.original_name AS file_name,f.status,f.capture_provenance,f.source_mode FROM evidence_file f "
+                + "JOIN evidence_link l ON l.evidence_id=f.evidence_id WHERE l.subject_kind='EVENT' AND l.subject_id=? ORDER BY f.kind_code",event);
+        assertThat(rows).extracting(r->r.get("kind_code")).containsExactly("EO_STILL","EO_VIDEO");
+        assertThat(rows).allSatisfy(r->{
+            assertThat(r.get("status")).isEqualTo("AVAILABLE");
+            assertThat(r.get("capture_provenance")).isEqualTo("EO_TRACKING_CAPTURE");
+            assertThat(r.get("source_mode")).isEqualTo("replay");
+            assertThat((String)r.get("file_name")).startsWith("自动-告警核实-");
+        });
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM evidence_link l JOIN evidence_link e ON e.evidence_id=l.evidence_id "
+                + "WHERE l.subject_kind='EVENT' AND l.subject_id=? AND e.subject_kind IN ('TARGET','DEVICE')",Long.class,event)).isEqualTo(4L);
+        assertThat(java.nio.file.Files.readString(dir.resolve("args.txt"))).contains("rtsp://127.0.0.1:8554/"+streamPath).contains("-t 5");
+        // 同一次核实不再重复截取。
+        service.poll();
+        Thread.sleep(300);
+        assertThat(countEventFiles(event)).isEqualTo(2L);
+
+        // 反制开始：同样截图录像，并挂到这次反制授权上。
+        String authorization=insertExecutingAuthorization(target,event);
+        service.poll();
+        awaitFiles(event,4);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM evidence_link WHERE subject_kind='AUTHORIZATION' AND subject_id=?",Long.class,authorization)).isEqualTo(2L);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM evidence_file f JOIN evidence_link l ON l.evidence_id=f.evidence_id "
+                + "WHERE l.subject_kind='AUTHORIZATION' AND l.subject_id=? AND f.original_name LIKE '自动-反制开始-%'",Long.class,authorization)).isEqualTo(2L);
+
+        // 当时没有画面：不截取，审计里写明原因。
+        String quietTarget=insertVideoTarget(), quietEvent=insertEvent(quietTarget), quietConfirm=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO uav_event_verification(history_id,event_id,version,previous_state,resulting_state,conclusion,note,actor_id,created_at) "
+                + "VALUES (?,?,1,'PENDING_VERIFICATION','CONFIRMED','CONFIRMED','',(SELECT user_id FROM app_user WHERE account='admin1'),?)",quietConfirm,quietEvent,new java.sql.Timestamp(clock.nowMillis()));
+        service.poll();
+        Thread.sleep(300);
+        assertThat(countEventFiles(quietEvent)).isZero();
+        assertThat(jdbc.queryForObject("SELECT detail FROM audit_log WHERE action='eo_auto_capture' AND object_id=?",String.class,quietConfirm))
+                .contains("当时没有光电视频画面");
+        assertThat(jdbc.queryForObject("SELECT result FROM audit_log WHERE action='eo_auto_capture' AND object_id=?",String.class,quietConfirm))
+                .isEqualTo("SKIPPED");
+        // 两分钟以前的核实不补拍：画面要是当时的。
+        String oldTarget=insertVideoTarget(), oldEvent=insertEvent(oldTarget);
+        jdbc.update("INSERT INTO uav_event_verification(history_id,event_id,version,previous_state,resulting_state,conclusion,note,actor_id,created_at) "
+                + "VALUES (?,?,1,'PENDING_VERIFICATION','CONFIRMED','CONFIRMED','',(SELECT user_id FROM app_user WHERE account='admin1'),?)",UUID.randomUUID().toString(),oldEvent,
+                new java.sql.Timestamp(clock.nowMillis()-180_000));
+        service.poll();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM audit_log a JOIN uav_event_verification v ON v.history_id=a.object_id "
+                + "WHERE a.action='eo_auto_capture' AND v.event_id=?",Long.class,oldEvent)).isZero();
+    }
+
+    private String insertEvent(String target) {
+        String alarm=UUID.randomUUID().toString(), event=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) "
+                + "VALUES (?,?,?,?,'UAV_INTRUSION','HIGH',CURRENT_TIMESTAMP,'replay',?,?,CURRENT_TIMESTAMP)",alarm,target,binding.sourceId(),alarm,org,district);
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) "
+                + "VALUES (?,?,'CONFIRMED',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,1)",event,alarm,org,district);
+        return event;
+    }
+
+    private String startTracking(String target) throws Exception {
+        String task=UUID.randomUUID().toString(), command=UUID.randomUUID().toString();
+        long now=clock.nowMillis();
+        edges.insertCommand(command,"VIDEO-AUTO-"+command.substring(0,8),binding.opsDeviceId(),null,"EO_BEGIN_TRACK","fixture","replay",true,now+10000,now);
+        edges.insertTask(task,target,null,binding.opsDeviceId(),command,"fixture","{}",now);
+        edges.updateCommand(command,"QUEUED","SENT",now,null,null);
+        edges.updateCommand(command,"SENT","SUCCEEDED",now,"200",null);
+        String url="/api/v1/local-interface-simulator/video-streams/"+task;
+        return mapper.readTree(mvc.perform(put(url).header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON)
+                .content(mapper.writeValueAsString(Map.of("device_id",binding.opsDeviceId())))).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data").path("stream_path").asText();
+    }
+
+    private String insertExecutingAuthorization(String target,String event) {
+        String id=UUID.randomUUID().toString(), user=jdbc.queryForObject("SELECT user_id FROM app_user WHERE account='admin1'",String.class);
+        String policy=jdbc.queryForObject("SELECT policy_code FROM disposal_policy ORDER BY policy_code FETCH FIRST 1 ROW ONLY",String.class);
+        var now=new java.sql.Timestamp(clock.nowMillis());
+        jdbc.update("INSERT INTO disposal_authorization(authorization_id,authorization_no,action_type,subject_kind,subject_id,target_id,device_id,channel,reason,"
+                + "requested_by,requested_at,status,policy_version,owner_org_id,district_id,source_mode,version,created_at,updated_at) "
+                + "VALUES (?,?,'COUNTERMEASURE','UAV_EVENT',?,?,NULL,'MANUAL','test',?,?,'EXECUTING',?,?,?,'replay',1,?,?)",
+                id,"AUTH-T-"+id.substring(0,8),event,target,user,now,policy,org,district,now,now);
+        jdbc.update("INSERT INTO disposal_authorization_event(event_id,authorization_id,event_kind,actor_id,note,occurred_at) VALUES (?,?,'EXECUTE',?,NULL,?)",
+                UUID.randomUUID().toString(),id,user,now);
+        return id;
+    }
+
+    private long countEventFiles(String event) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM evidence_link WHERE subject_kind='EVENT' AND subject_id=?",Long.class,event);
+    }
+
+    private void awaitFiles(String event,long expected) throws InterruptedException {
+        for(int i=0;i<100 && countEventFiles(event)<expected;i++) Thread.sleep(100);
+        assertThat(countEventFiles(event)).isEqualTo(expected);
+    }
+
     private ResultActions capture(String target,String kind,String stream,String event,String name,String type,byte[] bytes) throws Exception {
         var request=multipart("/api/v1/targets/"+target+"/video/captures").file(new MockMultipartFile("file",name,type,bytes))
                 .param("kind_code",kind).param("stream_id",stream)
