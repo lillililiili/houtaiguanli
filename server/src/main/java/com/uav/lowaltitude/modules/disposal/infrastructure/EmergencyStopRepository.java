@@ -79,6 +79,11 @@ public class EmergencyStopRepository {
         jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note,request_origin)"
                 +" VALUES (?,?,NULL,?,FALSE,?,'SYSTEM_PREDICTION_STOP')",stopId,eventId,at,note);
     }
+    /** 系统按规则自动停止（例如航班飞近反制设备）：没有操作人，原因已写明，不待补充。 */
+    public void insertSystemStop(String stopId, String eventId, long at, String note, String origin) {
+        jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,reason_pending,note,request_origin)"
+                +" VALUES (?,?,NULL,?,FALSE,?,?)",stopId,eventId,at,note,origin);
+    }
     public void cover(String stopId, String auth) {
         jdbc.update("INSERT INTO disposal_emergency_stop_authorization(stop_id,authorization_id) VALUES (?,?)",stopId,auth);
     }

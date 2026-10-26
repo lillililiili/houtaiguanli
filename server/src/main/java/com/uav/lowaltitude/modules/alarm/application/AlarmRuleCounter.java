@@ -50,6 +50,9 @@ public class AlarmRuleCounter {
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
+    private com.uav.lowaltitude.modules.flightavoidance.application.FlightAvoidanceService flights;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setFlightAvoidance(com.uav.lowaltitude.modules.flightavoidance.application.FlightAvoidanceService flights) { this.flights = flights; }
     private static final Logger log = LoggerFactory.getLogger(AlarmRuleCounter.class);
     private static final AccessDecision SCOPE = new AccessDecision("system:auto-counter", ScopeMode.ALL);
     private static final String REASON = "反制规则已满足，系统自动发起。";
@@ -123,6 +126,9 @@ public class AlarmRuleCounter {
         var available = automatic.devices(event.sourceMode(), event.ownerOrgId(), event.districtId());
         if (available.size() != 1 || !available.get(0).equals(chosen.deviceId())) return;
         if (!eligibility.allowsRun("counter", eventId, runId)) return;
+        // 航班避让（2026-10-26）：附近有航班或收不到航班信息时自动反制不启动，转人工；原因记在告警上。
+        if (flights != null && DisposalRules.COUNTERMEASURE_4CH.equals(chosen.channel())
+                && !flights.allowsAutomatic(event.eventId(), chosen.deviceId())) return;
 
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
         OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(DisposalRules.COUNTERMEASURE));
@@ -183,6 +189,8 @@ public class AlarmRuleCounter {
         if (busy(row.deviceId(), row.authorizationId())
                 || gateway.requestBlockReason(row.deviceId()) != null) return;
         if (!automatic.mayStart(row) || !eligibility.allowsRun("counter", eventId, runId)) return;
+        if (flights != null && DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())
+                && !flights.allowsAutomatic(eventId, row.deviceId())) return;
         String key = "rule-counter-" + row.authorizationId() + "-" + at.toInstant().toEpochMilli();
         DisposalExecutionGateway.Result dispatched = DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())
                 ? gateway.dispatch4chAs(actor, row.deviceId(), key, row.authorizationId(), DisposalRules.COUNTERMEASURE, REASON)
