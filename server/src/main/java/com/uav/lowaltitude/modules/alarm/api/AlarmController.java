@@ -26,6 +26,9 @@ public class AlarmController {
         return ApiResponse.ok(service.list(parameters));
     }
 
+    @GetMapping("/alarms/overview")
+    public ApiResponse<AlarmDtos.OverviewDto> overview() { return ApiResponse.ok(service.overview()); }
+
     /** 导出：路径独立于列表，便于 GlobalExceptionHandler 把它归到 alarms 模块并单独审计（决策 15-7）。 */
     @GetMapping("/alarms/export.csv")
     public org.springframework.http.ResponseEntity<byte[]> export(

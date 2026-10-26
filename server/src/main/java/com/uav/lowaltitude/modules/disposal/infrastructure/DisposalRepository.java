@@ -26,6 +26,16 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 /** 处置授权持久化。事件表只增：本类不提供任何 UPDATE/DELETE 事件的方法，PG 侧另有触发器兜底。 */
 @Repository
 public class DisposalRepository {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.riskCases=cases;}
+    private String caseSubject(String kind,String subject,Map<String,Object> params,String eventParameter){
+        String scope="UAV_EVENT".equals(kind)&&riskCases!=null?riskCases.caseId(subject):null;
+        if(scope==null)return "a.subject_id=:"+eventParameter;
+        params.put("risk_case_scope",scope);
+        return "(a.risk_case_id=:risk_case_scope OR (a.risk_case_id IS NULL AND EXISTS(SELECT 1 FROM uav_risk_case_member m WHERE m.risk_case_id=:risk_case_scope AND m.event_id=a.subject_id)"
+            +" AND (SELECT COUNT(*) FROM uav_risk_case_member m JOIN uav_risk_case c ON c.risk_case_id=m.risk_case_id WHERE m.event_id=a.subject_id AND c.superseded_by IS NULL)=1))";
+    }
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = scope(access);
@@ -213,7 +223,7 @@ public class DisposalRepository {
 
     /** 加锁读：同一授权的并发审批/执行必须串行，否则两人可以同时把 REQUESTED 批成 APPROVED。 */
     public AuthorizationRow lock(String id, AccessDecision access) {
-        Where where = scope(access);
+        Where where = scope(access, false);
         where.params.put("id", id);
         List<AuthorizationRow> rows = jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a"
                 + where.sql + " AND a.authorization_id=:id FOR UPDATE", where.params, DisposalRepository::row);
@@ -300,8 +310,8 @@ public class DisposalRepository {
         Map<String, Object> p = new HashMap<>();
         p.put("kind", subjectKind); p.put("subject", subjectId); p.put("action", actionType);
         p.put("statuses", DisposalRules.ACTIVE_STATUSES);
-        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE subject_kind=:kind"
-                + " AND subject_id=:subject AND action_type=:action AND status IN (:statuses)", p, Long.class);
+        Long total = jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization a WHERE a.subject_kind=:kind"
+                + " AND "+caseSubject(subjectKind,subjectId,p,"subject")+" AND a.action_type=:action AND a.status IN (:statuses)", p, Long.class);
         return total == null ? 0 : total;
     }
 
@@ -336,7 +346,9 @@ public class DisposalRepository {
     }
 
     /* 新单次反制必须有本授权、同设备的明确全关成功事实；启动成功或仅有 COMPLETED 标签均不够。
-       旧父子链仍按原 JAMMING 完成事实处理，避免从父授权推断子链已经停机。 */
+       旧父子链仍按原 JAMMING 完成事实处理，避免从父授权推断子链已经停机。
+       按授权的明确风险归属隔离预测衍生处置，不因同一实测事件的另一区域风险而误伤独立实测授权。
+       旧授权缺少区域归属时，已有预测关联不能被猜测为独立实测处罚依据。 */
     private static final String PUNISHMENT_COMPLETION = "a.status='COMPLETED' AND (a.action_type='JAMMING' OR ("
             + "a.action_type='COUNTERMEASURE' AND a.channel='COUNTERMEASURE_4CH'"
             + " AND a.chained_from_authorization_id IS NULL"
@@ -346,7 +358,12 @@ public class DisposalRepository {
             + " WHERE r.authorization_id=a.authorization_id AND r.device_id=a.device_id"
             + " AND c.device_id=a.device_id AND a.execution_command_id=r.off_command_id"
             + " AND c.status='SUCCEEDED' AND c.completed_at IS NOT NULL"
-            + " AND stop.authorization_id=a.authorization_id AND stop.action='SET_MASK' AND stop.mask=0)))";
+            + " AND stop.authorization_id=a.authorization_id AND stop.action='SET_MASK' AND stop.mask=0)))"
+            + " AND NOT EXISTS (SELECT 1 FROM prediction_event_link origin WHERE origin.event_id=a.subject_id"
+            + " AND (origin.role='PREDICTED' OR a.risk_case_id IS NULL))"
+            + " AND NOT EXISTS (SELECT 1 FROM uav_risk_case origin LEFT JOIN uav_risk_case current_origin"
+            + " ON current_origin.risk_case_id=origin.superseded_by WHERE origin.risk_case_id=a.risk_case_id"
+            + " AND (origin.episode_id IS NOT NULL OR current_origin.episode_id IS NOT NULL))";
 
     public List<String> completedWithoutPunishment() {
         return jdbc.queryForList("SELECT DISTINCT a.subject_id FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT' AND "
@@ -423,9 +440,10 @@ public class DisposalRepository {
 
     /** 这起事件的全部反制授权，按申请先后。自动反制据此决定新发、补发还是不再自动发；系统读取，不跟调用者范围。 */
     public List<AuthorizationRow> counterAttempts(String eventId) {
+        var params=new HashMap<String,Object>();params.put("id",eventId);
         return jdbc.query("SELECT " + COLUMNS + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
-                + " AND a.subject_id=:id AND a.action_type='COUNTERMEASURE' ORDER BY a.requested_at, a.authorization_id",
-                Map.of("id", eventId), DisposalRepository::row);
+                + " AND "+caseSubject("UAV_EVENT",eventId,params,"id")+" AND a.action_type='COUNTERMEASURE' ORDER BY a.requested_at, a.authorization_id",
+                params, DisposalRepository::row);
     }
 
     /** 该主体是否已有任一信号干扰授权（含手选），有则不再自动接。 */
@@ -738,7 +756,14 @@ public class DisposalRepository {
 
     private static Where filters(Where where, Query query) {
         add(where, "a.subject_kind", "f_kind", query.subjectKind());
-        add(where, "a.subject_id", "f_subject", query.subjectId());
+        String caseId=null;
+        if(org.springframework.web.context.request.RequestContextHolder.getRequestAttributes() instanceof org.springframework.web.context.request.ServletRequestAttributes r)caseId=r.getRequest().getParameter("risk_case_id");
+        if(caseId==null)add(where, "a.subject_id", "f_subject", query.subjectId());
+        else {
+            if(caseId.isBlank()||caseId.length()>36)throw new com.uav.lowaltitude.platform.api.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,"VALIDATION_ERROR","风险编号无效");
+            where.sql.append(" AND (a.risk_case_id=:f_risk_case OR (a.risk_case_id IS NULL AND a.subject_kind='UAV_EVENT' AND EXISTS(SELECT 1 FROM uav_risk_case_member rm JOIN uav_risk_case rc ON rc.risk_case_id=rm.risk_case_id AND rc.superseded_by IS NULL WHERE rm.risk_case_id=:f_risk_case AND rm.event_id=a.subject_id) AND (SELECT COUNT(*) FROM uav_risk_case_member cm JOIN uav_risk_case cc ON cc.risk_case_id=cm.risk_case_id AND cc.superseded_by IS NULL WHERE cm.event_id=a.subject_id)=1))");
+            where.params.put("f_risk_case",caseId);
+        }
         add(where, "a.status", "f_status", query.status());
         if (query.excludeStatus() != null) {
             where.sql.append(" AND a.status<>:f_exclude_status");
@@ -748,11 +773,18 @@ public class DisposalRepository {
         return where;
     }
 
-    /** 与交接同一口径：ALL 仍要求归属目录存在且启用，ASSIGNED 必须同一授权行同时命中组织与区域。 */
     private static Where scope(AccessDecision access) {
+        return scope(access, true);
+    }
+
+    /** Mutation locks retain current ownership; historical reads alone can include deleted organizations. */
+    private static Where scope(AccessDecision access, boolean history) {
         Where where = new Where();
+        String organization = history
+                ? com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("ao", access)
+                : "ao.enabled=TRUE AND ao.deleted_at IS NULL";
         where.sql.append(" WHERE EXISTS (SELECT 1 FROM app_org ao JOIN app_district ad ON ad.district_id=a.district_id"
-                + " WHERE ao.org_id=a.owner_org_id AND ao.enabled=TRUE AND ad.enabled=TRUE)");
+                + " WHERE ao.org_id=a.owner_org_id AND " + organization + " AND ad.enabled=TRUE)");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             where.sql.append(" AND EXISTS (SELECT 1 FROM app_user_data_scope gs JOIN app_org o ON o.org_id=gs.org_id AND o.enabled=TRUE"
                     + " JOIN app_district d2 ON d2.district_id=gs.district_id AND d2.enabled=TRUE WHERE gs.user_id=:scope_user"

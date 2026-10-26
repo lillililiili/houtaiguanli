@@ -45,6 +45,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @Service
 public class DisposalAuthorizationService {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.riskCases=cases;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -151,6 +154,7 @@ public class DisposalAuthorizationService {
                 subject.targetId(), blank(request.deviceId()) ? null : request.deviceId().trim(), request.channel(),
                 reason, actor.userId(), at, status, policy.policyCode(), subject.ownerOrgId(), subject.districtId(),
                 subject.sourceMode()), mode == null ? null : mode.name());
+        if(riskCases!=null&&"UAV_EVENT".equals(request.subjectKind()))riskCases.bindAuthorization(id,effectiveSubjectId);
         if (direct) {
             OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(request.actionType()));
             if (repository.authorizeDirect(id, 0L, at, until, "持有直接反制权限，免逐次审批") != 1) throw versionConflict();
@@ -176,6 +180,9 @@ public class DisposalAuthorizationService {
 
     @Transactional
     public ActionResultDto approve(String id, String rawRequest, String key) {
+        return riskCases==null?approveScoped(id,rawRequest,key):riskCases.withAuthorization(id,()->approveScoped(id,rawRequest,key));
+    }
+    private ActionResultDto approveScoped(String id,String rawRequest,String key){
         AccessDecision decision = access.require(PermissionCode.DISPOSAL_APPROVE);
         Decision body = parseDecision(rawRequest, false);
         AuthorizationRow row = locked(id, decision);
@@ -219,6 +226,9 @@ public class DisposalAuthorizationService {
 
     @Transactional
     public ExecuteOutcome execute(String id, String rawRequest, String key) {
+        return riskCases==null?executeScoped(id,rawRequest,key):riskCases.withAuthorization(id,()->executeScoped(id,rawRequest,key));
+    }
+    private ExecuteOutcome executeScoped(String id,String rawRequest,String key){
         AccessDecision decision = executionAccess(id);
         return executeInternal(id, parseExecute(rawRequest), key, decision);
     }
@@ -378,12 +388,14 @@ public class DisposalAuthorizationService {
     private Subject resolveSubject(String kind, String subjectId, String actionType, DisposalPolicy policy) {
         if ("UAV_EVENT".equals(kind)) {
             AccessDecision alarmDecision = access.require(PermissionCode.ALARM_READ);
+            if(riskCases!=null)riskCases.lockCases(subjectId);
             if(predictions!=null)predictions.lockEpisode(subjectId);
             // 锁主体但不改它：锁只用来串行化同一事件的并发申请，让下面的并发上限预检可靠。
             UavEventRepository.EventRow row = events.lock(subjectId, alarmDecision);
             if (row == null) throw notFound();
             // 未核实的事件不该被反制：先确认"确实是它"，再谈能不能动手（策略可关，但要明示）。
-            if (policy.requiresConfirmedEvent(actionType) && !"CONFIRMED".equals(row.state()))
+            boolean confirmed=riskCases!=null&&riskCases.hasCases(subjectId)?riskCases.confirmedForDisposal(subjectId):"CONFIRMED".equals(row.state());
+            if (policy.requiresConfirmedEvent(actionType) && !confirmed)
                 throw conflict("POLICY_REQUIRES_CONFIRMED_EVENT", "该动作要求事件已核实为属实");
             if (Set.of("COUNTERMEASURE", "JAMMING").contains(actionType)) advisory.requireCounter(subjectId, alarmDecision);
             return new Subject(subjectId, row.targetId(), row.ownerOrgId(), row.districtId(), row.sourceMode());
@@ -471,6 +483,7 @@ public class DisposalAuthorizationService {
         if(predictions!=null) {
             AuthorizationRow initial=repository.findUnlocked(id);
             if(initial!=null&&"UAV_EVENT".equals(initial.subjectKind())) {
+                if(riskCases!=null)riskCases.lockCases(initial.subjectId());
                 predictions.lockEpisode(initial.subjectId());
                 emergencyStops.lockEvent(initial.subjectId());
             }

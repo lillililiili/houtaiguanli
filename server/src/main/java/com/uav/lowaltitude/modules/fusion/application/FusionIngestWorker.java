@@ -15,6 +15,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.uav.lowaltitude.modules.fusion.application.FusionPipeline.FrameOutcome;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository;
 import com.uav.lowaltitude.modules.fusion.infrastructure.FusionInboxRepository.InboxRow;
+import com.uav.lowaltitude.platform.config.RealtimeSchedulingConfig;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
@@ -47,7 +48,8 @@ public class FusionIngestWorker {
     }
 
     // 首轮默认随调度器启动立即跑；测试可推迟首轮，免得排在其他定时任务之后的首轮和用例手工领取撞在一起。
-    @Scheduled(fixedDelayString = "${app.fusion.poll-millis:500}", initialDelayString = "${app.fusion.initial-delay-millis:0}")
+    @Scheduled(scheduler = RealtimeSchedulingConfig.FUSION_SCHEDULER,
+            fixedDelayString = "${app.fusion.poll-millis:500}", initialDelayString = "${app.fusion.initial-delay-millis:0}")
     public void poll() {
         // 预算量的是"这次调度已经占了调度线程多久"，用单调时钟；它不是业务时间，不走 AppClock。
         long budgetNanos = TimeUnit.MILLISECONDS.toNanos(properties.getDrainBudgetMillis());
@@ -60,7 +62,8 @@ public class FusionIngestWorker {
     }
 
     // 设备停报、同一分区再没有别的帧时，目标也要按平台时钟按时短失、终止（ZT-20 复测 2）。推迟首轮的测试同样推迟它。
-    @Scheduled(fixedDelayString = "${app.fusion.loss-sweep.interval-millis:500}", initialDelayString = "${app.fusion.initial-delay-millis:0}")
+    @Scheduled(scheduler = RealtimeSchedulingConfig.FUSION_SCHEDULER,
+            fixedDelayString = "${app.fusion.loss-sweep.interval-millis:500}", initialDelayString = "${app.fusion.initial-delay-millis:0}")
     public void sweepSilentTargets() {
         if (!properties.getLossSweep().isEnabled()) return;
         try {

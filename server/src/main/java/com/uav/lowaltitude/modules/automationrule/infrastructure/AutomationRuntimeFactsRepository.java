@@ -35,6 +35,9 @@ import org.springframework.transaction.annotation.Transactional;
 /** No writes, no authorization and no device dispatch. Facts use an independent consistent read snapshot. */
 @Repository
 public class AutomationRuntimeFactsRepository {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void cases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.cases=cases;}
     private final NamedParameterJdbcTemplate jdbc;
     private final RuleEngineRepository states;
     private final SpatialFactPort spatial;
@@ -173,16 +176,23 @@ public class AutomationRuntimeFactsRepository {
             if (known) facts.put("position", value("true", observed, stateEvidence));
             else facts.put("position", unknown("CURRENT_AIRSPACE_RELATION_UNKNOWN"));
         }
+        if(cases!=null&&cases.selectedCase()!=null){
+            var selected=cases.cases(b.event);
+            if(selected.size()!=1)known=false;
+            else if(selected.get(0).airspaceId()!=null)airspaces.retainAll(Set.of(selected.get(0).airspaceId()));
+        }
         return result(b, observed, airspaces, known, facts);
     }
 
     /** Elapsed time is derived from the persisted completion receipt, never from polling or page entry. */
     private Fact phoneWait(Base b, long now) {
+        if (notifications.phoneWaitNotRequired(b.event)) return value("NOT_REQUIRED",now,"response_order_or_notification_configuration:"+b.event);
         var p = params(b); p.put("event", b.event); p.put("now", now);
+        if(cases!=null){p.put("event",cases.notificationTaskOwner(b.event,"VOICE"));p.put("risk_scope",cases.taskScope(b.event,"VOICE"));}else p.put("risk_scope","");
         var rows = jdbc.query("""
                 SELECT r.record_id,r.playback_completed_at FROM uav_auto_voice_task t
                 JOIN uav_event_voice_advisory r ON r.record_id=t.delivery_record_id AND r.event_id=t.event_id
-                WHERE t.event_id=:event AND t.status='SIMULATED_PLAYED' AND r.delivery_status='SIMULATED_PLAYED'
+                WHERE t.event_id=:event AND t.risk_scope=:risk_scope AND t.status='SIMULATED_PLAYED' AND r.delivery_status='SIMULATED_PLAYED'
                   AND t.answered_at=r.answered_at AND t.playback_completed_at=r.playback_completed_at
                   AND r.answered_at>=0 AND r.playback_completed_at>=r.answered_at
                   AND r.playback_completed_at<=:now
@@ -340,12 +350,15 @@ public class AutomationRuntimeFactsRepository {
 
     private void executionFacts(Base b, long now, Map<String, Fact> facts) {
         Map<String,Object> p = params(b); p.put("event",b.event); p.put("now",at(now));
+        String riskCase=cases==null?null:cases.caseId(b.event);p.put("risk_case",riskCase);
         List<String[]> authorizations = jdbc.query("""
                 SELECT authorization_id,device_id,channel FROM disposal_authorization
                 WHERE subject_kind='UAV_EVENT' AND subject_id=:event AND target_id=:target
                   AND owner_org_id=:org AND district_id=:district AND source_mode=:mode
                   AND action_type='COUNTERMEASURE' AND status IN ('APPROVED','EXECUTING')
                   AND valid_from<=:now AND :now<valid_until
+                  AND (CAST(:risk_case AS VARCHAR) IS NULL OR risk_case_id=:risk_case OR (risk_case_id IS NULL
+                    AND (SELECT COUNT(*) FROM uav_risk_case_member m JOIN uav_risk_case c ON c.risk_case_id=m.risk_case_id WHERE m.event_id=:event AND c.superseded_by IS NULL)=1))
                 """, p, (r,n) -> new String[]{r.getString(1),r.getString(2),r.getString(3)});
         if (authorizations.size() != 1) {
             for (String key : List.of("device","receipt","conflictTask")) facts.put(key,unknown("UNIQUE_CURRENT_COUNTER_AUTHORIZATION_REQUIRED"));

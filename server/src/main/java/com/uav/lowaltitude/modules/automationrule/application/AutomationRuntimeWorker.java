@@ -12,6 +12,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** Rules drive automatic actions only after their independent business and dispatch checks pass. */
 @Component
 public class AutomationRuntimeWorker {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void cases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.cases=cases;}
     private final AutomationRuntimePolicy policy;
     private final AutomationRuntimeRepository runs;
     private final AutomationRuntimeFactsRepository facts;
@@ -39,6 +42,10 @@ public class AutomationRuntimeWorker {
                 for(String event:candidates){
                     for(String category:List.of("verify","counter","dispose")){
                         try {
+                            if(java.util.Set.of("verify","counter").contains(category)&&cases!=null&&!cases.allCases(event).isEmpty()){
+                                for(var c:cases.allCases(event))cases.runWithCase(c.riskCaseId(),()->evaluateCase(category,event));
+                                continue;
+                            }
                             service.evaluate(category,event);
                             var state=runs.state(category,event);
                             if(state==null||!"PASS".equals(state.status()))continue;
@@ -54,5 +61,12 @@ public class AutomationRuntimeWorker {
             }
         }catch(RuntimeException failed){error="自动规则判定本轮运行异常，等待恢复";org.slf4j.LoggerFactory.getLogger(getClass()).warn("Rule evaluation cycle failed: {}",failed.getClass().getSimpleName());}
         runs.heartbeat(clock.nowMillis(),cursor,error);
+    }
+    private void evaluateCase(String category,String event){
+        service.evaluate(category,event);
+        var state=runs.state(category,event);
+        if(state!=null&&"PASS".equals(state.status())){
+            if("verify".equals(category))verification.confirmIfPassed(event,state.runId());else counter.launchIfPassed(event,state.runId());
+        }
     }
 }

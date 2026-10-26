@@ -36,8 +36,10 @@ public class DatabaseAccessControlService implements AccessControlService {
         if (!effective.permissionCodes(current.userId()).contains(permission.value())) {
             throw forbidden();
         }
-        String storedScopeMode = accessControlMapper.findGrantedScopeMode(
-                current.userId(), permission.value());
+        // The permission above is the user-level grant. An appointed unit administrator
+        // does not need a duplicate personal role action; its scope is always OWN_ORG.
+        String storedScopeMode = effective.isUnitAdministrator(current.userId()) ? "ASSIGNED"
+                : accessControlMapper.findGrantedScopeMode(current.userId(), permission.value());
         if (storedScopeMode == null) {
             throw forbidden();
         }

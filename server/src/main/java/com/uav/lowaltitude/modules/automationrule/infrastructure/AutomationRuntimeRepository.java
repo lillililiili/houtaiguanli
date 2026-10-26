@@ -8,6 +8,10 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class AutomationRuntimeRepository {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void cases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.cases=cases;}
+    private String caseScope(String category,String event){return Set.of("verify","counter").contains(category)&&cases!=null?cases.caseId(event):null;}
     private final JdbcTemplate jdbc;
     public AutomationRuntimeRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
     public record State(String category,String eventId,long version,String runId,String status,Long unknownSince,String holds,String signature) { }
@@ -18,12 +22,31 @@ public class AutomationRuntimeRepository {
     public long heartbeat(){return jdbc.queryForObject("SELECT heartbeat_at FROM automation_runtime_worker WHERE worker_key='automation-rules'",Long.class);}
     public String lastError(){return jdbc.queryForObject("SELECT last_error FROM automation_runtime_worker WHERE worker_key='automation-rules'",String.class);}
     // Caller holds the corresponding group row; all initialization and changes are serialized by that lock.
-    public State state(String category,String event){return jdbc.query("SELECT * FROM automation_runtime_state WHERE category=? AND event_id=?",(r,n)->new State(category,event,r.getLong("group_version"),r.getString("run_id"),r.getString("status"),nullable(r,"unknown_since"),r.getString("holds_json"),r.getString("signature")),category,event).stream().findFirst().orElse(null);}
+    public State state(String category,String event){
+        String scope=caseScope(category,event);
+        if(scope!=null){var current=jdbc.query("SELECT * FROM automation_case_state WHERE risk_case_id=? AND category=?",(r,n)->state(r),scope,category).stream().findFirst().orElse(null);if(current!=null)return current;}
+        if(Set.of("verify","counter").contains(category)&&cases!=null&&cases.allCases(event).size()>1)return null;
+        return jdbc.query("SELECT * FROM automation_runtime_state WHERE category=? AND event_id=?",(r,n)->state(r),category,event).stream().findFirst().orElse(null);
+    }
+    private static State state(ResultSet r)throws SQLException{return new State(r.getString("category"),r.getString("event_id"),r.getLong("group_version"),r.getString("run_id"),r.getString("status"),nullable(r,"unknown_since"),r.getString("holds_json"),r.getString("signature"));}
     public void state(String category,String event,long version,String run,String status,Long unknown,String holds,String signature) {
+        String scope=caseScope(category,event);
+        if(scope!=null){
+            if(jdbc.update("UPDATE automation_case_state SET event_id=?,group_version=?,run_id=?,status=?,unknown_since=?,holds_json=?,signature=? WHERE risk_case_id=? AND category=?",event,version,run,status,unknown,holds,signature,scope,category)==0)
+                jdbc.update("INSERT INTO automation_case_state(risk_case_id,category,event_id,group_version,run_id,status,unknown_since,holds_json,signature) VALUES(?,?,?,?,?,?,?,?,?)",scope,category,event,version,run,status,unknown,holds,signature);
+            return;
+        }
         if(state(category,event)==null)jdbc.update("INSERT INTO automation_runtime_state(category,event_id,group_version,run_id,status,unknown_since,holds_json,signature) VALUES(?,?,?,?,?,?,?,?)",category,event,version,run,status,unknown,holds,signature);
         else jdbc.update("UPDATE automation_runtime_state SET group_version=?,run_id=?,status=?,unknown_since=?,holds_json=?,signature=? WHERE category=? AND event_id=?",version,run,status,unknown,holds,signature,category,event);
     }
-    public void insertRun(RunRow run,String facts){jdbc.update("INSERT INTO automation_runtime_run(run_id,category,event_id,target_id,group_version,status,reason,evaluated_at,observed_at,source_mode,conditions_json,facts_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",run.id(),run.category(),run.eventId(),run.targetId(),run.version(),run.status(),run.reason(),run.at(),run.observed(),run.mode(),run.conditions(),facts);}
+    public void insertRun(RunRow run,String facts){jdbc.update("INSERT INTO automation_runtime_run(run_id,category,event_id,target_id,group_version,status,reason,evaluated_at,observed_at,source_mode,conditions_json,facts_json,risk_case_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",run.id(),run.category(),run.eventId(),run.targetId(),run.version(),run.status(),run.reason(),run.at(),run.observed(),run.mode(),run.conditions(),facts,caseScope(run.category(),run.eventId()));}
+    public boolean runBelongsToCase(String runId,String event){
+        if(cases==null)return true;
+        var rows=jdbc.queryForList("SELECT risk_case_id FROM automation_runtime_run WHERE run_id=? AND event_id=?",String.class,runId,event);
+        if(rows.size()!=1)return false;
+        String scope=caseScope("counter",event),stored=rows.get(0);
+        return stored!=null?stored.equals(scope):cases.allCases(event).size()<=1;
+    }
     public RunRow run(String id){return jdbc.query("SELECT * FROM automation_runtime_run WHERE run_id=?",AutomationRuntimeRepository::run,id).stream().findFirst().orElse(null);}
     public List<RunRow> runs(String category,int page,int size){return jdbc.query("SELECT * FROM automation_runtime_run WHERE category=? ORDER BY evaluated_at DESC,run_id DESC LIMIT ? OFFSET ?",AutomationRuntimeRepository::run,category,size,(page-1)*size);}
     public long runCount(String category){return jdbc.queryForObject("SELECT COUNT(*) FROM automation_runtime_run WHERE category=?",Long.class,category);}

@@ -258,10 +258,10 @@ async function removeOrganization(row) {
   if (!Number.isInteger(version)) return ElMessage.warning('单位版本信息不完整，请刷新后重试。')
   deletingOrgId.value = id
   try {
-    await confirmDeletion(`确认删除单位“${name}”？存在人员、下级单位、授权或业务关联时不能删除。`, '删除单位')
+    await confirmDeletion(`确认删除单位“${name}”？删除后将从单位列表移除，相关授权失效，历史记录保留。有未删除人员、下级单位或未结束业务时不能删除。`, '删除单位')
     await systemApi.deleteOrganization(id, version)
     if (selectedOrgId.value === id) { selectedOrgId.value = ALL_ORGS; filters.page = 1 }
-    ElMessage.success('单位已删除。')
+    ElMessage.success('单位已删除，相关授权已失效，历史记录保留。')
     await refreshAll()
   } catch (e) {
     if (e !== 'cancel' && e !== 'close') {
@@ -285,7 +285,7 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
 
 <template>
   <div class="page-stack page-stack--viewport">
-    <PageHeader title="用户管理" description="统一维护前台与后台用户；前台按角色授权，后台拥有全部管理功能。">
+    <PageHeader title="用户管理" description="平台账号管理全部单位；单位管理员继承单位授权，其他人员按角色使用前台。">
       <el-button v-if="canReadUsers" @click="districtDialogVisible = true">区域管理</el-button>
       <el-button v-if="canReadUsers" :disabled="!canOperate" type="primary" @click="openUser('create')">新增用户</el-button>
     </PageHeader>
@@ -325,8 +325,8 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
           <el-form-item label="状态"><el-select v-model="filters.status" clearable placeholder="全部状态"><el-option label="启用" value="ACTIVE" /><el-option label="停用" value="DISABLED" /></el-select></el-form-item>
           <el-form-item><el-button type="primary" @click="search">查询</el-button><el-button @click="resetFilters">重置</el-button></el-form-item>
         </el-form>
-        <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><div class="unit-toolbar-actions"><el-button v-if="selectedOrg && canEditBasic" @click="handleOrgCommand('delegation', selectedOrg)">单位授权</el-button><el-button v-if="selectedOrg" @click="openOrg(selectedOrg, null, 'view')">查看单位</el-button><el-button @click="refreshAll">刷新</el-button></div></div>
-        <el-empty v-if="!canReadUsers" description="选择左侧单位后点击查看单位，维护单位资料。当前账号没有用户列表读取权限。" />
+        <div class="table-toolbar"><span>{{ selectedOrg ? `当前单位：${selectedOrg.name}` : '当前范围：全部单位' }}</span><el-button @click="refreshAll">刷新</el-button></div>
+        <el-empty v-if="!canReadUsers" description="从左侧单位的“…”菜单选择“查看单位”可查看基本资料。当前账号没有用户列表读取权限。" />
         <div v-else class="table-scroll"><el-table v-loading="loading" :data="users" height="100%" empty-text="当前条件下暂无用户">
           <el-table-column prop="account" label="账号" min-width="130" /><el-table-column prop="name" label="姓名" min-width="100" />
           <el-table-column label="用户类型" min-width="100"><template #default="{ row }">{{ userTypeLabel(rowUserType(row)) }}</template></el-table-column>
@@ -352,7 +352,8 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
         <el-form-item label="联系电话"><el-input v-model="userDialog.form.phone" maxlength="32" /></el-form-item>
         <el-form-item label="所属单位" required :error="userErrors.org_id"><el-select v-model="userDialog.form.org_id" filterable><el-option v-for="org in organizations" :key="org.org_id" :label="org.name" :value="org.org_id" /></el-select></el-form-item>
         <el-form-item label="用户类型" required><el-radio-group v-model="userDialog.form.user_type" :disabled="isAdmin(userDialog.row)" @change="changeUserType"><el-radio label="FRONTEND">前台用户</el-radio><el-radio label="BACKEND">后台用户</el-radio></el-radio-group></el-form-item>
-        <el-form-item v-if="!backendForm" label="角色" required :error="userErrors.role_code"><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="roleLabel(role)" :value="role.role_code" /></el-select></el-form-item>
+        <el-form-item v-if="!backendForm && userDialog.row?.unit_administrator" label="业务权限"><span>继承本单位已开放的全部权限，请在“单位授权”调整。</span></el-form-item>
+        <el-form-item v-else-if="!backendForm" label="角色" required :error="userErrors.role_code"><el-select v-model="userDialog.form.role_code"><el-option v-for="role in activeRoles" :key="role.role_code" :label="roleLabel(role)" :value="role.role_code" /></el-select></el-form-item>
         <el-alert v-else class="dialog-grid__wide" title="后台用户拥有全部后台菜单和管理功能，无需配置业务角色。" type="info" :closable="false" />
         <el-form-item v-if="userDialog.mode === 'create'" label="临时密码" required :error="userErrors.temporary_password"><el-input v-model="userDialog.form.temporary_password" type="password" show-password autocomplete="new-password" maxlength="32" /><small>6–32 位，包含大小写字母、数字和特殊字符。</small></el-form-item>
         <el-form-item label="数据范围" required class="dialog-grid__wide">
@@ -383,7 +384,7 @@ onBeforeUnmount(() => { alive = false; listSequence++; catalogSequence++ })
 
 <style scoped>
 .org-delete-label{color:var(--el-color-danger)}
-.unit-toolbar-actions{display:flex;flex-wrap:wrap;gap:8px;flex:none}.unit-toolbar-actions .el-button+.el-button{margin-left:0}.table-toolbar{flex-wrap:wrap;gap:12px}:deep(.el-table .cell){white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
+.table-toolbar{flex-wrap:wrap;gap:12px}:deep(.el-table .cell){white-space:normal;overflow-wrap:anywhere;text-overflow:clip}
 .user-management{display:grid;grid-template-columns:292px minmax(0,1fr);min-height:0;overflow:hidden}
 .org-panel{display:flex;min-width:0;min-height:0;flex-direction:column;border-right:1px solid var(--admin-border);background:linear-gradient(180deg,#fbfdff 0%,#f6f9fd 100%)}
 .org-panel__header{display:flex;min-height:76px;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--admin-border);background:#fff}

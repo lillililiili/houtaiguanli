@@ -38,7 +38,14 @@ public final class SystemDtos {
             String orgId, String orgName, String roleCode, String roleName,
             String status, String dataScope,
             boolean mustChangePassword, boolean online, Long lastLoginAt,
-            String lastLoginIp, long createdAt, int version, String userType) {
+            String lastLoginIp, long createdAt, int version, String userType, boolean unitAdministrator) {
+        public UserResponse(String userId, String account, String name, String phone,
+                String orgId, String orgName, String roleCode, String roleName, String status, String dataScope,
+                boolean mustChangePassword, boolean online, Long lastLoginAt, String lastLoginIp,
+                long createdAt, int version, String userType) {
+            this(userId,account,name,phone,orgId,orgName,roleCode,roleName,status,dataScope,
+                    mustChangePassword,online,lastLoginAt,lastLoginIp,createdAt,version,userType,false);
+        }
     }
 
     public record UserCreationRequest(

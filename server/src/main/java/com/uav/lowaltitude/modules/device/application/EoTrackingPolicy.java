@@ -20,10 +20,12 @@ public class EoTrackingPolicy {
     private String autoSourceModes="live,replay";
     private final com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch departure;
     private final com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository edges;
+    private final com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     private final long positionAge, heartbeatAge, demandAge;
     public EoTrackingPolicy(EoTrackingRepository repository, AppClock clock,
             com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch departure,
             com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository edges,
+            com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions,
             @Value("${app.mqtt.enabled:true}") boolean mqttEnabled,
             @Value("${app.eo-edge.auto-track.enabled:${app.eo-edge.auto-track-enabled:false}}") boolean enabled,
             @Value("${app.eo-edge.position-max-age-millis:15000}") long positionAge,
@@ -31,7 +33,7 @@ public class EoTrackingPolicy {
             @Value("${app.eo-edge.demand-max-age-millis:300000}") long demandAge) {
         this.repository=repository;this.clock=clock;this.enabled=enabled;
         this.mqttEnabled=mqttEnabled;this.departure=departure;
-        this.edges=edges;
+        this.edges=edges;this.predictions=predictions;
         this.positionAge=positionAge;this.heartbeatAge=heartbeatAge;this.demandAge=demandAge;
     }
     public boolean enabled() { return enabled && mqttEnabled; }
@@ -50,6 +52,11 @@ public class EoTrackingPolicy {
                 && b.lastHeartbeatAt()>=now-heartbeatAge && b.lastHeartbeatAt()<=now;
     }
     public String block(Map<String,Object> target) {
+        String observation = observationBlock(target);
+        if (observation != null) return observation;
+        return repository.currentScope(text(target,"owner_org_id"),text(target,"district_id")) ? null : "EO_SCOPE_UNAVAILABLE";
+    }
+    private String observationBlock(Map<String,Object> target) {
         if(target==null) return "TARGET_NOT_FOUND";
         if(edges.uncertainTaskByTarget(text(target,"target_id"))!=null) return "EO_RESULT_UNKNOWN";
         if(text(target,"unknown_fields").contains("\"location\"")) return "TARGET_POSITION_UNAVAILABLE";
@@ -69,7 +76,8 @@ public class EoTrackingPolicy {
     }
     /** Fresh reports from this very EO task can sustain tracking when fused guidance is late. */
     public String continuationBlock(Map<String,Object> target, Map<String,Object> task, Binding device) {
-        String guidanceBlock=block(target);
+        // An existing device's continuation/stop path must survive a directory permission change.
+        String guidanceBlock=observationBlock(target);
         if (!"TARGET_POSITION_STALE".equals(guidanceBlock) && !"TARGET_POSITION_UNAVAILABLE".equals(guidanceBlock)) return guidanceBlock;
         return trackingBlock(target,task,device);
     }
@@ -79,7 +87,14 @@ public class EoTrackingPolicy {
     public List<DemandReason> demand(String target) {
         long now=clock.nowMillis(), cutoff=now-demandAge;
         List<DemandReason> result=new ArrayList<>();
-        var alarms=repository.alarms(target,cutoff,now);
+        var alarms=new ArrayList<Map<String,Object>>();
+        boolean predictionDemand=false;
+        for(var alarm:repository.alarms(target,cutoff,now)) {
+            Boolean prediction=predictions.observationRequired(text(alarm,"event_id"));
+            if(prediction==null) alarms.add(alarm);
+            else if(prediction) predictionDemand=true;
+        }
+        if(predictionDemand) result.add(new DemandReason("PREDICTION_OBSERVE","预测入区预警，需要光电跟踪观察"));
         if(alarms.stream().anyMatch(a -> !"CONFIRMED".equals(text(a,"state_code")))) result.add(new DemandReason("ALARM_VERIFY","告警待核实，需要目标观察"));
         if(alarms.stream().anyMatch(a -> "CONFIRMED".equals(text(a,"state_code"))
                 && departure.assess(text(a,"event_id"),millis(a.get("basis_at")),now)!=com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.Presence.LEFT))

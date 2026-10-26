@@ -11,6 +11,15 @@ const config = { ...ceiling, members: [member], unit_roles: [old, formal], catal
 const plan = () => ({ new_roles: [], assignments: { [member.user_id]: 'existing:formal-role' }, retire_role_codes: [old.role_code] })
 
 describe('显式角色分配与等价清理', () => {
+  it('新任管理员直接继承单位授权，普通人员仍须手动分配；离任不能退回全局权限', () => {
+    const empty = { new_roles: [], assignments: {}, retire_role_codes: [] }
+    const initial = { ...config, members: [{ ...member, role_code: 'GLOBAL' }] }
+    expect(rolePlanError(initial, empty, { ...ceiling, administrator_user_id: member.user_id })).toBe('')
+    expect(rolePlanPayload(empty)).toEqual({})
+    expect(rolePlanError({ ...initial, administrator_user_id: member.user_id }, empty, { ...ceiling, administrator_user_id: null })).toContain('请为甲')
+    expect(rolePlanError({ ...initial, members: [...initial.members, { ...member, user_id: 'staff', name: '乙', role_code: 'GLOBAL' }] }, empty, { ...ceiling, administrator_user_id: member.user_id })).toContain('请为乙')
+    expect(rolePlanError({ ...config, administrator_user_id: member.user_id, unit_roles: [{ ...old, enabled: false }] }, empty, { ...ceiling, administrator_user_id: null })).toContain('离任管理员')
+  })
   it('旧ordinary动作READ/AUTH按有效授权比较，但DIRECT仍只认OP', () => {
     expect(rolePermissionDifferences(roleWithinCeiling(old, ceiling), roleWithinCeiling(formal, ceiling))).toEqual([])
     expect(rolePlanError(config, plan(), ceiling)).toBe('')

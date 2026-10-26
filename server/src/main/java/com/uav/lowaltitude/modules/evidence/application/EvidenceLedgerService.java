@@ -78,7 +78,7 @@ public class EvidenceLedgerService {
         if(kind.equals("TRACK")) {
             for(Map<String,Object> row:ledger.trackLinks(id)) {
                 String subjectKind=string(row,"subject_kind"),subjectId=string(row,"subject_id");
-                if(canSeeLink(subjectKind)&&subjects.subjectVisible(subjectKind,subjectId,decision))
+                if(canSeeLink(subjectKind)&&subjects.subjectReadable(subjectKind,subjectId,decision))
                     links.add(new LinkDto(null,subjectKind,subjectId,subjects.findSubject(subjectKind,subjectId).no()));
             }
         }
@@ -86,7 +86,7 @@ public class EvidenceLedgerService {
             Map<String,Object> row=devices.findCommand(id);if(row==null)throw missing();
             for(SubjectLink link:ledger.commandLinks(id)) {
                 if(!canSeeLink(link.kind()))continue;
-                if(!subjects.subjectVisible(link.kind(),link.id(),decision))continue;
+                if(!subjects.subjectReadable(link.kind(),link.id(),decision))continue;
                 var subject=subjects.findSubject(link.kind(),link.id());
                 links.add(new LinkDto(null,link.kind(),link.id(),subject.no()));
             }
@@ -153,7 +153,7 @@ public class EvidenceLedgerService {
         if(Set.of("DEVICE","COMMAND","COMMISSION").contains(q.subjectKind())&&!commandAccess.monitoring())return false;
         if(q.subjectKind().equals("CASE")&&!probe(PermissionCode.PUNISHMENT_READ))return false;
         if(q.subjectKind().equals("AUTHORIZATION")&&!probe(PermissionCode.DISPOSAL_READ))return false;
-        return q.subjectId()==null||subjects.subjectVisible(q.subjectKind(),q.subjectId(),decision);
+        return q.subjectId()==null||subjects.subjectReadable(q.subjectKind(),q.subjectId(),decision);
     }
     private boolean canSeeLink(String kind) {
         return switch(kind) {

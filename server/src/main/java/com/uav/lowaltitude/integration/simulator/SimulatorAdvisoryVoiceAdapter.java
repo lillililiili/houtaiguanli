@@ -21,7 +21,7 @@ public class SimulatorAdvisoryVoiceAdapter implements AdvisoryVoicePort {
  public boolean simulationAvailable(String mode){return Set.of("mock","replay").contains(mode==null?"":mode)&&transport.online();}
  public Delivery simulate(String mode,AdvisoryVoiceRecording.Recording recording,String key){
   if(!simulationAvailable(mode)||key==null||!key.startsWith("auto-advisory-voice:"))throw new IllegalStateException("数据模拟器电话接收端不可用");
-  String event=key.substring("auto-advisory-voice:".length());var task=tasks.find(event);
+  String event=tasks.eventForProviderKey(key);var task=event==null?null:tasks.find(event);
   if(task==null||!"CALLING".equals(task.status())||!key.equals(task.providerKey())||task.token()==null||!task.recordingMatches(recording))throw new IllegalStateException("电话发送尝试或录音已变更");
   var recipient=directory.getObject().advisoryHistoryRecipient("ADVISORY_VOICE",event);
   if(recipient==null)throw new IllegalStateException("电话接收快照缺失");

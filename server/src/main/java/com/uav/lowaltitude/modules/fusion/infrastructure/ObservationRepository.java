@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -20,10 +21,13 @@ import com.uav.lowaltitude.modules.fusion.domain.HeadingDegrees;
 public class ObservationRepository {
     private final NamedParameterJdbcTemplate jdbc;
     private final ObjectMapper json;
+    private final boolean postgresql;
 
     public ObservationRepository(JdbcTemplate jdbcTemplate, ObjectMapper json) {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
         this.json = json;
+        this.postgresql = Boolean.TRUE.equals(jdbcTemplate.execute((ConnectionCallback<Boolean>) connection ->
+                "PostgreSQL".equalsIgnoreCase(connection.getMetaData().getDatabaseProductName())));
     }
 
     public record SourceMeta(String sourceId, String sourceCode, String sourceType, String schemaStatus, String sourceMode, boolean enabled) { }
@@ -53,7 +57,10 @@ public class ObservationRepository {
                 +" JOIN app_org o ON o.org_id=d.owner_org_id JOIN app_district district ON district.district_id=d.district_id"
                 +" WHERE s.source_id=:source AND d.device_id=:device AND d.owner_org_id=:org AND d.district_id=:district"
                 +" AND s.source_type='SIM_NORMALIZED' AND s.source_mode='replay' AND s.enabled=TRUE"
-                +" AND d.source_mode='replay' AND d.enabled=TRUE AND o.enabled=TRUE AND district.enabled=TRUE FOR UPDATE",
+                +" AND d.source_mode='replay' AND d.enabled=TRUE AND o.enabled=TRUE AND o.deleted_at IS NULL AND district.enabled=TRUE"
+                // Registration/device identity remains exclusive. Shared catalog locks still fence scope
+                // deactivation/retirement, but let K03's organization guard and other sources progress.
+                +(postgresql ? " FOR UPDATE OF r,s,d FOR SHARE OF o,district" : " FOR UPDATE"),
                 Map.of("source",sourceId,"device",deviceId,"org",org,"district",district),
                 (r,n)->new DeviceMeta(r.getString(1),r.getString(2),r.getString(3)));
         if(rows.size()!=1)throw new IllegalStateException("NORMALIZED_SOURCE_SCOPE_CHANGED");

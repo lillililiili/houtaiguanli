@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.UUID;
 import javax.sql.DataSource;
 import com.uav.lowaltitude.modules.flight.infrastructure.LocalFlightPlanInputRepository;
+import com.uav.lowaltitude.platform.database.MigrationLineage;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -41,8 +42,10 @@ class LegacyLocalPlanNumberMigrationTest {
     private void verify(DataSource root, DataSource ds, String schema, boolean pg) {
         String[] locations = pg ? new String[]{"classpath:db/migration", "classpath:db/postgresql"}
                 : new String[]{"classpath:db/migration"};
-        Flyway.configure().dataSource(root).schemas(schema).defaultSchema(schema).createSchemas(false)
-                .locations(locations).target("202610060002").load().migrate();
+        var initial = Flyway.configure().dataSource(root).schemas(schema).defaultSchema(schema).createSchemas(false)
+                .locations(locations).target("202610060002");
+        MigrationLineage.configure(initial);
+        initial.load().migrate();
         JdbcTemplate jdbc = new JdbcTemplate(ds);
         String route = id(), version = id(), actor = id();
         jdbc.update("INSERT INTO route(route_id,route_no,name,enabled,source_mode,created_at,updated_at,version) "
@@ -70,10 +73,14 @@ class LegacyLocalPlanNumberMigrationTest {
         var before = jdbc.queryForList("SELECT * FROM flight_plan ORDER BY plan_id");
         var receipts = jdbc.queryForList("SELECT * FROM local_interface_message ORDER BY message_id");
         var links = jdbc.queryForList("SELECT * FROM flight_plan_duplicate");
-        var latest = Flyway.configure().dataSource(root).schemas(schema).defaultSchema(schema).createSchemas(false)
-                .locations(locations).load();
+        var configuration = Flyway.configure().dataSource(root).schemas(schema).defaultSchema(schema).createSchemas(false)
+                .locations(locations);
+        MigrationLineage.configure(configuration);
+        var latest = configuration.load();
         latest.migrate();
         for (Map<String,Object> old : before) {
+            // The additive coordinate contract must not invent a declaration for historical plans.
+            old.put("filing_coordinate_system", null);
             String planId = (String) old.get("plan_id");
             var current = jdbc.queryForMap("SELECT * FROM flight_plan WHERE plan_id=?", planId);
             if (converted.contains(planId)) {
@@ -92,7 +99,8 @@ class LegacyLocalPlanNumberMigrationTest {
         assertThat(numbers).doesNotHaveDuplicates();
         assertThat(numbers).doesNotContain(new LocalFlightPlanInputRepository(jdbc).nextPlanNo());
         var mapping = jdbc.queryForList("SELECT * FROM local_flight_plan_number_change ORDER BY plan_id");
-        latest.migrate();
+        MigrationLineage.configure(configuration);
+        assertThat(configuration.load().migrate().migrationsExecuted).isZero();
         assertThat(jdbc.queryForList("SELECT * FROM local_flight_plan_number_change ORDER BY plan_id")).isEqualTo(mapping);
         assertThat(jdbc.queryForList("SELECT plan_no FROM flight_plan", String.class)).containsExactlyElementsOf(numbers);
     }

@@ -35,6 +35,7 @@ class AutoVoiceApiTest {
     @Autowired com.uav.lowaltitude.modules.alarm.application.AutoVoiceService voiceService;
     @Autowired com.uav.lowaltitude.modules.alarm.application.AutoVoiceJob voiceJob;
     @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository voiceTasks;
+    @Autowired com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
     @SpyBean com.uav.lowaltitude.integration.mock.LocalAdvisoryVoiceAdapter voice;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoVoicePolicy voicePolicy;
     @SpyBean com.uav.lowaltitude.platform.time.AppClock departureClock;
@@ -90,6 +91,45 @@ class AutoVoiceApiTest {
         DirectoryAdvisoryFixture.evaluation(jdbc,eventId,targetId,pilotPlanId,ORG,DISTRICT,Instant.now().minusSeconds(30));
         automatic.process(eventId);
         jdbc.update("UPDATE uav_auto_sms_task SET updated_at=? WHERE event_id=? AND status='SIMULATED_DELIVERED'",System.currentTimeMillis()-61_000L,eventId);
+    }
+
+    @Test void ambiguousAttemptedLegacyChannelsDoNotCreateNewSendsForEachArea(){
+        long now=System.currentTimeMillis();voiceTasks.initialize(eventId,now,"scope-test");
+        jdbc.update("UPDATE uav_auto_voice_task SET status='UNKNOWN',attempt_count=1,reason='legacy receipt pending' WHERE event_id=? AND risk_scope=''",eventId);
+        String a=legacyScopeCase(now);
+        riskCases.runWithCase(a,()->{
+            for(String channel:List.of("SMS","VOICE"))assertThat(riskCases.legacyNotificationAmbiguous(eventId,channel)).as("sole proven area remains compatible").isFalse();
+        });
+        String b=legacyScopeCase(now);
+        clearInvocations(sms,voice);
+        for(String risk:List.of(a,b))riskCases.runWithCase(risk,()->{
+            for(String channel:List.of("SMS","VOICE")){
+                assertThat(riskCases.legacyNotificationAmbiguous(eventId,channel)).isTrue();
+                assertThat(riskCases.claimChannel(eventId,channel)).isFalse();
+            }
+        });
+        automatic.process(eventId);voiceService.process(eventId);
+        for(String table:List.of("uav_auto_sms_task","uav_auto_voice_task")){
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM "+table+" WHERE event_id=? AND risk_scope<>'' AND attempt_count>0",Long.class,eventId)).isZero();
+            assertThat(jdbc.queryForList("SELECT reason FROM "+table+" WHERE event_id=? AND risk_scope<>''",String.class,eventId)).allMatch(reason->reason.contains("无法确定所属区域"));
+        }
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+        verify(voice,never()).simulate(anyString(),any(),anyString());
+        assertThat(jdbc.queryForObject("SELECT status FROM uav_auto_sms_task WHERE event_id=? AND risk_scope=''",String.class,eventId)).isEqualTo("SIMULATED_DELIVERED");
+        assertThat(jdbc.queryForObject("SELECT status FROM uav_auto_voice_task WHERE event_id=? AND risk_scope=''",String.class,eventId)).isEqualTo("UNKNOWN");
+        for(String channel:List.of("SMS","VOICE"))jdbc.update("INSERT INTO uav_risk_channel(risk_case_id,channel,event_id,task_scope,claimed_at) VALUES(?,?,?,'',?)",a,channel,eventId,now);
+        for(String risk:List.of(a,b))riskCases.runWithCase(risk,()->{
+            for(String channel:List.of("SMS","VOICE"))assertThat(riskCases.legacyNotificationAmbiguous(eventId,channel)).as("a proven unique historical owner resolves the ambiguity").isFalse();
+        });
+        jdbc.update("INSERT INTO uav_risk_channel(risk_case_id,channel,event_id,task_scope,claimed_at) VALUES(?,'VOICE',?,'',?)",b,eventId,now);
+        riskCases.runWithCase(b,()->assertThat(riskCases.legacyNotificationAmbiguous(eventId,"VOICE")).as("duplicate legacy attribution is still ambiguous").isTrue());
+    }
+    private String legacyScopeCase(long now){
+        String id=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO uav_risk_case(risk_case_id,root_event_id,target_id,owner_org_id,district_id,source_mode,created_at) VALUES(?,?,?,?,?,'mock',?)",id,eventId,targetId,ORG,DISTRICT,now);
+        jdbc.update("INSERT INTO uav_risk_case_member VALUES(?,?,'ROOT',?)",id,eventId,now);
+        jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,actor_id,note,created_at) VALUES(?,?,0,?,1,'CONFIRMED','OBSERVED',?,'隔离测试核实',?)",UUID.randomUUID().toString(),id,eventId,userId,now);
+        return id;
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -445,7 +485,7 @@ class AutoVoiceApiTest {
         voiceService.process(eventId);read().andExpect(jsonPath("$.data.auto_voice.status").value("UNKNOWN"));
         assertThat(count("uav_event_voice_advisory")).isZero();
     }
-    @Test void latePlaybackAfterLeaseReconciliationCannotOverwriteUnknownOrDuplicateContact() throws Exception {
+    @Test void sameAttemptLatePlaybackPreservesItsRealResultWithoutRedial() throws Exception {
         long version = jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId);
         doAnswer(call -> {
             voiceService.process(eventId);
@@ -455,12 +495,36 @@ class AutoVoiceApiTest {
         }).when(voice).simulate(anyString(), any(), eq("auto-advisory-voice:" + eventId));
         voiceService.process(eventId);
         voiceService.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_voice.status").value("UNKNOWN"))
+        read().andExpect(jsonPath("$.data.auto_voice.status").value("SIMULATED_PLAYED"))
                 .andExpect(jsonPath("$.data.auto_voice.can_retry").value(false))
-                .andExpect(jsonPath("$.data.auto_voice.playback_completed_at").doesNotExist());
-        assertThat(count("uav_event_voice_advisory")).isZero();
-        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId)).isEqualTo(version);
+                .andExpect(jsonPath("$.data.auto_voice.playback_completed_at").isNumber());
+        assertThat(count("uav_event_voice_advisory")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId)).isEqualTo(version+1);
         verify(voice, times(1)).simulate(anyString(), any(), eq("auto-advisory-voice:" + eventId));
+    }
+    @Test void lateSimulatorReceiptReconcilesUnknownAfterRiskEndsWithoutRestoringTheRisk() {
+        doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"SUBMITTED",null,null,null)).when(voice).simulate(anyString(),any(),anyString());
+        voiceService.process(eventId);
+        var task=voiceTasks.find(eventId);var recording=recordings.current();
+        var recipient=directory.advisoryHistoryRecipient("ADVISORY_VOICE",eventId);
+        long requested=task.leaseUntil()-60000,answered=requested+1000,completed=requested+2000;
+        var tx=new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        try{
+            doReturn(task.leaseUntil()+1000).when(departureClock).nowMillis();
+            voiceService.process(eventId);
+            assertThat(voiceTasks.find(eventId).status()).isEqualTo("UNKNOWN");
+            assertThat(voiceTasks.find(eventId).token()).isEqualTo(task.token());
+            jdbc.update("UPDATE uav_event SET state_code='FALSE_POSITIVE' WHERE event_id=?",eventId);
+            assertThat(Boolean.TRUE.equals(tx.execute(s->voiceService.completeSimulatorReceipt(eventId,task.providerKey(),"another-attempt",recipient,recording,"late-call","ANSWERED",answered,null,requested)))).isFalse();
+            assertThat(Boolean.TRUE.equals(tx.execute(s->voiceService.completeSimulatorReceipt(eventId,task.providerKey(),task.token(),recipient,recording,"late-call","PLAYED",answered,completed,requested)))).as("playback still requires this attempt's answered receipt").isFalse();
+            assertThat(Boolean.TRUE.equals(tx.execute(s->voiceService.completeSimulatorReceipt(eventId,task.providerKey(),task.token(),recipient,recording,"late-call","ANSWERED",answered,null,requested)))).isTrue();
+            assertThat(Boolean.TRUE.equals(tx.execute(s->voiceService.completeSimulatorReceipt(eventId,task.providerKey(),task.token(),recipient,recording,"late-call","PLAYED",answered,completed,requested)))).isTrue();
+            assertThat(Boolean.TRUE.equals(tx.execute(s->voiceService.completeSimulatorReceipt(eventId,task.providerKey(),task.token(),recipient,recording,"late-call","PLAYED",answered,completed,requested)))).isFalse();
+            assertThat(voiceTasks.find(eventId).status()).isEqualTo("SIMULATED_PLAYED");
+            assertThat(count("uav_event_voice_advisory")).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,eventId)).isEqualTo("FALSE_POSITIVE");
+            voiceService.process(eventId);verify(voice,times(1)).simulate(anyString(),any(),anyString());
+        }finally{reset(departureClock);}
     }
     @Test void retryChecksPermissionScopeAndVersion()throws Exception {
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"FAILED",null,null,null)).when(voice).simulate(anyString(),any(),anyString());
@@ -491,6 +555,17 @@ class AutoVoiceApiTest {
         doReturn(new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Recording(original.id(),"changed",original.transcript(),original.sha256())).when(recordings).current();
         retry(UUID.randomUUID().toString(),2).andExpect(status().isConflict());
         read().andExpect(jsonPath("$.data.auto_voice.can_retry").value(false));
+    }
+    @Test void notYetSubmittedCallUsesTheLatestRecordingAndFreezesTheAttempt()throws Exception {
+        var original=recordings.current();
+        var current=new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Recording("new-"+UUID.randomUUID(),"更新后提醒","更新后的电话内容","new-sha");
+        doReturn(original,current).when(recordings).current();
+        doAnswer(call->new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoicePort.Delivery(true,"SIMULATED_PLAYED","isolated-updated-recording",System.currentTimeMillis(),System.currentTimeMillis())).when(voice).simulate(anyString(),eq(current),anyString());
+        voiceService.process(eventId);
+        verify(voice).simulate(anyString(),eq(current),anyString());
+        verify(voice,never()).simulate(anyString(),eq(original),anyString());
+        assertThat(jdbc.queryForObject("SELECT recording_id FROM uav_event_voice_advisory WHERE event_id=?",String.class,eventId)).isEqualTo(current.id());
+        assertThat(jdbc.queryForObject("SELECT send_started_at FROM uav_auto_voice_task WHERE event_id=?",Long.class,eventId)).isPositive();
     }
     protected ResultActions read()throws Exception{return mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization","Bearer "+session));}
     private ResultActions retry(String key,long version)throws Exception{return mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/auto-voice/retry").header("Authorization","Bearer "+session).header("Idempotency-Key",key).contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":"+version+"}"));}

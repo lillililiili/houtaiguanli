@@ -18,6 +18,10 @@ public class PredictionResponseService {
     @Transactional
     public void pause(String eventId,String reason,long revision) {
         gate.lockEpisode(eventId);
+        // A failed direction fit or expired 3-second future line is not loss of measured entry.
+        // Existing stopped authorizations remain stopped; this only preserves a currently valid
+        // authorization while its independently checked measured case evidence still applies.
+        if(gate.measuredHandoffCurrent(eventId))return;
         gate.markPaused(eventId,revision);
         // Existing provider receipts remain consumable. New claims and provider dispatches are
         // blocked by the lifecycle gate; accepting a late receipt never advances to another action.

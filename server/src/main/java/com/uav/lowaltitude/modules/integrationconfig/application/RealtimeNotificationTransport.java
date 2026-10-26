@@ -87,7 +87,7 @@ public class RealtimeNotificationTransport {
    return view(old,true);
   }
   if(old.version()!=input.expectedVersion())throw conflict("请求版本已变化，请重新读取");
-  if(!allowed(old.kind(),old.state(),input.outcome()))throw conflict("通知回执顺序无效");
+  if(!allowed(old.kind(),old.state(),input.outcome(),old.answered()))throw conflict("通知回执顺序无效");
   long now=clock.nowMillis();Long delivered=old.delivered(),answered=old.answered(),completed=old.completed(),ack=old.ack();
   switch(input.outcome()){case "DELIVERED"->delivered=now;case "ANSWERED"->answered=now;case "PLAYED"->completed=now;case "ACKNOWLEDGED"->ack=now;default->{}}
   boolean applied=projector.getObject().apply(id,old.kind(),old.subjectId(),old.payload(),input.outcome(),delivered,answered,completed,ack,input.receiptResult());
@@ -95,7 +95,12 @@ public class RealtimeNotificationTransport {
   audit.record(actor.userId(),actor.account(),"simulator_notification_receipt","local_interface",id,"独立模拟器回执："+input.outcome()+"; kind="+old.kind(),null);
   return view(require(id,false),true);
  }
- static boolean allowed(String kind,String state,String next){
+ static boolean allowed(String kind,String state,String next,Long answered){
+  // A timeout is missing knowledge, not proof of non-delivery. Only the same persisted pilot
+  // notification may add late positive facts; its immutable payload still binds the original
+  // provider key, claim token and recording. This neither resends nor reopens the risk.
+  if("TIMEOUT".equals(state))return "ADVISORY_SMS".equals(kind)?"DELIVERED".equals(next)
+   :"ADVISORY_VOICE".equals(kind)&&(answered==null?"ANSWERED".equals(next):"PLAYED".equals(next));
   if("SUBMITTED".equals(state))return Set.of("FAILED","TIMEOUT").contains(next)||("ADVISORY_VOICE".equals(kind)?"ANSWERED".equals(next):"DELIVERED".equals(next));
   if("ANSWERED".equals(state))return "ADVISORY_VOICE".equals(kind)&&Set.of("PLAYED","TIMEOUT").contains(next);
   return "DELIVERED".equals(state)&&!"ADVISORY_SMS".equals(kind)&&Set.of("ACKNOWLEDGED","TIMEOUT").contains(next);

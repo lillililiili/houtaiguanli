@@ -77,7 +77,7 @@ public class RiskRepository {
     /** 飞行任务列表“需要处理”：按计划统计仍待核验、待通知的风险，与风险列表共用同一筛选和范围谓词。 */
     public List<PlanStateCount> pendingCountsByPlan(RiskQuery query, List<String> planIds, AccessDecision access) {
         if (planIds.isEmpty()) return List.of();
-        Where where = where(query, access);
+        Where where = where(query, access, false);
         where.sql.append(" AND r.plan_id IN (:attention_plans) AND r.state_code IN ('PENDING_VERIFICATION','PENDING_NOTIFICATION')");
         where.params.put("attention_plans", planIds);
         return jdbc.query("SELECT r.plan_id,r.state_code,r.risk_type,r.reason_code,COUNT(*) AS total" + from() + where.sql
@@ -140,7 +140,7 @@ public class RiskRepository {
     }
 
     public RiskRow lock(String riskId, AccessDecision access) {
-        Where where = where(RiskQuery.empty(), access);
+        Where where = where(RiskQuery.empty(), access, false);
         where.sql.append(" AND r.risk_id=:risk_id");
         where.params.put("risk_id", riskId);
         List<RiskRow> rows = jdbc.query(select() + nullNames() + from() + where.sql + " FOR UPDATE", where.params, RiskRepository::risk);
@@ -324,7 +324,11 @@ public class RiskRepository {
     }
 
     private Where where(RiskQuery query, AccessDecision access) {
-        Where where = scope(access);
+        return where(query, access, true);
+    }
+
+    private Where where(RiskQuery query, AccessDecision access, boolean history) {
+        Where where = scope(access, history);
         add(where, "r.state_code", "state", query.state);
         add(where, "r.severity", "severity", query.severity);
         add(where, "r.plan_id", "plan", query.planId);
@@ -367,11 +371,17 @@ public class RiskRepository {
     }
 
     private static Where scope(AccessDecision access) {
+        return scope(access, true);
+    }
+
+    private static Where scope(AccessDecision access, boolean history) {
         Where where = new Where();
-        // ALL 仅免授权元组，不免基础目录有效性；停用组织/区域下的风险对任何读取范围都不可见。
+        String organization = history
+                ? com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("risk_org", access)
+                : "risk_org.enabled=TRUE AND risk_org.deleted_at IS NULL";
         where.sql.append(" WHERE r.owner_org_id IS NOT NULL AND r.district_id IS NOT NULL"
                 +" AND EXISTS (SELECT 1 FROM app_org risk_org JOIN app_district risk_district ON risk_district.district_id=r.district_id"
-                +" WHERE risk_org.org_id=r.owner_org_id AND risk_org.enabled=TRUE AND risk_district.enabled=TRUE)");
+                +" WHERE risk_org.org_id=r.owner_org_id AND " + organization + " AND risk_district.enabled=TRUE)");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             // 同一授权行必须同时命中组织和区域，禁止 (org-a,dist-a)+(org-b,dist-b) 拼成交叉范围。
             where.sql.append(" AND EXISTS (SELECT 1 FROM app_user_data_scope gs JOIN app_org o ON o.org_id=gs.org_id AND o.enabled=TRUE"

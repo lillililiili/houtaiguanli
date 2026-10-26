@@ -13,6 +13,8 @@ import com.uav.lowaltitude.platform.api.ApiException;
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(prefix="app.notifications",name="transport",havingValue="mock",matchIfMissing=true)
 public class LocalAdvisorySmsAdapter implements AdvisorySmsPort {
     private final Environment environment;
+    private com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository tasks;
+    @org.springframework.beans.factory.annotation.Autowired public void tasks(com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository value){tasks=value;}
     public LocalAdvisorySmsAdapter(Environment environment) { this.environment = environment; }
     public boolean simulationAvailable(String mode) {
         return development() && mode != null && Set.of("mock", "replay").contains(mode);
@@ -24,7 +26,7 @@ public class LocalAdvisorySmsAdapter implements AdvisorySmsPort {
     }
     public Delivery simulateAutomatic(String mode, String recipientName, String content, String idempotencyKey) {
         if (!automaticSimulationAvailable(mode)) throw new ApiException(HttpStatus.CONFLICT, "SMS_CHANNEL_UNAVAILABLE", "正式短信渠道尚未接入，不能把模拟送达写成真实通知");
-        var scenario=LocalAdvisoryScenario.read(environment,mode,idempotencyKey,false);
+        var scenario=tasks==null?LocalAdvisoryScenario.read(environment,mode,idempotencyKey,false):LocalAdvisoryScenario.read(environment,mode,idempotencyKey,false,tasks.eventForProviderKey(idempotencyKey));
         if(scenario!=null) { scenario.awaitResponse();return new Delivery(true,scenario.status()); }
         return new Delivery(true, "SIMULATED_DELIVERED");
     }

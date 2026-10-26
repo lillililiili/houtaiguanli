@@ -35,6 +35,7 @@ public interface AccessControlMapper {
             JOIN app_org o
               ON o.org_id = s.org_id
              AND o.enabled = TRUE
+             AND o.deleted_at IS NULL
             JOIN app_district d
               ON d.district_id = s.district_id
              AND d.enabled = TRUE

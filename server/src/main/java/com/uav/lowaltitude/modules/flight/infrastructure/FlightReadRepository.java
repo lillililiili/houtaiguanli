@@ -258,6 +258,7 @@ public class FlightReadRepository {
         if (query.statusCode != null) add(where, "p.status_code", "status_code", query.statusCode);
         if (query.sourceCode != null) add(where, "s.source_code", "source_code", query.sourceCode);
         if (query.sourceMode != null) add(where, "p.source_mode", "source_mode", query.sourceMode);
+        if (query.excludeRetiredSimulation) where.sql.append(" AND ").append(SimulationPlanBatchRepository.eligibleSql("p"));
         if (query.routeId != null) add(where, "r.route_id", "route_id", query.routeId);
         if (query.uavSn != null) add(where, "p.uav_sn", "uav_sn", query.uavSn);
         if (query.ownerOrgId != null) add(where, "p.owner_org_id", "owner_org_id", query.ownerOrgId);
@@ -425,8 +426,8 @@ public class FlightReadRepository {
     public record PlanQuery(String statusCode, String sourceCode, String routeId, String uavSn, String ownerOrgId,
             String districtId, OffsetDateTime windowFrom, OffsetDateTime windowTo, String keyword,
             /** 来源模式（mock/replay/live）：正式统计只认 live，与航线列表同名参数（ZT-17）。 */
-            String sourceMode) {
-        public static PlanQuery empty() { return new PlanQuery(null, null, null, null, null, null, null, null, null, null); }
+            String sourceMode, boolean excludeRetiredSimulation) {
+        public static PlanQuery empty() { return new PlanQuery(null, null, null, null, null, null, null, null, null, null, false); }
     }
 
     public record RouteQuery(Boolean enabled, String sourceMode, String ownerOrgId, String districtId, String keyword) {

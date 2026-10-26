@@ -11,10 +11,12 @@ import RuleHistoryDialog from './RuleHistoryDialog.vue'
 import RuleRunsDialog from './RuleRunsDialog.vue'
 import RuleSettingsDialog from './RuleSettingsDialog.vue'
 import RuleSetPanel from './RuleSetPanel.vue'
+import ResponseOrderPanel from './ResponseOrderPanel.vue'
 import { CATEGORIES, actionSummary, categoryMeta, conditionText, enabledCount, scopeSummary, timeSummary } from './ruleModel'
 import { useAutomationRuleGroup } from './useAutomationRuleGroup'
 
 const auth = useAuthStore()
+const activeTab = ref('verify')
 const canReadRuleSets = computed(() => auth.hasPermission('rule:read'))
 const ruleSetsVisible = ref(false), ruleSetsOpened = ref(false)
 function toggleRuleSets() { ruleSetsOpened.value = true; ruleSetsVisible.value = !ruleSetsVisible.value }
@@ -37,7 +39,7 @@ const executionType = computed(() => ({ CONNECTED: 'success', STARTING: 'warning
 
 function openEditor(rule = null) { clearActionError(); editingRule.value = rule; editorVisible.value = true }
 function openSettings() { clearActionError(); settingsVisible.value = true }
-function changeCategory(next) { if (!saving.value && !loading.value && next !== category.value) { editorVisible.value = false; settingsVisible.value = false; runsVisible.value = false; historyVisible.value = false; clearActionError(); load(next) } }
+function changeCategory(next) { if (saving.value || loading.value) return; activeTab.value = next; if (next === 'order') return; if (next !== category.value) { editorVisible.value = false; settingsVisible.value = false; runsVisible.value = false; historyVisible.value = false; clearActionError(); load(next) } }
 async function saveRule(payload) {
   const current = editingRule.value
   const success = await mutate(state => current ? automationRuleApi.updateRule(category.value, current.rule_id, { ...payload, expected_version: state.version }) : automationRuleApi.createRule(category.value, { ...payload, expected_version: state.version }))
@@ -58,17 +60,18 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
 </script>
 <template>
   <div class="page-stack rules-page">
-    <PageHeader title="规则管理" description="这三类规则用于前台告警到处罚。启用的规则全部满足且业务校验通过后自动推进；无反制规则或条件不满足时，由有权限的操作员人工发起反制。">
+    <PageHeader title="规则管理" description="管理风险核实、反制及移送条件，并单独设置处置顺序。预测风险始终由人工核实、人工发起反制。">
       <el-button v-if="canReadRuleSets" :aria-expanded="ruleSetsVisible" aria-controls="judgement-rule-versions" @click="toggleRuleSets">研判规则版本</el-button>
     </PageHeader>
     <section v-if="canReadRuleSets && ruleSetsOpened" v-show="ruleSetsVisible" id="judgement-rule-versions" aria-label="研判规则版本"><RuleSetPanel /></section>
-    <el-alert v-if="group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
+    <el-alert v-if="activeTab !== 'order' && group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
     <el-alert v-if="uncertain" :title="uncertain" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon><template #default><el-button :disabled="loading" @click="load(category)">重新读取</el-button></template></el-alert>
     <el-alert v-if="actionError && !editorVisible && !settingsVisible" :title="actionError" type="error" :closable="false" show-icon />
     <el-card class="rule-card" shadow="never">
-      <el-tabs :model-value="category" @update:model-value="changeCategory"><el-tab-pane v-for="item in CATEGORIES" :key="item.key" :label="item.label" :name="item.key" :disabled="saving || loading" /></el-tabs>
-      <template v-if="group">
+      <el-tabs :model-value="activeTab" @update:model-value="changeCategory"><el-tab-pane v-for="item in CATEGORIES" :key="item.key" :label="item.label" :name="item.key" :disabled="saving || loading" /><el-tab-pane label="处置顺序" name="order" :disabled="saving || loading" /></el-tabs>
+      <ResponseOrderPanel v-if="activeTab === 'order'" />
+      <template v-else-if="group">
         <section class="context-grid"><div><span>适用范围</span><strong>{{ scopeSummary(group.settings) }}</strong></div><div><span>生效时间</span><strong>{{ timeSummary(group.settings) }}</strong></div><div><span>预设动作</span><strong>{{ actionSummary(category, group.settings) }}</strong></div><el-button type="primary" :icon="Setting" :disabled="!canManage || saving || loading" @click="openSettings">生效设置</el-button></section>
         <section class="list-bar"><div><p :class="{ paused: !count }">{{ policyText }}</p><small>共 {{ group.rules.length }} 条 · {{ count }} 条已启用</small></div><div class="list-actions"><el-button @click="runsVisible = true">运行记录</el-button><el-button @click="historyVisible = true">变更记录</el-button><el-button type="primary" :icon="Plus" :disabled="!mayCreate || saving" @click="openEditor()">新建规则</el-button></div></section>
         <el-table v-loading="loading" :data="group.rules" class="rules-table">

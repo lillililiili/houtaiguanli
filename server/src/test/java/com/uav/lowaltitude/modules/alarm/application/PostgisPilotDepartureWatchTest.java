@@ -40,14 +40,14 @@ class PostgisPilotDepartureWatchTest {
             jdbc.execute("create table uav_event (event_id text primary key,alarm_id text,owner_org_id text,district_id text)");
             jdbc.execute("create table track (track_id text primary key,target_id text)");
             jdbc.execute("create table track_point (track_id text,observed_at timestamptz,location geometry(Point,4326),point_kind text default 'MEAS')");
-            jdbc.execute("create table airspace (airspace_id text primary key,owner_org_id text,district_id text,source_mode text)");
+            jdbc.execute(AIRSPACE_TABLE);
             jdbc.execute("create table airspace_version (airspace_id text,boundary geometry(MultiPolygon,4326),valid_from timestamptz,valid_to timestamptz)");
             jdbc.execute(EVALUATION_TABLE);
             jdbc.update("insert into alarm values ('alarm','target','live')");
             jdbc.update("insert into uav_event values ('event','alarm','org','district')");
             jdbc.update("insert into track values ('track','target')");
             jdbc.update("insert into track_point(track_id,observed_at,location) values ('track','2026-09-27T00:00:00Z',ST_SetSRID(ST_MakePoint(118.5,37.5),4326)),('track','2026-09-27T00:00:10Z',ST_SetSRID(ST_MakePoint(118.6,37.6),4326))");
-            jdbc.update("insert into airspace values ('area','org','district','mock')");
+            jdbc.update("insert into airspace(airspace_id,owner_org_id,district_id,source_mode) values ('area','org','district','mock')");
             jdbc.update("insert into airspace_version values ('area',ST_Multi(ST_GeomFromText('POLYGON((118 37,119 37,119 38,118 38,118 37))',4326)),'2026-09-26T00:00:00Z',null)");
             PostgisPilotDepartureWatch watch = watch(jdbc, scoped);
             long accepted = Instant.parse("2026-09-27T00:00:01Z").toEpochMilli();
@@ -62,6 +62,15 @@ class PostgisPilotDepartureWatchTest {
                             .isEqualTo(eligible ? PilotDepartureWatch.Presence.STILL_PRESENT : PilotDepartureWatch.Presence.UNKNOWN);
                 }
             }
+            // Retirement uses the evaluated instant: history before deletion still applies, the endpoint does not.
+            jdbc.update("update airspace set source_mode='live',deleted_at='2026-09-27T00:00:11Z'");
+            jdbc.update("update alarm set source_mode='live'");
+            assertThat(watch.inAreaAtSms("event", accepted)).isTrue();
+            assertThat(watch.assess("event", accepted, now)).isEqualTo(PilotDepartureWatch.Presence.STILL_PRESENT);
+            jdbc.update("update airspace set deleted_at='2026-09-27T00:00:01Z'");
+            assertThat(watch.inAreaAtSms("event", accepted)).isFalse();
+            assertThat(watch.assess("event", accepted, now)).isEqualTo(PilotDepartureWatch.Presence.UNKNOWN);
+            jdbc.update("update airspace set deleted_at=null");
             // A later observation outside a simulated area must not fabricate a live departure.
             jdbc.update("update airspace set source_mode='mock'");
             jdbc.update("update track_point set location=ST_SetSRID(ST_MakePoint(120,39),4326) where observed_at='2026-09-27T00:00:10Z'");
@@ -103,13 +112,13 @@ class PostgisPilotDepartureWatchTest {
             jdbc.execute("create table uav_event (event_id text primary key,alarm_id text,owner_org_id text,district_id text)");
             jdbc.execute("create table track (track_id text primary key,target_id text)");
             jdbc.execute("create table track_point (track_id text,observed_at timestamptz,location geometry(Point,4326),point_kind text default 'MEAS')");
-            jdbc.execute("create table airspace (airspace_id text primary key,owner_org_id text,district_id text,source_mode text)");
+            jdbc.execute(AIRSPACE_TABLE);
             jdbc.execute("create table airspace_version (airspace_id text,boundary geometry(MultiPolygon,4326),valid_from timestamptz,valid_to timestamptz)");
             jdbc.execute(EVALUATION_TABLE);
             jdbc.update("insert into alarm values ('alarm','target','mock')");
             jdbc.update("insert into uav_event values ('event','alarm','org','district')");
             jdbc.update("insert into track values ('track','target')");
-            jdbc.update("insert into airspace values ('area','org','district','mock')");
+            jdbc.update("insert into airspace(airspace_id,owner_org_id,district_id,source_mode) values ('area','org','district','mock')");
             jdbc.update("insert into airspace_version values ('area',ST_Multi(ST_GeomFromText('POLYGON((118 37,119 37,119 38,118 38,118 37))',4326)),'2026-09-26T00:00:00Z',null)");
             // 短信发出时在空域内；电话期间已经飞出；录音播完后的新位置也在外面。
             jdbc.update("insert into track_point(track_id,observed_at,location) values ('track','2026-09-27T00:00:00Z',ST_SetSRID(ST_MakePoint(118.5,37.5),4326)),"
@@ -148,13 +157,13 @@ class PostgisPilotDepartureWatchTest {
             jdbc.execute("create table uav_event (event_id text primary key,alarm_id text,owner_org_id text,district_id text)");
             jdbc.execute("create table track (track_id text primary key,target_id text)");
             jdbc.execute("create table track_point (track_id text,observed_at timestamptz,location geometry(Point,4326),point_kind text default 'MEAS')");
-            jdbc.execute("create table airspace (airspace_id text primary key,owner_org_id text,district_id text,source_mode text)");
+            jdbc.execute(AIRSPACE_TABLE);
             jdbc.execute("create table airspace_version (airspace_id text,boundary geometry(MultiPolygon,4326),valid_from timestamptz,valid_to timestamptz)");
             jdbc.execute(EVALUATION_TABLE);
             jdbc.update("insert into alarm values ('alarm','target','mock')");
             jdbc.update("insert into uav_event values ('event','alarm','org','district')");
             jdbc.update("insert into track values ('track','target')");
-            jdbc.update("insert into airspace values ('zone','org','district','mock')");
+            jdbc.update("insert into airspace(airspace_id,owner_org_id,district_id,source_mode) values ('zone','org','district','mock')");
             jdbc.update("insert into airspace_version values ('zone',ST_Multi(ST_GeomFromText('POLYGON((118 37,119 37,119 38,118 38,118 37))',4326)),'2026-09-26T00:00:00Z',null)");
             // 短信发出时已偏离航线、不在任何空域；之后飞进禁飞区。
             jdbc.update("insert into track_point(track_id,observed_at,location) values ('track','2026-09-27T00:00:00Z',ST_SetSRID(ST_MakePoint(120,39),4326)),"
@@ -200,6 +209,7 @@ class PostgisPilotDepartureWatchTest {
         }
     }
 
+    private static final String AIRSPACE_TABLE = "create table airspace (airspace_id text primary key,owner_org_id text,district_id text,source_mode text,deleted_at timestamptz)";
     private static final String EVALUATION_TABLE = "create table rule_evaluation (evaluation_id text primary key,target_id text,owner_org_id text,district_id text,"
             + "source_mode text,mode text,subject_kind text,observed_at timestamptz,evaluated_at timestamptz,freshness_code text,legal_status text)";
     private static void evaluation(JdbcTemplate jdbc, String id, String legal, String freshness, String observed, String evaluated, String sourceMode, String mode) {

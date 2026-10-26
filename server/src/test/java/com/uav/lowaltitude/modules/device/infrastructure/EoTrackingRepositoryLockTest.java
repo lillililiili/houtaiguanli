@@ -18,6 +18,52 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 class EoTrackingRepositoryLockTest {
 
     @Test
+    void automaticCandidatesExcludeRetiredAndDisabledUnitsButStopTasksRemainAvailable() {
+        var dataSource = new DriverManagerDataSource("jdbc:h2:mem:eo_scope_" + UUID.randomUUID()
+                + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1", "sa", "");
+        var jdbc = new JdbcTemplate(dataSource);
+        try {
+            jdbc.execute("CREATE TABLE app_org(org_id varchar(36) PRIMARY KEY,enabled boolean,deleted_at bigint)");
+            jdbc.execute("CREATE TABLE app_district(district_id varchar(36) PRIMARY KEY,enabled boolean)");
+            jdbc.execute("CREATE TABLE target(target_id varchar(36) PRIMARY KEY,owner_org_id varchar(36),district_id varchar(36))");
+            jdbc.execute("CREATE TABLE target_latest_state(target_id varchar(36),observed_at timestamp with time zone)");
+            jdbc.execute("CREATE TABLE eo_tracking_task(task_id varchar(36),target_id varchar(36),status varchar(24),created_at bigint)");
+            jdbc.execute("CREATE TABLE eo_target_control(target_id varchar(36),auto_paused boolean)");
+            jdbc.execute("CREATE TABLE alarm(alarm_id varchar(36),target_id varchar(36))");
+            jdbc.execute("CREATE TABLE uav_event(alarm_id varchar(36),state_code varchar(32))");
+            jdbc.execute("CREATE TABLE flight_risk(target_id varchar(36),state_code varchar(32),risk_type varchar(32),severity varchar(16))");
+            jdbc.execute("CREATE TABLE rule_evaluation(evaluation_id varchar(36),target_id varchar(36),mode varchar(16),legal_status varchar(24))");
+            jdbc.execute("CREATE TABLE legality_review(evaluation_id varchar(36),manual_status varchar(24))");
+            String district=UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO app_district VALUES(?,TRUE)",district);
+            long now=System.currentTimeMillis();
+            var active=new java.util.ArrayList<String>();
+            var rejected=new java.util.ArrayList<String>();
+            for(int index=0;index<4;index++) {
+                String org=UUID.randomUUID().toString(),target=UUID.randomUUID().toString();
+                boolean enabled=index<2;
+                jdbc.update("INSERT INTO app_org VALUES(?,?,?)",org,enabled,index==2?now:null);
+                jdbc.update("INSERT INTO target VALUES(?,?,?)",target,org,district);
+                jdbc.update("INSERT INTO target_latest_state VALUES(?,?)",target,new java.sql.Timestamp(now-index));
+                // Acknowledged historical risk may still satisfy visual-demand selection.
+                jdbc.update("INSERT INTO flight_risk VALUES(?,'ACKNOWLEDGED','SPACE_OBJECT','HIGH')",target);
+                (enabled?active:rejected).add(target);
+                var repository=new EoTrackingRepository(jdbc,null);
+                assertThat(repository.currentScope(org,district)).isEqualTo(enabled);
+            }
+            var repository=new EoTrackingRepository(jdbc,null);
+            assertThat(repository.candidates(now-1000,now,20)).containsExactlyElementsOf(active);
+            assertThat(repository.candidates(now-1000,now,20)).doesNotContainAnyElementsOf(rejected);
+            String task=UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO eo_tracking_task VALUES(?,?,'ENDING',?)",task,rejected.get(0),now);
+            assertThat(repository.endingTasks()).containsExactly(task);
+            assertThat(repository.currentScope(UUID.randomUUID().toString(),district)).isFalse();
+        } finally {
+            jdbc.execute("SHUTDOWN");
+        }
+    }
+
+    @Test
     void automaticPollSkipsATargetAnotherTransactionIsWritingInsteadOfWaiting() throws Exception {
         var dataSource = new DriverManagerDataSource("jdbc:h2:mem:eo_lock_" + UUID.randomUUID()
                 + ";MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=300", "sa", "");

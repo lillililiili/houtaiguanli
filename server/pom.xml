@@ -25,6 +25,17 @@
         <apache-poi.version>5.5.1</apache-poi.version>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- Moquette's [3.0,4.0) range requires remote metadata; keep the version already used by our tests. -->
+            <dependency>
+                <groupId>com.bugsnag</groupId>
+                <artifactId>bugsnag</artifactId>
+                <version>3.8.0</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <dependency>
             <groupId>org.eclipse.paho</groupId>

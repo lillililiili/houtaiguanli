@@ -386,7 +386,11 @@ public class UnitDelegationService {
             MemberRoleAssignment assignment=plan.assignments().get(u.getUserId());
             RoleRow r=assignment!=null&&assignment.newRoleKey()!=null?null:
                     identity.findRole(assignment==null?u.getRoleCode():assignment.roleCode());
-            if(!"ACTIVE".equals(u.getStatus())||(r!=null&&!r.isEnabled())) throw bad("ADMINISTRATOR_INACTIVE","单位管理员必须是本单位启用的前台人员");
+            if(!"ACTIVE".equals(u.getStatus()) || (r!=null && !r.isEnabled()
+                    && (d==null || !u.getUserId().equals(d.administratorUserId()))))
+                throw bad("ADMINISTRATOR_INACTIVE","单位管理员必须是本单位启用的前台人员");
+            if(r!=null && r.getOwnerOrgId()!=null && !orgId.equals(r.getOwnerOrgId()))
+                throw bad("ROLE_ORGANIZATION_MISMATCH","不能任命绑定其他单位角色的人员");
         }
         return plan;
     }
@@ -420,8 +424,17 @@ public class UnitDelegationService {
             }
         }
         for(UserAdminRow u:members.values()) {
-            if(!orgId.equals(units.roleOwner(u.getRoleCode()))&&!assignments.containsKey(u.getUserId()))
+            if(!u.getUserId().equals(request.administratorUserId())
+                    && !orgId.equals(units.roleOwner(u.getRoleCode()))&&!assignments.containsKey(u.getUserId()))
                 throw bad("UNIT_ROLE_ASSIGNMENT_REQUIRED","请为“"+u.getName()+"（"+u.getAccount()+"）”明确选择本单位角色；系统不再自动复制角色");
+        }
+        Delegation departing=units.delegation(orgId);
+        if(departing!=null && departing.administratorUserId()!=null
+                && !Objects.equals(departing.administratorUserId(),request.administratorUserId())) {
+            UserAdminRow oldAdministrator=members.get(departing.administratorUserId());
+            if(oldAdministrator!=null && !assignments.containsKey(oldAdministrator.getUserId())
+                    && !identity.findRole(oldAdministrator.getRoleCode()).isEnabled())
+                throw bad("UNIT_ROLE_ASSIGNMENT_REQUIRED","请先为离任管理员选择启用的本单位人员角色");
         }
         Map<String,RoleRow> retiring=new LinkedHashMap<>();
         List<PermissionAssignment> currentCaps=units.permissions(orgId).stream()
@@ -649,11 +662,14 @@ public class UnitDelegationService {
     private DelegationResponse detail(String orgId) {
         OrgRow o=identity.findOrganization(orgId);
         if(o==null) throw error(HttpStatus.NOT_FOUND,"ORG_NOT_FOUND","单位不存在");
+        if(identity.countDeletedOrganization(orgId)>0)
+            throw error(HttpStatus.CONFLICT,"ORG_DELETED","单位已删除，不能再配置授权");
         Delegation d=units.delegation(orgId);
         return new DelegationResponse(orgId,o.getName(),d!=null,d==null?0:d.version(),d==null?null:d.administratorUserId(),
                 units.permissions(orgId).stream().map(this::permission).toList(),
                 units.actions(orgId).stream().map(a->new ActionAssignment(a,"OP")).toList(),
-                members(orgId).stream().filter(u->"ACTIVE".equals(u.getStatus())&&identity.findRole(u.getRoleCode()).isEnabled()).map(this::user).toList(),catalogEntries(),
+                members(orgId).stream().filter(u->"ACTIVE".equals(u.getStatus())
+                        && (identity.findRole(u.getRoleCode()).isEnabled() || (d!=null && u.getUserId().equals(d.administratorUserId())))).map(this::user).toList(),catalogEntries(),
                 managementPermissions(orgId,null),members(orgId).stream().map(this::user).toList(),
                 units.roles(orgId).stream().map(r->role(r,d)).toList());
     }
@@ -691,9 +707,11 @@ public class UnitDelegationService {
                         .map(a->new RoleActionResponse(a.getPermissionCode(),a.getLevel())).toList(),r.getRoleCode().equals(adminRole),RoleCopyOrigins.from(r));
     }
     private UserResponse user(UserAdminRow u) {
+        Delegation appointment=units.delegation(u.getOrgId());
         return new UserResponse(u.getUserId(),u.getAccount(),u.getName(),u.getPhone(),u.getOrgId(),u.getOrgName(),u.getRoleCode(),
                 u.getRoleName(),u.getStatus(),DataScope.of(u.getScopeMode(),u.getScopeOrgRule()).name(),u.isMustChangePassword(),
-                u.isOnline(),u.getLastLoginAt(),u.getLastLoginIp(),u.getCreatedAt(),u.getVersion(),"FRONTEND");
+                u.isOnline(),u.getLastLoginAt(),u.getLastLoginIp(),u.getCreatedAt(),u.getVersion(),"FRONTEND",
+                appointment!=null && u.getUserId().equals(appointment.administratorUserId()));
     }
     private PermissionResponse permission(PermissionRow p) {
         return new PermissionResponse(p.getPermissionCode(),p.getModuleName(),UnitDelegationPolicy.menu(p.getRouteKey())?p.getRouteKey():null,

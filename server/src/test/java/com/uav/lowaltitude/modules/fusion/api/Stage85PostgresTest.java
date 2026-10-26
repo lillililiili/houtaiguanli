@@ -155,6 +155,9 @@ class Stage85PostgresTest {
                 .as("有失败迁移时后续断言全部没有意义").isZero();
         assertThat(jdbc.queryForObject("select count(*) from flyway_schema_history where version=?", Long.class, "202609050070"))
                 .as("迁移 070（阶段 8.5 目录扩展）必须已应用").isEqualTo(1L);
+        assertThat(jdbc.queryForObject("select script from flyway_schema_history where version=?", String.class, "202610200001"))
+                .as("空库必须按迁移来源选择器加载本地功能迁移，不能漏过已移出公共目录的脚本")
+                .isEqualTo("V202610200001__remove_vendor_name_from_display_data.sql");
         assertThat(jdbc.queryForObject("select extversion from pg_extension where extname='postgis'", String.class)).isNotBlank();
         // 阶段 8 的只增触发器在 8.5 迁移之后仍在位：新迁移不得顺手放开历史证据的改写。
         for (String trigger : List.of("trg_stage8_lineage_append_only", "trg_stage7_rule_evaluation_append_only")) {
@@ -1022,8 +1025,10 @@ class Stage85PostgresTest {
         root.execute("create schema " + SCHEMA);
         schemaCreated = true;
         try {
-            Flyway.configure().dataSource(rootDataSource()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false).cleanDisabled(true)
-                    .locations("classpath:db/migration", "classpath:db/postgresql").load().migrate();
+            var configuration = Flyway.configure().dataSource(rootDataSource()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false).cleanDisabled(true)
+                    .locations("classpath:db/migration", "classpath:db/postgresql");
+            com.uav.lowaltitude.platform.database.MigrationLineage.configure(configuration);
+            configuration.load().migrate();
         } catch (RuntimeException exception) {
             try { root.execute("drop schema " + SCHEMA + " cascade"); } finally { schemaCreated = false; }
             throw exception;

@@ -84,7 +84,7 @@ onBeforeUnmount(() => { sequence++ })
     <div v-loading="loading" class="delegation-content">
       <ErrorAlert :message="error" @retry="load" />
       <template v-if="config">
-        <el-alert title="保存后立即生效：本单位前台人员使用本单位角色和数据范围，受影响人员需重新登录。历史业务记录保留。" type="info" :closable="false" show-icon />
+        <el-alert title="保存后立即生效：管理员继承单位授权，其他人员按角色授权，数据范围均为本单位；受影响人员需重新登录。" type="info" :closable="false" show-icon />
         <el-tabs v-model="activeTab" class="delegation-tabs">
         <el-tab-pane label="管理员" name="administrator">
         <el-form label-position="top">
@@ -95,9 +95,8 @@ onBeforeUnmount(() => { sequence++ })
             <small>需要新账号时，请先在用户管理新增本单位前台用户。{{ config.managed ? '清空后将撤任管理员，单位权限和本单位数据范围仍保留。' : '' }}</small>
           </el-form-item>
         </el-form>
-        <p>单位管理员负责本单位人员和角色；其本人的前台业务角色仍由平台维护，管理身份不会自动授予审批、反制或设备控制权限。</p>
+        <p>单位管理员直接继承平台为本单位开放的全部前台权限和后台功能，无需单独配置个人角色权限。仅管理本单位，不含下级单位；审批、反制等动作仍需平台在单位权限中明确开放，并遵守申请不能自审等业务限制。</p>
         </el-tab-pane>
-        <el-tab-pane label="人员角色" name="members"><UnitRoleAssignmentEditor v-model="rolePlan" :config="config" :permissions="draft.permissions" :actions="draft.actions" :disabled="busy" /></el-tab-pane>
         <el-tab-pane label="前台权限" name="business">
         <h3>本单位人员的前台权限上限</h3>
         <UnitPermissionEditor v-model:permissions="draft.permissions" v-model:actions="draft.actions" :modules="config.catalog?.action_modules || []" :disabled="busy" />
@@ -115,6 +114,7 @@ onBeforeUnmount(() => { sequence++ })
             <el-table-column label="操作范围" min-width="240"><template #default="{ row }">{{ managementModules.find(module => module.module_key === row.module_key)?.operation || '仅查看状态，不下放设备控制' }}</template></el-table-column>
           </el-table>
         </el-tab-pane>
+        <el-tab-pane label="人员角色" name="members"><UnitRoleAssignmentEditor v-model="rolePlan" :config="config" :administrator-user-id="draft.administrator_user_id" :permissions="draft.permissions" :actions="draft.actions" :disabled="busy" /></el-tab-pane>
         </el-tabs>
       </template>
     </div>

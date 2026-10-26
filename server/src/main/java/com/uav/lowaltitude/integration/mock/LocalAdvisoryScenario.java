@@ -8,12 +8,16 @@ import org.springframework.core.env.Profiles;
 record LocalAdvisoryScenario(String status, long delayMillis) {
     private static final String PREFIX="app.qa.advisory-scenario.";
     static LocalAdvisoryScenario read(Environment env,String mode,String key,boolean voice) {
+        String configured=env.getProperty(PREFIX+"event-id","").trim();
+        return read(env,mode,key,voice,((voice?"auto-advisory-voice:":"auto-advisory:")+configured).equals(key)?configured:null);
+    }
+    static LocalAdvisoryScenario read(Environment env,String mode,String key,boolean voice,String resolvedEventId) {
         if(!env.acceptsProfiles(Profiles.of("((local & qa) | test) & !prod & !production"))
                 || !Boolean.parseBoolean(env.getProperty(PREFIX+"enabled","false"))
                 || mode==null || !Set.of("mock","replay").contains(mode)) return null;
         String event=env.getProperty(PREFIX+"event-id","").trim();
         if(event.isEmpty() || event.length()>64) throw new IllegalArgumentException("模拟通知场景必须绑定一个测试事件");
-        if(!((voice?"auto-advisory-voice:":"auto-advisory:")+event).equals(key)) return null;
+        if(!event.equals(resolvedEventId)) return null;
         String status=env.getProperty(PREFIX+(voice?"voice-status":"sms-status"),voice?"SIMULATED_PLAYED":"SIMULATED_DELIVERED");
         Set<String> allowed=voice?Set.of("SIMULATED_PLAYED","NO_ANSWER","ANSWERED","FAILED","UNKNOWN")
                 :Set.of("SIMULATED_DELIVERED","SENT","FAILED","UNKNOWN");

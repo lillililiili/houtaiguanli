@@ -321,6 +321,65 @@ class FlightReadApiTest {
         assertError("/api/v1/flight-plans?order=attention&attention=OTHER", 400, "VALIDATION_ERROR");
     }
 
+    @Test
+    void retiredSimulationFilterUsesRegisteredScopeAndBatchBeforePagination() throws Exception {
+        String oldBatch = id(), currentBatch = id();
+        for (String batch : java.util.List.of(oldBatch, currentBatch)) {
+            jdbc.update("insert into simulation_plan_batch(batch_id,owner_org_id,district_id,started_at,registered_at,created_by,request_body)"
+                    + " values(?,?,?,1,1,?,'{}')", batch, orgA, districtA, userId);
+        }
+        String unregistered = id(), live = id(), historicalMember = id();
+        for (String plan : java.util.List.of(unregistered, live, historicalMember)) {
+            plan(plan, "MAP-" + plan, routeVersionOne, orgA, districtA, T0.plusHours(1), T0.plusHours(2));
+        }
+        for (String plan : java.util.List.of(planA, planNoTime, unregistered, historicalMember, planOtherScope)) {
+            jdbc.update("update flight_plan set source_mode='replay' where plan_id=?", plan);
+        }
+        jdbc.update("update flight_plan set source_mode='live' where plan_id=?", live);
+        jdbc.update("insert into simulation_plan_batch_member values(?,?,true)", oldBatch, planA);
+        jdbc.update("insert into simulation_plan_batch_member values(?,?,true)", currentBatch, planNoTime);
+        jdbc.update("insert into simulation_plan_batch_member values(?,?,false)", currentBatch, historicalMember);
+        jdbc.update("insert into simulation_plan_batch_member values(?,?,false)", oldBatch, live);
+        jdbc.update("insert into simulation_plan_batch_member values(?,?,true)", currentBatch, planOtherScope);
+        jdbc.update("insert into simulation_plan_batch_current values(?,?,?)", orgA, districtA, currentBatch);
+
+        // History remains readable, and omitting/explicitly disabling the filter preserves the original contract.
+        for (String query : java.util.List.of("", "&exclude_retired_simulation=false")) {
+            JsonNode all = getJson("/api/v1/flight-plans?size=100" + query).path("data");
+            assertThat(all.path("total").asInt()).isEqualTo(5);
+            assertThat(all.path("items").findValuesAsText("plan_id"))
+                    .containsExactlyInAnyOrder(planA, planNoTime, unregistered, live, historicalMember);
+        }
+        assertThat(getJson("/api/v1/flight-plans/" + planA).path("data").path("plan_id").asText()).isEqualTo(planA);
+        java.util.List<String> visible = new java.util.ArrayList<>();
+        for (int page = 1; page <= 3; page++) {
+            JsonNode data = getJson("/api/v1/flight-plans?exclude_retired_simulation=true&size=1&page=" + page).path("data");
+            assertThat(data.path("total").asInt()).isEqualTo(3);
+            visible.addAll(data.path("items").findValuesAsText("plan_id"));
+        }
+        assertThat(visible).containsExactlyInAnyOrder(planNoTime, unregistered, live);
+        assertThat(getJson("/api/v1/flight-plans?exclude_retired_simulation=true&keyword=" + "MAP-" + historicalMember)
+                .path("data").path("total").asInt()).isZero();
+
+        // Switching the actual scope pointer changes eligibility without rewriting plans or geometry.
+        jdbc.update("update simulation_plan_batch_current set batch_id=? where owner_org_id=? and district_id=?", oldBatch, orgA, districtA);
+        assertThat(getJson("/api/v1/flight-plans?exclude_retired_simulation=true&size=100")
+                .path("data").path("items").findValuesAsText("plan_id"))
+                .containsExactlyInAnyOrder(planA, unregistered, live);
+        jdbc.update("update app_user set scope_mode='ALL' where user_id=?", userId);
+        // Membership in another scope's active batch does not make a replay plan current.
+        assertThat(getJson("/api/v1/flight-plans?exclude_retired_simulation=true&size=100")
+                .path("data").path("items").findValuesAsText("plan_id")).doesNotContain(planOtherScope);
+    }
+
+    @Test
+    void retiredSimulationFilterValidatesBooleanAndKeepsPermissionChecks() throws Exception {
+        assertError("/api/v1/flight-plans?exclude_retired_simulation=yes", 400, "VALIDATION_ERROR");
+        assertError("/api/v1/flight-plans?exclude_retired_simulation=true&exclude_retired_simulation=false", 400, "VALIDATION_ERROR");
+        jdbc.update("delete from app_role_permission where role_code=? and permission_code='flight:read'", role);
+        assertError("/api/v1/flight-plans?exclude_retired_simulation=true", 403, "FORBIDDEN");
+    }
+
     private java.util.List<String> searchIds(String keyword) throws Exception {
         String body = mvc.perform(get("/api/v1/flight-plans").header("Authorization", "Bearer " + sessionId)
                         .param("keyword", keyword).param("size", "100"))

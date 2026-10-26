@@ -20,8 +20,10 @@ import com.uav.lowaltitude.modules.directory.application.NotificationDirectorySe
 import com.uav.lowaltitude.modules.integrationconfig.application.RealtimeNotificationTransport;
 
 class SimulatorAdvisoryVoiceAdapterTest {
-    @Test
-    void submitsTheSelectedRecordingBytesToTheDeviceSimulator() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"", ":9c3d9b2b-2a51-4de0-9c5e-456de5606971"})
+    void submitsTheSelectedRecordingBytesToTheDeviceSimulator(String scopeSuffix) {
+        String key="auto-advisory-voice:event-1"+scopeSuffix;
         var transport = mock(RealtimeNotificationTransport.class);
         var tasks = mock(AutoVoiceRepository.class);
         var directory = mock(NotificationDirectoryService.class);
@@ -33,19 +35,20 @@ class SimulatorAdvisoryVoiceAdapterTest {
         var recipient = new RecipientSnapshot("pilot", "飞手", "org", "单位", "contact", "飞手", "***",
                 "API", "local-data-simulator", "setting", 1L, true, null, 100L);
         var task = new AutoVoiceRepository.Task("event-1", "CALLING", "", "", null, null, null, 100L, 1,
-                200L, "claim", "auto-advisory-voice:event-1", "rec-1", "现场提醒", "sha256", "请立即降落", null,
+                200L, "claim", key, "rec-1", "现场提醒", "sha256", "请立即降落", null,
                 null);
         when(transport.online()).thenReturn(true);
         when(tasks.find("event-1")).thenReturn(task);
+        when(tasks.eventForProviderKey(key)).thenReturn("event-1");
         when(provider.getObject()).thenReturn(directory);
         when(directory.advisoryHistoryRecipient("ADVISORY_VOICE", "event-1")).thenReturn(recipient);
         when(recordings.content(recording)).thenReturn(audio);
 
         var adapter = new SimulatorAdvisoryVoiceAdapter(transport, tasks, provider, json, recordings);
-        adapter.simulate("mock", recording, "auto-advisory-voice:event-1");
+        adapter.simulate("mock", recording, key);
 
         var payload = org.mockito.ArgumentCaptor.forClass(JsonNode.class);
-        org.mockito.Mockito.verify(transport).submit(eq("ADVISORY_VOICE"), eq("event-1"), eq("auto-advisory-voice:event-1:claim"), payload.capture());
+        org.mockito.Mockito.verify(transport).submit(eq("ADVISORY_VOICE"), eq("event-1"), eq(key+":claim"), payload.capture());
         assertThat(payload.getValue().path("recording_audio_base64").asText())
                 .isEqualTo(Base64.getEncoder().encodeToString(audio));
         assertThat(payload.getValue().path("recording").path("id").asText()).isEqualTo("rec-1");

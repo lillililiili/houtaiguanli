@@ -54,9 +54,10 @@ public class DirectDisposalAccess {
         var user = identity.findAdminUser(row.requestedBy(), clock.nowMillis());
         if (user == null || !"ACTIVE".equals(user.getStatus()) || user.isMustChangePassword()) return null;
         var role = identity.findRole(user.getRoleCode());
-        if (role == null || !role.isEnabled()) return null;
-        // 管理员也必须有显式 OP 授权；目录存在、READ/AUTH 或其他处置权限都不能替代。
-        boolean direct = identity.listActionsForRole(user.getRoleCode()).stream().anyMatch(grant ->
+        boolean unitAdministrator = effective.isUnitAdministrator(user.getUserId());
+        if (role == null || (!role.isEnabled() && !unitAdministrator)) return null;
+        // Unit administrators use the unit's explicit OP; staff/super-admin keep their explicit role OP.
+        boolean direct = unitAdministrator || identity.listActionsForRole(user.getRoleCode()).stream().anyMatch(grant ->
                 "disposal:direct".equals(grant.getPermissionCode()) && "OP".equals(grant.getLevel()));
         if (!direct || !permissions.contains("disposal:direct")) return null;
         ScopeMode scope = "ALL".equals(user.getScopeMode()) ? ScopeMode.ALL

@@ -79,6 +79,7 @@ public class AccessService {
 
     public boolean canAccessTuple(String orgId, String districtId) {
         AuthUser user = AuthContext.require();
+        if (effective != null && !effective.organizationAvailable(user.userId())) return false;
         String managedOrg = effective == null ? null : effective.managedOrgId(user.userId());
         if (managedOrg != null && !managedOrg.equals(orgId)) return false;
         if ("ALL".equals(user.scopeMode())) return true;

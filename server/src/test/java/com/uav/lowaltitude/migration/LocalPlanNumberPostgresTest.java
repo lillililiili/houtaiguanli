@@ -9,6 +9,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import javax.sql.DataSource;
 import com.uav.lowaltitude.modules.flight.infrastructure.LocalFlightPlanInputRepository;
+import com.uav.lowaltitude.platform.database.MigrationLineage;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -30,10 +31,11 @@ class LocalPlanNumberPostgresTest {
         JdbcTemplate root = new JdbcTemplate(rootSource);
         root.execute("CREATE SCHEMA " + schema);
         try {
-            var before = Flyway.configure().dataSource(rootSource).schemas(schema).defaultSchema(schema)
+            var initial = Flyway.configure().dataSource(rootSource).schemas(schema).defaultSchema(schema)
                     .createSchemas(false).locations("classpath:db/migration", "classpath:db/postgresql")
-                    .target("202610050002").load();
-            before.migrate();
+                    .target("202610050002");
+            MigrationLineage.configure(initial);
+            initial.load().migrate();
             DataSource ds = source(base + (base.contains("?") ? "&" : "?") + "currentSchema=" + schema + ",public");
             JdbcTemplate jdbc = new JdbcTemplate(ds);
             String route = UUID.randomUUID().toString(), version = UUID.randomUUID().toString();
@@ -48,8 +50,12 @@ class LocalPlanNumberPostgresTest {
                         mode.equals("live") ? "SIM-000001" : "EXT-SIM-" + id, mode, version);
             }
             var oldRows = jdbc.queryForList("SELECT * FROM flight_plan ORDER BY plan_id");
-            var latest = Flyway.configure().dataSource(rootSource).schemas(schema).defaultSchema(schema)
-                    .createSchemas(false).locations("classpath:db/migration", "classpath:db/postgresql").load();
+            // A later schema adds this nullable fact; it must remain unknown on existing plans.
+            oldRows.forEach(row -> row.put("filing_coordinate_system", null));
+            var configuration = Flyway.configure().dataSource(rootSource).schemas(schema).defaultSchema(schema)
+                    .createSchemas(false).locations("classpath:db/migration", "classpath:db/postgresql");
+            MigrationLineage.configure(configuration);
+            var latest = configuration.load();
             latest.migrate();
             assertThat(jdbc.queryForList("SELECT * FROM flight_plan ORDER BY plan_id")).isEqualTo(oldRows);
             var repository = new LocalFlightPlanInputRepository(jdbc);
@@ -69,7 +75,8 @@ class LocalPlanNumberPostgresTest {
                 return number;
             });
             assertThat(repository.nextPlanNo()).isNotEqualTo(rolledBack);
-            latest.migrate();
+            MigrationLineage.configure(configuration);
+            assertThat(configuration.load().migrate().migrationsExecuted).isZero();
             String afterRestart = new LocalFlightPlanInputRepository(new JdbcTemplate(ds)).nextPlanNo();
             assertThat(allocated).doesNotContain(afterRestart);
             assertThat(jdbc.queryForList("SELECT * FROM flight_plan ORDER BY plan_id")).isEqualTo(oldRows);

@@ -41,7 +41,8 @@ public class FlightReadService {
     private static final int MAX_BATCH_ROUTE_VERSIONS = 100;
     private static final int VERSIONS_PER_ROUTE = 20;
     private static final Set<String> PLAN_PARAMETERS = Set.of("page", "size", "status_code", "source_code",
-            "route_id", "uav_sn", "owner_org_id", "district_id", "window_from", "window_to", "keyword", "source_mode");
+            "route_id", "uav_sn", "owner_org_id", "district_id", "window_from", "window_to", "keyword", "source_mode",
+            "exclude_retired_simulation");
     private static final Set<String> ROUTE_PARAMETERS = Set.of("page", "size", "enabled", "source_mode",
             "owner_org_id", "district_id", "keyword");
 
@@ -103,7 +104,7 @@ public class FlightReadService {
         return new PlanQuery(request.optional("status_code", 32), request.optional("source_code", 64),
                 request.optional("route_id", 36), request.optional("uav_sn", 128), request.optional("owner_org_id", 36),
                 request.optional("district_id", 36), window.from(), window.to(), request.optional("keyword", 128),
-                request.optional("source_mode", 8));
+                request.optional("source_mode", 8), Boolean.TRUE.equals(request.bool("exclude_retired_simulation")));
     }
 
     @Transactional(readOnly = true)

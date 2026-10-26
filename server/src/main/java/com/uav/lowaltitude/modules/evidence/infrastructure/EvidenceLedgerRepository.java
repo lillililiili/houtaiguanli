@@ -32,7 +32,8 @@ public class EvidenceLedgerRepository {
 
     private static String millis(String column) { return "CAST(EXTRACT(EPOCH FROM " + column + ")*1000 AS BIGINT)"; }
     private static String scope(String alias, AccessDecision access) {
-        String sql = " EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=" + alias + ".owner_org_id AND o.enabled=TRUE)"
+        String sql = " EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=" + alias + ".owner_org_id AND "
+                + com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access) + ")"
                 + " AND EXISTS(SELECT 1 FROM app_district d WHERE d.district_id=" + alias + ".district_id AND d.enabled=TRUE)";
         if (access.scopeMode() == ScopeMode.NONE) return "1=0";
         if (access.scopeMode() == ScopeMode.ASSIGNED) sql += " AND EXISTS(SELECT 1 FROM app_user_data_scope ds WHERE ds.user_id=:user"

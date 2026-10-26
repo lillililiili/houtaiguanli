@@ -7,6 +7,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
@@ -51,7 +53,7 @@ class Stage8AccessControlServiceTest {
         jdbc.update("insert into app_user (user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version) values (?,?,'Stage 8 operator',?,'ACTIVE','hash',0,'ASSIGNED',0,0,0,0)", userId, "stage8-" + userId, ROLE);
         jdbc.update("insert into app_org (org_id,org_code,name,enabled,created_at,updated_at,version) select ?,?,?,true,0,0,0 where not exists (select 1 from app_org where org_id=?)", ORG, "STAGE8-ORG-A", "STAGE8-ORG-A", ORG);
         jdbc.update("insert into app_district (district_id,district_code,name,enabled,created_at,updated_at,version) select ?,?,?,true,0,0,0 where not exists (select 1 from app_district where district_id=?)", DISTRICT, "STAGE8-DISTRICT-A", "STAGE8-DISTRICT-A", DISTRICT);
-        AuthContext.set(new AuthUser(userId, "stage8", "Stage 8", "ROLE-ADMIN", 0, false, "ALL"));
+        AuthContext.set(new AuthUser(userId, "stage8", "Stage 8", ROLE, 0, false, "ASSIGNED"));
     }
 
     @AfterEach
@@ -100,14 +102,23 @@ class Stage8AccessControlServiceTest {
     @Test
     void menuPermissionDoesNotGrantFusionActionsAndAssignedNeedsExactTuple() {
         jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,?,'READ',false,current_timestamp)", ROLE, "sensing");
-        assertForbidden(PermissionCode.FUSION_REVISE);
-        jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,?,'OP',false,current_timestamp)", ROLE, PermissionCode.FUSION_REVISE.value());
-        assertForbidden(PermissionCode.FUSION_REVISE);
+        assertForbidden(PermissionCode.FUSION_READ);
+        jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,?,'READ',false,current_timestamp)", ROLE, PermissionCode.FUSION_READ.value());
+        assertForbidden(PermissionCode.FUSION_READ);
         jdbc.update("insert into app_user_data_scope (user_id,org_id,district_id,created_at) values (?,?,?,current_timestamp)", userId, ORG, DISTRICT);
-        assertThat(accessControlService.require(PermissionCode.FUSION_REVISE)).isEqualTo(new AccessDecision(userId, ScopeMode.ASSIGNED));
-        // 修订/合并动作不附带目标读权限；服务层分别校验 target:read。
+        assertThat(accessControlService.require(PermissionCode.FUSION_READ)).isEqualTo(new AccessDecision(userId, ScopeMode.ASSIGNED));
+        // 融合读不附带目标读或平台维护权限。
         assertForbidden(PermissionCode.TARGET_READ);
+        assertForbidden(PermissionCode.FUSION_REVISE);
         assertForbidden(PermissionCode.FUSION_MANAGE);
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PermissionCode.class, names = {"FUSION_REVISE", "FUSION_MANAGE"})
+    void historicalPlatformActionGrantDoesNotAuthorizeFrontendRole(PermissionCode permission) {
+        jdbc.update("insert into app_role_permission (role_code,permission_code,permission_level,menu_enabled,created_at) values (?,?,'OP',false,current_timestamp)", ROLE, permission.value());
+        jdbc.update("insert into app_user_data_scope (user_id,org_id,district_id,created_at) values (?,?,?,current_timestamp)", userId, ORG, DISTRICT);
+        assertForbidden(permission);
     }
 
     private void assertForbidden(PermissionCode permission) {

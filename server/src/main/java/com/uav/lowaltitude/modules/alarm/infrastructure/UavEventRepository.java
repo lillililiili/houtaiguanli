@@ -28,13 +28,20 @@ public class UavEventRepository {
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = where(access);
-        String time = reader.epoch("e.created_at");
+        String time = "COALESCE(c.created_at,"+reader.epoch("e.created_at")+")";
         // 等级按告警升级后的当前等级（同告警列表，见 AlarmReadRepository.CURRENT_SEVERITY）。
-        String sql = "SELECT e.event_id AS id,COALESCE(a.alarm_no,a.source_alarm_id,e.event_id) AS label," + time + " AS at_ms,"
-            + "e.state_code AS state,a.alarm_type AS kind," + AlarmReadRepository.CURRENT_SEVERITY + " AS severity,rd.name AS region,a.source_mode,"
-            + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
+        String sql = "SELECT COALESCE(c.risk_case_id,e.event_id) AS id,COALESCE(a.alarm_no,a.source_alarm_id,e.event_id) AS label," + time + " AS at_ms,"
+            + "CASE WHEN c.risk_case_id IS NULL THEN e.state_code ELSE "+com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.VERIFICATION
+            + " END AS state,a.alarm_type AS kind," + AlarmReadRepository.CURRENT_SEVERITY + " AS severity,rd.name AS region,a.source_mode,"
+            + "e.event_id AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note"
             + " FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id" + AlarmReadRepository.LATEST_ESCALATION
-            + " LEFT JOIN app_district rd ON rd.district_id=e.district_id" + w.sql;
+            + com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.JOINS
+            + " LEFT JOIN app_district rd ON rd.district_id=e.district_id" + w.sql
+            + " AND "+AlarmReadRepository.CASE_ROWS+" AND "+AlarmReadRepository.CASE_SCOPE
+            + " AND EXISTS(SELECT 1 FROM app_org o WHERE o.org_id=e.owner_org_id AND "
+            + com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o",access)+")"
+            + " AND EXISTS(SELECT 1 FROM app_district d WHERE d.district_id=e.district_id AND d.enabled=TRUE)"
+            + (access.scopeMode()==ScopeMode.NONE?" AND 1=0":"");
         return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.parameters, range, time), "e.owner_org_id");
     }
     private final NamedParameterJdbcTemplate jdbc;

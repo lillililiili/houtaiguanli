@@ -35,6 +35,7 @@ class AlarmRuleVerificationTest {
     @Autowired com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeWorker worker;
     @Autowired org.springframework.context.ApplicationContext context;
     @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.UavVerificationBasisRepository basis;
+    @Autowired UavRiskCaseIdentity cases;
     @MockitoBean AutomationRuntimePolicy policy;
     @MockitoBean AutomationRuntimeFactsRepository facts;
     private String event, run, rule;
@@ -107,6 +108,50 @@ class AlarmRuleVerificationTest {
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?", String.class, event)).isEqualTo("CONFIRMED");
         assertThat(records()).isEqualTo(originalRecords + 1);
     }
+    @Test void singleMeasuredCaseKeepsOriginalAutomaticFlowAndRecordsTheSystemRun(){
+        String risk=createCase(false),caseRun=caseRun(risk);
+        cases.runWithCase(risk,()->{verification.confirmIfPassed(event,caseRun);verification.confirmIfPassed(event,caseRun);});
+        assertThat(cases.find(risk).confirmed()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,event)).isEqualTo("CONFIRMED");
+        assertThat(records()).isEqualTo(originalRecords+1);
+        var entry=jdbc.queryForMap("SELECT trigger_mode,actor_id,automation_run_id,basis_kind FROM uav_risk_case_verification WHERE risk_case_id=?",risk);
+        assertThat(entry.get("trigger_mode")).isEqualTo("AUTO");assertThat(entry.get("actor_id")).isNull();
+        assertThat(entry.get("automation_run_id")).isEqualTo(caseRun);assertThat(entry.get("basis_kind")).isEqualTo("OBSERVED");
+    }
+    @Test void twoMeasuredAreasAreConfirmedSeparatelyWithoutChangingTheSharedRawVerdict(){
+        String a=createCase(false),b=createCase(false),runA=caseRun(a),runB=caseRun(b);
+        cases.runWithCase(a,()->verification.confirmIfPassed(event,runA));
+        assertThat(cases.find(a).confirmed()).isTrue();assertThat(cases.find(b).confirmed()).isFalse();assertUnchanged();
+        cases.runWithCase(b,()->verification.confirmIfPassed(event,runA));
+        assertThat(cases.find(b).confirmed()).as("another region's passing run cannot verify this case").isFalse();
+        cases.runWithCase(b,()->verification.confirmIfPassed(event,runB));
+        assertThat(cases.find(b).confirmed()).isTrue();assertUnchanged();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id IN (?,?)",Long.class,a,b)).isEqualTo(2);
+    }
+    @Test void predictionDerivedCaseCannotAutoVerifyOrBlockAnIndependentMeasuredCase(){
+        String prediction=createCase(true),measured=createCase(false),predRun=caseRun(prediction),measuredRun=caseRun(measured);
+        cases.runWithCase(prediction,()->verification.confirmIfPassed(event,predRun));
+        assertThat(cases.find(prediction).confirmed()).isFalse();
+        cases.runWithCase(measured,()->verification.confirmIfPassed(event,measuredRun));
+        assertThat(cases.find(measured).confirmed()).isTrue();assertThat(cases.find(prediction).confirmed()).isFalse();assertUnchanged();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id=?",Long.class,prediction)).isZero();
+    }
+    @Test void multipleAreasRequireExplicitRiskContextForAutomaticVerification(){
+        String a=createCase(false),b=createCase(false),runA=caseRun(a);
+        verification.confirmIfPassed(event,runA);
+        assertThat(cases.find(a).confirmed()).isFalse();assertThat(cases.find(b).confirmed()).isFalse();assertUnchanged();
+    }
+    private String createCase(boolean prediction){
+        String risk=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO uav_risk_case(risk_case_id,root_event_id,episode_id,target_id,owner_org_id,district_id,source_mode,created_at) SELECT ?,e.event_id,?,a.target_id,e.owner_org_id,e.district_id,a.source_mode,? FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id WHERE e.event_id=?",risk,prediction?UUID.randomUUID().toString():null,clock.nowMillis(),event);
+        jdbc.update("INSERT INTO uav_risk_case_member VALUES(?,?,'ROOT',?)",risk,event,clock.nowMillis());
+        return risk;
+    }
+    private String caseRun(String risk){return cases.withCase(risk,()->{
+        String id=UUID.randomUUID().toString();long now=clock.nowMillis();
+        runtime.insertRun(new AutomationRuntimeRepository.RunRow(id,"verify",event,null,731,"PASS","isolated region verification",now,now,"mock","[]"),"{}");
+        runtime.state("verify",event,731,id,"PASS",null,"{}",id);return id;
+    });}
     private long records() { return jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?",Long.class,event); }
     private void assertUnchanged() {
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,event)).isEqualTo("PENDING_VERIFICATION");

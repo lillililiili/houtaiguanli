@@ -14,15 +14,20 @@ class EoTrackingPolicyTest {
     private final long now=Instant.parse("2026-09-28T12:00:00Z").toEpochMilli();
     private final com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch departure=mock(com.uav.lowaltitude.modules.alarm.application.PilotDepartureWatch.class);
     private final com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository edges=mock(com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository.class);
-    private final EoTrackingPolicy policy=new EoTrackingPolicy(repository,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),departure,edges,true,true,15000,30000,300000);
-    @org.junit.jupiter.api.BeforeEach void noHistoricalUncertainty() {when(edges.uncertainTaskByTarget(anyString())).thenReturn(null);}
+    private final com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions=mock(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate.class);
+    private final EoTrackingPolicy policy=new EoTrackingPolicy(repository,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),departure,edges,predictions,true,true,15000,30000,300000);
+    @org.junit.jupiter.api.BeforeEach void noHistoricalUncertainty() {
+        when(edges.uncertainTaskByTarget(anyString())).thenReturn(null);
+        when(repository.currentScope(anyString(),anyString())).thenReturn(true);
+        when(predictions.observationRequired(anyString())).thenReturn(null);
+    }
     @Test void notificationStateDoesNotRemoveConfirmedAlarmDemand() {
         when(repository.alarms(anyString(),anyLong(),anyLong())).thenReturn(List.of(Map.of("state_code","CONFIRMED")));
         assertThat(policy.demand("target")).extracting(EoTrackingPolicy.DemandReason::code).containsExactly("ALARM_OBSERVE");
     }
     @Test void simulatedAutoTrackingNeverEnablesRealDevices() {
         var scoped=new EoTrackingPolicy(repository,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),
-                departure,edges,true,true,15000,30000,300000);
+                departure,edges,predictions,true,true,15000,30000,300000);
         org.springframework.test.util.ReflectionTestUtils.setField(scoped,"autoSourceModes","replay");
         assertThat(scoped.enabledFor(Map.of("source_mode","replay"))).isTrue();
         assertThat(scoped.enabledFor(Map.of("source_mode","mock"))).isTrue();
@@ -33,6 +38,18 @@ class EoTrackingPolicyTest {
         for(String status:List.of("LEGAL","UNDETERMINED","NOT_APPLICABLE","ILLEGAL","ABNORMAL")) {
             when(repository.evaluation("target")).thenReturn(Map.of("legal_status",status,"observed_at",new Timestamp(now),"evaluated_at",new Timestamp(now)));
             assertThat(policy.demand("target").isEmpty()).isEqualTo(!Set.of("ILLEGAL","ABNORMAL").contains(status));
+        }
+    }
+    @Test void currentPredictionObservesBeforeVerificationAndStopsDemandWhenInvalid() {
+        for(String state:List.of("PENDING_VERIFICATION","CONFIRMED")) {
+            String event=UUID.randomUUID().toString(), target=UUID.randomUUID().toString();
+            when(repository.alarms(eq(target),anyLong(),anyLong())).thenReturn(List.of(Map.of("event_id",event,"state_code",state)));
+            when(predictions.observationRequired(event)).thenReturn(true);
+            assertThat(policy.demand(target)).extracting(EoTrackingPolicy.DemandReason::code).containsExactly("PREDICTION_OBSERVE");
+            when(predictions.observationRequired(event)).thenReturn(false);
+            assertThat(policy.demand(target)).isEmpty();
+            when(repository.evaluation(target)).thenReturn(Map.of("legal_status","ILLEGAL","observed_at",new Timestamp(now),"evaluated_at",new Timestamp(now)));
+            assertThat(policy.demand(target)).extracting(EoTrackingPolicy.DemandReason::code).containsExactly("LEGALITY_OBSERVE");
         }
     }
     @Test void staleOrFutureEvaluationDoesNotTrigger() {
@@ -56,6 +73,14 @@ class EoTrackingPolicyTest {
         facts.put("observed_at",new Timestamp(now));facts.put("track_status","SHORT_LOST");assertThat(policy.block(facts)).isEqualTo("TARGET_POSITION_STALE");
         facts.remove("track_status");facts.put("object_type_code","UNKNOWN");assertThat(policy.block(facts)).isEqualTo("EO_CLASS_UNSUPPORTED");
         facts.put("srid",3857);assertThat(policy.block(facts)).isEqualTo("TARGET_POSITION_UNAVAILABLE");
+    }
+    @Test void unavailableOrganizationBlocksNewStartsWithoutChangingExistingContinuation() {
+        var facts=new HashMap<String,Object>(Map.of("position","POINT (118 37)","srid",4326,"object_type_code","UAV","source_mode","replay","owner_org_id","retired","district_id","d","observed_at",new Timestamp(now)));
+        when(repository.currentScope("retired","d")).thenReturn(false);
+        assertThat(policy.block(facts)).isEqualTo("EO_SCOPE_UNAVAILABLE");
+        assertThat(policy.continuationBlock(facts,null,null)).isNull();
+        facts.put("owner_org_id","neighbor");
+        assertThat(policy.block(facts)).isNull();
     }
     private static Map<String,Object> risk(String type,String reason,String severity) {return Map.of("risk_type",type,"reason_code",reason,"severity",severity);}
 }

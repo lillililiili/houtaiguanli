@@ -3,6 +3,8 @@ package com.uav.lowaltitude.modules.alarm.infrastructure;
 import com.uav.lowaltitude.platform.report.BusinessReportSource.Dataset;
 import com.uav.lowaltitude.platform.report.BusinessReportSource.Range;
 import com.uav.lowaltitude.platform.report.ReportDatasetReader;
+import com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity;
+import com.uav.lowaltitude.modules.alarm.application.UavMeasuredRiskSql;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -36,20 +38,31 @@ public class AlarmReadRepository {
     static final String CURRENT_SEVERITY = "COALESCE(esc.severity_after,a.severity)";
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
-        Where w = where(AlarmQuery.empty(), access);
-        String time = reader.epoch("a.occurred_at");
-        String sql = "SELECT a.alarm_id AS id,COALESCE(a.alarm_no,a.source_alarm_id) AS label," + time + " AS at_ms,"
+        AlarmQuery query=AlarmQuery.risks();
+        Where w = where(query, access);
+        putAttentionTime(w.parameters);
+        String time = "COALESCE(c.created_at,"+reader.epoch("a.occurred_at")+")";
+        String columns = "SELECT COALESCE(c.risk_case_id,a.alarm_id) AS id,COALESCE(a.alarm_no,a.source_alarm_id) AS label," + time + " AS at_ms,"
             + "e.state_code AS state,a.alarm_type AS kind," + CURRENT_SEVERITY + " AS severity,dist_ref.name AS region,a.source_mode,"
-            + "CAST(NULL AS VARCHAR) AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note" + from() + w.sql;
+            + "e.event_id AS related,CAST(NULL AS VARCHAR) AS result,CAST(NULL AS VARCHAR) AS note";
+        String sql=caseSql(columns,query)+from(query)+caseSql(w.sql.toString(),query);
         return com.uav.lowaltitude.platform.report.ReportAccessContext.scope(ReportDatasetReader.window(sql, w.parameters, range, time), "a.owner_org_id");
     }
     private final NamedParameterJdbcTemplate jdbc;
+    private final JdbcTemplate plainJdbc;
+    private final boolean postgis;
+    private boolean measuredQaAllowed,measuredSimulationAllowed;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void simulation(com.uav.lowaltitude.platform.config.SimulationPolicy policy,org.springframework.core.env.Environment environment){
+        measuredQaAllowed=policy.allowed();measuredSimulationAllowed=UavMeasuredRiskSql.realtimeSimulation(policy,environment);
+    }
     private final com.uav.lowaltitude.platform.time.AppClock clock;
     private final com.uav.lowaltitude.modules.fusion.application.FusionConfigService fusionConfig;
 
     public AlarmReadRepository(JdbcTemplate jdbcTemplate, com.uav.lowaltitude.platform.time.AppClock clock,
             com.uav.lowaltitude.modules.fusion.application.FusionConfigService fusionConfig) {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
+        this.plainJdbc=jdbcTemplate;this.postgis=UavMeasuredRiskSql.postgis(jdbcTemplate);
         this.clock = clock;
         this.fusionConfig = fusionConfig;
     }
@@ -62,13 +75,45 @@ public class AlarmReadRepository {
         parameters.put("attention_now", now.atOffset(ZoneOffset.UTC));
         parameters.put("prediction_now", now.toEpochMilli());
         parameters.put("observation_since", now.minusMillis(lifetime).atOffset(ZoneOffset.UTC));
+        UavMeasuredRiskSql.addTimes(parameters,plainJdbc,now.toEpochMilli(),measuredQaAllowed,measuredSimulationAllowed);
     }
 
     public long count(AlarmQuery query, AccessDecision access) {
         Where where = where(query, access);
-        if (query.attentionGroups() != null || query.predictionStatus() != null) putAttentionTime(where.parameters);
-        Long total = jdbc.queryForObject("SELECT COUNT(*)" + from() + where.sql, where.parameters, Long.class);
+        if (query.attentionGroups() != null || query.predictionStatus() != null || query.riskCaseView()) putAttentionTime(where.parameters);
+        Long total = jdbc.queryForObject("SELECT COUNT(*)" + from(query) + caseSql(where.sql.toString(),query), where.parameters, Long.class);
         return total == null ? 0 : total;
+    }
+
+    public com.uav.lowaltitude.modules.alarm.api.AlarmDtos.OverviewDto overview(AccessDecision access,long from,long to) {
+        AlarmQuery query=AlarmQuery.risks();
+        Where where=where(query,access);
+        putAttentionTime(where.parameters);
+        where.parameters.put("day_from",from);where.parameters.put("day_to",to);
+        // The current queue excludes deleted/disabled units, while historical daily
+        // counts keep the same organization-history policy as the regular list.
+        String source="SELECT a.source_mode,COALESCE(c.created_at,CAST(EXTRACT(EPOCH FROM a.occurred_at)*1000 AS BIGINT)) AS at_ms,"
+                +caseSql("e.state_code",query)+" AS verification,"
+                +caseSql("COALESCE(("+UavRiskCaseIdentity.STAGE+"),'OBSERVED')",query)+" AS stage,"
+                +caseSql("("+UavRiskCaseIdentity.CASE_DEVICE_WORK_REMAINS+")",query)+" AS device_work,"
+                +caseSql("("+AlarmAttentionSql.GROUP_RANK+")",query)+" AS attention_rank,"
+                +"(org_ref.enabled=TRUE AND org_ref.deleted_at IS NULL) AS current_unit"
+                +from(query)+caseSql(where.sql.toString(),query);
+        String inDay="at_ms>=:day_from AND at_ms<:day_to";
+        String pending="verification='PENDING_VERIFICATION' AND current_unit AND stage NOT IN ('CLEARED','ENDED')";
+        String[] predicates={inDay,inDay+" AND "+pending,inDay+" AND verification='CONFIRMED'",inDay+" AND verification='FALSE_POSITIVE'"};
+        var aggregates=new java.util.ArrayList<String>();
+        for(int i=0;i<predicates.length;i++){
+            aggregates.add("COALESCE(SUM(CASE WHEN "+predicates[i]+" THEN 1 ELSE 0 END),0) AS today_"+i);
+            aggregates.add("COALESCE(SUM(CASE WHEN source_mode='mock' AND "+predicates[i]+" THEN 1 ELSE 0 END),0) AS mock_"+i);
+        }
+        aggregates.add("COALESCE(SUM(CASE WHEN verification='CONFIRMED' AND current_unit AND attention_rank IN (0,1)"
+                +" AND (stage NOT IN ('CLEARED','ENDED') OR device_work) THEN 1 ELSE 0 END),0) AS pending_disposal");
+        String sql="WITH risk_stats AS "+(postgis?"MATERIALIZED ":"")+"("+source+") SELECT "+String.join(",",aggregates)+" FROM risk_stats";
+        return jdbc.queryForObject(sql,where.parameters,(rs,row)->new com.uav.lowaltitude.modules.alarm.api.AlarmDtos.OverviewDto(
+                new com.uav.lowaltitude.modules.alarm.api.AlarmDtos.TodayCountsDto(rs.getLong("today_0"),rs.getLong("today_1"),rs.getLong("today_2"),rs.getLong("today_3")),
+                new com.uav.lowaltitude.modules.alarm.api.AlarmDtos.TodayCountsDto(rs.getLong("mock_0"),rs.getLong("mock_1"),rs.getLong("mock_2"),rs.getLong("mock_3")),
+                rs.getLong("pending_disposal"),from,to));
     }
 
     public List<AlarmRow> list(AlarmQuery query, AccessDecision access, int offset, int size, String sort, String order) {
@@ -76,7 +121,7 @@ public class AlarmReadRepository {
         where.parameters.put("offset", offset);
         putAttentionTime(where.parameters);
         where.parameters.put("size", size);
-        return jdbc.query(select() + from() + where.sql + orderBy(sort, order)
+        return jdbc.query(select(query) + from(query) + caseSql(where.sql.toString(),query) + caseSql(orderBy(sort, order),query) + (query.riskCaseView()?",c.risk_case_id ASC":"")
                 + " OFFSET :offset ROWS FETCH NEXT :size ROWS ONLY", where.parameters, AlarmReadRepository::alarm);
     }
 
@@ -85,7 +130,7 @@ public class AlarmReadRepository {
         Where where = where(query, access);
         where.parameters.put("size", limit);
         putAttentionTime(where.parameters);
-        return jdbc.query(select() + from() + where.sql + orderBy(sort, order)
+        return jdbc.query(select(query) + from(query) + caseSql(where.sql.toString(),query) + caseSql(orderBy(sort, order),query) + (query.riskCaseView()?",c.risk_case_id ASC":"")
                 + " FETCH NEXT :size ROWS ONLY", where.parameters, AlarmReadRepository::alarm);
     }
 
@@ -119,12 +164,13 @@ public class AlarmReadRepository {
     }
 
     public boolean targetVisible(String targetId, String alarmOrgId, String alarmDistrictId, AccessDecision access) {
-        if (targetId == null) return false;
+        if (targetId == null || access == null || access.scopeMode() == ScopeMode.NONE) return false;
         Map<String, Object> parameters = new HashMap<>();
         parameters.put("target_id", targetId);
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM target t WHERE t.target_id=:target_id AND t.owner_org_id IS NOT NULL AND t.district_id IS NOT NULL");
-        // ALL 只是不受用户 grant 限制，不能绕过已停用或不存在的组织、区域目录记录。
-        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=t.owner_org_id AND o.enabled=TRUE)");
+        // Deleted organizations retain historical target references for unrestricted readers.
+        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=t.owner_org_id AND "
+                + com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access) + ")");
         sql.append(" AND EXISTS (SELECT 1 FROM app_district d WHERE d.district_id=t.district_id AND d.enabled=TRUE)");
         if (alarmOrgId != null && alarmDistrictId != null) {
             parameters.put("alarm_org_id", alarmOrgId); parameters.put("alarm_district_id", alarmDistrictId);
@@ -147,6 +193,27 @@ public class AlarmReadRepository {
                 + " LEFT JOIN target tg ON tg.target_id=a.target_id"
                 + " LEFT JOIN target_latest_state obs ON obs.target_id=tg.target_id" + LATEST_ESCALATION;
     }
+    private String from(AlarmQuery query){
+        if(!query.riskCaseView())return from();
+        String joined=from()+UavRiskCaseIdentity.JOINS;
+        if(!postgis)return joined;
+        // One statement-local projection per risk. OFFSET 0 prevents PostgreSQL from
+        // expanding the spatial predicate into every SELECT/filter/sort expression.
+        // These remain live reads at the same query time, never cached action authority.
+        return joined+" LEFT JOIN LATERAL (SELECT "+UavMeasuredRiskSql.expand(UavRiskCaseIdentity.STAGE, true)
+                +" AS risk_stage,"+UavRiskCaseIdentity.VERIFICATION+" AS risk_verification,"
+                +UavRiskCaseIdentity.CASE_DEVICE_WORK_REMAINS+" AS device_work_remains OFFSET 0) risk_read ON c.risk_case_id IS NOT NULL";
+    }
+    private String caseSql(String sql,AlarmQuery query){
+        if(!query.riskCaseView())return sql;
+        String projected=sql.replace(AlarmAttentionSql.GROUP_RANK,CASE_GROUP_RANK)
+                .replace("e.state_code","(CASE WHEN c.risk_case_id IS NULL THEN e.state_code ELSE "+UavRiskCaseIdentity.VERIFICATION+" END)");
+        if(postgis)projected=projected.replace(UavRiskCaseIdentity.STAGE,"COALESCE(risk_read.risk_stage,'OBSERVED')")
+                .replace(UavRiskCaseIdentity.CASE_DEVICE_WORK_REMAINS,"risk_read.device_work_remains")
+                .replace(UavRiskCaseIdentity.VERIFICATION,"risk_read.risk_verification");
+        return UavMeasuredRiskSql.expand(projected,postgis);
+    }
+    private String select(AlarmQuery query){return caseSql(select().replace("e.state_code,","e.state_code AS state_code,"),query).replace("CAST(NULL AS VARCHAR) AS risk_case_id",query.riskCaseView()?"c.risk_case_id AS risk_case_id":"CAST(NULL AS VARCHAR) AS risk_case_id");}
 
     /** detail 只在服务层取 violation_reasons 摘要，不原样外露；升级过的告警以最近一次升级的累计原因为准。 */
     private static String select() {
@@ -155,7 +222,7 @@ public class AlarmReadRepository {
                 + "a.source_alarm_id,s.name AS source_name,org_ref.name AS owner_org_name,dist_ref.name AS district_name,tg.target_no,a.alarm_no,"
                 + "a.detail,esc.reasons_after,esc.seq AS escalation_count,esc.created_at AS escalated_at,"
                 + AlarmAttentionSql.OBSERVATION_STATUS + " AS observation_status,"
-                + AlarmAttentionSql.GROUP + " AS attention_group";
+                + AlarmAttentionSql.GROUP + " AS attention_group,CAST(NULL AS VARCHAR) AS risk_case_id";
     }
 
     /** 升级记录按次序从早到晚；调用方先用 find 确认告警可见（同核实历史）。 */
@@ -209,11 +276,29 @@ public class AlarmReadRepository {
             + com.uav.lowaltitude.platform.query.SeverityOrder.rank(CURRENT_SEVERITY) + " ELSE 0 END DESC,"
             + " a.received_at DESC,a.alarm_id ASC";
 
+    /** Each area's work and conclusion are independent even when two risks share an actual event. */
+    private static final String CASE_GROUP_RANK = "CASE WHEN c.risk_case_id IS NULL THEN ("+AlarmAttentionSql.GROUP_RANK+")"
+            +" WHEN "+UavRiskCaseIdentity.CASE_DEVICE_WORK_REMAINS+" THEN 0"
+            +" WHEN ("+UavRiskCaseIdentity.STAGE+") IN ('CLEARED','ENDED') THEN 2"
+            +" WHEN ("+UavRiskCaseIdentity.STAGE+")='UNKNOWN' THEN 1"
+            +" WHEN ("+AlarmAttentionSql.OBSERVATION_STATUS+")='CURRENT' THEN 0 ELSE 1 END";
+    static final String CASE_ROWS = "(e.event_id IS NULL OR c.risk_case_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM uav_risk_case_member rm"
+            +" JOIN uav_risk_case rc ON rc.risk_case_id=rm.risk_case_id AND rc.superseded_by IS NULL WHERE rm.event_id=e.event_id))";
+    static final String CASE_SCOPE = "(c.risk_case_id IS NULL OR (c.owner_org_id=a.owner_org_id AND c.district_id=a.district_id"
+            +" AND c.source_mode=a.source_mode AND (c.target_id=a.target_id OR (c.target_id IS NULL AND a.target_id IS NULL))))";
+
     private static Where where(AlarmQuery query, AccessDecision access) {
         StringBuilder sql = new StringBuilder(" WHERE a.owner_org_id IS NOT NULL AND a.district_id IS NOT NULL");
         Map<String, Object> parameters = new HashMap<>();
-        // 目录启用性是对象可见性的共同前提；ALL 仅跳过 grant，不得读取失效归属的数据。
-        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=a.owner_org_id AND o.enabled=TRUE)");
+        if(access.scopeMode()==ScopeMode.NONE)sql.append(" AND 1=0");
+        if(query.riskCaseView()){
+            sql.append(" AND ").append(CASE_ROWS).append(" AND ").append(CASE_SCOPE);
+            if(query.riskStage()!=null){sql.append(" AND e.event_id IS NOT NULL AND (").append(UavRiskCaseIdentity.STAGE).append(") IN (:risk_stages)");parameters.put("risk_stages",List.of(query.riskStage().split(",")));}
+        }
+        // Ordinary disabled directories remain excluded; logical deletion must not erase history.
+        String orgRead = query.currentPending() ? "o.enabled=TRUE AND o.deleted_at IS NULL"
+                : com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access);
+        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=a.owner_org_id AND " + orgRead + ")");
         sql.append(" AND EXISTS (SELECT 1 FROM app_district d WHERE d.district_id=a.district_id AND d.enabled=TRUE)");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             // EXISTS 让同一条授权记录同时绑定 org/district，禁止两条 grant 笛卡尔拼接。
@@ -221,7 +306,13 @@ public class AlarmReadRepository {
             parameters.put("scope_user_id", access.userId());
         }
         add(sql, parameters, "e.state_code", "state", query.state());
-        if (query.currentPending()) {
+        if (query.currentPending() && query.riskCaseView()) {
+            // Case qualification is not the representative event's original verdict. Unknown
+            // risks remain pending; a finished risk stays only if device work is not settled.
+            sql.append(" AND ((").append(UavRiskCaseIdentity.STAGE).append(") NOT IN ('CLEARED','ENDED')");
+            if("CONFIRMED".equals(query.state()))sql.append(" OR ").append(UavRiskCaseIdentity.CASE_DEVICE_WORK_REMAINS);
+            sql.append(")");
+        } else if (query.currentPending()) {
             // Verification history remains immutable; only an explicitly requested current queue
             // excludes a completed predictive cycle. Independently observed events are untouched.
             sql.append(" AND (NOT EXISTS(SELECT 1 FROM prediction_event_link pending_link"
@@ -248,12 +339,20 @@ public class AlarmReadRepository {
         add(sql, parameters, "a.source_mode", "source_mode", query.sourceMode());
         add(sql, parameters, "a.alarm_type", "alarm_type", query.alarmType());
         if (query.originKind()!=null) {
-            if ("PREDICTED_AIRSPACE_ENTRY".equals(query.originKind())) sql.append(" AND a.alarm_type='PREDICTED_AIRSPACE_ENTRY'");
+            if (query.riskCaseView() && "PREDICTED_AIRSPACE_ENTRY".equals(query.originKind()))
+                sql.append(" AND (c.episode_id IS NOT NULL OR (c.risk_case_id IS NULL AND a.alarm_type='PREDICTED_AIRSPACE_ENTRY'))");
+            else if (query.riskCaseView() && "OBSERVED".equals(query.originKind()))
+                sql.append(" AND c.episode_id IS NULL AND a.alarm_type<>'PREDICTED_AIRSPACE_ENTRY'");
+            else if (query.riskCaseView() && "OBSERVED_AIRSPACE_ENTRY".equals(query.originKind()))
+                sql.append(" AND c.airspace_id IS NOT NULL AND EXISTS(SELECT 1 FROM uav_risk_case_member origin_member WHERE origin_member.risk_case_id=c.risk_case_id AND origin_member.role='OBSERVED')");
+            else if ("PREDICTED_AIRSPACE_ENTRY".equals(query.originKind())) sql.append(" AND a.alarm_type='PREDICTED_AIRSPACE_ENTRY'");
             else if ("OBSERVED".equals(query.originKind())) sql.append(" AND a.alarm_type<>'PREDICTED_AIRSPACE_ENTRY'");
             else sql.append(" AND EXISTS(SELECT 1 FROM prediction_event_link pl WHERE pl.event_id=e.event_id AND pl.role='OBSERVED')");
         }
         if (query.predictionStatus()!=null) {
-            sql.append(" AND EXISTS(SELECT 1 FROM prediction_event_link pl JOIN prediction_episode pp ON pp.episode_id=pl.episode_id WHERE pl.event_id=e.event_id"
+            if(query.riskCaseView())sql.append(" AND p.episode_id IS NOT NULL AND (CASE (").append(UavRiskCaseIdentity.STAGE)
+                    .append(") WHEN 'PREDICTED' THEN 'ACTIVE' ELSE (").append(UavRiskCaseIdentity.STAGE).append(") END)=:prediction_status");
+            else sql.append(" AND EXISTS(SELECT 1 FROM prediction_event_link pl JOIN prediction_episode pp ON pp.episode_id=pl.episode_id WHERE pl.event_id=e.event_id"
                     + " AND (CASE WHEN pp.status='ACTIVE' AND pp.valid_until<=:prediction_now THEN 'UNKNOWN' ELSE pp.status END)=:prediction_status)");
             parameters.put("prediction_status",query.predictionStatus());
         }
@@ -275,9 +374,15 @@ public class AlarmReadRepository {
             sql.append(" AND EXISTS (SELECT 1 FROM target filter_target WHERE filter_target.target_id=a.target_id AND filter_target.target_id=:target_id AND filter_target.owner_org_id=a.owner_org_id AND filter_target.district_id=a.district_id)");
         }
         if (query.occurredFrom() != null) {
-            sql.append(" AND a.occurred_at IS NOT NULL AND a.occurred_at>=:occurred_from AND a.occurred_at<:occurred_to");
-            parameters.put("occurred_from", query.occurredFrom());
-            parameters.put("occurred_to", query.occurredTo());
+            if(query.riskCaseView()){
+                String time="COALESCE(c.created_at,CAST(EXTRACT(EPOCH FROM a.occurred_at)*1000 AS BIGINT))";
+                sql.append(" AND ").append(time).append(">=:occurred_from AND ").append(time).append("<:occurred_to");
+                parameters.put("occurred_from",query.occurredFrom().toInstant().toEpochMilli());
+                parameters.put("occurred_to",query.occurredTo().toInstant().toEpochMilli());
+            }else{
+                sql.append(" AND a.occurred_at IS NOT NULL AND a.occurred_at>=:occurred_from AND a.occurred_at<:occurred_to");
+                parameters.put("occurred_from", query.occurredFrom()); parameters.put("occurred_to", query.occurredTo());
+            }
         }
         return new Where(sql, parameters);
     }
@@ -296,7 +401,7 @@ public class AlarmReadRepository {
                 rs.getString("source_alarm_id"), rs.getString("source_name"), rs.getString("owner_org_name"), rs.getString("district_name"),
                 rs.getString("target_no"), rs.getString("alarm_no"), rs.getString("original_severity"), rs.getString("detail"),
                 rs.getString("reasons_after"), rs.getInt("escalation_count"), time(rs, "escalated_at"),
-                rs.getString("observation_status"), rs.getString("attention_group"));
+                rs.getString("observation_status"), rs.getString("attention_group"),rs.getString("risk_case_id"));
     }
 
     private static OffsetDateTime time(ResultSet rs, String column) throws SQLException {
@@ -317,7 +422,13 @@ public class AlarmReadRepository {
             /* 2026-10-07：按关注分组筛（待处置统计、状态筛选）；null 表示不限。 */
             List<String> attentionGroups,
             /* 2026-10-07：按当前违规原因代码筛（告警页"违规类别"）；null 表示不限。 */
-            String violationReason, String targetNo, String originKind, String predictionStatus, boolean currentPending) {
+            String violationReason, String targetNo, String originKind, String predictionStatus, boolean currentPending,
+            boolean riskCaseView,String riskStage) {
+        public AlarmQuery(String state,String severity,String targetId,OffsetDateTime occurredFrom,OffsetDateTime occurredTo,
+                String ownerOrgId,String districtId,String sourceMode,String alarmType,List<String> attentionGroups,
+                String violationReason,String targetNo,String originKind,String predictionStatus,boolean currentPending){
+            this(state,severity,targetId,occurredFrom,occurredTo,ownerOrgId,districtId,sourceMode,alarmType,attentionGroups,violationReason,targetNo,originKind,predictionStatus,currentPending,false,null);
+        }
         public AlarmQuery(String state, String severity, String targetId, OffsetDateTime occurredFrom,
                 OffsetDateTime occurredTo, String ownerOrgId, String districtId, String sourceMode,
                 String alarmType, List<String> attentionGroups, String violationReason, String targetNo,
@@ -339,6 +450,7 @@ public class AlarmReadRepository {
         public static AlarmQuery empty() {
             return new AlarmQuery(null, null, null, null, null, null, null, null, null, null, null);
         }
+        public static AlarmQuery risks(){return new AlarmQuery(null,null,null,null,null,null,null,null,null,null,null,null,null,null,false,true,null);}
     }
     /**
      * severity 是升级后的当前等级，originalSeverity 是告警产生时的等级；escalationCount 为 0 表示没升级过。
@@ -349,7 +461,14 @@ public class AlarmReadRepository {
             String sourceMode, String ownerOrgId, String districtId,
             String sourceAlarmId, String sourceName, String ownerOrgName, String districtName, String targetNo, String alarmNo,
             String originalSeverity, String detailJson, String escalatedReasonsJson, int escalationCount, OffsetDateTime escalatedAt,
-            String observationStatus, String attentionGroup) {
+            String observationStatus, String attentionGroup,String riskCaseId) {
+        public AlarmRow(String alarmId,String targetId,String eventId,String state,String alarmType,String severity,OffsetDateTime occurredAt,
+                OffsetDateTime receivedAt,String sourceCode,String sourceMode,String ownerOrgId,String districtId,String sourceAlarmId,
+                String sourceName,String ownerOrgName,String districtName,String targetNo,String alarmNo,String originalSeverity,
+                String detailJson,String escalatedReasonsJson,int escalationCount,OffsetDateTime escalatedAt,String observationStatus,String attentionGroup){
+            this(alarmId,targetId,eventId,state,alarmType,severity,occurredAt,receivedAt,sourceCode,sourceMode,ownerOrgId,districtId,sourceAlarmId,
+                    sourceName,ownerOrgName,districtName,targetNo,alarmNo,originalSeverity,detailJson,escalatedReasonsJson,escalationCount,escalatedAt,observationStatus,attentionGroup,null);
+        }
         /** 页面上的告警编号：平台编号优先，没有就用来源编号。 */
         public String displayNo() { return alarmNo != null ? alarmNo : sourceAlarmId; }
     }

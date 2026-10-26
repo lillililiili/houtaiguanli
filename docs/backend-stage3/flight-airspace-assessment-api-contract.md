@@ -52,10 +52,12 @@
 
 ```text
 page, size, status_code, source_code, route_id, uav_sn,
-owner_org_id, district_id, window_from, window_to, keyword
+owner_org_id, district_id, window_from, window_to, keyword, exclude_retired_simulation
 ```
 
 `window_from/window_to` 必须成对，并以计划完整时段与查询时段相交为匹配条件。计划任一时间缺失时，不匹配时间筛选；无时间筛选时仍可返回，并在 `field_issues` 标明缺失。
+
+2026-10-22：融合感知地图传 `exclude_retired_simulation=true`，按模拟计划批次登记关系、归属单位及区域，仅保留当前批次的有效成员。筛选在列表、计数和分页之前统一执行，与当前目标匹配共用同一资格判断；真实计划和未登记批次关系的资料仍按原规则返回，不按名称或航线形状识别模拟资料。参数为可选布尔值，缺省或 `false` 保持历史查询；旧计划详情和航线版本不删除、不改写。原时间、状态、来源及权限筛选继续取交集。
 
 `keyword` 为 1–128 个字符，不去除首尾空格，不区分大小写地包含匹配计划编号 `plan_no`、无人机编号 `uav_sn`、航线编号 `route_no` 和航线名称；`%`、`_` 按字面匹配。空白或超长返回 400 `VALIDATION_ERROR`。与其他筛选条件取交集，`total` 同样按关键词计数，且不越过数据范围。
 

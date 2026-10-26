@@ -88,6 +88,33 @@ class EoManualTrackApiTest {
         AuthContext.clear();
     }
 
+    @Test void predictedRiskStartsObservationBeforeVerificationAndClearedRiskQueuesStop() throws Exception {
+        doReturn(true).when(trackingPolicy).enabled();
+        String target=insertTarget(true), alarm=key(), event=key(), episode=key();
+        long now=clock.nowMillis();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) "
+                + "VALUES (?,?,?,?,'PREDICTED_AIRSPACE_ENTRY','HIGH',CURRENT_TIMESTAMP,'replay',?,?,CURRENT_TIMESTAMP)",alarm,target,binding.sourceId(),alarm,org,district);
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) "
+                + "VALUES (?,?,'PENDING_VERIFICATION',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",event,alarm,org,district);
+        jdbc.update("INSERT INTO prediction_episode(episode_id,target_id,airspace_id,source_mode,owner_org_id,district_id,status,last_observed_at,valid_until,current_evidence_valid,reason,started_at,stability_json,warning_json) "
+                + "VALUES (?,?,?,'replay',?,?,'ACTIVE',?,?,TRUE,'PREDICTED_ENTRY_CONFIRMED',?,'{}','{}')",episode,target,key(),org,district,now-1,now+30000,now);
+        jdbc.update("INSERT INTO prediction_event_link(event_id,episode_id,role,created_at) VALUES (?,?,'PREDICTED',?)",event,episode,now);
+        assertThat(trackingPolicy.demand(target)).extracting(com.uav.lowaltitude.modules.device.application.EoTrackingPolicy.DemandReason::code)
+                .containsExactly("PREDICTION_OBSERVE");
+        assertThat(edges.openTaskByTarget(target)).isNull();
+        scheduler.poll();
+        var task=edges.openTaskByTarget(target);
+        assertThat(task).isNotNull();
+        assertThat(task.get("origin")).isEqualTo("AUTO");
+        assertThat(task.get("ops_device_id")).isEqualTo(binding.opsDeviceId());
+        assertThat(jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,event)).isEqualTo("PENDING_VERIFICATION");
+        jdbc.update("UPDATE prediction_episode SET status='CLEARED',current_evidence_valid=FALSE WHERE episode_id=?",episode);
+        scheduler.poll();
+        task=edges.task(String.valueOf(task.get("task_id")));
+        assertThat(task.get("status")).isEqualTo("ENDING");
+        assertThat(edges.command(String.valueOf(task.get("end_command_id"))).get("reason")).isEqualTo("AUTO_OBSERVATION_DEMAND_CLEARED");
+    }
+
     @Test void unifiedStatusIsReadOnlyAndPauseSurvivesRepeatedRequests() throws Exception {
         String target = insertTarget(true);
         long before = jdbc.queryForObject("SELECT COUNT(*) FROM device_command", Long.class);

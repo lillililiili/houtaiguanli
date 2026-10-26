@@ -488,6 +488,9 @@ public class HandoffSubmissionService {
     /** 只补发仍停在“等待规则”的那一次。已经发出、失败或人工接管的记录不再自动重试。 */
     private void sendWaitingPunishment(String handoffId, String eventId) {
         if(predictions!=null&&predictions.isPrediction(eventId))return;
+        // Recheck the qualifying authorization at the actual send boundary. Prediction-derived
+        // completion cannot become a punishment fact just because its event later became observed.
+        if(disposals.punishmentCompletion(eventId)==null)return;
         var row = repository.lockNotification(handoffId, SYSTEM_SCOPE);
         if (row == null || repository.hasDelivered(handoffId)) return;
         var latest = repository.latestDelivery(handoffId);

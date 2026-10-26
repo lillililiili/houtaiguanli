@@ -52,6 +52,15 @@ public class EvidenceRepository {
         return count != null && count > 0;
     }
 
+    public boolean catalogReadable(String orgId, String districtId, AccessDecision access) {
+        Long count = jdbc.queryForObject("SELECT COUNT(*) FROM app_org o"
+                + " JOIN app_district d ON d.district_id=:district AND d.enabled=TRUE"
+                + " WHERE o.org_id=:org AND "
+                + com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access),
+                Map.of("org", orgId, "district", districtId), Long.class);
+        return count != null && count > 0;
+    }
+
     public SubjectRef findSubject(String kind, String id) {
         String sql = switch (kind) {
             case "EVENT" -> "SELECT event_id AS id, event_id AS no, owner_org_id, district_id FROM uav_event WHERE event_id=:id";
@@ -86,9 +95,18 @@ public class EvidenceRepository {
     }
 
     public boolean subjectVisible(String kind, String id, AccessDecision access) {
+        return subjectVisible(kind, id, access, false);
+    }
+
+    public boolean subjectReadable(String kind, String id, AccessDecision access) {
+        return subjectVisible(kind, id, access, true);
+    }
+
+    private boolean subjectVisible(String kind, String id, AccessDecision access, boolean history) {
         SubjectRef subject = findSubject(kind, id);
         if (subject == null || subject.ownerOrgId() == null || subject.districtId() == null) return false;
-        if (!catalogEnabled(subject.ownerOrgId(), subject.districtId())) return false;
+        if (!(history ? catalogReadable(subject.ownerOrgId(), subject.districtId(), access)
+                : catalogEnabled(subject.ownerOrgId(), subject.districtId()))) return false;
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             Long count = jdbc.queryForObject("""
                     SELECT COUNT(*) FROM app_user_data_scope ds
@@ -341,7 +359,8 @@ public class EvidenceRepository {
     private Where where(FileQuery query, AccessDecision access, boolean ingest) {
         StringBuilder sql = new StringBuilder(" WHERE f.owner_org_id IS NOT NULL AND f.district_id IS NOT NULL");
         Map<String, Object> params = new HashMap<>();
-        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=f.owner_org_id AND o.enabled=TRUE)");
+        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=f.owner_org_id AND "
+                + com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access) + ")");
         sql.append(" AND EXISTS (SELECT 1 FROM app_district d WHERE d.district_id=f.district_id AND d.enabled=TRUE)");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             sql.append("""

@@ -7,7 +7,7 @@ import { roleDisplayName } from '@/utils/rolePresentation'
 import { existingRoleKey, newRoleKey, assignmentRole, rolePermissionDifferences, roleWithinCeiling } from './unitRoleAssignment'
 
 const plan = defineModel({ type: Object, required: true })
-const props = defineProps({ config: { type: Object, required: true }, permissions: { type: Array, default: () => [] }, actions: { type: Array, default: () => [] }, disabled: Boolean })
+const props = defineProps({ config: { type: Object, required: true }, administratorUserId: { type: String, default: '' }, permissions: { type: Array, default: () => [] }, actions: { type: Array, default: () => [] }, disabled: Boolean })
 const existing = computed(() => (props.config.unit_roles || []).filter(role => role.enabled !== false && !plan.value.retire_role_codes.includes(role.role_code)))
 const copies = computed(() => (props.config.unit_roles || []).filter(role => role.copy_origin))
 function addRole() {
@@ -22,7 +22,12 @@ function toggleRetire(code, checked) {
   plan.value.retire_role_codes = checked ? [...new Set([...plan.value.retire_role_codes, code])] : plan.value.retire_role_codes.filter(item => item !== code)
 }
 function currentRole(member) { return (props.config.unit_roles || []).find(role => role.role_code === member.role_code) }
-function currentLabel(member) { return currentRole(member) ? roleDisplayName(currentRole(member)) : `${member.role_name || '未分配角色'}（需改为本单位角色）` }
+function currentLabel(member) {
+  const role = currentRole(member)
+  const name = role ? roleDisplayName(role) : member.role_name || '未分配角色'
+  if (member.user_id === props.administratorUserId && !plan.value.retire_role_codes.includes(member.role_code)) return `${name}（保留绑定，管理员权限由单位授权决定）`
+  return role ? name : `${name}（需改为本单位角色）`
+}
 function needsAssignment(member) { return !currentRole(member) || plan.value.retire_role_codes.includes(member.role_code) }
 function differences(member) {
   const target = assignmentRole(plan.value.assignments[member.user_id], props.config.unit_roles || [], plan.value.new_roles)
@@ -46,12 +51,13 @@ function differences(member) {
       <el-button type="danger" link :disabled="disabled" @click="removeRole(role.client_key)">移除本次新角色</el-button>
     </details>
     <h3>人员角色分配</h3>
-    <p class="assignment-help">包括停用人员。单位管理员本人的前台角色由平台指定；已有本单位角色可保持不变。</p>
+    <p class="assignment-help">单位管理员直接继承单位授权，无需单独分配角色。其他人员（包括停用账号）使用本单位角色；离任管理员也须保留或选择有效的人员角色。</p>
     <el-table :data="config.members || []" max-height="380" empty-text="本单位暂无需要分配角色的前台人员" aria-label="人员角色分配表">
       <el-table-column label="人员" min-width="140"><template #default="{ row }"><strong>{{ row.name }}</strong><small>{{ row.account }}{{ row.status === 'DISABLED' ? ' · 停用' : '' }}</small></template></el-table-column>
       <el-table-column label="当前角色" min-width="170"><template #default="{ row }">{{ currentLabel(row) }}</template></el-table-column>
       <el-table-column label="保存后使用的角色" min-width="250"><template #default="{ row }">
-        <el-select v-model="plan.assignments[row.user_id]" clearable filterable :disabled="disabled" :aria-label="`${row.account}的单位角色`" :placeholder="needsAssignment(row) ? '必须选择本单位角色' : '保持当前角色'">
+        <span v-if="row.user_id === administratorUserId && !plan.retire_role_codes.includes(row.role_code)">单位管理员 · 继承单位已开放的全部权限</span>
+        <el-select v-else v-model="plan.assignments[row.user_id]" clearable filterable :disabled="disabled" :aria-label="`${row.account}的单位角色`" :placeholder="needsAssignment(row) ? '必须选择本单位角色' : '保持当前角色'">
           <el-option v-for="role in existing" :key="role.role_code" :value="existingRoleKey(role.role_code)" :label="roleDisplayName(role)" />
           <el-option v-for="(role, index) in plan.new_roles" :key="role.client_key" :value="newRoleKey(role.client_key)" :label="`${role.name.trim() || `新角色 ${index + 1}`}（本次新建）`" />
         </el-select>

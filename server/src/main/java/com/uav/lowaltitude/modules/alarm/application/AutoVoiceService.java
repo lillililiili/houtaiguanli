@@ -22,9 +22,13 @@ import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.time.AppClock;
 
-/** 持久化电话录音任务；外部调用不占数据库事务，不依赖页面或用户会话。 */
+/** 持久化电话任务；发送前在风险锁内重验，回执不会恢复已经结束的风险。 */
 @Service
 public class AutoVoiceService {
+    private com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder;
+    private UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void responseOrder(com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder,UavRiskCaseIdentity riskCases){this.responseOrder=responseOrder;this.riskCases=riskCases;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -54,20 +58,23 @@ public class AutoVoiceService {
     }
     public void poll() {
         var candidates=policy.enabled()?tasks.candidates():tasks.callingCandidates();
+        if(policy.enabled()&&responseOrder!=null){var all=new java.util.LinkedHashSet<>(candidates);all.addAll(responseOrder.pendingVoiceCandidates());candidates=new java.util.ArrayList<>(all);}
         for(String id:candidates) {
             try {process(id);} catch(RuntimeException failed) {org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic voice cycle failed for event {}; pending work requires reconciliation",id);}
         }
         for(String id:tasks.departureCandidates()) {
-            try { tx.executeWithoutResult(s->{var event=events.lock(id,SYSTEM_SCOPE);if(event!=null)captureDeparture(event,tasks.find(id),clock.nowMillis());}); }
+            try { eachCase(id,()->tx.executeWithoutResult(s->{String owner=taskOwner(id,"VOICE");if(riskCases!=null)riskCases.lockCases(owner);var event=events.lock(owner,SYSTEM_SCOPE);if(event!=null)captureDeparture(event,tasks.find(owner),clock.nowMillis());})); }
             catch(RuntimeException unavailable) { org.slf4j.LoggerFactory.getLogger(getClass()).warn("departure observation unavailable for event {}",id); }
         }
     }
-    public com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation departureSnapshot(String id) { return tasks.departure(id); }
+    private String taskOwner(String eventId,String channel){return riskCases==null?eventId:riskCases.notificationTaskOwner(eventId,channel);}
+    public com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.DepartureObservation departureSnapshot(String id) { return tasks.departure(taskOwner(id,"VOICE")); }
     /** A recorded decision ends this notification cycle; it is not a claim of a currently fresh position. */
     private boolean captureDeparture(EventRow event,Task task,long now) {
         if(tasks.departure(event.eventId())!=null)return true;
-        if(!"CONFIRMED".equals(event.state())||(task!=null&&"CALLING".equals(task.status())))return false;
-        Long smsAt=smsTasks.deliveredAt(event.eventId());
+        boolean confirmed=riskCases!=null&&riskCases.hasCases(event.eventId())?riskCases.confirmedForDisposal(event.eventId()):"CONFIRMED".equals(event.state());
+        if(!confirmed||(task!=null&&"CALLING".equals(task.status())))return false;
+        Long smsAt=smsTasks.deliveredAt(taskOwner(event.eventId(),"SMS"));
         if(smsAt==null)return false;
         boolean played=task!=null&&"SIMULATED_PLAYED".equals(task.status())&&task.playbackCompletedAt()!=null;
         if(task!=null&&task.attempts()>0&&!played)return false;
@@ -84,36 +91,72 @@ public class AutoVoiceService {
         return true;
     }
     public void process(String id) {
+        eachCase(id,()->processScoped(id));
+    }
+    private void eachCase(String eventId,Runnable work){
+        if(riskCases==null||riskCases.selectedCase()!=null){work.run();return;}
+        var refs=riskCases.cases(eventId);
+        if(refs.isEmpty())work.run();else for(var ref:refs)riskCases.runWithCase(ref.riskCaseId(),work);
+    }
+    private void processScoped(String requestedEventId) {
+        String owner=riskCases==null?null:riskCases.notificationTaskOwner(requestedEventId,"VOICE");
+        final String id=owner==null?requestedEventId:owner;
         Claim claim=tx.execute(s->claim(id));if(claim==null)return;
+        var sentClaim=new java.util.concurrent.atomic.AtomicReference<>(claim);
         AdvisoryVoicePort.Delivery delivery=null;
         try {
-            delivery=predictions!=null&&predictions.manualCounterOnly(id)?tx.execute(s->{
-                predictions.lockEpisode(id);
-                String block=predictions.notificationBlock(id);
-                if(predictions.notificationClaimInterrupted(id,claim.predictionRevision()))
+            delivery=tx.execute(s->{
+                if(riskCases!=null)riskCases.lockCases(id);
+                if(predictions!=null)predictions.lockEpisode(id);
+                var current=events.lock(id,SYSTEM_SCOPE);
+                if(current==null)return null;
+                Task pending=tasks.find(id);
+                if(pending==null||!claim.token().equals(pending.token())||!"CALLING".equals(pending.status()))return null;
+                Recording currentRecording=tasks.sendStarted(id)?claim.recording():recording(current);
+                String block=predictions==null?null:predictions.notificationBlock(id);
+                if(predictions!=null&&predictions.notificationClaimInterrupted(id,claim.predictionRevision()))
                     block="本次待拨电话已因预测风险变化取消，等待当前条件重新检查";
+                var eligibility=eligible(current,clock.nowMillis(),pending,currentRecording);
+                if(!eligibility.allowed())block=eligibility.reason();
                 if(block!=null&&!block.isEmpty()) {
                     Task task=tasks.find(id);
                     if(task!=null&&claim.token().equals(task.token())&&"CALLING".equals(task.status()))
                         tasks.block(id,new Eligibility(false,"WAITING",block,TRIGGER,null,null),clock.nowMillis());
                     return null;
                 }
-                return voice.simulate(claim.mode(),claim.recipient(),claim.recording(),claim.providerKey());
-            }):voice.simulate(claim.mode(),claim.recipient(),claim.recording(),claim.providerKey());
+                var recipient=tasks.sendStarted(id)?claim.recipient():requiredPilot(id);
+                if(recipient==null||!recipient.configured()){
+                    tasks.block(id,new Eligibility(false,"WAITING","飞手联系方式已变化，等待当前条件重新检查",TRIGGER,null,null),clock.nowMillis());
+                    return null;
+                }
+                tasks.prepareSend(id,claim.token(),currentRecording,clock.nowMillis());
+                directory.freezeAdvisoryTask("ADVISORY_VOICE",id,recipient);
+                sentClaim.set(new Claim(id,current.sourceMode(),claim.token(),claim.providerKey(),currentRecording,claim.startedAt(),recipient,claim.predictionRevision()));
+                // Persist the exact attempted content even if the channel outcome is unknown.
+                try{return voice.simulate(current.sourceMode(),recipient,currentRecording,claim.providerKey());}
+                catch(RuntimeException uncertain){return null;}
+            });
         }
         catch(RuntimeException uncertain) { /* 可能已经受理，不能把未知直接当失败并重拨。 */ }
         final var receipt=delivery;
         if(receipt!=null&&"SUBMITTED".equals(receipt.status()))return;
-        tx.executeWithoutResult(s->finish(claim,receipt));
+        tx.executeWithoutResult(s->finish(sentClaim.get(),receipt));
     }
     /** Preserve the frozen recipient and recording; a newer claim must never consume an older call. */
     public boolean completeSimulatorReceipt(String eventId,String providerKey,String token,
             com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,Recording recording,
             String messageId,String outcome,Long answeredAt,Long completedAt,long requestedAt) {
+        return riskCases==null?completeReceiptScoped(eventId,providerKey,token,recipient,recording,messageId,outcome,answeredAt,completedAt,requestedAt):
+                riskCases.withReceipt(eventId,"VOICE",providerKey,()->completeReceiptScoped(eventId,providerKey,token,recipient,recording,messageId,outcome,answeredAt,completedAt,requestedAt));
+    }
+    private boolean completeReceiptScoped(String eventId,String providerKey,String token,
+            com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient,Recording recording,
+            String messageId,String outcome,Long answeredAt,Long completedAt,long requestedAt) {
+        if(riskCases!=null)riskCases.lockCases(eventId);
         var event=events.lock(eventId,SYSTEM_SCOPE);if(event==null)return false;
         var task=tasks.find(eventId);long now=clock.nowMillis();
         if(task==null||token==null||!token.equals(task.token())||!java.util.Objects.equals(providerKey,task.providerKey())
-                ||!"CALLING".equals(task.status())||task.leaseUntil()==null||task.leaseUntil()<now
+                ||!Set.of("CALLING","UNKNOWN").contains(task.status())||task.leaseUntil()==null
                 ||requestedAt!=task.leaseUntil()-60000||recipient==null||recording==null||!task.recordingMatches(recording))return false;
         if("ANSWERED".equals(outcome)) {
             if(answeredAt==null||answeredAt<requestedAt||answeredAt>now||task.answeredAt()!=null)return false;
@@ -128,8 +171,10 @@ public class AutoVoiceService {
         return true;
     }
     private Claim claim(String id) {
+        if(riskCases!=null)riskCases.lockCases(id);
         if(predictions!=null)predictions.lockEpisode(id);
         EventRow event=events.lock(id,SYSTEM_SCOPE);if(event==null)return null;
+        if(responseOrder!=null)responseOrder.ensureLocked(event);
         long now=clock.nowMillis();Task task=tasks.find(id);
         if(captureDeparture(event,task,now))return null;
         if(task!=null&&"CALLING".equals(task.status())) {
@@ -146,14 +191,16 @@ public class AutoVoiceService {
         if(!e.allowed()){tasks.block(id,e,now);return null;}
         var recipient=requiredPilot(id);
         if(recipient==null||!recipient.configured()){tasks.block(id,blocked(e,"BLOCKED",recipient==null||recipient.blockedReason()==null||recipient.blockedReason().isBlank()?"没有可通知的执行飞手，不能拨打电话":recipient.blockedReason()),now);return null;}
+        if(riskCases!=null&&!riskCases.claimChannel(id,"VOICE")){tasks.block(id,blocked(e,"BLOCKED","同次风险已有电话任务，保留原任务及真实回执，不重复拨打"),now);return null;}
         String token=UUID.randomUUID().toString();tasks.claim(id,token,e,recording,now);
         directory.freezeAdvisoryTask("ADVISORY_VOICE",id,recipient);
         return new Claim(id,event.sourceMode(),token,tasks.find(id).providerKey(),recording,now,recipient,
                 predictions==null?null:predictions.notificationRevision(id));
     }
     private void finish(Claim claim,AdvisoryVoicePort.Delivery receipt) {
+        if(riskCases!=null)riskCases.lockCases(claim.eventId());
         EventRow event=events.lock(claim.eventId(),SYSTEM_SCOPE);if(event==null)return;
-        Task task=tasks.find(event.eventId());if(task==null||!claim.token().equals(task.token())||!"CALLING".equals(task.status()))return;
+        Task task=tasks.find(event.eventId());if(task==null||!claim.token().equals(task.token())||!Set.of("CALLING","UNKNOWN").contains(task.status()))return;
         long now=clock.nowMillis();
         boolean simulated=receipt!=null&&receipt.simulated();
         boolean played=simulated&&"SIMULATED_PLAYED".equals(receipt.status())&&receipt.providerCallId()!=null&&!receipt.providerCallId().isBlank()&&receipt.providerCallId().length()<=160
@@ -179,6 +226,7 @@ public class AutoVoiceService {
     }
     /** 纯读取；即使查询多次或页面关闭，都不会创建或触发电话任务。 */
     public AutoVoice overview(EventRow event,boolean mayRetry) {
+        event=channelEvent(event);
         Task task=tasks.find(event.eventId());boolean enabled=policy.enabled();
         if(tasks.departure(event.eventId())!=null&&(task==null||task.attempts()==0))
             return view(event,enabled,"BLOCKED","有效位置已离开告警区域，已停止后续电话；判断依据已留存",false,task,null,null);
@@ -195,15 +243,16 @@ public class AutoVoiceService {
         if(!enabled)return view(event,false,"DISABLED","电话录音通知尚未启用；需开启后台电话通知，在管理端 运维管理 → 接口配置 → 电话通知录音 上传并选用录音，并接通授权通知渠道",false,task,null,null);
         Eligibility e=eligible(event,clock.nowMillis(),task,recording);
         // 短信因超过时效停发时，电话也不会自动拨打，不能一直显示“等短信送达”。只改显示，任务仍按等待短信处理。
-        if(!e.allowed()&&"WAITING".equals(e.status())&&smsStale(event.eventId()))
+        if(!e.allowed()&&"WAITING".equals(e.status())&&smsStale(event.eventId())&&(responseOrder==null||!responseOrder.summary(event.eventId()).matched()))
             return view(event,true,"BLOCKED",STALE_REASON,false,task,recording,e);
         return view(event,true,e.allowed()?"WAITING":e.status(),e.reason(),false,task,recording,e);
     }
     private boolean smsStale(String eventId) {
-        var sms=smsTasks.find(eventId);
+        var sms=smsTasks.find(taskOwner(eventId,"SMS"));
         return sms!=null&&Set.of("BLOCKED","UNAVAILABLE").contains(sms.status())&&sms.reason()!=null&&sms.reason().startsWith(AutoSmsService.STALE_REASON);
     }
     public String mode(EventRow event) {
+        event=channelEvent(event);
         Task task=tasks.find(event.eventId());
         if(task!=null&&task.attempts()>0)return "SIMULATED";
         return policy.enabled()&&voice.simulationAvailable(event.sourceMode())&&recording(event)!=null?"SIMULATED":"UNAVAILABLE";
@@ -211,33 +260,51 @@ public class AutoVoiceService {
     private Recording recording(EventRow event) {
         return predicted(event)?recordings.current(AdvisoryVoiceRecording.PREDICTED_AIRSPACE_ENTRY):recordings.current();
     }
-    private boolean predicted(EventRow event) {return predictions!=null&&predictions.isPrediction(event.eventId());}
+    private boolean predicted(EventRow event) {
+        if(riskCases!=null){var refs=riskCases.cases(event.eventId());if(!refs.isEmpty())return refs.stream().allMatch(c->"PREDICTED".equals(c.stage()));}
+        return predictions!=null&&predictions.isPrediction(event.eventId());
+    }
+    private EventRow channelEvent(EventRow event){
+        if(riskCases==null)return event;
+        String ownerId=taskOwner(event.eventId(),"VOICE");
+        if(ownerId==null||ownerId.equals(event.eventId()))return event;
+        var owner=events.find(ownerId,SYSTEM_SCOPE);
+        return owner!=null&&java.util.Objects.equals(owner.targetId(),event.targetId())&&java.util.Objects.equals(owner.ownerOrgId(),event.ownerOrgId())
+                &&java.util.Objects.equals(owner.districtId(),event.districtId())&&java.util.Objects.equals(owner.sourceMode(),event.sourceMode())?owner:event;
+    }
     public void retry(EventRow event) {
+        event=channelEvent(event);
         if(!overview(event,true).canRetry())throw new ApiException(HttpStatus.CONFLICT,"AUTO_VOICE_RETRY_BLOCKED",overview(event,false).reason());
         tasks.queueRetry(event.eventId(),clock.nowMillis());
     }
     private Eligibility eligible(EventRow event,long now,Task task,Recording recording) {
+        if(riskCases!=null&&riskCases.legacyNotificationAmbiguous(event.eventId(),"VOICE"))
+            return blocked(waiting("旧通知区域归属待核查"),"BLOCKED","已有电话发送记录无法确定所属区域，保留原回执并暂停新增拨打，避免重复通知");
         if(predictions!=null) {
             String block=predictions.notificationBlock(event.eventId());
             if(block!=null&&!block.isEmpty())return blocked(waiting("预测风险待确认"),"BLOCKED",block);
         }
         if(noCounter.active(event.eventId()))return blocked(waiting("已决定不反制"),"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON);
         if("FALSE_POSITIVE".equals(event.state()))return blocked(waiting("误报"),"BLOCKED","已核实为误报，不拨打电话");
-        Long smsAt=smsTasks.deliveredAt(event.eventId());
-        if(smsAt==null)return waiting("飞手短信尚未送达，送达后即检查电话拨打条件");
-        if(now<smsAt)return waiting("短信送达时间异常，暂不能拨打电话");
+        var order=responseOrder==null?null:responseOrder.summary(event.eventId());
+        boolean counterFirst=order!=null&&order.matched();
+        if(counterFirst&&!order.voiceAllowed())return blocked(waiting(order.reason()),"PAUSED".equals(order.status())?"BLOCKED":"WAITING",order.reason());
+        Long smsAt=smsTasks.deliveredAt(taskOwner(event.eventId(),"SMS"));
+        if(!counterFirst&&smsAt==null)return waiting("飞手短信尚未送达，送达后即检查电话拨打条件");
+        if(!counterFirst&&now<smsAt)return waiting("短信送达时间异常，暂不能拨打电话");
         if(!voice.simulationAvailable(event.sourceMode()))return blocked(waiting("通道不可用"),"UNAVAILABLE","正式电话录音通道尚未接入，不能把模拟接通写成真实通话");
         if(recording==null)return blocked(waiting("录音不可用"),"UNAVAILABLE",predicted(event)
                 ?"还没有可用的预测进入禁飞区专用录音（在管理端 运维管理 → 接口配置 → 电话通知录音 上传并选用），预测预警电话不能执行，也不会改播普通告警录音"
                 :"还没有选用电话通知录音（在管理端 运维管理 → 接口配置 → 电话通知录音 上传并选用），电话通知不能执行");
         PilotDepartureWatch.Presence presence;
-        try { presence=departure.assess(event.eventId(),smsAt,now); }
+        try { presence=counterFirst?PilotDepartureWatch.Presence.STILL_PRESENT:departure.assess(event.eventId(),smsAt,now); }
         catch(RuntimeException unavailable) { presence=PilotDepartureWatch.Presence.UNKNOWN; }
         if(presence==PilotDepartureWatch.Presence.LEFT)return blocked(waiting("已离开"),"BLOCKED",leftReason(event.eventId(),smsAt));
         if(presence!=PilotDepartureWatch.Presence.STILL_PRESENT)return blocked(waiting("无法确认"),"BLOCKED","短信发出后没有新的位置，或无法判断是否仍在告警空域，不拨打电话，也不记为已撤离");
-        if(task!=null&&!task.recordingMatches(recording))return blocked(waiting("仍在"),"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
+        if(task!=null&&tasks.sendStarted(event.eventId())&&!task.recordingMatches(recording))return blocked(waiting("仍在"),"BLOCKED","录音配置与本任务原始内容不一致，不能沿用同一幂等编号更换录音重拨");
         var pilot=requiredPilot(event.eventId());
         if(pilot==null||!pilot.configured())return blocked(waiting("仍在"),"BLOCKED",pilot!=null&&pilot.blockedReason()!=null&&!pilot.blockedReason().isBlank()?pilot.blockedReason():"没有可通知的执行飞手，不能拨打电话");
+        if(counterFirst)return new Eligibility(true,"WAITING",order.reason()+"；继续核验飞手、通道和本阶段录音，不等待短信送达","COUNTER_FIRST",null,null);
         return new Eligibility(true,"WAITING",predicted(event)
                 ?"短信已送达，预计进入禁飞区的风险仍持续，可立即使用预测专用录音拨打模拟电话；模拟不会实际拨号或播放"
                 :"短信已送达，目标仍在告警空域，可立即拨打模拟电话；模拟不会实际拨号或播放",TRIGGER,null,null);

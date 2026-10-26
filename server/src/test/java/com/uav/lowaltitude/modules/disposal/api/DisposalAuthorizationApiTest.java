@@ -14,6 +14,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -22,6 +24,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -154,6 +157,40 @@ class DisposalAuthorizationApiTest {
                         .content("{\"expected_version\":0}"))
                 .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("TWO_PERSON_RULE"));
         assertThat(statusOf(id)).isEqualTo("REQUESTED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    @Transactional
+    void inheritedUnitAdministratorPermissionsDoNotBypassApprovalSeparation(boolean approvalGranted) throws Exception {
+        // Only the unit ceiling grants these actions; the retained personal role cannot request or approve.
+        String[] administrator = user("UNIT", List.of(), false);
+        jdbc.update("update app_user set org_id=?,scope_org_rule='OWN_ORG' where user_id=?", ORG, administrator[1]);
+        jdbc.update("insert into app_org_delegation(org_id,administrator_user_id,version,created_at,updated_at)"
+                + " values (?,?,0,0,0)", ORG, administrator[1]);
+        for (String permission : List.of("alarm:read", "target:read", "disposal:read", "disposal:request")) {
+            jdbc.update("insert into app_org_action(org_id,permission_code,permission_level)"
+                    + " values (?,?,'OP')", ORG, permission);
+        }
+        if (approvalGranted) {
+            jdbc.update("insert into app_org_action(org_id,permission_code,permission_level)"
+                    + " values (?,'disposal:approve','OP')", ORG);
+        }
+        JsonNode effective = body(mvc.perform(get("/api/v1/auth/me")
+                .header("Authorization", bearer(administrator[0]))).andExpect(status().isOk())).path("data");
+        assertThat(effective.path("permission_codes").toString()).contains("disposal:request");
+        String authorization = id(create(administrator[0], "COUNTERMEASURE", eventId, "COUNTERMEASURE_4CH")
+                .andExpect(status().isCreated()));
+        ResultActions approval = mvc.perform(post("/api/v1/disposal-authorizations/{id}/approve", authorization)
+                .header("Authorization", bearer(administrator[0])).header("Idempotency-Key", key())
+                .contentType(MediaType.APPLICATION_JSON).content("{\"expected_version\":0}"));
+        if (approvalGranted) {
+            approval.andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("TWO_PERSON_RULE"));
+        } else {
+            approval.andExpect(status().isForbidden());
+        }
+        assertThat(statusOf(authorization)).isEqualTo("REQUESTED");
+        assertThat(eventKinds(authorization)).containsExactly("REQUEST");
     }
 
     @Test

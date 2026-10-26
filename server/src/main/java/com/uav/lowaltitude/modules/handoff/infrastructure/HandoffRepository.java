@@ -240,7 +240,7 @@ public class HandoffRepository {
 
     /** 只锁交接主行，避免 PostgreSQL 对外连接 nullable side 的 FOR UPDATE 限制。 */
     public HandoffRow lockNotification(String handoffId, AccessDecision access) {
-        Where where = scope(access);
+        Where where = scope(access, false);
         where.sql.append(" AND h.handoff_id=:id"); where.params.put("id", handoffId);
         List<String> locked = jdbc.query("SELECT h.handoff_id FROM handoff h" + where.sql + " FOR UPDATE",
                 where.params, (rs, ignored) -> rs.getString(1));
@@ -354,10 +354,16 @@ public class HandoffRepository {
     }
 
     private static Where scope(AccessDecision access) {
+        return scope(access, true);
+    }
+
+    private static Where scope(AccessDecision access, boolean history) {
         Where where = new Where();
-        // 交接归属复制自源风险；ALL 仍要求归属目录存在且启用，ASSIGNED 必须同一授权行同时命中组织和区域。
+        String organization = history
+                ? com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("ho", access)
+                : "ho.enabled=TRUE AND ho.deleted_at IS NULL";
         where.sql.append(" WHERE EXISTS (SELECT 1 FROM app_org ho JOIN app_district hd ON hd.district_id=h.district_id"
-                + " WHERE ho.org_id=h.owner_org_id AND ho.enabled=TRUE AND hd.enabled=TRUE)");
+                + " WHERE ho.org_id=h.owner_org_id AND " + organization + " AND hd.enabled=TRUE)");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             where.sql.append(" AND EXISTS (SELECT 1 FROM app_user_data_scope gs JOIN app_org o ON o.org_id=gs.org_id AND o.enabled=TRUE"
                     + " JOIN app_district d2 ON d2.district_id=gs.district_id AND d2.enabled=TRUE WHERE gs.user_id=:scope_user"

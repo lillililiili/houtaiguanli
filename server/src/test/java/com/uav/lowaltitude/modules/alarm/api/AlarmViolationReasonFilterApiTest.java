@@ -98,6 +98,27 @@ class AlarmViolationReasonFilterApiTest {
                 + " AND detail LIKE '%violation_reason=ROUTE_DEVIATION%' AND detail LIKE '%rows=1%'", Integer.class, actor)).isEqualTo(1);
     }
 
+    @Test void overviewUsesShanghaiDayAndAlarmScopeWithoutExposingOtherUnits() throws Exception {
+        var now=java.time.Instant.now();
+        alarm(target("OVERVIEW"),"HIGH",now.atOffset(ZoneOffset.UTC),List.of("NO_AUTHORIZATION"));
+        String body=mvc.perform(get("/api/v1/alarms/overview").header("Authorization","Bearer "+token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.ok").value(true))
+                .andExpect(jsonPath("$.data.today.total").value(1))
+                .andExpect(jsonPath("$.data.today.pending_verification").value(1))
+                .andExpect(jsonPath("$.data.excluded_mock.total").value(1))
+                .andExpect(jsonPath("$.data.pending_disposal").value(0))
+                .andReturn().getResponse().getContentAsString();
+        var overview=json.readTree(body).path("data");
+        var zone=java.time.ZoneId.of("Asia/Shanghai");
+        var day=now.atZone(zone).toLocalDate();
+        assertThat(overview.path("occurred_from").asLong()).isEqualTo(day.atStartOfDay(zone).toInstant().toEpochMilli());
+        assertThat(overview.path("occurred_to").asLong()).isEqualTo(day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli());
+        jdbc.update("DELETE FROM app_user_data_scope WHERE user_id=?",actor);
+        mvc.perform(get("/api/v1/alarms/overview").header("Authorization","Bearer "+token))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/alarms/overview")).andExpect(status().isUnauthorized());
+    }
+
     /** UX-61：导出带"违规原因"一列，与列表同源（升级过取累计原因），说法与告警页"违规原因"一列一致。 */
     @Test void exportCarriesTheCurrentViolationReasonsInChinese() throws Exception {
         String a = target("A"), b = target("B"), c = target("C");
@@ -121,7 +142,15 @@ class AlarmViolationReasonFilterApiTest {
                 .containsEntry(noById.get(escalated.alarmId()), "无飞行授权、偏航（偏离报备航线）")
                 .containsEntry(noById.get(planAltitude.alarmId()), "超出任务高度带")
                 .containsEntry(noById.get(bvlos.alarmId()), "超出目视视距");
-        assertThat(lines.get(0)).endsWith("任务匹配提示");
+        assertThat(lines.get(0)).endsWith("任务匹配提示,预测来源,预测生命周期,预测变化原因");
+        // 普通实测告警也保留预测列，但不能填入并不存在的预测事实。
+        int columnCount = lines.get(0).split(",", -1).length;
+        assertThat(lines.subList(1, lines.size())).allSatisfy(line -> {
+            String[] cells = line.split(",", -1);
+            assertThat(cells).hasSize(columnCount);
+            assertThat(java.util.Arrays.asList(cells).subList(columnCount - 3, columnCount))
+                    .containsExactly("", "", "");
+        });
         assertThat(lines.stream().filter(line -> line.startsWith(noById.get(escalated.alarmId()) + ",")).findFirst().orElseThrow())
                 .contains("无飞行授权").doesNotContain("不作为违规原因");
     }

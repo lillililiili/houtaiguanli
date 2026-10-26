@@ -9,12 +9,12 @@ import com.uav.lowaltitude.modules.identity.infrastructure.OrganizationDeletionR
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.audit.AuditService;
 import com.uav.lowaltitude.platform.security.AuthContext;
-import org.springframework.dao.DataIntegrityViolationException;
+import com.uav.lowaltitude.platform.time.AppClock;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Deletes unused directory entries only; business records and historical ownership are never moved. */
+/** Retires inactive units; historical directory and business ownership are never removed or moved. */
 @Service
 public class OrganizationDeletionService {
     private final OrganizationDeletionRepository repository;
@@ -22,14 +22,16 @@ public class OrganizationDeletionService {
     private final IdempotencyGuard idempotency;
     private final AuditService audit;
     private final ObjectMapper json;
+    private final AppClock clock;
 
     public OrganizationDeletionService(OrganizationDeletionRepository repository, AccessService access,
-            IdempotencyGuard idempotency, AuditService audit, ObjectMapper json) {
+            IdempotencyGuard idempotency, AuditService audit, ObjectMapper json, AppClock clock) {
         this.repository = repository;
         this.access = access;
         this.idempotency = idempotency;
         this.audit = audit;
         this.json = json;
+        this.clock = clock;
     }
 
     @Transactional
@@ -41,28 +43,26 @@ public class OrganizationDeletionService {
         idempotency.claim(key, "organization-delete:" + orgId + ":" + expectedVersion);
         Map<String, Object> before = repository.lockOrganization(orgId);
         if (before == null) throw new ApiException(HttpStatus.NOT_FOUND, "ORG_NOT_FOUND", "单位不存在");
+        if (before.get("deleted_at") != null) throw new ApiException(HttpStatus.CONFLICT,
+                "ORG_DELETED", "单位已删除，请刷新单位目录");
         if (((Number) before.get("version")).intValue() != expectedVersion) {
             throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "单位已发生变化，请刷新后重试");
         }
-        List<String> references = repository.blockingReferences(orgId);
+        List<String> references = repository.blockingReferences(orgId, clock.nowMillis());
         if (!references.isEmpty()) throw inUse("该单位仍关联" + String.join("、", references)
-                + "，不能删除。已有业务和历史记录的单位必须保留。");
+                + "，暂不能删除。请先处理在用人员、下级单位和未结束业务；已完成的历史记录不会阻止删除。");
 
         var detail = new LinkedHashMap<String, Object>();
         detail.put("organization", before);
         detail.put("profile", repository.profile(orgId));
-        detail.put("deletion_type", "UNREFERENCED_DIRECTORY");
-        try {
-            detail.put("invalidated_preview_count", repository.deletePreviews(orgId));
-            repository.deleteProfile(orgId);
-            if (repository.deleteOrganization(orgId, expectedVersion) != 1) {
-                throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "单位已发生变化，请刷新后重试");
-            }
-        } catch (DataIntegrityViolationException ex) {
-            // A new foreign-key reference racing the precheck must never cascade or leak an SQL error.
-            throw inUse("该单位已有人员或业务关联，不能删除，请刷新后核对。");
-        }
         var actor = AuthContext.require();
+        long at = clock.nowMillis();
+        detail.put("deletion_type", "LOGICAL_RETIREMENT");
+        detail.put("invalidated_preview_count", repository.deletePreviews(orgId));
+        detail.put("authorization_changes", repository.retireAuthorization(orgId, at));
+        if (repository.retireOrganization(orgId, expectedVersion, actor.userId(), at) != 1)
+            throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "单位已发生变化，请刷新后重试");
+        detail.put("deleted_at", at);
         try {
             audit.record(actor.userId(), actor.account(), actor.roleCode(), "users", "organization_deleted",
                     "organization", orgId, json.writeValueAsString(detail), "SUCCESS", meta.ip(), meta.userAgent());

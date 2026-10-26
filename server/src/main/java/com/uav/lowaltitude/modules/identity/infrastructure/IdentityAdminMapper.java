@@ -28,8 +28,10 @@ public interface IdentityAdminMapper {
         """)
     int insertUnitRole(@Param("roleCode") String roleCode,@Param("name") String name,
             @Param("description") String description,@Param("now") long now,@Param("orgId") String orgId);
-    @Select("SELECT org_id FROM app_org WHERE org_id=#{orgId} FOR UPDATE")
+    @Select("SELECT org_id FROM app_org WHERE org_id=#{orgId} AND deleted_at IS NULL FOR UPDATE")
     String lockManagedOrganization(@Param("orgId") String orgId);
+    @Select("SELECT COUNT(*) FROM app_org WHERE org_id=#{orgId} AND deleted_at IS NOT NULL")
+    int countDeletedOrganization(@Param("orgId") String orgId);
     @Select("SELECT role_code FROM app_role WHERE role_code=#{roleCode} FOR UPDATE")
     String lockRoleMutation(@Param("roleCode") String roleCode);
 
@@ -157,15 +159,16 @@ public interface IdentityAdminMapper {
     List<ScopeGrantRow> listUserScopes(@Param("userId") String userId);
 
     @Select("""
-            SELECT COUNT(*) FROM app_user_data_scope
-            WHERE user_id = #{userId} AND org_id = #{orgId} AND district_id = #{districtId}
+            SELECT COUNT(*) FROM app_user_data_scope s
+            JOIN app_org o ON o.org_id=s.org_id AND o.deleted_at IS NULL
+            WHERE s.user_id = #{userId} AND s.org_id = #{orgId} AND s.district_id = #{districtId}
             """)
     int countUserScopeTuple(@Param("userId") String userId, @Param("orgId") String orgId,
             @Param("districtId") String districtId);
 
     @Select("""
             SELECT org_id AS orgId, parent_id AS parentId, org_code AS orgCode, name, enabled, version
-            FROM app_org ORDER BY name, org_code
+            FROM app_org WHERE deleted_at IS NULL ORDER BY name, org_code
             """)
     List<OrgRow> listOrganizations();
 
@@ -236,7 +239,7 @@ public interface IdentityAdminMapper {
 
     @Update("""
             UPDATE app_org SET parent_id = #{parentId}, name = #{name}, updated_at = #{at}, version = version + 1
-            WHERE org_id = #{orgId} AND version = #{expectedVersion}
+            WHERE org_id = #{orgId} AND version = #{expectedVersion} AND deleted_at IS NULL
             """)
     int updateOrganization(@Param("orgId") String orgId, @Param("parentId") String parentId,
             @Param("name") String name, @Param("at") long at, @Param("expectedVersion") int expectedVersion);

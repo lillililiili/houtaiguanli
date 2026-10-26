@@ -92,12 +92,18 @@ class MqttIngressTest {
         return heartbeat(type, workState, time, null, null, null);
     }
     private String heartbeat(String type,int workState,Long time, Double longitude, Double latitude, Double altitude) {
+        return heartbeat(type, workState, time, longitude, latitude, altitude, "WGS84");
+    }
+    private String heartbeat(String type,int workState,Long time, Double longitude, Double latitude, Double altitude,
+                             String coordinateSystem) {
         StringBuilder body = new StringBuilder("{\"providerCode\":\"fixture-provider\",\"deviceId\":\"external-1\",\"deviceName\":\"fixture\",\"deviceType\":")
                 .append(LingyunEnvelope.TYPES.get(type)).append(",\"workState\":").append(workState);
         if (time != null) body.append(",\"ptTime\":").append(time);
         if (longitude != null) body.append(",\"deviceLongitude\":").append(longitude);
         if (latitude != null) body.append(",\"deviceLatitude\":").append(latitude);
         if (altitude != null) body.append(",\"deviceAltitude\":").append(altitude);
+        if ((longitude != null || latitude != null) && coordinateSystem != null)
+            body.append(",\"coordinate_system\":\"").append(coordinateSystem).append('"');
         return body.append("}").toString();
     }
     private long inboxCount(Binding b) { return jdbc.queryForObject("SELECT COUNT(*) FROM inbox_message WHERE source=?",Long.class,b.source()); }
@@ -341,6 +347,42 @@ class MqttIngressTest {
                 Long.class, brokerId)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", java.math.BigDecimal.class, b.opsDeviceId()))
                 .isEqualByComparingTo("118.62");
+        assertThat(inboxCount(b)).isZero();
+    }
+
+    @Test void staticLocationRejectsMissingUnsupportedAndConflictingDeclarationsWithoutAdvancingHeartbeat() {
+        Binding b = register("radar");
+        receive(b, heartbeat("radar", 1, 1000L), false, 1, false, false);
+        long lastHeartbeatAt = devices.state(b.opsDeviceId()).lastHeartbeatAt();
+        int packet = 2;
+        for (String declaration : new String[] {null, "", " ", "GCJ02", "BD09", "CGCS2000"}) {
+            receive(b, heartbeat("radar", 2, 2000L + packet, -73.85, 40.64, 8.0, declaration),
+                    false, packet++, false, false);
+        }
+        String conflicting = heartbeat("radar", 2, 3000L, -73.85, 40.64, 8.0)
+                .replace("\"coordinate_system\":\"WGS84\"", "\"coordinate_system\":\"WGS84\",\"coordinateSystem\":\"GCJ02\"");
+        receive(b, conflicting, false, packet, false, false);
+        assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", Double.class, b.opsDeviceId())).isNull();
+        assertThat(jdbc.queryForObject("SELECT latitude FROM ops_device WHERE device_id=?", Double.class, b.opsDeviceId())).isNull();
+        assertThat(repository.binding(b.opsDeviceId(), false).lastStaticPtTime()).isEqualTo(1000L);
+        assertThat(devices.state(b.opsDeviceId()).lastHeartbeatAt()).isEqualTo(lastHeartbeatAt);
+        assertThat(devices.state(b.opsDeviceId()).workStateCode()).isEqualTo("1");
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM mqtt_receive_diagnostic WHERE broker_id=? AND outcome='REJECTED' AND reason='COORDINATE_SYSTEM_REQUIRED'",
+                Long.class, brokerId)).isOne();
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM mqtt_receive_diagnostic WHERE broker_id=? AND outcome='REJECTED' AND reason='COORDINATE_SYSTEM_NOT_SUPPORTED'",
+                Long.class, brokerId)).isEqualTo(6);
+
+        // A valid report older than the rejected ones must still fill this different device/location.
+        receive(b, heartbeat("radar", 1, 1500L, -73.85, 40.64, 8.0, "WGS-84"), false, packet + 1, false, false);
+        assertThat(repository.binding(b.opsDeviceId(), false).lastStaticPtTime()).isEqualTo(1500L);
+        assertThat(jdbc.queryForObject("SELECT longitude FROM ops_device WHERE device_id=?", java.math.BigDecimal.class, b.opsDeviceId()))
+                .isEqualByComparingTo("-73.85");
+        assertThat(jdbc.queryForObject("SELECT latitude FROM ops_device WHERE device_id=?", java.math.BigDecimal.class, b.opsDeviceId()))
+                .isEqualByComparingTo("40.64");
+        assertThat(jdbc.queryForObject("SELECT coordinate_system FROM ops_device WHERE device_id=?", String.class, b.opsDeviceId()))
+                .isEqualTo("WGS-84");
         assertThat(inboxCount(b)).isZero();
     }
 

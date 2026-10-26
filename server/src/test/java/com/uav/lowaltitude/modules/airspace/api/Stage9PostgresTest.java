@@ -56,6 +56,7 @@ import com.uav.lowaltitude.modules.assessment.engine.RuleEngineRepository;
 import com.uav.lowaltitude.modules.risk.application.RiskIngestionService;
 import com.uav.lowaltitude.modules.risk.application.spacerisk.SpaceRiskEvaluationService;
 import com.uav.lowaltitude.modules.risk.infrastructure.SpaceRiskRepository;
+import com.uav.lowaltitude.platform.database.MigrationLineage;
 import com.uav.lowaltitude.platform.time.AppClock;
 
 /**
@@ -716,21 +717,32 @@ class Stage9PostgresTest {
                 .isEqualTo("PROHIBITED");
     }
 
-    /** 业务前台划设入口已关闭：并发新建不再受理，也不会留下空域。 */
+    /** 已授权的本地空域入口允许新建；同一编号并发创建只提交一份完整空域。 */
     @Test
     @Order(13)
     void twoRealConnectionsCreatingSameAirspaceNoCommitExactlyOne() throws Exception {
-        String manager = session(managerRole());
+        String manager = session(managerRole(), org, district);
         String airspaceNo = "AS-RACE-" + suffix;
-        mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
+        var results = race(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "race-a-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody(airspaceNo, "PROHIBITED", T0, null)))
-                .andExpect(status().isMethodNotAllowed());
-        mvc.perform(post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
+                        .content(createBody(airspaceNo, "PROHIBITED", T0, null)),
+                post("/api/v1/airspaces").header("Authorization", "Bearer " + manager)
                         .header("Idempotency-Key", "race-b-" + UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON)
-                        .content(createBody(airspaceNo, "RESTRICTED", T0, null)))
-                .andExpect(status().isMethodNotAllowed());
-        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no=?", Long.class, airspaceNo)).isZero();
+                        .content(createBody(airspaceNo, "RESTRICTED", T0, null)));
+        assertThat(results.stream().map(result -> result.getResponse().getStatus()).toList())
+                .containsExactlyInAnyOrder(200, 409);
+        for (MvcResult result : results) {
+            if (result.getResponse().getStatus() == 409) {
+                assertThat(json.readTree(result.getResponse().getContentAsString()).path("error").path("code").asText())
+                        .isEqualTo("AIRSPACE_NO_EXISTS");
+            }
+        }
+        assertThat(jdbc.queryForObject("select count(*) from airspace where airspace_no=?", Long.class, airspaceNo)).isEqualTo(1);
+        String created = jdbc.queryForObject("select airspace_id from airspace where airspace_no=?", String.class, airspaceNo);
+        assertThat(jdbc.queryForObject("select count(*) from airspace_version where airspace_id=?", Long.class, created)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from airspace_version where airspace_id=? and min_altitude_m=0 and max_altitude_m=120 and altitude_datum='AMSL'", Long.class, created)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from airspace_version_origin o join airspace_version v on v.airspace_version_id=o.airspace_version_id where v.airspace_id=? and o.origin_kind='MANUAL'", Long.class, created)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from audit_log where action='airspace_created' and object_id=? and result='SUCCESS'", Long.class, created)).isEqualTo(1);
     }
 
     /** 本地 GeoJSON 导入入口已关闭，确认和查询都不再受理。 */
@@ -1089,9 +1101,11 @@ class Stage9PostgresTest {
 
     /** 只迁到指定版本的 Flyway：与 {@link #initializeSchema()} 同一套位置与开关，仅多一个 target。 */
     private static Flyway flywayFor(String schema, String targetVersion) {
-        return Flyway.configure().dataSource(rootDataSource()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true)
+        var configuration = Flyway.configure().dataSource(rootDataSource()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true)
                 .locations("classpath:db/migration", "classpath:db/postgresql")
-                .target(MigrationVersion.fromVersion(targetVersion)).load();
+                .target(MigrationVersion.fromVersion(targetVersion));
+        MigrationLineage.configure(configuration);
+        return configuration.load();
     }
 
     /** 取最内层 PostgreSQL 异常的 SQLSTATE：只断言"抛了"会让约束换成别的机制时照样通过。 */
@@ -1242,8 +1256,9 @@ class Stage9PostgresTest {
     private String createBody(String airspaceNo, String kindCode, OffsetDateTime validFrom, OffsetDateTime validTo) {
         return "{\"airspace_no\":\"" + airspaceNo + "\",\"name\":\"阶段九验证空域\",\"kind_code\":\"" + kindCode + "\","
                 + "\"boundary\":" + geoJsonMultiPolygon() + ",\"valid_from\":" + validFrom.toInstant().toEpochMilli()
+                + ",\"min_altitude_m\":0,\"max_altitude_m\":120,\"altitude_datum\":\"AMSL\""
                 + (validTo == null ? "" : ",\"valid_to\":" + validTo.toInstant().toEpochMilli())
-                + ",\"owner_org_id\":\"" + LocalStage9SpaceRiskSeeder.ORG + "\",\"district_id\":\"" + LocalStage9SpaceRiskSeeder.DISTRICT + "\"}";
+                + ",\"owner_org_id\":\"" + org + "\",\"district_id\":\"" + district + "\"}";
     }
 
     private String versionBody(String kindCode, OffsetDateTime validFrom) {
@@ -1288,11 +1303,15 @@ class Stage9PostgresTest {
 
     /** ASSIGNED 用户配种子自身的 (org,district) 授权元组，走与生产一致的精确范围谓词。 */
     private String session(String roleCode) {
+        return session(roleCode, LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT);
+    }
+
+    private String session(String roleCode, String ownerOrg, String scopeDistrict) {
         String user = id(), token = UUID.randomUUID().toString();
         jdbc.update("insert into app_user (user_id,account,name,role_code,status,password_hash,fail_count,scope_mode,permission_version,created_at,updated_at,version)"
                 + " values (?,?,?,?,'ACTIVE','unused',0,'ASSIGNED',0,0,0,0)", user, "s9-pg-" + suffix, "阶段九验证员", roleCode);
         jdbc.update("insert into app_user_data_scope (user_id,org_id,district_id) values (?,?,?)", user,
-                LocalStage9SpaceRiskSeeder.ORG, LocalStage9SpaceRiskSeeder.DISTRICT);
+                ownerOrg, scopeDistrict);
         jdbc.update("insert into app_session (session_id,user_id,expire_at,ip,permission_version) values (?,?,?,'127.0.0.1',0)",
                 token, user, System.currentTimeMillis() + 3_600_000L);
         return token;
@@ -1328,8 +1347,10 @@ class Stage9PostgresTest {
         root.execute("create schema " + SCHEMA);
         schemaCreated = true;
         try {
-            Flyway.configure().dataSource(rootDataSource()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false).cleanDisabled(true)
-                    .locations("classpath:db/migration", "classpath:db/postgresql").load().migrate();
+            var configuration = Flyway.configure().dataSource(rootDataSource()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false).cleanDisabled(true)
+                    .locations("classpath:db/migration", "classpath:db/postgresql");
+            MigrationLineage.configure(configuration);
+            configuration.load().migrate();
         } catch (RuntimeException exception) {
             try { root.execute("drop schema " + SCHEMA + " cascade"); } finally { schemaCreated = false; }
             throw exception;

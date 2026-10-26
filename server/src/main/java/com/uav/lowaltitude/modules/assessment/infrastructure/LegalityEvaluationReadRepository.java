@@ -141,6 +141,19 @@ public class LegalityEvaluationReadRepository {
         return referenceVisible("alarm t", "t.alarm_id", "t.owner_org_id", "t.district_id", alarmId, orgId, districtId, access);
     }
 
+    /** Historical references must not loosen the current-subject checks used by manual evaluation. */
+    public boolean targetReadable(String targetId, String orgId, String districtId, AccessDecision access) {
+        return targetId != null && referenceVisible("target t", "t.target_id", "t.owner_org_id", "t.district_id", targetId, orgId, districtId, access, true);
+    }
+
+    public boolean planReadable(String planId, String orgId, String districtId, AccessDecision access) {
+        return planId != null && referenceVisible("flight_plan t", "t.plan_id", "t.owner_org_id", "t.district_id", planId, orgId, districtId, access, true);
+    }
+
+    public boolean alarmReadable(String alarmId, String orgId, String districtId, AccessDecision access) {
+        return alarmId != null && referenceVisible("alarm t", "t.alarm_id", "t.owner_org_id", "t.district_id", alarmId, orgId, districtId, access, true);
+    }
+
     public String eventIdOfAlarm(String alarmId) {
         if (alarmId == null) return null;
         List<String> rows = jdbc.queryForList("SELECT event_id FROM uav_event WHERE alarm_id=:alarm", Map.of("alarm", alarmId), String.class);
@@ -201,11 +214,17 @@ public class LegalityEvaluationReadRepository {
     }
 
     private boolean referenceVisible(String table, String idColumn, String orgColumn, String districtColumn, String id, String orgId, String districtId, AccessDecision access) {
+        return referenceVisible(table, idColumn, orgColumn, districtColumn, id, orgId, districtId, access, false);
+    }
+
+    private boolean referenceVisible(String table, String idColumn, String orgColumn, String districtColumn, String id, String orgId, String districtId, AccessDecision access, boolean history) {
         Map<String, Object> parameters = new HashMap<>();
         parameters.put("id", id);
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM " + table + " WHERE " + idColumn + "=:id AND " + orgColumn + " IS NOT NULL AND " + districtColumn + " IS NOT NULL");
-        // ALL 只是不受用户 grant 限制，不能绕过已停用或不存在的组织、区域目录记录。
-        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=" + orgColumn + " AND o.enabled=TRUE)");
+        String organization = history ? com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access)
+                : "o.enabled=TRUE AND o.deleted_at IS NULL";
+        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=" + orgColumn + " AND "
+                + organization + ")");
         sql.append(" AND EXISTS (SELECT 1 FROM app_district d WHERE d.district_id=" + districtColumn + " AND d.enabled=TRUE)");
         if (orgId != null && districtId != null) {
             parameters.put("ref_org_id", orgId); parameters.put("ref_district_id", districtId);
@@ -361,7 +380,8 @@ public class LegalityEvaluationReadRepository {
         StringBuilder sql = new StringBuilder(" WHERE " + alias + ".owner_org_id IS NOT NULL AND " + alias + ".district_id IS NOT NULL");
         Map<String, Object> parameters = new HashMap<>();
         // 目录启用性是对象可见性的共同前提；ALL 仅跳过 grant，不得读取失效归属的数据。
-        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=" + alias + ".owner_org_id AND o.enabled=TRUE)");
+        sql.append(" AND EXISTS (SELECT 1 FROM app_org o WHERE o.org_id=" + alias + ".owner_org_id AND "
+                + com.uav.lowaltitude.platform.query.OrganizationHistorySql.readable("o", access) + ")");
         sql.append(" AND EXISTS (SELECT 1 FROM app_district d WHERE d.district_id=" + alias + ".district_id AND d.enabled=TRUE)");
         if (access.scopeMode() == ScopeMode.ASSIGNED) {
             // EXISTS 让同一条授权记录同时绑定 org/district，禁止两条 grant 笛卡尔拼接。

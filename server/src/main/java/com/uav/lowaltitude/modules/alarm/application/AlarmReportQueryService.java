@@ -17,7 +17,7 @@ public class AlarmReportQueryService extends BusinessReportSource {
     }
     @Override public String key() { return "alarms"; }
     @Override public String title() { return "告警"; }
-    @Override public String basis() { return "发生时间"; }
+    @Override public String basis() { return "无人机按持续风险首次创建时间计一次；其他告警按发生时间，状态截至生成时"; }
     @Override public List<Dimension> dimensions() {
         return List.of(new Dimension("state", "当前状态"), new Dimension("severity", "告警等级"));
     }

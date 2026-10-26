@@ -29,6 +29,9 @@ public class PredictionReadService {
     private final AccessControlService access;
     private final ObjectMapper json;
     private final AppClock clock;
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity value){riskCases=value;}
     public PredictionReadService(NamedParameterJdbcTemplate jdbc,AccessControlService access,ObjectMapper json,AppClock clock) {
         this.jdbc=jdbc; this.access=access; this.json=json; this.clock=clock;
     }
@@ -82,7 +85,7 @@ public class PredictionReadService {
                 +" ORDER BY CASE WHEN p.active_key IS NULL THEN 1 ELSE 0 END,p.started_at DESC,p.episode_id",Map.of("ids",ids)))
             grouped.computeIfAbsent((String)row.get("event_id"),k->new ArrayList<>()).add(row);
         for(var dto:values) {
-            var rows=grouped.get(dto.getEventId().value());
+            var rows=caseRows(dto,dto.getEventId().value(),grouped.get(dto.getEventId().value()));
             if(rows==null || rows.isEmpty()) continue;
             var row=rows.get(0);
             var latest=decorate(object(row.get("result_json")),
@@ -99,7 +102,8 @@ public class PredictionReadService {
         var rows=jdbc.queryForList("SELECT p.*,l.role,l.event_id,e.alarm_id"+BASIS_COLUMNS+" FROM prediction_event_link l JOIN prediction_episode p ON p.episode_id=l.episode_id"
                 +" JOIN uav_event e ON e.event_id=l.event_id"+BASIS_JOINS+" WHERE l.event_id=:id"
                 +" ORDER BY CASE WHEN p.active_key IS NULL THEN 1 ELSE 0 END,p.started_at DESC,p.episode_id",Map.of("id",eventId));
-        if(rows.isEmpty()) return dto;
+        rows=caseRows(dto,eventId,rows);
+        if(rows==null || rows.isEmpty()) return dto;
         var row=rows.get(0);
         Map<String,Object> latest=snapshot((String)row.get("latest_prediction_id"));
         latest=decorate(latest,rows.stream().map(r->warning(r,true)).toList());
@@ -108,12 +112,38 @@ public class PredictionReadService {
         if(detail.get("prediction") instanceof Map<?,?> frozen) {
             first=new LinkedHashMap<>(first); first.put("warning",frozen); first.put("warnings",List.of(frozen));
         }
+        Map<String,Object> historyParameters=new HashMap<>();historyParameters.put("id",eventId);
+        String historyScope="";
+        if(selectedCase(dto)!=null){historyScope=" AND h.episode_id=:episode";historyParameters.put("episode",row.get("episode_id"));}
         var history=jdbc.queryForList("SELECT h.history_id,h.episode_id,h.prediction_id,h.version,h.state,h.reason,h.created_at"
-                +" FROM prediction_episode_history h JOIN prediction_event_link l ON l.episode_id=h.episode_id WHERE l.event_id=:id ORDER BY h.created_at,h.episode_id,h.version",
-                Map.of("id",eventId));
+                +" FROM prediction_episode_history h JOIN prediction_event_link l ON l.episode_id=h.episode_id WHERE l.event_id=:id"
+                +historyScope+" ORDER BY h.created_at,h.episode_id,h.version",
+                historyParameters);
         history.forEach(h->h.put("state",PredictionWorker.publicStatus((String)h.get("state"))));
         if(!targetVisible) { latest=redact(latest);first=redact(first); }
         return dto.withPrediction("PREDICTED".equals(row.get("role"))?PredictionWorker.ORIGIN:"OBSERVED_AIRSPACE_ENTRY",latest,first,history);
+    }
+    private String selectedCase(AlarmDto dto){
+        String selected=riskCases==null?null:riskCases.selectedCase();
+        if(selected!=null)return selected;
+        return dto.getRiskCase()==null?null:Objects.toString(dto.getRiskCase().get("risk_case_id"),null);
+    }
+    /** A shared measured event cannot choose another area's first snapshot or lifecycle. */
+    private List<Map<String,Object>> caseRows(AlarmDto dto,String eventId,List<Map<String,Object>> rows){
+        String selected=selectedCase(dto);
+        if(selected==null || rows==null || rows.isEmpty())return rows;
+        var cases=jdbc.queryForList("SELECT c.episode_id,c.target_id,c.owner_org_id,c.district_id,c.source_mode,pa.detail AS frozen_detail"
+                +" FROM uav_risk_case c JOIN uav_risk_case_member m ON m.risk_case_id=c.risk_case_id AND m.event_id=:event"
+                +" LEFT JOIN prediction_event_link pl ON pl.episode_id=c.episode_id AND pl.role='PREDICTED'"
+                +" LEFT JOIN uav_event pe ON pe.event_id=pl.event_id LEFT JOIN alarm pa ON pa.alarm_id=pe.alarm_id"
+                +" AND pa.target_id=c.target_id AND pa.owner_org_id=c.owner_org_id AND pa.district_id=c.district_id AND pa.source_mode=c.source_mode"
+                +" WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL ORDER BY pl.created_at,pl.event_id",
+                Map.of("case_id",selected,"event",eventId));
+        if(cases.isEmpty() || cases.get(0).get("episode_id")==null)return List.of();
+        var risk=cases.get(0);
+        return rows.stream().filter(row->List.of("episode_id","target_id","owner_org_id","district_id","source_mode")
+                .stream().allMatch(key->Objects.equals(row.get(key),risk.get(key))))
+                .map(row->{var copy=new LinkedHashMap<>(row);copy.put("frozen_detail",risk.get("frozen_detail"));return (Map<String,Object>)copy;}).toList();
     }
     public List<String> exportSummary(String eventId) {
         if(eventId==null) return Arrays.asList(null,null,null);

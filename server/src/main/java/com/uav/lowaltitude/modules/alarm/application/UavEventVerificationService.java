@@ -40,6 +40,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavEventVerificationService {
+    private UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired public void riskCases(UavRiskCaseIdentity value){riskCases=value;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -92,6 +94,10 @@ public class UavEventVerificationService {
         if(predictions!=null)predictions.lockEpisode(id);
         EventRow event = repository.lock(id, read);
         if (event == null) throw notFound();
+        if(riskCases!=null&&riskCases.hasCases(id)){
+            if(riskCases.caseCount(id)>1)throw new ApiException(HttpStatus.CONFLICT,"RISK_CASE_REQUIRED","此事件涉及多个区域，请分别在对应风险中核实");
+            if(riskCases.cases(id).stream().anyMatch(c->!"PENDING_VERIFICATION".equals(riskCases.details(c.riskCaseId()).get("verification_status"))))throw new ApiException(HttpStatus.CONFLICT,"RISK_ALREADY_VERIFIED","本次持续风险已核实，请继续原风险办理");
+        }
         // 先完成读/写权限与范围锁定才声明幂等键，越权者不能靠重放键探测已提交请求。
         idempotency.claim(idempotencyKey, stableOperation(id, conclusion, note, expectedVersion)
                 +(request.predictionId()==null?"":part(request.predictionId())));

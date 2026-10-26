@@ -440,7 +440,7 @@ class UnitDelegationApiTest {
         assertThat(managementAccess.allows(administrator,"maintenance.op")).isFalse();
         jdbc.update("UPDATE app_user SET scope_mode='ASSIGNED',scope_org_rule='OWN_ORG' WHERE user_id=?",administrator);
         jdbc.update("UPDATE app_role SET enabled=false WHERE role_code=?",userRole(administrator));
-        assertThat(managementAccess.permissionCodes(administrator)).isEmpty();
+        assertThat(managementAccess.permissionCodes(administrator)).contains("maintenance.op");
         jdbc.update("UPDATE app_role SET enabled=true WHERE role_code=?",userRole(administrator));
         jdbc.update("UPDATE app_user SET org_id=? WHERE user_id=?",child,administrator);
         assertThat(managementAccess.orgId(administrator)).isNull();
@@ -535,7 +535,88 @@ class UnitDelegationApiTest {
         assertThat(jdbc.queryForObject("SELECT copied_from_role_code FROM app_role WHERE role_code=?",String.class,code)).isNull();
         assertThat(jdbc.queryForObject("SELECT status FROM app_user WHERE user_id=?",String.class,member)).isEqualTo("DISABLED");
         mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(login(administrator,PASSWORD,true))))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes").isEmpty());
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes[?(@ == 'alarm:verify')]").exists());
+    }
+
+    @Test void administratorInheritsCeilingWithoutAssignmentAndFormerAdministratorMustHaveStaffRole() throws Exception {
+        ObjectNode request=delegation(0,"OP",true);
+        explicitRoles(org,request);
+        request.putArray("member_assignments").add(node().put("user_id",member).put("new_role_key","manual-duty"));
+        ((ObjectNode)request.path("new_roles").get(0)).putArray("actions");
+        request.putArray("management_permissions").add(node().put("module_key","devices").put("level","READ"));
+        // There are deliberately no personal business grants to inherit.
+        jdbc.update("DELETE FROM app_role_permission WHERE role_code=?",sharedRole);sql.clearCache();
+        apply(org,request,preview(org,request));
+        assertThat(userRole(administrator)).isEqualTo(sharedRole);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM app_role WHERE owner_org_id=?",Integer.class,org)).isEqualTo(1);
+        String token=login(administrator,PASSWORD,true);
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.menu_keys[?(@ == 'flights')]").exists())
+                .andExpect(jsonPath("$.data.permission_codes[?(@ == 'alarm:verify')]").exists())
+                .andExpect(jsonPath("$.data.permission_codes[?(@ == 'disposal:direct')]").doesNotExist())
+                .andExpect(jsonPath("$.data.management_context.permission_codes[?(@ == 'devices.read')]").exists());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(login(member,PASSWORD,false))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes[?(@ == 'alarm:verify')]").doesNotExist());
+        mvc.perform(get("/api/v1/roles").header("Authorization",bearer(token))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/unit-admin/users").header("Authorization",bearer(token)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(2));
+        ObjectNode replace=delegation(1,"OP",true).put("administrator_user_id",member);
+        perform(post("/api/v1/organizations/"+org+"/delegation/preview"),platform,replace)
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("UNIT_ROLE_ASSIGNMENT_REQUIRED"));
+        replace.putArray("member_assignments").add(node().put("user_id",administrator).put("role_code",userRole(member)));
+        apply(org,replace,preview(org,replace));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(token))).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(login(administrator,PASSWORD,false))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes[?(@ == 'alarm:verify')]").doesNotExist());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(login(member,PASSWORD,true))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes[?(@ == 'alarm:verify')]").exists());
+    }
+
+    @Test void unitWithOnlyAdministratorNeedsNoNewRoleAndCeilingExpansionDoesNotExpandStaffRoles() throws Exception {
+        jdbc.update("UPDATE app_user SET org_id=? WHERE user_id=?",other,member);sql.clearCache();
+        var original=jdbc.queryForList("SELECT * FROM app_role ORDER BY role_code");
+        ObjectNode request=delegation(0,"READ",false);request.putArray("member_assignments");
+        apply(org,request,preview(org,request));
+        assertThat(jdbc.queryForList("SELECT * FROM app_role ORDER BY role_code")).isEqualTo(original);
+        assertThat(userRole(administrator)).isEqualTo(sharedRole);
+        String token=login(administrator,PASSWORD,true);
+        JsonNode staffRole=createdRole(token,"只读人员","READ");
+        ObjectNode expanded=delegation(1,"OP",true);
+        expanded.withArray("actions").add(node().put("permission_code","disposal:direct").put("level","OP"));
+        apply(org,expanded,preview(org,expanded));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(login(administrator,PASSWORD,false))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes[?(@ == 'disposal:direct')]").exists());
+        assertThat(jdbc.queryForObject("SELECT permission_level FROM app_role_permission WHERE role_code=? AND permission_code='alarms'",String.class,staffRole.path("role_code").asText())).isEqualTo("READ");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM app_role_permission WHERE role_code=? AND permission_code='disposal:direct' AND permission_level='OP'",Integer.class,staffRole.path("role_code").asText())).isZero();
+        jdbc.update("UPDATE app_role SET enabled=false WHERE role_code=?",sharedRole);sql.clearCache();
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(login(administrator,PASSWORD,true))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.permission_codes[?(@ == 'alarm:verify')]").exists());
+        mvc.perform(get("/api/v1/organizations/"+org+"/delegation").header("Authorization",bearer(platform)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.administrator_candidates[0].user_id").value(administrator));
+    }
+
+    @Test void policyUpgradeInvalidatesOnlyAdministratorSessionsAndPreservesGrantsBindingsAndHistory() throws Exception {
+        enable();
+        String adminToken=login(administrator,PASSWORD,true),memberToken=login(member,PASSWORD,false);
+        var bindings=jdbc.queryForList("SELECT user_id,role_code,scope_mode,scope_org_rule,version FROM app_user ORDER BY user_id");
+        var grants=jdbc.queryForList("SELECT * FROM app_role_permission ORDER BY role_code,permission_code");
+        int version=jdbc.queryForObject("SELECT permission_version FROM app_user WHERE user_id=?",Integer.class,administrator);
+        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>)connection->{
+            var context=new org.flywaydb.core.api.migration.Context() {
+                public java.sql.Connection getConnection(){ return connection; }
+                public org.flywaydb.core.api.configuration.Configuration getConfiguration(){ return null; }
+            };
+            try { new db.migration.V202610220001__unit_administrator_ceiling_policy().migrate(context); }
+            catch(Exception e){ throw new IllegalStateException(e); }
+            return null;
+        });
+        sql.clearCache();
+        assertThat(jdbc.queryForObject("SELECT permission_version FROM app_user WHERE user_id=?",Integer.class,administrator)).isEqualTo(version+1);
+        assertThat(jdbc.queryForList("SELECT user_id,role_code,scope_mode,scope_org_rule,version FROM app_user ORDER BY user_id")).isEqualTo(bindings);
+        assertThat(jdbc.queryForList("SELECT * FROM app_role_permission ORDER BY role_code,permission_code")).isEqualTo(grants);
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(adminToken))).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization",bearer(memberToken))).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM audit_log WHERE action='unit_admin_permission_policy_changed' AND object_id=?",Integer.class,administrator)).isEqualTo(1);
     }
 
     @Test void platformCanExplicitlyAssignExistingUnitRoleWithoutCreatingAnything() throws Exception {

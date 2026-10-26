@@ -77,6 +77,36 @@ class DirectDisposalAccessTest {
         return new DirectDisposalAccess(identity, authorizations, devices, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), deviceRows, automatic, effective);
     }
 
+    @Test void unitAdministratorQueuedDirectNeedsExplicitUnitGrantAndRechecksRevocationAndDeviceAccess() {
+        String id=java.util.UUID.randomUUID().toString(),roleCode="ROLE-"+id.substring(0,8);
+        var authorization=org.mockito.Mockito.mock(AuthorizationRow.class);
+        when(authorization.authorizationMode()).thenReturn("DIRECT");
+        when(authorization.validFrom()).thenReturn(NOW.minusSeconds(30).atOffset(ZoneOffset.UTC));
+        when(authorization.validUntil()).thenReturn(NOW.plusSeconds(60).atOffset(ZoneOffset.UTC));
+        when(authorization.requestedBy()).thenReturn(id);
+        when(authorization.authorizationId()).thenReturn("authorization-"+id);
+        var user=new com.uav.lowaltitude.modules.identity.domain.IdentityRows.UserAdminRow();
+        user.setUserId(id);user.setRoleCode(roleCode);user.setStatus("ACTIVE");user.setScopeMode("ASSIGNED");
+        var role=new com.uav.lowaltitude.modules.identity.domain.IdentityRows.RoleRow();
+        role.setRoleCode(roleCode);role.setEnabled(false);
+        when(identity.findAdminUser(id,NOW.toEpochMilli())).thenReturn(user);
+        when(identity.findRole(roleCode)).thenReturn(role);
+        when(effective.isUnitAdministrator(id)).thenReturn(true);
+        when(effective.permissionCodes(id)).thenReturn(java.util.List.of("disposal:direct"));
+        when(authorizations.find("authorization-"+id,new com.uav.lowaltitude.modules.identity.domain.AccessDecision(id,
+                com.uav.lowaltitude.modules.identity.domain.ScopeMode.ASSIGNED))).thenReturn(authorization);
+        var actor=new AuthUser(id,id,"单位管理员",roleCode,0,false,"ASSIGNED");
+        when(authorizations.actor(id)).thenReturn(actor);
+        assertThat(access().eligibleRequester(authorization,false)).isEqualTo(actor);
+        verify(identity,never()).listActionsForRole(roleCode);
+        assertThat(access().eligibleRequester(authorization,true)).isNull(); // Backend management is not device-control authorization.
+        when(effective.permissionCodes(id)).thenReturn(java.util.List.of());
+        assertThat(access().eligibleRequester(authorization,false)).isNull();
+        when(effective.permissionCodes(id)).thenReturn(java.util.List.of("disposal:direct"));
+        when(effective.isUnitAdministrator(id)).thenReturn(false);
+        assertThat(access().eligibleRequester(authorization,false)).isNull();
+    }
+
     @Test void newlyBoundAutomaticCounterUsesTheSystemActorWithoutImpersonatingAHuman() {
         var row = row(NOW.minusSeconds(30), NOW.plusSeconds(60));
         AuthUser actor = new AuthUser(AutomationPrincipal.USER_ID, AutomationPrincipal.ACCOUNT, "自动规则",

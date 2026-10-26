@@ -33,6 +33,10 @@ public class IdempotencyGuard {
         }
         AuthUser actor = AuthContext.require();
         String storedKey = sha256(actor.userId() + ":" + key.trim());
+        if(org.springframework.web.context.request.RequestContextHolder.getRequestAttributes() instanceof org.springframework.web.context.request.ServletRequestAttributes attrs){
+            Object risk=attrs.getRequest().getAttribute("uav.risk.case"),version=attrs.getRequest().getAttribute("uav.risk.version");
+            if(risk!=null)operation=operation+"|risk_case="+risk+"|case_version="+version;
+        }
         String requestHash = sha256(operation);
         String previous = mapper.findHash(storedKey);
         if (previous != null) {

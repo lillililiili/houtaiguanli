@@ -12,6 +12,7 @@ export function roleDisplayName(role) {
 }
 
 export function userRoleDisplayName(user, roles) {
+  if (user.unit_administrator) return '单位管理员（继承单位授权）'
   const role = roles.find(item => item.role_code === user.role_code)
   return role ? roleDisplayName(role) : user.role_name || ''
 }

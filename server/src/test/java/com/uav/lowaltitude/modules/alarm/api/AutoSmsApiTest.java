@@ -31,6 +31,7 @@ class AutoSmsApiTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired AutoSmsService automatic;
+    @Autowired com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
     @Autowired AutoSmsJob job;
     @SpyBean LocalAdvisorySmsAdapter sms;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoSmsPolicy smsPolicy;
@@ -108,23 +109,48 @@ class AutoSmsApiTest {
         }
     }
     @AfterEach void clearSpy(){reset(directory);reset(sms);reset(audit);reset(smsPolicy);}
-    @Test void lateDeliveryAfterLeaseReconciliationCannotOverwriteUnknownOrDuplicateContact() throws Exception {
+    @Test void lateOriginalDeliveryIsRetainedWithoutDuplicateContactOrRevivingEndedRisk() throws Exception {
         long version = jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId);
         int records = jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?", Integer.class, eventId);
+        var existing=jdbc.queryForList("SELECT risk_case_id FROM uav_risk_case WHERE root_event_id=? AND superseded_by IS NULL",String.class,eventId);
+        String risk=existing.isEmpty()?UUID.randomUUID().toString():existing.get(0);
+        long created=System.currentTimeMillis()-1_000;
+        if(existing.isEmpty()) {
+            jdbc.update("INSERT INTO uav_risk_case(risk_case_id,root_event_id,target_id,owner_org_id,district_id,source_mode,created_at) VALUES(?,?,?,?,?,'mock',?)",risk,eventId,targetId,ORG,DISTRICT,created);
+            jdbc.update("INSERT INTO uav_risk_case_member(risk_case_id,event_id,role,created_at) VALUES(?,?,'OBSERVED',?)",risk,eventId,created);
+        } else jdbc.update("UPDATE uav_risk_case SET target_id=? WHERE risk_case_id=?",targetId,risk);
+        var originalProviderKey=new java.util.concurrent.atomic.AtomicReference<String>();
         doAnswer(call -> {
             // A second worker cannot send while the first is in the channel call.
             automatic.process(eventId);
+            var original=jdbc.queryForMap("SELECT claim_token,provider_key FROM uav_auto_sms_task WHERE event_id=? AND risk_scope=?",eventId,risk);
+            originalProviderKey.set((String)original.get("provider_key"));
             jdbc.update("update uav_auto_sms_task set lease_until=0 where event_id=?", eventId);
             automatic.process(eventId);
+            var unknown=jdbc.queryForMap("SELECT status,claim_token,provider_key FROM uav_auto_sms_task WHERE event_id=? AND risk_scope=?",eventId,risk);
+            assertThat(unknown.get("status")).isEqualTo("UNKNOWN");
+            assertThat(unknown.get("claim_token")).isEqualTo(original.get("claim_token"));
+            assertThat(unknown.get("provider_key")).isEqualTo(original.get("provider_key"));
+            // The risk ends independently while the original accepted channel call is still pending.
+            jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,actor_id,note,created_at) VALUES(?,?,1,?,?,'FALSE_POSITIVE','OBSERVED',?,'人工结束本次风险',?)",UUID.randomUUID().toString(),risk,eventId,version,userId,System.currentTimeMillis());
+            jdbc.update("UPDATE uav_risk_case SET version=1 WHERE risk_case_id=?",risk);
             return call.callRealMethod(); // The original channel response arrives after UNKNOWN was persisted.
-        }).when(sms).simulateAutomatic(anyString(), anyString(), anyString(), eq("auto-advisory:" + eventId));
+        }).when(sms).simulateAutomatic(anyString(), anyString(), anyString(), anyString());
         automatic.process(eventId);
         automatic.process(eventId);
-        read().andExpect(jsonPath("$.data.auto_sms.status").value("UNKNOWN"))
+        read().andExpect(jsonPath("$.data.auto_sms.status").value("SIMULATED_DELIVERED"))
                 .andExpect(jsonPath("$.data.auto_sms.can_retry").value(false));
-        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId)).isEqualTo(version);
-        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?", Integer.class, eventId)).isEqualTo(records);
-        verify(sms, times(1)).simulateAutomatic(anyString(), anyString(), anyString(), eq("auto-advisory:" + eventId));
+        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?", Long.class, eventId)).isEqualTo(version+1);
+        assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?", String.class, eventId)).isEqualTo("CONFIRMED");
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_advisory where event_id=?", Integer.class, eventId)).isEqualTo(records+1);
+        assertThat(jdbc.queryForObject("select attempt_count from uav_auto_sms_task where event_id=? AND risk_scope=?", Integer.class, eventId,risk)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select provider_key from uav_auto_sms_task where event_id=? AND risk_scope=?", String.class, eventId,risk)).isEqualTo(originalProviderKey.get());
+        assertThat(riskCases.find(risk).stage()).isEqualTo("ENDED");
+        assertThat(riskCases.find(risk).version()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from uav_risk_channel where risk_case_id=? AND channel='SMS'",Integer.class,risk)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select count(*) from disposal_authorization where risk_case_id=?",Integer.class,risk)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from uav_auto_voice_task where event_id=?",Integer.class,eventId)).isZero();
+        verify(sms, times(1)).simulateAutomatic(anyString(), anyString(), anyString(), eq(originalProviderKey.get()));
     }
     @Test void voiceIsDisabledByDefaultAndCannotBeRetried()throws Exception {
         read().andExpect(status().isOk()).andExpect(jsonPath("$.data.voice_mode").value("UNAVAILABLE"))

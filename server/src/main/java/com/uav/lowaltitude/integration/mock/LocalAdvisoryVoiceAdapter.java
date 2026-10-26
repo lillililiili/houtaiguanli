@@ -13,6 +13,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 @Component
 @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(prefix="app.notifications",name="transport",havingValue="mock",matchIfMissing=true)
 public class LocalAdvisoryVoiceAdapter implements AdvisoryVoicePort {
+    private com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository tasks;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void tasks(com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository tasks){this.tasks=tasks;}
     private final Environment environment;
     private final AdvisoryVoiceRecording configuredRecording;
     private final AppClock clock;
@@ -25,7 +28,7 @@ public class LocalAdvisoryVoiceAdapter implements AdvisoryVoicePort {
     public Delivery simulate(String mode,AdvisoryVoiceRecording.Recording recording,String key) {
         if(!simulationAvailable(mode)||recording==null||configuredRecording.content(recording)==null)
             throw new ApiException(HttpStatus.CONFLICT,"VOICE_CHANNEL_UNAVAILABLE","电话通道或已配置录音不可用，不能模拟播放");
-        var scenario=LocalAdvisoryScenario.read(environment,mode,key,true);
+        var scenario=tasks==null?LocalAdvisoryScenario.read(environment,mode,key,true):LocalAdvisoryScenario.read(environment,mode,key,true,tasks.eventForProviderKey(key));
         if(scenario!=null) {
             scenario.awaitResponse();
             long respondedAt=clock.nowMillis();

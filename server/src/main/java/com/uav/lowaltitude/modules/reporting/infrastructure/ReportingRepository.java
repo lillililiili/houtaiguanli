@@ -38,7 +38,9 @@ public class ReportingRepository {
     public record OrganizationOption(String orgId, String name) { }
     public List<OrganizationOption> organizations(Scope scope) {
         String filter = scope.allScope() ? "" : " AND EXISTS (SELECT 1 FROM app_user_data_scope ds JOIN app_district dd ON dd.district_id=ds.district_id AND dd.enabled=TRUE WHERE ds.user_id=:user_id AND ds.org_id=o.org_id)";
-        return named.query("SELECT o.org_id,o.name FROM app_org o WHERE o.enabled=TRUE" + filter + " ORDER BY o.name,o.org_id",
+        String organization = scope.allScope() ? "(o.enabled=TRUE OR o.deleted_at IS NOT NULL)"
+                : "o.enabled=TRUE AND o.deleted_at IS NULL";
+        return named.query("SELECT o.org_id,o.name FROM app_org o WHERE " + organization + filter + " ORDER BY o.name,o.org_id",
                 Map.of("user_id", scope.userId()), (rs,n) -> new OrganizationOption(rs.getString("org_id"),rs.getString("name")));
     }
 

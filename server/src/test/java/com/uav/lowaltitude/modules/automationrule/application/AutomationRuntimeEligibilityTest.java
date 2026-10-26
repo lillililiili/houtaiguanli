@@ -31,6 +31,7 @@ class AutomationRuntimeEligibilityTest {
     private AutomationRuntimeEligibility eligibility;
 
     @BeforeEach void fixture() {
+        when(runs.runBelongsToCase(anyString(),anyString())).thenReturn(true);
         eligibility = new AutomationRuntimeEligibility(config, runs, facts, policy, new ObjectMapper(),
                 new AppClock(Clock.fixed(Instant.ofEpochMilli(NOW), ZoneOffset.UTC)));
         when(policy.enabled()).thenReturn(true); when(policy.maxAge()).thenReturn(30000L);
@@ -42,6 +43,7 @@ class AutomationRuntimeEligibilityTest {
     }
     @Test void unchangedCurrentFactsMayPass() { assertThat(check()).isEqualTo("PASS"); }
     @Test void currentRunAndFactsMayDispatch() { assertThat(eligibility.allowsRun("counter", "event", "run")).isTrue(); }
+    @Test void otherRiskCaseCannotBorrowCurrentPassingRun(){when(runs.runBelongsToCase("run","event")).thenReturn(false);assertThat(eligibility.allowsRun("counter","event","run")).isFalse();verifyNoInteractions(facts);}
     @Test void oldOrOtherEventRunCannotDispatch() {
         assertThat(eligibility.allowsRun("counter", "event", "other-run")).isFalse();
         verifyNoInteractions(facts);

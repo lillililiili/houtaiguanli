@@ -21,7 +21,7 @@ public class SimulatorAdvisorySmsAdapter implements AdvisorySmsPort {
  public Delivery simulate(String mode,String recipient,String content){throw new IllegalStateException("数据模拟器通知必须使用已关联事件与独立发送编号");}
  public Delivery simulateAutomatic(String mode,String recipientName,String content,String key){
   if(!simulationAvailable(mode)||key==null||!key.startsWith("auto-advisory:"))throw new IllegalStateException("数据模拟器接收端不可用");
-  String event=key.substring("auto-advisory:".length());var task=tasks.find(event);
+  String event=tasks.eventForProviderKey(key);var task=event==null?null:tasks.find(event);
   if(task==null||!"SENDING".equals(task.status())||!key.equals(task.providerKey())||task.token()==null)throw new IllegalStateException("短信发送尝试已失效");
   var recipient=directory.getObject().advisoryHistoryRecipient("ADVISORY_SMS",event);
   if(recipient==null)throw new IllegalStateException("短信接收快照缺失");

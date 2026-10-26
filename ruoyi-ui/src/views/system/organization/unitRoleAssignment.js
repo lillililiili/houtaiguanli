@@ -70,7 +70,9 @@ export function rolePlanError(config, plan, nextCeiling) {
     const retiring = plan.retire_role_codes.includes(member.role_code)
     const target = assignmentRole(value, roles, plan.new_roles)
     if (retiring && current?.enabled === false) return `${member.name || member.account}正在使用停用副本，请先单独处理其角色状态和分配。`
-    if ((!current || retiring) && !target) return `请为${member.name || member.account}选择本单位角色。`
+    const administrator = member.user_id === nextCeiling?.administrator_user_id
+    if (((!current && !administrator) || retiring) && !target) return `请为${member.name || member.account}选择本单位角色。`
+    if (!administrator && member.user_id === config.administrator_user_id && current?.enabled === false && !target) return '请为离任管理员选择启用的本单位人员角色。'
     if (value && (!target || target.enabled === false || plan.retire_role_codes.includes(target.role_code))) return `${member.name || member.account}选择的角色不可用，请重新选择。`
     if (retiring && rolePermissionDifferences(roleWithinCeiling(current, config), roleWithinCeiling(target, nextCeiling || config), config.catalog).length) return `${member.name || member.account}的新角色权限与待清理副本不一致，请按差异调整后再保存。`
   }

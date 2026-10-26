@@ -15,17 +15,12 @@ public interface UnitDelegationMapper {
             long expiresAt, boolean consumed) {}
     record BusinessCount(String orgId, String orgName, String districtId, String resourceType, long total) {}
 
-    @Select("SELECT org_id FROM app_org WHERE org_id=#{orgId} FOR UPDATE")
+    @Select("SELECT org_id FROM app_org WHERE org_id=#{orgId} AND deleted_at IS NULL FOR UPDATE")
     String lockOrg(String orgId);
     @Select("SELECT org_id,administrator_user_id,version FROM app_org_delegation WHERE org_id=#{orgId}")
     Delegation delegation(String orgId);
-    @Select("""
-        SELECT d.org_id,d.administrator_user_id,d.version FROM app_org_delegation d
-        JOIN app_org o ON o.org_id=d.org_id AND o.enabled=TRUE
-        JOIN app_user u ON u.user_id=d.administrator_user_id AND u.org_id=d.org_id AND u.status='ACTIVE'
-        JOIN app_role r ON r.role_code=u.role_code AND r.enabled=TRUE AND r.owner_org_id=d.org_id
-        WHERE d.administrator_user_id=#{userId} AND u.role_code NOT IN ('ROLE-ADMIN','ROLE-BACKEND','ROLE-AUTOMATION')
-        """)
+    @Select("SELECT d.org_id,d.administrator_user_id,d.version " + UnitAdministratorSql.SUBJECT
+            + " WHERE u.user_id=#{userId} AND " + UnitAdministratorSql.VALID)
     @Options(flushCache=Options.FlushCachePolicy.TRUE, useCache=false)
     Delegation administrator(String userId);
     @Insert("INSERT INTO app_org_delegation(org_id,administrator_user_id,version,created_at,updated_at) VALUES(#{orgId},#{adminId},1,#{at},#{at})")

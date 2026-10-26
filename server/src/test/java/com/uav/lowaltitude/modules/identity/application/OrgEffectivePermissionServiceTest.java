@@ -43,7 +43,7 @@ class OrgEffectivePermissionServiceTest {
         var source = new DriverManagerDataSource("jdbc:h2:mem:" + UUID.randomUUID()
                 + ";MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "sa", "");
         jdbc = new JdbcTemplate(source);
-        jdbc.execute("CREATE TABLE app_org(org_id VARCHAR PRIMARY KEY, enabled BOOLEAN)");
+        jdbc.execute("CREATE TABLE app_org(org_id VARCHAR PRIMARY KEY, enabled BOOLEAN, deleted_at BIGINT)");
         jdbc.execute("CREATE TABLE app_role(role_code VARCHAR PRIMARY KEY, owner_org_id VARCHAR, enabled BOOLEAN)");
         jdbc.execute("CREATE TABLE app_org_delegation(org_id VARCHAR PRIMARY KEY, administrator_user_id VARCHAR)");
         jdbc.execute("CREATE TABLE app_org_permission(org_id VARCHAR, permission_code VARCHAR, permission_level VARCHAR, menu_enabled BOOLEAN)");
@@ -76,6 +76,49 @@ class OrgEffectivePermissionServiceTest {
     @AfterEach void cleanup() {
         AuthContext.clear();
         jdbc.execute("DROP ALL OBJECTS");
+    }
+
+    @Test void administratorInheritsExplicitCeilingWithoutRoleGrantsWhileOrdinaryMembersStillIntersect() {
+        when(identity.listPermissionsForRole(anyString())).thenReturn(List.of());
+        when(identity.listActionCodesForRole(anyString())).thenReturn(List.of());
+        assertThat(effective.permissionCodes(admin)).contains("alarms.read", "devices.op", "alarm:read")
+                .doesNotContain("disposal:direct", "alarm:verify");
+        assertThat(effective.menuKeys(admin)).containsExactly("alarms");
+        assertThat(effective.permissionCodes(member)).isEmpty();
+        jdbc.update("INSERT INTO app_org_action VALUES (?,'disposal:direct','READ')", unitA);
+        assertThat(effective.permissionCodes(admin)).doesNotContain("disposal:direct");
+        jdbc.update("UPDATE app_org_action SET permission_level='OP' WHERE org_id=? AND permission_code='disposal:direct'", unitA);
+        assertThat(effective.permissionCodes(admin)).contains("disposal:direct");
+        jdbc.update("DELETE FROM app_org_action WHERE org_id=?", unitA);
+        assertThat(effective.permissionCodes(admin)).doesNotContain("disposal:direct", "alarm:read");
+    }
+
+    @Test void administratorFallbackCanBeGlobalOrDisabledButNotForeignAndRevocationNeverRestoresGlobalScope() {
+        String roleCode=people.get(admin).getRoleCode();
+        jdbc.update("UPDATE app_role SET owner_org_id=NULL,enabled=FALSE WHERE role_code=?", roleCode);
+        RoleRow disabled=new RoleRow(); disabled.setRoleCode(roleCode); disabled.setEnabled(false);
+        when(identity.findRole(roleCode)).thenReturn(disabled);
+        assertThat(effective.permissionCodes(admin)).contains("alarm:read");
+        jdbc.update("UPDATE app_role SET owner_org_id=? WHERE role_code=?", unitB,roleCode);
+        assertThat(effective.isUnitAdministrator(admin)).isFalse();
+        assertThat(effective.permissionCodes(admin)).isEmpty();
+        jdbc.update("UPDATE app_role SET owner_org_id=NULL WHERE role_code=?",roleCode);
+        jdbc.update("UPDATE app_org_delegation SET administrator_user_id=NULL WHERE org_id=?",unitA);
+        assertThat(effective.permissionCodes(admin)).isEmpty();
+    }
+
+    @Test void administratorActionGuardUsesOwnUnitScopeWithoutRequiringDuplicateRoleAction() {
+        when(identity.listPermissionsForRole(anyString())).thenReturn(List.of());
+        when(identity.listActionCodesForRole(anyString())).thenReturn(List.of());
+        var rows=mock(AccessControlMapper.class);
+        when(rows.countValidAssignedScopes(admin)).thenReturn(1);
+        var actions=new DatabaseAccessControlService(rows,effective);
+        AppUser user=people.get(admin);
+        AuthContext.set(new AuthUser(admin,admin,"admin",user.getRoleCode(),0,false,"ASSIGNED"));
+        assertThat(actions.require(PermissionCode.ALARM_READ).scopeMode().name()).isEqualTo("ASSIGNED");
+        new AccessService(identity,effective).require("devices.op");
+        jdbc.update("UPDATE app_org SET deleted_at=1 WHERE org_id=?",unitA);
+        assertThatThrownBy(()->actions.require(PermissionCode.ALARM_READ)).isInstanceOf(ApiException.class);
     }
 
     @Test void moduleLevelsAndActionsAreIntersectedWithThisUnitsCeiling() {
@@ -128,6 +171,23 @@ class OrgEffectivePermissionServiceTest {
         assertThat(effective.menuKeys(member)).isEmpty();
     }
 
+    @Test void deletedUnitRevokesManagedAndUnmanagedBusinessGrantsButNotOtherUnitsOrPlatform() {
+        assertThat(effective.permissionCodes(member)).contains("alarm:read");
+        // Deletion itself must be authoritative even if a stale writer leaves enabled=true.
+        jdbc.update("UPDATE app_org SET deleted_at=123 WHERE org_id=?", unitA);
+        assertThat(effective.permissionCodes(member)).isEmpty();
+        assertThat(effective.menuKeys(member)).isEmpty();
+        assertThat(effective.isUnitAdministrator(admin)).isFalse();
+        assertThat(effective.organizationAvailable(people.get(member))).isFalse();
+        assertThat(effective.permissionCodes(peer)).contains("alarm:read");
+        assertThat(effective.permissionCodes(childMember)).contains("alarm:read");
+        jdbc.update("DELETE FROM app_org_delegation WHERE org_id=?", unitA);
+        assertThat(effective.permissionCodes(member)).isEmpty();
+        people.get(admin).setRoleCode("ROLE-BACKEND");
+        assertThat(effective.organizationAvailable(people.get(admin))).isTrue();
+        assertThat(effective.permissionCodes(admin)).contains("users.auth");
+    }
+
     @Test void platformAndExplicitSystemPrincipalAreNotCapturedByOrgMembership() {
         AppUser backend = people.get(admin);
         backend.setRoleCode("ROLE-BACKEND");
@@ -165,7 +225,7 @@ class OrgEffectivePermissionServiceTest {
 
     private String unit() {
         String id = UUID.randomUUID().toString();
-        jdbc.update("INSERT INTO app_org VALUES (?,TRUE)", id);
+        jdbc.update("INSERT INTO app_org VALUES (?,TRUE,NULL)", id);
         jdbc.update("INSERT INTO app_org_delegation VALUES (?,NULL)", id);
         jdbc.update("INSERT INTO app_org_permission VALUES (?,'alarms','READ',TRUE)", id);
         jdbc.update("INSERT INTO app_org_permission VALUES (?,'devices','OP',FALSE)", id);

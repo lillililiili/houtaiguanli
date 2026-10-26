@@ -41,6 +41,7 @@ public class AutomationRuntimeEligibility {
     /** A queued worker invocation must still refer to this event's current passing decision. */
     public boolean allowsRun(String category,String eventId,String runId){
         if(runId==null||runId.isBlank())return false;
+        if(Set.of("verify","counter").contains(category)&&!runs.runBelongsToCase(runId,eventId))return false;
         var before=runs.state(category,eventId);
         if(before==null||!runId.equals(before.runId())||!"PASS".equals(before.status()))return false;
         if(!"PASS".equals(check(category,eventId).status()))return false;

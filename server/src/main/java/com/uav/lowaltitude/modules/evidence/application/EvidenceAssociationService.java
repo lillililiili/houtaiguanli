@@ -110,7 +110,7 @@ public class EvidenceAssociationService {
         boolean ingest = probe(PermissionCode.EVIDENCE_INGEST);
         Request request = Request.list(parameters);
         if (request.subjectKind() != null && (!canSeeKind(request.subjectKind())
-                || !repository.subjectVisible(request.subjectKind(), request.subjectId(), decision))) {
+                || !repository.subjectReadable(request.subjectKind(), request.subjectId(), decision))) {
             return new PageDto<>(List.of(), request.page(), request.size(), 0);
         }
         FileQuery query = request.query();
@@ -134,7 +134,7 @@ public class EvidenceAssociationService {
         Map<LocalDate, long[]> buckets = new LinkedHashMap<>();
         for (LocalDate day = start; !day.isAfter(end); day = day.plusDays(1)) buckets.put(day, new long[1]);
         if (request.subjectKind() != null && (!canSeeKind(request.subjectKind())
-                || !repository.subjectVisible(request.subjectKind(), request.subjectId(), decision))) {
+                || !repository.subjectReadable(request.subjectKind(), request.subjectId(), decision))) {
             return new EvidenceStatsDto(0, 0, ordered(KIND_ORDER, Map.of()), ordered(STATUS_ORDER, Map.of()),
                     ordered(CUSTODY_ORDER, Map.of()), days(buckets), start.toString(), end.toString());
         }
@@ -166,7 +166,7 @@ public class EvidenceAssociationService {
     @Transactional
     public EvidenceDetailDto get(String evidenceId) {
         AccessDecision decision = access.require(PermissionCode.EVIDENCE_READ);
-        FileRow file = visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST));
+        FileRow file = visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST), true);
         repository.insertAccess(UUID.randomUUID().toString(), file.evidenceId(), decision.userId(),
                 "VIEW", "GRANTED", null, clock.now());
         return detail(file, decision);
@@ -177,7 +177,7 @@ public class EvidenceAssociationService {
         AccessDecision decision = access.require(PermissionCode.EVIDENCE_READ);
         String kind = subject(subjectKind);
         String id = id(subjectId);
-        if (!canSeeKind(kind) || !repository.subjectVisible(kind, id, decision)) return List.of();
+        if (!canSeeKind(kind) || !repository.subjectReadable(kind, id, decision)) return List.of();
         FileQuery query = new FileQuery(null, null, kind, id, null);
         boolean ingest = probe(PermissionCode.EVIDENCE_INGEST);
         return repository.list(query, decision, ingest, 0, 100).stream().map(this::summary).toList();
@@ -186,7 +186,7 @@ public class EvidenceAssociationService {
     @Transactional(readOnly = true)
     public PageDto<AccessLogDto> accessLogs(String evidenceId, MultiValueMap<String, String> parameters) {
         AccessDecision decision = access.require(PermissionCode.EVIDENCE_READ);
-        FileRow file = visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST));
+        FileRow file = visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST), true);
         Request request = Request.pageOnly(parameters);
         long total = repository.accessCount(file.evidenceId());
         List<AccessLogDto> items = repository.accessLogs(file.evidenceId(), request.offset(), request.size()).stream()
@@ -504,7 +504,7 @@ public class EvidenceAssociationService {
     @Transactional
     public Download openDownload(String evidenceId) {
         AccessDecision decision = access.require(PermissionCode.EVIDENCE_DOWNLOAD);
-        FileRow file = visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST));
+        FileRow file = visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST), true);
         if ("PENDING".equals(file.status())) {
             deny(file, decision, "NOT_READY");
             throw new ApiException(HttpStatus.CONFLICT, "EVIDENCE_NOT_READY", "文件尚未完成入库");
@@ -533,20 +533,25 @@ public class EvidenceAssociationService {
     }
 
     FileRow visibleForContent(String evidenceId, AccessDecision decision) {
-        return visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST));
+        return visible(id(evidenceId), decision, probe(PermissionCode.EVIDENCE_INGEST), true);
     }
 
     private FileRow visible(String evidenceId, AccessDecision decision, boolean ingest) {
+        return visible(evidenceId, decision, ingest, false);
+    }
+
+    private FileRow visible(String evidenceId, AccessDecision decision, boolean ingest, boolean history) {
         FileRow file = repository.find(evidenceId);
         if (file == null) throw notFound();
-        if (!inScope(file, decision)) throw notFound();
+        if (!inScope(file, decision, history)) throw notFound();
         if (!ingest && repository.linkCount(file.evidenceId()) == 0) throw notFound();
         return file;
     }
 
-    private boolean inScope(FileRow file, AccessDecision decision) {
+    private boolean inScope(FileRow file, AccessDecision decision, boolean history) {
         if (file.ownerOrgId() == null || file.districtId() == null) return false;
-        if (!repository.catalogEnabled(file.ownerOrgId(), file.districtId())) return false;
+        if (!(history ? repository.catalogReadable(file.ownerOrgId(), file.districtId(), decision)
+                : repository.catalogEnabled(file.ownerOrgId(), file.districtId()))) return false;
         if (decision.scopeMode() == com.uav.lowaltitude.modules.identity.domain.ScopeMode.ASSIGNED) {
             try {
                 menuAccess.requireTuple(file.ownerOrgId(), file.districtId());
@@ -584,7 +589,7 @@ public class EvidenceAssociationService {
     private EvidenceDetailDto detail(FileRow row, AccessDecision decision) {
         List<LinkDto> links = new ArrayList<>();
         for (LinkRow link : repository.links(row.evidenceId())) {
-            if (!canSeeKind(link.subjectKind()) || !repository.subjectVisible(link.subjectKind(), link.subjectId(), decision)) continue;
+            if (!canSeeKind(link.subjectKind()) || !repository.subjectReadable(link.subjectKind(), link.subjectId(), decision)) continue;
             SubjectRef subject = repository.findSubject(link.subjectKind(), link.subjectId());
             links.add(new LinkDto(link.linkId(), link.subjectKind(), link.subjectId(),
                     subject == null ? null : subject.no()));

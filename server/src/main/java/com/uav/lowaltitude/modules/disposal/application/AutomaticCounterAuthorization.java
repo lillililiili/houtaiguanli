@@ -106,6 +106,7 @@ public class AutomaticCounterAuthorization {
             if (!CONTRACT.equals(snapshot.path("automation_contract").asText())
                     || !snapshot.path("group_version").isIntegralNumber()) return null;
             RunRow original = runs.run(snapshot.path("automation_run_id").asText());
+            if(original!=null&&!runs.runBelongsToCase(original.id(),row.subjectId()))return null;
             return original != null && "counter".equals(original.category()) && "PASS".equals(original.status())
                     && Objects.equals(original.eventId(), row.subjectId())
                     && Objects.equals(original.targetId(), row.targetId())

@@ -43,8 +43,15 @@ class AutomaticCounterAuthorizationTest {
     private final String device = UUID.randomUUID().toString(), runId = UUID.randomUUID().toString();
 
     @BeforeEach void setup() {
+        lenient().when(runs.runBelongsToCase(anyString(),anyString())).thenReturn(true);
         guard = new AutomaticCounterAuthorization(authorizations, runs, eligibility, new ObjectMapper(), simulation,
                 true, new AppClock(Clock.fixed(NOW, ZoneOffset.UTC)), 30000, notifications);
+    }
+    @Test void cannotUseAnotherRiskCasesPassingRun(){
+        var row=row("APPROVED","replay","COUNTERMEASURE","COUNTERMEASURE_4CH");
+        origin(row,contract(17),run(17,target,"replay"));
+        when(runs.runBelongsToCase(runId,event)).thenReturn(false);
+        assertThat(guard.origin(row)).isNull();
     }
 
     @Test void freshPassCanAdvanceObservationWithoutChangingTheOriginalGroupVersion() {

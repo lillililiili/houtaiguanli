@@ -9,6 +9,7 @@ import com.uav.lowaltitude.modules.prediction.infrastructure.PredictionInputRepo
 import com.uav.lowaltitude.modules.prediction.infrastructure.PredictionInputRepository.Inputs;
 import com.uav.lowaltitude.modules.prediction.infrastructure.PredictionInputRepository.Target;
 import com.uav.lowaltitude.platform.number.BusinessNumberService;
+import com.uav.lowaltitude.platform.config.RealtimeSchedulingConfig;
 import com.uav.lowaltitude.platform.time.AppClock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -49,7 +50,8 @@ public class PredictionWorker {
         this.alarms=alarms; this.events=events; this.numbers=numbers; this.clock=clock; this.tx=new TransactionTemplate(transactions);
     }
 
-    @Scheduled(fixedDelayString="${app.prediction.poll-ms:1000}", initialDelayString="${app.prediction.initial-delay-ms:5000}")
+    @Scheduled(scheduler=RealtimeSchedulingConfig.PREDICTION_SCHEDULER,
+            fixedDelayString="${app.prediction.poll-ms:1000}", initialDelayString="${app.prediction.initial-delay-ms:5000}")
     public void poll() {
         if (!jobs.enabled()) return;
         long now=clock.nowMillis();
@@ -112,6 +114,10 @@ public class PredictionWorker {
         }
         payload.put("evidence_notes",input.evidenceNotes());
         var spatialResults=result.reliable()?spatial.evaluate(result.forecast(),input.airspaces()):List.<PredictionSpatialEvaluator.Assessment>of();
+        // Display and lifecycle use the same forecast and airspace versions in this transaction.
+        // Reuse that calculation; never retain spatial decisions across observations or versions.
+        Map<String,PredictionSpatialEvaluator.Assessment> spatialByRegion=new HashMap<>();
+        spatialResults.forEach(assessment->spatialByRegion.put(assessment.airspaceId(),assessment));
         payload.put("proximity",spatialResults.stream().filter(a->a.decision()!=Decision.CLEAR).map(a->{
             Map<String,Object> item=new LinkedHashMap<>();
             item.put("airspace_id",a.airspaceId());item.put("airspace_name",input.airspaceNames().getOrDefault(a.airspaceId(),a.airspaceId()));
@@ -145,7 +151,8 @@ public class PredictionWorker {
         input.airspaces().forEach(v->regions.add(v.airspaceId()));
         for(String region:regions) {
             var versions=input.airspaces().stream().filter(v->region.equals(v.airspaceId())).toList();
-            var assessment=result.reliable()?spatial.evaluateForAirspace(region,result.forecast(),versions)
+            var assessment=result.reliable()?spatialByRegion.computeIfAbsent(region,
+                    missing->spatial.evaluateForAirspace(missing,result.forecast(),versions))
                     : new PredictionSpatialEvaluator.Assessment(region,Decision.UNKNOWN,null,List.of(),List.of(result.reason()));
             Map<String,Object> previous=open.get(region);
             // A clear region without an ongoing candidate has no lifecycle to maintain.

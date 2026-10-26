@@ -20,13 +20,16 @@ public class EventReportQueryService extends BusinessReportSource {
     private final UavEventRepository repository;
     private final AccessControlService access;
     private final UavAdvisoryService advisory;
+    private AlarmReadService riskReads;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskReads(AlarmReadService value){riskReads=value;}
     public EventReportQueryService(ReportDatasetReader reader, UavEventRepository repository, AccessControlService access,
             UavAdvisoryService advisory) {
         super(reader); this.repository = repository; this.access = access; this.advisory = advisory;
     }
     @Override public String key() { return "events"; }
-    @Override public String title() { return "无人机事件"; }
-    @Override public String basis() { return "事件创建时间；状态截至生成时"; }
+    @Override public String title() { return "无人机风险"; }
+    @Override public String basis() { return "持续风险首次创建时间；同次风险计一次，状态截至生成时"; }
     @Override public List<Dimension> dimensions() {
         return List.of(new Dimension("state", "当前状态"), new Dimension("kind", "事件类型"));
     }
@@ -46,7 +49,10 @@ public class EventReportQueryService extends BusinessReportSource {
         try { disposals = com.uav.lowaltitude.platform.report.ReportAccessContext.require(access,PermissionCode.DISPOSAL_READ); } catch (ApiException denied) { disposals = null; }
         AccessDecision disposalScope = disposals;
         return reader.rows(repository.reportDataset(reader, range, alarms), range.sourceScope()).stream().map(row -> {
-            String progress = advisory.progressLabel(row.id(), alarms, disposalScope);
+            String eventId=row.related()==null?row.id():row.related();
+            String caseId=row.id().equals(eventId)?null:row.id();
+            String progress = riskReads==null?advisory.progressLabel(eventId,alarms,disposalScope)
+                    :riskReads.riskProgress(caseId,eventId,alarms,disposalScope);
             return progress == null ? row : new Row(row.id(), row.label(), row.occurredAt(), progress, row.kind(), row.severity(),
                     row.region(), row.sourceMode(), row.related(), row.result(), row.note());
         }).toList();

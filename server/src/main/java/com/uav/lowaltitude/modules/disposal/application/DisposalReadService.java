@@ -37,6 +37,8 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 /** 处置授权读侧。allowed_actions 与 device_stop_result 都在这里派生，前端不自己推。 */
 @Service
 public class DisposalReadService {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity value){riskCases=value;}
     private static final int MAX_SIZE = 100;
 
     private final AccessControlService access;
@@ -172,7 +174,7 @@ public class DisposalReadService {
                         : DisposalRules.executionBlockReason(row.status(), eventKinds),
                 row.policyVersion(), policy == null ? null : policy.schemaStatus(), row.ownerOrgId(), row.districtId(),
                 row.sourceMode(), row.version(),
-                List.copyOf(actions), row.authorizationMode(), row.countermeasureMode());
+                List.copyOf(actions), row.authorizationMode(), row.countermeasureMode(),riskCases==null?null:riskCases.authorizationSummary(row.authorizationId()));
     }
 
     private EventDto event(EventRow row) {

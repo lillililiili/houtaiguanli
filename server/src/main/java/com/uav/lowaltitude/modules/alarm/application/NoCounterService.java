@@ -24,6 +24,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class NoCounterService {
+    private UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired public void riskCases(UavRiskCaseIdentity value){riskCases=value;}
     private final NoCounterRepository repository;
     private final UavEventRepository events;
     private final AccessControlService access;
@@ -57,6 +59,9 @@ public class NoCounterService {
         var read=access.require(PermissionCode.ALARM_READ);
         var verify=access.require(PermissionCode.ALARM_VERIFY);
         if(events.find(id,verify)==null)throw missing();
+        if(riskCases!=null){riskCases.lockCases(id);var cases=riskCases.cases(id);
+            if(riskCases.caseCount(id)>1||cases.stream().anyMatch(UavRiskCaseIdentity.CaseRef::manualCounterOnly))
+                throw conflict("RISK_CASE_INDEPENDENT_LIFECYCLE","该风险按各区域的有效观测判断结束，不能以事件级决定结束关联风险");}
         Request request=parse(raw);
         if(key==null||key.trim().length()<8||key.trim().length()>128)throw error(HttpStatus.BAD_REQUEST,"IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
         var event=events.lock(id,read);if(event==null||events.find(id,verify)==null)throw missing();

@@ -124,6 +124,8 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnknown(Exception ex, HttpServletRequest request) {
+        ApiException organizationGuard = organizationWriteGuard(ex);
+        if (organizationGuard != null) return handleApi(organizationGuard, request);
         if (clientDisconnected(ex)) {
             log.debug("Client disconnected on {}: {}", request == null ? "" : request.getRequestURI(), ex.getMessage());
             return null;
@@ -133,6 +135,21 @@ public class GlobalExceptionHandler {
         auditFailure(request, "INTERNAL_ERROR", "服务内部错误");
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.fail("INTERNAL_ERROR", "服务内部错误"));
+    }
+
+    /** Dedicated SQLSTATEs from the organization retirement guard; never classify by database message text. */
+    private static ApiException organizationWriteGuard(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (!(cause instanceof java.sql.SQLException sql)) continue;
+            String state = sql.getSQLState();
+            if ("P7101".equals(state)) return new ApiException(HttpStatus.CONFLICT,
+                    "ORG_DELETED", "单位已删除，不能再新增或启用相关人员、授权和业务，请刷新后重试");
+            if ("P7102".equals(state)) return new ApiException(HttpStatus.CONFLICT,
+                    "ORG_DELETE_BUSY", "单位或相关业务正在更新，请刷新后重试");
+            if ("P7103".equals(state)) return new ApiException(HttpStatus.BAD_REQUEST,
+                    "INVALID_ORGANIZATION", "所属单位不存在，请重新选择有效单位");
+        }
+        return null;
     }
 
     /** 只认容器和 Spring 明确标记的“客户端已断开”，不按报错文字猜，免得把对外调用失败也当成正常断开。 */

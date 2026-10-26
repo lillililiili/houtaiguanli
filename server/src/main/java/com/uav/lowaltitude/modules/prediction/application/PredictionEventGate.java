@@ -13,6 +13,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @Service
 public class PredictionEventGate {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases){this.riskCases=riskCases;}
     private final JdbcTemplate jdbc;
     private final AppClock clock;
     private long freshnessMillis=com.uav.lowaltitude.modules.prediction.domain.PredictionEngine.Config.defaults().freshnessMillis();
@@ -39,7 +42,7 @@ public class PredictionEventGate {
 
     private List<Facts> allFacts(String eventId) {
         if (eventId == null || eventId.isBlank()) return List.of();
-        return jdbc.query("""
+        List<Facts> facts=jdbc.query("""
                 SELECT p.*,l.role,e.state_code,
                   EXISTS(SELECT 1 FROM uav_event_verification v WHERE v.event_id=e.event_id
                     AND v.conclusion='CONFIRMED' AND v.actor_id IS NOT NULL) AS human_confirmed
@@ -52,11 +55,34 @@ public class PredictionEventGate {
                 r.getBoolean("current_evidence_valid"), r.getBoolean("entered_evidence_valid"),
                 r.getBoolean("manual_counter_only"), r.getBoolean("human_confirmed"), r.getString("state_code")),
                 eventId);
+        if(riskCases!=null&&riskCases.selectedCase()!=null){
+            var selected=riskCases.cases(eventId);
+            if(selected.size()!=1)return List.of();
+            String episode=selected.get(0).episodeId();
+            return facts.stream().filter(f->java.util.Objects.equals(episode,f.episodeId())).toList();
+        }
+        return facts;
     }
 
     public boolean isPrediction(String eventId) {
         Facts f = facts(eventId);
         return f != null && "PREDICTED".equals(f.role());
+    }
+
+    /** Observation supports human verification; it neither verifies nor authorizes countermeasures. */
+    public Boolean observationRequired(String eventId) {
+        // Case verification does not rewrite the raw event verdict. Do not let that old pending
+        // verdict keep automatic observation alive after the risk was rejected or became invalid.
+        // Read every region here: a valid independent risk for the same event still needs observing.
+        if (riskCases != null) {
+            var cases = riskCases.allCases(eventId);
+            if (!cases.isEmpty() && cases.stream().allMatch(c ->
+                    java.util.Set.of("ENDED", "CLEARED", "UNKNOWN").contains(c.stage()))) return false;
+        }
+        Facts f = facts(eventId);
+        if (f == null || !"PREDICTED".equals(f.role())) return null;
+        if(measuredHandoffCurrent(eventId))return true;
+        return current(f, clock.nowMillis());
     }
 
     public boolean manualCounterOnly(String eventId) {
@@ -65,11 +91,12 @@ public class PredictionEventGate {
 
     public boolean blocksAutomatic(String category, String eventId) {
         return allFacts(eventId).stream().anyMatch(f->"PREDICTED".equals(f.role())
-                ||("counter".equals(category)&&f.manualOnly()));
+                ||(("counter".equals(category)||"verify".equals(category))&&f.manualOnly()));
     }
 
     /** Call before taking event, authorization, device or command locks. */
     public void lockEpisode(String eventId) {
+        if(riskCases!=null){riskCases.lockCases(eventId);return;}
         jdbc.queryForList("""
                 SELECT episode_id FROM prediction_episode
                 WHERE episode_id IN (SELECT episode_id FROM prediction_event_link WHERE event_id=?)
@@ -106,26 +133,44 @@ public class PredictionEventGate {
 
     /** An empty string allows a prediction, null delegates an ordinary event to its original rules. */
     public String counterBlock(String eventId, boolean continuing) {
+        if(riskCases!=null&&riskCases.hasCases(eventId)) {
+            for(var c:riskCases.cases(eventId)){
+                if(!c.confirmed())return "当前区域风险尚未人工核实";
+                if(java.util.Set.of("UNKNOWN","CLEARED","ENDED").contains(c.stage()))return "当前风险已结束或依据不足，不能启动或继续反制";
+                if("ENTERED".equals(c.stage())&&!riskCases.currentMeasuredArea(c))return "缺少本禁飞区当前有效的实测入区依据";
+            }
+        }
         Facts f = facts(eventId);
         if (f == null) return null;
         // The actual event retains its own measured evidence/verification policy even when an old
         // linked prediction cycle closes. Only predictive authorizations depend on its lifecycle.
         if (!"PREDICTED".equals(f.role())) return null;
+        // The case keeps its predictive origin, but the current basis is now measured entry.
+        // currentMeasuredArea checks the latest position, region/version and ordinary measured
+        // evidence window. It does not extend, reopen or change an existing authorization.
+        if(measuredHandoffCurrent(eventId))return "";
         if ("UNKNOWN".equals(f.status())) return "预测依据不可靠，已暂停处置；恢复可靠观测后须人工重新发起";
         if ("CLEARED".equals(f.status())) return "本次预测风险已解除，不能继续处置";
-        if (!"CONFIRMED".equals(f.eventState()) || !f.humanConfirmed()) return "预测风险须先由有权限人员人工核实";
-        if ("ENTERED".equals(f.status()) && !continuing) return "目标已实际进入，请在关联实测告警核实并发起新的处置";
+        if ((riskCases==null||!riskCases.confirmedForDisposal(eventId))&&(!"CONFIRMED".equals(f.eventState()) || !f.humanConfirmed())) return "预测风险须先由有权限人员人工核实";
+        if ("ENTERED".equals(f.status()) && !continuing && (riskCases==null||!riskCases.confirmedForDisposal(eventId))) return "目标已实际进入，请从统一风险记录办理处置";
         if (!current(f, clock.nowMillis())) return "缺少当前有效实测及预测风险依据，暂不能反制";
         return "";
     }
 
     public String notificationBlock(String eventId) {
+        if(riskCases!=null&&riskCases.hasCases(eventId)) {
+            for(var c:riskCases.cases(eventId)){
+                if(!c.confirmed())return "当前区域风险尚未核实，暂停通知";
+                if(java.util.Set.of("UNKNOWN","CLEARED","ENDED").contains(c.stage()))return "当前风险已结束或依据不足，暂停通知";
+                if("ENTERED".equals(c.stage())&&!riskCases.currentMeasuredArea(c))return "缺少本禁飞区当前有效的实测入区依据，暂停通知";
+            }
+        }
         Facts f = facts(eventId);
         if (f == null) return null;
-        if ("PREDICTED".equals(f.role())) {
+        if ("PREDICTED".equals(f.role())&&!measuredHandoffCurrent(eventId)) {
             if ("UNKNOWN".equals(f.status())) return "预测依据待确认，暂停通知";
             if ("CLEARED".equals(f.status())) return "预测风险已解除，取消后续通知";
-            if (!f.humanConfirmed() || !"CONFIRMED".equals(f.eventState())) return "预测风险尚未人工核实，暂停通知";
+            if ((riskCases==null||!riskCases.confirmedForDisposal(eventId))&&(!f.humanConfirmed() || !"CONFIRMED".equals(f.eventState()))) return "预测风险尚未人工核实，暂停通知";
             if (!current(f, clock.nowMillis())) return "缺少当前可靠实测和有效预测，暂停通知";
         }
         return eventId.equals(notificationOwner(eventId)) ? "" : "同次风险已由关联告警通知，本告警不重复发送";
@@ -136,6 +181,7 @@ public class PredictionEventGate {
      * serializes first claims across the predicted and observed event; records are never copied.
      */
     public String notificationOwner(String eventId) {
+        if(riskCases!=null&&riskCases.hasCases(eventId))return riskCases.notificationOwner(eventId);
         var rows = jdbc.queryForList("""
                 SELECT DISTINCT t.event_id,t.triggered_at FROM uav_auto_sms_task t
                 JOIN prediction_event_link l ON l.event_id=t.event_id
@@ -149,6 +195,11 @@ public class PredictionEventGate {
     }
 
     public boolean hasOtherActiveCounter(String eventId, String excludedAuthorization) {
+        if(riskCases!=null&&riskCases.hasCases(eventId)){
+            for(var c:riskCases.cases(eventId))for(String id:riskCases.authorizationIds(c.riskCaseId()))
+                if(!id.equals(excludedAuthorization)&&jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE authorization_id=? AND action_type IN ('COUNTERMEASURE','JAMMING') AND status IN ('REQUESTED','APPROVED','EXECUTING')",Long.class,id)>0)return true;
+            return false;
+        }
         return jdbc.queryForObject("""
                 SELECT COUNT(*) FROM disposal_authorization a
                 JOIN prediction_event_link l ON l.event_id=a.subject_id
@@ -195,7 +246,12 @@ public class PredictionEventGate {
      */
     public String pilotPlan(String eventId,String evaluationId) {
         Facts f=facts(eventId);
-        if(f==null||!"PREDICTED".equals(f.role())||evaluationId==null||!current(f,clock.nowMillis()))return null;
+        if(f==null||!"PREDICTED".equals(f.role())||evaluationId==null)return null;
+        boolean measured=measuredHandoffCurrent(eventId);
+        if(!measured&&!current(f,clock.nowMillis()))return null;
+        Long measuredWindow=measured?riskCases.measuredFreshnessMillis():null;
+        if(measured&&measuredWindow==null)return null;
+        long window=measured?measuredWindow:freshnessMillis;
         long now=clock.nowMillis();
         var rows=jdbc.query("""
                 SELECT r.plan_id,r.target_id,r.owner_org_id,r.district_id,r.source_mode,r.freshness_code,r.observed_at
@@ -215,11 +271,11 @@ public class PredictionEventGate {
                 """,(r,n)->new PilotMatch(r.getString("plan_id"),r.getString("target_id"),r.getString("owner_org_id"),
                         r.getString("district_id"),r.getString("source_mode"),r.getString("freshness_code"),
                         r.getTimestamp("observed_at").getTime()),
-                f.episodeId(),evaluationId,new java.sql.Timestamp(now-freshnessMillis),new java.sql.Timestamp(now));
+                f.episodeId(),evaluationId,new java.sql.Timestamp(now-window),new java.sql.Timestamp(now));
         if(rows.isEmpty())return null;
         var r=rows.get(0);
-        if(!"FRESH".equals(r.freshness())&&!realtimeReplayMeasurement(jdbc,now,
-                r.target(),r.org(),r.district(),r.source(),r.observedAt(),freshnessMillis))return null;
+        if(!measured&&!"FRESH".equals(r.freshness())&&!realtimeReplayMeasurement(jdbc,now,
+                r.target(),r.org(),r.district(),r.source(),r.observedAt(),window))return null;
         return r.plan();
     }
     private record PilotMatch(String plan,String target,String org,String district,String source,String freshness,long observedAt) { }
@@ -243,6 +299,10 @@ public class PredictionEventGate {
     public PilotDepartureWatch.Assessment assessment(String eventId, long since, long now) {
         Facts f = facts(eventId);
         if (f == null || !"PREDICTED".equals(f.role())) return null;
+        if(measuredHandoffCurrent(eventId)) {
+            boolean newer=riskCases.cases(eventId).stream().allMatch(c->{Long at=riskCases.measuredObservedAt(c);return at!=null&&at>since&&at<=now;});
+            return new PilotDepartureWatch.Assessment(newer?PilotDepartureWatch.Presence.STILL_PRESENT:PilotDepartureWatch.Presence.UNKNOWN,null,"CURRENT_MEASURED_CASE_ENTRY");
+        }
         if (f.observedAt() == null || f.observedAt() <= since || f.observedAt() > now)
             return new PilotDepartureWatch.Assessment(PilotDepartureWatch.Presence.UNKNOWN, null, "PREDICTION_NO_NEW_MEASUREMENT");
         var presence = "CLEARED".equals(f.status()) ? PilotDepartureWatch.Presence.LEFT
@@ -254,5 +314,12 @@ public class PredictionEventGate {
         if (f.observedAt() == null || f.observedAt() > now || f.validUntil() == null || now >= f.validUntil()) return false;
         return ("ACTIVE".equals(f.status()) && f.evidenceValid())
                 || ("ENTERED".equals(f.status()) && f.enteredEvidenceValid());
+    }
+
+    /** Same case and region only; one unrelated measured risk cannot keep another risk alive. */
+    public boolean measuredHandoffCurrent(String eventId) {
+        if(riskCases==null)return false;
+        var cases=riskCases.cases(eventId);
+        return !cases.isEmpty()&&cases.stream().allMatch(c->c.episodeId()!=null&&"ENTERED".equals(c.stage())&&riskCases.currentMeasuredArea(c));
     }
 }

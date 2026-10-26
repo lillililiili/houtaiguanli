@@ -138,10 +138,10 @@ public class LegalityEvaluationReadService {
     }
 
     public EvaluationDto dto(EvaluationRow row, AccessDecision decision) {
-        boolean targetVisible = has(PermissionCode.TARGET_READ) && repository.targetVisible(row.targetId(), row.ownerOrgId(), row.districtId(), decision);
-        boolean planVisible = has(PermissionCode.FLIGHT_READ) && repository.planVisible(row.planId(), row.ownerOrgId(), row.districtId(), decision);
+        boolean targetVisible = has(PermissionCode.TARGET_READ) && repository.targetReadable(row.targetId(), row.ownerOrgId(), row.districtId(), decision);
+        boolean planVisible = has(PermissionCode.FLIGHT_READ) && repository.planReadable(row.planId(), row.ownerOrgId(), row.districtId(), decision);
         String alarmId = row.alarmId();
-        boolean alarmVisible = alarmId != null && has(PermissionCode.ALARM_READ) && repository.alarmVisible(alarmId, row.ownerOrgId(), row.districtId(), decision);
+        boolean alarmVisible = alarmId != null && has(PermissionCode.ALARM_READ) && repository.alarmReadable(alarmId, row.ownerOrgId(), row.districtId(), decision);
         var verification = alarmVisible ? repository.alarmVerification(row) : null;
         var assurance = assurance(row);
         if (verification != null) assurance = new DecisionAssuranceDto(assurance.algorithmVersion(), assurance.status(), false,

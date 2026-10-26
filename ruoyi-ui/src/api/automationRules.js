@@ -4,6 +4,9 @@ const groupPath = category => `/v1/automation-rule-groups/${encodeURIComponent(c
 const write = (method, url, body, operation) => mutation(method, url, body, { idempotencyKey: newIdempotencyKey(operation) })
 
 export const automationRuleApi = {
+  responseOrder: () => request({ url: '/v1/response-order-policy' }),
+  saveResponseOrder: body => write('put', '/v1/response-order-policy', body, 'response-order-save'),
+  responseOrderHistory: params => request({ url: `/v1/response-order-policy/history${queryString(params)}` }),
   group: category => request({ url: groupPath(category) }),
   createRule: (category, body) => write('post', `${groupPath(category)}/rules`, body, 'automation-rule-create'),
   updateRule: (category, id, body) => write('put', `${groupPath(category)}/rules/${encodeURIComponent(id)}`, body, 'automation-rule-update'),

@@ -24,7 +24,16 @@ public final class UavAdvisoryDtos {
     public record Overview(String eventId, long eventVersion, String smsMode, boolean canWrite,
             boolean canRequestCounter, boolean canDirectCounter, boolean canHandoff, String counterBlockReason, List<Record> records, Recipient recipient, AutoSms autoSms, String voiceMode, AutoVoice autoVoice, boolean counterLaunchVisible, String notifyPhase, AutoHandoff autoHandoff, NoCounterDtos.Status noCounter,
             /* BLOCK-03：事件精确关联的计划没有执行飞手或飞手电话时为 true，页面写明“缺飞手联系方式”。 */
-            boolean pilotContactMissing, DepartureObservation departureObservation) { }
+            boolean pilotContactMissing, DepartureObservation departureObservation,
+            com.uav.lowaltitude.modules.automationrule.api.ResponseOrderDtos.Summary responseOrder,
+            java.util.Map<String,Object> riskCase) {
+        public Overview(String eventId,long eventVersion,String smsMode,boolean canWrite,boolean canRequestCounter,boolean canDirectCounter,boolean canHandoff,
+                String counterBlockReason,List<Record> records,Recipient recipient,AutoSms autoSms,String voiceMode,AutoVoice autoVoice,boolean counterLaunchVisible,
+                String notifyPhase,AutoHandoff autoHandoff,NoCounterDtos.Status noCounter,boolean pilotContactMissing,DepartureObservation departureObservation){
+            this(eventId,eventVersion,smsMode,canWrite,canRequestCounter,canDirectCounter,canHandoff,counterBlockReason,records,recipient,autoSms,voiceMode,autoVoice,
+                    counterLaunchVisible,notifyPhase,autoHandoff,noCounter,pilotContactMissing,departureObservation,null,null);
+        }
+    }
     /**
      * 处罚移送进度。status：WAITING 等待干扰完成或后台自动移送；MANUAL_REQUIRED 启用了多个处罚接收单位，需有权限的人选定后移送；
      * BLOCKED 没有可用接收单位或执行历史仍需核查；PENDING 交接已建立但还没发出；SUBMITTED 已发出；FAILED 发送失败；NOT_REQUIRED 不需要移送（误报、已决定不反制）。

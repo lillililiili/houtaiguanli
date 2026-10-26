@@ -138,7 +138,7 @@ onBeforeUnmount(() => { alive = false; sequence++ })
     <section v-if="roleCategory === 'mine'" v-loading="loading" class="content-card my-permissions" aria-label="我的实际权限">
       <h2>当前可用功能</h2>
       <template v-if="myPermissionsReady">
-      <el-alert title="以下为当前账号实际生效的权限，由平台维护。后台管理身份不会自动增加前台业务权限。" type="info" :closable="false" show-icon />
+      <el-alert title="单位管理员继承本单位已开放的全部权限，随平台的单位授权调整；无需单独配置个人角色权限。以下为当前实际可用功能。" type="info" :closable="false" show-icon />
       <p class="my-scope">数据范围：{{ auth.user?.data_scope === 'OWN_ORG' ? `${auth.user?.org_name || catalog?.org_name || '本单位'}（仅本单位，不含下级单位）` : '当前范围未确认，请重新登录核对' }}</p>
       <UnitPermissionSummary :permissions="myBusinessPermissions.permissions" :actions="myBusinessPermissions.actions" :modules="catalog?.action_modules || []" />
       <section class="my-management-permissions" aria-label="我的后台权限"><h3>后台功能</h3><p>固定管理：本单位人员、本单位角色。</p><ul v-if="myManagementFunctions.length"><li v-for="module in myManagementFunctions" :key="module.module_key">{{ module.name }}：{{ module.level }}</li></ul><p v-else>尚未开通其他后台运维功能，请联系平台管理员。</p></section>

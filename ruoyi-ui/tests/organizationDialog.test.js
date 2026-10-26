@@ -52,6 +52,8 @@ describe('删除单位', () => {
     await vm.$.setupState.handleOrgCommand('delete', profile); await settle()
     expect(ElMessageBox.prompt).not.toHaveBeenCalled()
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(expect.stringContaining(profile.name), '删除单位', expect.objectContaining({ confirmButtonText: '确认删除', cancelButtonText: '取消' }))
+    expect(ElMessageBox.confirm.mock.calls[0][0]).toContain('相关授权失效，历史记录保留')
+    expect(ElMessageBox.confirm.mock.calls[0][0]).toContain('未结束业务')
     expect(systemApi.deleteOrganization).toHaveBeenCalledWith(profile.org_id, profile.version)
     expect(vm.$.setupState.selectedOrgId).toBe('__all__')
     expect(vm.$.setupState.organizations).toEqual([])

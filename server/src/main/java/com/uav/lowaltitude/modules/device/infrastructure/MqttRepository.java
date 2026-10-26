@@ -79,13 +79,13 @@ public class MqttRepository {
                 r.getObject("last_msg_cnt",Long.class),r.getString("owner_org_id"),r.getString("district_id"));
     }
     public boolean scopeExists(String org, String district) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM app_org o CROSS JOIN app_district d WHERE o.org_id=? AND d.district_id=?",
+        return jdbc.queryForObject("SELECT COUNT(*) FROM app_org o CROSS JOIN app_district d WHERE o.org_id=? AND d.district_id=? AND o.deleted_at IS NULL",
                 Integer.class,org,district)==1;
     }
     public List<Map<String,Object>> scopeOptions() {
         return jdbc.queryForList("""
                 SELECT o.org_id,o.name AS org_name,d.district_id,d.name AS district_name
-                FROM app_org o CROSS JOIN app_district d ORDER BY o.name,d.name
+                FROM app_org o CROSS JOIN app_district d WHERE o.deleted_at IS NULL ORDER BY o.name,d.name
                 """);
     }
     public String register(Registration p, long now) {

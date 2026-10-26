@@ -30,6 +30,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavAdvisoryService {
+    private com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder;
+    private UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void responseOrder(com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService order,UavRiskCaseIdentity cases){this.responseOrder=order;this.riskCases=cases;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -66,7 +70,7 @@ public class UavAdvisoryService {
     public DepartureObservation observation(String id) {
         var current = event(id, false); // Same alarm permission and data scope as overview.
         long now = clock.nowMillis();
-        if (!"CONFIRMED".equals(current.state())) return new DepartureObservation(id, null, "NOT_STARTED", "UNKNOWN", null, null, now);
+        if (!confirmed(current)) return new DepartureObservation(id, null, "NOT_STARTED", "UNKNOWN", null, null, now);
         var recorded=voice.departureSnapshot(id);
         if(recorded!=null) {
             boolean visible=allowed(PermissionCode.TARGET_READ)&&events.find(id,access.require(PermissionCode.TARGET_READ))!=null;
@@ -105,8 +109,9 @@ public class UavAdvisoryService {
             version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=optionalRetryNote(n);
         } catch(Exception bad){throw bad("VALIDATION_ERROR","补发需要有效版本；说明选填，最多1000字");}
         if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
+        lockNotificationRisk(id);
         EventRow event=events.lock(id,scope);if(event==null)throw notFound();var actor=AuthContext.require();
-        String hash=hash("auto-sms-retry:"+id+":"+version+":"+note);var previous=repository.replay(actor.userId(),key.trim());
+        String hash=hash("auto-sms-retry:"+id+":"+version+":"+note+":"+(riskCases==null?"":riskCases.caseId(id)));var previous=repository.replay(actor.userId(),key.trim());
         if(previous!=null) {
             if(!id.equals(previous.eventId())||!hash.equals(previous.hash()))throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作");
             try{return json.readValue(previous.response(),Overview.class);}catch(Exception invalid){throw new IllegalStateException(invalid);}
@@ -132,8 +137,9 @@ public class UavAdvisoryService {
             version=n.get("expected_version").longValue();if(version<0)throw new IllegalArgumentException();note=optionalRetryNote(n);
         } catch(Exception bad){throw bad("VALIDATION_ERROR","补呼需要有效版本；说明选填，最多1000字");}
         if(key==null||key.trim().length()<8||key.trim().length()>128)throw bad("IDEMPOTENCY_KEY_REQUIRED","Idempotency-Key 必须为8至128个字符");
+        lockNotificationRisk(id);
         EventRow event=events.lock(id,scope);if(event==null)throw notFound();var actor=AuthContext.require();
-        String hash=hash("auto-voice-retry:"+id+":"+version+":"+note);var previous=repository.replay(actor.userId(),key.trim());
+        String hash=hash("auto-voice-retry:"+id+":"+version+":"+note+":"+(riskCases==null?"":riskCases.caseId(id)));var previous=repository.replay(actor.userId(),key.trim());
         if(previous!=null) {
             if(!id.equals(previous.eventId())||!hash.equals(previous.hash()))throw conflict("IDEMPOTENCY_KEY_REUSED","该请求编号已用于其他操作");
             try{return json.readValue(previous.response(),Overview.class);}catch(Exception invalid){throw new IllegalStateException(invalid);}
@@ -164,7 +170,7 @@ public class UavAdvisoryService {
     public String progressLabel(String eventId, AccessDecision alarmScope, AccessDecision disposalScope) {
         EventRow event=events.find(eventId,alarmScope);
         if(event==null)return null;
-        boolean confirmed="CONFIRMED".equals(event.state());
+        boolean confirmed=confirmed(event);
         if(!confirmed&&!"PENDING_VERIFICATION".equals(event.state()))return null;
         Boolean review=confirmed?noCounter.reviewRequired(event):null;
         if(Boolean.TRUE.equals(review))return "风险变化待决策";
@@ -229,18 +235,28 @@ public class UavAdvisoryService {
     /** 调用方持有受限事件/授权范围；锁定事件并读取当前系统依据。 */
     @Transactional
     public void requireCounter(String eventId, com.uav.lowaltitude.modules.identity.domain.AccessDecision scope) {
+        if(riskCases!=null)riskCases.lockCases(eventId);
         if(predictions!=null)predictions.lockEpisode(eventId);
         EventRow event=events.lock(eventId,scope);
         if(event==null) throw notFound();
         String reason=repository.counterBlockReason(eventId);
         if(!reason.isEmpty()) throw conflict("ADVISORY_COUNTER_BLOCKED",reason);
+        if(responseOrder!=null)responseOrder.ensureLocked(event);
     }
     private EventRow event(String id,boolean lock) {
         var decision=access.require(PermissionCode.ALARM_READ);
+        if(lock)lockNotificationRisk(id);
         EventRow row=lock?events.lock(id,decision):events.find(id,decision);
         if(row==null) throw notFound(); return row;
     }
+    private void lockNotificationRisk(String eventId) {
+        if(riskCases==null)return;
+        riskCases.lockCases(eventId);
+        if(riskCases.caseCount(eventId)>1&&riskCases.selectedCase()==null)
+            throw conflict("RISK_CASE_REQUIRED","该事件关联多个区域风险，请从具体风险记录办理通知");
+    }
     private Overview view(EventRow event) {
+        var order=responseOrder==null?null:responseOrder.summary(event.eventId());
         var records=repository.records(event.eventId());
         String launchBlock=repository.counterLaunchBlockReason(event.eventId());
         String reason=launchBlock.isEmpty()?repository.counterBlockReason(event.eventId()):launchBlock;
@@ -254,15 +270,22 @@ public class UavAdvisoryService {
         var decision=noCounter.status(event);
         var observation=observation(event.eventId());
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
-                !decision.decisionActive() && "CONFIRMED".equals(event.state()) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
+                !decision.decisionActive() && confirmed(event) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
                 reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的任务执行飞手"),
-                autoSms,voice.mode(event),withoutSms(autoSms,autoVoice),launchBlock.isEmpty()&&!decision.decisionActive()&&CounterLaunchVisibility.visible(phase),phaseName(phase),autoHandoff(event,observation),decision,
-                automatic.pilotContactMissing(event),observation);
+                autoSms,voice.mode(event),order!=null&&order.matched()?autoVoice:withoutSms(autoSms,autoVoice),launchBlock.isEmpty()&&!decision.decisionActive()&&(order!=null&&order.counterPriority()||CounterLaunchVisibility.visible(phase)),phaseName(phase),autoHandoff(event,observation),decision,
+                automatic.pilotContactMissing(event),observation,order,riskSummary(event));
+    }
+    private java.util.Map<String,Object> riskSummary(EventRow event){
+        if(riskCases==null||riskCases.caseId(event.eventId())==null)return null;
+        AccessDecision scope=null;try{scope=access.require(PermissionCode.DISPOSAL_READ);}catch(ApiException denied){/* Summary remains readable without device disposition details. */}
+        return riskCases.summary(riskCases.caseId(event.eventId()),scope);
     }
     private boolean allowed(PermissionCode permission) {try {access.require(permission);return true;} catch(ApiException ignored){return false;}}
+    private boolean confirmed(EventRow event){return riskCases!=null&&riskCases.hasCases(event.eventId())?riskCases.confirmedForDisposal(event.eventId()):"CONFIRMED".equals(event.state());}
     private NotifyFlow.Phase notifyPhase(EventRow event, AutoSms sms, AutoVoice voice) {
-        if (!"CONFIRMED".equals(event.state())) return null;
+        if (!confirmed(event)) return null;
+        if(responseOrder!=null&&responseOrder.counterPriority(event.eventId()))return NotifyFlow.Phase.AWAIT_COUNTER;
         if(this.voice.departureSnapshot(event.eventId())!=null)return null;
         String notificationEventId=event.eventId();
         var prediction=predictions==null?null:predictions.facts(event.eventId());
@@ -272,7 +295,7 @@ public class UavAdvisoryService {
                 // The existing episode relation selects the notification cycle. Read its receipts
                 // only for phase projection; public summaries and records retain their own event.
                 EventRow owner=events.find(ownerId,new AccessDecision("system:notification-phase",ScopeMode.ALL));
-                if(!sameNotificationSubject(event,owner)||!"CONFIRMED".equals(owner.state()))return null;
+                if(!sameNotificationSubject(event,owner)||!confirmed(owner))return null;
                 notificationEventId=ownerId;
                 sms=automatic.overview(owner,false);
                 voice=this.voice.overview(owner,false);
@@ -287,7 +310,7 @@ public class UavAdvisoryService {
             afterSms = presence(event.eventId(), smsAt, now);
         if (voice != null && "SIMULATED_PLAYED".equals(voice.status()) && playedAt != null && now >= playedAt + NotifyFlow.CALL_WATCH_MILLIS)
             afterCall = presenceAfterCall(event.eventId(), smsAt, playedAt, now);
-        return NotifyFlow.phase(event.state(), sms == null ? null : sms.status(), sms == null ? null : sms.reason(), smsAt,
+        return NotifyFlow.phase(confirmed(event)?"CONFIRMED":event.state(), sms == null ? null : sms.status(), sms == null ? null : sms.reason(), smsAt,
                 voice == null ? null : voice.status(), voice == null ? null : voice.reason(), playedAt, now, afterSms, afterCall);
     }
     private static boolean sameNotificationSubject(EventRow event,EventRow owner) {

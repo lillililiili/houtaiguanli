@@ -16,6 +16,12 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** Automatic starts require notification evidence; the UI's manual-decision phase is not authorization. */
 @Component
 public class AutomaticCounterNotificationGate {
+    private UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(UavRiskCaseIdentity cases){this.riskCases=cases;}
+    private com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void responseOrder(com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder){this.responseOrder=responseOrder;}
     private static final Set<String> UNATTEMPTED = Set.of("WAITING", "BLOCKED", "UNAVAILABLE", "DISABLED");
     private final UavEventRepository events;
     private final AutoSmsRepository sms;
@@ -40,7 +46,7 @@ public class AutomaticCounterNotificationGate {
     public boolean allows(String eventId) {
         try {
             EventRow event = events.find(eventId, new AccessDecision("system:auto-counter", ScopeMode.ALL));
-            return event != null && "CONFIRMED".equals(event.state()) && ready(event, clock.nowMillis());
+            return event != null && confirmed(event) && ready(event, clock.nowMillis());
         } catch (RuntimeException unavailable) {
             // A read failure is neither a missing recipient nor proof that notification is impossible.
             return false;
@@ -50,8 +56,9 @@ public class AutomaticCounterNotificationGate {
     /** Only an unattempted, explicitly unavailable notification may waive the configurable phone wait. */
     public boolean phoneWaitNotRequired(String eventId) {
         try {
+            if(responseOrder!=null&&responseOrder.counterPriority(eventId))return true;
             EventRow event = events.find(eventId, new AccessDecision("system:auto-counter", ScopeMode.ALL));
-            if (event == null || !"CONFIRMED".equals(event.state())) return false;
+            if (event == null || !confirmed(event)) return false;
             var call = voice.find(eventId);
             if (call != null && (call.attempts() != 0 || !UNATTEMPTED.contains(call.status())
                     || call.answeredAt() != null || call.playbackCompletedAt() != null)) return false;
@@ -64,6 +71,7 @@ public class AutomaticCounterNotificationGate {
 
     private boolean ready(EventRow event, long now) {
         String id = event.eventId();
+        if(responseOrder!=null&&responseOrder.counterPriority(id))return true;
         if (voice.departure(id) != null) return false;
         var smsTask = sms.find(id);
         if (smsTask == null || !"SIMULATED_DELIVERED".equals(smsTask.status())) {
@@ -93,4 +101,5 @@ public class AutomaticCounterNotificationGate {
         return !voicePolicy.enabled() || recording == null
                 || directory.cannotNotifyPilotFromConfiguration("ADVISORY_VOICE", id);
     }
+    private boolean confirmed(EventRow event){return riskCases!=null&&riskCases.hasCases(event.eventId())?riskCases.confirmedForDisposal(event.eventId()):"CONFIRMED".equals(event.state());}
 }

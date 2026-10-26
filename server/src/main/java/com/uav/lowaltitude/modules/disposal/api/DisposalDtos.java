@@ -30,7 +30,14 @@ public final class DisposalDtos {
             Long approvedAt, String decisionNote, Long validFrom, Long validUntil, String status,
             String executionCommandId, String resultCode, String resultDetail, String deviceStopResult,
             String executionBlockReason, String policyVersion, String policyStatus, String ownerOrgId, String districtId, String sourceMode,
-            long version, List<String> allowedActions, String authorizationMode, String countermeasureMode) { }
+            long version, List<String> allowedActions, String authorizationMode, String countermeasureMode, Map<String,Object> riskCase) {
+        public AuthorizationDto(String authorizationId,String authorizationNo,String actionType,String subjectKind,String subjectId,String targetId,String deviceId,String channel,String reason,
+                String requestedBy,String requestedByName,Long requestedAt,String approvedBy,String approvedByName,Long approvedAt,String decisionNote,Long validFrom,Long validUntil,String status,
+                String executionCommandId,String resultCode,String resultDetail,String deviceStopResult,String executionBlockReason,String policyVersion,String policyStatus,String ownerOrgId,String districtId,String sourceMode,
+                long version,List<String> allowedActions,String authorizationMode,String countermeasureMode){
+            this(authorizationId,authorizationNo,actionType,subjectKind,subjectId,targetId,deviceId,channel,reason,requestedBy,requestedByName,requestedAt,approvedBy,approvedByName,approvedAt,decisionNote,validFrom,validUntil,status,executionCommandId,resultCode,resultDetail,deviceStopResult,executionBlockReason,policyVersion,policyStatus,ownerOrgId,districtId,sourceMode,version,allowedActions,authorizationMode,countermeasureMode,null);
+        }
+    }
 
     /** 只读处置分组；每个成员保持原授权身份、状态和动作，根授权 ID 作为稳定的展示 ID。 */
     public record AuthorizationGroupDto(String disposalId, List<AuthorizationDto> authorizations) { }

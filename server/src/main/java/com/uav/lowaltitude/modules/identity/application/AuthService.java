@@ -95,7 +95,9 @@ public class AuthService {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "ACCOUNT_LOCKED", "账号已锁定");
         }
         RoleRow role = identityAdminMapper.findRole(user.getRoleCode());
-        if (!"ACTIVE".equals(user.getStatus()) || role == null || !role.isEnabled()) {
+        if (!"ACTIVE".equals(user.getStatus()) || role == null
+                || (!role.isEnabled() && !effectivePermissions.isUnitAdministrator(user.getUserId()))
+                || !effectivePermissions.organizationAvailable(user)) {
             loginFailureRecorder.disabled(user, normalizedAccount, ip, userAgent);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "ACCOUNT_DISABLED", "账号已停用");
         }
@@ -140,11 +142,13 @@ public class AuthService {
         AppUser user = userMapper.findById(current.userId());
         RoleRow role = identityAdminMapper.findRole(current.roleCode());
         List<ScopeGrantResponse> scopes = identityAdminMapper.listUserScopes(current.userId()).stream()
+                .filter(scope -> identityAdminMapper.countDeletedOrganization(scope.getOrgId()) == 0)
                 .map(this::toScopeResponse)
                 .toList();
         return new MeResponse(user.getUserId(), user.getAccount(), user.getName(), user.getPhone(),
                 user.getOrgId(), identityAdminMapper.findAdminUser(user.getUserId(), appClock.nowMillis()).getOrgName(),
-                user.getRoleCode(), role == null ? user.getRoleCode() : role.getName(), user.getScopeMode(), scopes,
+                user.getRoleCode(), effectivePermissions.isUnitAdministrator(user.getUserId()) ? "单位管理员（继承单位授权）"
+                        : role == null ? user.getRoleCode() : role.getName(), user.getScopeMode(), scopes,
                 effectivePermissions.menuKeys(user.getUserId()), effectivePermissions.permissionCodes(user.getUserId()),
                 user.getPermissionVersion(), user.isMustChangePassword(), appProperties.getSourceMode(),
                 DataScope.of(user.getScopeMode(), user.getScopeOrgRule()).name(), user.getVersion(),
@@ -232,8 +236,10 @@ public class AuthService {
         }
         AppUser user = userMapper.findById(session.getUserId());
         RoleRow role = user == null ? null : identityAdminMapper.findRole(user.getRoleCode());
-        if (user == null || !"ACTIVE".equals(user.getStatus()) || role == null || !role.isEnabled()
-                || session.getPermissionVersion() != user.getPermissionVersion()) {
+        if (user == null || !"ACTIVE".equals(user.getStatus()) || role == null
+                || (!role.isEnabled() && !effectivePermissions.isUnitAdministrator(user.getUserId()))
+                || session.getPermissionVersion() != user.getPermissionVersion()
+                || !effectivePermissions.organizationAvailable(user)) {
             return null;
         }
         renewSessionIfDue(sessionId, now);

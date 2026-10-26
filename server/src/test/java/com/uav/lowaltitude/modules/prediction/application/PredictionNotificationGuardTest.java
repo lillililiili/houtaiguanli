@@ -99,4 +99,18 @@ class PredictionNotificationGuardTest {
         verify(records).appendAutomatic(anyString(),eq(event),eq(2L),eq(now.toEpochMilli()),contains("预测不代表已经进入"),anyString());
         verify(provider,times(1)).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
     }
+
+    @Test void lateReceiptOfTheUnknownOriginalAttemptIsRecordedWithoutRestartingCancelledWork() {
+        long requested=now.toEpochMilli()-120_000;
+        String token=UUID.randomUUID().toString();
+        current.set(new Task(event,"UNKNOWN","pending original receipt","AUTO",null,null,null,requested,
+                now.toEpochMilli()-1000,1,requested+60_000,token,"provider-"+event));
+        when(gate.notificationBlock(event)).thenReturn("本次风险已撤销，停止后续处置");
+        assertThat(service.completeSimulatorReceipt(event,"provider-"+event,token,recipient,"DELIVERED",now.toEpochMilli(),requested)).isTrue();
+        verify(records).appendAutomatic(anyString(),eq(event),eq(2L),eq(now.toEpochMilli()),anyString(),anyString());
+        service.process(event);
+        verify(provider,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+        verify(tasks,never()).claim(anyString(),anyString(),anyString(),any(),any(),anyLong());
+        verify(tasks).finish(eq(event),eq(token),eq("SIMULATED_DELIVERED"),anyString(),anyString(),eq(now.toEpochMilli()));
+    }
 }

@@ -9,22 +9,14 @@ import org.springframework.stereotype.Service;
 import com.uav.lowaltitude.modules.identity.api.UnitDelegationDtos.ManagementPermission;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.security.AuthContext;
+import com.uav.lowaltitude.modules.identity.infrastructure.UnitAdministratorSql;
 
 /** Unit management grants are independent of front-office business role permissions. */
 @Service
 public class UnitManagementAccessService {
     public static final List<String> MODULE_KEYS=List.of("devices","monitoring","maintenance","commissioning","statistics");
-    private static final String SUBJECT="""
-        FROM app_org_delegation d
-        JOIN app_org o ON o.org_id=d.org_id AND o.enabled=TRUE
-        JOIN app_user u ON u.user_id=d.administrator_user_id AND u.org_id=d.org_id
-        JOIN app_role r ON r.role_code=u.role_code AND r.owner_org_id=d.org_id AND r.enabled=TRUE
-        """;
-    private static final String VALID="""
-        WHERE u.user_id=:user AND u.status='ACTIVE' AND u.scope_mode='ASSIGNED' AND u.scope_org_rule='OWN_ORG'
-          AND u.role_code NOT IN ('ROLE-ADMIN','ROLE-BACKEND','ROLE-AUTOMATION')
-          AND u.user_id<>'automation-rule-runner'
-        """;
+    private static final String SUBJECT=UnitAdministratorSql.SUBJECT;
+    private static final String VALID=" WHERE u.user_id=:user AND " + UnitAdministratorSql.VALID;
     private final NamedParameterJdbcTemplate jdbc;
     public UnitManagementAccessService(NamedParameterJdbcTemplate jdbc) { this.jdbc=jdbc; }
 

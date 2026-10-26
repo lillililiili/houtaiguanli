@@ -8,7 +8,7 @@ function Read-LocalServiceState {
     param([string]$Path)
     $result = [ordered]@{}
     if (Test-Path -LiteralPath $Path) {
-        $saved = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+        $saved = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($property in $saved.PSObject.Properties) { $result[$property.Name] = $property.Value }
     }
     return $result

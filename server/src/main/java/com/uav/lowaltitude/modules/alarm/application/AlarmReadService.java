@@ -38,11 +38,13 @@ import com.uav.lowaltitude.platform.api.ApiException;
 
 @Service
 public class AlarmReadService {
+    private UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired public void riskCases(UavRiskCaseIdentity value){riskCases=value;}
     // 参数白名单：写错的参数必须报错而不是被忽略，否则调用方以为筛过了、拿到的却是全量。
     // 阶段 15 新增 sort/order/alarm_type（决策 15-6 / 15-7）；2026-10-07 新增 attention_group、violation_reason。
     private static final Set<String> ALLOWED = Set.of("state", "severity", "target_id", "target_no", "occurred_from", "occurred_to",
             "owner_org_id", "district_id", "source_mode", "page", "size", "sort", "order", "alarm_type", "attention_group",
-            "violation_reason", "origin_kind", "prediction_status", "current_pending");
+            "violation_reason", "origin_kind", "prediction_status", "current_pending", "view", "risk_stage");
     private static final Set<String> ATTENTION_GROUPS = Set.of("CURRENT", "AWAITING_CONFIRMATION", "HISTORY");
     /** 筛选和展示使用当次告警保存的原因，不按当前规则版本抹去历史原因。 */
     private static final Set<String> VIOLATION_REASONS = Set.of(RuleCodes.NO_AUTHORIZATION, RuleCodes.INSIDE_RESTRICTED_AIRSPACE, RuleCodes.AIRSPACE_ALTITUDE_EXCEEDED,
@@ -87,23 +89,24 @@ public class AlarmReadService {
                     "导出行数超过 " + CsvExport.MAX_ROWS + " 条，请先缩小筛选范围");
         }
         List<AlarmRow> rows = repository.listForExport(query, decision, CsvExport.MAX_ROWS, sort, order);
-        // 处置进度按事件算一次（同一事件的几条告警共用）；反制进度只给有处置查看权限的人写，和页面一样。
+        // Unified rows cache by risk, not event: one measured event may cover independent areas.
         AccessDecision disposalDecision = optional(PermissionCode.DISPOSAL_READ);
         Map<String, String> progress = new HashMap<>();
         for (AlarmRow row : rows) {
-            if (row.eventId() != null && !progress.containsKey(row.eventId()))
-                progress.put(row.eventId(), advisory.progressLabel(row.eventId(), decision, disposalDecision));
+            String key=row.riskCaseId()==null?row.eventId():row.riskCaseId();
+            if (row.eventId() != null && !progress.containsKey(key))
+                progress.put(key, riskProgress(row.riskCaseId(),row.eventId(),decision,disposalDecision));
         }
         Map<String,List<String>> predictionSummaries=predictions==null?Map.of()
                 :predictions.exportSummaries(rows.stream().map(AlarmRow::eventId).toList());
-        List<List<String>> cells = rows.stream().map(row -> exportRow(row, progress.get(row.eventId()),
-                row.eventId()==null?java.util.Arrays.asList(null,null,null)
-                        :predictionSummaries.getOrDefault(row.eventId(),java.util.Arrays.asList(null,null,null)))).toList();
+        List<List<String>> cells = rows.stream().map(row -> exportRow(row, progress.get(row.riskCaseId()==null?row.eventId():row.riskCaseId()),
+                row.riskCaseId()!=null&&riskCases!=null?casePredictionSummary(row.riskCaseId()):row.eventId()==null?java.util.Arrays.asList(null,null,null)
+                        :predictionSummaries.getOrDefault(row.eventId(),java.util.Arrays.asList(null,null,null)),query.riskCaseView())).toList();
         AuthUser actor = AuthContext.require();
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarms", "alarms_exported", "alarm", null,
                 "filters=" + describe(query, sort, order) + "; rows=" + cells.size(), "SUCCESS", "", "");
         return CsvExport.response(CsvExport.fileName("alarms", Instant.ofEpochMilli(clock.nowMillis())),
-                EXPORT_HEADERS, cells);
+                query.riskCaseView()?java.util.stream.Stream.concat(EXPORT_HEADERS.stream(),java.util.stream.Stream.of("风险编号","风险阶段")).toList():EXPORT_HEADERS, cells);
     }
 
     /**
@@ -118,7 +121,37 @@ public class AlarmReadService {
         try { return access.require(permission); } catch (ApiException denied) { return null; }
     }
 
-    private List<String> exportRow(AlarmRow row, String progress,List<String> predictionSummary) {
+    /** Shared by CSV and reporting. The caller has already scoped the risk's representative event. */
+    public String riskProgress(String riskCaseId,String eventId,AccessDecision alarmScope,AccessDecision disposalScope){
+        if(riskCaseId==null||riskCases==null)return advisory.progressLabel(eventId,alarmScope,disposalScope);
+        var summary=riskCases.summary(riskCaseId,disposalScope);
+        if(summary==null)return null;
+        if(summary.get("counter") instanceof Map<?,?> counter){
+            String status=java.util.Objects.toString(counter.get("status"),"");
+            String label=switch(status){case "REQUESTED"->"待审批";case "APPROVED"->"已批准，等待启动";
+                case "EXECUTING"->"JAMMING".equals(counter.get("action_type"))?"干扰执行中":"反制执行中";
+                case "COMPLETED"->"反制已完成";case "STOPPED"->"反制已停止";case "FAILED"->"反制失败";
+                case "CANCELLED"->"反制已取消";case "EXPIRED"->"反制授权已失效";default->null;};
+            if(label!=null)return label;
+        }
+        String stage=java.util.Objects.toString(summary.get("stage"),"");
+        if(Set.of("UNKNOWN","CLEARED","ENDED").contains(stage))return riskStageLabel(stage);
+        if(!"CONFIRMED".equals(summary.get("verification_status")))return null;
+        var phase=riskCases.withCase(riskCaseId,()->advisory.phaseForAutomation(eventId));
+        if(phase==null)return null;
+        return switch(phase){case AUTO_SMS->"自动短信";case WATCHING->"观察中";case AUTO_CALL->"自动电话";case AWAIT_COUNTER->"待反制";};
+    }
+
+    private List<String> casePredictionSummary(String id){
+        var row=riskCases.details(id);
+        if(row==null||row.get("episode_id")==null)return java.util.Arrays.asList(null,null,null);
+        return java.util.Arrays.asList("预测衍生风险",riskStageLabel(java.util.Objects.toString(row.get("stage"),"")),
+                java.util.Objects.toString(row.get("prediction_reason"),null));
+    }
+    static String riskStageLabel(String stage){return switch(stage){case "PREDICTED"->"预计入区";case "ENTERED"->"已实际入区";
+        case "CLEARED"->"已避开";case "UNKNOWN"->"依据不足";case "ENDED"->"已结束";case "OBSERVED"->"实测告警";default->"";};}
+
+    private List<String> exportRow(AlarmRow row, String progress,List<String> predictionSummary,boolean riskCaseView) {
         // 枚举列翻中文（决策 15-32）：列头是中文、正文却是 HIGH/PENDING_VERIFICATION，拿到的是半中半英的表。
         // 违规原因与列表同源（UX-61）：升级过取最近一次升级的累计原因，否则取告警明细的 violation_reasons。
         var cells = new java.util.ArrayList<String>(java.util.Arrays.asList(row.displayNo(),
@@ -129,6 +162,8 @@ public class AlarmReadService {
                 time(row.occurredAt()), time(row.receivedAt()), row.targetNo(), row.ownerOrgName(),
                 row.districtName(), row.sourceName(), observationLabel(row.observationStatus()), attentionLabel(row.attentionGroup()), null));
         cells.addAll(predictionSummary);
+        if(riskCaseView){cells.add(row.riskCaseId());
+            cells.add(row.riskCaseId()==null||riskCases==null?null:riskStageLabel(java.util.Objects.toString(riskCases.summary(row.riskCaseId()).get("stage"),"")));}
         return cells;
     }
 
@@ -153,6 +188,7 @@ public class AlarmReadService {
                 + ",attention_group=" + (query.attentionGroups() == null ? null : String.join("|", query.attentionGroups()))
                 + ",violation_reason=" + query.violationReason()
                 + ",current_pending=" + query.currentPending()
+                + ",view="+(query.riskCaseView()?"risk_case":"raw")+",risk_stage="+query.riskStage()
                 + ",district_id=" + query.districtId() + ",target_id=" + query.targetId() + ",target_no=" + query.targetNo()
                 + ",sort=" + sort + ",order=" + order;
     }
@@ -171,8 +207,21 @@ public class AlarmReadService {
             if (!repository.targetReadable(query.targetId(), targetDecision)) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权筛选该关联目标");
         }
         long total = repository.count(query, decision);
-        var items=repository.list(query, decision, page.offset(), page.size(), sort, order).stream().map(this::baseDto).toList();
+        var rows=repository.list(query, decision, page.offset(), page.size(), sort, order);
+        var summaries=riskCases==null?Map.<String,Map<String,Object>>of():riskCases.summaries(
+                rows.stream().map(AlarmRow::riskCaseId).filter(java.util.Objects::nonNull).toList(),optional(PermissionCode.DISPOSAL_READ));
+        var items=rows.stream().map(row->baseDto(row,row.riskCaseId()==null?null:summaries.get(row.riskCaseId()))).toList();
         return new PageDto<>(predictions==null?items:predictions.enrichList(items),page.page(),page.size(),total);
+    }
+
+    /** Aggregate the same risk-case view once instead of loading nine one-row pages. */
+    @Transactional(readOnly = true)
+    public com.uav.lowaltitude.modules.alarm.api.AlarmDtos.OverviewDto overview() {
+        AccessDecision scope=access.require(PermissionCode.ALARM_READ);
+        var day=clock.now().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate();
+        long from=day.atStartOfDay(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+        long to=day.plusDays(1).atStartOfDay(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+        return repository.overview(scope,from,to);
     }
 
     /**
@@ -245,6 +294,10 @@ public class AlarmReadService {
         return predictions == null ? result : predictions.enrich(result,row.eventId(),result.getTargetId()!=null);
     }
     private AlarmDto baseDto(AlarmRow row) {
+        return baseDto(row,riskCases!=null&&row.riskCaseId()!=null
+                ?riskCases.summary(row.riskCaseId(),optional(PermissionCode.DISPOSAL_READ)):null);
+    }
+    private AlarmDto baseDto(AlarmRow row,Map<String,Object> riskSummary) {
         // target_id 是独立敏感引用：没有 target:read 时宁可省略，也不能以 0 坐标或可猜 ID 替代。
         String targetId = targetReferenceVisible(row.targetId(), row.ownerOrgId(), row.districtId()) ? row.targetId() : null;
         List<String> violations = violations(row);
@@ -253,6 +306,7 @@ public class AlarmReadService {
                 row.displayNo(), row.sourceName(), row.ownerOrgName(), row.districtName(), targetId == null ? null : row.targetNo(),
                 row.originalSeverity(), violations, row.escalationCount(), millis(row.escalatedAt()),
                 row.observationStatus(), row.attentionGroup(), null);
+        if(riskSummary!=null)result.withRiskCase(riskSummary);
         return result;
     }
 
@@ -304,8 +358,10 @@ public class AlarmReadService {
         private AlarmQuery query() {
             return new AlarmQuery(optional("state", 32), optional("severity", 16), optional("target_id", 36), timeFrom(), timeTo(),
                     optional("owner_org_id", 36), optional("district_id", 36), optional("source_mode", 8), optional("alarm_type", 32),
-                    attentionGroups(), violationReason(), optional("target_no", 64), predictionOrigin(), predictionStatus(), currentPending());
+                    attentionGroups(), violationReason(), optional("target_no", 64), predictionOrigin(), predictionStatus(), currentPending(),riskCaseView(),riskStage());
         }
+        private boolean riskCaseView(){String value=optional("view",16);if(value!=null&&!"risk_case".equals(value))throw invalid("view 参数无效");return value!=null;}
+        private String riskStage(){String value=optional("risk_stage",100);if(value!=null){if(!riskCaseView())throw invalid("risk_stage 仅用于统一风险视图");for(String s:value.split(",",-1))if(!Set.of("PREDICTED","ENTERED","CLEARED","UNKNOWN","ENDED","OBSERVED").contains(s))throw invalid("risk_stage 参数无效");}return value;}
         private boolean currentPending() {
             String value=optional("current_pending",5);
             if(value==null || "false".equals(value)) return false;

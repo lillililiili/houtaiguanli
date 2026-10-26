@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.*;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.configuration.FluentConfiguration;
+import com.uav.lowaltitude.platform.database.MigrationLineage;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -39,14 +41,14 @@ class AutoSmsPostgresTest extends AutoSmsApiTest {
         var jdbc=new JdbcTemplate(root());
         if(!jdbc.queryForObject("select current_database()",String.class).matches("^advisory_verify_[a-z0-9_]+$")) throw new IllegalStateException("Requires isolated advisory_verify_ database");
         jdbc.execute("create schema "+SCHEMA);created=true;
-        Flyway.configure().dataSource(root()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false).cleanDisabled(true).locations("classpath:db/migration","classpath:db/postgresql").load().migrate();
+        migration(SCHEMA).load().migrate();
     }
     @Test void upgradeFromPreviousVersionAndRepeatValidation() {
         String schema="auto_sms_upgrade_"+UUID.randomUUID().toString().replace("-","");var jdbc=new JdbcTemplate(root());jdbc.execute("create schema "+schema);
         try {
-            Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true).locations("classpath:db/migration","classpath:db/postgresql").target("202609150007").load().migrate();
+            migration(schema).target("202609150007").load().migrate();
             var historical=AdvisoryMigrationFixture.seed(jdbc,schema);
-            var upgraded=Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true).locations("classpath:db/migration","classpath:db/postgresql").load();
+            var upgraded=migration(schema).load();
             assertThat(upgraded.migrate().migrationsExecuted).isPositive();
             assertThat(java.util.Arrays.stream(upgraded.info().applied()).map(org.flywaydb.core.api.MigrationInfo::getVersion).filter(java.util.Objects::nonNull).map(Object::toString)).contains("202609160002");
             assertThat(AdvisoryMigrationFixture.snapshot(jdbc,schema)).isEqualTo(historical);
@@ -58,16 +60,16 @@ class AutoSmsPostgresTest extends AutoSmsApiTest {
         String schema="auto_sms_result_upgrade_"+UUID.randomUUID().toString().replace("-","");
         var jdbc=new JdbcTemplate(root());jdbc.execute("create schema "+schema);
         try {
-            Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true)
-                .locations("classpath:db/migration","classpath:db/postgresql").target("202609200003").load().migrate();
+            migration(schema).target("202609200003").load().migrate();
             var history=AdvisoryMigrationFixture.seed(jdbc,schema);
             jdbc.update("INSERT INTO "+schema+".uav_auto_sms_task(event_id,status,policy_code,reason,updated_at,provider_key,delivery_record_id,attempt_count,triggered_at) VALUES('upgrade-event','SIMULATED_DELIVERED','LOCAL_AUTO_SMS_DEMO_V1','历史模拟送达',1700000000000,'auto-advisory:upgrade-event','upgrade-record',1,1700000000000)");
             var task=jdbc.queryForMap("SELECT * FROM "+schema+".uav_auto_sms_task WHERE event_id='upgrade-event'");
-            var upgraded=Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema).createSchemas(false).cleanDisabled(true)
-                .locations("classpath:db/migration","classpath:db/postgresql").load();
+            var upgraded=migration(schema).load();
             assertThat(upgraded.migrate().migrationsExecuted).isPositive();
             assertThat(AdvisoryMigrationFixture.snapshot(jdbc,schema)).isEqualTo(history);
-            assertThat(jdbc.queryForMap("SELECT * FROM "+schema+".uav_auto_sms_task WHERE event_id='upgrade-event'")).isEqualTo(task);
+            var upgradedTask=jdbc.queryForMap("SELECT * FROM "+schema+".uav_auto_sms_task WHERE event_id='upgrade-event'");
+            assertThat(upgradedTask).containsAllEntriesOf(task);
+            assertThat(upgradedTask).containsEntry("risk_scope","").containsEntry("risk_content",null);
             jdbc.update("UPDATE "+schema+".uav_auto_sms_task SET status='UNKNOWN',delivery_record_id=NULL WHERE event_id='upgrade-event'");
             assertThatThrownBy(()->jdbc.update("UPDATE "+schema+".uav_auto_sms_task SET status='SIMULATED_DELIVERED' WHERE event_id='upgrade-event'"))
                 .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
@@ -75,5 +77,11 @@ class AutoSmsPostgresTest extends AutoSmsApiTest {
         } finally {jdbc.execute("drop schema "+schema+" cascade");}
     }
     @AfterAll static void cleanSchema(@org.springframework.beans.factory.annotation.Autowired org.springframework.context.ConfigurableApplicationContext context) {context.getBeansOfType(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class).values().forEach(org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler::shutdown);if(created){new JdbcTemplate(root()).execute("drop schema "+SCHEMA+" cascade");created=false;}}
+    private static FluentConfiguration migration(String schema){
+        var configuration=Flyway.configure().dataSource(root()).schemas(schema).defaultSchema(schema)
+                .createSchemas(false).cleanDisabled(true).locations("classpath:db/migration","classpath:db/postgresql");
+        MigrationLineage.configure(configuration);
+        return configuration;
+    }
     static DataSource root(){return new DriverManagerDataSource(System.getenv("POSTGRES_TEST_URL"),System.getenv("POSTGRES_TEST_USER"),System.getenv("POSTGRES_TEST_PASSWORD"));}
 }

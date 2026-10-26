@@ -212,7 +212,9 @@ public class SystemManagementService {
         if (mapper.administratorOrganization(userId) != null && (orgChanged || !"FRONTEND".equals(nextType))) {
             throw bad("UNIT_ADMIN_APPOINTMENT_PROTECTED", "请先在单位授权中撤任或更换管理员，再调整所属单位或账号类型");
         }
-        validateManagedAssignment(org.getOrgId(), roleCode, nextScope);
+        if (mapper.administratorOrganization(userId) != null && !roleChanged) {
+            if (nextScope != DataScope.OWN_ORG) throw bad("UNIT_MEMBER_SCOPE_FIXED", "单位管理员数据范围固定为本单位");
+        } else validateManagedAssignment(org.getOrgId(), roleCode, nextScope);
         long now = appClock.nowMillis();
         int version = request.expectedVersion();
         if (mapper.updateUserProfile(userId, request.name().trim(), nullable(request.phone()), org.getOrgId(),
@@ -466,7 +468,10 @@ public class SystemManagementService {
         idempotencyGuard.claim(idempotencyKey, "organization-create:" + request.name());
         accessService.require("users.auth");
         String parentId = nullable(request.parentId());
-        if (parentId != null) requireEnabledOrg(parentId);
+        if (parentId != null) {
+            lockUserOrganizations(parentId);
+            requireEnabledOrg(parentId);
+        }
         String name = request.name().trim();
         String orgCode = resolveOrgCode(request.orgCode());
         String id = UUID.randomUUID().toString();
@@ -488,8 +493,9 @@ public class SystemManagementService {
             String idempotencyKey, RequestMeta meta) {
         idempotencyGuard.claim(idempotencyKey, "organization-update:" + orgId + ":" + request);
         accessService.require("users.auth");
-        requireOrganization(orgId);
         String parentId = nullable(request.parentId());
+        lockUserOrganizations(orgId, parentId);
+        requireOrganization(orgId);
         validateOrgParent(orgId, parentId);
         if (mapper.updateOrganization(orgId, parentId, request.name().trim(), appClock.nowMillis(),
                 request.expectedVersion()) != 1) conflict();
@@ -917,7 +923,10 @@ public class SystemManagementService {
     /** Platform entry points must obey the same scoped-role and unit ceiling invariants. */
     private void lockUserOrganizations(String... orgIds) {
         java.util.Arrays.stream(orgIds).filter(java.util.Objects::nonNull).distinct().sorted()
-                .forEach(mapper::lockManagedOrganization);
+                .forEach(id -> {
+                    if (mapper.lockManagedOrganization(id) == null)
+                        throw conflict("ORG_UNAVAILABLE", "单位不存在或已删除，不能继续修改");
+                });
     }
 
     private void validateManagedAssignment(String orgId, String roleCode, DataScope scope) {
@@ -980,7 +989,8 @@ public class SystemManagementService {
                 row.getOrgName(), row.getRoleCode(), row.getRoleName(), row.getStatus(), dataScope(row).name(),
                 row.isMustChangePassword(), row.isOnline(), row.getLastLoginAt(), row.getLastLoginIp(),
                 row.getCreatedAt(), row.getVersion(),
-                com.uav.lowaltitude.modules.identity.domain.UserType.forRole(row.getRoleCode()).name());
+                com.uav.lowaltitude.modules.identity.domain.UserType.forRole(row.getRoleCode()).name(),
+                mapper.administratorOrganization(row.getUserId()) != null);
     }
 
     private static DataScope dataScope(UserAdminRow row) {
@@ -1164,6 +1174,8 @@ public class SystemManagementService {
     private OrgRow requireOrganization(String id) {
         OrgRow row = mapper.findOrganization(id);
         if (row == null) throw notFound("ORG_NOT_FOUND", "组织不存在");
+        if (mapper.countDeletedOrganization(id) > 0)
+            throw conflict("ORG_DELETED", "单位已删除，不能用于新的配置或业务");
         return row;
     }
 

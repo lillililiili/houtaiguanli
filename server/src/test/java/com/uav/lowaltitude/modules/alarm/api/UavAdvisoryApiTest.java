@@ -22,6 +22,10 @@ class UavAdvisoryApiTest {
     @Autowired MockMvc mvc;
     @Autowired JdbcTemplate jdbc;
     @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.UavAdvisoryRepository advisory;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository smsTasks;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository voiceTasks;
+    @Autowired com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity risks;
+    @Autowired com.uav.lowaltitude.modules.directory.infrastructure.DirectoryRepository directory;
     protected String eventId,session,userId,role;
     private static final String ORG="seed-stage3-org", DISTRICT="seed-stage3-district";
     @BeforeEach void fixture() {
@@ -77,6 +81,86 @@ class UavAdvisoryApiTest {
     @Test void missingSystemEvidenceNeverOffersDirectCounter() throws Exception {
         read().andExpect(jsonPath("$.data.can_direct_counter").value(false))
             .andExpect(jsonPath("$.data.counter_block_reason").isNotEmpty());
+    }
+    @Test void sharedEventNotificationRetriesRequireASelectedRiskAndCreateNoTasks() throws Exception {
+        riskCase();riskCase();
+        for(String channel:List.of("auto-sms","auto-voice")) {
+            mvc.perform(post("/api/v1/uav-events/"+eventId+"/advisory/"+channel+"/retry")
+                    .header("Authorization",bearer()).header("Idempotency-Key",key()).contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"expected_version\":0}"))
+                    .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("RISK_CASE_REQUIRED"));
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_auto_sms_task WHERE event_id=?",Long.class,eventId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_auto_voice_task WHERE event_id=?",Long.class,eventId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT version FROM uav_event WHERE event_id=?",Long.class,eventId)).isZero();
+    }
+    @Test void rawConfirmationCannotEnableAnUnverifiedAreaOfASharedEvent() throws Exception {
+        com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture.seed(jdbc,eventId);
+        String a=riskCase();riskCase();
+        read().andExpect(status().isOk()).andExpect(jsonPath("$.data.can_write").value(false))
+                .andExpect(jsonPath("$.data.can_request_counter").value(false));
+        mvc.perform(get("/api/v1/uav-events/"+eventId+"/advisory").header("Authorization",bearer()).param("risk_case_id",a))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.can_write").value(false))
+                .andExpect(jsonPath("$.data.can_request_counter").value(false));
+        assertThat(advisory.counterBlockReason(eventId)).isNotEmpty();
+    }
+    @Test void recipientSnapshotsDoNotBorrowAnAmbiguousLegacyTaskOrAnotherAreasSnapshot(){
+        long now=System.currentTimeMillis();
+        smsTasks.initialize(eventId,now,"scope-test");voiceTasks.initialize(eventId,now,"scope-test");
+        var legacy=recipientSnapshot("legacy");
+        for(String purpose:List.of("ADVISORY_SMS","ADVISORY_VOICE"))directory.freezeAdvisoryTask(purpose,eventId,legacy);
+        String a=riskCase();
+        risks.runWithCase(a,()->{
+            for(String purpose:List.of("ADVISORY_SMS","ADVISORY_VOICE"))
+                assertThat(directory.advisoryTaskSnapshot(purpose,eventId).recipientId()).as("one proven case may read its legacy task").isEqualTo(legacy.recipientId());
+        });
+        String b=riskCase();
+        for(String risk:List.of(a,b))risks.runWithCase(risk,()->{
+            for(String purpose:List.of("ADVISORY_SMS","ADVISORY_VOICE"))
+                assertThat(directory.advisoryTaskSnapshot(purpose,eventId)).as("shared raw event cannot assign the old task by guess").isNull();
+        });
+        // The known historical channel attribution remains valid for only its own area.
+        for(String channel:List.of("SMS","VOICE"))jdbc.update("INSERT INTO uav_risk_channel(risk_case_id,channel,event_id,task_scope,claimed_at) VALUES(?,?,?,'',?)",a,channel,eventId,now);
+        risks.runWithCase(a,()->{
+            for(String purpose:List.of("ADVISORY_SMS","ADVISORY_VOICE"))assertThat(directory.advisoryTaskSnapshot(purpose,eventId).recipientId()).isEqualTo(legacy.recipientId());
+        });
+        var own=recipientSnapshot("new-area");
+        risks.runWithCase(b,()->{
+            smsTasks.initialize(eventId,now,"scope-test");voiceTasks.initialize(eventId,now,"scope-test");
+            for(String purpose:List.of("ADVISORY_SMS","ADVISORY_VOICE")){
+                assertThat(directory.advisoryTaskSnapshot(purpose,eventId)).isNull();
+                directory.freezeAdvisoryTask(purpose,eventId,own);
+                assertThat(directory.advisoryTaskSnapshot(purpose,eventId).recipientId()).isEqualTo(own.recipientId());
+            }
+        });
+        risks.runWithCase(a,()->{
+            for(String purpose:List.of("ADVISORY_SMS","ADVISORY_VOICE"))assertThat(directory.advisoryTaskSnapshot(purpose,eventId).recipientId()).isEqualTo(legacy.recipientId());
+        });
+    }
+    private com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot(String label){
+        return new com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot(key(),label,ORG,"测试单位",null,null,null,"MOCK",null,null,1L,true,null,System.currentTimeMillis());
+    }
+    @Test @org.springframework.transaction.annotation.Transactional
+    void unattemptedLegacyTasksDoNotBlockIndependentNewAreaClaims(){
+        long now=System.currentTimeMillis();smsTasks.initialize(eventId,now,"scope-test");voiceTasks.initialize(eventId,now,"scope-test");
+        String a=riskCase(),b=riskCase();
+        for(String risk:List.of(a,b)){
+            jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,actor_id,note,created_at) VALUES(?,?,0,?,0,'CONFIRMED','OBSERVED',?,'隔离测试核实',?)",key(),risk,eventId,userId,now);
+            risks.runWithCase(risk,()->{
+                for(String channel:List.of("SMS","VOICE")){
+                    assertThat(risks.legacyNotificationAmbiguous(eventId,channel)).isFalse();
+                    assertThat(risks.claimChannel(eventId,channel)).isTrue();
+                    assertThat(risks.taskScope(eventId,channel)).isEqualTo(risk);
+                }
+            });
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_channel WHERE event_id=?",Long.class,eventId)).isEqualTo(4);
+    }
+    private String riskCase(){
+        String risk=key();long now=System.currentTimeMillis();
+        jdbc.update("INSERT INTO uav_risk_case(risk_case_id,root_event_id,target_id,owner_org_id,district_id,source_mode,created_at) SELECT ?,e.event_id,a.target_id,e.owner_org_id,e.district_id,a.source_mode,? FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id WHERE e.event_id=?",risk,now,eventId);
+        jdbc.update("INSERT INTO uav_risk_case_member VALUES(?,?,'ROOT',?)",risk,eventId,now);
+        return risk;
     }
     @Test void existingAuthorizationBlocksOnlyNewLaunchUntilItIsNoLongerActive() throws Exception {
         com.uav.lowaltitude.modules.disposal.api.CounterEvidenceFixture.seed(jdbc,eventId);

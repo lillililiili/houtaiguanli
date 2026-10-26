@@ -88,7 +88,7 @@ public class EvidenceChainService {
         if ("CASE".equals(kind) && !probe(PermissionCode.PUNISHMENT_READ)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "对象不存在或不可见");
         }
-        if (!subjects.subjectVisible(kind, id, decision)) {
+        if (!subjects.subjectReadable(kind, id, decision)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "对象不存在或不可见");
         }
         boolean targetRead = probe(PermissionCode.TARGET_READ);
@@ -155,7 +155,7 @@ public class EvidenceChainService {
         addCommands(buckets.get("AUTHORIZATION"), repository.linkedCommands(eventId, family), decision);
         if (probe(PermissionCode.DISPOSAL_READ)) {
             for (CommandRow row : cap(repository.linkedAuthorizations(eventId, family))) {
-                if (subjects.subjectVisible("AUTHORIZATION", row.authorizationId(), decision)) {
+                if (subjects.subjectReadable("AUTHORIZATION", row.authorizationId(), decision)) {
                     buckets.get("AUTHORIZATION").add(new RecordDto("AUTHORIZATION", row.authorizationId(), row.createdAt(),
                             EvidenceChainChecksum.fingerprintAuthorization(row.status(), row.authorizationId()), "PRESENT",
                             new AuthorizationSummary(row.commandNo(), row.authorizationId(), row.status())));
@@ -282,7 +282,7 @@ public class EvidenceChainService {
     private void addCommands(List<RecordDto> sink, List<CommandRow> rows, AccessDecision decision) {
         List<CommandRow> visible = new ArrayList<>();
         for (CommandRow row : rows) {
-            if (subjects.subjectVisible("COMMAND", row.commandId(), decision)) visible.add(row);
+            if (subjects.subjectReadable("COMMAND", row.commandId(), decision)) visible.add(row);
         }
         for (CommandRow row : cap(visible)) {
             sink.add(new RecordDto("AUTHORIZATION", row.commandId(), row.createdAt(),

@@ -43,6 +43,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @Service
 public class AlarmRuleCounter {
+    private UavRiskCaseIdentity riskCases;
+    private com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(UavRiskCaseIdentity cases,com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService order){this.riskCases=cases;this.responseOrder=order;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -87,6 +91,7 @@ public class AlarmRuleCounter {
 
     @Transactional
     public void launchIfPassed(String eventId, String runId) {
+        if(riskCases!=null&&eventId!=null)riskCases.lockCases(eventId);
         if (predictions != null && predictions.blocksAutomatic("counter",eventId)) return;
         if (eventId == null || eventId.isBlank() || runId == null || runId.isBlank()) return;
         RunRow run = automatic.passingRun(eventId, runId);
@@ -103,6 +108,7 @@ public class AlarmRuleCounter {
         if (history.next() == CounterHistory.Next.NOTHING) return;
         String block = advisory.counterBlockReason(event.eventId());
         if (block != null && !block.isEmpty()) return;
+        if(responseOrder!=null)responseOrder.ensureLocked(event);
         if (!notifications.allows(event.eventId())) return;
         DisposalPolicy policy = policies.active();
         if (history.next() == CounterHistory.Next.DISPATCH_QUEUED) {
@@ -126,6 +132,7 @@ public class AlarmRuleCounter {
         repository.insert(new AuthorizationInsert(id, no, DisposalRules.COUNTERMEASURE, "UAV_EVENT", event.eventId(),
                 event.targetId(), chosen.deviceId(), chosen.channel(), REASON, actor.userId(), at, DisposalRules.REQUESTED,
                 policy.policyCode(), event.ownerOrgId(), event.districtId(), event.sourceMode()));
+        if(riskCases!=null)riskCases.bindAuthorization(id,event.eventId());
         String note = history.attempt() > 1 ? NOTE + "前一次自动反制的启动指令没有发出去，这是第 " + history.attempt()
                 + " 次自动发起（最多 " + CounterHistory.MAX_ATTEMPTS + " 次）。" : NOTE;
         if (repository.authorizeDirect(id, 0L, at, until, note) != 1)

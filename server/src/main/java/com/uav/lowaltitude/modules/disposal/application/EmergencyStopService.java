@@ -31,6 +31,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class EmergencyStopService {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity value){riskCases=value;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -79,9 +81,10 @@ public class EmergencyStopService {
         if(predictions==null||!predictions.isPrediction(eventId))
             throw new IllegalArgumentException("A prediction episode is required for a system safety stop");
         predictions.lockEpisode(eventId);
-        stops.lockEvent(eventId);
+        String caseId=riskCases==null?null:riskCases.caseId(eventId);
+        if(caseId==null)stops.lockEvent(eventId);else for(String member:riskCases.eventIds(caseId))stops.lockEvent(member);
         List<AuthorizationRow> rows=new ArrayList<>();
-        for(String id:stops.authorizationIds(eventId)) {
+        for(String id:caseId==null?stops.authorizationIds(eventId):riskCases.authorizationIds(caseId)) {
             AuthorizationRow row=authorizations.lockForSystem(id);
             if(row!=null)rows.add(row);
         }

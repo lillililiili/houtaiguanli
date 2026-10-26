@@ -1,10 +1,12 @@
 package com.uav.lowaltitude.modules.prediction.application;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.mockito.Mockito.*;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.UUID;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +50,51 @@ class PredictionEventGateTest {
     }
     @AfterEach void close(){db.shutdown();}
 
+    @Test void opticalObservationUsesCurrentRiskWithoutRequiringHumanVerification() {
+        assertThat(gate.observationRequired(predicted)).isTrue();
+        assertThat(gate.observationRequired(observed)).isNull();
+        assertThat(gate.observationRequired(id())).isNull();
+        for(String status:java.util.List.of("UNKNOWN","CLEARED","ACTIVE","ENTERED")) {
+            jdbc.update("UPDATE prediction_episode SET status=?,current_evidence_valid=TRUE,entered_evidence_valid=FALSE WHERE episode_id=?",status,episode);
+            assertThat(gate.observationRequired(predicted)).isEqualTo("ACTIVE".equals(status));
+        }
+        jdbc.update("UPDATE prediction_episode SET entered_evidence_valid=TRUE WHERE episode_id=?",episode);
+        assertThat(gate.observationRequired(predicted)).isTrue();
+        jdbc.update("UPDATE prediction_episode SET valid_until=? WHERE episode_id=?",now,episode);
+        assertThat(gate.observationRequired(predicted)).isFalse();
+        jdbc.update("UPDATE prediction_episode SET valid_until=?,last_observed_at=? WHERE episode_id=?",now+1000,now+1,episode);
+        assertThat(gate.observationRequired(predicted)).isFalse();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"ENDED","CLEARED","UNKNOWN"})
+    void closedCaseCannotKeepAutomaticObservationThroughItsUnchangedRawEvent(String stage) {
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        gate.riskCases(cases);
+        var inactive=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),episode,id(),stage,predicted,java.util.List.of(predicted,observed),false,true,3);
+        for(String event:java.util.List.of(predicted,observed)) {
+            when(cases.allCases(event)).thenReturn(java.util.List.of(inactive));
+            assertThat(gate.observationRequired(event)).isFalse();
+        }
+        assertThat(jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,predicted))
+                .as("risk verification must not rewrite the original verdict").isEqualTo("PENDING_VERIFICATION");
+    }
+
+    @Test void anotherCurrentRegionKeepsObservationAndUnrelatedMeasuredEventsKeepOriginalPolicy() {
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        gate.riskCases(cases);
+        var ended=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),episode,id(),"ENDED",observed,java.util.List.of(predicted,observed),false,true,3);
+        var active=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),null,id(),"ENTERED",observed,java.util.List.of(observed),false,false,1);
+        when(cases.allCases(observed)).thenReturn(java.util.List.of(ended,active));
+        assertThat(gate.observationRequired(observed)).isNull();
+        assertThat(gate.observationRequired(id())).isNull();
+        when(cases.allCases(predicted)).thenReturn(java.util.List.of(new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),episode,id(),"PREDICTED",predicted,java.util.List.of(predicted),false,true,1)));
+        assertThat(gate.observationRequired(predicted)).isTrue();
+    }
+
     @Test void predictionRequiresHumanConfirmationAndObservedEventKeepsIndependentEvidence() {
         assertThat(gate.confirmationBlock(predicted)).isEmpty();
         assertThat(gate.counterBlock(predicted,false)).contains("人工核实");
@@ -64,7 +111,7 @@ class PredictionEventGateTest {
     @Test void automationOriginCannotBeLostWhenObservedAlarmIsLinked() {
         for(String category:new String[]{"verify","counter","dispose"})assertThat(gate.blocksAutomatic(category,predicted)).isTrue();
         assertThat(gate.blocksAutomatic("counter",observed)).isTrue();
-        assertThat(gate.blocksAutomatic("verify",observed)).isFalse();
+        assertThat(gate.blocksAutomatic("verify",observed)).isTrue();
         assertThat(gate.blocksAutomatic("dispose",observed)).isFalse();
         assertThat(gate.blocksAutomatic("counter",id())).isFalse();
     }
@@ -80,12 +127,42 @@ class PredictionEventGateTest {
     @Test void enteredOnlyContinuesExistingWindowWithFreshMeasuredEntryEvidence() {
         confirm();
         jdbc.update("UPDATE prediction_episode SET status='ENTERED',entered_evidence_valid=TRUE WHERE episode_id=?",episode);
-        assertThat(gate.counterBlock(predicted,false)).contains("关联实测告警");
+        assertThat(gate.counterBlock(predicted,false)).contains("统一风险记录");
         assertThat(gate.counterBlock(predicted,true)).isEmpty();
         jdbc.update("UPDATE prediction_episode SET entered_evidence_valid=FALSE WHERE episode_id=?",episode);
         assertThat(gate.counterBlock(predicted,true)).isNotEmpty();
         jdbc.update("UPDATE prediction_episode SET entered_evidence_valid=TRUE,valid_until=? WHERE episode_id=?",now,episode);
         assertThat(gate.counterBlock(predicted,true)).isNotEmpty();
+    }
+
+    @Test void measuredHandoffKeepsManualRiskCurrentAfterPredictionExpiresAndDoesNotReviveStoppedAuthority() {
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        gate.riskCases(cases);
+        var entered=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),episode,id(),"ENTERED",observed,java.util.List.of(predicted,observed),true,true,7);
+        when(cases.cases(predicted)).thenReturn(java.util.List.of(entered));
+        when(cases.allCases(predicted)).thenReturn(java.util.List.of(entered));
+        when(cases.hasCases(predicted)).thenReturn(true);
+        when(cases.confirmedForDisposal(predicted)).thenReturn(true);
+        when(cases.currentMeasuredArea(entered)).thenReturn(true);
+        when(cases.notificationOwner(predicted)).thenReturn(predicted);
+        when(cases.measuredObservedAt(entered)).thenReturn(now-100);
+        jdbc.update("UPDATE prediction_episode SET status='ENTERED',valid_until=?,entered_evidence_valid=FALSE,current_evidence_valid=FALSE",now-6_000);
+        assertThat(gate.counterBlock(predicted,true)).isEmpty();
+        assertThat(gate.notificationBlock(predicted)).isEmpty();
+        assertThat(gate.observationRequired(predicted)).isTrue();
+        assertThat(gate.assessment(predicted,now-1_000,now).presence()).isEqualTo(Presence.STILL_PRESENT);
+        assertThat(gate.blocksAutomatic("counter",predicted)).isTrue();
+        var stop=mock(com.uav.lowaltitude.modules.disposal.application.EmergencyStopService.class);
+        var response=new PredictionResponseService(gate,stop);
+        response.pause(predicted,"DIRECTION_UNRESOLVED",8);
+        verifyNoInteractions(stop);
+        assertThat(jdbc.queryForObject("SELECT last_paused_version FROM prediction_episode",Long.class)).isEqualTo(-1);
+        when(cases.currentMeasuredArea(entered)).thenReturn(false);
+        assertThat(gate.counterBlock(predicted,true)).contains("实测入区依据");
+        assertThat(gate.notificationBlock(predicted)).contains("实测入区依据");
+        response.pause(predicted,"NO_CURRENT_MEASUREMENT",9);
+        verify(stop).stopForPrediction(predicted,"NO_CURRENT_MEASUREMENT",9);
     }
 
     @Test void operatorMayVerifyViewedSnapshotWhileNewerEvidenceIsCheckedAndFrozen() {
@@ -229,6 +306,20 @@ class PredictionEventGateTest {
         gate.configuration(configurationWithFreshness(3000));
         jdbc.update("UPDATE prediction_episode SET last_observed_at=?",now-100);
         if("replay".equals(source)) jdbc.update("UPDATE prediction_snapshot SET based_on_observed_at=?",now-100);
+        jdbc.update("UPDATE rule_evaluation SET observed_at=?",new java.sql.Timestamp(now-100));
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        var entered=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(id(),episode,id(),"ENTERED",observed,List.of(predicted,observed),true,true,1);
+        when(cases.cases(predicted)).thenReturn(List.of(entered));
+        when(cases.currentMeasuredArea(entered)).thenReturn(true);
+        when(cases.measuredFreshnessMillis()).thenReturn(120_000L);
+        gate.riskCases(cases);
+        jdbc.update("UPDATE prediction_episode SET valid_until=?",now-1);
+        jdbc.update("UPDATE rule_evaluation SET observed_at=?",new java.sql.Timestamp(now-8_000));
+        assertThat(gate.pilotPlan(predicted,evaluation)).as("measured handoff uses the measured clock for both real and registered replay evidence").isEqualTo(plan);
+        when(cases.currentMeasuredArea(entered)).thenReturn(false);
+        assertThat(gate.pilotPlan(predicted,evaluation)).isNull();
+        gate.riskCases(null);
+        jdbc.update("UPDATE prediction_episode SET valid_until=?",now+3_000);
         jdbc.update("UPDATE rule_evaluation SET observed_at=?",new java.sql.Timestamp(now-100));
         jdbc.update("INSERT INTO rule_evaluation VALUES (?,?,?,?,?,NULL,'ACTIVE','FRESH','NONE',?,?)",
                 id(),target,org,district,source,new java.sql.Timestamp(now-10),new java.sql.Timestamp(now));

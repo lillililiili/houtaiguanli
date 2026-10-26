@@ -18,7 +18,13 @@ public final class AlarmDtos {
     private AlarmDtos() { }
 
     public record PageDto<T>(List<T> items, int page, int size, long total) { }
+    public record TodayCountsDto(long total, long pendingVerification, long confirmed, long falsePositive) { }
+    public record OverviewDto(TodayCountsDto today, TodayCountsDto excludedMock, long pendingDisposal,
+                              long occurredFrom, long occurredTo) { }
     public static final class AlarmDto {
+        private java.util.Map<String,Object> riskCase;
+        public java.util.Map<String,Object> getRiskCase(){return riskCase;}
+        public AlarmDto withRiskCase(java.util.Map<String,Object> value){riskCase=value;return this;}
         private String originKind;
         private java.util.Map<String,Object> prediction, predictionSnapshot;
         private List<java.util.Map<String,Object>> predictionHistory;

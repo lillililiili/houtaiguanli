@@ -32,7 +32,7 @@ public interface UserDataScopeMapper {
             """)
     List<ScopeRuleRow> lockRuleUsers();
 
-    @Select("SELECT org_id AS orgId, parent_id AS parentId FROM app_org")
+    @Select("SELECT org_id AS orgId, parent_id AS parentId FROM app_org WHERE deleted_at IS NULL")
     List<OrgRow> listOrgLinks();
 
     @Delete("DELETE FROM app_user_data_scope WHERE user_id = #{userId}")
@@ -44,7 +44,7 @@ public interface UserDataScopeMapper {
             INSERT INTO app_user_data_scope (user_id, org_id, district_id)
             SELECT CAST(#{userId} AS VARCHAR(36)), o.org_id, d.district_id
             FROM app_org o CROSS JOIN app_district d
-            WHERE o.org_id IN
+            WHERE o.deleted_at IS NULL AND o.org_id IN
             <foreach collection='orgIds' item='orgId' open='(' separator=',' close=')'>#{orgId}</foreach>
             </script>
             """)

@@ -12,6 +12,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /** Persists decisions only. This service never dispatches device or notification actions. */
 @Service
 public class AutomationRuntimeService {
+    private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void predictions(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions){this.predictions=predictions;}
     private final AutomationRuleRepository config;
     private final AutomationRuntimeRepository runs;
     private final AutomationRuntimeFactsRepository facts;
@@ -32,6 +35,7 @@ public class AutomationRuntimeService {
         var current=facts.read(eventId,now);
         var decision=evaluator.evaluate(head,config.rules(category),new HashSet<>(config.scopes(category).stream().map(s->s.id()).toList()),
             current,now,policy.maxAge(),same?eligibility.holds(old.holds()):Map.of(),same?old.unknownSince():null);
+        if(predictions!=null&&predictions.blocksAutomatic(category,eventId))decision=new AutomationRuntimeModel.Decision("PAUSED","本次预测衍生风险须人工核实及发起反制，不能自动处罚",List.of(),Map.of(),null);
         String signature=encode(Arrays.asList(head.version(),decision.status(),decision.reason(),stableFacts(current),decision.conditions()));
         String run=same&&signature.equals(old.signature())?old.runId():UUID.randomUUID().toString();
         if(!same||!signature.equals(old.signature()))runs.insertRun(new RunRow(run,category,eventId,current==null?null:current.targetId(),head.version(),

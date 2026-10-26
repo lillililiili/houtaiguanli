@@ -186,7 +186,7 @@ describe('本单位角色保护', () => {
     await mount(UnitRolesView)
     expect(host.textContent).toContain('暂无人员角色')
     ;[...host.querySelectorAll('[role=tab]')].find(tab => tab.textContent.trim() === '我的权限').click(); await settle()
-    expect(host.textContent).toContain('由平台维护')
+    expect(host.textContent).toContain('继承本单位已开放的全部权限')
     expect(host.querySelector('.unit-role-detail .el-select')).toBeNull()
     expect(host.querySelector('.unit-role-detail input[type=checkbox]')).toBeNull()
     expect(button('保存权限', host)).toBeUndefined()
@@ -223,14 +223,13 @@ describe('本单位角色保护', () => {
 
 describe('平台单位授权一次保存', () => {
   const props = () => ({ visible: true, organization: { org_id: 'org-east', name: '东区单位' } })
-  it('首次纳管要求逐人分配，手动新增角色默认零权限，绑定和角色一次保存', async () => {
-    const person = { user_id: `member-${crypto.randomUUID()}`, account: 'unit-admin', name: '单位管理员', role_code: 'GLOBAL-OLD', role_name: '原全局角色' }
+  it('首次纳管要求为普通人员分配，手动新增角色默认零权限，绑定和角色一次保存', async () => {
+    const person = { user_id: `member-${crypto.randomUUID()}`, account: 'unit-staff', name: '值班员', role_code: 'GLOBAL-OLD', role_name: '原全局角色' }
     api.delegation.mockResolvedValueOnce({ ...unit, managed: false, version: 4, members: [person], unit_roles: [], catalog: { permissions: [menu], action_modules: unit.action_modules } })
     await mount(UnitDelegationDialog, props())
-    vm.$.setupState.draft.administrator_user_id = person.user_id
     button('保存并立即生效').click(); await settle()
     expect(api.preview).not.toHaveBeenCalled()
-    expect(ElMessage.warning).toHaveBeenCalledWith('请为单位管理员选择本单位角色。')
+    expect(ElMessage.warning).toHaveBeenCalledWith('请为值班员选择本单位角色。')
     button('新增单位角色').click(); await settle()
     const state = vm.$.setupState
     expect(state.rolePlan.new_roles[0].permissions.every(item => item.level === 'NONE' && !item.menu_enabled)).toBe(true)
@@ -242,6 +241,23 @@ describe('平台单位授权一次保存', () => {
     expect(body.new_roles).toEqual([expect.objectContaining({ name: '本单位值班角色', permissions: [{ permission_code: 'alarms', level: 'NONE', menu_enabled: false }], actions: [] })])
     expect(body.member_assignments).toEqual([{ user_id: person.user_id, new_role_key: body.new_roles[0].client_key }])
     expect(body).not.toHaveProperty('retire_role_codes')
+    expect(api.createRole).not.toHaveBeenCalled()
+  })
+
+  it('只有管理员时无需新建角色或重分配，界面明确继承单位授权', async () => {
+    const person = { user_id: 'manager-east', account: 'unit-admin', name: '单位管理员', role_code: 'GLOBAL-OLD', role_name: '原全局角色' }
+    api.delegation.mockResolvedValueOnce({ ...unit, managed: false, version: 4, members: [person], unit_roles: [], catalog: { permissions: [menu], action_modules: unit.action_modules } })
+    await mount(UnitDelegationDialog, props())
+    expect(document.body.textContent).toContain('直接继承平台为本单位开放的全部前台权限和后台功能')
+    vm.$.setupState.activeTab = 'members'; await settle()
+    const members = document.querySelector('[aria-label="人员角色分配表"]')
+    expect(members.textContent).toContain('保留绑定，管理员权限由单位授权决定')
+    expect(members.textContent).not.toContain('需改为本单位角色')
+    button('保存并立即生效').click(); await settle()
+    expect(api.apply).toHaveBeenCalledOnce()
+    const body = api.apply.mock.calls[0][1]
+    expect(body).not.toHaveProperty('new_roles')
+    expect(body).not.toHaveProperty('member_assignments')
     expect(api.createRole).not.toHaveBeenCalled()
   })
 

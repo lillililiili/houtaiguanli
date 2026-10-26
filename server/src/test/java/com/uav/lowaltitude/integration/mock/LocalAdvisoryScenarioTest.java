@@ -26,6 +26,16 @@ class LocalAdvisoryScenarioTest {
         assertThat(result.status()).isEqualTo("ANSWERED");assertThat(result.answeredAt()).isNotNull();
         assertThat(result.playbackCompletedAt()).isNull();assertThat(result.simulated()).isTrue();
     }
+    @Test void scopedProviderKeysUsePersistedEventIdentityRatherThanParsingSuffixes(){
+        var recording=new AdvisoryVoiceRecording.Recording("qa","测试","测试","sha");
+        var configured=mock(AdvisoryVoiceRecording.class);when(configured.content(recording)).thenReturn(new byte[]{1});
+        var adapter=new LocalAdvisoryVoiceAdapter(environment("test"),configured,new AppClock());
+        var tasks=mock(com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository.class);adapter.tasks(tasks);
+        String key="auto-advisory-voice:qa-event:"+java.util.UUID.randomUUID();
+        when(tasks.eventForProviderKey(key)).thenReturn("qa-event");
+        assertThat(adapter.simulate("replay",recording,key).status()).isEqualTo("ANSWERED");
+        assertThat(adapter.simulate("replay",recording,"auto-advisory-voice:qa-event:unregistered").status()).isEqualTo("SIMULATED_PLAYED");
+    }
     @Test void scenariosDoNotAffectOtherEventsSourcesOrUnqualifiedEnvironments() {
         for(String[] profiles:new String[][]{{"local"},{"local","qa","prod"},{"test","prod"}}) {
             var adapter=new LocalAdvisorySmsAdapter(environment(profiles));

@@ -40,6 +40,8 @@ public class EoTrackingRepository {
     public List<String> candidates(long cutoff, long now, int batch) {
         return jdbc.queryForList("""
                 SELECT t.target_id FROM target t JOIN target_latest_state s ON s.target_id=t.target_id
+                JOIN app_org o ON o.org_id=t.owner_org_id AND o.enabled=TRUE AND o.deleted_at IS NULL
+                JOIN app_district d ON d.district_id=t.district_id AND d.enabled=TRUE
                 WHERE s.observed_at>=? AND s.observed_at<=?
                 AND NOT EXISTS (SELECT 1 FROM eo_tracking_task x WHERE x.target_id=t.target_id AND x.status IN ('OPEN','ENDING'))
                 AND NOT EXISTS (SELECT 1 FROM eo_target_control c WHERE c.target_id=t.target_id AND c.auto_paused=TRUE)
@@ -51,6 +53,12 @@ public class EoTrackingRepository {
                 ORDER BY CASE WHEN EXISTS (SELECT 1 FROM flight_risk r WHERE r.target_id=t.target_id AND r.state_code<>'EXCLUDED'
                      AND r.severity IN ('HIGH','CRITICAL')) THEN 0 ELSE 1 END,s.observed_at DESC,t.target_id
                 """, String.class, new Timestamp(cutoff), new Timestamp(now));
+    }
+    /** New tracking must recheck current ownership; historical snapshots and stop tasks remain readable. */
+    public boolean currentScope(String org, String district) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM app_org o"
+                + " JOIN app_district d ON d.district_id=? AND d.enabled=TRUE"
+                + " WHERE o.org_id=? AND o.enabled=TRUE AND o.deleted_at IS NULL)", Boolean.class, district, org));
     }
     public List<Map<String,Object>> alarms(String target, long cutoff, long now) {
         return jdbc.queryForList("""

@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { roleCopySource, roleDisplayName, userRoleDisplayName } from '@/utils/rolePresentation'
 
 describe('角色来源展示契约', () => {
+  it('管理员显示有效权限来源，保留原人员角色绑定但不当作当前权限', () => {
+    expect(userRoleDisplayName({ role_code: 'old', role_name: '旧人员角色', unit_administrator: true }, [])).toBe('单位管理员（继承单位授权）')
+    expect(userRoleDisplayName({ role_code: 'old', role_name: '旧人员角色', unit_administrator: false }, [])).toBe('旧人员角色')
+  })
   it.each([undefined, null, {}, { source_role_code: '', source_role_name: '值班员' }, { source_role_code: 'old', source_role_name: ' ' }])('没有有效来源关系不根据名称或单位推断自动复制：%j', copy_origin => {
     const role = { role_code: 'unit-staff', name: '值班员', owner_org_id: 'org-1', copy_origin }
     expect(roleDisplayName(role)).toBe('值班员')
