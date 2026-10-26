@@ -11,6 +11,7 @@ import com.uav.lowaltitude.modules.device.domain.EoEdgeConfiguration.Binding;
 import com.uav.lowaltitude.modules.device.domain.EoTrackingContinuity;
 import com.uav.lowaltitude.modules.device.infrastructure.DeviceRepository;
 import com.uav.lowaltitude.modules.device.infrastructure.EoEdgeRepository;
+import com.uav.lowaltitude.modules.device.infrastructure.EoTrackingRepository;
 import com.uav.lowaltitude.modules.target.application.TargetReadService;
 import com.uav.lowaltitude.platform.api.ApiException;
 import com.uav.lowaltitude.platform.time.AppClock;
@@ -30,19 +31,21 @@ public class TargetVideoService {
     private final long reportMaxAge;
     private final long heartbeatMaxAge;
     private final EoFusionObservationSummaryService fusionObservations;
+    private final EoTrackingRepository trackingRepository;
 
     public TargetVideoService(DeviceAccessPolicy access, TargetReadService targets, EoEdgeRepository edges,
                               DeviceRepository devices, ObjectMapper mapper, AppClock clock,
                               VideoStreamRegistry streams, VideoMediaClient media,
                               @org.springframework.beans.factory.annotation.Value("${app.eo-edge.position-max-age-millis:15000}") long reportMaxAge,
                               @org.springframework.beans.factory.annotation.Value("${app.eo-edge.heartbeat-timeout-millis:30000}") long heartbeatMaxAge,
-                              EoFusionObservationSummaryService fusionObservations) {
+                              EoFusionObservationSummaryService fusionObservations, EoTrackingRepository trackingRepository) {
         this.access = access; this.targets = targets; this.edges = edges;
         this.devices = devices; this.mapper = mapper; this.clock = clock;
         this.streams = streams; this.media = media;
         this.reportMaxAge=reportMaxAge;
         this.heartbeatMaxAge=heartbeatMaxAge;
         this.fusionObservations=fusionObservations;
+        this.trackingRepository=trackingRepository;
     }
 
     public TargetVideoDto video(String targetId) {
@@ -101,14 +104,25 @@ public class TargetVideoService {
     public record CaptureSource(String targetId, String taskId, String deviceId, String streamId, String sourceMode) { }
 
     /**
-     * 系统自动取证（告警核实属实、反制开始）用：没有操作人，只认该目标进行中的光电跟踪任务已登记、且此刻有画面的视频流。
+     * 系统自动取证（告警核实属实、反制开始）用：没有操作人，按当前任务、来源、真实成功回执和持续跟踪事实核定视频流。
      * 返回 null 表示当时没有可截取的画面，调用方如实记录，不拿别的画面代替。
      */
     public AutoCaptureSource autoCaptureSource(String targetId) {
         Map<String, Object> task = edges.latestTaskByTarget(targetId);
         if (task == null || !"OPEN".equals(text(task, "status"))) return null;
+        Map<String, Object> target = trackingRepository.snapshot(targetId);
+        if (target == null) return null;
+        Binding binding = edges.binding(text(task, "ops_device_id"), false);
+        Map<String, Object> command = devices.findCommand(text(task, "begin_command_id"));
+        String block = EoTrackingContinuity.block(new EoTrackingContinuity.Target(text(target, "target_id"),
+                text(target, "source_mode"), text(target, "owner_org_id"), text(target, "district_id"),
+                text(target, "object_type_code"), text(target, "track_status")),
+                task, binding, command, clock.nowMillis(), reportMaxAge, heartbeatMaxAge);
+        if (block != null || devices.commandReceipts(text(command, "command_id")).stream()
+                .noneMatch(row -> validReceipt(row, task, binding))) return null;
         var stream = streams.find(text(task, "task_id"));
-        if (stream == null || !stream.targetId().equals(targetId) || !stream.deviceId().equals(text(task, "ops_device_id"))
+        if (stream == null || !stream.taskId().equals(text(task, "task_id")) || !stream.targetId().equals(targetId)
+                || !stream.deviceId().equals(text(task, "ops_device_id")) || !Objects.equals(stream.sourceMode(), binding.sourceMode())
                 || !media.ready(stream.streamPath())) return null;
         return new AutoCaptureSource(new CaptureSource(targetId, stream.taskId(), stream.deviceId(), stream.streamId(),
                 stream.sourceMode()), media.rtspReadUrl(stream.streamPath()));

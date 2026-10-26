@@ -265,16 +265,87 @@ class QaVideoStreamApiTest extends EoManualTrackApiTest {
     @Autowired com.uav.lowaltitude.platform.audit.AuditService auditService;
     @Autowired org.springframework.transaction.support.TransactionTemplate tx;
 
+    @Test void automaticCaptureRequiresCurrentSuccessfulReceiptAndMatchingSource() throws Exception {
+        String target=insertVideoTarget(), task=UUID.randomUUID().toString(), command=UUID.randomUUID().toString();
+        long now=clock.nowMillis();
+        edges.insertCommand(command,"VIDEO-GUARD-"+command.substring(0,8),binding.opsDeviceId(),null,"EO_BEGIN_TRACK","fixture","replay",true,now+10000,now);
+        edges.insertTask(task,target,null,binding.opsDeviceId(),command,"fixture","{}",now);
+        mvc.perform(put("/api/v1/local-interface-simulator/video-streams/"+task).header("Authorization","Bearer "+token)
+                .contentType(MediaType.APPLICATION_JSON).content(mapper.writeValueAsString(Map.of("device_id",binding.opsDeviceId()))))
+                .andExpect(status().isOk());
+        var stream=streams.find(task);
+        when(media.ready(stream.streamPath())).thenReturn(true);
+        when(media.rtspReadUrl(stream.streamPath())).thenReturn("rtsp://127.0.0.1:8554/"+stream.streamPath());
+        // 系统读取不依赖操作人；有推流不等于当前任务已获得成功回执。
+        com.uav.lowaltitude.platform.security.AuthContext.clear();
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        edges.updateCommand(command,"QUEUED","SENT",now,null,null);
+        edges.updateCommand(command,"SENT","SUCCEEDED",now,"200",null);
+        edges.trackingReport(task,now,now);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        addTrackingReceipt(command,UUID.randomUUID().toString(),binding.edgeId(),binding.externalDeviceId(),now);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        addTrackingReceipt(command,task,"other-"+UUID.randomUUID(),binding.externalDeviceId(),now);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        addTrackingReceipt(command,task,binding.edgeId(),"other-"+UUID.randomUUID(),now);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        addTrackingReceipt(command,task,binding.edgeId(),binding.externalDeviceId(),now);
+        var captured=videoService.autoCaptureSource(target);
+        assertThat(captured).isNotNull();
+        assertThat(captured.source()).isEqualTo(new com.uav.lowaltitude.modules.device.application.TargetVideoService.CaptureSource(
+                target,task,binding.opsDeviceId(),stream.streamId(),"replay"));
+        assertThat(captured.readUrl()).isEqualTo("rtsp://127.0.0.1:8554/"+stream.streamPath());
+        jdbc.update("UPDATE device_command SET source_mode='live' WHERE command_id=?",command);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        jdbc.update("UPDATE device_command SET source_mode='replay',simulated=FALSE WHERE command_id=?",command);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        jdbc.update("UPDATE device_command SET simulated=TRUE WHERE command_id=?",command);
+        jdbc.update("UPDATE target SET source_mode='live' WHERE target_id=?",target);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        jdbc.update("UPDATE target SET source_mode='mock' WHERE target_id=?",target);
+        assertThat(videoService.autoCaptureSource(target)).isNotNull();
+        jdbc.update("UPDATE eo_tracking_task SET last_report_observed_at=?,last_report_at=? WHERE task_id=?",now-60_000,now-60_000,task);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        edges.trackingReport(task,now,now);
+        assertThat(videoService.autoCaptureSource(target)).isNotNull();
+        streams.remove(task);
+        var wrongSource=streams.register(task,target,binding.opsDeviceId(),"live");
+        when(media.ready(wrongSource.streamPath())).thenReturn(true);
+        assertThat(videoService.autoCaptureSource(target)).isNull();
+        streams.remove(task);
+    }
+
     /** 告警核实属实、反制开始时系统自动截图并录像，挂到告警事件、目标、光电设备和反制授权上；没有画面如实记下；同一触发只做一次。 */
     @Test void alarmConfirmationAndCounterStartCaptureStillAndClipAutomatically() throws Exception {
         java.nio.file.Path dir=java.nio.file.Files.createTempDirectory("eo-auto-test");
-        java.nio.file.Path jpg=dir.resolve("frame.jpg"), mp4=dir.resolve("clip.mp4"), script=dir.resolve("fake-ffmpeg.sh");
+        boolean windows=System.getProperty("os.name").startsWith("Windows");
+        java.nio.file.Path jpg=dir.resolve("frame.jpg"), mp4=dir.resolve("clip.mp4"),
+                script=dir.resolve(windows?"fake-ffmpeg.cmd":"fake-ffmpeg.sh");
         java.nio.file.Files.write(jpg,EvidenceTestFiles.bytes("frame.jpg"));
         java.nio.file.Files.write(mp4,EvidenceTestFiles.bytes("clip.mp4"));
         // 代替 ffmpeg：按输出文件扩展名写入有效样本，并记下收到的拉流地址。
-        java.nio.file.Files.writeString(script,"#!/bin/sh\nfor last; do :; done\necho \"$@\" >> '"+dir.resolve("args.txt")+"'\n"
-                +"case \"$last\" in *.jpg) cp '"+jpg+"' \"$last\";; *) cp '"+mp4+"' \"$last\";; esac\n");
-        script.toFile().setExecutable(true);
+        if(windows) {
+            java.nio.file.Files.writeString(script,"""
+                    @echo off
+                    setlocal
+                    set "fixture=%~dp0"
+                    echo %*>>"%~dp0args.txt"
+                    :next
+                    set "last=%~1"
+                    shift
+                    if not "%~1"=="" goto next
+                    for %%f in ("%last%") do if /I "%%~xf"==".jpg" (
+                    copy /b /y "%fixture%frame.jpg" "%last%" >nul
+                    ) else (
+                    copy /b /y "%fixture%clip.mp4" "%last%" >nul
+                    )
+                    exit /b %errorlevel%
+                    """.replace("\n","\r\n"));
+        } else {
+            java.nio.file.Files.writeString(script,"#!/bin/sh\nfor last; do :; done\necho \"$@\" >> '"+dir.resolve("args.txt")+"'\n"
+                    +"case \"$last\" in *.jpg) cp '"+jpg+"' \"$last\";; *) cp '"+mp4+"' \"$last\";; esac\n");
+            script.toFile().setExecutable(true);
+        }
         var service=new com.uav.lowaltitude.modules.device.application.EoAutoCaptureService(jdbc,videoService,evidenceService,
                 auditService,tx,clock,true,script.toString(),5);
 
@@ -348,10 +419,21 @@ class QaVideoStreamApiTest extends EoManualTrackApiTest {
         edges.insertTask(task,target,null,binding.opsDeviceId(),command,"fixture","{}",now);
         edges.updateCommand(command,"QUEUED","SENT",now,null,null);
         edges.updateCommand(command,"SENT","SUCCEEDED",now,"200",null);
+        addTrackingReceipt(command,task,binding.edgeId(),binding.externalDeviceId(),now);
+        edges.trackingReport(task,now,now);
         String url="/api/v1/local-interface-simulator/video-streams/"+task;
         return mapper.readTree(mvc.perform(put(url).header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON)
                 .content(mapper.writeValueAsString(Map.of("device_id",binding.opsDeviceId())))).andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString()).path("data").path("stream_path").asText();
+    }
+
+    private void addTrackingReceipt(String command,String task,String edgeId,String externalDeviceId,long now) throws Exception {
+        String receipt=mapper.writeValueAsString(Map.of("event","BeginTracking","edgeId",edgeId,"timestamp",now,
+                "metadata",Map.of("taskId",task,"deviceId",externalDeviceId,"codeStatus",200)));
+        String inbox=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO inbox_message(inbox_id,source,source_msg_id,received_at) VALUES (?,?,?,?)",
+                inbox,"eo-receipt-test:"+command,inbox,now);
+        edges.addReceipt(command,inbox,"200",now,receipt);
     }
 
     private String insertExecutingAuthorization(String target,String event) {

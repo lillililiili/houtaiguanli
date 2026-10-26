@@ -40,8 +40,10 @@ class TargetVideoPostgresTest extends EoManualTrackApiTest {
             throw new IllegalStateException("Requires isolated advisory_verify_ database");
         jdbc.execute("create schema " + SCHEMA);
         created = true;
-        Flyway.configure().dataSource(root()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false)
-                .cleanDisabled(true).locations("classpath:db/migration", "classpath:db/postgresql").load().migrate();
+        var configuration = Flyway.configure().dataSource(root()).schemas(SCHEMA).defaultSchema(SCHEMA).createSchemas(false)
+                .cleanDisabled(true).locations("classpath:db/migration", "classpath:db/postgresql");
+        com.uav.lowaltitude.platform.database.MigrationLineage.configure(configuration);
+        configuration.load().migrate();
     }
 
     @AfterAll static void cleanSchema(@org.springframework.beans.factory.annotation.Autowired

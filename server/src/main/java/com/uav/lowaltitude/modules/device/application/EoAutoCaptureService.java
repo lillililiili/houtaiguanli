@@ -29,8 +29,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 告警核实属实、反制开始时自动截图并录一段像（2026-10-19 用户确认）。
  * <p>
- * 触发只看已落库的事实：核实历史里新出现的“属实”、反制授权事件里的“开始执行”。人工核实、规则自动核实、
- * 人工改判非法、人工或自动反制都会留下这两类记录，所以不用逐个入口挂钩。每次触发先写一条审计占位，
+ * 触发只看已落库的事实：风险核实账本、兼容核实历史里新出现的“属实”、反制授权事件里的“开始执行”。
+ * 风险处置核实不改写实测违法结论；同次核实双写的新旧历史只取证一次。每次触发先写一条审计占位，
  * 同一触发只处理一次（重启后也不重复）。
  * <p>
  * 画面只取该目标进行中的光电跟踪任务正在登记的视频流；当时没有画面就在审计里如实记下，不拿别的画面代替。
@@ -40,7 +40,20 @@ import com.uav.lowaltitude.platform.time.AppClock;
 public class EoAutoCaptureService {
     private static final Logger log = LoggerFactory.getLogger(EoAutoCaptureService.class);
     static final String ACTION = "eo_auto_capture";
-    static final String ALARM = "ALARM_CONFIRMED", COUNTER = "COUNTER_STARTED";
+    static final String ALARM = "ALARM_CONFIRMED", RISK = "RISK_CONFIRMED", COUNTER = "COUNTER_STARTED";
+    // A case confirmation can also append the original event verdict. Match that exact write,
+    // never every confirmation for the target/event: distinct regions remain distinct triggers.
+    private static final String SAME_VERIFICATION = """
+            rv.event_id=v.event_id AND rv.event_version+1=v.version AND rv.conclusion='CONFIRMED' AND v.conclusion='CONFIRMED'
+            AND rv.basis_kind='OBSERVED'
+            AND ((rv.trigger_mode='AUTO' AND rv.automation_run_id=v.automation_run_id)
+              OR (rv.trigger_mode='MANUAL' AND rv.actor_id=v.actor_id
+                  AND rv.created_at=CAST(EXTRACT(EPOCH FROM v.created_at)*1000 AS BIGINT)))
+            """;
+    private static final String CASE_SCOPE = """
+            rc.target_id=a.target_id AND rc.owner_org_id=a.owner_org_id AND rc.district_id=a.district_id
+            AND rc.source_mode=a.source_mode AND e.owner_org_id=a.owner_org_id AND e.district_id=a.district_id
+            """;
     private static final DateTimeFormatter NAME_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.of("Asia/Shanghai"));
     /** 只补最近两分钟内的触发：画面是“当时”的才有意义，停机很久后补拍的不是当时画面。 */
     private static final long LOOKBACK_MS = 120_000;
@@ -72,9 +85,16 @@ public class EoAutoCaptureService {
         this.clipSeconds = Math.max(5, Math.min(clipSeconds, 60));
     }
 
-    record Trigger(String triggerId, String kind, String eventId, String targetId, String authorizationId) {
-        String objectType() { return ALARM.equals(kind) ? "uav_event_verification" : "disposal_authorization_event"; }
-        String label() { return ALARM.equals(kind) ? "告警核实属实" : "反制开始"; }
+    record Trigger(String triggerId, String kind, String eventId, String targetId, String authorizationId,
+                   String riskCaseId, String basisKind) {
+        Trigger(String id, String kind, String event, String target, String authorization) {
+            this(id, kind, event, target, authorization, null, null);
+        }
+        String objectType() { return RISK.equals(kind) ? "uav_risk_case_verification"
+                : ALARM.equals(kind) ? "uav_event_verification" : "disposal_authorization_event"; }
+        String label() { return RISK.equals(kind) ? "风险核实属实" : ALARM.equals(kind) ? "告警核实属实" : "反制开始"; }
+        String context() { return riskCaseId == null ? "" : "; risk_case_id=" + riskCaseId + "; basis_kind=" + basisKind; }
+        String key() { return objectType() + ":" + triggerId; }
     }
 
     @Scheduled(fixedDelayString = "${app.video.auto-capture.poll-millis:5000}",
@@ -83,8 +103,8 @@ public class EoAutoCaptureService {
         if (!enabled) return;
         try {
             for (Trigger trigger : pending()) {
-                if (inFlight.add(trigger.triggerId())) {
-                    try { handle(trigger); } finally { inFlight.remove(trigger.triggerId()); }
+                if (inFlight.add(trigger.key())) {
+                    try { handle(trigger); } finally { inFlight.remove(trigger.key()); }
                 }
             }
         } catch (RuntimeException ex) {
@@ -94,13 +114,31 @@ public class EoAutoCaptureService {
 
     List<Trigger> pending() {
         java.time.OffsetDateTime since = Instant.ofEpochMilli(clock.nowMillis() - LOOKBACK_MS).atOffset(java.time.ZoneOffset.UTC);
+        List<Trigger> risks = jdbc.query("""
+                SELECT rv.verification_id,rv.risk_case_id,rv.basis_kind,rv.event_id,
+                       COALESCE((SELECT c.current_target_id FROM target_current_alias c WHERE c.historical_target_id=a.target_id),a.target_id) AS target_id
+                FROM uav_risk_case_verification rv JOIN uav_risk_case rc ON rc.risk_case_id=rv.risk_case_id
+                JOIN uav_risk_case_member rm ON rm.risk_case_id=rv.risk_case_id AND rm.event_id=rv.event_id
+                JOIN uav_event e ON e.event_id=rv.event_id JOIN alarm a ON a.alarm_id=e.alarm_id
+                WHERE rv.conclusion='CONFIRMED' AND rv.created_at>=? AND a.target_id IS NOT NULL AND
+                """ + CASE_SCOPE + """
+                  AND NOT EXISTS (SELECT 1 FROM audit_log l WHERE l.object_type='uav_risk_case_verification' AND l.object_id=rv.verification_id AND l.action=?)
+                  AND NOT EXISTS (SELECT 1 FROM uav_event_verification v JOIN audit_log l
+                    ON l.object_type='uav_event_verification' AND l.object_id=v.history_id AND l.action=?
+                    WHERE
+                """ + SAME_VERIFICATION + ") ORDER BY rv.created_at,rv.verification_id LIMIT 20",
+                (rs,i) -> new Trigger(rs.getString("verification_id"),RISK,rs.getString("event_id"),rs.getString("target_id"),null,
+                        rs.getString("risk_case_id"),rs.getString("basis_kind")), since.toInstant().toEpochMilli(),ACTION,ACTION);
         List<Trigger> alarms = jdbc.query("""
                 SELECT v.history_id, e.event_id,
                        COALESCE((SELECT c.current_target_id FROM target_current_alias c WHERE c.historical_target_id=a.target_id), a.target_id) AS target_id
                 FROM uav_event_verification v JOIN uav_event e ON e.event_id=v.event_id JOIN alarm a ON a.alarm_id=e.alarm_id
                 WHERE v.resulting_state='CONFIRMED' AND v.previous_state<>'CONFIRMED' AND v.created_at>=? AND a.target_id IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM audit_log l WHERE l.object_type='uav_event_verification' AND l.object_id=v.history_id AND l.action=?)
-                ORDER BY v.created_at LIMIT 20""",
+                  AND NOT EXISTS (SELECT 1 FROM uav_risk_case_verification rv JOIN uav_risk_case rc ON rc.risk_case_id=rv.risk_case_id
+                    JOIN uav_risk_case_member rm ON rm.risk_case_id=rv.risk_case_id AND rm.event_id=rv.event_id
+                    WHERE
+                """ + CASE_SCOPE + " AND " + SAME_VERIFICATION + ") ORDER BY v.created_at,v.history_id LIMIT 20",
                 (rs, i) -> new Trigger(rs.getString("history_id"), ALARM, rs.getString("event_id"), rs.getString("target_id"), null),
                 since, ACTION);
         List<Trigger> counters = jdbc.query("""
@@ -114,7 +152,7 @@ public class EoAutoCaptureService {
                 (rs, i) -> new Trigger(rs.getString("trigger_id"), COUNTER, rs.getString("event_id"), rs.getString("target_id"),
                         rs.getString("authorization_id")),
                 since, ACTION);
-        return java.util.stream.Stream.concat(alarms.stream(), counters.stream()).toList();
+        return java.util.stream.Stream.of(risks,alarms,counters).flatMap(List::stream).toList();
     }
 
     void handle(Trigger trigger) {
@@ -125,7 +163,7 @@ public class EoAutoCaptureService {
         tx.executeWithoutResult(status -> audit.record(null, "AUTO_EVIDENCE", "SYSTEM", "evidence", ACTION,
                 trigger.objectType(), trigger.triggerId(), outcome + " 目标=" + trigger.targetId()
                         + (trigger.eventId() == null ? "" : "; 事件=" + trigger.eventId())
-                        + (trigger.authorizationId() == null ? "" : "; 授权=" + trigger.authorizationId()),
+                        + (trigger.authorizationId() == null ? "" : "; 授权=" + trigger.authorizationId()) + trigger.context(),
                 source == null ? "SKIPPED" : "SUCCESS", "", ""));
         if (source == null) return;
         Instant startedAt = Instant.ofEpochMilli(clock.nowMillis());
@@ -140,7 +178,8 @@ public class EoAutoCaptureService {
 
     private void capture(Trigger trigger, TargetVideoService.AutoCaptureSource from, String kind, Instant startedAt) {
         boolean still = "EO_STILL".equals(kind);
-        String name = "自动" + (ALARM.equals(trigger.kind()) ? "-告警核实-" : "-反制开始-") + (still ? "截图-" : "录像-")
+        String name = "自动-" + (RISK.equals(trigger.kind()) ? "风险核实" : ALARM.equals(trigger.kind()) ? "告警核实" : "反制开始")
+                + "-" + (still ? "截图-" : "录像-")
                 + NAME_TIME.format(startedAt) + (still ? ".jpg" : ".mp4");
         Path file = null;
         try {
@@ -158,7 +197,7 @@ public class EoAutoCaptureService {
             var source = from.source();
             EoCapture capture = new EoCapture(kind, source.targetId(), trigger.eventId(), source.deviceId(), source.taskId(),
                     source.streamId(), source.sourceMode(), startedAt);
-            evidence.ingestAutoEoCapture(capture, trigger.authorizationId(), name, content, trigger.kind());
+            evidence.ingestAutoEoCapture(capture, trigger.authorizationId(), name, content, trigger.kind() + trigger.context());
         } catch (Exception ex) {
             if (ex instanceof InterruptedException) Thread.currentThread().interrupt();
             log.warn("{}自动{}未能保存：{}", trigger.label(), still ? "截图" : "录像", ex.getMessage());

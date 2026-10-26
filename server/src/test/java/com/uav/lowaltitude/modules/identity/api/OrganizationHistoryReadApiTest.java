@@ -98,10 +98,10 @@ class OrganizationHistoryReadApiTest {
         var source = mode.equals("live") ? SourceScope.LIVE : SourceScope.SIMULATED;
         var range = new Range(day.minusDays(1), day.plusDays(1), source);
         var dataset = alarms.reportDataset(reports, range, all);
-        assertThat(reports.rows(dataset, source)).extracting(row -> row.id()).contains(original.alarm(), neighbor.alarm())
-                .doesNotContain(unavailable.alarm());
+        assertThat(reports.rows(dataset, source)).extracting(row -> row.id()).contains(reportId(original), reportId(neighbor))
+                .doesNotContain(reportId(unavailable));
         assertThat(reports.rows(alarms.reportDataset(reports, range, assigned), source))
-                .extracting(row -> row.id()).doesNotContain(original.alarm());
+                .extracting(row -> row.id()).doesNotContain(reportId(original));
         assertThat(reports.rows(disposals.reportDataset(reports, range, all), source))
                 .extracting(row -> row.id()).contains(original.authorization());
         assertThat(reporting.organizations(new ReportingRepository.Scope(true, actor)))
@@ -109,6 +109,14 @@ class OrganizationHistoryReadApiTest {
         assertThat(reporting.organizations(new ReportingRepository.Scope(false, actor)))
                 .extracting(ReportingRepository.OrganizationOption::orgId).doesNotContain(retired);
         assertThat(jdbc.queryForObject("SELECT owner_org_id FROM uav_event WHERE event_id=?", String.class, original.event())).isEqualTo(retired);
+    }
+
+    private String reportId(Fact fact) {
+        // PostgreSQL persists a risk identity for this event; H2 keeps the legacy fallback.
+        // The report follows that stable identity while raw alarm/detail assertions remain above.
+        var risks=jdbc.queryForList("SELECT c.risk_case_id FROM uav_risk_case c JOIN uav_risk_case_member m USING(risk_case_id) WHERE m.event_id=? AND c.superseded_by IS NULL",String.class,fact.event());
+        assertThat(risks).hasSizeLessThanOrEqualTo(1);
+        return risks.isEmpty()?fact.alarm():risks.get(0);
     }
 
     private String organization() {
