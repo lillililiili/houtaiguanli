@@ -142,6 +142,7 @@ final class AuditLabels {
             Map.entry("target_split", "分裂目标"),
             Map.entry("fusion_config_activated", "激活融合参数版本"),
             Map.entry("evidence_ingested", "入库证据文件"),
+            Map.entry("eo_auto_capture", "自动截图录像"),
             Map.entry("evidence_linked", "关联证据对象"),
             Map.entry("evidence_hold_placed", "冻结证据"),
             Map.entry("evidence_hold_released", "解除证据冻结"),
@@ -303,6 +304,7 @@ final class AuditLabels {
             Map.entry("flight_risk", "飞行风险"), Map.entry("handoff", "业务交接"), Map.entry("disposal_authorization", "处置授权"),
             Map.entry("disposal_emergency_stop", "急停"), Map.entry("eo_dispatch_request", "光电调度"),
             Map.entry("eo_tracking_task", "光电跟踪"), Map.entry("target", "目标"), Map.entry("evidence_file", "证据文件"),
+            Map.entry("uav_event_verification", "告警核实"), Map.entry("disposal_authorization_event", "反制执行"),
             Map.entry("evidence_ledger", "证据台账"), Map.entry("airspace", "空域"), Map.entry("airport", "机场"),
             Map.entry("map_package", "离线地图包"), Map.entry("advisory_voice_recording", "电话通知录音"),
             Map.entry("automation_rule_group", "自动化规则"), Map.entry("rule_set", "规则集"),
@@ -442,6 +444,7 @@ final class AuditLabels {
         if ("SUCCESS".equals(result)) return "成功";
         if (FAILURE_RESULTS.contains(result)) return "失败";
         if ("DENIED".equals(result)) return "已拒绝";
+        if ("SKIPPED".equals(result)) return "未执行";
         return readable(result, "其他结果");
     }
 

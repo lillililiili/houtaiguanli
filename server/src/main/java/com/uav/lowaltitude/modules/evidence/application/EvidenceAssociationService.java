@@ -358,6 +358,59 @@ public class EvidenceAssociationService {
         return detail(repository.find(evidenceId), decision);
     }
 
+    /**
+     * 告警核实属实、反制开始时系统自动截取的光电画面入库（2026-10-19 用户确认）。
+     * 没有操作人，不做会话权限判断；格式校验、存储、留存期限和关联范围与人工截图相同。
+     * 归属取告警事件，同时关联目标、来源光电设备和触发的反制授权；同一触发只入库一次由调用方按审计记录保证。
+     */
+    @Transactional
+    public String ingestAutoEoCapture(EoCapture capture, String authorizationId, String fileName, byte[] content,
+                                      String trigger) {
+        if (!Set.of("EO_STILL", "EO_VIDEO").contains(capture.kindCode())) throw invalid("kind_code 参数无效");
+        if (!MODES.contains(capture.sourceMode())) throw invalid("source_mode 参数无效");
+        if (content == null || content.length == 0) throw invalid("空文件不能入库");
+        if (content.length > MAX_BYTES) throw new ApiException(HttpStatus.BAD_REQUEST, "FILE_TOO_LARGE", "文件超过 32 MiB");
+        String contentType = EvidenceFileTypes.verify(capture.kindCode(), fileName, null, content);
+        SubjectRef target = repository.findSubject("TARGET", capture.targetId());
+        if (target == null) throw invalid("目标不存在");
+        SubjectRef event = capture.eventId() == null ? null : repository.findSubject("EVENT", capture.eventId());
+        if (event != null && !repository.eventConcernsTarget(event.id(), target.id())) event = null;
+        SubjectRef owner = event != null ? event : target;
+        String org = owner.ownerOrgId(), district = owner.districtId();
+        if (!repository.catalogEnabled(org, district)) throw invalid("组织或区域无效");
+        CaptureProvenance provenance = new CaptureProvenance(capture.deviceId(),
+                repository.sourceDeviceName(capture.deviceId()), null, null, EO_TRACKING_CAPTURE);
+        Instant now = clock.now();
+        Instant captured = capture.capturedAt() == null ? now : capture.capturedAt();
+        String evidenceId = UUID.randomUUID().toString();
+        String objectKey = now.toString().substring(0, 10) + "/" + evidenceId + "/" + fileName.replaceAll("[^A-Za-z0-9._-]", "_");
+        repository.insertFile(new FileInsert(evidenceId, evidenceNo(now, evidenceId), capture.kindCode(), fileName,
+                contentType, "local", objectKey, null, null, captured, null,
+                EvidenceRetention.until(capture.kindCode(), captured, now), "PENDING", capture.sourceMode(),
+                org, district, now, now, 0));
+        repository.storeCapture(evidenceId, provenance);
+        StoredObject stored;
+        try (InputStream in = new java.io.ByteArrayInputStream(content)) {
+            stored = storage.putNew(objectKey, in);
+        } catch (IOException ex) {
+            throw new UncheckedIOException(ex);
+        }
+        repository.updateAvailable(evidenceId, stored.sizeBytes(), stored.sha256(), now, now, 1);
+        if (event != null) repository.insertLink(UUID.randomUUID().toString(), evidenceId, "EVENT", event.id(), now);
+        if (sameScope(target, org, district))
+            repository.insertLink(UUID.randomUUID().toString(), evidenceId, "TARGET", target.id(), now);
+        SubjectRef device = repository.findSubject("DEVICE", capture.deviceId());
+        if (device != null && sameScope(device, org, district))
+            repository.insertLink(UUID.randomUUID().toString(), evidenceId, "DEVICE", device.id(), now);
+        SubjectRef authorization = authorizationId == null ? null : repository.findSubject("AUTHORIZATION", authorizationId);
+        if (authorization != null && sameScope(authorization, org, district))
+            repository.insertLink(UUID.randomUUID().toString(), evidenceId, "AUTHORIZATION", authorization.id(), now);
+        audit.record(null, "AUTO_EVIDENCE", "SYSTEM", "evidence", "evidence_ingested",
+                "evidence_file", evidenceId, "kind=" + capture.kindCode() + "; source=EO_AUTO_CAPTURE; trigger=" + trigger
+                        + "; task=" + capture.taskId(), "SUCCESS", "", "");
+        return evidenceId;
+    }
+
     private static boolean sameScope(SubjectRef subject, String org, String district) {
         return org.equals(subject.ownerOrgId()) && district.equals(subject.districtId());
     }

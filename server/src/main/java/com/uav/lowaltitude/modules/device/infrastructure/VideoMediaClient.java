@@ -21,7 +21,9 @@ public class VideoMediaClient {
     private static final int MAX_BYTES = 8 * 1024 * 1024;
     private final URI apiOrigin, hlsOrigin;
     private final ObjectMapper json;
-    private final String authorization, username;
+    private final String authorization, username, password;
+    @Value("${app.video.media-rtsp-origin:rtsp://127.0.0.1:8554}")
+    private String rtspOrigin = "rtsp://127.0.0.1:8554";
     private final java.nio.file.Path passwordFile;
     private String fileAuthorization;
     private long fileModified = Long.MIN_VALUE;
@@ -37,7 +39,7 @@ public class VideoMediaClient {
             @Value("${app.video.media-password:}") String password,
             @Value("${app.video.media-password-file:}") String passwordFile, AppClock clock) {
         this.json = json; apiOrigin = origin(api); hlsOrigin = origin(hls);
-        this.clock = clock; this.username = username;
+        this.clock = clock; this.username = username; this.password = password;
         authorization = password.isEmpty() ? null : basic(username, password);
         this.passwordFile = password.isEmpty() && !passwordFile.isBlank() ? java.nio.file.Path.of(passwordFile) : null;
     }
@@ -57,6 +59,30 @@ public class VideoMediaClient {
             }
         } catch (IOException e) { fileAuthorization = null; fileModified = Long.MIN_VALUE; }
         return fileAuthorization;
+    }
+    /**
+     * 服务端自动取证用的拉流地址（只读账号）。地址只交给本机 ffmpeg 进程，不返回给浏览器，也不写日志。
+     */
+    public String rtspReadUrl(String path) {
+        validatePath(path);
+        URI base = URI.create(rtspOrigin.replaceAll("/+$", ""));
+        if (!"rtsp".equals(base.getScheme()) || base.getHost() == null || base.getUserInfo() != null
+                || !(base.getPath() == null || base.getPath().isEmpty() || "/".equals(base.getPath())))
+            throw new IllegalStateException("Media RTSP origin must be an rtsp origin without path or credentials");
+        String secret = readPassword();
+        String user = secret == null ? "" : encode(username) + ":" + encode(secret) + "@";
+        return "rtsp://" + user + base.getHost() + (base.getPort() < 0 ? "" : ":" + base.getPort()) + "/" + path;
+    }
+    private static String encode(String value) {
+        return java.net.URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+    private String readPassword() {
+        if (!password.isEmpty()) return password;
+        if (passwordFile == null) return null;
+        try {
+            String read = json.readTree(passwordFile.toFile()).path("read").asText("");
+            return read.matches("[A-Za-z0-9_-]{24,128}") ? read : null;
+        } catch (IOException e) { return null; }
     }
     private static URI origin(String value) {
         URI uri = URI.create(value);

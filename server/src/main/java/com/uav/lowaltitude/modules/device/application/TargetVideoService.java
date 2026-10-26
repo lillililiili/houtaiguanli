@@ -101,6 +101,25 @@ public class TargetVideoService {
     public record CaptureSource(String targetId, String taskId, String deviceId, String streamId, String sourceMode) { }
 
     /**
+     * 系统自动取证（告警核实属实、反制开始）用：没有操作人，只认该目标进行中的光电跟踪任务已登记、且此刻有画面的视频流。
+     * 返回 null 表示当时没有可截取的画面，调用方如实记录，不拿别的画面代替。
+     */
+    public AutoCaptureSource autoCaptureSource(String targetId) {
+        Map<String, Object> task = edges.latestTaskByTarget(targetId);
+        if (task == null || !"OPEN".equals(text(task, "status"))) return null;
+        var stream = streams.find(text(task, "task_id"));
+        if (stream == null || !stream.targetId().equals(targetId) || !stream.deviceId().equals(text(task, "ops_device_id"))
+                || !media.ready(stream.streamPath())) return null;
+        return new AutoCaptureSource(new CaptureSource(targetId, stream.taskId(), stream.deviceId(), stream.streamId(),
+                stream.sourceMode()), media.rtspReadUrl(stream.streamPath()));
+    }
+
+    /** readUrl 带只读凭据，只交给本机取证进程，不能返回给页面或写进日志。 */
+    public record AutoCaptureSource(CaptureSource source, String readUrl) {
+        @Override public String toString() { return "AutoCaptureSource[" + source + "]"; }
+    }
+
+    /**
      * 看画面只是读取（2026-10-06，OBS-03 用户确认值班员要能看光电画面）：与 eo-tracking-status 一样要设备查看权限、
      * 目标读取资格和设备范围；发起、暂停、结束跟踪等控制仍要 devices.op。
      */

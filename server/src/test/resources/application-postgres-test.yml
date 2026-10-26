@@ -13,6 +13,9 @@ spring:
 app:
   dev-seed:
     enabled: false
+  video:
+    auto-capture:
+      enabled: false
   live-device:
     enabled: false
   mqtt:
