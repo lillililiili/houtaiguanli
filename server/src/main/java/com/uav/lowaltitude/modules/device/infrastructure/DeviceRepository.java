@@ -24,7 +24,11 @@ public class DeviceRepository {
                 AND EXISTS(SELECT 1 FROM ops_integration_source weather_source
                     WHERE weather_source.source_id=d.source_id AND weather_source.protocol_code='WEATHER_SIMULATOR')
                 AND (d.enabled=FALSE OR s.observed_at IS NULL OR s.observed_at<:weather_fresh_after)
-                THEN 'UNKNOWN' ELSE COALESCE(s.connectivity,'UNKNOWN') END)
+                THEN 'UNKNOWN'
+            WHEN d.device_type_code='adsb_receiver' THEN (CASE WHEN d.enabled=FALSE THEN 'UNKNOWN'
+                WHEN EXISTS(SELECT 1 FROM adsb_receiver adsb WHERE adsb.device_id=d.device_id AND adsb.last_data_at>=:adsb_fresh_after)
+                THEN 'ONLINE' ELSE 'OFFLINE' END)
+            ELSE COALESCE(s.connectivity,'UNKNOWN') END)
             """;
     private static final String CONNECTIVITY_COUNTS =
             "SUM(CASE WHEN " + EFFECTIVE_CONNECTIVITY + "='ONLINE' THEN 1 ELSE 0 END) AS online, "
@@ -83,6 +87,8 @@ public class DeviceRepository {
     private Map<String,Object> readParameters() {
         Map<String,Object> params = new HashMap<>();
         params.put("weather_fresh_after", clock.nowMillis() - 15000);
+        // 航班接收机：30 秒内收到过航班数据就是在线（2026-10-26 航班避让）。
+        params.put("adsb_fresh_after", clock.nowMillis() - 30000);
         return params;
     }
 

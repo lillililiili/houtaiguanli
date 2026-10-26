@@ -98,10 +98,10 @@ it('统一入口，选择类型前不显示 TCP 参数，切换后只显示相�
   expect([...dialog().querySelectorAll('input')].some(el => el.value === '保留名称')).toBe(true);
   await click('雷达'); expect([...dialog().querySelectorAll('input')].some(el => el.value === '192.0.2.20')).toBe(false);
 });
-it('接入设备只展示已开放的六类设备类型', async () => {
+it('接入设备只展示已开放的七类设备类型（含 ADS-B 航班接收机）', async () => {
   await mount(); await click('接入设备');
   expect([...dialog().querySelectorAll('.access-type')].map(el => el.textContent.trim())).toEqual([
-    '雷达', '光电设备', '四通道反制设备', '天气传感器', '5G-A', 'TDOA'
+    '雷达', '光电设备', '四通道反制设备', '天气传感器', 'ADS-B 航班接收机', '5G-A', 'TDOA'
   ]);
   for (const hiddenType of ['AOA', '协议破解', 'RemoteID', '诱骗', '干扰', '驱鸟炮']) {
     expect(dialog().textContent).not.toContain(hiddenType);

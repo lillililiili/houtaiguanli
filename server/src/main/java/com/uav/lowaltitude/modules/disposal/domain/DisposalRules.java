@@ -65,7 +65,8 @@ public final class DisposalRules {
             "DEVICE_NOT_BOUND", BLOCK_NOT_BOUND,
             "DEVICE_OFFLINE", BLOCK_DEVICE_OFFLINE,
             "DEVICE_FAULT", "DEVICE_FAULT",
-            "DEVICE_BUSY", "DEVICE_BUSY");
+            "DEVICE_BUSY", "DEVICE_BUSY",
+            "AIRCRAFT_NEARBY", "AIRCRAFT_NEARBY");
 
     /** 决策 13-10 / 13-11：停止时设备侧到底怎么了，由事件流推导，不加列。 */
     public static final String STOP_NOT_ATTEMPTED = "NOT_ATTEMPTED", STOP_EXECUTED = "EXECUTED",

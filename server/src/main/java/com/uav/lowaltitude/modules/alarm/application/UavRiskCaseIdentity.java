@@ -277,10 +277,10 @@ public class UavRiskCaseIdentity {
                     +" JOIN app_district d ON d.district_id=ds.district_id AND d.enabled=TRUE WHERE ds.user_id=:reader_id AND ds.org_id=da.owner_org_id AND ds.district_id=da.district_id)";
             parameters.put("reader_id",disposalScope.userId());
         }
-        String projection="SELECT c.risk_case_id,da.authorization_id,da.action_type,da.status,da.requested_at,da.updated_at,"
+        String projection="SELECT c.risk_case_id,da.authorization_id,da.action_type,da.status,da.result_code,da.requested_at,da.updated_at,"
                 +"ROW_NUMBER() OVER(PARTITION BY c.risk_case_id ORDER BY da.requested_at DESC,da.authorization_id DESC) AS counter_rank"
                 +" FROM disposal_authorization da JOIN uav_risk_case c ON c.risk_case_id IN (:ids)";
-        String sql="SELECT risk_case_id,authorization_id,action_type,status,requested_at,updated_at FROM ("
+        String sql="SELECT risk_case_id,authorization_id,action_type,status,result_code,requested_at,updated_at FROM ("
                 +CASE_AUTHORIZATION.replace("SELECT 1 FROM disposal_authorization da",projection)+scope+") ranked WHERE counter_rank=1";
         var result=new HashMap<String,Map<String,Object>>();
         for(var row:namedJdbc.queryForList(sql,parameters)){
