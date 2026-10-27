@@ -1,6 +1,7 @@
 package com.uav.lowaltitude.modules.disposal.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
 
 import com.uav.lowaltitude.modules.disposal.application.DisposalCompletionAdapter;
 import java.sql.Timestamp;
@@ -30,19 +31,30 @@ class DisposalPredictionOriginTest {
         jdbc.execute("CREATE TABLE disposal_authorization(authorization_id VARCHAR PRIMARY KEY,subject_kind VARCHAR,subject_id VARCHAR,action_type VARCHAR,status VARCHAR,channel VARCHAR,chained_from_authorization_id VARCHAR,risk_case_id VARCHAR,requested_by VARCHAR,requested_at TIMESTAMP,device_id VARCHAR,execution_command_id VARCHAR)");
         jdbc.execute("CREATE TABLE prediction_event_link(event_id VARCHAR,episode_id VARCHAR,role VARCHAR)");
         jdbc.execute("CREATE TABLE uav_risk_case(risk_case_id VARCHAR PRIMARY KEY,episode_id VARCHAR,superseded_by VARCHAR)");
+        jdbc.execute("CREATE TABLE uav_risk_case_member(risk_case_id VARCHAR,event_id VARCHAR,role VARCHAR,created_at BIGINT)");
+        jdbc.execute("CREATE TABLE uav_event(event_id VARCHAR,alarm_id VARCHAR)");
+        jdbc.execute("CREATE TABLE alarm(alarm_id VARCHAR,alarm_type VARCHAR)");
         jdbc.execute("CREATE TABLE disposal_device_run(authorization_id VARCHAR,device_id VARCHAR,off_command_id VARCHAR)");
         jdbc.execute("CREATE TABLE device_command(command_id VARCHAR,device_id VARCHAR,status VARCHAR,completed_at BIGINT)");
         jdbc.execute("CREATE TABLE countermeasure_4ch_command(command_id VARCHAR,authorization_id VARCHAR,action VARCHAR,mask INT)");
         jdbc.execute("CREATE TABLE disposal_authorization_event(authorization_id VARCHAR,event_kind VARCHAR,occurred_at TIMESTAMP)");
-        jdbc.execute("CREATE TABLE handoff(source_kind VARCHAR,source_id VARCHAR,handoff_type VARCHAR)");
+        jdbc.execute("CREATE TABLE handoff(source_kind VARCHAR,source_id VARCHAR,handoff_type VARCHAR,risk_case_id VARCHAR)");
         repository=new DisposalRepository(jdbc,new DataSourceTransactionManager(database));
+        var origin=spy(new com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis(jdbc,
+                mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class),new com.uav.lowaltitude.platform.time.AppClock()));
+        // H2 verifies the repository's completion/origin boundary. Independent spatial proof is
+        // exercised with real migrations, MEAS lineage and device-off receipts in the PostGIS suite.
+        doReturn(null).when(origin).resolve(anyString(),anyString(),any());
+        repository.measuredPunishment(origin);
         adapter=new DisposalCompletionAdapter(repository);
         event=id();authorization=id();actor=id();device=id();command=id();
+        jdbc.update("INSERT INTO uav_event VALUES (?,?)",event,event);
+        jdbc.update("INSERT INTO alarm VALUES (?,'RULE_LEGALITY')",event);
     }
     @AfterEach void close(){database.shutdown();}
 
     @ParameterizedTest @ValueSource(strings={"COUNTERMEASURE","JAMMING"})
-    void predictionDerivedCompletionIsExcludedBeforeAndAfterMeasuredEntry(String action) {
+    void predictionDerivedCompletionNeedsIndependentSpatialProofBeforeAndAfterMeasuredEntry(String action) {
         completed(action);
         String predictedCase=caseRow(id(),null);
         jdbc.update("UPDATE disposal_authorization SET risk_case_id=?",predictedCase);
@@ -65,18 +77,12 @@ class DisposalPredictionOriginTest {
     }
 
     @ParameterizedTest @ValueSource(strings={"COUNTERMEASURE","JAMMING"})
-    void independentMeasuredCompletionRemainsEligibleEvenWhenAnotherRegionHasPrediction(String action) {
+    void ordinaryMeasuredCompletionKeepsOriginalEligibility(String action) {
         completed(action);
         eligible(action);
         String independentCase=caseRow(null,null);
-        caseRow(id(),null);
-        jdbc.update("INSERT INTO prediction_event_link VALUES (?,?,'OBSERVED')",event,id());
         jdbc.update("UPDATE disposal_authorization SET risk_case_id=?",independentCase);
         eligible(action);
-        // An older predictive authorization cannot become the selected completion.
-        jdbc.update("INSERT INTO disposal_authorization SELECT ?,subject_kind,subject_id,action_type,status,channel,NULL,?,requested_by,requested_at,device_id,execution_command_id FROM disposal_authorization WHERE authorization_id=?",
-                id(),caseRow(id(),null),authorization);
-        assertThat(repository.punishmentCompletion(event).authorizationId()).isEqualTo(authorization);
     }
 
     private void completed(String action) {
@@ -87,7 +93,8 @@ class DisposalPredictionOriginTest {
         jdbc.update("INSERT INTO disposal_authorization_event VALUES (?,'COMPLETE',?)",authorization,new Timestamp(now));
     }
     private String caseRow(String episode,String successor) {
-        String risk=id();jdbc.update("INSERT INTO uav_risk_case VALUES (?,?,?)",risk,episode,successor);return risk;
+        String risk=id();jdbc.update("INSERT INTO uav_risk_case VALUES (?,?,?)",risk,episode,successor);
+        jdbc.update("INSERT INTO uav_risk_case_member VALUES (?,?,'OBSERVED',?)",risk,event,now);return risk;
     }
     private void rejected() {
         assertThat(repository.punishmentCompletion(event)).isNull();

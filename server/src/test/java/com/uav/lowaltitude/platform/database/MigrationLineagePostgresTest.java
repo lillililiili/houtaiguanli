@@ -80,7 +80,10 @@ class MigrationLineagePostgresTest {
         assertThat(history().subList(0,before.size())).containsExactlyElementsOf(before);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=? AND table_name='simulator_observation_source' AND column_name='origin_ops_device_id'",Integer.class,schema)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM handoff_followup_policy",Integer.class)).isEqualTo(1);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM pg_trigger WHERE tgrelid='handoff_notification_decision'::regclass AND NOT tgisinternal",Integer.class)).isEqualTo(6);
+        assertThat(jdbc.queryForList("SELECT tgname FROM pg_trigger WHERE tgrelid='handoff_notification_decision'::regclass AND NOT tgisinternal",String.class))
+                .containsExactlyInAnyOrder("trg_handoff_decision_punishment_ins", "trg_handoff_decision_punishment_upd",
+                        "trg_handoff_decision_punishment_del", "trg_handoff_decision_alarm_ins", "trg_handoff_decision_alarm_upd",
+                        "trg_handoff_decision_alarm_del", "guard_current_organization");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM flyway_schema_history WHERE version='202610160003' AND success",Integer.class)).isEqualTo(1);
         if (branch.equals("automatic")) assertThat(jdbc.queryForObject("SELECT attempted_at FROM countermeasure_start_attempt WHERE command_id=?",Long.class,command)).isEqualTo(123L);
         if (branch.equals("manual")) assertThat(jdbc.queryForObject("SELECT eligible_from FROM handoff_followup_policy WHERE policy_id=1",Object.class)).isEqualTo(cutoff);

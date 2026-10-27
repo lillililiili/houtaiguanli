@@ -380,8 +380,8 @@ public class DisposalRepository {
         for(int offset=0;eligible.size()<50;offset+=100){
             var batch=jdbc.queryForList(query,Map.of("offset",offset),String.class);
             for(String event:batch){
-                var scopes=riskCases==null?List.<com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef>of():riskCases.allCases(event);
-                boolean valid=scopes.isEmpty()?punishmentCompletion(event)!=null:scopes.stream().anyMatch(c->riskCases.withCase(c.riskCaseId(),()->punishmentCompletion(event)!=null));
+                var scopes=riskCases==null?Map.<String,String>of():riskCases.actionEvents(event);
+                boolean valid=scopes.isEmpty()?punishmentCompletion(event)!=null:scopes.keySet().stream().anyMatch(c->riskCases.withCase(c,()->punishmentCompletion(event)!=null));
                 if(valid){eligible.add(event);if(eligible.size()==50)break;}
             }
             if(batch.size()<100)break;
@@ -401,6 +401,8 @@ public class DisposalRepository {
                 + " (SELECT MAX(e.occurred_at) FROM disposal_authorization_event e WHERE e.authorization_id=a.authorization_id AND e.event_kind='COMPLETE') AS completed_at"
                 + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
                 + " AND "+subject+" AND " + PUNISHMENT_COMPLETION
+                + " AND (a.risk_case_id IS NOT NULL OR (NOT EXISTS(SELECT 1 FROM prediction_event_link p WHERE p.event_id=a.subject_id)"
+                + " AND NOT EXISTS(SELECT 1 FROM uav_risk_case_member pm JOIN uav_risk_case pc USING(risk_case_id) WHERE pm.event_id=a.subject_id AND pc.episode_id IS NOT NULL)))"
                 + " ORDER BY a.requested_at DESC,a.authorization_id DESC", parameters,
                 (r, n) -> new PunishmentCompletionRow(
                         r.getString("requested_by"), "JAMMING".equals(r.getString("action_type"))

@@ -32,6 +32,22 @@ public class MeasuredPunishmentBasis {
                         Long observedAt,Long completedAt,Map<String,Object> facts) { }
 
     public boolean derived(String eventId) {
+        String selected=cases.selectedCase();
+        if(eventId!=null&&selected!=null){
+            var scoped=jdbc.queryForList("SELECT c.episode_id,a.alarm_type FROM uav_risk_case c"
+                    +" JOIN uav_risk_case_member m ON m.risk_case_id=c.risk_case_id AND m.event_id=?"
+                    +" JOIN uav_event e ON e.event_id=m.event_id JOIN alarm a ON a.alarm_id=e.alarm_id"
+                    +" WHERE c.risk_case_id=? AND c.superseded_by IS NULL AND a.target_id IS NOT DISTINCT FROM c.target_id"
+                    +" AND a.owner_org_id=c.owner_org_id AND a.district_id=c.district_id AND a.source_mode=c.source_mode"
+                    +" AND e.owner_org_id=c.owner_org_id AND e.district_id=c.district_id"
+                    +" AND (c.episode_id IS NOT NULL OR (m.role='OBSERVED' AND ((c.airspace_id IS NULL AND c.root_event_id=e.event_id)"
+                    +" OR EXISTS(SELECT 1 FROM prediction_actual_entry_link x"
+                    +" WHERE x.event_id=e.event_id AND x.target_id=c.target_id AND x.airspace_id=c.airspace_id))))",eventId,selected);
+            // A selected region must actually belong to this event before it can narrow origin.
+            // Invalid/foreign selections remain guarded; pure prediction is never a legal fact.
+            return scoped.size()!=1||scoped.get(0).get("episode_id")!=null
+                    ||"PREDICTED_AIRSPACE_ENTRY".equals(scoped.get(0).get("alarm_type"));
+        }
         return eventId!=null&&jdbc.queryForObject("SELECT COUNT(*) FROM uav_event e JOIN alarm a ON a.alarm_id=e.alarm_id WHERE e.event_id=?"
                 +" AND (a.alarm_type='PREDICTED_AIRSPACE_ENTRY' OR EXISTS(SELECT 1 FROM prediction_event_link p WHERE p.event_id=e.event_id)"
                 +" OR EXISTS(SELECT 1 FROM uav_risk_case_member m JOIN uav_risk_case c USING(risk_case_id) WHERE m.event_id=e.event_id AND c.episode_id IS NOT NULL))",Long.class,eventId)>0;
@@ -66,6 +82,7 @@ public class MeasuredPunishmentBasis {
         if(!postgis||scope==null)return null; // Spatial proof must be evaluated by PostGIS, never guessed from an H2 fixture.
         var params=new HashMap<String,Object>();params.put("event",eventId);params.put("case",scope);
         params.put("before",new Timestamp(before));params.put("simulation",simulationAllowed);params.put("qa",qaAllowed);
+        params.put("for_completion",completedAt!=null);
         params.put("evaluation",evaluationId);params.put("point",pointId);
         var rows=named.queryForList(SQL,params);
         if(rows.isEmpty())return null;
@@ -117,6 +134,7 @@ public class MeasuredPunishmentBasis {
         AND NULLIF(r.decision_algorithm_version,'') IS NOT NULL
         AND (r.freshness_code='FRESH' OR (r.freshness_code='REPLAY' AND c.source_mode='replay'))
         AND r.observed_at<=:before AND r.evaluated_at BETWEEN r.observed_at AND :before
+        AND (:for_completion=FALSE OR r.evaluated_at<:before)
         AND (c.episode_id IS NULL OR (pe.episode_id IS NOT NULL AND CAST(EXTRACT(EPOCH FROM r.observed_at)*1000 AS BIGINT)>=pe.started_at))
         AND x.observed_at=CAST(EXTRACT(EPOCH FROM r.observed_at)*1000 AS BIGINT)
         AND jsonb_typeof(r.unknown_reasons::jsonb)='array' AND (r.unknown_reasons::jsonb-'PILOT_POSITION_UNAVAILABLE')='[]'::jsonb

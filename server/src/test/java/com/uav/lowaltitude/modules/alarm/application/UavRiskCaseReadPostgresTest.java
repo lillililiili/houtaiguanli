@@ -54,7 +54,7 @@ class UavRiskCaseReadPostgresTest {
         assertThat(basis.observedAt()).isEqualTo(f.now);
         assertThat(basis.facts()).containsEntry("basis_kind","INDEPENDENT_MEASURED_ENTRY")
                 .containsEntry("risk_verification_is_legal_verdict",false).containsEntry("simulated","replay".equals(mode));
-        assertThat((Map<?,?>)basis.facts().get("risk_verification")).containsEntry("basis_kind","PREDICTION");
+        assertThat(((Map<?,?>)basis.facts().get("risk_verification")).get("basis_kind")).isEqualTo("PREDICTION");
         assertThat(f.jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,observed)).isEqualTo("PENDING_VERIFICATION");
         assertThat(punishment(f).resolve(cycle.event(),auth,f.now+1000)).as("Prediction material is never a legal fact").isNull();
         var repository=disposals(f);
@@ -71,20 +71,20 @@ class UavRiskCaseReadPostgresTest {
         assertThat(punishment(f).resolve(observed,auth,f.now+1000)!=null).isEqualTo("replay".equals(mode));
     }
 
-    @ParameterizedTest @ValueSource(strings={"no-verification","missing-height","wrong-source","after-completion","old-cycle","unknown-evidence","stop-unknown","stop-wrong-mask","missing-case"})
+    @ParameterizedTest @ValueSource(strings={"no-verification","missing-height","wrong-source","after-completion","same-as-completion","old-cycle","unknown-evidence","stop-unknown","stop-wrong-mask","missing-case"})
     void measuredPunishmentDoesNotBorrowMissingOrInvalidFacts(String invalid) {
         Fixtures f=new Fixtures(DATABASE,"replay");Cycle cycle=f.predict(id(),f.now-2000);
         if(!invalid.equals("no-verification"))f.confirm(cycle);
+        if(invalid.equals("wrong-source"))f.observationMode="live";
+        if(invalid.equals("unknown-evidence"))f.assurance="INSUFFICIENT";
         String observed=f.enter(List.of(cycle)),actor=actor(f),auth=authorization(f,cycle.episode(),observed,actor,"COMPLETED");
-        long completed=invalid.equals("after-completion")?f.now-1:f.now+1000;
+        long completed=invalid.equals("after-completion")?f.now-1:invalid.equals("same-as-completion")?f.now:f.now+1000;
         String command=completeDevice(f,auth,actor,completed);
         switch(invalid) {
             case "missing-height" -> f.jdbc.update("UPDATE track_point SET altitude_amsl_m=NULL WHERE track_id=?",f.measuredTrack);
-            case "wrong-source" -> f.jdbc.update("UPDATE source_observation SET source_mode='live' WHERE source_id=?",f.source);
             case "old-cycle" -> f.jdbc.update("UPDATE prediction_episode SET started_at=? WHERE episode_id=?",f.now+1,cycle.episode());
-            case "unknown-evidence" -> f.jdbc.update("UPDATE rule_evaluation SET decision_assurance_code='INSUFFICIENT' WHERE target_id=?",f.target);
-            case "stop-unknown" -> f.jdbc.update("UPDATE device_command SET status='UNKNOWN' WHERE command_id=?",command);
-            case "stop-wrong-mask" -> f.jdbc.update("UPDATE countermeasure_4ch_command SET mask=1 WHERE command_id=?",command);
+            case "stop-unknown" -> f.jdbc.update("UPDATE device_command SET status='TIMED_OUT' WHERE command_id=?",command);
+            case "stop-wrong-mask" -> f.jdbc.update("UPDATE countermeasure_4ch_command SET mask=13 WHERE command_id=?",command);
             case "missing-case" -> f.jdbc.update("UPDATE disposal_authorization SET risk_case_id=NULL WHERE authorization_id=?",auth);
             default -> { }
         }
@@ -108,6 +108,29 @@ class UavRiskCaseReadPostgresTest {
         assertThat(identity.withCase(first.episode(),()->basis.resolveFrozen(observed,auth,f.now+999,frozen.evaluationId(),frozen.pointId()))).isNull();
     }
 
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void aSharedEventDoesNotTurnAnotherIndependentRegionIntoPredictionOrigin(String mode) {
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle predicted=f.predict(id(),f.now-2000);f.confirm(predicted);
+        String observed=f.enter(List.of(predicted)),independentArea=id();f.actualEntry(observed,independentArea);
+        var identity=f.identities();
+        f.tx(()->{identity.lockCases(observed);return null;});
+        String independent=identity.allCases(observed).stream().filter(c->independentArea.equals(c.airspaceId())).findFirst().orElseThrow().riskCaseId();
+        var proof=punishment(f);String actor=actor(f);
+        String auth=authorization(f,independent,observed,actor,"COMPLETED");completeDevice(f,auth,actor,f.now+1000);
+        assertThat(proof.derived(observed)).as("An unscoped mixed event cannot waive origin checks").isTrue();
+        assertThat(identity.withCase(predicted.episode(),()->proof.derived(observed))).isTrue();
+        assertThat(identity.withCase(independent,()->proof.derived(observed))).isFalse();
+        assertThat(identity.withCase(independent,()->disposals(f).punishmentCompletion(observed)).authorizationId()).isEqualTo(auth);
+        assertThat(identity.withCase(independent,()->proof.derived(predicted.event()))).isTrue();
+        assertThat(identity.withCase(id(),()->proof.derived(observed))).as("An unrelated case never waives guards").isTrue();
+        f.jdbc.update("UPDATE disposal_authorization SET risk_case_id=NULL WHERE authorization_id=?",auth);
+        assertThat(identity.withCase(independent,()->disposals(f).punishmentCompletion(observed))).as("An unscoped old authorization cannot be borrowed").isNull();
+        String otherOrg=id();
+        f.jdbc.update("INSERT INTO app_org(org_id,org_code,name,enabled,created_at,updated_at,version) VALUES(?,?,?,TRUE,0,0,0)",otherOrg,otherOrg,"Other isolated owner");
+        f.jdbc.update("UPDATE uav_risk_case SET owner_org_id=? WHERE risk_case_id=?",otherOrg,independent);
+        assertThat(identity.withCase(independent,()->proof.derived(observed))).as("Scope drift cannot waive prediction guards").isTrue();
+    }
+
     @Test void completedPunishmentScanDoesNotStarveBehindInvalidCandidates() {
         // Explicit lexical prefixes prove that all 101 invalid candidates precede the valid one,
         // including a second SQL page. The remainder of every identity/time/location is generated.
@@ -123,6 +146,68 @@ class UavRiskCaseReadPostgresTest {
         assertThat(disposals(f).completedWithoutPunishment()).contains(observed);
     }
 
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void concurrentAutomaticHandoffFreezesOneIndependentBasisPerRegion(String mode) throws Exception {
+        Fixtures f=new Fixtures(DATABASE,mode);
+        Cycle first=f.predict(id(),f.now-2000),second=f.predict(id(),f.now-1000);
+        f.confirm(first);f.confirm(second);
+        String observed=f.enter(List.of(first,second)),actor=actor(f);
+        for(Cycle cycle:List.of(first,second)) {
+            String auth=authorization(f,cycle.episode(),cycle.event(),actor,"COMPLETED");
+            completeDevice(f,auth,actor,f.now+1000);
+        }
+        var identity=spy(f.identities());
+        doThrow(new AssertionError("Historical completion must not recompute current spatial risk")).when(identity).cases(anyString());
+        doThrow(new AssertionError("Historical completion must not recompute current spatial risk")).when(identity).allCases(anyString());
+        var handoffs=new com.uav.lowaltitude.modules.handoff.infrastructure.HandoffRepository(f.jdbc);
+        handoffs.riskCases(identity);
+        f.jdbc.update("UPDATE handoff_recipient SET enabled=FALSE WHERE handoff_type='UAV_PUNISHMENT'");
+        String recipient=id();
+        f.jdbc.update("INSERT INTO handoff_recipient(recipient_id,display_name,handoff_type,enabled,created_at,updated_at) VALUES(?,?,'UAV_PUNISHMENT',TRUE,?,?)",recipient,recipient,at(f.now),at(f.now));
+        var material=mock(com.uav.lowaltitude.modules.handoff.application.HandoffMaterialAssembler.class);
+        when(material.assemble(observed,true)).thenReturn(new com.uav.lowaltitude.modules.handoff.api.HandoffDtos.MaterialV2Dto(
+                2,null,List.of(),List.of(),List.of(),false,null,List.of(),null,List.of(),List.of(),null));
+        when(material.sourceMode(observed)).thenReturn(mode);
+        var channel=mock(com.uav.lowaltitude.modules.handoff.domain.HandoffChannelPort.class);
+        var policy=mock(com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimePolicy.class);
+        // A disabled automatic engine cannot implicitly authorize sending derived punishment.
+        when(policy.enabled()).thenReturn(false);
+        var service=new com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService(null,handoffs,null,null,
+                null,new AppClock(Clock.fixed(Instant.ofEpochMilli(f.now+2000),ZoneOffset.UTC)),mock(AuditService.class),new ObjectMapper().findAndRegisterModules(),
+                new com.uav.lowaltitude.modules.disposal.application.DisposalCompletionAdapter(disposals(f)),new UavEventRepository(f.jdbc),material,channel,
+                null,null,policy,null,null,null,null,mock(com.uav.lowaltitude.modules.handoff.infrastructure.HandoffFollowupRepository.class));
+        service.measuredPunishment(punishment(f),identity);
+        var workers=java.util.concurrent.Executors.newFixedThreadPool(2);
+        var start=new java.util.concurrent.CountDownLatch(1);
+        try {
+            var pending=new ArrayList<java.util.concurrent.Future<?>>();
+            for(int n=0;n<2;n++)pending.add(workers.submit(()->{
+                try {start.await();}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException(interrupted);}
+                f.tx(()->{service.automaticAfterDisposal(observed);return null;});
+            }));
+            start.countDown();
+            for(var result:pending)result.get(20,java.util.concurrent.TimeUnit.SECONDS);
+        } finally {workers.shutdownNow();}
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM handoff WHERE source_id=?",Long.class,observed)).isEqualTo(2L);
+        for(Cycle cycle:List.of(first,second)) {
+            String handoff=identity.withCase(cycle.episode(),()->handoffs.existingPunishment(observed));
+            assertThat(handoff).isNotBlank();
+            String frozen=handoffs.frozenMeasuredBasis(handoff);
+            var facts=new ObjectMapper().readTree(frozen);
+            assertThat(facts.path("risk_case_id").asText()).isEqualTo(cycle.episode());
+            assertThat(facts.path("airspace_id").asText()).isEqualTo(cycle.airspace());
+            assertThat(facts.path("risk_verification_is_legal_verdict").asBoolean()).isFalse();
+            assertThat(handoffs.latestDelivery(handoff).blockedReason()).isEqualTo(com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService.WAITING_RULES);
+            f.tx(()->{identity.runWithCase(cycle.episode(),()->service.automaticAfterDisposal(observed));return null;});
+            assertThat(handoffs.frozenMeasuredBasis(handoff)).isEqualTo(frozen);
+            assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM handoff_delivery WHERE handoff_id=?",Long.class,handoff)).isEqualTo(1L);
+            assertThatThrownBy(()->f.jdbc.update("UPDATE handoff_measured_basis SET basis_json=CAST('{}' AS JSON) WHERE handoff_id=?",handoff))
+                    .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        }
+        assertThat(f.jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,observed)).isEqualTo("PENDING_VERIFICATION");
+        verifyNoInteractions(channel);
+    }
+
     private static com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis punishment(Fixtures f) {
         var clock=new AppClock(Clock.fixed(Instant.ofEpochMilli(f.now+2000),ZoneOffset.UTC));
         var proof=new com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis(f.jdbc,f.identities(),clock);
@@ -134,7 +219,7 @@ class UavRiskCaseReadPostgresTest {
     }
     private static String completeDevice(Fixtures f,String auth,String actor,long completed) {
         String device=f.jdbc.queryForObject("SELECT device_id FROM disposal_authorization WHERE authorization_id=?",String.class,auth),command=id();
-        f.jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type,channel,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,'反制','测试',?,?,?,?)",device,device,"Isolated counter",f.mode,!f.mode.equals("live"),f.now,f.now);
+        f.jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,'反制','测试',?,?,?,?)",device,device,"Isolated counter",f.mode,!f.mode.equals("live"),f.now,f.now);
         f.jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,completed_at,created_at,updated_at) VALUES(?,?,?,?,'COUNTERMEASURE_4CH_SET','Isolated real-off fixture','SUCCEEDED',?,?,?,?,?)",command,command,device,actor,f.mode,!f.mode.equals("live"),completed,f.now,f.now);
         f.jdbc.update("INSERT INTO countermeasure_4ch_command(command_id,action,mask,authorization_id) VALUES(?,'SET_MASK',0,?)",command,auth);
         f.jdbc.update("UPDATE disposal_authorization SET execution_command_id=? WHERE authorization_id=?",command,auth);
@@ -971,7 +1056,7 @@ class UavRiskCaseReadPostgresTest {
         final JdbcTemplate jdbc;
         final String target=id(),org=id(),district=id(),source=id(),parameter=id(),ruleSet=id(),ruleVersion=id(),run=id(),mode;
         final long now=Instant.now().toEpochMilli();
-        String measuredDevice,measuredTrack,measuredSession,measuredExternal,nextEventId;
+        String measuredDevice,measuredTrack,measuredSession,measuredExternal,nextEventId,observationMode,assurance="SUFFICIENT";
         final double longitude=117+Math.random(),latitude=36+Math.random();
         Fixtures(Database database,String mode) {
             this.database=database;this.jdbc=database.jdbc();this.mode=mode;
@@ -1061,8 +1146,8 @@ class UavRiskCaseReadPostgresTest {
             String evaluation=id();
             var existing=jdbc.queryForList("SELECT evaluation_id FROM rule_evaluation WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?) ORDER BY evaluated_at DESC,evaluation_id DESC FETCH FIRST 1 ROW ONLY",String.class,event);
             if(!existing.isEmpty())evaluation=existing.get(0);
-            else jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) VALUES(?,?,?,'ACTIVE','TARGET',?,?,?,?,'FRESH','NONE','ILLEGAL',90,'HIGH',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),(SELECT alarm_id FROM uav_event WHERE event_id=?),?,?,?,?,'SUFFICIENT','isolated-measured',CAST('[]' AS JSON))",
-                    evaluation,run,ruleVersion,target,at(now),at(now),at(now),event,org,district,mode,at(now));
+            else jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) VALUES(?,?,?,'ACTIVE','TARGET',?,?,?,?,'FRESH','NONE','ILLEGAL',90,'HIGH',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),(SELECT alarm_id FROM uav_event WHERE event_id=?),?,?,?,?,?,'isolated-measured',CAST('[]' AS JSON))",
+                    evaluation,run,ruleVersion,target,at(now),at(now),at(now),event,org,district,mode,at(now),assurance);
             String version=id();
             if(jdbc.queryForObject("SELECT COUNT(*) FROM airspace WHERE airspace_id=?",Long.class,airspace)==0){
                 jdbc.update("INSERT INTO airspace(airspace_id,airspace_no,name,source_mode,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,'Isolated measured region',?,?,?,?,?)",airspace,airspace,mode,org,district,at(now),at(now));
@@ -1096,7 +1181,7 @@ class UavRiskCaseReadPostgresTest {
             }
             String inbox=id(),observation=id();
             jdbc.update("INSERT INTO inbox_message(inbox_id,source,source_msg_id,received_at,processed_at,source_id,payload_hash,payload,status) VALUES(?,?,?,?,?,?,REPEAT('a',64),CAST('{}' AS JSON),'DONE')",inbox,"sim-normalized:"+source,id(),observed,observed,source);
-            jdbc.update("INSERT INTO source_observation(observation_id,inbox_id,source_id,device_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,altitude_amsl_m,quality,source_mode,owner_org_id,district_id,created_at) VALUES(?,?,?,?,?,?,?,?,ST_SetSRID(ST_MakePoint(?,?),4326),2,?,CAST(? AS JSON),?,?,?,?)",observation,inbox,source,measuredDevice,measuredSession,measuredExternal,at(observed),at(observed),lon,latitude,amsl,quality,mode,org,district,at(observed));
+            jdbc.update("INSERT INTO source_observation(observation_id,inbox_id,source_id,device_id,source_session_key,external_target_id,observed_at,received_at,location,position_accuracy_m,altitude_amsl_m,quality,source_mode,owner_org_id,district_id,created_at) VALUES(?,?,?,?,?,?,?,?,ST_SetSRID(ST_MakePoint(?,?),4326),2,?,CAST(? AS JSON),?,?,?,?)",observation,inbox,source,measuredDevice,measuredSession,measuredExternal,at(observed),at(observed),lon,latitude,amsl,quality,observationMode==null?mode:observationMode,org,district,at(observed));
             long sequence=jdbc.queryForObject("SELECT COUNT(*)+1 FROM track_point WHERE track_id=?",Long.class,measuredTrack);
             jdbc.update("INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,point_kind,observation_id,position_accuracy_m,position_source_id,created_at) VALUES(?,?,?,?,?,ST_SetSRID(ST_MakePoint(?,?),4326),?,'MEAS',?,2,?,?)",id(),measuredTrack,sequence,at(observed),at(observed),lon,latitude,amsl,observation,source,at(observed));
             jdbc.update("UPDATE target_latest_state SET location=ST_SetSRID(ST_MakePoint(?,?),4326),altitude_amsl_m=?,observed_at=?,received_at=? WHERE target_id=?",lon,latitude,amsl,at(observed),at(observed),target);
@@ -1126,7 +1211,12 @@ class UavRiskCaseReadPostgresTest {
         }
         synchronized DataSource dataSource() {
             // Spring binds JDBC transactions to this exact DataSource instance, including worker threads.
-            if(scopedDataSource==null)scopedDataSource=new DriverManagerDataSource(url()+"?currentSchema="+schema+",public",env("POSTGRES_TEST_USER"),env("POSTGRES_TEST_PASSWORD"));
+            if(scopedDataSource==null){
+                var config=new com.zaxxer.hikari.HikariConfig();
+                config.setJdbcUrl(url()+"?currentSchema="+schema+",public");config.setUsername(env("POSTGRES_TEST_USER"));config.setPassword(env("POSTGRES_TEST_PASSWORD"));
+                config.setMinimumIdle(1);config.setMaximumPoolSize(8);config.setPoolName(schema);
+                scopedDataSource=new com.zaxxer.hikari.HikariDataSource(config);
+            }
             return scopedDataSource;
         }
         DataSource rootDataSource() { return new DriverManagerDataSource(url(),env("POSTGRES_TEST_USER"),env("POSTGRES_TEST_PASSWORD")); }
@@ -1139,6 +1229,7 @@ class UavRiskCaseReadPostgresTest {
         void verifySchema() { if(!schema.matches("risk_read_[a-f0-9]{32}"))throw new IllegalStateException("Unsafe disposable schema"); }
         @Override public void close() {
             if(!created)return;verifySchema();
+            if(scopedDataSource instanceof com.zaxxer.hikari.HikariDataSource pool)pool.close();
             new JdbcTemplate(rootDataSource()).execute("DROP SCHEMA "+schema+" CASCADE");created=false;
         }
         static String env(String name) { String value=System.getenv(name);if(value==null)throw new IllegalStateException(name+" required");return value; }

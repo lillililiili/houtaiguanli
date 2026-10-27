@@ -12,6 +12,7 @@ import RuleRunsDialog from './RuleRunsDialog.vue'
 import RuleSettingsDialog from './RuleSettingsDialog.vue'
 import RuleSetPanel from './RuleSetPanel.vue'
 import ResponseOrderPanel from './ResponseOrderPanel.vue'
+import FlightAvoidancePanel from './FlightAvoidancePanel.vue'
 import { CATEGORIES, actionSummary, categoryMeta, conditionText, enabledCount, scopeSummary, timeSummary } from './ruleModel'
 import { useAutomationRuleGroup } from './useAutomationRuleGroup'
 
@@ -39,7 +40,7 @@ const executionType = computed(() => ({ CONNECTED: 'success', STARTING: 'warning
 
 function openEditor(rule = null) { clearActionError(); editingRule.value = rule; editorVisible.value = true }
 function openSettings() { clearActionError(); settingsVisible.value = true }
-function changeCategory(next) { if (saving.value || loading.value) return; activeTab.value = next; if (next === 'order') return; if (next !== category.value) { editorVisible.value = false; settingsVisible.value = false; runsVisible.value = false; historyVisible.value = false; clearActionError(); load(next) } }
+function changeCategory(next) { if (saving.value || loading.value) return; activeTab.value = next; if (next === 'order' || next === 'flight') return; if (next !== category.value) { editorVisible.value = false; settingsVisible.value = false; runsVisible.value = false; historyVisible.value = false; clearActionError(); load(next) } }
 async function saveRule(payload) {
   const current = editingRule.value
   const success = await mutate(state => current ? automationRuleApi.updateRule(category.value, current.rule_id, { ...payload, expected_version: state.version }) : automationRuleApi.createRule(category.value, { ...payload, expected_version: state.version }))
@@ -64,13 +65,14 @@ watch(recoveryRevision, () => { editorVisible.value = false; settingsVisible.val
       <el-button v-if="canReadRuleSets" :aria-expanded="ruleSetsVisible" aria-controls="judgement-rule-versions" @click="toggleRuleSets">研判规则版本</el-button>
     </PageHeader>
     <section v-if="canReadRuleSets && ruleSetsOpened" v-show="ruleSetsVisible" id="judgement-rule-versions" aria-label="研判规则版本"><RuleSetPanel /></section>
-    <el-alert v-if="activeTab !== 'order' && group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
+    <el-alert v-if="!['order', 'flight'].includes(activeTab) && group?.execution_message" :title="group.execution_message" :type="executionType" :closable="false" show-icon />
     <el-alert v-if="uncertain" :title="uncertain" type="warning" :closable="false" show-icon />
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon><template #default><el-button :disabled="loading" @click="load(category)">重新读取</el-button></template></el-alert>
     <el-alert v-if="actionError && !editorVisible && !settingsVisible" :title="actionError" type="error" :closable="false" show-icon />
     <el-card class="rule-card" shadow="never">
-      <el-tabs :model-value="activeTab" @update:model-value="changeCategory"><el-tab-pane v-for="item in CATEGORIES" :key="item.key" :label="item.label" :name="item.key" :disabled="saving || loading" /><el-tab-pane label="处置顺序" name="order" :disabled="saving || loading" /></el-tabs>
+      <el-tabs :model-value="activeTab" @update:model-value="changeCategory"><el-tab-pane v-for="item in CATEGORIES" :key="item.key" :label="item.label" :name="item.key" :disabled="saving || loading" /><el-tab-pane label="处置顺序" name="order" :disabled="saving || loading" /><el-tab-pane label="航班避让" name="flight" :disabled="saving || loading" /></el-tabs>
       <ResponseOrderPanel v-if="activeTab === 'order'" />
+      <FlightAvoidancePanel v-else-if="activeTab === 'flight'" />
       <template v-else-if="group">
         <section class="context-grid"><div><span>适用范围</span><strong>{{ scopeSummary(group.settings) }}</strong></div><div><span>生效时间</span><strong>{{ timeSummary(group.settings) }}</strong></div><div><span>预设动作</span><strong>{{ actionSummary(category, group.settings) }}</strong></div><el-button type="primary" :icon="Setting" :disabled="!canManage || saving || loading" @click="openSettings">生效设置</el-button></section>
         <section class="list-bar"><div><p :class="{ paused: !count }">{{ policyText }}</p><small>共 {{ group.rules.length }} 条 · {{ count }} 条已启用</small></div><div class="list-actions"><el-button @click="runsVisible = true">运行记录</el-button><el-button @click="historyVisible = true">变更记录</el-button><el-button type="primary" :icon="Plus" :disabled="!mayCreate || saving" @click="openEditor()">新建规则</el-button></div></section>

@@ -202,11 +202,23 @@ class HandoffAutomaticMatrixApiTest extends HandoffPunishmentMaterialsApiTest {
     }
 
     private void prepareCurrentDisposeFacts() {
-        String target = UUID.randomUUID().toString();
+        String target = jdbc.queryForObject("select a.target_id from alarm a join uav_event e on e.alarm_id=a.alarm_id where e.event_id=?", String.class, eventId);
         var now = OffsetDateTime.now(java.time.ZoneOffset.UTC).minusSeconds(1);
-        jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','mock','seed-stage3-org','seed-stage3-district',?,?)", target, "QA-SUPP-" + target, now, now, now, now);
-        jdbc.update("insert into target_latest_state(target_id,observed_at,received_at,created_at,updated_at) values(?,?,?,?,?)", target, now, now, now, now);
-        jdbc.update("update alarm set target_id=? where alarm_id=(select alarm_id from uav_event where event_id=?)", target, eventId);
+        if (target == null) {
+            target = UUID.randomUUID().toString();
+            jdbc.update("insert into target(target_id,target_no,first_seen_at,last_seen_at,object_type_code,source_mode,owner_org_id,district_id,created_at,updated_at) values(?,?,?,?,'UAV','mock','seed-stage3-org','seed-stage3-district',?,?)", target, "QA-SUPP-" + target, now, now, now, now);
+            jdbc.update("update alarm set target_id=? where alarm_id=(select alarm_id from uav_event where event_id=?) and target_id is null", target, eventId);
+            // PostgreSQL creates the generic case when the parent fixture inserts the event.
+            // Complete this test fixture's initially unknown identity together; never replace an
+            // existing identity or any predictive/regional case to make a mismatched risk eligible.
+            jdbc.update("update uav_risk_case set target_id=? where root_event_id=? and target_id is null and episode_id is null and airspace_id is null", target, eventId);
+        } else {
+            jdbc.update("update target set last_seen_at=?,updated_at=? where target_id=?", now, now, target);
+        }
+        int updated = jdbc.update("update target_latest_state set observed_at=?,received_at=?,updated_at=? where target_id=?", now, now, now, target);
+        if (updated == 0)
+            jdbc.update("insert into target_latest_state(target_id,observed_at,received_at,created_at,updated_at) values(?,?,?,?,?)", target, now, now, now, now);
+        assertThat(jdbc.queryForObject("select count(*) from uav_risk_case c join uav_event e on e.event_id=c.root_event_id join alarm a on a.alarm_id=e.alarm_id where c.root_event_id=? and c.target_id is distinct from a.target_id", Integer.class, eventId)).isZero();
         jdbc.update("delete from automation_rule_condition where category='dispose'");
         jdbc.update("update automation_rule_group set version=version+1,scope_mode='ALL',schedule_mode='ALL_DAY' where category='dispose'");
         jdbc.update("insert into automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) values(?,'dispose','QA事件关联','eventLink','风险与当前目标已关联',0,true,0,0,'QA')", UUID.randomUUID().toString());

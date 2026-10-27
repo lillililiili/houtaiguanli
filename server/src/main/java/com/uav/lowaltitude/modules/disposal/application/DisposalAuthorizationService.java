@@ -51,10 +51,13 @@ public class DisposalAuthorizationService {
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
+    private com.uav.lowaltitude.modules.flightavoidance.application.FlightAvoidanceService flights;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setFlightAvoidance(com.uav.lowaltitude.modules.flightavoidance.application.FlightAvoidanceService flights) { this.flights = flights; }
     private static final Set<String> CREATE_FIELDS = Set.of("action_type", "subject_kind", "subject_id",
-            "device_id", "channel", "reason", "countermeasure_mode");
+            "device_id", "channel", "reason", "countermeasure_mode", "flight_check_ack");
     private static final Set<String> DECISION_FIELDS = Set.of("expected_version", "note");
-    private static final Set<String> EXECUTE_FIELDS = Set.of("expected_version", "operation_params");
+    private static final Set<String> EXECUTE_FIELDS = Set.of("expected_version", "operation_params", "flight_check_ack");
 
     private final com.uav.lowaltitude.modules.alarm.application.UavAdvisoryService advisory;
     private final AccessControlService access;
@@ -96,7 +99,7 @@ public class DisposalAuthorizationService {
     public DirectResultDto directExecute(String rawRequest, String key) {
         access.require(PermissionCode.DISPOSAL_DIRECT);
         CreatedDto created = createInternal(rawRequest, key, true);
-        ExecuteOutcome outcome = executeInternal(created.authorizationId(), new Execute(created.version(), Map.of()),
+        ExecuteOutcome outcome = executeInternal(created.authorizationId(), new Execute(created.version(), Map.of(), false),
                 null, executionAccess(created.authorizationId()));
         return new DirectResultDto(created.authorizationId(), created.authorizationNo(), outcome.dto().status(),
                 outcome.dto().version(), "DIRECT", outcome.rejected()
@@ -155,6 +158,11 @@ public class DisposalAuthorizationService {
                 reason, actor.userId(), at, status, policy.policyCode(), subject.ownerOrgId(), subject.districtId(),
                 subject.sourceMode()), mode == null ? null : mode.name());
         if(riskCases!=null&&"UAV_EVENT".equals(request.subjectKind()))riskCases.bindAuthorization(id,effectiveSubjectId);
+        // 航班避让（2026-10-26）：禁止反制范围有航班不能提交；提醒范围有航班或收不到航班信息时须勾选确认。
+        if (flights != null && flightChecked(request.channel(), request.actionType()))
+            flights.requireForRequest(direct ? "DIRECT" : "REQUEST", "UAV_EVENT".equals(request.subjectKind()) ? effectiveSubjectId : null,
+                    id, request.deviceId().trim(), flightMode(request.actionType(), mode == null ? null : mode.name()),
+                    flightAck(rawRequest), actor.userId());
         if (direct) {
             OffsetDateTime until = at.plusMinutes(policy.timeLimitMinutes(request.actionType()));
             if (repository.authorizeDirect(id, 0L, at, until, "持有直接反制权限，免逐次审批") != 1) throw versionConflict();
@@ -260,8 +268,17 @@ public class DisposalAuthorizationService {
             throw conflict("MANUAL_CHANNEL_RETIRED", "人工执行已关闭，历史记录仅供查阅");
 
         DisposalPolicy policy = policies.active();
+        // 下发前一刻再查附近航班。直接反制刚在创建时查过并记了，这里只在拦下时再记一条。
+        com.uav.lowaltitude.modules.flightavoidance.application.FlightAvoidanceService.Refusal aircraft =
+                flights != null && flightChecked(row.channel(), row.actionType())
+                        ? flights.beforeDispatch("EXECUTE", "UAV_EVENT".equals(row.subjectKind()) ? row.subjectId() : null, id,
+                                row.deviceId(), flightMode(row.actionType(), row.countermeasureMode()), body.flightAck(),
+                                actor.userId(), key != null)
+                        : null;
         // 四通道走 A 的原生 TCP 设置；凌云 B 仍经 enqueue，自校验 devices.op（决策 13-9）。
-        DisposalExecutionGateway.Result dispatched = DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())
+        DisposalExecutionGateway.Result dispatched = aircraft != null
+                ? new DisposalExecutionGateway.Rejected("AIRCRAFT_NEARBY", aircraft.code(), aircraft.detail())
+                : DisposalRules.COUNTERMEASURE_4CH.equals(row.channel())
                 ? gateway.dispatch4ch(row.deviceId(), "disposal-" + id + "-" + row.version(),
                         id, row.actionType(), row.reason())
                 : gateway.dispatch(row.deviceId(), "disposal-" + id + "-" + row.version(),
@@ -561,7 +578,9 @@ public class DisposalAuthorizationService {
             if (!raw_params.isObject()) throw bad("operation_params 必须是对象");
             params = json.convertValue(raw_params, new com.fasterxml.jackson.core.type.TypeReference<>() { });
         }
-        return new Execute(version(node), params);
+        JsonNode ack = node.get("flight_check_ack");
+        if (ack != null && !ack.isNull() && !ack.isBoolean()) throw bad("flight_check_ack 必须是 true 或 false");
+        return new Execute(version(node), params, ack != null && ack.asBoolean(false));
     }
 
     private long version(JsonNode node) {
@@ -607,5 +626,21 @@ public class DisposalAuthorizationService {
     }
 
     private record Decision(long expectedVersion, String note) { }
-    private record Execute(long expectedVersion, Map<String, Object> operationParams) { }
+    private record Execute(long expectedVersion, Map<String, Object> operationParams, boolean flightAck) { }
+
+    /** 航班避让只管四通道反制设备上的反制（迫降、驱离）。 */
+    private static boolean flightChecked(String channel, String actionType) {
+        return DisposalRules.COUNTERMEASURE_4CH.equals(channel) && Set.of("COUNTERMEASURE", "JAMMING").contains(actionType);
+    }
+
+    private static com.uav.lowaltitude.modules.flightavoidance.domain.FlightAvoidancePolicy.CounterMode flightMode(
+            String actionType, String countermeasureMode) {
+        return com.uav.lowaltitude.modules.flightavoidance.application.FlightAvoidanceService.modeOf(actionType, countermeasureMode);
+    }
+
+    private boolean flightAck(String raw) {
+        JsonNode ack = strict(raw, CREATE_FIELDS).get("flight_check_ack");
+        if (ack != null && !ack.isNull() && !ack.isBoolean()) throw bad("flight_check_ack 必须是 true 或 false");
+        return ack != null && ack.asBoolean(false);
+    }
 }

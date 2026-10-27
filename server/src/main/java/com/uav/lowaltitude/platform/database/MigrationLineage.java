@@ -38,6 +38,9 @@ public final class MigrationLineage {
             "V202610200002__local_airspace_lifecycle.sql", -852369259);
     private static final List<String> FEATURE_VERSIONS = List.of("202610200001", "202610200002", "202610200003",
             "202610200004", "202610200005", "202610200006", "202610200007", "202610210001");
+    private static final Map<String, Integer> VOICE_AND_FLIGHT = Map.of(
+            "V202610260001__freeze_voice_response_order_basis.sql", 1792140,
+            "V202610260001__flight_avoidance.sql", 200317101);
 
     public static void configure(FluentConfiguration configuration) {
         try (Connection connection = configuration.getDataSource().getConnection()) {
@@ -62,6 +65,12 @@ public final class MigrationLineage {
             locations.add("classpath:db/lineage/" + (remoteFeatures ? "features-remote" : "features-local"));
             if (!remoteFeatures && connection.getMetaData().getDatabaseProductName().equals("PostgreSQL"))
                 locations.add("classpath:db/lineage/features-local-postgresql");
+            Applied voiceOrFlight = history.get("202610260001");
+            if (voiceOrFlight != null && (!voiceOrFlight.success()
+                    || !Integer.valueOf(voiceOrFlight.checksum()).equals(VOICE_AND_FLIGHT.get(voiceOrFlight.script()))))
+                throw new IllegalStateException("Unrecognized 20261026 migration history; preserve the database and original scripts (do not repair checksums)");
+            boolean flight = voiceOrFlight != null && voiceOrFlight.script().equals("V202610260001__flight_avoidance.sql");
+            locations.add("classpath:db/lineage/" + (flight ? "flight-avoidance" : "voice-order"));
             configuration.locations(locations.toArray(String[]::new));
             selectFeatureJavaMigrations(configuration, remoteFeatures);
             // The remote history already applied 9001 before the independent fusion index existed.
@@ -133,7 +142,7 @@ public final class MigrationLineage {
              var result = statement.executeQuery("SELECT version,script,checksum,success FROM " + qualified
                      + " WHERE version IN ('202610160001','202610160002','202610160003','202610169001',"
                      + "'202610200001','202610200002','202610200003','202610200004','202610200005','202610200006',"
-                     + "'202610200007','202610210001')")) {
+                     + "'202610200007','202610210001','202610260001')")) {
             while (result.next()) {
                 int checksum = result.getInt("checksum");
                 if (result.wasNull()) throw new IllegalStateException("Missing checksum in migration lineage history");

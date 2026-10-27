@@ -440,7 +440,7 @@ public class HandoffSubmissionService {
         if(riskCases!=null&&riskCases.hasCases(eventId)){
             riskCases.lockCases(eventId);
             if(riskCases.selectedCase()==null){
-                for(var c:riskCases.cases(eventId))riskCases.runWithCase(c.riskCaseId(),()->automaticAfterDisposalScoped(c.actionEventId()));
+                riskCases.actionEvents(eventId).forEach((id,action)->riskCases.runWithCase(id,()->automaticAfterDisposalScoped(action)));
                 return;
             }
         }

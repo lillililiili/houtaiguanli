@@ -126,6 +126,64 @@ public class EmergencyStopService {
         noteSharedDevice(eventId,allOff,null);
     }
 
+    /**
+     * 航班避让（2026-10-26 用户确认）：反制进行中有航班飞进禁止反制范围，系统自动停止这台设备上本事件正在执行的反制。
+     * 只停正在执行的，不撤销还没执行的申请；锁序与急停相同：事件→授权→设备→指令。同一次检查只停一次。
+     */
+    @Transactional
+    public boolean stopForAircraft(String eventId,String deviceId,String checkId,String note) {
+        String caseId=riskCases==null?null:riskCases.caseId(eventId);
+        if(caseId==null)stops.lockEvent(eventId);else for(String member:riskCases.eventIds(caseId))stops.lockEvent(member);
+        List<AuthorizationRow> current=new ArrayList<>();
+        for(String id:caseId==null?stops.authorizationIds(eventId):riskCases.authorizationIds(caseId)) {
+            AuthorizationRow row=authorizations.lockForSystem(id);
+            if(row!=null&&"EXECUTING".equals(row.status())&&deviceId.equals(row.deviceId()))current.add(row);
+        }
+        if(current.isEmpty())return false;
+        stops.lockDevice(deviceId);
+        String text=note.length()>500?note.substring(0,500):note;
+        String id=UUID.nameUUIDFromBytes(("aircraft-stop:"+eventId+":"+checkId).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        if(stops.stop(eventId,id)!=null)return false;
+        long now=clock.nowMillis();
+        stops.insertSystemStop(id,eventId,now,text,"SYSTEM_AIRCRAFT_STOP");
+        Map<String,Object> hardware=devices.find(deviceId);
+        String allOff=null;boolean dispatched=false;
+        for(AuthorizationRow row:current) {
+            stops.cover(id,row.authorizationId());
+            if(authorizations.transition(row.authorizationId(),row.version(),"STOPPED",clock.now().atOffset(ZoneOffset.UTC),
+                    null,"STOPPED_BY_AIRCRAFT",text)!=1)throw conflict("VERSION_CONFLICT","处置状态已变化");
+            authorizations.insertEvent(UUID.randomUUID().toString(),row.authorizationId(),"STOP",null,text,
+                    "{\"status\":\"STOPPED\",\"origin\":\"SYSTEM_AIRCRAFT_STOP\"}",clock.now().atOffset(ZoneOffset.UTC));
+            commands.cancelAuthorizationStarts(row.authorizationId(),now);
+            if(dispatched)continue;
+            dispatched=true;
+            Dispatch result=dispatchAircraftStop(row,id,hardware,text);
+            stops.task(id,deviceId,row.authorizationId(),hardware==null?MANUAL_TASK_NAME:text(hardware,"name"),row.channel(),
+                    hardware==null?row.sourceMode():text(hardware,"source_mode"),hardware==null||bool(hardware,"simulated"),
+                    result.commandId(),result.status(),result.detail());
+            if("QUEUED".equals(result.status()))allOff=result.commandId();
+        }
+        stops.event(UUID.randomUUID().toString(),id,"STOP",null,now,text);
+        audit.record(null,"FLIGHT_AVOIDANCE","SYSTEM","disposal","aircraft_safety_stop","disposal_emergency_stop",id,
+                "event_id="+eventId+"; device_id="+deviceId+"; check_id="+checkId+"; "+text,"SUCCESS","","");
+        if(allOff!=null)noteSharedDevice(eventId,Map.of(deviceId,allOff),null);
+        return true;
+    }
+
+    /** 以最近一次下发这条反制的人的名义发全关（与到时自动关闭相同），设备回执为准。 */
+    private Dispatch dispatchAircraftStop(AuthorizationRow row,String stopId,Map<String,Object> hardware,String note) {
+        if(hardware==null||!"COUNTERMEASURE_4CH".equals(row.channel())||!"live".equals(text(hardware,"source_mode"))
+                ||!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(hardware,"protocol_code")))
+            return new Dispatch(null,"UNSUPPORTED",UNSUPPORTED_DETAIL);
+        String actorId=authorizations.latestExecuteActor(row.authorizationId());
+        AuthUser executor=authorizations.actor(actorId==null?row.requestedBy():actorId);
+        if(executor==null)return new Dispatch(null,"UNSUPPORTED","找不到下发这次反制的账号，系统没法远程全关；请按急停或到现场关停设备");
+        var result=gateway.stop4ch(executor,row.deviceId(),"astop-"+stopId+"-"+row.authorizationId(),row.authorizationId(),note);
+        if(result instanceof DisposalExecutionGateway.Accepted accepted)return new Dispatch(accepted.commandId(),"QUEUED","已排队全关，等待设备真实停止回执");
+        var rejected=(DisposalExecutionGateway.Rejected)result;
+        return new Dispatch(null,"DEVICE_OFFLINE".equals(rejected.eventKind())?"OFFLINE":"UNSUPPORTED",rejected.detail());
+    }
+
     private Dispatch dispatchSystem(AuthorizationRow row,String stopId,Map<String,Object> hardware,String note) {
         if(hardware==null||!"COUNTERMEASURE_4CH".equals(row.channel())||!"live".equals(text(hardware,"source_mode"))
                 ||!DeviceProtocolCodes.COUNTERMEASURE_TCP_4CH_V2_0.equals(text(hardware,"protocol_code")))

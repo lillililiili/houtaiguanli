@@ -7,7 +7,7 @@ import './operations-reference.css';
 import ErrorAlert from '@/components/ErrorAlert.vue';
 import DeviceCoordinatePicker from '@/components/DeviceCoordinatePicker.vue';
 import { useRoute } from 'vue-router';
-import { weatherSensorsApi } from '@/api/externalInterfaces.js';
+import { adsbReceiversApi, weatherSensorsApi } from '@/api/externalInterfaces.js';
 import DeviceCatalogPreview from './DeviceCatalogPreview.vue';
 import { deviceApi, integrationApi, mqttApi } from '@/api/devices.js';
 import { newIdempotencyKey } from '@/services/apiClient.js';
@@ -19,6 +19,7 @@ import { maintenanceTime as formatTime } from './maintenance/presentation.js';
 import { deviceCatalogParams } from '@/utils/deviceCatalog.js';
 import { confirmDeletion } from '@/utils/deleteConfirmation.js';
 import { warmDeviceMapResources } from '@/services/deviceLocationMap.js';
+import { useFlightDistance } from './deviceFlightDistance.js';
 
 const MQTT_PROTOCOL = 'LINGYUN_MQTT_V8_6';
 const EO_PROTOCOL = 'EO_EDGE_MQTT_20250826';
@@ -30,21 +31,23 @@ const deviceTypes = [
   { code: 'eo', name: '光电设备', protocols: [EO_PROTOCOL] },
   { code: 'counter', name: '四通道反制设备', protocols: [COUNTER_PROTOCOL] },
   { code: 'weather_sensor', name: '天气传感器', protocols: [] },
+  { code: 'adsb_receiver', name: 'ADS-B 航班接收机', protocols: [] },
   ...[['5ga', '5G-A'], ['tdoa', 'TDOA']]
     .map(([code, name]) => ({ code, name, protocols: [MQTT_PROTOCOL] }))
 ];
 const selectedType = ref('');
 const auth = useAuthStore();
 const unitMode = computed(() => isUnitAdministrator(auth.user));
-const availableDeviceTypes = computed(() => unitMode.value ? deviceTypes.filter(type => type.code !== 'weather_sensor') : deviceTypes);
+const PLATFORM_TYPES = ['weather_sensor', 'adsb_receiver'];
+const availableDeviceTypes = computed(() => unitMode.value ? deviceTypes.filter(type => !PLATFORM_TYPES.includes(type.code)) : deviceTypes);
 const readOverview = params => unitMode.value ? deviceApi.catalogOverview(params) : deviceApi.overview(params);
 const canOperate = computed(() => auth.hasPermission('devices.op'));
 const filters = reactive({ keyword: '', type_code: '', channel: '', region: '', vendor: '', connectivity: '', enabled: 'true', sort: 'priority' });
 const options = ref({ types: [], channels: [], regions: [], vendors: [] });
 const filterTypes = computed(() => {
   const items = options.value.type_options || [];
-  return items.some(item => item.code === 'weather_sensor') ? items
-    : [...items, { code: 'weather_sensor', name: '天气传感器' }];
+  const extra = [{ code: 'weather_sensor', name: '天气传感器' }, { code: 'adsb_receiver', name: 'ADS-B 航班接收机' }];
+  return [...items, ...extra.filter(type => !items.some(item => item.code === type.code))];
 });
 const protocols = ref([]);
 const overview = ref({ total: 0, online: 0, offline: 0, abnormal: 0, unknown: 0, alarm: 0, vendor_count: 0 });
@@ -81,7 +84,7 @@ const deviceForm = reactive({
   recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false, device_address: 1,
   wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live', scope_key: '',
   device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-  longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false
+  longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350
 });
 const unsupportedCoordinateSystem = computed(() => (deviceForm.longitude != null || deviceForm.latitude != null)
   && !['WGS84', 'WGS-84'].includes(String(deviceForm.coordinate_system || '').trim().toUpperCase()));
@@ -91,6 +94,7 @@ function clearDevicePosition() {
 function chooseDeviceLongitude(value) { deviceForm.longitude = value; deviceForm.coordinate_system = 'WGS-84'; }
 function chooseDeviceLatitude(value) { deviceForm.latitude = value; deviceForm.coordinate_system = 'WGS-84'; }
 const isWeather = computed(() => selectedType.value === 'weather_sensor');
+const isAdsb = computed(() => selectedType.value === 'adsb_receiver');
 const usesDemoConfiguration = computed(() => !deviceDialog.editing
   && Boolean(deviceTypes.find(type => type.code === selectedType.value)?.protocols.length)
   && deviceTypes.find(type => type.code === selectedType.value).protocols.every(isMqttProtocol));
@@ -105,6 +109,8 @@ const isEo = computed(() => deviceForm.protocol_code === EO_PROTOCOL);
 const isMqttTransport = computed(() => isMqtt.value || isEo.value);
 const isRadar = computed(() => deviceForm.protocol_code === 'RADAR_TCP_V3_0_0');
 const isCountermeasure = computed(() => deviceForm.protocol_code === 'COUNTERMEASURE_TCP_4CH_V2_0');
+const flightDistance = useFlightDistance();
+watch(isCountermeasure, counter => { if (!counter) flightDistance.clear(); else if (!deviceDialog.editing) void flightDistance.load(null); });
 
 function listParams() {
   return { ...overviewParams(), page: table.page, size: table.size };
@@ -211,7 +217,7 @@ function resetDeviceForm() {
     allowed_cidrs: '', recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false,
     device_address: 1, wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live',
     scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-    longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false });
+    longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350 });
   coordinatePickerOpen.value = false;
 }
 
@@ -247,16 +253,22 @@ async function refreshAccessOptions() {
 }
 
 async function openDevice(row = null) {
-  if (!canOperate.value || deviceDialog.opening || unitMode.value && row?.device_type_code === 'weather_sensor') return;
+  if (!canOperate.value || deviceDialog.opening || unitMode.value && PLATFORM_TYPES.includes(row?.device_type_code)) return;
   deviceDialog.opening = true; selectedType.value = '';
-  deviceDialog.editing = Boolean(row); deviceDialog.row = row; deviceDialog.current = null; resetDeviceForm();
+  deviceDialog.editing = Boolean(row); deviceDialog.row = row; deviceDialog.current = null; resetDeviceForm(); flightDistance.clear();
   try {
-    const current = row ? await (row.device_type_code === 'weather_sensor' ? weatherSensorsApi.get(row.device_id) : deviceApi.detail(row.device_id)) : null;
+    const current = row ? await (row.device_type_code === 'weather_sensor' ? weatherSensorsApi.get(row.device_id)
+      : row.device_type_code === 'adsb_receiver' ? adsbReceiversApi.get(row.device_id) : deviceApi.detail(row.device_id)) : null;
     deviceDialog.current = current;
     await refreshAccessOptions();
     if (row?.device_type_code === 'weather_sensor') {
       selectedType.value = 'weather_sensor';
       Object.assign(deviceForm, current, { scope_key: `${current.owner_org_id}/${current.district_id}` });
+    } else if (row?.device_type_code === 'adsb_receiver') {
+      selectedType.value = 'adsb_receiver';
+      Object.assign(deviceForm, current, { scope_key: `${current.owner_org_id}/${current.district_id}`,
+        longitude: current.longitude == null ? null : Number(current.longitude), latitude: current.latitude == null ? null : Number(current.latitude),
+        coordinate_system: 'WGS-84', vendor: current.vendor || '', model: current.model || '', address: current.address || '' });
     } else if (current) {
       const connection = current.connection || {}, protocol = current.protocol_configuration || {};
       Object.assign(deviceForm, {
@@ -277,6 +289,7 @@ async function openDevice(row = null) {
         const broker = brokers.value.find(item => item.broker_id === mqtt.broker_id);
         Object.assign(deviceForm, mqtt, { model: current.model || '', scope_key: broker ? `${broker.owner_org_id}/${broker.district_id}` : deviceForm.scope_key });
       }
+      if (current.protocol_code === COUNTER_PROTOCOL) await flightDistance.load(row.device_id);
       selectedType.value = current.protocol_code === RADAR_PROTOCOL ? 'radar' : current.protocol_code === COUNTER_PROTOCOL ? 'counter'
         : current.protocol_code === EO_PROTOCOL ? 'eo' : deviceForm.device_type_abbr;
     }
@@ -318,12 +331,14 @@ function mqttPayload(values, version, location) {
 async function saveDevice() {
   if (!canOperate.value || deviceDialog.saving || !selectedType.value || usesDemoConfiguration.value) return;
   if (isMqttTransport.value && !deviceDialog.editing) return;
-  if (!isWeather.value && !availableProtocols.value.some(item => item.protocol_code === deviceForm.protocol_code)) return;
+  if (!isWeather.value && !isAdsb.value && !availableProtocols.value.some(item => item.protocol_code === deviceForm.protocol_code)) return;
   if (deviceDialog.optionsError || deviceDialog.optionsLoading) return;
   if (!await deviceFormRef.value.validate().catch(() => false) || deviceDialog.saving) return;
   let location;
   try { location = locationValues(); }
   catch (e) { ElMessage.error(e.message); return; }
+  const distanceProblem = isCountermeasure.value ? flightDistance.validate() : null;
+  if (distanceProblem) { ElMessage.error(distanceProblem); return; }
   deviceDialog.saving = true;
   const current = deviceDialog.current;
   const key = newIdempotencyKey('device-form');
@@ -336,6 +351,14 @@ async function saveDevice() {
         model: deviceForm.model?.trim() || null, address: deviceForm.address?.trim() || null, owner_org_id, district_id, version: deviceForm.version };
       const sensor = deviceDialog.editing ? await weatherSensorsApi.update(deviceDialog.row.device_id, payload) : await weatherSensorsApi.create(payload);
       saved = { device: sensor };
+    } else if (isAdsb.value) {
+      if (location.longitude == null) throw new Error('请填写航班接收机的安装经纬度');
+      const [owner_org_id, district_id] = deviceForm.scope_key.split('/');
+      const payload = { device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(), vendor: deviceForm.vendor?.trim() || null,
+        model: deviceForm.model?.trim() || null, address: deviceForm.address?.trim() || null, owner_org_id, district_id,
+        longitude: location.longitude, latitude: location.latitude, receive_range_km: deviceForm.receive_range_km, version: deviceForm.version };
+      const receiver = deviceDialog.editing ? await adsbReceiversApi.update(deviceDialog.row.device_id, payload) : await adsbReceiversApi.create(payload);
+      saved = { device: receiver };
     } else if (isMqttTransport.value) {
       const payload = mqttPayload(deviceForm, current?.device?.version, location);
       saved = await deviceApi.update(deviceDialog.row.device_id, payload, key);
@@ -360,8 +383,17 @@ async function saveDevice() {
         rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
         device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }, key);
     }
-    selectedId.value = saved.device.device_id; deviceDialog.visible = false;
-    ElMessage.success(isWeather.value ? '天气传感器档案已保存，待接入' : deviceDialog.editing ? '设备已更新' : '接入配置已保存，请确认设备连接及上报状态');
+    selectedId.value = saved.device.device_id;
+    if (isCountermeasure.value) {
+      try { await flightDistance.save(saved.device.device_id); }
+      catch (e) {
+        // 设备已经保存；距离没保存时留在弹窗里，提示再保存一次。
+        deviceDialog.editing = true; deviceDialog.row = saved.device; deviceDialog.current = saved;
+        ElMessage.error(`设备已保存，但附近航班安全距离没有保存：${e.message}`); await loadList(true); return;
+      }
+    }
+    deviceDialog.visible = false;
+    ElMessage.success(isWeather.value ? '天气传感器档案已保存，待接入' : isAdsb.value ? '航班接收机已保存' : deviceDialog.editing ? '设备已更新' : '接入配置已保存，请确认设备连接及上报状态');
     await loadList(true);
   } catch (e) { ElMessage.error(e.message); if (e.code === 'VERSION_CONFLICT') await loadList(); }
   finally { deviceDialog.saving = false; }
@@ -436,7 +468,7 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
           <el-table-column label="状态 / 健康" width="105"><template #default="{row}"><el-tag :type="statusType(row.connectivity)" effect="plain">{{ statusText(row.connectivity) }}</el-tag><span class="cell-secondary">{{ healthText(row.health_code) }}</span></template></el-table-column>
           <el-table-column prop="last_heartbeat_at" label="最后心跳" min-width="165"><template #default="{row}"><span class="mono">{{ formatTime(row.last_heartbeat_at) }}</span></template></el-table-column>
           <el-table-column label="状态" width="76"><template #default="{row}"><el-tag :type="row.enabled?'success':'info'" effect="plain">{{ row.enabled?'启用':'停用' }}</el-tag></template></el-table-column>
-          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId) || (unitMode && row.device_type_code === 'weather_sensor')" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId) || (row.device_type_code==='weather_sensor' && !row.enabled)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
+          <el-table-column label="操作" width="175" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="!canOperate || Boolean(deletingId) || (unitMode && ['weather_sensor','adsb_receiver'].includes(row.device_type_code))" @click.stop="openDevice(row)">编辑</el-button><el-button link :type="row.enabled?'danger':'success'" :disabled="!canOperate || Boolean(deletingId) || (row.device_type_code==='weather_sensor' && !row.enabled) || (row.device_type_code==='adsb_receiver' && !row.enabled && !row.simulated)" @click.stop="toggleDevice(row)">{{ row.enabled?'停用':'启用' }}</el-button><el-button link type="danger" :disabled="!canOperate || Boolean(deletingId)" :loading="deletingId === row.device_id" @click.stop="deleteDevice(row)">删除</el-button></template></el-table-column>
         </el-table></div>
         <div class="pagination-row"><span>共 {{ table.total }} 台</span><el-pagination v-model:current-page="table.page" v-model:page-size="table.size" :page-sizes="[10,20,50,100]" layout="sizes, prev, pager, next" :total="table.total" @current-change="loadList(false)" @size-change="table.page=1;loadList(false)" /></div>
       </el-card>
@@ -461,7 +493,7 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
               <el-form-item label="设备名称" prop="name" :rules="[{required:true,whitespace:true,message:'请输入设备名称'}]"><el-input v-model="deviceForm.name" maxlength="128" placeholder="请输入设备名称" /></el-form-item>
               <el-form-item label="供应商"><el-input v-model="deviceForm.vendor" maxlength="128" placeholder="请输入供应商" /></el-form-item>
               <el-form-item label="型号"><el-input v-model="deviceForm.model" maxlength="128" placeholder="请输入设备型号" /></el-form-item>
-              <el-form-item label="所属单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择所属单位及区域'}]"><el-select v-model="deviceForm.scope_key" :disabled="deviceDialog.editing && (isWeather || isMqttTransport || Boolean(deviceDialog.current?.device?.owner_org_id))" placeholder="请选择单位及区域"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
+              <el-form-item label="所属单位 / 区域" prop="scope_key" :rules="[{required:true,message:'请选择所属单位及区域'}]"><el-select v-model="deviceForm.scope_key" :disabled="deviceDialog.editing && (isWeather || isAdsb || isMqttTransport || Boolean(deviceDialog.current?.device?.owner_org_id))" placeholder="请选择单位及区域"><el-option v-for="item in scopes" :key="`${item.org_id}/${item.district_id}`" :label="`${item.org_name} / ${item.district_name}`" :value="`${item.org_id}/${item.district_id}`" /></el-select></el-form-item>
               <el-form-item v-if="!isMqttTransport" label="安装位置"><el-input v-model="deviceForm.address" maxlength="256" placeholder="例如：园区东门楼顶" /></el-form-item>
               <div v-if="!isWeather" class="wide coordinate-section">
                 <div class="coordinate-section-heading"><div><b>地图位置</b><span>可选，仅接收 WGS-84 坐标；手工录入前请核实坐标系，地图选点自动使用 WGS-84</span></div><div><el-button size="small" @click="clearDevicePosition">清空坐标</el-button><el-button size="small" type="primary" plain @click="coordinatePickerOpen = !coordinatePickerOpen">{{ coordinatePickerOpen ? '收起地图' : '打开地图选点' }}</el-button></div></div>
@@ -472,12 +504,26 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
                 </div>
                 <DeviceCoordinatePicker v-if="coordinatePickerOpen" :longitude="unsupportedCoordinateSystem ? null : deviceForm.longitude" :latitude="unsupportedCoordinateSystem ? null : deviceForm.latitude" :disabled="deviceDialog.saving" @update:longitude="chooseDeviceLongitude" @update:latitude="chooseDeviceLatitude" />
               </div>
+              <div v-if="isCountermeasure && flightDistance.state.visible" class="wide adsb-receive-settings flight-distance-settings">
+                <b>附近航班安全距离</b>
+                <el-radio-group v-model="flightDistance.state.custom" :disabled="!flightDistance.state.canManage"><el-radio :label="false">用规则管理里的默认值</el-radio><el-radio :label="true">这台设备单独设置</el-radio></el-radio-group>
+                <fieldset v-if="flightDistance.state.custom" class="fd-fields" :disabled="!flightDistance.state.canManage">
+                  <div class="adsb-receive-row"><label class="fd-mode">迫降</label><label>禁止反制范围</label><el-input-number class="fd-input" v-model="flightDistance.state.values.force_land_block_km" :min="0.5" :max="350" :precision="1" :step="1" controls-position="right" /><span class="adsb-unit">公里</span><label>提醒范围</label><el-input-number class="fd-input" v-model="flightDistance.state.values.force_land_warn_km" :min="0.5" :max="350" :precision="1" :step="1" controls-position="right" /><span class="adsb-unit">公里</span><label>只看</label><el-input-number class="fd-input" v-model="flightDistance.state.values.force_land_max_altitude_m" :min="100" :max="15000" :precision="0" :step="100" controls-position="right" /><span class="adsb-unit">米以下的航班</span></div>
+                  <div class="adsb-receive-row"><label class="fd-mode">驱离</label><label>提醒范围</label><el-input-number class="fd-input" v-model="flightDistance.state.values.drive_away_warn_km" :min="0.5" :max="350" :precision="1" :step="1" controls-position="right" /><span class="adsb-unit">公里</span><label>只看</label><el-input-number class="fd-input" v-model="flightDistance.state.values.drive_away_max_altitude_m" :min="100" :max="15000" :precision="0" :step="100" controls-position="right" /><span class="adsb-unit">米以下的航班</span></div>
+                </fieldset>
+                <div v-else class="access-field-note">{{ flightDistance.defaultText() }}</div>
+              </div>
+              <div v-if="isAdsb" class="wide adsb-receive-settings">
+                <b>接收设置</b>
+                <div class="adsb-receive-row"><label for="adsb-receive-range">接收范围</label><el-input-number id="adsb-receive-range" class="adsb-range-input" v-model="deviceForm.receive_range_km" :min="10" :max="600" :precision="0" controls-position="right" /><span class="adsb-unit">公里</span><span class="access-field-note">地图上显示这个范围内的民航航班</span></div>
+              </div>
             </div>
             <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载接入资料</el-button></el-alert>
           </section>
           <section class="access-section">
-            <div class="access-section-title"><span class="access-step-number">3</span><h3>{{ isWeather ? '接入状态' : '接入配置' }}</h3><el-tag v-if="isWeather" class="access-mode-tag" type="warning" effect="plain">协议待确认</el-tag><el-tag v-else-if="deviceForm.protocol_code" class="access-mode-tag" effect="plain">{{ isMqttTransport ? '沿用已有配置' : 'TCP 直连' }}</el-tag></div>
+            <div class="access-section-title"><span class="access-step-number">3</span><h3>{{ isWeather ? '接入状态' : '接入配置' }}</h3><el-tag v-if="isWeather" class="access-mode-tag" type="warning" effect="plain">协议待确认</el-tag><el-tag v-else-if="isAdsb" class="access-mode-tag" effect="plain">网络接入</el-tag><el-tag v-else-if="deviceForm.protocol_code" class="access-mode-tag" effect="plain">{{ isMqttTransport ? '沿用已有配置' : 'TCP 直连' }}</el-tag></div>
             <el-alert v-if="isWeather" title="厂家协议待确认，当前仅登记设备档案" description="天气传感器统一纳入设备台账。协议确认前无需填写设备地址、端口或 MQTT 连接，登记后保持停用与待接入。" type="warning" :closable="false" show-icon />
+            <div v-else-if="isAdsb" class="access-protocol-row"><el-form-item label="接入协议"><el-input model-value="ADS-B 航班数据" disabled /></el-form-item></div>
             <template v-else>
               <div class="access-protocol-row"><el-form-item label="接入协议" prop="protocol_code" :rules="[{required:true,message:'请选择接入协议'}]"><el-select v-model="deviceForm.protocol_code" :disabled="deviceDialog.editing || availableProtocols.length === 1" @change="clearProtocolFields"><el-option v-for="item in availableProtocols" :key="item.protocol_code" :label="`${item.name} · v${item.version}`" :value="item.protocol_code" /></el-select></el-form-item><span class="muted">仅展示当前设备类型已支持的协议</span></div>
               <el-alert v-if="!availableProtocols.length" title="当前没有可用的接入协议，请刷新后重试" type="warning" :closable="false" />
@@ -509,7 +555,7 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
         </template>
         <el-empty v-else description="请选择需要接入的设备类型" :image-size="65" />
       </el-form>
-      <template #footer><div class="access-footer"><span>{{ usesDemoConfiguration ? '模拟设备由现有演示环境提供。' : isWeather ? '仅保存设备档案，保持停用与待接入。' : '配置保存后，以实际连接与有效报文确认状态。' }}</span><div><el-button :disabled="deviceDialog.saving" @click="deviceDialog.visible=false">取消</el-button><el-button type="primary" :loading="deviceDialog.saving" :disabled="!selectedType || usesDemoConfiguration || (!isWeather && !deviceForm.protocol_code) || deviceDialog.optionsLoading || Boolean(deviceDialog.optionsError) || (isMqttTransport && !selectedBroker)" @click="saveDevice">{{ isWeather ? '保存档案' : deviceDialog.editing ? '保存' : '保存接入配置' }}</el-button></div></div></template>
+      <template #footer><div class="access-footer"><span>{{ usesDemoConfiguration ? '模拟设备由现有演示环境提供。' : isWeather ? '仅保存设备档案，保持停用与待接入。' : isAdsb ? '持续收到航班数据时设备显示在线。' : '配置保存后，以实际连接与有效报文确认状态。' }}</span><div><el-button :disabled="deviceDialog.saving" @click="deviceDialog.visible=false">取消</el-button><el-button type="primary" :loading="deviceDialog.saving" :disabled="!selectedType || usesDemoConfiguration || (!isWeather && !isAdsb && !deviceForm.protocol_code) || deviceDialog.optionsLoading || Boolean(deviceDialog.optionsError) || (isMqttTransport && !selectedBroker)" @click="saveDevice">{{ isWeather ? '保存档案' : deviceDialog.editing ? '保存' : '保存接入配置' }}</el-button></div></div></template>
     </el-dialog>
 
   </section>
@@ -527,6 +573,18 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
 .access-section { padding: 16px 0; border-bottom: 1px solid var(--admin-border); }
 .access-section:first-child { padding-top: 0; }
 .access-section:last-child { border-bottom: 0; }
+.adsb-receive-settings { grid-column: 1 / -1; margin-top: 4px; padding: 14px 16px; border: 1px solid var(--admin-border); border-radius: 8px; }
+.adsb-receive-settings b { display: block; margin-bottom: 10px; }
+.flight-distance-settings .adsb-receive-row { margin-top: 10px; }
+.access-basic-grid .adsb-receive-row > .fd-input { width: 120px !important; }
+.fd-mode { font-weight: 600; min-width: 36px; }
+.fd-fields { margin: 0; padding: 0; border: 0; min-width: 0; }
+.access-basic-grid .flight-distance-settings .adsb-unit { margin-right: 10px; }
+.access-basic-grid .adsb-receive-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.access-basic-grid .adsb-receive-row > * { flex: none; width: auto !important; margin: 0; }
+.access-basic-grid .adsb-receive-row > .adsb-range-input { width: 140px !important; }
+.adsb-receive-row label { color: var(--admin-text, #33415a); }
+.adsb-unit { margin-right: 12px; color: var(--admin-muted); }
 .access-section-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
 .access-step-number { display: grid; place-items: center; flex: 0 0 24px; width: 24px; height: 24px; border-radius: 6px; color: var(--admin-primary); background: var(--admin-primary-soft); font-weight: 700; font-size: 12px; }
 .access-section-title h3 { flex: 0 0 auto; margin: 0; font-size: 15px; }

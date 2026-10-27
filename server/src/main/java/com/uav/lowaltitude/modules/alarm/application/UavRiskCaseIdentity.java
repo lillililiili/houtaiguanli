@@ -83,6 +83,19 @@ public class UavRiskCaseIdentity {
         var ids=jdbc.queryForList("SELECT c.risk_case_id FROM uav_risk_case c JOIN uav_risk_case_member m USING(risk_case_id) WHERE m.event_id=? AND c.superseded_by IS NULL ORDER BY c.risk_case_id",String.class,eventId);
         return ids.stream().map(this::find).filter(Objects::nonNull).toList();
     }
+    /** Historical completion processing needs identity, not a fresh spatial assessment for each case. */
+    public Map<String,String> actionEvents(String eventId){
+        if(eventId==null)return Map.of();
+        var result=new LinkedHashMap<String,String>();
+        jdbc.query("SELECT c.risk_case_id,"+ACTION_EVENT+" AS action_event_id FROM uav_risk_case c"
+                +" JOIN uav_risk_case_member m ON m.risk_case_id=c.risk_case_id AND m.event_id=?"
+                +" JOIN uav_event e ON e.event_id=m.event_id JOIN alarm a ON a.alarm_id=e.alarm_id"
+                +" WHERE c.superseded_by IS NULL AND a.target_id IS NOT DISTINCT FROM c.target_id"
+                +" AND a.owner_org_id=c.owner_org_id AND a.district_id=c.district_id AND a.source_mode=c.source_mode"
+                +" AND e.owner_org_id=c.owner_org_id AND e.district_id=c.district_id ORDER BY c.risk_case_id",
+                rs->{result.put(rs.getString("risk_case_id"),rs.getString("action_event_id"));},eventId);
+        return result;
+    }
     public CaseRef find(String id){var row=details(id);if(row==null)return null;return new CaseRef(id,(String)row.get("episode_id"),(String)row.get("airspace_id"),(String)row.get("stage"),(String)row.get("action_event_id"),eventIds(id),"CONFIRMED".equals(row.get("verification_status")),row.get("episode_id")!=null,((Number)row.get("version")).longValue());}
     /** Identity/verification lookups must not evaluate current geometry or device work. */
     private List<Map<String,Object>> identityRows(String eventId,boolean verification) {
