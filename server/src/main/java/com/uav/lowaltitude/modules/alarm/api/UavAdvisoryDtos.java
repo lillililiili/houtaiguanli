@@ -43,14 +43,27 @@ public final class UavAdvisoryDtos {
      */
     public record AutoHandoff(boolean enabled, String status, String reason, String handoffId, String triggerSource, Long updatedAt,
             String partyStatus, List<String> partyReasons,
-            com.uav.lowaltitude.modules.handoff.api.HandoffDtos.NotificationDecisionDto notificationDecision) {
-        public AutoHandoff(boolean enabled,String status,String reason,String handoffId,String triggerSource,Long updatedAt,String partyStatus,List<String> partyReasons){this(enabled,status,reason,handoffId,triggerSource,updatedAt,partyStatus,partyReasons,null);}
+            com.uav.lowaltitude.modules.handoff.api.HandoffDtos.NotificationDecisionDto notificationDecision,
+            boolean waitingForRules) {
+        public AutoHandoff(boolean enabled,String status,String reason,String handoffId,String triggerSource,Long updatedAt,String partyStatus,List<String> partyReasons){this(enabled,status,reason,handoffId,triggerSource,updatedAt,partyStatus,partyReasons,null,false);}
+        public AutoHandoff(boolean enabled,String status,String reason,String handoffId,String triggerSource,Long updatedAt,String partyStatus,List<String> partyReasons,com.uav.lowaltitude.modules.handoff.api.HandoffDtos.NotificationDecisionDto notificationDecision){this(enabled,status,reason,handoffId,triggerSource,updatedAt,partyStatus,partyReasons,notificationDecision,false);}
     }
     public record AutoSms(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,
             int attemptCount,String policyCode,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
     public record AutoVoice(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,
             int attemptCount,String policyCode,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,String recordingId,String recordingName,
-            Long answeredAt,Long playbackCompletedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) { }
+            Long answeredAt,Long playbackCompletedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot,
+            ResponseOrderBasis responseOrderBasis) {
+        public AutoVoice(boolean enabled,String status,String reason,Long triggeredAt,Long updatedAt,boolean canRetry,
+                int attemptCount,String policyCode,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,String recordingId,String recordingName,
+                Long answeredAt,Long playbackCompletedAt,com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipientSnapshot) {
+            this(enabled,status,reason,triggeredAt,updatedAt,canRetry,attemptCount,policyCode,triggerSource,evaluatedAt,dataUpdatedAt,
+                    recordingId,recordingName,answeredAt,playbackCompletedAt,recipientSnapshot,null);
+        }
+    }
+    /** The ordering decision accepted immediately before the original send; never inferred from a later status. */
+    public record ResponseOrderBasis(String status,String reason,int maxWaitSeconds,Long priorityStartedAt,
+            Long priorityDeadlineAt,long policyVersion,long checkedAt) { }
     public record Action(Long expectedVersion, String kind, String recipientName, String contactBasis, String content,
             String outcome, String danger, String note, Boolean urgent) { }
 }

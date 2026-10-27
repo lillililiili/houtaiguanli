@@ -74,6 +74,53 @@ public class PredictionReadService {
         return new PageDto<>(items.stream().map(item->decorate(item,grouped.getOrDefault(item.get("target_id"),List.of()))).toList(),page,size,count);
     }
     /** Called only after AlarmReadService has authorized this exact alarm. */
+    public com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerificationBasisDto verificationEvidence(AlarmDto dto) {
+        String selected=selectedCase(dto),event=dto.getEventId().value();
+        Long version=dto.getRiskCase()==null?null:number(dto.getRiskCase().get("version"));
+        List<Map<String,Object>> rows=selected==null||event==null||version==null?List.of():jdbc.queryForList(
+                "SELECT p.*,l.role,l.event_id,e.alarm_id,s.result_json,s.status AS snapshot_status"
+                +",s.generated_at AS snapshot_generated_at,s.valid_until AS snapshot_valid_until"
+                +" FROM uav_risk_case c JOIN uav_risk_case_member m ON m.risk_case_id=c.risk_case_id AND m.event_id=:event"
+                +" JOIN uav_event e ON e.event_id=m.event_id AND e.owner_org_id=c.owner_org_id AND e.district_id=c.district_id"
+                +" JOIN alarm a ON a.alarm_id=e.alarm_id AND a.target_id=c.target_id AND a.owner_org_id=c.owner_org_id"
+                +" AND a.district_id=c.district_id AND a.source_mode=c.source_mode"
+                +" JOIN prediction_episode p ON p.episode_id=c.episode_id AND p.target_id=c.target_id"
+                +" AND p.owner_org_id=c.owner_org_id AND p.district_id=c.district_id AND p.source_mode=c.source_mode"
+                +" JOIN target t ON t.target_id=c.target_id AND t.owner_org_id=c.owner_org_id"
+                +" AND t.district_id=c.district_id AND t.source_mode=c.source_mode"
+                +" JOIN prediction_event_link l ON l.episode_id=p.episode_id AND l.event_id=e.event_id AND l.role='PREDICTED'"
+                +" JOIN prediction_snapshot s ON s.prediction_id=p.latest_prediction_id AND s.target_id=p.target_id"
+                +" AND s.owner_org_id=p.owner_org_id AND s.district_id=p.district_id AND s.source_mode=p.source_mode"
+                +" WHERE c.risk_case_id=:case_id AND c.version=:version AND c.superseded_by IS NULL AND e.alarm_id=:alarm",
+                Map.of("case_id",selected,"version",version,"event",event,"alarm",dto.getAlarmId()));
+        long now=clock.nowMillis();
+        String block="缺少当前可靠实测和有效预测，暂不能核实预测风险";
+        if(rows.size()==1){
+            var row=rows.get(0);
+            var facts=new PredictionEventGate.Facts((String)row.get("episode_id"),event,(String)row.get("role"),
+                    (String)row.get("status"),((Number)row.get("version")).longValue(),(String)row.get("latest_prediction_id"),
+                    number(row.get("last_observed_at")),number(row.get("valid_until")),Boolean.TRUE.equals(row.get("current_evidence_valid")),
+                    Boolean.TRUE.equals(row.get("entered_evidence_valid")),Boolean.TRUE.equals(row.get("manual_counter_only")),false,null);
+            block=PredictionEventGate.confirmationBlock(facts,now);
+            if(!"READY".equals(row.get("snapshot_status"))||number(row.get("snapshot_generated_at"))==null
+                    ||number(row.get("snapshot_generated_at"))>now||number(row.get("snapshot_valid_until"))==null
+                    ||number(row.get("snapshot_valid_until"))<=now)block="缺少当前可靠实测和有效预测，暂不能核实预测风险";
+            // No last-valid fallback or history scan: the dialog and its basis describe this same row.
+            var source=object(row.get("result_json"));
+            source.put("prediction_id",row.get("latest_prediction_id"));
+            source.put("valid_until",row.get("snapshot_valid_until"));
+            source.put("status",block==null||block.isEmpty()?row.get("snapshot_status"):"UNKNOWN");
+            var latest=decorate(source,List.of(warning(row,true,now)),now);
+            if(dto.getTargetId()==null)latest=redact(latest);
+            dto.withPrediction(PredictionWorker.ORIGIN,latest,Map.of(),List.of());
+        }
+        boolean valid=block==null||block.isEmpty();
+        return new com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerificationBasisDto(valid,
+                valid?List.of():List.of("RISK_EVIDENCE_UNAVAILABLE"),valid?null:block,now);
+    }
+    private static Long number(Object value){return value instanceof Number n?n.longValue():null;}
+
+    /** Called only after AlarmReadService has authorized this exact alarm. */
     public List<AlarmDto> enrichList(List<AlarmDto> values) {
         var ids=values.stream().map(v->v.getEventId().value()).filter(Objects::nonNull).distinct().toList();
         if(ids.isEmpty()) return values;
@@ -216,9 +263,12 @@ public class PredictionReadService {
         } catch(ApiException forbidden) { return row->false; }
     }
     private Map<String,Object> warning(Map<String,Object> row,boolean alarmAuthorized) {
+        return warning(row,alarmAuthorized,clock.nowMillis());
+    }
+    private Map<String,Object> warning(Map<String,Object> row,boolean alarmAuthorized,long now) {
         Map<String,Object> w=object(row.get("warning_json"));
         String state=PredictionWorker.publicStatus((String)row.get("status"));
-        boolean expired="ACTIVE".equals(state) && ((Number)row.get("valid_until")).longValue()<=clock.nowMillis();
+        boolean expired="ACTIVE".equals(state) && ((Number)row.get("valid_until")).longValue()<=now;
         if(expired) state="UNKNOWN";
         w.put("state",state); w.put("reason",expired?"STALE_MEASUREMENT":row.get("reason")); w.put("version",row.get("version"));
         w.put("episode_id",row.get("episode_id"));
@@ -252,11 +302,14 @@ public class PredictionReadService {
         return rows.isEmpty()?Map.of():rows.get(0);
     }
     private Map<String,Object> decorate(Map<String,Object> source,List<Map<String,Object>> warnings) {
+        return decorate(source,warnings,clock.nowMillis());
+    }
+    private Map<String,Object> decorate(Map<String,Object> source,List<Map<String,Object>> warnings,long now) {
         var value=new LinkedHashMap<>(source);
         value.put("warnings",warnings); value.put("warning",warnings.isEmpty()?null:warnings.get(0));
         String invalidation=warnings.stream().map(w->Objects.toString(w.get("reason"),""))
                 .filter(r->Set.of("PREDICTION_PROCESSING_FAILED","TARGET_OR_SCOPE_UNAVAILABLE","TARGET_DOMAIN_CHANGED").contains(r)).findFirst().orElse(null);
-        boolean expired="READY".equals(value.get("status")) && value.get("valid_until") instanceof Number expiry && expiry.longValue()<=clock.nowMillis();
+        boolean expired="READY".equals(value.get("status")) && value.get("valid_until") instanceof Number expiry && expiry.longValue()<=now;
         if(expired || invalidation!=null) {
             value.put("status","UNKNOWN");
             value.put("reason_codes",List.of(invalidation==null?"STALE_MEASUREMENT":invalidation));

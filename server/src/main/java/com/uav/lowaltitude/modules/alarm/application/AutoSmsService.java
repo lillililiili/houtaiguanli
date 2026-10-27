@@ -64,7 +64,7 @@ public class AutoSmsService {
         }
         for(String id:candidates) {
             try { process(id); } catch(RuntimeException failed) {
-                org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic SMS cycle failed for event {}; pending work will be reconciled",id);
+                org.slf4j.LoggerFactory.getLogger(getClass()).warn("automatic SMS cycle failed for event {}: {}; pending work will be reconciled",id,failed.getClass().getSimpleName());
             }
         }
     }
@@ -94,6 +94,7 @@ public class AutoSmsService {
                 var qualified=eligible(current,pending,false);
                 if(!qualified.allowed())block=qualified.reason();
                 if(block!=null&&!block.isEmpty()) {
+                    org.slf4j.LoggerFactory.getLogger(getClass()).info("automatic SMS dispatch paused before provider acceptance for event {}, case {}: {}",eventId,riskCases==null?null:riskCases.selectedCase(),block);
                     Task task=tasks.find(eventId);
                     if(task!=null&&claim.token().equals(task.token())&&"SENDING".equals(task.status()))
                         tasks.block(eventId,"WAITING",block,TRIGGER,null,null,clock.nowMillis());

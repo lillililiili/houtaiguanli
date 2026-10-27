@@ -40,6 +40,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavEventVerificationService {
+    private AutoSmsVerificationDispatch verifiedSms;
+    @org.springframework.beans.factory.annotation.Autowired public void verifiedSms(AutoSmsVerificationDispatch value){verifiedSms=value;}
     private UavRiskCaseIdentity riskCases;
     @org.springframework.beans.factory.annotation.Autowired public void riskCases(UavRiskCaseIdentity value){riskCases=value;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
@@ -124,6 +126,7 @@ public class UavEventVerificationService {
         if(predictions!=null&&"CONFIRMED".equals(conclusion))predictions.freezeVerification(historyId,id,request.predictionId());
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarm", "uav_event_verified", "uav_event", id,
                 "conclusion=" + conclusion + "; version=" + (expectedVersion + 1), "SUCCESS", "", "");
+        if("CONFIRMED".equals(conclusion)&&verifiedSms!=null)verifiedSms.verified(id,null);
         return dto(new EventRow(event.eventId(), event.alarmId(), event.targetId(), next, event.ownerOrgId(), event.districtId(), event.createdAt(), at, expectedVersion + 1, event.sourceMode()));
     }
 
@@ -144,6 +147,7 @@ public class UavEventVerificationService {
         String eventId = repository.eventIdForAlarm(alarmId);
         if(predictions!=null&&predictions.isPrediction(eventId))
             throw new ApiException(HttpStatus.CONFLICT,"PREDICTION_MANUAL_VERIFICATION_REQUIRED","预测风险须在预警中人工核实，不能沿用实际违法复核结论");
+        if(eventId!=null){if(predictions!=null)predictions.lockEpisode(eventId);else if(riskCases!=null)riskCases.lockCases(eventId);}
         EventRow event = eventId == null ? null : repository.lock(eventId, read);
         if (event == null) throw notFound();
         if (!repository.reviewedIllegal(eventId, evaluationId))
@@ -159,6 +163,7 @@ public class UavEventVerificationService {
                 note == null ? "" : note, event.version() + 1, actor.userId(), at);
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "alarm", "uav_event_verified", "uav_event", eventId,
                 "conclusion=CONFIRMED; source=LEGALITY_REVIEW; evaluation_id=" + evaluationId + "; version=" + (event.version() + 1), "SUCCESS", "", "");
+        if(verifiedSms!=null)verifiedSms.verified(eventId,null);
     }
     /** 只给能核实的人：依据随目标数据时效变化，每次读取现算；页面据此提示“缺少依据”，提交时服务端再算一次。 */
     private VerificationBasisDto verificationBasis(String eventId) {

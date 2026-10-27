@@ -85,6 +85,28 @@ class PredictionReadJsonTest {
         assertThat(result).doesNotContainKey("trajectory");
     }
 
+    @ParameterizedTest @ValueSource(longs={1999L,2000L})
+    void verificationDisplayAndEligibilityUseOneCurrentReadAndOneExpiryBoundary(long now) throws Exception {
+        String event=UUID.randomUUID().toString(),target=UUID.randomUUID().toString(),prediction=UUID.randomUUID().toString();
+        var current=row(event,json.writeValueAsString(Map.of("prediction_id",prediction,"target_id",target,
+                "status","READY","valid_until",2000L,"points",List.of(Map.of("horizon_seconds",10)))),"{}");
+        current.put("latest_prediction_id",prediction);current.put("last_observed_at",1000L);
+        current.put("current_evidence_valid",true);current.put("snapshot_status","READY");
+        current.put("snapshot_generated_at",1100L);current.put("snapshot_valid_until",2000L);
+        when(clock.nowMillis()).thenReturn(now);
+        when(jdbc.queryForList(anyString(),anyMap())).thenReturn(List.of(current));
+        var dto=alarm(event,target).withRiskCase(Map.of("risk_case_id",UUID.randomUUID().toString(),"version",3L));
+
+        var basis=service.verificationEvidence(dto);
+        assertThat(basis.confirmable()).isEqualTo(now<2000L);
+        assertThat(basis.checkedAt()).isEqualTo(now);
+        assertThat(dto.getPrediction()).containsEntry("prediction_id",prediction)
+                .containsEntry("status",now<2000L?"READY":"UNKNOWN");
+        assertThat(dto.getPredictionHistory()).isEmpty();assertThat(dto.getPredictionSnapshot()).isEmpty();
+        org.mockito.Mockito.verify(jdbc,org.mockito.Mockito.times(1)).queryForList(anyString(),anyMap());
+        org.mockito.Mockito.verify(clock,org.mockito.Mockito.times(1)).nowMillis();
+    }
+
     private Object encoded(String value,String representation) throws Exception {
         return switch(representation) {
             case "UTF8_BYTES"->value.getBytes(StandardCharsets.UTF_8);

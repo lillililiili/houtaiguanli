@@ -13,6 +13,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
  */
 @Service
 public class PredictionEventGate {
+    private com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis measuredPunishment;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void measuredPunishment(com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis value){measuredPunishment=value;}
     private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
     @org.springframework.beans.factory.annotation.Autowired
     public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases){this.riskCases=riskCases;}
@@ -90,8 +93,31 @@ public class PredictionEventGate {
     }
 
     public boolean blocksAutomatic(String category, String eventId) {
+        if("dispose".equals(category)&&measuredPunishment!=null&&measuredPunishment.derived(eventId))
+            return !measuredPunishment.independentMeasuredEvent(eventId);
+        // Verification follows the current regional risk, not its original prediction label.
+        // Only the current measured event can take over; an old prediction event or another
+        // region must not borrow the entry evidence. Countermeasure origin restrictions remain.
+        if ("verify".equals(category) && riskCases != null) {
+            var selected = riskCases.cases(eventId);
+            if (riskCases.selectedCase() != null && selected.size() != 1) return true;
+            if (selected.stream().anyMatch(c -> c.episodeId() != null || c.manualCounterOnly())) {
+                if (selected.size() != 1) return true;
+                var c = selected.get(0);
+                return !"ENTERED".equals(c.stage()) || !eventId.equals(c.actionEventId())
+                        || c.airspaceId() == null || !riskCases.currentMeasuredArea(c);
+            }
+        }
         return allFacts(eventId).stream().anyMatch(f->"PREDICTED".equals(f.role())
                 ||(("counter".equals(category)||"verify".equals(category))&&f.manualOnly()));
+    }
+
+    public String automaticBlockReason(String category) {
+        return switch(category) {
+            case "verify" -> "当前风险阶段或本禁飞区实测入区依据不满足自动核实条件";
+            case "counter" -> "预测衍生风险须由有权限人员人工发起反制";
+            default -> "缺少本次风险独立、充分的实测违法依据，不能自动移送处罚";
+        };
     }
 
     /** Call before taking event, authorization, device or command locks. */
@@ -106,10 +132,14 @@ public class PredictionEventGate {
 
     /** Null means the established, non-prediction verification policy applies. */
     public String confirmationBlock(String eventId) {
-        Facts f = facts(eventId);
+        return confirmationBlock(facts(eventId),clock.nowMillis());
+    }
+
+    /** Shared by the current-evidence dialog and the locked submit guard. */
+    static String confirmationBlock(Facts f,long now) {
         if (f == null || !"PREDICTED".equals(f.role())) return null;
         if (!"ACTIVE".equals(f.status())) return "本次预测风险已变化，请查看当前预警状态后再核实";
-        return current(f, clock.nowMillis()) ? "" : "缺少当前可靠实测和有效预测，暂不能核实预测风险";
+        return current(f, now) ? "" : "缺少当前可靠实测和有效预测，暂不能核实预测风险";
     }
 
     public void requireSelectedPrediction(String eventId,String predictionId) {
@@ -135,7 +165,7 @@ public class PredictionEventGate {
     public String counterBlock(String eventId, boolean continuing) {
         if(riskCases!=null&&riskCases.hasCases(eventId)) {
             for(var c:riskCases.cases(eventId)){
-                if(!c.confirmed())return "当前区域风险尚未人工核实";
+                if(!c.confirmed())return "当前区域风险尚未核实";
                 if(java.util.Set.of("UNKNOWN","CLEARED","ENDED").contains(c.stage()))return "当前风险已结束或依据不足，不能启动或继续反制";
                 if("ENTERED".equals(c.stage())&&!riskCases.currentMeasuredArea(c))return "缺少本禁飞区当前有效的实测入区依据";
             }

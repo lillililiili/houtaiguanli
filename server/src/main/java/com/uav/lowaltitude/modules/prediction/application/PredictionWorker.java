@@ -14,6 +14,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.*;
+import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -57,7 +58,7 @@ public class PredictionWorker {
         long now=clock.nowMillis();
         // Once registered, polling also evaluates expiry and future airspace changes without a fresh message.
         for (String target : jdbc.queryForList("SELECT target_id FROM prediction_job WHERE next_attempt_at<=? ORDER BY next_attempt_at,target_id FETCH FIRST 100 ROWS ONLY", String.class, now)) {
-            try { tx.executeWithoutResult(status -> process(target, clock.nowMillis())); }
+            try { tx.executeWithoutResult(status -> processCurrent(target)); }
             catch (RuntimeException failure) {
                 LOG.warn("K03 target {} processing failed; durable retry retained: {}",target,failure.getClass().getSimpleName());
                 jdbc.update("UPDATE prediction_job SET attempts=attempts+1,next_attempt_at=?,last_error=? WHERE target_id=?",
@@ -70,7 +71,30 @@ public class PredictionWorker {
     }
 
     public void process(String targetId,long now) {
-        if (jdbc.queryForList("SELECT target_id FROM prediction_job WHERE target_id=? AND next_attempt_at<=? FOR UPDATE SKIP LOCKED",String.class,targetId,now).isEmpty()) return;
+        process(targetId,()->now);
+    }
+
+    void processCurrent(String targetId) {
+        process(targetId,clock::nowMillis);
+    }
+
+    private void process(String targetId,LongSupplier time) {
+        long dueAt=time.getAsLong();
+        // Fusion owns target before enqueueing this job. Take the strongest target lock first
+        // without waiting, including for a new cycle: later snapshot/alarm foreign keys or a
+        // target lock upgrade must never wait behind fusion while we own its outbox row.
+        if(jdbc.queryForList("SELECT target_id FROM target WHERE target_id=? FOR UPDATE SKIP LOCKED",String.class,targetId).isEmpty())return;
+        if (jdbc.queryForList("SELECT target_id FROM prediction_job WHERE target_id=? AND next_attempt_at<=? FOR UPDATE SKIP LOCKED",String.class,targetId,dueAt).isEmpty()) return;
+        // Measured alarm merging locks episodes before target. Never wait for those episodes
+        // while holding target/job, and never insert a snapshot before all open episodes are
+        // locked. A short contention skip leaves the durable job due and does not renew evidence.
+        var expectedEpisodes=jdbc.queryForList("SELECT episode_id FROM prediction_episode WHERE target_id=? AND active_key IS NOT NULL ORDER BY episode_id",String.class,targetId);
+        var lockedEpisodes=jdbc.queryForList("SELECT * FROM prediction_episode WHERE target_id=? AND active_key IS NOT NULL ORDER BY episode_id FOR UPDATE SKIP LOCKED",targetId);
+        if(!expectedEpisodes.equals(lockedEpisodes.stream().map(row->(String)row.get("episode_id")).toList()))return;
+        // A fusion commit immediately before taking target may be newer than the scheduler's
+        // due check. Anchor the forecast only after acquiring its stable input boundary; the
+        // evidence expiry below still comes from the last measurement, never this read time.
+        long now=time.getAsLong();
         Inputs input=inputs.load(targetId,now,config.parameters().forecast());
         if (input==null || input.target()==null) {
             invalidate(targetId,now,"TARGET_OR_SCOPE_UNAVAILABLE");
@@ -136,7 +160,7 @@ public class PredictionWorker {
         jdbc.update("INSERT INTO prediction_current(target_id,prediction_id) VALUES (?,?) ON CONFLICT(target_id) DO UPDATE SET prediction_id=EXCLUDED.prediction_id",target.id(),prediction);
 
         Map<String,Map<String,Object>> open=new LinkedHashMap<>();
-        for(var row:jdbc.queryForList("SELECT * FROM prediction_episode WHERE target_id=? AND active_key IS NOT NULL ORDER BY episode_id FOR UPDATE",target.id())) {
+        for(var row:lockedEpisodes) {
             if(!target.orgId().equals(row.get("owner_org_id")) || !target.districtId().equals(row.get("district_id"))
                     || !target.sourceMode().equals(row.get("source_mode"))) {
                 long changed=((Number)row.get("version")).longValue()+1;

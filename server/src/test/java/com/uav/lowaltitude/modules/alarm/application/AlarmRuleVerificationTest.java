@@ -38,6 +38,7 @@ class AlarmRuleVerificationTest {
     @Autowired UavRiskCaseIdentity cases;
     @MockitoBean AutomationRuntimePolicy policy;
     @MockitoBean AutomationRuntimeFactsRepository facts;
+    @MockitoBean AutoSmsVerificationDispatch verifiedSms;
     private String event, run, rule;
     private long originalRecords;
 
@@ -75,6 +76,7 @@ class AlarmRuleVerificationTest {
         assertThat(jdbc.queryForObject("select state_code from uav_event where event_id=?",String.class,event)).isEqualTo("CONFIRMED");
         assertThat(records()).isEqualTo(originalRecords+1);
         assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=? and automation_run_id=?",Integer.class,event,run)).isEqualTo(1);
+        verify(verifiedSms,times(1)).verified(event,null);
     }
     @Test void workerFailureThenRecoveryAndFreshWorkerInstanceDoNotDuplicateVerification() {
         jdbc.update("update automation_rule_condition set enabled=false where category<>'verify'");
@@ -117,6 +119,7 @@ class AlarmRuleVerificationTest {
         var entry=jdbc.queryForMap("SELECT trigger_mode,actor_id,automation_run_id,basis_kind FROM uav_risk_case_verification WHERE risk_case_id=?",risk);
         assertThat(entry.get("trigger_mode")).isEqualTo("AUTO");assertThat(entry.get("actor_id")).isNull();
         assertThat(entry.get("automation_run_id")).isEqualTo(caseRun);assertThat(entry.get("basis_kind")).isEqualTo("OBSERVED");
+        verify(verifiedSms,times(1)).verified(event,risk);
     }
     @Test void twoMeasuredAreasAreConfirmedSeparatelyWithoutChangingTheSharedRawVerdict(){
         String a=createCase(false),b=createCase(false),runA=caseRun(a),runB=caseRun(b);

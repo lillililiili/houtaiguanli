@@ -34,6 +34,7 @@ public class AutomationRuntimeWorker {
     public void poll(){
         if(!policy.enabled())return;
         String cursor=runs.cursor(),error=null;
+        var evaluatedCases=new java.util.HashSet<String>();
         try{
             // Drain several pages in one tick, keeping the durable cursor fair across restarts.
             for(int page=0;page<20;page++){
@@ -42,8 +43,12 @@ public class AutomationRuntimeWorker {
                 for(String event:candidates){
                     for(String category:List.of("verify","counter","dispose")){
                         try {
-                            if(java.util.Set.of("verify","counter").contains(category)&&cases!=null&&!cases.allCases(event).isEmpty()){
-                                for(var c:cases.allCases(event))cases.runWithCase(c.riskCaseId(),()->evaluateCase(category,event));
+                            if(java.util.Set.of("verify","counter","dispose").contains(category)&&cases!=null&&!cases.allCases(event).isEmpty()){
+                                // Prediction and measured events are aliases of this regional risk.
+                                // Evaluating both would overwrite the same persisted decision/hold
+                                // with the old prediction's PAUSED result on every scheduler tick.
+                                for(var c:cases.allCases(event))if(evaluatedCases.add(category+":"+c.riskCaseId()))
+                                    cases.runWithCase(c.riskCaseId(),()->evaluateCase(category,c.actionEventId()));
                                 continue;
                             }
                             service.evaluate(category,event);
@@ -66,7 +71,9 @@ public class AutomationRuntimeWorker {
         service.evaluate(category,event);
         var state=runs.state(category,event);
         if(state!=null&&"PASS".equals(state.status())){
-            if("verify".equals(category))verification.confirmIfPassed(event,state.runId());else counter.launchIfPassed(event,state.runId());
+            if("verify".equals(category))verification.confirmIfPassed(event,state.runId());
+            else if("counter".equals(category))counter.launchIfPassed(event,state.runId());
+            else if("dispose".equals(category))handoffs.automaticAfterDisposal(event);
         }
     }
 }

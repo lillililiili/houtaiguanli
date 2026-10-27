@@ -26,6 +26,9 @@ import com.uav.lowaltitude.platform.security.AuthUser;
 /** 处置授权持久化。事件表只增：本类不提供任何 UPDATE/DELETE 事件的方法，PG 侧另有触发器兜底。 */
 @Repository
 public class DisposalRepository {
+    private com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis measuredPunishment;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void measuredPunishment(com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis value){measuredPunishment=value;}
     private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
     @org.springframework.beans.factory.annotation.Autowired
     public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.riskCases=cases;}
@@ -349,7 +352,7 @@ public class DisposalRepository {
        旧父子链仍按原 JAMMING 完成事实处理，避免从父授权推断子链已经停机。
        按授权的明确风险归属隔离预测衍生处置，不因同一实测事件的另一区域风险而误伤独立实测授权。
        旧授权缺少区域归属时，已有预测关联不能被猜测为独立实测处罚依据。 */
-    private static final String PUNISHMENT_COMPLETION = "a.status='COMPLETED' AND (a.action_type='JAMMING' OR ("
+    public static final String PUNISHMENT_COMPLETION = "a.status='COMPLETED' AND (a.action_type='JAMMING' OR ("
             + "a.action_type='COUNTERMEASURE' AND a.channel='COUNTERMEASURE_4CH'"
             + " AND a.chained_from_authorization_id IS NULL"
             + " AND NOT EXISTS (SELECT 1 FROM disposal_authorization child WHERE child.chained_from_authorization_id=a.authorization_id)"
@@ -358,30 +361,49 @@ public class DisposalRepository {
             + " WHERE r.authorization_id=a.authorization_id AND r.device_id=a.device_id"
             + " AND c.device_id=a.device_id AND a.execution_command_id=r.off_command_id"
             + " AND c.status='SUCCEEDED' AND c.completed_at IS NOT NULL"
-            + " AND stop.authorization_id=a.authorization_id AND stop.action='SET_MASK' AND stop.mask=0)))"
-            + " AND NOT EXISTS (SELECT 1 FROM prediction_event_link origin WHERE origin.event_id=a.subject_id"
-            + " AND (origin.role='PREDICTED' OR a.risk_case_id IS NULL))"
-            + " AND NOT EXISTS (SELECT 1 FROM uav_risk_case origin LEFT JOIN uav_risk_case current_origin"
-            + " ON current_origin.risk_case_id=origin.superseded_by WHERE origin.risk_case_id=a.risk_case_id"
-            + " AND (origin.episode_id IS NOT NULL OR current_origin.episode_id IS NOT NULL))";
+            + " AND stop.authorization_id=a.authorization_id AND stop.action='SET_MASK' AND stop.mask=0)))";
+
+    private static final String PUNISHMENT_EVENT="COALESCE((SELECT m.event_id FROM uav_risk_case c JOIN uav_risk_case_member m USING(risk_case_id)"
+            +" WHERE c.risk_case_id=a.risk_case_id AND c.superseded_by IS NULL AND m.role='OBSERVED'"
+            +" ORDER BY m.created_at DESC,m.event_id FETCH FIRST 1 ROW ONLY),a.subject_id)";
 
     public List<String> completedWithoutPunishment() {
-        return jdbc.queryForList("SELECT DISTINCT a.subject_id FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT' AND "
+        String query="SELECT DISTINCT "+PUNISHMENT_EVENT+" AS event_id FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT' AND "
                 + PUNISHMENT_COMPLETION + " AND NOT EXISTS (SELECT 1 FROM handoff h WHERE h.source_kind='UAV_EVENT'"
-                + " AND h.source_id=a.subject_id AND h.handoff_type='UAV_PUNISHMENT') ORDER BY a.subject_id FETCH FIRST 50 ROWS ONLY",
-                Map.of(), String.class);
+                + " AND ((a.risk_case_id IS NOT NULL AND h.risk_case_id=a.risk_case_id) OR (a.risk_case_id IS NULL AND h.source_id=a.subject_id AND h.risk_case_id=''))"
+                +" AND h.handoff_type='UAV_PUNISHMENT')"
+                +" AND NOT EXISTS(SELECT 1 FROM prediction_event_link p WHERE p.event_id=a.subject_id AND a.risk_case_id IS NULL)"
+                +" AND (NOT EXISTS(SELECT 1 FROM prediction_event_link p WHERE p.event_id=a.subject_id) OR EXISTS("
+                +" SELECT 1 FROM uav_risk_case c JOIN uav_risk_case_member m USING(risk_case_id) WHERE c.risk_case_id=a.risk_case_id AND c.superseded_by IS NULL AND m.role='OBSERVED'))"
+                +" ORDER BY event_id OFFSET :offset ROWS FETCH FIRST 100 ROWS ONLY";
+        var eligible=new ArrayList<String>();
+        for(int offset=0;eligible.size()<50;offset+=100){
+            var batch=jdbc.queryForList(query,Map.of("offset",offset),String.class);
+            for(String event:batch){
+                var scopes=riskCases==null?Map.<String,String>of():riskCases.actionEvents(event);
+                boolean valid=scopes.isEmpty()?punishmentCompletion(event)!=null:scopes.keySet().stream().anyMatch(c->riskCases.withCase(c,()->punishmentCompletion(event)!=null));
+                if(valid){eligible.add(event);if(eligible.size()==50)break;}
+            }
+            if(batch.size()<100)break;
+        }
+        return eligible;
     }
 
     public record PunishmentCompletionRow(String requestedBy, String triggerSource, String authorizationId, Long completedAt) { }
 
     public PunishmentCompletionRow punishmentCompletion(String eventId) {
         if (eventId == null || eventId.isBlank()) return null;
+        if(riskCases!=null&&riskCases.hasCases(eventId)&&riskCases.caseId(eventId)==null)return null;
+        var parameters=new HashMap<String,Object>();parameters.put("id",eventId);
+        String subject=caseSubject("UAV_EVENT",eventId,parameters,"id");
         var rows = jdbc.query("SELECT a.requested_by,a.action_type,a.authorization_id,"
                 + " (SELECT c.completed_at FROM device_command c WHERE c.command_id=a.execution_command_id AND c.status='SUCCEEDED') AS stop_completed_at,"
                 + " (SELECT MAX(e.occurred_at) FROM disposal_authorization_event e WHERE e.authorization_id=a.authorization_id AND e.event_kind='COMPLETE') AS completed_at"
                 + " FROM disposal_authorization a WHERE a.subject_kind='UAV_EVENT'"
-                + " AND a.subject_id=:id AND " + PUNISHMENT_COMPLETION
-                + " ORDER BY a.requested_at DESC,a.authorization_id DESC", Map.of("id", eventId),
+                + " AND "+subject+" AND " + PUNISHMENT_COMPLETION
+                + " AND (a.risk_case_id IS NOT NULL OR (NOT EXISTS(SELECT 1 FROM prediction_event_link p WHERE p.event_id=a.subject_id)"
+                + " AND NOT EXISTS(SELECT 1 FROM uav_risk_case_member pm JOIN uav_risk_case pc USING(risk_case_id) WHERE pm.event_id=a.subject_id AND pc.episode_id IS NOT NULL)))"
+                + " ORDER BY a.requested_at DESC,a.authorization_id DESC", parameters,
                 (r, n) -> new PunishmentCompletionRow(
                         r.getString("requested_by"), "JAMMING".equals(r.getString("action_type"))
                                 ? "JAMMING_COMPLETED" : "COUNTERMEASURE_COMPLETED",r.getString("authorization_id"),
@@ -389,6 +411,9 @@ public class DisposalRepository {
                             r.getTimestamp("completed_at")==null?null:r.getTimestamp("completed_at").getTime()));
         PunishmentCompletionRow latest = null;
         for (var row : rows) {
+            if(measuredPunishment!=null&&measuredPunishment.derived(eventId)
+                    &&measuredPunishment.resolve(eventId,row.authorizationId(),row.completedAt())==null)continue;
+            if(measuredPunishment==null&&jdbc.queryForObject("SELECT COUNT(*) FROM prediction_event_link WHERE event_id=:id",parameters,Long.class)>0)continue;
             if (latest == null || row.completedAt() != null && (latest.completedAt() == null || row.completedAt() > latest.completedAt())) latest = row;
         }
         return latest;

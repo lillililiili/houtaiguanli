@@ -33,6 +33,23 @@ class AutomationRuntimeWorkerTest {
         ready(state).poll();
         verifyNoInteractions(counter);
     }
+    @Test void linkedPredictionAndMeasuredCandidatesEvaluateTheSameCurrentCaseOnlyOnce() {
+        String prediction=java.util.UUID.randomUUID().toString(),measured=java.util.UUID.randomUUID().toString(),risk=java.util.UUID.randomUUID().toString();
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        var c=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                risk,java.util.UUID.randomUUID().toString(),java.util.UUID.randomUUID().toString(),"ENTERED",measured,List.of(prediction,measured),false,true,2);
+        when(policy.enabled()).thenReturn(true);when(runs.cursor()).thenReturn("");
+        when(facts.candidates(anyLong(),eq(100),eq(""))).thenReturn(List.of(prediction,measured));
+        when(cases.allCases(prediction)).thenReturn(List.of(c));when(cases.allCases(measured)).thenReturn(List.of(c));
+        doAnswer(call->{((Runnable)call.getArgument(1)).run();return null;}).when(cases).runWithCase(eq(risk),any(Runnable.class));
+        when(runs.state("verify",measured)).thenReturn(new AutomationRuntimeRepository.State("verify",measured,4,"passing-run","PASS",null,"{}","sig"));
+        var worker=new AutomationRuntimeWorker(policy,runs,facts,service,verification,counter,handoffs,new AppClock());worker.cases(cases);worker.poll();
+        verify(service,times(1)).evaluate("verify",measured);
+        verify(service,never()).evaluate("verify",prediction);
+        verify(service,times(1)).evaluate("counter",measured);
+        verify(service,never()).evaluate("counter",prediction);
+        verify(verification,times(1)).confirmIfPassed(measured,"passing-run");
+    }
     private AutomationRuntimeWorker ready(String status) {
         when(policy.enabled()).thenReturn(true);
         when(runs.cursor()).thenReturn("");

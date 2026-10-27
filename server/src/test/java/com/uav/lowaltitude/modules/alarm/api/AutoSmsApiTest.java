@@ -33,6 +33,10 @@ class AutoSmsApiTest {
     @Autowired AutoSmsService automatic;
     @Autowired com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
     @Autowired AutoSmsJob job;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoSmsRepository smsTasks;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
+    @Autowired org.springframework.context.ApplicationContext applicationContext;
+    @Autowired com.uav.lowaltitude.platform.time.AppClock appClock;
     @SpyBean LocalAdvisorySmsAdapter sms;
     @SpyBean com.uav.lowaltitude.modules.alarm.application.AutoSmsPolicy smsPolicy;
     @SpyBean com.uav.lowaltitude.platform.audit.AuditService audit;
@@ -167,6 +171,93 @@ class AutoSmsApiTest {
         read().andExpect(status().isOk());
         assertThat(count("uav_auto_sms_task")).isZero();assertThat(count("uav_event_advisory")).isZero();
         verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
+    @Test void verifiedSmsIsDurableBeforeCommitAndSendsImmediatelyAfterCommitWithoutPolling() {
+        String risk=confirmedRisk();var queued=new ArrayList<Runnable>();var dispatch=verificationDispatch(queued::add);
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status -> {
+            riskCases.runWithCase(risk,()->{
+                riskCases.lockCases(eventId);dispatch.verified(eventId,risk);
+                assertThat(smsTasks.find(eventId).status()).isEqualTo("WAITING");
+                assertThat(queued).isEmpty();assertThat(count("uav_event_advisory")).isZero();
+            });
+        });
+        assertThat(riskCases.selectedCase()).isNull();assertThat(queued).hasSize(1);
+        queued.remove(0).run();
+        riskCases.runWithCase(risk,()->assertThat(smsTasks.find(eventId).status()).isEqualTo("SIMULATED_DELIVERED"));
+        enqueueVerified(dispatch,risk);queued.remove(0).run();automatic.process(eventId);
+        assertThat(count("uav_event_advisory")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM uav_auto_sms_task WHERE event_id=? AND risk_scope=?",Integer.class,eventId,risk)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_auto_voice_task WHERE event_id=?",Integer.class,eventId)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM disposal_authorization WHERE risk_case_id=?",Integer.class,risk)).isZero();
+    }
+    @Test void rolledBackVerificationDoesNotPersistTaskOrWakeSender() {
+        String risk=confirmedRisk();var queued=new ArrayList<Runnable>();var dispatch=verificationDispatch(queued::add);
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status -> {
+            riskCases.runWithCase(risk,()->{riskCases.lockCases(eventId);dispatch.verified(eventId,risk);});status.setRollbackOnly();
+        });
+        assertThat(queued).isEmpty();assertThat(count("uav_auto_sms_task")).isZero();assertThat(count("uav_event_advisory")).isZero();
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
+    @Test void committedTaskSurvivesLostWakeupAndRestartedSweepWithoutDuplicatingDelivery() {
+        String risk=confirmedRisk();var discarded=new ArrayList<Runnable>();
+        enqueueVerified(verificationDispatch(discarded::add),risk);
+        assertThat(discarded).hasSize(1);discarded.clear(); // Process dies before its in-memory wake-up runs.
+        for(int i=0;i<4&&count("uav_event_advisory")==0;i++)automatic.poll();
+        assertThat(count("uav_event_advisory")).isEqualTo(1);
+        var restarted=new ArrayList<Runnable>();enqueueVerified(verificationDispatch(restarted::add),risk);restarted.get(0).run();
+        assertThat(count("uav_event_advisory")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT attempt_count FROM uav_auto_sms_task WHERE event_id=? AND risk_scope=?",Integer.class,eventId,risk)).isEqualTo(1);
+    }
+    @Test void queuedVerificationRechecksCurrentRiskAndPilotBeforeSending() {
+        String risk=confirmedRisk();var queued=new ArrayList<Runnable>();enqueueVerified(verificationDispatch(queued::add),risk);
+        jdbc.update("UPDATE flight_plan SET pilot_contact_id=NULL WHERE plan_id=?",pilotPlanId);
+        queued.get(0).run();
+        riskCases.runWithCase(risk,()->assertThat(smsTasks.find(eventId).status()).isEqualTo("BLOCKED"));
+        assertThat(count("uav_event_advisory")).isZero();
+        jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,actor_id,note,created_at) VALUES(?,?,2,?,1,'FALSE_POSITIVE','OBSERVED',?,'isolated test ends risk',?)",UUID.randomUUID().toString(),risk,eventId,userId,System.currentTimeMillis());
+        queued.clear();enqueueVerified(verificationDispatch(queued::add),risk);queued.get(0).run();
+        assertThat(count("uav_event_advisory")).isZero();
+        verify(sms,never()).simulateAutomatic(anyString(),anyString(),anyString(),anyString());
+    }
+    @Test void sharedEventKeepsVerificationWakeupsBoundToTheirOwnRegionalRisk() {
+        String first=confirmedRisk(),second=confirmedRisk();var queued=new ArrayList<Runnable>();var dispatch=verificationDispatch(queued::add);
+        enqueueVerified(dispatch,first);enqueueVerified(dispatch,second);
+        assertThat(queued).hasSize(2);assertThat(riskCases.selectedCase()).isNull();
+        queued.forEach(Runnable::run);
+        assertThat(jdbc.queryForList("SELECT risk_scope FROM uav_auto_sms_task WHERE event_id=? AND status='SIMULATED_DELIVERED'",String.class,eventId)).containsExactlyInAnyOrder(first,second);
+        assertThat(jdbc.queryForObject("SELECT COUNT(DISTINCT provider_key) FROM uav_auto_sms_task WHERE event_id=?",Integer.class,eventId)).isEqualTo(2);
+        assertThat(count("uav_event_advisory")).isEqualTo(2);
+    }
+    @Test void verificationOfCurrentAliasAndPollingShareTheOriginalTaskUnderConcurrentClaims() throws Exception {
+        String risk=confirmedRisk(),alias=UUID.randomUUID().toString(),aliasAlarm=UUID.randomUUID().toString();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at) SELECT ?,target_id,source_id,?,'UAV_INTRUSION',severity,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at FROM alarm WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?)",aliasAlarm,UUID.randomUUID().toString(),eventId);
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) SELECT ?,?,'CONFIRMED',owner_org_id,district_id,created_at,updated_at,1 FROM uav_event WHERE event_id=?",alias,aliasAlarm,eventId);
+        jdbc.update("INSERT INTO uav_risk_case_member(risk_case_id,event_id,role,created_at) VALUES(?,?,'OBSERVED',?)",risk,alias,System.currentTimeMillis()+1);
+        var queued=new java.util.concurrent.CopyOnWriteArrayList<Runnable>();var dispatch=verificationDispatch(queued::add);
+        var start=new java.util.concurrent.CountDownLatch(1);var workers=java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var verification=workers.submit(()->{start.await();new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status->riskCases.runWithCase(risk,()->{riskCases.lockCases(alias);dispatch.verified(alias,risk);}));return null;});
+            var sweep=workers.submit(()->{start.await();riskCases.runWithCase(risk,()->automatic.process(eventId));return null;});
+            start.countDown();verification.get(20,java.util.concurrent.TimeUnit.SECONDS);sweep.get(20,java.util.concurrent.TimeUnit.SECONDS);
+            queued.forEach(Runnable::run);
+            assertThat(jdbc.queryForList("SELECT event_id FROM uav_auto_sms_task WHERE risk_scope=?",String.class,risk)).containsExactly(eventId);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_event_advisory WHERE event_id IN (?,?)",Integer.class,eventId,alias)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_channel WHERE risk_case_id=? AND channel='SMS'",Integer.class,risk)).isEqualTo(1);
+        } finally {workers.shutdownNow();}
+    }
+    private com.uav.lowaltitude.modules.alarm.application.AutoSmsVerificationDispatch verificationDispatch(java.util.concurrent.Executor executor){
+        return new com.uav.lowaltitude.modules.alarm.application.AutoSmsVerificationDispatch(smsTasks,riskCases,smsPolicy,appClock,applicationContext.getBeanProvider(AutoSmsService.class),executor);
+    }
+    private void enqueueVerified(com.uav.lowaltitude.modules.alarm.application.AutoSmsVerificationDispatch dispatch,String risk){
+        new org.springframework.transaction.support.TransactionTemplate(transactions).executeWithoutResult(status ->
+                riskCases.runWithCase(risk,()->{riskCases.lockCases(eventId);dispatch.verified(eventId,risk);}));
+    }
+    private String confirmedRisk(){
+        String risk=UUID.randomUUID().toString();long now=System.currentTimeMillis();
+        jdbc.update("INSERT INTO uav_risk_case(risk_case_id,root_event_id,target_id,owner_org_id,district_id,source_mode,created_at) VALUES(?,?,?,?,?,'mock',?)",risk,eventId,targetId,ORG,DISTRICT,now);
+        jdbc.update("INSERT INTO uav_risk_case_member(risk_case_id,event_id,role,created_at) VALUES(?,?,'OBSERVED',?)",risk,eventId,now);
+        jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,actor_id,note,created_at) VALUES(?,?,1,?,1,'CONFIRMED','OBSERVED',?,'isolated verified risk',?)",UUID.randomUUID().toString(),risk,eventId,userId,now);
+        return risk;
     }
     @Test void backgroundJobRunsWithoutBrowserOrSessionAndOnlySendsOnce()throws Exception {
         // 没有调用页面或发送API；会话全部退出后直接执行定时任务入口。

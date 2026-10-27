@@ -68,7 +68,7 @@ class CommandSettlementSignalTest {
     @Test
     void fourChannelStartCancelledForOfflineDeviceSettlesDisposal() {
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
+        when(guard.startBlockReason("auth", "executor", "device")).thenReturn("");
         when(devices.find("device")).thenReturn(device("OFFLINE"));
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("DEVICE_NOT_OPERABLE"), anyString())).thenReturn(1);
@@ -81,20 +81,22 @@ class CommandSettlementSignalTest {
     @Test
     void fourChannelStartCancelledAfterAuthorizationStoppedSettlesDisposal() {
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth", "executor", "device")).thenReturn(false);
+        when(guard.startBlockReason("auth", "executor", "device")).thenReturn("本次授权已停止，不能重新启动");
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("AUTHORIZATION_STOPPED"), anyString())).thenReturn(1);
 
         fourChannel.dispatch("c");
 
         verify(events).publishEvent(new DeviceCommandFinished("c"));
+        verify(fourChannelControls).updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
+                eq("AUTHORIZATION_STOPPED"), eq("启动指令尚未下发，已取消：本次授权已停止，不能重新启动；本条指令不能重发"));
     }
 
     @Test
     void fourChannelRevocationDuringCommandLockWaitPreventsAnySendAttempt() {
         AtomicBoolean authorized = new AtomicBoolean(true);
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth", "executor", "device")).thenAnswer(call -> authorized.get());
+        when(guard.startBlockReason("auth", "executor", "device")).thenAnswer(call -> authorized.get() ? "" : "当前账号已撤权");
         doAnswer(call -> { authorized.set(false); return null; }).when(fourChannelControls).lockCommand("c");
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("AUTHORIZATION_STOPPED"), anyString())).thenReturn(1);
@@ -134,7 +136,7 @@ class CommandSettlementSignalTest {
     @Test
     void lostRaceDoesNotSignalAgain() {
         when(fourChannelControls.control("c")).thenReturn(fourChannelCommand());
-        when(guard.mayStart("auth", "executor", "device")).thenReturn(true);
+        when(guard.startBlockReason("auth", "executor", "device")).thenReturn("");
         when(devices.find("device")).thenReturn(device("OFFLINE"));
         when(fourChannelControls.updateCommand(eq("c"), eq("QUEUED"), eq("CANCELLED"), anyLong(),
                 eq("DEVICE_NOT_OPERABLE"), anyString())).thenReturn(0);

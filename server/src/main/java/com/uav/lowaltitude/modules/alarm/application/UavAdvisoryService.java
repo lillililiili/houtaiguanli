@@ -30,6 +30,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavAdvisoryService {
+    private com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis measuredPunishment;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void measuredPunishment(com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis value){this.measuredPunishment=value;}
     private com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder;
     private UavRiskCaseIdentity riskCases;
     @org.springframework.beans.factory.annotation.Autowired
@@ -63,8 +66,39 @@ public class UavAdvisoryService {
         this.disposals=disposals;
         this.events=events;this.repository=repository;this.access=access;this.sms=sms;this.json=json;this.clock=clock;this.audit=audit;
     }
-    @Transactional(readOnly=true)
-    public Overview overview(String id) { return view(event(id,false)); }
+    // The stage, current evidence and action flags belong to one read snapshot. This
+    // response is never an authorization: command paths still lock and recheck current facts.
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Overview overview(String id) {
+        EventRow current=event(id,false);
+        if(riskCases==null)return view(current);
+        for(int attempt=0;attempt<2;attempt++){
+            var before=riskCases.cases(current.eventId());
+            // Only an explicit, unique regional case can resolve an old prediction event alias.
+            if(before.size()==1&&!before.get(0).actionEventId().equals(current.eventId())){
+                current=event(before.get(0).actionEventId(),false);
+                before=riskCases.cases(current.eventId());
+            }
+            Overview result=view(current);
+            var after=riskCases.cases(current.eventId());
+            EventRow latest=event(current.eventId(),false);
+            if(before.equals(after)&&current.version()==latest.version()&&matchesCaseSnapshot(after,result.riskCase()))return result;
+            current=event(after.size()==1?after.get(0).actionEventId():current.eventId(),false);
+        }
+        // Do not attach a newly verified case/version to eligibility calculated before that
+        // verification. This is a read conflict, not a change of the persisted business state.
+        throw conflict("RISK_CASE_CHANGED","风险办理状态正在更新，请刷新处置进度");
+    }
+    private static boolean matchesCaseSnapshot(List<UavRiskCaseIdentity.CaseRef> cases,java.util.Map<String,Object> summary){
+        if(cases.size()!=1)return summary==null;
+        if(summary==null)return false;
+        var current=cases.get(0);
+        return current.riskCaseId().equals(summary.get("risk_case_id"))
+                && summary.get("version") instanceof Number version&&current.version()==version.longValue()
+                && current.actionEventId().equals(summary.get("action_event_id"))
+                && current.stage().equals(summary.get("stage"))
+                && current.confirmed()=="CONFIRMED".equals(summary.get("verification_status"));
+    }
     /** Exposes the existing device-position assessment; reading never sends or confirms. */
     @Transactional(readOnly=true)
     public DepartureObservation observation(String id) {
@@ -255,7 +289,7 @@ public class UavAdvisoryService {
         if(riskCases.caseCount(eventId)>1&&riskCases.selectedCase()==null)
             throw conflict("RISK_CASE_REQUIRED","该事件关联多个区域风险，请从具体风险记录办理通知");
     }
-    private Overview view(EventRow event) {
+    Overview view(EventRow event) {
         var order=responseOrder==null?null:responseOrder.summary(event.eventId());
         var records=repository.records(event.eventId());
         String launchBlock=repository.counterLaunchBlockReason(event.eventId());
@@ -269,11 +303,16 @@ public class UavAdvisoryService {
         var phase=notifyPhase(event,autoSms,autoVoice);
         var decision=noCounter.status(event);
         var observation=observation(event.eventId());
+        var handoffContext=handoffContext(event);
+        var handoffProgress=autoHandoff(event,observation,handoffContext);
+        boolean canHandoff=handoffContext.existingId()==null&&!handoffContext.predictionOnly()
+                &&(!handoffContext.derived()||handoffContext.completion()!=null)
+                &&confirmed(event)&&allowed(PermissionCode.HANDOFF_CREATE);
         return new Overview(event.eventId(),event.version(),mode?"SIMULATED":"UNAVAILABLE",
                 !decision.decisionActive() && confirmed(event) && allowed(PermissionCode.ALARM_VERIFY) && allowed(PermissionCode.HANDOFF_CREATE),
-                reason.isEmpty() && request,reason.isEmpty() && direct,"CONFIRMED".equals(event.state()) && allowed(PermissionCode.HANDOFF_CREATE),reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
+                reason.isEmpty() && request,reason.isEmpty() && direct,canHandoff,reason.isEmpty()&&!request&&!direct?"当前账号没有反制申请或直接反制权限":reason,records,
                 currentRecipient.recipientName()==null?null:new Recipient(currentRecipient.recipientName(),currentRecipient.contactHint(),"当前明确关联的任务执行飞手"),
-                autoSms,voice.mode(event),order!=null&&order.matched()?autoVoice:withoutSms(autoSms,autoVoice),launchBlock.isEmpty()&&!decision.decisionActive()&&(order!=null&&order.counterPriority()||CounterLaunchVisibility.visible(phase)),phaseName(phase),autoHandoff(event,observation),decision,
+                autoSms,voice.mode(event),order!=null&&order.matched()?autoVoice:withoutSms(autoSms,autoVoice),launchBlock.isEmpty()&&!decision.decisionActive()&&(order!=null&&order.counterPriority()||CounterLaunchVisibility.visible(phase)),phaseName(phase),handoffProgress,decision,
                 automatic.pilotContactMissing(event),observation,order,riskSummary(event));
     }
     private java.util.Map<String,Object> riskSummary(EventRow event){
@@ -331,11 +370,19 @@ public class UavAdvisoryService {
                 voice.policyCode(), voice.triggerSource(), voice.evaluatedAt(), voice.dataUpdatedAt(), voice.recordingId(), voice.recordingName(),
                 voice.answeredAt(), voice.playbackCompletedAt(), voice.recipientSnapshot());
     }
-    private AutoHandoff autoHandoff(EventRow event, DepartureObservation observation) {
-        if(predictions!=null&&predictions.isPrediction(event.eventId()))
-            return new AutoHandoff(false,"NOT_REQUIRED","预测预警不作为实际违法事实，不自动移送处罚",null,null,null,null,null);
+    private record HandoffContext(String existingId,boolean predictionOnly,boolean derived,
+            boolean independentMeasured,DisposalRepository.PunishmentCompletionRow completion) { }
+    private HandoffContext handoffContext(EventRow event){
+        String id=event.eventId();String existing=handoffs.existingPunishment(id);
+        boolean prediction=predictions!=null&&predictions.isPrediction(id);
+        boolean derived=measuredPunishment!=null&&measuredPunishment.derived(id);
+        var completion=existing==null&&!prediction?disposals.punishmentCompletion(id):null;
+        boolean measured=existing!=null||!derived||completion!=null||(!prediction&&measuredPunishment.independentMeasuredEvent(id));
+        return new HandoffContext(existing,prediction,derived,measured,completion);
+    }
+    private AutoHandoff autoHandoff(EventRow event, DepartureObservation observation,HandoffContext context) {
         String eventId = event.eventId();
-        String handoffId = handoffs.existingPunishment(eventId);
+        String handoffId = context.existingId();
         if(handoffId!=null){
             var decision=followups.decision(handoffId);
             if(decision!=null){
@@ -351,11 +398,15 @@ public class UavAdvisoryService {
             }
         }
         if (handoffId == null) {
+            if(context.predictionOnly())
+                return new AutoHandoff(false,"NOT_REQUIRED","预测预警不作为实际违法事实，不自动移送处罚",null,null,null,null,null);
             // 误报不进入处罚移送，不能一直显示“等待移送”。
             if ("FALSE_POSITIVE".equals(event.state()))
                 return new AutoHandoff(false, "NOT_REQUIRED", "已核实为误报，不需要移送处罚", null, null, null, null, null);
             if(repository.noCounterActive(eventId))return new AutoHandoff(false,"NOT_REQUIRED","已决定不反制；是否移送按事件事实另行判断",null,null,null,null,null);
-            var completion = disposals.punishmentCompletion(eventId);
+            if(context.derived()&&!context.independentMeasured())
+                return new AutoHandoff(true,"BLOCKED","缺少本风险、本禁飞区独立的实测违法依据，不能移送处罚；风险核实记录不代替违法依据",null,null,null,null,null);
+            var completion = context.completion();
             if ("LEFT".equals(observation.presence()) && completion == null
                     && disposals.activeCount("UAV_EVENT",eventId,"COUNTERMEASURE") == 0
                     && disposals.activeCount("UAV_EVENT",eventId,"JAMMING") == 0) {
@@ -390,18 +441,21 @@ public class UavAdvisoryService {
         }
         var latest = handoffs.latestDelivery(handoffId);
         String trigger = handoffs.triggerSource(handoffId);
+        if(latest==null)return new AutoHandoff(true,"BLOCKED","移送记录已建立，但投递记录缺失，需核查原记录",handoffId,trigger,null,null,null);
         Long updatedAt = latest == null || latest.createdAt() == null ? null : latest.createdAt().toInstant().toEpochMilli();
         String delivery = latest == null ? null : latest.deliveryStatus();
         if ("FAILED".equals(delivery))
             return new AutoHandoff(true, "FAILED", "处罚交接投递失败", handoffId, trigger, updatedAt, null, null);
         // 交接已建立但还没发出（例如通知处罚规则未全部满足、接收单位没配通知方式）：如实写明，不说成“已移送”。
-        if ("PENDING_DELIVERY".equals(delivery))
-            return new AutoHandoff(true, "PENDING", pendingReason(latest.blockedReason()), handoffId, trigger, updatedAt, null, null);
+        if ("PENDING_DELIVERY".equals(delivery)) {
+            boolean waiting=latest.submittedAt()==null&&com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService.WAITING_RULES.equals(latest.blockedReason());
+            return new AutoHandoff(true, "PENDING", pendingReason(latest.blockedReason()), handoffId, trigger, updatedAt, null, null,null,waiting);
+        }
         return new AutoHandoff(true, "SUBMITTED", null, handoffId, trigger, updatedAt, null, null);
     }
     private static String pendingReason(String blocked) {
         if (blocked == null || blocked.isBlank()) return "处罚交接已建立，还没有发给处罚部门。";
-        if ("通知处罚规则尚未全部满足".equals(blocked)) return "通知处罚的规则还没有全部满足，系统没有自动发出。有权限的人员可以打开处罚交接手动发送。";
+        if (com.uav.lowaltitude.modules.handoff.application.HandoffSubmissionService.WAITING_RULES.equals(blocked)) return "通知处罚的规则还没有全部满足，系统没有自动发出。有权限的人员可以打开处罚交接手动发送。";
         return blocked;
     }
     private boolean canInspectHandoffRecipients(String eventId) {

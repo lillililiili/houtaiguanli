@@ -116,7 +116,9 @@ public class AutoVoiceService {
                 String block=predictions==null?null:predictions.notificationBlock(id);
                 if(predictions!=null&&predictions.notificationClaimInterrupted(id,claim.predictionRevision()))
                     block="本次待拨电话已因预测风险变化取消，等待当前条件重新检查";
-                var eligibility=eligible(current,clock.nowMillis(),pending,currentRecording);
+                long checkedAt=clock.nowMillis();
+                var order=responseOrder==null?null:responseOrder.summary(current.eventId());
+                var eligibility=eligible(current,checkedAt,pending,currentRecording,order);
                 if(!eligibility.allowed())block=eligibility.reason();
                 if(block!=null&&!block.isEmpty()) {
                     Task task=tasks.find(id);
@@ -129,7 +131,10 @@ public class AutoVoiceService {
                     tasks.block(id,new Eligibility(false,"WAITING","飞手联系方式已变化，等待当前条件重新检查",TRIGGER,null,null),clock.nowMillis());
                     return null;
                 }
-                tasks.prepareSend(id,claim.token(),currentRecording,clock.nowMillis());
+                var orderBasis=order!=null&&order.matched()
+                        ?new com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis(order.status(),order.reason(),order.maxWaitSeconds(),
+                            order.priorityStartedAt(),order.priorityDeadlineAt(),order.policyVersion(),checkedAt):null;
+                tasks.prepareSend(id,claim.token(),currentRecording,clock.nowMillis(),orderBasis);
                 directory.freezeAdvisoryTask("ADVISORY_VOICE",id,recipient);
                 sentClaim.set(new Claim(id,current.sourceMode(),claim.token(),claim.providerKey(),currentRecording,claim.startedAt(),recipient,claim.predictionRevision()));
                 // Persist the exact attempted content even if the channel outcome is unknown.
@@ -278,6 +283,10 @@ public class AutoVoiceService {
         tasks.queueRetry(event.eventId(),clock.nowMillis());
     }
     private Eligibility eligible(EventRow event,long now,Task task,Recording recording) {
+        return eligible(event,now,task,recording,responseOrder==null?null:responseOrder.summary(event.eventId()));
+    }
+    private Eligibility eligible(EventRow event,long now,Task task,Recording recording,
+            com.uav.lowaltitude.modules.automationrule.api.ResponseOrderDtos.Summary order) {
         if(riskCases!=null&&riskCases.legacyNotificationAmbiguous(event.eventId(),"VOICE"))
             return blocked(waiting("旧通知区域归属待核查"),"BLOCKED","已有电话发送记录无法确定所属区域，保留原回执并暂停新增拨打，避免重复通知");
         if(predictions!=null) {
@@ -286,7 +295,6 @@ public class AutoVoiceService {
         }
         if(noCounter.active(event.eventId()))return blocked(waiting("已决定不反制"),"BLOCKED",com.uav.lowaltitude.modules.alarm.infrastructure.NoCounterRepository.ACTIVE_REASON);
         if("FALSE_POSITIVE".equals(event.state()))return blocked(waiting("误报"),"BLOCKED","已核实为误报，不拨打电话");
-        var order=responseOrder==null?null:responseOrder.summary(event.eventId());
         boolean counterFirst=order!=null&&order.matched();
         if(counterFirst&&!order.voiceAllowed())return blocked(waiting(order.reason()),"PAUSED".equals(order.status())?"BLOCKED":"WAITING",order.reason());
         Long smsAt=smsTasks.deliveredAt(taskOwner(event.eventId(),"SMS"));
@@ -330,7 +338,7 @@ public class AutoVoiceService {
         return new AutoVoice(enabled,status,reason,task==null?null:task.triggeredAt(),task==null?null:task.updatedAt(),retry,task==null?0:task.attempts(),AutoVoicePolicy.CODE,
                 e!=null?e.source():task==null?null:task.triggerSource(),e!=null&&e.evaluation()!=null?e.evaluation().evaluatedAt():task==null?null:task.evaluatedAt(),e!=null?e.observedAt():task==null?null:task.dataUpdatedAt(),
                 task!=null&&task.recordingId()!=null?task.recordingId():recording==null?null:recording.id(),task!=null&&task.recordingName()!=null?task.recordingName():recording==null?null:recording.name(),
-                task==null?null:task.answeredAt(),task==null?null:task.playbackCompletedAt(),recipient(event));
+                task==null?null:task.answeredAt(),task==null?null:task.playbackCompletedAt(),recipient(event),task==null?null:task.responseOrderBasis());
     }
     private com.uav.lowaltitude.modules.directory.api.DirectoryDtos.RecipientSnapshot recipient(EventRow event){var recorded=directory.advisoryHistoryRecipient("ADVISORY_VOICE",event.eventId());if(recorded!=null)return recorded;var task=tasks.find(event.eventId());return task!=null&&task.attempts()>0?null:directory.currentPilotEvent("ADVISORY_VOICE",event.eventId());}
     private record Claim(String eventId,String mode,String token,String providerKey,Recording recording,long startedAt,

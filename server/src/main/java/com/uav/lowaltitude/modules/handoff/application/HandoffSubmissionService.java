@@ -61,6 +61,10 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class HandoffSubmissionService {
+    private MeasuredPunishmentBasis measuredPunishment;
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void measuredPunishment(MeasuredPunishmentBasis value,com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.measuredPunishment=value;this.riskCases=cases;}
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -87,7 +91,7 @@ public class HandoffSubmissionService {
     private final AutomationRuntimeRepository ruleRuns;
     private final AutomationRuntimeEligibility ruleEligibility;
     private final com.uav.lowaltitude.modules.evidence.application.EvidenceCommandAccess commandAccess;
-    static final String WAITING_RULES = "通知处罚规则尚未全部满足";
+    public static final String WAITING_RULES = "通知处罚规则尚未全部满足";
     /** 处罚交接的建立方式：单次反制停止确认、旧干扰完成链，或人工选择接收单位后提交。 */
     public static final String TRIGGER_JAMMING_COMPLETED = "JAMMING_COMPLETED";
     public static final String TRIGGER_COUNTERMEASURE_COMPLETED = "COUNTERMEASURE_COMPLETED";
@@ -207,18 +211,26 @@ public class HandoffSubmissionService {
                                        AccessDecision alarmDecision, String key) {
         if(predictions!=null&&predictions.isPrediction(sourceId))
             throw new ApiException(HttpStatus.CONFLICT,"PREDICTION_NOT_PUNISHMENT_EVIDENCE","预测风险不代表实际违法，请使用独立核实的实测告警办理处罚移送");
+        if(riskCases!=null&&riskCases.hasCases(sourceId)){
+            if(riskCases.caseId(sourceId)==null)throw new ApiException(HttpStatus.CONFLICT,"RISK_CASE_REQUIRED","请选择具体区域风险办理移送");
+            riskCases.lockCases(sourceId);
+        }
         // 锁事件但不改它：锁只用来串行化同一事件的并发提交并冻结版本核对；提交交接不是事件状态迁移。
         UavEventRepository.EventRow event = events.lock(sourceId, alarmDecision);
         if (event == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "源对象不存在或不可见");
         String existing = repository.existingPunishment(sourceId);
         if (existing != null && legacyFollowups.decision(existing) != null)
             throw new ApiException(HttpStatus.CONFLICT, "HANDOFF_FOLLOWUP_REQUIRED", "该事件已有通知决定记录，请打开原待办办理");
-        idempotency.claim(key, operation(request.sourceKind(), sourceId, request.handoffType(), recipientId, request.expectedVersion()));
+        idempotency.claim(key, operation(request.sourceKind(), sourceId, request.handoffType(), recipientId, request.expectedVersion())
+                +(riskCases==null?"":";risk_case="+riskCases.caseId(sourceId)));
         if (event.version() != request.expectedVersion())
             throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "事件已被其他操作更新");
         // 未核实的事件不能移送处罚：处罚要"事实清楚"，而"待核实"恰恰是事实还没清楚（决策 14-3）。
-        if (!"CONFIRMED".equals(event.state()))
+        var completion=disposals.punishmentCompletion(sourceId);
+        var measuredBasis=measuredBasis(sourceId,completion);
+        if (requiresMeasuredBasis(sourceId)?measuredBasis==null:!"CONFIRMED".equals(event.state()))
             throw new ApiException(HttpStatus.CONFLICT, "INVALID_TRANSITION", "只有已核实为属实的事件可以提交处罚交接");
+        if(existing!=null)throw alreadyExists();
         if (!repository.anyEnabledRecipient(request.handoffType()))
             throw new ApiException(HttpStatus.CONFLICT, "RECIPIENT_NOT_CONFIGURED", "尚未配置可用的交接接收方");
         RecipientRow recipient = resolveRecipient(recipientId, request.handoffType());
@@ -238,8 +250,9 @@ public class HandoffSubmissionService {
         } catch (DuplicateKeyException ex) {
             throw alreadyExists();
         }
-        String snapshot = json(material);
+        String snapshot = measuredMaterial(material,measuredBasis);
         repository.insertSnapshot(handoffId, MATERIAL_SCHEMA_V2, snapshot, at);
+        if(measuredBasis!=null)repository.freezeMeasuredBasis(handoffId,measuredBasis,json(measuredBasis.facts()),at.toInstant().toEpochMilli());
         DeliveryOutcome outcome = dispatch(handoffId, request.sourceKind(), sourceId, request.handoffType(), recipient, snapshot, at, materials.sourceMode(sourceId));
         repository.insertDelivery(delivery(handoffId, outcome, at));
         audit.record(actor.userId(), actor.account(), actor.roleCode(), "handoff", "handoff_created", "handoff", handoffId,
@@ -423,13 +436,25 @@ public class HandoffSubmissionService {
     /** 反制停止确认或旧干扰完成后自动建立交接；通知渠道与规则沿用，启动成功不能作为停止事实。 */
     @Transactional
     public void automaticAfterDisposal(String eventId) {
-        if(predictions!=null&&predictions.isPrediction(eventId))return;
         if (eventId == null || eventId.isBlank()) return;
+        if(riskCases!=null&&riskCases.hasCases(eventId)){
+            riskCases.lockCases(eventId);
+            if(riskCases.selectedCase()==null){
+                riskCases.actionEvents(eventId).forEach((id,action)->riskCases.runWithCase(id,()->automaticAfterDisposalScoped(action)));
+                return;
+            }
+        }
+        automaticAfterDisposalScoped(eventId);
+    }
+    private void automaticAfterDisposalScoped(String eventId) {
+        if(predictions!=null&&predictions.isPrediction(eventId))return;
         String existing = repository.existingPunishment(eventId);
         // Earlier deployments may have frozen a human notification decision; never decide or send it automatically.
         if (existing != null && legacyFollowups.decision(existing) != null) return;
         var completion = disposals.punishmentCompletion(eventId);
         if (completion == null) return;
+        var measuredBasis=measuredBasis(eventId,completion);
+        if(requiresMeasuredBasis(eventId)&&measuredBasis==null)return;
         boolean send = automaticPunishmentSend(eventId);
         if (existing != null) {
             if (send) sendWaitingPunishment(existing, eventId);
@@ -442,7 +467,7 @@ public class HandoffSubmissionService {
         // 由告警处置进度提示有权限的人员选定接收单位后提交，这里只记一次日志。
         if (recipients.size() != 1) { noteManualRequired(eventId, recipients.size()); return; }
         UavEventRepository.EventRow event = events.lock(eventId, SYSTEM_SCOPE);
-        if (event == null || !"CONFIRMED".equals(event.state())) return;
+        if (event == null || (measuredBasis==null&&!"CONFIRMED".equals(event.state()))) return;
         if (repository.existingPunishment(eventId) != null) return;
         RecipientRow recipient = recipients.get(0);
         OffsetDateTime at = clock.now().atOffset(ZoneOffset.UTC);
@@ -455,8 +480,9 @@ public class HandoffSubmissionService {
         } catch (DuplicateKeyException ignored) {
             return;
         }
-        String snapshot = json(material);
+        String snapshot = measuredMaterial(material,measuredBasis);
         repository.insertSnapshot(handoffId, MATERIAL_SCHEMA_V2, snapshot, at);
+        if(measuredBasis!=null)repository.freezeMeasuredBasis(handoffId,measuredBasis,json(measuredBasis.facts()),at.toInstant().toEpochMilli());
         if (!send) {
             repository.insertDelivery(new DeliveryInsert(UUID.randomUUID().toString(), handoffId, 1, HandoffRules.PENDING_DELIVERY,
                     HandoffRules.NOT_EXPECTED, WAITING_RULES, at, null, null, null));
@@ -479,7 +505,7 @@ public class HandoffSubmissionService {
     }
 
     private boolean automaticPunishmentSend(String eventId) {
-        if (!rulePolicy.enabled()) return true;
+        if (!rulePolicy.enabled()) return !requiresMeasuredBasis(eventId);
         var state = ruleRuns.state("dispose", eventId);
         return state != null && "PASS".equals(state.status())
                 && "PASS".equals(ruleEligibility.check("dispose", eventId).status());
@@ -490,13 +516,26 @@ public class HandoffSubmissionService {
         if(predictions!=null&&predictions.isPrediction(eventId))return;
         // Recheck the qualifying authorization at the actual send boundary. Prediction-derived
         // completion cannot become a punishment fact just because its event later became observed.
-        if(disposals.punishmentCompletion(eventId)==null)return;
+        var completion=disposals.punishmentCompletion(eventId);
+        if(completion==null)return;
+        var measuredBasis=measuredBasis(eventId,completion);
+        if(requiresMeasuredBasis(eventId)&&measuredBasis==null)return;
+        if(requiresMeasuredBasis(eventId)){
+            String frozen=repository.frozenMeasuredBasis(handoffId);
+            if(frozen==null)return;
+            try{
+                var basis=objectMapper.readTree(frozen);if(basis.isTextual())basis=objectMapper.readTree(basis.asText());
+                if(!eventId.equals(basis.path("event_id").asText())||!measuredBasis.riskCaseId().equals(basis.path("risk_case_id").asText()))return;
+                if(measuredPunishment.resolveFrozen(eventId,basis.path("authorization_id").asText(),basis.path("completed_at").asLong(),
+                        basis.path("evaluation_id").asText(),basis.path("point_id").asText())==null)return;
+            }catch(Exception invalid){return;}
+        }
         var row = repository.lockNotification(handoffId, SYSTEM_SCOPE);
         if (row == null || repository.hasDelivered(handoffId)) return;
         var latest = repository.latestDelivery(handoffId);
         if (latest == null || !WAITING_RULES.equals(latest.blockedReason()) || latest.submittedAt() != null) return;
         var event = events.lock(eventId, SYSTEM_SCOPE);
-        if (event == null || !"CONFIRMED".equals(event.state())) return;
+        if (event == null || (measuredBasis==null&&!"CONFIRMED".equals(event.state()))) return;
         var snapshot = repository.snapshot(handoffId);
         if (snapshot == null) return;
         RecipientRow recipient = repository.findEnabledRecipient(row.recipientId(), row.handoffType());
@@ -509,6 +548,17 @@ public class HandoffSubmissionService {
         if (outcome.receiptResult() != null) repository.updateReceiptResult(handoffId, outcome.receiptResult());
         audit.record(null, "AUTO_PUNISHMENT", "SYSTEM", "handoff", "handoff_created", "handoff", handoffId,
                 "source_id=" + eventId + "; trigger=DISPOSE_RULES; recipient_id=" + recipient.recipientId(), "SUCCESS", "", "");
+    }
+
+    private boolean requiresMeasuredBasis(String eventId){return measuredPunishment!=null&&measuredPunishment.derived(eventId);}
+    private MeasuredPunishmentBasis.Basis measuredBasis(String eventId,DisposalCompletionPort.PunishmentCompletion completion){
+        return requiresMeasuredBasis(eventId)&&completion!=null?measuredPunishment.resolve(eventId,completion.authorizationId(),completion.completedAt()):null;
+    }
+    private String measuredMaterial(MaterialV2Dto material,MeasuredPunishmentBasis.Basis basis){
+        if(basis==null)return json(material);
+        var value=objectMapper.valueToTree(material);
+        ((com.fasterxml.jackson.databind.node.ObjectNode)value).set("measured_risk_basis",objectMapper.valueToTree(basis.facts()));
+        return json(value);
     }
 
     /** 渠道异常不吞：交接与快照已入库，投递记录如实写"待投递 · 未接通"，由后续人工或重试处理。 */

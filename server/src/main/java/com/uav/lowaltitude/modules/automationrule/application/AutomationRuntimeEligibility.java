@@ -11,6 +11,7 @@ import com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeM
 /** Read-only dispatch guard. Never takes a group lock while device code holds an event/authorization lock. */
 @Service
 public class AutomationRuntimeEligibility {
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(AutomationRuntimeEligibility.class);
     private com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions;
     @org.springframework.beans.factory.annotation.Autowired
     public void setPredictionEventGate(com.uav.lowaltitude.modules.prediction.application.PredictionEventGate predictions) { this.predictions=predictions; }
@@ -24,7 +25,7 @@ public class AutomationRuntimeEligibility {
     public AutomationRuntimeEligibility(AutomationRuleRepository config,AutomationRuntimeRepository runs,AutomationRuntimeFactsRepository facts,AutomationRuntimePolicy policy,ObjectMapper json,AppClock clock){this.config=config;this.runs=runs;this.facts=facts;this.policy=policy;this.json=json;this.clock=clock;}
     public Decision check(String category,String eventId){
         if(predictions!=null&&predictions.blocksAutomatic(category,eventId))
-            return new Decision("PAUSED","预测风险须人工核实和人工发起反制，不能自动移送处罚",List.of(),Map.of(),null);
+            return new Decision("PAUSED",predictions.automaticBlockReason(category),List.of(),Map.of(),null);
         if(!policy.enabled())return new Decision("PAUSED","自动规则引擎未启用",List.of(),Map.of(),null);
         var head=config.head(category,false);var state=runs.state(category,eventId);
         if(state==null||state.version()!=head.version())return new Decision("WAITING","等待按当前规则版本重新判定",List.of(),Map.of(),null);
@@ -41,10 +42,11 @@ public class AutomationRuntimeEligibility {
     /** A queued worker invocation must still refer to this event's current passing decision. */
     public boolean allowsRun(String category,String eventId,String runId){
         if(runId==null||runId.isBlank())return false;
-        if(Set.of("verify","counter").contains(category)&&!runs.runBelongsToCase(runId,eventId))return false;
+        if(Set.of("verify","counter").contains(category)&&!runs.runBelongsToCase(runId,eventId)){log.debug("Automatic rule dispatch deferred: category={}, event={}, run={}, reason=RUN_CASE_MISMATCH",category,eventId,runId);return false;}
         var before=runs.state(category,eventId);
-        if(before==null||!runId.equals(before.runId())||!"PASS".equals(before.status()))return false;
-        if(!"PASS".equals(check(category,eventId).status()))return false;
+        if(before==null||!runId.equals(before.runId())||!"PASS".equals(before.status())){log.debug("Automatic rule dispatch deferred: category={}, event={}, run={}, reason=RUN_NOT_CURRENT_PASS",category,eventId,runId);return false;}
+        var decision=check(category,eventId);
+        if(!"PASS".equals(decision.status())){log.debug("Automatic rule dispatch deferred: category={}, event={}, run={}, status={}, reason={}",category,eventId,runId,decision.status(),decision.reason());return false;}
         var after=runs.state(category,eventId);
         return after!=null&&runId.equals(after.runId())&&before.version()==after.version()&&"PASS".equals(after.status());
     }
@@ -55,7 +57,7 @@ public class AutomationRuntimeEligibility {
     public String punishNotifyBlock(String eventId){return block("dispose",eventId);}
     public String counterBlock(String eventId){return block("counter",eventId);}
     public String block(String category,String eventId){
-        if(predictions!=null&&predictions.blocksAutomatic(category,eventId))return "本次预测衍生风险不允许自动执行该动作";
+        if(predictions!=null&&predictions.blocksAutomatic(category,eventId))return predictions.automaticBlockReason(category);
         if(!enabled(category))return null;
         String noun=switch(category){case "verify"->"核实";case "counter"->"反制";default->"通知处罚";};
         if(eventId==null||eventId.isBlank())return noun+"规则缺少来源事件，不能放行";

@@ -83,6 +83,19 @@ public class UavRiskCaseIdentity {
         var ids=jdbc.queryForList("SELECT c.risk_case_id FROM uav_risk_case c JOIN uav_risk_case_member m USING(risk_case_id) WHERE m.event_id=? AND c.superseded_by IS NULL ORDER BY c.risk_case_id",String.class,eventId);
         return ids.stream().map(this::find).filter(Objects::nonNull).toList();
     }
+    /** Historical completion processing needs identity, not a fresh spatial assessment for each case. */
+    public Map<String,String> actionEvents(String eventId){
+        if(eventId==null)return Map.of();
+        var result=new LinkedHashMap<String,String>();
+        jdbc.query("SELECT c.risk_case_id,"+ACTION_EVENT+" AS action_event_id FROM uav_risk_case c"
+                +" JOIN uav_risk_case_member m ON m.risk_case_id=c.risk_case_id AND m.event_id=?"
+                +" JOIN uav_event e ON e.event_id=m.event_id JOIN alarm a ON a.alarm_id=e.alarm_id"
+                +" WHERE c.superseded_by IS NULL AND a.target_id IS NOT DISTINCT FROM c.target_id"
+                +" AND a.owner_org_id=c.owner_org_id AND a.district_id=c.district_id AND a.source_mode=c.source_mode"
+                +" AND e.owner_org_id=c.owner_org_id AND e.district_id=c.district_id ORDER BY c.risk_case_id",
+                rs->{result.put(rs.getString("risk_case_id"),rs.getString("action_event_id"));},eventId);
+        return result;
+    }
     public CaseRef find(String id){var row=details(id);if(row==null)return null;return new CaseRef(id,(String)row.get("episode_id"),(String)row.get("airspace_id"),(String)row.get("stage"),(String)row.get("action_event_id"),eventIds(id),"CONFIRMED".equals(row.get("verification_status")),row.get("episode_id")!=null,((Number)row.get("version")).longValue());}
     /** Identity/verification lookups must not evaluate current geometry or device work. */
     private List<Map<String,Object>> identityRows(String eventId,boolean verification) {
@@ -98,6 +111,7 @@ public class UavRiskCaseIdentity {
     }
     public String caseId(String eventId){var rows=identityRows(eventId,false);return rows.size()==1?(String)rows.get(0).get("risk_case_id"):null;}
     public boolean confirmedForDisposal(String eventId){var rows=identityRows(eventId,true);return !rows.isEmpty()&&rows.stream().allMatch(row->"CONFIRMED".equals(row.get("verification_status")));}
+    public boolean pendingVerification(String eventId){var rows=identityRows(eventId,true);return rows.size()==1&&"PENDING_VERIFICATION".equals(rows.get(0).get("verification_status"));}
     public boolean hasCases(String eventId){return !identityRows(eventId,false).isEmpty();}
     public long caseCount(String eventId){return jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case c JOIN uav_risk_case_member m USING(risk_case_id) WHERE m.event_id=? AND c.superseded_by IS NULL",Long.class,eventId);}
     public Map<String,Object> details(String id){
@@ -106,23 +120,45 @@ public class UavRiskCaseIdentity {
         return rows.isEmpty()?null:rows.get(0);
     }
     private List<Map<String,Object>> detailRows(Collection<String> ids){
-        long now=clock.nowMillis();
-        var parameters=new HashMap<String,Object>();parameters.put("prediction_now",now);parameters.put("case_ids",ids);
-        UavMeasuredRiskSql.addTimes(parameters,jdbc,now,measuredQaAllowed,measuredSimulationAllowed);
-        return namedJdbc.queryForList(
+        for(int attempt=0;;attempt++) {
+        var parameters=new HashMap<String,Object>();parameters.put("case_ids",ids);
+        long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
+        parameters.put("prediction_now",now);
+        var rows=namedJdbc.queryForList(
                 UavMeasuredRiskSql.expand("SELECT c.*,"+ACTION_EVENT+" AS action_event_id,"+VERIFICATION+" AS verification_status,"+STAGE
                 +" AS stage,p.latest_prediction_id,p.first_prediction_id,p.warning_json,p.valid_until,p.reason AS prediction_reason,"
                 +"("+CASE_DEVICE_WORK_REMAINS+") AS device_work_remains FROM uav_risk_case c"
                 +" LEFT JOIN prediction_episode p ON p.episode_id=c.episode_id JOIN uav_event root_event ON root_event.event_id=c.root_event_id"
                 +" WHERE c.risk_case_id IN (:case_ids) AND c.superseded_by IS NULL",postgis),parameters);
+        if(attempt<2&&rows.stream().anyMatch(row->"UNKNOWN".equals(row.get("stage")))&&frameCommittedAfterSample(ids,now))continue;
+        return rows;
+        }
+    }
+
+    /** A READ COMMITTED spatial SELECT may see a frame committed after its Java clock sample.
+     * Only that proven race is re-read, with the full predicates and a new clock; future data,
+     * expired evidence and exhausted retries still fail closed. No old eligibility is reused. */
+    private boolean frameCommittedAfterSample(Collection<String> ids,long sampledAt){
+        var parameters=new HashMap<String,Object>();parameters.put("case_ids",ids);
+        var watermarks=namedJdbc.queryForList("SELECT s.observed_at,s.received_at,"
+                +"(SELECT MAX(r.evaluated_at) FROM rule_evaluation r WHERE r.target_id=c.target_id"
+                +" AND r.owner_org_id=c.owner_org_id AND r.district_id=c.district_id AND r.source_mode=c.source_mode AND r.mode='ACTIVE') AS evaluated_at"
+                +" FROM uav_risk_case c LEFT JOIN target_latest_state s ON s.target_id=c.target_id"
+                +" WHERE c.risk_case_id IN (:case_ids) AND c.superseded_by IS NULL",parameters);
+        long latest=sampledAt;
+        for(var row:watermarks)for(Object value:row.values())if(value instanceof java.sql.Timestamp stamp)latest=Math.max(latest,stamp.getTime());
+        // Sample after the watermark query as well: reading the watermark can itself wait.
+        return latest>sampledAt&&latest<=clock.nowMillis();
     }
     /** Lock episode first, then case, before event / authorization / device locks. */
     public void lockCases(String eventId){
         jdbc.queryForList("SELECT episode_id FROM prediction_episode WHERE episode_id IN(SELECT episode_id FROM prediction_event_link WHERE event_id=?) ORDER BY episode_id FOR UPDATE",eventId);
-        jdbc.queryForList("SELECT c.risk_case_id FROM uav_risk_case c WHERE c.superseded_by IS NULL AND EXISTS(SELECT 1 FROM uav_risk_case_member m WHERE m.risk_case_id=c.risk_case_id AND m.event_id=?) ORDER BY c.risk_case_id FOR UPDATE",eventId);
+        var locked=jdbc.queryForList("SELECT c.risk_case_id,c.version FROM uav_risk_case c WHERE c.superseded_by IS NULL AND EXISTS(SELECT 1 FROM uav_risk_case_member m WHERE m.risk_case_id=c.risk_case_id AND m.event_id=?) ORDER BY c.risk_case_id FOR UPDATE",eventId);
         String selected=selectedCase();
-        if(selected!=null){CaseRef c=find(selected);if(c==null||!c.eventIds().contains(eventId))throw conflict("RISK_CASE_EVENT_MISMATCH","当前事件不属于所选风险，请刷新");
-            if(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs){Object expected=attrs.getRequest().getAttribute(REQUEST_VERSION);if(expected!=null&&c.version()!=((Number)expected).longValue())throw conflict("RISK_CASE_VERSION_CONFLICT","风险阶段或办理状态已更新，请刷新");}}
+        if(selected!=null){var c=locked.stream().filter(row->selected.equals(row.get("risk_case_id"))).findFirst().orElse(null);if(c==null)throw conflict("RISK_CASE_EVENT_MISMATCH","当前事件不属于所选风险，请刷新");
+            // The locked identity/version rows already prove membership. Lock acquisition
+            // must not run another live spatial assessment before its caller's action guard.
+            if(RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attrs){Object expected=attrs.getRequest().getAttribute(REQUEST_VERSION);if(expected!=null&&((Number)c.get("version")).longValue()!=((Number)expected).longValue())throw conflict("RISK_CASE_VERSION_CONFLICT","风险阶段或办理状态已更新，请刷新");}}
     }
     public void bindAuthorization(String authorizationId,String eventId){
         lockCases(eventId);var rows=cases(eventId);if(rows.isEmpty())return;
@@ -187,12 +223,26 @@ public class UavRiskCaseIdentity {
     /** Area-specific relation; ordinary freshness and legality checks remain mandatory downstream. */
     public boolean currentMeasuredArea(CaseRef c){
         if(c.airspaceId()==null)return true;
+        for(int attempt=0;;attempt++) {
         var parameters=new HashMap<String,Object>();parameters.put("case_id",c.riskCaseId());
-        UavMeasuredRiskSql.addTimes(parameters,jdbc,clock.nowMillis(),measuredQaAllowed,measuredSimulationAllowed);
-        return Boolean.TRUE.equals(namedJdbc.queryForObject(
+        long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
+        boolean current=Boolean.TRUE.equals(namedJdbc.queryForObject(
                 UavMeasuredRiskSql.expand("SELECT "+UavMeasuredRiskSql.TOKEN+" FROM uav_risk_case c WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL",postgis),parameters,Boolean.class));
+        if(!current&&attempt<2&&frameCommittedAfterSample(List.of(c.riskCaseId()),now))continue;
+        return current;
+        }
     }
     public Long measuredFreshnessMillis(){return UavMeasuredRiskSql.freshnessMillis(jdbc);}
+    public List<Map<String,Object>> currentMeasuredEntries(CaseRef c){
+        if(c.airspaceId()==null)return List.of();
+        for(int attempt=0;;attempt++) {
+        var parameters=new HashMap<String,Object>();parameters.put("case_id",c.riskCaseId());
+        long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
+        var rows=namedJdbc.queryForList(UavMeasuredRiskSql.currentEntriesQuery(postgis),parameters);
+        if(rows.isEmpty()&&attempt<2&&frameCommittedAfterSample(List.of(c.riskCaseId()),now))continue;
+        return rows;
+        }
+    }
     public Long measuredObservedAt(CaseRef c){return jdbc.queryForObject("SELECT CAST(EXTRACT(EPOCH FROM s.observed_at)*1000 AS BIGINT) FROM target_latest_state s JOIN uav_risk_case c ON c.target_id=s.target_id WHERE c.risk_case_id=?",Long.class,c.riskCaseId());}
     public List<String> authorizationIds(String caseId){return jdbc.queryForList("SELECT authorization_id FROM disposal_authorization a WHERE a.risk_case_id=? OR (a.risk_case_id IS NULL AND a.subject_kind='UAV_EVENT' AND EXISTS(SELECT 1 FROM uav_risk_case_member m WHERE m.risk_case_id=? AND m.event_id=a.subject_id) AND (SELECT COUNT(*) FROM uav_risk_case_member m JOIN uav_risk_case c USING(risk_case_id) WHERE m.event_id=a.subject_id AND c.superseded_by IS NULL)=1) ORDER BY authorization_id",String.class,caseId,caseId);}
     public Map<String,Object> authorizationSummary(String id){

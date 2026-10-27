@@ -173,8 +173,8 @@ public class Countermeasure4ChControlService {
         Map<String, Object> command = controls.control(commandId);
         if (command == null || terminal(text(command, "status"))) return;
         // Authorization first, command second: same lock order as emergency stop and direct enqueue.
-        boolean allowed = !starts(text(command,"action"),number(command,"mask"))
-                || disposalGuard.mayStart(text(command,"control_authorization_id"), text(command,"requested_by"), text(command,"device_id"));
+        String startBlock = starts(text(command,"action"),number(command,"mask"))
+                ? disposalGuard.startBlockReason(text(command,"control_authorization_id"), text(command,"requested_by"), text(command,"device_id")) : "";
         controls.lockCommand(commandId);
         command = controls.control(commandId);
         if (command == null || terminal(text(command,"status"))) return;
@@ -186,11 +186,11 @@ public class Countermeasure4ChControlService {
         }
         // Waiting for the command lock may outlive an account/role/unit-permission change.
         // The first check already acquired the event -> authorization -> device locks.
-        if (allowed && starting) allowed = disposalGuard.mayStart(text(command,"control_authorization_id"),
+        if (startBlock.isEmpty() && starting) startBlock = disposalGuard.startBlockReason(text(command,"control_authorization_id"),
                 text(command,"requested_by"), text(command,"device_id"));
-        if (!allowed) {
+        if (!startBlock.isEmpty()) {
             if (controls.updateCommand(commandId,text(command,"status"),"CANCELLED",clock.nowMillis(),
-                    "AUTHORIZATION_STOPPED","处置已停止或当前条件不允许执行，禁止重投旧启动指令；此前设备动作仍需核查") == 1) {
+                    "AUTHORIZATION_STOPPED","启动指令尚未下发，已取消：" + startBlock + "；本条指令不能重发") == 1) {
                 finished(commandId);
             }
             return;
