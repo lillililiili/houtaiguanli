@@ -64,6 +64,19 @@ class DirectDisposalBackgroundTest {
         assertThat(guard.mayStart(authorization("DIRECT", "EXECUTING", "LINGYUN_B", 300))).isTrue();
     }
 
+    @Test void queuedStartExplainsTheExactFailedGuardWithoutGrantingNewPermission() {
+        String id = authorization("DIRECT", "EXECUTING", "LINGYUN_B", 300);
+        assertThat(guard.startBlockReason(id, userId, scopedDeviceId)).isEmpty();
+        assertThat(guard.startBlockReason(id, UUID.randomUUID().toString(), scopedDeviceId))
+                .isEqualTo("直接反制必须由本次授权的发起人执行");
+        assertThat(guard.startBlockReason(id, userId, UUID.randomUUID().toString()))
+                .isEqualTo("启动设备与本次授权不一致");
+        revoke("DIRECT");
+        assertThat(guard.startBlockReason(id, userId, scopedDeviceId)).contains("当前权限、数据范围或设备操作资格");
+        jdbc.update("update disposal_authorization set status='STOPPED' where authorization_id=?", id);
+        assertThat(guard.startBlockReason(id, userId, scopedDeviceId)).isEqualTo("本次授权已停止，不能重新启动");
+    }
+
     @Test void queuedAutomationCommandCannotStartWhenEngineIsDisabled() {
         String id = automationAuthorization("EXECUTING");
         assertThat(guard.mayStart(id)).isFalse();

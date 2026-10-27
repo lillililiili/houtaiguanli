@@ -51,6 +51,7 @@ class UavRiskCaseServiceTest {
     private final AccessControlService access=mock(AccessControlService.class);
     private final IdempotencyGuard idempotency=mock(IdempotencyGuard.class);
     private final ResponseOrderService responseOrder=mock(ResponseOrderService.class);
+    private final AutoSmsVerificationDispatch verifiedSms=mock(AutoSmsVerificationDispatch.class);
     private final AuditService audit=mock(AuditService.class);
     private final ObjectMapper json=new ObjectMapper();
     private final String risk=id(),event=id(),alarm=id(),area=id(),prediction=id(),actor=id();
@@ -105,6 +106,7 @@ class UavRiskCaseServiceTest {
         service=spy(new UavRiskCaseService(identities,rawVerification,events,null,null,basis,predictions,access,idempotency,jdbc,json,clock,audit));
         doReturn(Map.of("risk_case_id",risk)).when(service).detail(risk);
         service.responseOrder(responseOrder);
+        service.verifiedSms(verifiedSms);
         AuthContext.set(new AuthUser(actor,"isolated-operator","Operator",id(),0,false,"ALL"));
     }
     @AfterEach void close(){AuthContext.clear();database.shutdown();}
@@ -167,6 +169,7 @@ class UavRiskCaseServiceTest {
         assertThat(jdbc.queryForObject("SELECT state_code FROM uav_event",String.class)).isEqualTo("PENDING_VERIFICATION");
         assertThat(jdbc.queryForObject("SELECT version FROM uav_event",Long.class)).isEqualTo(7);
         verifyNoInteractions(rawVerification,basis);verify(responseOrder).ensureLocked(eventRow);
+        verify(verifiedSms,times(1)).verified(event,risk);
     }
 
     @Test void measuredConfirmationRequiresTheSelectedAreaAndFreezesOnlyItsEntryEvidence() throws Exception {

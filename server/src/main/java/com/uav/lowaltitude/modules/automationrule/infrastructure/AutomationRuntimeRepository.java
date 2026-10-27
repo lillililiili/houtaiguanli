@@ -11,7 +11,8 @@ public class AutomationRuntimeRepository {
     private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases;
     @org.springframework.beans.factory.annotation.Autowired
     public void cases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity cases){this.cases=cases;}
-    private String caseScope(String category,String event){return Set.of("verify","counter").contains(category)&&cases!=null?cases.caseId(event):null;}
+    private String caseScope(String category,String event){return Set.of("verify","counter","dispose").contains(category)&&cases!=null?cases.caseId(event):null;}
+    private static String caseTable(String category){return "dispose".equals(category)?"automation_dispose_case_state":"automation_case_state";}
     private final JdbcTemplate jdbc;
     public AutomationRuntimeRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
     public record State(String category,String eventId,long version,String runId,String status,Long unknownSince,String holds,String signature) { }
@@ -24,16 +25,16 @@ public class AutomationRuntimeRepository {
     // Caller holds the corresponding group row; all initialization and changes are serialized by that lock.
     public State state(String category,String event){
         String scope=caseScope(category,event);
-        if(scope!=null){var current=jdbc.query("SELECT * FROM automation_case_state WHERE risk_case_id=? AND category=?",(r,n)->state(r),scope,category).stream().findFirst().orElse(null);if(current!=null)return current;}
-        if(Set.of("verify","counter").contains(category)&&cases!=null&&cases.allCases(event).size()>1)return null;
+        if(scope!=null){var current=jdbc.query("SELECT * FROM "+caseTable(category)+" WHERE risk_case_id=? AND category=?",(r,n)->state(r),scope,category).stream().findFirst().orElse(null);if(current!=null)return current;if("dispose".equals(category))return null;}
+        if(Set.of("verify","counter","dispose").contains(category)&&cases!=null&&cases.allCases(event).size()>1)return null;
         return jdbc.query("SELECT * FROM automation_runtime_state WHERE category=? AND event_id=?",(r,n)->state(r),category,event).stream().findFirst().orElse(null);
     }
     private static State state(ResultSet r)throws SQLException{return new State(r.getString("category"),r.getString("event_id"),r.getLong("group_version"),r.getString("run_id"),r.getString("status"),nullable(r,"unknown_since"),r.getString("holds_json"),r.getString("signature"));}
     public void state(String category,String event,long version,String run,String status,Long unknown,String holds,String signature) {
         String scope=caseScope(category,event);
         if(scope!=null){
-            if(jdbc.update("UPDATE automation_case_state SET event_id=?,group_version=?,run_id=?,status=?,unknown_since=?,holds_json=?,signature=? WHERE risk_case_id=? AND category=?",event,version,run,status,unknown,holds,signature,scope,category)==0)
-                jdbc.update("INSERT INTO automation_case_state(risk_case_id,category,event_id,group_version,run_id,status,unknown_since,holds_json,signature) VALUES(?,?,?,?,?,?,?,?,?)",scope,category,event,version,run,status,unknown,holds,signature);
+            if(jdbc.update("UPDATE "+caseTable(category)+" SET event_id=?,group_version=?,run_id=?,status=?,unknown_since=?,holds_json=?,signature=? WHERE risk_case_id=? AND category=?",event,version,run,status,unknown,holds,signature,scope,category)==0)
+                jdbc.update("INSERT INTO "+caseTable(category)+"(risk_case_id,category,event_id,group_version,run_id,status,unknown_since,holds_json,signature) VALUES(?,?,?,?,?,?,?,?,?)",scope,category,event,version,run,status,unknown,holds,signature);
             return;
         }
         if(state(category,event)==null)jdbc.update("INSERT INTO automation_runtime_state(category,event_id,group_version,run_id,status,unknown_since,holds_json,signature) VALUES(?,?,?,?,?,?,?,?)",category,event,version,run,status,unknown,holds,signature);

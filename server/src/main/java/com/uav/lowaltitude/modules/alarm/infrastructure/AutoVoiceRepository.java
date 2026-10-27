@@ -10,6 +10,7 @@ import com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Reco
 
 @Repository
 public class AutoVoiceRepository {
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON=new com.fasterxml.jackson.databind.ObjectMapper();
     private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
     @org.springframework.beans.factory.annotation.Autowired
     public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity identity){this.riskCases=identity;}
@@ -18,8 +19,9 @@ public class AutoVoiceRepository {
     public AutoVoiceRepository(JdbcTemplate jdbc){this.jdbc=jdbc;}
     public String eventForProviderKey(String key){var ids=jdbc.queryForList("SELECT event_id FROM uav_auto_voice_task WHERE provider_key=?",String.class,key);return ids.size()==1?ids.get(0):null;}
     public boolean sendStarted(String id){return jdbc.queryForObject("SELECT COUNT(*) FROM uav_auto_voice_task WHERE event_id=? AND risk_scope=? AND send_started_at IS NOT NULL",Long.class,id,scope(id))>0;}
-    public void prepareSend(String id,String token,Recording recording,long now){
-        if(jdbc.update("UPDATE uav_auto_voice_task SET recording_id=?,recording_name=?,recording_sha256=?,recording_transcript=?,send_started_at=COALESCE(send_started_at,?) WHERE event_id=? AND risk_scope=? AND status='CALLING' AND claim_token=?",recording.id(),recording.name(),recording.sha256(),recording.transcript(),now,id,scope(id),token)!=1)
+    public void prepareSend(String id,String token,Recording recording,long now,
+            com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis basis){
+        if(jdbc.update("UPDATE uav_auto_voice_task SET recording_id=?,recording_name=?,recording_sha256=?,recording_transcript=?,response_order_basis_json=CASE WHEN send_started_at IS NULL THEN ? ELSE response_order_basis_json END,send_started_at=COALESCE(send_started_at,?) WHERE event_id=? AND risk_scope=? AND status='CALLING' AND claim_token=?",recording.id(),recording.name(),recording.sha256(),recording.transcript(),encodeBasis(basis),now,id,scope(id),token)!=1)
             throw new IllegalStateException("Automatic voice claim changed before dispatch");
     }
     public List<String> callingCandidates() {
@@ -30,7 +32,7 @@ public class AutoVoiceRepository {
         return jdbc.queryForList("SELECT e.event_id FROM uav_event e JOIN uav_auto_sms_task s ON s.event_id=e.event_id AND s.status='SIMULATED_DELIVERED' LEFT JOIN uav_auto_voice_task t ON t.event_id=e.event_id WHERE t.departure_evaluated_at IS NULL AND (t.status='CALLING' OR t.event_id IS NULL OR t.status IN ('WAITING','UNAVAILABLE') OR (t.status='BLOCKED' AND t.attempt_count=0)) ORDER BY CASE WHEN t.status='CALLING' THEN 0 ELSE 1 END,COALESCE(t.updated_at,s.updated_at),e.event_id FETCH FIRST 200 ROWS ONLY",String.class);
     }
     public Task find(String id) {
-        var rows=jdbc.query("SELECT * FROM uav_auto_voice_task WHERE event_id=? AND risk_scope=?",(r,n)->new Task(r.getString("event_id"),r.getString("status"),r.getString("reason"),r.getString("trigger_source"),number(r,"evaluated_at"),number(r,"data_updated_at"),number(r,"triggered_at"),r.getLong("updated_at"),r.getInt("attempt_count"),number(r,"lease_until"),r.getString("claim_token"),r.getString("provider_key"),r.getString("recording_id"),r.getString("recording_name"),r.getString("recording_sha256"),r.getString("recording_transcript"),number(r,"answered_at"),number(r,"playback_completed_at")),id,scope(id));
+        var rows=jdbc.query("SELECT * FROM uav_auto_voice_task WHERE event_id=? AND risk_scope=?",(r,n)->new Task(r.getString("event_id"),r.getString("status"),r.getString("reason"),r.getString("trigger_source"),number(r,"evaluated_at"),number(r,"data_updated_at"),number(r,"triggered_at"),r.getLong("updated_at"),r.getInt("attempt_count"),number(r,"lease_until"),r.getString("claim_token"),r.getString("provider_key"),r.getString("recording_id"),r.getString("recording_name"),r.getString("recording_sha256"),r.getString("recording_transcript"),number(r,"answered_at"),number(r,"playback_completed_at"),readBasis(r.getString("response_order_basis_json"))),id,scope(id));
         return rows.isEmpty()?null:rows.get(0);
     }
     public void initialize(String id,long now,String policy) {
@@ -77,7 +79,20 @@ public class AutoVoiceRepository {
         jdbc.update("INSERT INTO uav_event_voice_advisory(record_id,event_id,event_version,created_at,recording_id,recording_name,recording_sha256,transcript,provider_call_id,answered_at,playback_completed_at,policy_code,simulated,delivery_status,risk_case_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,TRUE,'SIMULATED_PLAYED',?)",recordId,eventId,version,now,recording.id(),recording.name(),recording.sha256(),recording.transcript(),callId,answered,completed,policy,riskCases==null?null:riskCases.caseId(eventId));
     }
     private static Long number(ResultSet r,String c)throws SQLException {long v=r.getLong(c);return r.wasNull()?null:v;}
-    public record Task(String eventId,String status,String reason,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,Long triggeredAt,long updatedAt,int attempts,Long leaseUntil,String token,String providerKey,String recordingId,String recordingName,String recordingSha256,String recordingTranscript,Long answeredAt,Long playbackCompletedAt) {
+    private static String encodeBasis(com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis basis){
+        if(basis==null)return null;
+        try{return JSON.writeValueAsString(basis);}catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("Cannot freeze voice ordering basis",invalid);}
+    }
+    private static com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis readBasis(String value){
+        if(value==null)return null;
+        try{return JSON.readValue(value,com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis.class);}
+        catch(com.fasterxml.jackson.core.JsonProcessingException invalid){throw new IllegalStateException("Cannot read frozen voice ordering basis",invalid);}
+    }
+    public record Task(String eventId,String status,String reason,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,Long triggeredAt,long updatedAt,int attempts,Long leaseUntil,String token,String providerKey,String recordingId,String recordingName,String recordingSha256,String recordingTranscript,Long answeredAt,Long playbackCompletedAt,
+            com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis responseOrderBasis) {
+        public Task(String eventId,String status,String reason,String triggerSource,Long evaluatedAt,Long dataUpdatedAt,Long triggeredAt,long updatedAt,int attempts,Long leaseUntil,String token,String providerKey,String recordingId,String recordingName,String recordingSha256,String recordingTranscript,Long answeredAt,Long playbackCompletedAt){
+            this(eventId,status,reason,triggerSource,evaluatedAt,dataUpdatedAt,triggeredAt,updatedAt,attempts,leaseUntil,token,providerKey,recordingId,recordingName,recordingSha256,recordingTranscript,answeredAt,playbackCompletedAt,null);
+        }
         public boolean recordingMatches(Recording recording) {
             return recordingId==null||(recording!=null&&recordingId.equals(recording.id())&&recordingName.equals(recording.name())&&recordingSha256.equals(recording.sha256())&&recordingTranscript.equals(recording.transcript()));
         }

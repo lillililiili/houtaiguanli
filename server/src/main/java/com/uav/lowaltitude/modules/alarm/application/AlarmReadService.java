@@ -193,7 +193,7 @@ public class AlarmReadService {
                 + ",sort=" + sort + ",order=" + order;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public PageDto<AlarmDto> list(MultiValueMap<String, String> values) {
         AccessDecision decision = access.require(PermissionCode.ALARM_READ);
         // 筛选字段本身已是关联目标的探测入口；在解析其值（甚至分页）之前完成 target:read 鉴权。
@@ -206,6 +206,8 @@ public class AlarmReadService {
             // target_id 是关联对象筛选，不允许仅以告警读权限用 total 是否变化猜测目标存在或归属。
             if (!repository.targetReadable(query.targetId(), targetDecision)) throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "无权筛选该关联目标");
         }
+        // These projections must see one committed snapshot: a new frame between count,
+        // rows and summaries must not turn an included entry into UNKNOWN in the same reply.
         long total = repository.count(query, decision);
         var rows=repository.list(query, decision, page.offset(), page.size(), sort, order);
         var summaries=riskCases==null?Map.<String,Map<String,Object>>of():riskCases.summaries(
@@ -215,7 +217,7 @@ public class AlarmReadService {
     }
 
     /** Aggregate the same risk-case view once instead of loading nine one-row pages. */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public com.uav.lowaltitude.modules.alarm.api.AlarmDtos.OverviewDto overview() {
         AccessDecision scope=access.require(PermissionCode.ALARM_READ);
         var day=clock.now().atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate();
@@ -258,12 +260,27 @@ public class AlarmReadService {
                 .map(row -> new DistrictOptionDto(row.districtId(), row.name())).toList();
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public AlarmDto detail(String alarmId) {
         AccessDecision decision = access.require(PermissionCode.ALARM_READ);
         AlarmRow row = repository.find(id(alarmId), decision);
         if (row == null) throw new ApiException(HttpStatus.NOT_FOUND, "ALARM_NOT_FOUND", "告警不存在");
         return dto(row);
+    }
+
+    /** The verification dialog needs current evidence, not frozen snapshots or lifecycle history. */
+    @Transactional(readOnly = true)
+    public AlarmDto verificationDetail(String alarmId,Map<String,Object> riskSummary) {
+        AccessDecision decision = access.require(PermissionCode.ALARM_READ);
+        AlarmRow row = repository.find(id(alarmId), decision);
+        if (row == null) throw new ApiException(HttpStatus.NOT_FOUND, "ALARM_NOT_FOUND", "告警不存在");
+        return baseDto(row,riskSummary);
+    }
+
+    /** Called only with a summary authorized by verificationDetail in this request. */
+    public com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerificationBasisDto currentVerificationPrediction(AlarmDto authorizedAlarm) {
+        return predictions==null?new com.uav.lowaltitude.modules.alarm.api.AlarmDtos.VerificationBasisDto(false,
+                List.of("RISK_EVIDENCE_UNAVAILABLE"),"预测依据暂不可用",clock.nowMillis()):predictions.verificationEvidence(authorizedAlarm);
     }
 
     /**

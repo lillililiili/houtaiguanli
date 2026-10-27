@@ -116,6 +116,22 @@ class PredictionEventGateTest {
         assertThat(gate.blocksAutomatic("counter",id())).isFalse();
     }
 
+    @ParameterizedTest @ValueSource(strings={"PREDICTED","ENTERED","UNKNOWN","CLEARED","ENDED"})
+    void onlyCurrentMeasuredCaseCanUseAutomaticVerificationWithoutLosingManualCounterOrigin(String stage) {
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        gate.riskCases(cases);
+        var selected=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),episode,id(),stage,observed,List.of(predicted,observed),false,true,3);
+        when(cases.cases(observed)).thenReturn(List.of(selected));
+        when(cases.cases(predicted)).thenReturn(List.of(selected));
+        when(cases.currentMeasuredArea(selected)).thenReturn(true);
+        assertThat(gate.blocksAutomatic("verify",observed)).isEqualTo(!"ENTERED".equals(stage));
+        assertThat(gate.blocksAutomatic("verify",predicted)).isTrue();
+        assertThat(gate.blocksAutomatic("counter",observed)).isTrue();
+        when(cases.currentMeasuredArea(selected)).thenReturn(false);
+        assertThat(gate.blocksAutomatic("verify",observed)).isTrue();
+    }
+
     @ParameterizedTest @ValueSource(strings={"UNKNOWN","CLEARED","CANDIDATE"})
     void unreliableOrEndedEpisodeCannotStartOrContinuePredictionCounter(String status) {
         confirm();jdbc.update("UPDATE prediction_episode SET status=? WHERE episode_id=?",status,episode);

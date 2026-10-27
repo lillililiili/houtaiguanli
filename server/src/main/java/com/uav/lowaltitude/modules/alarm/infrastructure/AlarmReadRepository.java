@@ -69,13 +69,12 @@ public class AlarmReadRepository {
 
     /** 使用当前融合终止时长；一次查询固定同一个时间点，恰好到期即下沉。 */
     private void putAttentionTime(Map<String, Object> parameters) {
-        var now = clock.now();
         long lifetime = fusionConfig.params(null).integer("identity", "terminate_after_ms");
         if (lifetime <= 0) throw new IllegalStateException("Invalid target observation lifetime");
+        var now = java.time.Instant.ofEpochMilli(UavMeasuredRiskSql.addTimes(parameters,plainJdbc,clock,measuredQaAllowed,measuredSimulationAllowed));
         parameters.put("attention_now", now.atOffset(ZoneOffset.UTC));
         parameters.put("prediction_now", now.toEpochMilli());
         parameters.put("observation_since", now.minusMillis(lifetime).atOffset(ZoneOffset.UTC));
-        UavMeasuredRiskSql.addTimes(parameters,plainJdbc,now.toEpochMilli(),measuredQaAllowed,measuredSimulationAllowed);
     }
 
     public long count(AlarmQuery query, AccessDecision access) {

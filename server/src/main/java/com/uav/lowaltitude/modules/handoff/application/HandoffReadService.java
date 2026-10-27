@@ -251,7 +251,7 @@ public class HandoffReadService {
         }
         return new MaterialV2Dto(schemaVersion, stored.event(), stored.verifications(), stored.disposals(),
                 evidence, stored.evidenceOmitted(), stored.references(), stored.advisoryRecords(), stored.pilotLocation(),
-                stored.judgments(), evidenceChain, stored.party());
+                stored.judgments(), evidenceChain, stored.party(),stored.measuredRiskBasis());
     }
 
     /** 证据段的可用性：提交时就没冻结 > 读者没权限 > 可用。三者互斥，取最先成立的那个。 */

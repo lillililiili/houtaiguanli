@@ -19,13 +19,17 @@ public final class UavMeasuredRiskSql {
         return policy.allowed()&&environment.acceptsProfiles(org.springframework.core.env.Profiles.of("local & !prod & !production"))
             &&environment.getProperty("app.flight-device-check.simulator-device-bridge-enabled",Boolean.class,false);
     }
-    public static void addTimes(Map<String,Object> parameters,JdbcTemplate jdbc,long now,boolean qa,boolean realtimeSimulation) {
+    public static long addTimes(Map<String,Object> parameters,JdbcTemplate jdbc,com.uav.lowaltitude.platform.time.AppClock clock,boolean qa,boolean realtimeSimulation) {
         Long window=freshnessMillis(jdbc);
+        // Configuration reads may wait while fusion commits another complete frame. Capture
+        // the comparison time afterwards, so that frame is not mistaken for future evidence.
+        long now=clock.nowMillis();
         parameters.put("measured_configured",window!=null);
         parameters.put("measured_since",new Timestamp(window==null?now:now-window));
         parameters.put("measured_now",new Timestamp(now));
         parameters.put("measured_qa_allowed",qa);
         parameters.put("measured_simulation_allowed",realtimeSimulation);
+        return now;
     }
     public static boolean postgis(JdbcTemplate jdbc) {
         try(var connection=jdbc.getDataSource().getConnection()){return connection.getMetaData().getDatabaseProductName().toLowerCase(java.util.Locale.ROOT).contains("postgres");}
@@ -34,7 +38,30 @@ public final class UavMeasuredRiskSql {
     public static String expand(String sql,boolean postgis){return sql.replace(TOKEN,postgis?POSTGIS_PREDICATE:RELATIONAL_PREDICATE);}
 
     private static String predicate(boolean postgis) {
-        return "EXISTS(SELECT 1 FROM target mt JOIN target_latest_state ms ON ms.target_id=mt.target_id"
+        return "EXISTS("+entryQuery(postgis,"1",false)+")";
+    }
+
+    /** Freeze the exact entry accepted by the current-risk guard, including its latest evaluation/version. */
+    static String currentEntriesQuery(boolean postgis) {
+        String columns="mx.event_id,mx.evaluation_id,mx.observed_at,mx.airspace_version_id";
+        String order=" ORDER BY mr.evaluated_at DESC,mr.evaluation_id DESC,mx.event_id FETCH FIRST 1 ROW ONLY";
+        if(postgis) {
+            // Keep the case as a correlated input, as the boolean EXISTS guard does. Flattening
+            // all case/evidence joins makes PostgreSQL spend seconds planning on a populated
+            // database; new frames can then arrive between the captured time and its snapshot.
+            // LIMIT keeps this lateral query separate while retaining every evidence predicate.
+            return "SELECT entry.* FROM uav_risk_case c CROSS JOIN LATERAL ("
+                +entryQuery(true,columns,false)+order+") entry"
+                +" WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL";
+        }
+        return entryQuery(false,columns,true)
+            +" AND c.risk_case_id=:case_id AND c.superseded_by IS NULL"
+            +order;
+    }
+
+    private static String entryQuery(boolean postgis,String columns,boolean includeCase) {
+        return "SELECT "+columns+" FROM "+(includeCase?"uav_risk_case c JOIN target mt ON mt.target_id=c.target_id":"target mt")
+            +" JOIN target_latest_state ms ON ms.target_id=mt.target_id"
             +" JOIN prediction_actual_entry_link mx ON mx.target_id=mt.target_id AND mx.airspace_id=c.airspace_id"
             +" JOIN uav_risk_case_member mm ON mm.risk_case_id=c.risk_case_id AND mm.event_id=mx.event_id AND mm.role='OBSERVED'"
             +" JOIN uav_event me ON me.event_id=mx.event_id JOIN alarm ma ON ma.alarm_id=me.alarm_id"
@@ -55,7 +82,7 @@ public final class UavMeasuredRiskSql {
             +" AND NOT EXISTS(SELECT 1 FROM rule_evaluation newer WHERE newer.target_id=mt.target_id AND newer.owner_org_id=c.owner_org_id"
             +" AND newer.district_id=c.district_id AND newer.source_mode=c.source_mode AND newer.mode='ACTIVE'"
             +" AND (newer.evaluated_at>mr.evaluated_at OR(newer.evaluated_at=mr.evaluated_at AND newer.evaluation_id>mr.evaluation_id)))"
-            +(postgis?SPATIAL_CURRENT:" AND mr.observed_at=ms.observed_at")+")";
+            +(postgis?SPATIAL_CURRENT:" AND mr.observed_at=ms.observed_at");
     }
     private static final String SPATIAL_JOINS=" JOIN target_degradation mg ON mg.target_id=mt.target_id AND mg.determined=TRUE"
         +" LEFT JOIN target_track_status mts ON mts.target_id=mt.target_id"
@@ -80,7 +107,10 @@ public final class UavMeasuredRiskSql {
         +" JOIN device md ON md.device_id=mo.device_id AND md.source_id=mo.source_id AND md.enabled=TRUE"
         +" JOIN inbox_message mi ON mi.inbox_id=mo.inbox_id AND mi.source_id=mo.source_id"
         +" WHERE mtr.target_id=mt.target_id AND mtr.layer='FUSED' AND mtr.ended_at IS NULL AND mp.observed_at=ms.observed_at AND mp.received_at=ms.received_at"
-        +" AND NOT EXISTS(SELECT 1 FROM track_point newer_point WHERE newer_point.track_id=mp.track_id AND newer_point.point_seq>mp.point_seq)"
+        // Fused history also appends late source-switch frames, without moving latest_state
+        // backwards. Only a same-time or newer observation can supersede its selected MEAS.
+        +" AND NOT EXISTS(SELECT 1 FROM track_point newer_point WHERE newer_point.track_id=mp.track_id"
+        +" AND newer_point.point_seq>mp.point_seq AND newer_point.observed_at>=mp.observed_at)"
         +" AND mp.point_kind='MEAS' AND mp.position_accuracy_m>0 AND ST_Equals(mp.location,ms.location)"
         +" AND mp.altitude_amsl_m IS NOT DISTINCT FROM ms.altitude_amsl_m AND mp.height_agl_m IS NOT DISTINCT FROM ms.height_agl_m"
         +" AND mo.owner_org_id=c.owner_org_id AND mo.district_id=c.district_id AND mo.source_mode=c.source_mode"

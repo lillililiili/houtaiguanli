@@ -22,6 +22,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 
 @Service
 public class UavRiskCaseService {
+    private AutoSmsVerificationDispatch verifiedSms;
+    @org.springframework.beans.factory.annotation.Autowired public void verifiedSms(AutoSmsVerificationDispatch value){verifiedSms=value;}
     private com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService responseOrder;
     @org.springframework.beans.factory.annotation.Autowired public void responseOrder(com.uav.lowaltitude.modules.automationrule.application.ResponseOrderService value){responseOrder=value;}
     private final UavRiskCaseIdentity identities; private final UavEventVerificationService events;
@@ -35,8 +37,48 @@ public class UavRiskCaseService {
         this.identities=identities;this.events=events;this.eventRows=eventRows;this.alarms=alarms;this.advisory=advisory;this.basis=basis;
         this.predictions=predictions;this.access=access;this.idempotency=idempotency;this.jdbc=jdbc;this.json=json;this.clock=clock;this.audit=audit;
     }
-    @Transactional(readOnly=true) public Map<String,Object> detail(String id){
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ) public Map<String,Object> detail(String id){
         return identities.withCase(id,()->detailScoped(id));
+    }
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ) public Map<String,Object> detail(String id,String purpose){
+        if(purpose==null)return detail(id);
+        if(!"verification".equals(purpose))throw invalid("purpose 参数无效");
+        return identities.withCase(id,()->verificationContext(id));
+    }
+    /** A short-lived read context is never an authorization; verifyScoped still locks and rechecks. */
+    private Map<String,Object> verificationContext(String id){
+        var scope=access.require(PermissionCode.ALARM_READ);
+        boolean permitted=false;
+        try{access.require(PermissionCode.ALARM_VERIFY);permitted=true;}
+        catch(ApiException denied){if(denied.getStatus()!=HttpStatus.FORBIDDEN)throw denied;}
+        // A direct GET uses one read snapshot. Keep the version guard for callers that join
+        // an existing transaction; a display snapshot never authorizes the later submission.
+        for(int attempt=0;attempt<2;attempt++){
+            var summary=identities.summary(id);if(summary==null)throw missing();
+            long initialVersion=((Number)summary.get("version")).longValue();
+            var row=eventRows.find((String)summary.get("action_event_id"),scope);if(row==null)throw missing();
+            var alarm=alarms.verificationDetail(row.alarmId(),summary);
+            // Calculate the basis last using the current clock, so elapsed time can invalidate
+            // this snapshot. Newly committed frames appear on the next GET, not in half a response.
+            var current=identities.find(id);if(current==null)throw missing();
+            if(!row.eventId().equals(current.actionEventId())||initialVersion!=current.version())continue;
+            summary.put("stage",current.stage());summary.put("version",current.version());
+            summary.put("action_event_version",row.version());
+            var predictionBasis="PREDICTED".equals(current.stage())?alarms.currentVerificationPrediction(alarm):null;
+            if(alarm.getPrediction()!=null){
+                summary.put("prediction_id",alarm.getPrediction().get("prediction_id"));
+                summary.put("prediction_valid_until",alarm.getPrediction().get("valid_until"));
+            }
+            boolean mayVerify=permitted&&"PENDING_VERIFICATION".equals(summary.get("verification_status"));
+            var actions=mayVerify?List.of("VERIFY"):List.<String>of();
+            summary.put("allowed_actions",actions);
+            var projected=new UavEventDto(row.eventId(),row.alarmId(),alarm.getTargetId(),
+                    (String)summary.get("verification_status"),row.version(),
+                    row.createdAt().toInstant().toEpochMilli(),row.updatedAt().toInstant().toEpochMilli(),
+                    actions,mayVerify?(predictionBasis!=null?predictionBasis:verificationBasis(current)):null);
+            return Map.of("risk_case",summary,"alarm",alarm.withRiskCase(summary),"event",projected);
+        }
+        throw conflict("风险办理阶段正在更新，请刷新核实依据");
     }
     private Map<String,Object> detailScoped(String id){
         var c=identities.find(id);if(c==null)throw missing();
@@ -51,13 +93,13 @@ public class UavRiskCaseService {
         var projected=new UavEventDto(event.eventId(),event.alarmId(),event.targetId(),(String)summary.get("verification_status"),event.version(),event.createdAt(),event.updatedAt(),
                 mayVerify?List.of("VERIFY"):List.of(),mayVerify?verificationBasis(c):null);
         summary.put("allowed_actions",projected.allowedActions());
-        summary.put("verifications",jdbc.queryForList("SELECT verification_id,case_version,event_id,event_version,conclusion,basis_kind,prediction_id,trigger_mode,automation_run_id,note,created_at,basis_json FROM uav_risk_case_verification WHERE risk_case_id=? ORDER BY case_version",id));
+        summary.put("verifications",jdbc.queryForList("SELECT verification_id,case_version,event_id,event_version,conclusion,basis_kind,prediction_id,actor_id,trigger_mode,automation_run_id,note,created_at,basis_json FROM uav_risk_case_verification WHERE risk_case_id=? ORDER BY case_version",id));
         return Map.of("risk_case",summary,"alarm",alarms.detail(row.alarmId()).withRiskCase(summary),"event",projected,"advisory",advisory.overview(c.actionEventId()));
     }
-    @Transactional public Map<String,Object> verify(String id,String raw,String key){
-        return identities.withCase(id,()->verifyScoped(id,raw,key));
+    @Transactional public void verify(String id,String raw,String key){
+        identities.withCase(id,()->{verifyScoped(id,raw,key);return null;});
     }
-    private Map<String,Object> verifyScoped(String id,String raw,String key){
+    private void verifyScoped(String id,String raw,String key){
         var scope=access.require(PermissionCode.ALARM_READ);access.require(PermissionCode.ALARM_VERIFY);
         var c=identities.find(id);if(c==null||eventRows.find(c.actionEventId(),scope)==null)throw missing();
         bind(id);identities.lockCases(c.actionEventId());c=identities.find(id);
@@ -101,9 +143,12 @@ public class UavRiskCaseService {
                     "conclusion="+conclusion+"; version="+(event.version()+1)+"; risk_case_id="+id,"SUCCESS","","");
         }
         if("CONFIRMED".equals(conclusion)&&responseOrder!=null)responseOrder.ensureLocked(event);
+        if("CONFIRMED".equals(conclusion)&&verifiedSms!=null)verifiedSms.verified(event.eventId(),id);
         audit.record(actor.userId(),actor.account(),actor.roleCode(),"alarm","uav_risk_case_verified","uav_risk_case",id,
                 "conclusion="+conclusion+"; basis_kind="+kind+"; disposition_only="+!eventVerdict,"SUCCESS","","");
-        return detail(id);
+        // Finish the command before assembling a potentially expensive page response. Holding
+        // the episode lock during detail/notification projections prevents new predictions from
+        // being committed, even though current measurements continue to arrive.
     }
     private boolean independentMeasuredCase(UavRiskCaseIdentity.CaseRef c){
         if(c.episodeId()!=null||c.manualCounterOnly())return false;

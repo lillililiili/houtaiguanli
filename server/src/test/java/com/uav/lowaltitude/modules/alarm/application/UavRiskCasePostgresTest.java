@@ -51,6 +51,225 @@ class UavRiskCasePostgresTest {
     @AfterEach void clearRequest() { RequestContextHolder.resetRequestAttributes(); }
 
     @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void predictionHandsOffToAutomaticMeasuredVerificationOnceWithoutChangingRawVerdictsOrChannels(String mode) {
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-20_000);
+        AutoVerification automatic=new AutoVerification(f);
+        assertThat(automatic.evaluate(cycle,cycle.event())).isEqualTo("PAUSED");
+        automatic.confirm(cycle,cycle.event());
+        assertThat(f.identities().find(cycle.episode()).confirmed()).isFalse();
+        String measured=f.enter(List.of(cycle));
+        assertThat(automatic.evaluate(cycle,cycle.event())).as("old prediction alias is never measured evidence").isEqualTo("PAUSED");
+        assertThat(automatic.evaluate(cycle,measured)).isEqualTo("PASS");
+        automatic.confirm(cycle,measured);automatic.confirm(cycle,measured);
+        assertThat(f.identities().find(cycle.episode()).confirmed()).isTrue();
+        assertThat(f.identities().find(cycle.episode()).manualCounterOnly()).isTrue();
+        assertThat(f.reader().count(query(f,true,null,null),ALL)).isEqualTo(1);
+        var ledger=f.jdbc.queryForMap("SELECT trigger_mode,actor_id,event_id,basis_kind,automation_run_id FROM uav_risk_case_verification WHERE risk_case_id=?",cycle.episode());
+        assertThat(ledger).containsEntry("trigger_mode","AUTO").containsEntry("actor_id",null)
+                .containsEntry("event_id",measured).containsEntry("basis_kind","OBSERVED");
+        assertThat(ledger.get("automation_run_id")).isNotNull();
+        String frozen=f.jdbc.queryForObject("SELECT CAST(basis_json AS VARCHAR) FROM uav_risk_case_verification WHERE risk_case_id=?",String.class,cycle.episode());
+        assertThat(frozen).contains("OBSERVED","ENTERED",cycle.airspace(),"disposition_only", "true", "evaluation_id", "airspace_version_id");
+        for(String event:List.of(cycle.event(),measured)) {
+            assertThat(f.jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,event)).isEqualTo("PENDING_VERIFICATION");
+            assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_event_verification WHERE event_id=?",Long.class,event)).isZero();
+        }
+        assertThat(selected(cycle.episode(),()->automatic.gate.blocksAutomatic("counter",measured))).isTrue();
+        for(String channel:List.of("SMS","VOICE")) {
+            assertThat(f.tx(()->selected(cycle.episode(),()->f.identities().claimChannel(cycle.event(),channel)))).isTrue();
+            assertThat(f.tx(()->selected(cycle.episode(),()->f.identities().claimChannel(measured,channel)))).isFalse();
+            assertThat(f.identities().channelOwner(cycle.episode(),channel)).isEqualTo(cycle.event());
+        }
+        automatic.restart();automatic.confirm(cycle,measured);
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id=?",Long.class,cycle.episode())).isEqualTo(1);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"CONFIRMED","FALSE_POSITIVE"})
+    void priorHumanVerdictIsNeverReplacedWhenMeasuredEntryArrives(String conclusion) {
+        Fixtures f=new Fixtures(DATABASE,"live");Cycle cycle=f.predict(id(),f.now-20_000);f.verdict(cycle,conclusion);
+        String measured=f.enter(List.of(cycle));AutoVerification automatic=new AutoVerification(f);
+        automatic.evaluate(cycle,measured);automatic.confirm(cycle,measured);
+        assertThat(f.jdbc.queryForList("SELECT conclusion FROM uav_risk_case_verification WHERE risk_case_id=?",String.class,cycle.episode())).containsExactly(conclusion);
+        assertThat(f.jdbc.queryForObject("SELECT trigger_mode FROM uav_risk_case_verification WHERE risk_case_id=?",String.class,cycle.episode())).isEqualTo("MANUAL");
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void automaticVerificationFreezesLatestSameObservationReevaluationAndEffectiveAirspaceVersion(String mode) throws Exception {
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-20_000);String measured=f.enter(List.of(cycle));
+        var original=f.jdbc.queryForMap("SELECT evaluation_id,airspace_version_id,observed_at FROM prediction_actual_entry_link WHERE event_id=? AND airspace_id=?",measured,cycle.airspace());
+        String originalEvaluation=original.get("evaluation_id").toString(),originalVersion=original.get("airspace_version_id").toString();
+        // The same observation may be reevaluated at the same millisecond. Exercise the explicit
+        // evaluation-ID descending tie-break with an independently generated string identifier.
+        String latestEvaluation="review-"+id().replace("-","").substring(0,29),latestVersion=id();
+        assertThat(latestEvaluation.compareTo(originalEvaluation)).isPositive();
+        f.jdbc.update("UPDATE airspace_version SET valid_to=? WHERE airspace_version_id=?",at(f.now),originalVersion);
+        f.jdbc.update("INSERT INTO airspace_version(airspace_version_id,airspace_id,version_no,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at) SELECT ?,airspace_id,version_no+1,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,?,? FROM airspace_version WHERE airspace_version_id=?",latestVersion,at(f.now),at(f.now),originalVersion);
+        f.jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) SELECT ?,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons FROM rule_evaluation WHERE evaluation_id=?",latestEvaluation,originalEvaluation);
+        f.jdbc.update("INSERT INTO prediction_actual_entry_link(event_id,target_id,airspace_id,observed_at,evaluation_id,airspace_version_id) VALUES(?,?,?,?,?,?)",measured,f.target,cycle.airspace(),f.now,latestEvaluation,latestVersion);
+        assertThat(f.identities().currentMeasuredArea(f.identities().find(cycle.episode()))).isTrue();
+        AutoVerification automatic=new AutoVerification(f);assertThat(automatic.evaluate(cycle,measured)).isEqualTo("PASS");automatic.confirm(cycle,measured);
+        var snapshot=new com.fasterxml.jackson.databind.ObjectMapper().readTree(f.jdbc.queryForObject("SELECT CAST(basis_json AS VARCHAR) FROM uav_risk_case_verification WHERE risk_case_id=?",String.class,cycle.episode()));
+        var entries=snapshot.path("measured_entries");assertThat(entries.size()).isEqualTo(1);
+        assertThat(entries.get(0).path("evaluation_id").asText()).isEqualTo(latestEvaluation);
+        assertThat(entries.get(0).path("airspace_version_id").asText()).isEqualTo(latestVersion);
+        assertThat(entries.get(0).path("event_id").asText()).isEqualTo(measured);
+        assertThat(entries.get(0).path("observed_at").asLong()).isEqualTo(((Number)original.get("observed_at")).longValue());
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM prediction_actual_entry_link WHERE event_id=?",Long.class,measured)).isEqualTo(2);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"live,inside","replay,inside","live,outside","replay,outside",
+            "live,expired","replay,expired","live,source-changed","replay,source-changed"})
+    void finalMeasuredSnapshotRechecksCommittedChangesAfterRuleEligibility(String mode,String change) throws Exception {
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-20_000);String measured=f.enter(List.of(cycle));
+        var wallTime=new java.util.concurrent.atomic.AtomicLong(f.now);
+        AppClock clock=mock(AppClock.class);
+        when(clock.nowMillis()).thenAnswer(ignored->wallTime.get());
+        when(clock.now()).thenAnswer(ignored->Instant.ofEpochMilli(wallTime.get()));
+        var identities=spy(qa(new UavRiskCaseIdentity(f.jdbc,clock)));
+        AutoVerification automatic=new AutoVerification(f,clock,identities);
+        assertThat(automatic.evaluate(cycle,measured)).isEqualTo("PASS");
+        String run=selected(cycle.episode(),()->automatic.runs.state("verify",measured).runId());
+        var eligibility=spy(automatic.eligibility);
+        var rulePassed=new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation->{
+            boolean allowed=(boolean)invocation.callRealMethod();
+            if(allowed)rulePassed.set(true);
+            return allowed;
+        }).when(eligibility).allowsRun("verify",measured,run);
+        automatic.verification=new AlarmRuleVerification(f.jdbc,new com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository(f.jdbc),
+                mock(com.uav.lowaltitude.platform.audit.AuditService.class),clock,eligibility);
+        automatic.verification.cases(identities);automatic.verification.setPredictionEventGate(automatic.gate);
+
+        var writer=Executors.newSingleThreadExecutor();
+        var changed=new java.util.concurrent.atomic.AtomicBoolean();
+        var frozenEntries=new java.util.concurrent.atomic.AtomicReference<List<Map<String,Object>>>();
+        doAnswer(invocation->{
+            if(changed.compareAndSet(false,true)) {
+                assertThat(rulePassed).as("The real rule guard passed before final measured evidence was read").isTrue();
+                assertThat(f.jdbc.queryForObject("SHOW transaction_isolation",String.class)).isEqualTo("read committed");
+                if("expired".equals(change)) {
+                    wallTime.set(f.now+121_000);
+                } else {
+                    // A separate connection commits a complete observation after qualification.
+                    // It does not alter the locked risk, event, rule run or verification ledger.
+                    writer.submit(()->f.tx(()->{
+                        f.measuredPoint(f.now+500,f.longitude+("outside".equals(change)?.02:.001),100);
+                        if("source-changed".equals(change))
+                            f.jdbc.update("UPDATE integration_source SET source_mode=? WHERE source_id=?","live".equals(mode)?"replay":"live",f.source);
+                        return null;
+                    })).get(5,TimeUnit.SECONDS);
+                    wallTime.set(f.now+700);
+                }
+            }
+            @SuppressWarnings("unchecked")
+            var entries=(List<Map<String,Object>>)invocation.callRealMethod();
+            frozenEntries.set(entries);
+            return entries;
+        }).when(identities).currentMeasuredEntries(any(UavRiskCaseIdentity.CaseRef.class));
+        try {
+            automatic.confirm(cycle,measured,run);
+            assertThat(changed).isTrue();
+            if("inside".equals(change)) {
+                assertThat(f.jdbc.queryForObject("SELECT observed_at FROM target_latest_state WHERE target_id=?",java.sql.Timestamp.class,f.target).getTime()).isEqualTo(f.now+500);
+                assertThat(frozenEntries.get()).hasSize(1);
+                var snapshot=new com.fasterxml.jackson.databind.ObjectMapper().readTree(f.jdbc.queryForObject("SELECT CAST(basis_json AS VARCHAR) FROM uav_risk_case_verification WHERE risk_case_id=?",String.class,cycle.episode()));
+                var entry=snapshot.path("measured_entries");assertThat(entry.size()).isEqualTo(1);
+                var accepted=frozenEntries.get().get(0);
+                for(String key:List.of("event_id","evaluation_id","airspace_version_id"))
+                    assertThat(entry.get(0).path(key).asText()).isEqualTo(accepted.get(key).toString());
+                assertThat(entry.get(0).path("observed_at").asLong()).isEqualTo(((Number)accepted.get("observed_at")).longValue());
+                assertThat(snapshot.path("checked_at").asLong()).isEqualTo(f.now+700);
+                assertThat(snapshot.path("disposition_only").asBoolean()).isTrue();
+            } else assertThat(frozenEntries.get()).isEmpty();
+
+            automatic.confirm(cycle,measured,run);
+            assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id=?",Long.class,cycle.episode()))
+                    .isEqualTo("inside".equals(change)?1L:0L);
+            for(String event:List.of(cycle.event(),measured)) {
+                assertThat(f.jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,event)).isEqualTo("PENDING_VERIFICATION");
+                assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_event_verification WHERE event_id=?",Long.class,event)).isZero();
+            }
+        } finally {
+            writer.shutdownNow();assertThat(writer.awaitTermination(5,TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test void lockedCaseMembershipRejectsAnEventFromAnotherRisk() {
+        Fixtures f=new Fixtures(DATABASE,"live");Cycle own=f.predict(id(),f.now-2000),other=f.predict(id(),f.now-1000);
+        assertThatThrownBy(()->f.tx(()->selected(other.episode(),()->{f.identities().lockCases(own.event());return null;})))
+                .isInstanceOfSatisfying(com.uav.lowaltitude.platform.api.ApiException.class,error->
+                        assertThat(error.getCode()).isEqualTo("RISK_CASE_EVENT_MISMATCH"));
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id IN (?,?)",Long.class,own.episode(),other.episode())).isZero();
+    }
+
+    @Test void lockedCaseVersionRejectsAMismatchedSelectedVersion() {
+        Fixtures f=new Fixtures(DATABASE,"replay");Cycle cycle=f.predict(id(),f.now-1000);
+        long current=f.jdbc.queryForObject("SELECT version FROM uav_risk_case WHERE risk_case_id=?",Long.class,cycle.episode());
+        assertThatThrownBy(()->f.tx(()->selected(cycle.episode(),()->{
+            var request=((ServletRequestAttributes)RequestContextHolder.getRequestAttributes()).getRequest();
+            request.setAttribute(UavRiskCaseIdentity.REQUEST_VERSION,current+1);
+            f.identities().lockCases(cycle.event());return null;
+        }))).isInstanceOfSatisfying(com.uav.lowaltitude.platform.api.ApiException.class,error->
+                assertThat(error.getCode()).isEqualTo("RISK_CASE_VERSION_CONFLICT"));
+        assertThat(f.jdbc.queryForObject("SELECT version FROM uav_risk_case WHERE risk_case_id=?",Long.class,cycle.episode())).isEqualTo(current);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"DISABLED_RULES","CONDITION_FAILED","RULE_VERSION_CHANGED","UNKNOWN_ENTRY","UNRELATED_RUN"})
+    void measuredEntryCannotReusePassingDecisionAfterRulesOrRegionalEvidenceChange(String condition) {
+        Fixtures f=new Fixtures(DATABASE,"replay");Cycle cycle=f.predict(id(),f.now-20_000);String measured=f.enter(List.of(cycle));
+        AutoVerification automatic=new AutoVerification(f);assertThat(automatic.evaluate(cycle,measured)).isEqualTo("PASS");
+        String run=selected(cycle.episode(),()->automatic.runs.state("verify",measured).runId());
+        switch(condition){
+            case "DISABLED_RULES" -> f.jdbc.update("UPDATE automation_rule_condition SET enabled=FALSE WHERE category='verify'");
+            case "CONDITION_FAILED" -> automatic.confidence="40";
+            case "RULE_VERSION_CHANGED" -> f.jdbc.update("UPDATE automation_rule_group SET version=version+1 WHERE category='verify'");
+            case "UNKNOWN_ENTRY" -> f.jdbc.update("UPDATE target_latest_state SET altitude_amsl_m=NULL WHERE target_id=?",f.target);
+            case "UNRELATED_RUN" -> run=id();
+            default -> throw new AssertionError(condition);
+        }
+        automatic.confirm(cycle,measured,run);
+        assertThat(f.identities().find(cycle.episode()).confirmed()).isFalse();
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id=?",Long.class,cycle.episode())).isZero();
+    }
+
+    @Test void automaticVerificationIsIsolatedByRegionAndNewRiskCycle() {
+        Fixtures f=new Fixtures(DATABASE,"live");Cycle a=f.predict(id(),f.now-20_000),b=f.predict(id(),f.now-19_000);
+        String measured=f.enter(List.of(a,b));AutoVerification automatic=new AutoVerification(f);
+        assertThat(automatic.evaluate(a,measured)).isEqualTo("PASS");
+        String runA=selected(a.episode(),()->automatic.runs.state("verify",measured).runId());
+        assertThat(automatic.evaluate(b,measured)).isEqualTo("PASS");
+        automatic.confirm(b,measured,runA);assertThat(f.identities().find(b.episode()).confirmed()).isFalse();
+        f.jdbc.update("UPDATE airspace_version SET valid_to=? WHERE airspace_id=?",at(f.now),a.airspace());
+        automatic.confirm(a,measured);assertThat(f.identities().find(a.episode()).confirmed()).isFalse();
+        automatic.confirm(b,measured);assertThat(f.identities().find(b.episode()).confirmed()).isTrue();
+        assertThat(f.reader().count(query(f,true,"CONFIRMED",null),ALL)).isEqualTo(1);
+        f.jdbc.update("UPDATE prediction_episode SET status='CLEARED',active_key=NULL,current_evidence_valid=FALSE,closed_at=? WHERE episode_id=?",f.now,b.episode());
+        Cycle next=f.predict(b.airspace(),f.now+1);
+        assertThat(f.identities().find(next.episode()).confirmed()).isFalse();
+        assertThat(automatic.evaluate(next,next.event())).isEqualTo("PAUSED");
+        assertThat(f.identities().channelOwner(next.episode(),"SMS")).isNull();
+    }
+
+    @Test void concurrentAutomaticAndHumanVerificationSerializeOnTheSameRisk() throws Exception {
+        Fixtures f=new Fixtures(DATABASE,"replay");Cycle cycle=f.predict(id(),f.now-20_000);String measured=f.enter(List.of(cycle));
+        AutoVerification automatic=new AutoVerification(f);assertThat(automatic.evaluate(cycle,measured)).isEqualTo("PASS");
+        var executor=Executors.newFixedThreadPool(2);CountDownLatch ready=new CountDownLatch(2),start=new CountDownLatch(1);
+        try {
+            var actions=List.<Runnable>of(()->automatic.confirm(cycle,measured),()->f.tx(()->selected(cycle.episode(),()->{
+                f.identities().lockCases(measured);
+                if("PENDING_VERIFICATION".equals(f.identities().details(cycle.episode()).get("verification_status")))f.verdict(cycle,"CONFIRMED");
+                return null;
+            })));
+            var futures=actions.stream().map(action->executor.submit(()->{ready.countDown();if(!start.await(5,TimeUnit.SECONDS))throw new IllegalStateException("start barrier timed out");action.run();return null;})).toList();
+            assertThat(ready.await(5,TimeUnit.SECONDS)).isTrue();start.countDown();
+            for(var future:futures)future.get(15,TimeUnit.SECONDS);
+        } finally {start.countDown();executor.shutdownNow();assertThat(executor.awaitTermination(5,TimeUnit.SECONDS)).isTrue();}
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM uav_risk_case_verification WHERE risk_case_id=?",Long.class,cycle.episode())).isEqualTo(1);
+        assertThat(f.identities().find(cycle.episode()).confirmed()).isTrue();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
     void predictionBecomesObservedInTheSameCaseAndPaginationExportAndCountsAgree(String mode) {
         Fixtures f = new Fixtures(DATABASE, mode);
         Cycle first = f.predict(id(), f.now - 86_400_000L);
@@ -387,6 +606,48 @@ class UavRiskCasePostgresTest {
 
     private record Cycle(String episode,String event,String airspace,String snapshot) { }
 
+    /** Real rule versions, runs, transactions and entry geometry; controlled source facts for rule branches. */
+    private static final class AutoVerification {
+        final Fixtures f;
+        final AppClock clock;
+        final UavRiskCaseIdentity identities;
+        final com.uav.lowaltitude.modules.prediction.application.PredictionEventGate gate;
+        final com.uav.lowaltitude.modules.automationrule.infrastructure.AutomationRuntimeRepository runs;
+        final com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility eligibility;
+        final com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeService evaluator;
+        AlarmRuleVerification verification;
+        String confidence="95";
+        AutoVerification(Fixtures f){
+            this(f,f.clock(),f.identities());
+        }
+        AutoVerification(Fixtures f,AppClock clock,UavRiskCaseIdentity identities){
+            this.f=f;this.clock=clock;this.identities=identities;
+            gate=new com.uav.lowaltitude.modules.prediction.application.PredictionEventGate(f.jdbc,clock);gate.riskCases(identities);
+            runs=new com.uav.lowaltitude.modules.automationrule.infrastructure.AutomationRuntimeRepository(f.jdbc);runs.cases(identities);
+            var config=new com.uav.lowaltitude.modules.automationrule.infrastructure.AutomationRuleRepository(f.jdbc);
+            var policy=new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimePolicy(true,30_000,2000,runs,clock);
+            var facts=mock(com.uav.lowaltitude.modules.automationrule.infrastructure.AutomationRuntimeFactsRepository.class);
+            when(facts.read(anyString(),anyLong())).thenAnswer(call->new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeFacts(
+                    call.getArgument(0),f.target,"isolated-measured-alarm",f.org,f.district,f.mode,"PENDING_VERIFICATION","UAV",f.now,
+                    java.util.Set.of(),true,Map.of("confidence",new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeFacts.Fact(confidence,f.now,"isolated-observation:"+f.target,null),
+                    "freshness",new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeFacts.Fact("0",f.now,"isolated-observation:"+f.target,null))));
+            var json=new com.fasterxml.jackson.databind.ObjectMapper();
+            eligibility=new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeEligibility(config,runs,facts,policy,json,clock);eligibility.setPredictionEventGate(gate);
+            evaluator=new com.uav.lowaltitude.modules.automationrule.application.AutomationRuntimeService(config,runs,facts,policy,eligibility,json,clock);evaluator.predictions(gate);
+            f.jdbc.update("UPDATE automation_rule_condition SET enabled=FALSE WHERE category='verify'");
+            f.jdbc.update("UPDATE automation_rule_group SET version=version+1,scope_mode='ALL',schedule_mode='ALL_DAY',wait_seconds=0 WHERE category='verify'");
+            for(String code:List.of("confidence","freshness"))f.jdbc.update("INSERT INTO automation_rule_condition(rule_id,category,name,item_code,value_text,hold_seconds,enabled,created_at,updated_at,updated_by) VALUES(?,'verify',?,?,?,0,TRUE,?,?,'isolated-test') ON CONFLICT(category,item_code) DO UPDATE SET value_text=EXCLUDED.value_text,hold_seconds=0,enabled=TRUE,updated_at=EXCLUDED.updated_at",id(),"Isolated "+code,code,"confidence".equals(code)?"90":"60",f.now,f.now);
+            restart();
+        }
+        void restart(){
+            verification=new AlarmRuleVerification(f.jdbc,new com.uav.lowaltitude.modules.alarm.infrastructure.UavEventRepository(f.jdbc),mock(com.uav.lowaltitude.platform.audit.AuditService.class),clock,eligibility);
+            verification.cases(identities);verification.setPredictionEventGate(gate);
+        }
+        String evaluate(Cycle c,String event){return f.tx(()->selected(c.episode(),()->{evaluator.evaluate("verify",event);return runs.state("verify",event).status();}));}
+        void confirm(Cycle c,String event){confirm(c,event,selected(c.episode(),()->runs.state("verify",event).runId()));}
+        void confirm(Cycle c,String event,String run){f.tx(()->selected(c.episode(),()->{verification.confirmIfPassed(event,run);return null;}));}
+    }
+
     /** Direct inserts are isolated fixture facts, not a shortcut through runtime verification or notification APIs. */
     private static final class Fixtures {
         final Database database;
@@ -452,11 +713,14 @@ class UavRiskCasePostgresTest {
             return new Cycle(episode,event,airspace,snapshot);
         }
         void confirm(Cycle cycle) {
+            verdict(cycle,"CONFIRMED");
+        }
+        void verdict(Cycle cycle,String conclusion) {
             tx(() -> {
                 identities().lockCases(cycle.event());
                 long version=identities().find(cycle.episode()).version()+1;
-                jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,prediction_id,actor_id,note,created_at) VALUES(?,?,?,?,0,'CONFIRMED','PREDICTION',?,?,'isolated human confirmation fixture',?)",
-                        id(),cycle.episode(),version,cycle.event(),cycle.snapshot(),id(),now);
+                jdbc.update("INSERT INTO uav_risk_case_verification(verification_id,risk_case_id,case_version,event_id,event_version,conclusion,basis_kind,prediction_id,actor_id,note,created_at) VALUES(?,?,?,?,0,?,'PREDICTION',?,?,'isolated human confirmation fixture',?)",
+                        id(),cycle.episode(),version,cycle.event(),conclusion,cycle.snapshot(),id(),now);
                 jdbc.update("UPDATE uav_risk_case SET version=? WHERE risk_case_id=?",version,cycle.episode());
                 return null;
             });

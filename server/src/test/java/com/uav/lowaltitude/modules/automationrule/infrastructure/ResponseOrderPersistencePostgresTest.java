@@ -31,6 +31,7 @@ class ResponseOrderPersistencePostgresTest {
     @AfterAll static void close(){DATABASE.close();}
     @Autowired JdbcTemplate jdbc;@Autowired ResponseOrderRepository ordering;@Autowired AutomationRuntimeRepository runs;
     @Autowired UavRiskCaseIdentity cases;@Autowired DisposalRepository authorizations;
+    @Autowired com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository voiceTasks;
     String event,first,second,target,mode,org,district;
     long now;
     @BeforeEach void fixture(){
@@ -51,6 +52,45 @@ class ResponseOrderPersistencePostgresTest {
         assertThat(restarted.window("case:"+first)).isEqualTo(frozen);
         assertThat(frozen.deadlineAt()).isEqualTo(now+60_000);
     }
+    @Test void voiceSendBasisSurvivesUnknownLateReceiptAndRepositoryRestart(){
+        cases.runWithCase(first,()->{
+            var original=voiceBasis("WAIT_TIMEOUT",now);var recording=voiceRecording();
+            claimVoice("original");voiceTasks.prepareSend(event,"original",recording,now,original);
+            voiceTasks.finish(event,"original","UNKNOWN","await receipt",null,null,null,null,now+1);
+            voiceTasks.answer(event,"original","late-answer",now+10,now+11);
+            String record=id();voiceTasks.append(record,event,100,now+21,recording,"late-answer",now+10,now+20,"isolated");
+            voiceTasks.finish(event,"original","SIMULATED_PLAYED","played",record,"late-answer",now+10,now+20,now+21);
+            jdbc.update("UPDATE response_order_policy SET version=version+1,max_wait_seconds=5 WHERE policy_id='uav'");
+            var restarted=new com.uav.lowaltitude.modules.alarm.infrastructure.AutoVoiceRepository(jdbc);restarted.riskCases(cases);
+            assertThat(restarted.find(event).responseOrderBasis()).isEqualTo(original);
+            assertThat(restarted.find(event).status()).isEqualTo("SIMULATED_PLAYED");
+        });
+    }
+    @Test void retryCannotReplaceOriginalSendBasisAndOtherRegionHasNoSnapshot(){
+        cases.runWithCase(first,()->{
+            var original=voiceBasis("START_FAILED",now);claimVoice("first-attempt");
+            voiceTasks.prepareSend(event,"first-attempt",voiceRecording(),now,original);
+            voiceTasks.finish(event,"first-attempt","FAILED","failed",null,null,null,null,now+1);
+            voiceTasks.queueRetry(event,now+2);claimVoice("retry");
+            voiceTasks.prepareSend(event,"retry",voiceRecording(),now+3,voiceBasis("WAIT_TIMEOUT",now+3));
+            assertThat(voiceTasks.find(event).responseOrderBasis()).isEqualTo(original);
+        });
+        cases.runWithCase(second,()->{voiceTasks.initialize(event,now,"isolated");assertThat(voiceTasks.find(event).responseOrderBasis()).isNull();});
+    }
+    @Test void acceptedLegacyCallDoesNotAcquireAnInventedOrderingBasis(){
+        cases.runWithCase(first,()->{
+            claimVoice("legacy");
+            jdbc.update("UPDATE uav_auto_voice_task SET send_started_at=? WHERE event_id=? AND risk_scope=?",now-1000,event,first);
+            voiceTasks.prepareSend(event,"legacy",voiceRecording(),now,voiceBasis("WAIT_TIMEOUT",now));
+            assertThat(voiceTasks.find(event).responseOrderBasis()).isNull();
+        });
+    }
+    void claimVoice(String token){
+        voiceTasks.initialize(event,now,"isolated");
+        voiceTasks.claim(event,token,new com.uav.lowaltitude.modules.alarm.application.AdvisoryEligibilityService.Eligibility(true,"WAITING","isolated","COUNTER_FIRST",null,null),voiceRecording(),now);
+    }
+    com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Recording voiceRecording(){return new com.uav.lowaltitude.modules.alarm.application.AdvisoryVoiceRecording.Recording("isolated-recording","isolated","isolated","hash");}
+    com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis voiceBasis(String status,long at){return new com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.ResponseOrderBasis(status,"isolated send-time decision",60,at-60_000,at,4,at);}
     @Test void verificationAndCounterRunsRemainIndependentForTwoAreasOfOneEvent(){
         for(String category:List.of("verify","counter")){
             String a=id(),b=id();

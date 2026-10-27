@@ -85,7 +85,15 @@ public final class HandoffDtos {
             ReferenceMaterialDto references, List<com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record> advisoryRecords,
             PilotLocationMaterialDto pilotLocation,
             // 2026-10-06 起新提交的材料另冻结研判结论、证据链清单和当事人认定；旧材料没有这三段，按原样读出。
-            List<JudgmentMaterialDto> judgments, List<EvidenceChainItemDto> evidenceChain, PartyMaterialDto party) { }
+            List<JudgmentMaterialDto> judgments, List<EvidenceChainItemDto> evidenceChain, PartyMaterialDto party,
+            java.util.Map<String,Object> measuredRiskBasis) {
+        public MaterialV2Dto(int schemaVersion,EventMaterialDto event,List<EventVerificationDto> verifications,
+                List<DisposalMaterialDto> disposals,List<EvidenceMaterialDto> evidence,Boolean evidenceOmitted,
+                ReferenceMaterialDto references,List<com.uav.lowaltitude.modules.alarm.api.UavAdvisoryDtos.Record> advisoryRecords,
+                PilotLocationMaterialDto pilotLocation,List<JudgmentMaterialDto> judgments,List<EvidenceChainItemDto> evidenceChain,PartyMaterialDto party){
+            this(schemaVersion,event,verifications,disposals,evidence,evidenceOmitted,references,advisoryRecords,pilotLocation,judgments,evidenceChain,party,null);
+        }
+    }
     /**
      * 合法性研判结论（提交时冻结）。basis：EVENT_ALARM 是关联本事件告警的那条（告警依据），LATEST 是同一目标提交时的最新一条；
      * 两条相同时只留 EVENT_ALARM。manual_status/review_state 是人工复核结果，没有复核时省略。

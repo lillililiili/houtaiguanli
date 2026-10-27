@@ -24,6 +24,10 @@ import com.uav.lowaltitude.modules.identity.domain.ScopeMode;
 
 @Repository
 public class HandoffRepository {
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void riskCases(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity value){riskCases=value;}
+    private String caseScope(String event){String id=riskCases==null?null:riskCases.caseId(event);return id==null?"":id;}
 
     public Dataset reportDataset(ReportDatasetReader reader, Range range, AccessDecision access) {
         Where w = scope(access);
@@ -70,9 +74,11 @@ public class HandoffRepository {
     }
 
     public String existingPunishment(String eventId) {
-        List<String> rows = jdbc.query("SELECT handoff_id FROM handoff WHERE source_kind='UAV_EVENT' AND source_id=:id"
+        String scope=caseScope(eventId);
+        String where=scope.isEmpty()?"source_id=:id AND risk_case_id=''":"(risk_case_id=:scope OR (risk_case_id='' AND source_id=:id AND (SELECT COUNT(*) FROM uav_risk_case_member m JOIN uav_risk_case c USING(risk_case_id) WHERE m.event_id=:id AND c.superseded_by IS NULL)=1))";
+        List<String> rows = jdbc.query("SELECT handoff_id FROM handoff WHERE source_kind='UAV_EVENT' AND "+where
                 + " AND handoff_type='UAV_PUNISHMENT' ORDER BY created_at FETCH FIRST 1 ROW ONLY",
-                Map.of("id", eventId), (r, n) -> r.getString(1));
+                Map.of("id", eventId,"scope",scope), (r, n) -> r.getString(1));
         return rows.isEmpty() ? null : rows.get(0);
     }
 
@@ -127,8 +133,8 @@ public class HandoffRepository {
 
     public boolean logicalExists(String sourceKind, String sourceId, String handoffType, String recipientId) {
         Long count = jdbc.queryForObject("SELECT COUNT(*) FROM handoff WHERE source_kind=:kind AND source_id=:source"
-                + " AND handoff_type=:type AND recipient_id=:recipient",
-                Map.of("kind", sourceKind, "source", sourceId, "type", handoffType, "recipient", recipientId), Long.class);
+                + " AND handoff_type=:type AND recipient_id=:recipient AND risk_case_id=:scope",
+                Map.of("kind", sourceKind, "source", sourceId, "type", handoffType, "recipient", recipientId,"scope","UAV_EVENT".equals(sourceKind)?caseScope(sourceId):""), Long.class);
         return count != null && count > 0;
     }
 
@@ -139,9 +145,21 @@ public class HandoffRepository {
         params.put("recipient", row.recipientId()); params.put("version", row.sourceVersion()); params.put("org", row.ownerOrgId());
         params.put("district", row.districtId()); params.put("mode", row.sourceMode()); params.put("submitter", row.submittedBy());
         params.put("created", row.createdAt()); params.put("trigger", row.triggerSource());
+        params.put("case","UAV_EVENT".equals(row.sourceKind())?caseScope(row.sourceId()):"");
         jdbc.update("INSERT INTO handoff (handoff_id,source_kind,source_id,risk_id,event_id,handoff_type,recipient_id,source_version,"
-                + "owner_org_id,district_id,source_mode,submitted_by,created_at,trigger_source) VALUES (:id,:kind,:source,:risk,:event,:type,:recipient,"
-                + ":version,:org,:district,:mode,:submitter,:created,:trigger)", params);
+                + "owner_org_id,district_id,source_mode,submitted_by,created_at,trigger_source,risk_case_id) VALUES (:id,:kind,:source,:risk,:event,:type,:recipient,"
+                + ":version,:org,:district,:mode,:submitter,:created,:trigger,:case)", params);
+    }
+
+    public void freezeMeasuredBasis(String handoffId,com.uav.lowaltitude.modules.handoff.application.MeasuredPunishmentBasis.Basis basis,String json,long at){
+        jdbc.update("INSERT INTO handoff_measured_basis(handoff_id,risk_case_id,authorization_id,evaluation_id,airspace_version_id,observation_id,point_id,basis_json,created_at)"
+                +" VALUES(:handoff,:case,:authorization,:evaluation,:airspace,:observation,:point,CAST(:json AS JSON),:at)",
+                Map.of("handoff",handoffId,"case",basis.riskCaseId(),"authorization",basis.authorizationId(),"evaluation",basis.evaluationId(),
+                        "airspace",basis.airspaceVersionId(),"observation",basis.observationId(),"point",basis.pointId(),"json",json,"at",at));
+    }
+    public String frozenMeasuredBasis(String handoffId){
+        var rows=jdbc.query("SELECT basis_json FROM handoff_measured_basis WHERE handoff_id=:id",Map.of("id",handoffId),(r,n)->r.getString(1));
+        return rows.isEmpty()?null:rows.get(0);
     }
 
     /** 处罚交接是后台自动建立（COUNTERMEASURE_COMPLETED / 旧 JAMMING_COMPLETED）还是人工提交（MANUAL）；旧记录可能为空。 */
