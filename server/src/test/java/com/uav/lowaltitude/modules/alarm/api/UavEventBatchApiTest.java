@@ -51,12 +51,15 @@ class UavEventBatchApiTest {
         for (String id : events) {
             jdbc.update("insert into alarm(alarm_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) values(?,?,?,'UAV','HIGH',current_timestamp,'mock',?,?,current_timestamp)", id, source, id, org, district);
             jdbc.update("insert into uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) values(?,?,'PENDING_VERIFICATION',?,?,current_timestamp,current_timestamp,0)", id, id, org, district);
+            jdbc.update("insert into uav_risk_case(risk_case_id,root_event_id,owner_org_id,district_id,source_mode,created_at) values(?,?,?,?,'mock',?)",id,id,org,district,System.currentTimeMillis());
+            jdbc.update("insert into uav_risk_case_member(risk_case_id,event_id,role,created_at) values(?,?,'OBSERVED',?)",id,id,System.currentTimeMillis());
         }
     }
 
     @AfterEach void cleanup() {
         jdbc.update("delete from audit_log where user_id=?", user);
         jdbc.update("delete from idempotency_request where user_id=?", user);
+        for(String id:events){jdbc.update("delete from uav_risk_case_verification where risk_case_id=?",id);jdbc.update("delete from uav_risk_case_member where risk_case_id=?",id);jdbc.update("delete from uav_risk_case where risk_case_id=?",id);}
         for (String id : events) { jdbc.update("delete from uav_event_verification where event_id=?", id); jdbc.update("delete from uav_event where event_id=?", id); jdbc.update("delete from alarm where alarm_id=?", id); }
         jdbc.update("delete from app_session where user_id=?", user); jdbc.update("delete from app_user_data_scope where user_id=?", user); jdbc.update("delete from app_user where user_id=?", user);
         jdbc.update("delete from app_role_permission where role_code=?", role); jdbc.update("delete from app_role where role_code=?", role);
@@ -67,9 +70,9 @@ class UavEventBatchApiTest {
         var items = List.of(verification(events.get(0), 0, "FALSE_POSITIVE", "partial-key-a"), verification(events.get(1), 0, "CONFIRMED", "partial-key-b"), verification(events.get(2), 0, "FALSE_POSITIVE", "partial-key-c"));
         mvc.perform(request("verify", Map.of("items", items))).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.succeeded").value(2)).andExpect(jsonPath("$.data.failed").value(1))
-                .andExpect(jsonPath("$.data.items[1].error.code").value("VERIFICATION_BASIS_MISSING"));
+                .andExpect(jsonPath("$.data.items[1].error.code").value("RISK_CASE_CHANGED"));
         mvc.perform(request("verify", Map.of("items", items))).andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].error.code").value("IDEMPOTENCY_REPLAY"));
+                .andExpect(jsonPath("$.data.items[0].error.code").value("RISK_CASE_CHANGED"));
         assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id in (?,?,?)", Integer.class, events.toArray())).isEqualTo(2);
         assertThat(jdbc.queryForObject("select count(*) from audit_log where user_id=? and result='FAILURE'", Integer.class, user)).isGreaterThan(0);
     }
@@ -123,9 +126,9 @@ class UavEventBatchApiTest {
         }
         mvc.perform(request("verify", Map.of("items", events.stream().map(id -> verification(id, 0, "CONFIRMED", "source-" + id)).toList())))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.failed").value(3))
-                .andExpect(jsonPath("$.data.items[0].error.code").value("VERIFICATION_BASIS_MISSING"))
-                .andExpect(jsonPath("$.data.items[1].error.code").value("VERIFICATION_BASIS_MISSING"))
-                .andExpect(jsonPath("$.data.items[2].error.code").value("VERIFICATION_BASIS_MISSING"));
+                .andExpect(jsonPath("$.data.items[0].error.code").value("RISK_CASE_CHANGED"))
+                .andExpect(jsonPath("$.data.items[1].error.code").value("RISK_CASE_CHANGED"))
+                .andExpect(jsonPath("$.data.items[2].error.code").value("RISK_CASE_CHANGED"));
     }
 
     @Test void concurrentBatchesCommitOnlyOneVerification() throws Exception {
@@ -138,6 +141,35 @@ class UavEventBatchApiTest {
             assertThat(a.path("data").path("succeeded").asInt() + b.path("data").path("succeeded").asInt()).isEqualTo(1);
             assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?", Integer.class, events.get(0))).isEqualTo(1);
         } finally { executor.shutdownNow(); }
+    }
+
+    @Test void sameEventTwoCasesArePrecheckedAndVerifiedIndependently() throws Exception {
+        String event=events.get(0), secondCase=events.get(1);
+        jdbc.update("delete from uav_risk_case_member where risk_case_id=?",secondCase);
+        jdbc.update("update uav_risk_case set root_event_id=? where risk_case_id=?",event,secondCase);
+        jdbc.update("insert into uav_risk_case_member(risk_case_id,event_id,role,created_at) values(?,?,'OBSERVED',?)",secondCase,event,System.currentTimeMillis());
+        var scoped=List.of(Map.of("event_id",event,"risk_case_id",event,"expected_case_version",0),Map.of("event_id",event,"risk_case_id",secondCase,"expected_case_version",0));
+        mvc.perform(request("precheck",Map.of("items",scoped))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.data.items[0].risk_case_id").value(event)).andExpect(jsonPath("$.data.items[1].risk_case_id").value(secondCase))
+            .andExpect(jsonPath("$.data.items[0].status").value("READY")).andExpect(jsonPath("$.data.items[1].status").value("READY"));
+        var submissions=scoped.stream().map(row->{var item=new java.util.LinkedHashMap<String,Object>(row);item.putAll(verification(event,0,"FALSE_POSITIVE","case-"+row.get("risk_case_id")));return item;}).toList();
+        mvc.perform(request("verify",Map.of("items",submissions))).andExpect(status().isOk()).andExpect(jsonPath("$.data.succeeded").value(2));
+        assertThat(jdbc.queryForObject("select count(*) from uav_risk_case_verification where event_id=?",Integer.class,event)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?",Integer.class,event)).isZero();
+        mvc.perform(request("verify",Map.of("items",List.of(verification(event,0,"FALSE_POSITIVE","ambiguous-after")))))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].error.code").value("RISK_CASE_AMBIGUOUS"));
+    }
+
+    @Test void zeroAssociationCannotFallBackToAnUnscopedEventWrite() throws Exception {
+        String id=events.get(0);
+        jdbc.update("delete from uav_risk_case_member where risk_case_id=?",id);
+        jdbc.update("delete from uav_risk_case where risk_case_id=?",id);
+        mvc.perform(request("precheck",Map.of("items",List.of(Map.of("event_id",id)))))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].error.code").value("RISK_CASE_REQUIRED"));
+        mvc.perform(request("verify",Map.of("items",List.of(verification(id,0,"FALSE_POSITIVE","no-case-key")))))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].error.code").value("RISK_CASE_REQUIRED"));
+        assertThat(jdbc.queryForObject("select count(*) from uav_event_verification where event_id=?",Integer.class,id)).isZero();
+        assertThat(jdbc.queryForObject("select version from uav_event where event_id=?",Long.class,id)).isZero();
     }
 
     private Map<String, Object> verification(String id, long version, String conclusion, String key) {

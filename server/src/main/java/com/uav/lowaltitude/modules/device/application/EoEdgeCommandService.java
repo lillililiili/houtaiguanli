@@ -250,6 +250,7 @@ public class EoEdgeCommandService {
             var snapshot=target==null?null:tracking.snapshot(target);
             boolean auto=task!=null && "AUTO".equals(text(task,"origin"));
             boolean invalid=task==null || !"OPEN".equals(text(task,"status")) || policy.block(snapshot)!=null
+                    || !com.uav.lowaltitude.modules.device.domain.EoCoverage.contains(tracking.coverage(binding.opsDeviceId()),EoTrackingPolicy.position(snapshot))
                     || !policy.deviceReady(binding) || !binding.sourceMode().equals(EoTrackingPolicy.mode(snapshot))
                     || !binding.ownerOrgId().equals(text(snapshot,"owner_org_id")) || !binding.districtId().equals(text(snapshot,"district_id"))
                     || (!auto && !operatorAllowed(command,binding))

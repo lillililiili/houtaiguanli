@@ -300,6 +300,42 @@ class EoEdgeMqttTest {
         assertThat(jdbc.queryForObject("SELECT work_state_code FROM ops_device_state WHERE device_id=?", String.class, binding.opsDeviceId())).isEqualTo("1");
     }
 
+    @Test void turningAndLostReportsNeverProveCurrentTrackingAndOldReportsCannotReviveIt() {
+        String task=openTask("SENT");long first=1731731306000L;
+        String turning=beginReport(binding,task,200,first,"drone").replace("\"workState\":1","\"workState\":0")
+                .replace("\"cameraStatus\":{","\"cameraStatus\":{\"trackingState\":\"TURNING\",");
+        receive(turning,201,false);
+        assertThat(edges.task(task).get("last_report_observed_at")).isNull();
+        String acquired=beginReport(binding,task,200,first+1000,"drone")
+                .replace("\"cameraStatus\":{","\"cameraStatus\":{\"trackingState\":\"TRACKING\",");
+        receive(acquired,202,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isTrue();
+        receive(beginReport(binding,task,200,first+2000,"drone").replace("\"cameraStatus\":{","\"cameraStatus\":{\"trackingState\":\"LOST\","),203,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isFalse();
+        receive(acquired,204,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isFalse();
+        assertThat(edges.cameraSnapshot(binding.opsDeviceId()).get("camera_status_json").toString()).contains("LOST");
+    }
+    @Test void futureCameraReportCannotPoisonReportWatermark() {
+        long now=clock.nowMillis();
+        String future=cameraReport(binding).replace("1731731424000",Long.toString(now+60000));
+        receive(future,205,false);
+        assertThat(edges.cameraSnapshot(binding.opsDeviceId()).get("camera_status_json")).isNull();
+        receive(cameraReport(binding).replace("1731731424000",Long.toString(now)),206,false);
+        assertThat(edges.cameraSnapshot(binding.opsDeviceId()).get("camera_status_json")).isNotNull();
+    }
+    @Test void explicitLostHeartbeatInvalidatesOnlyItsOwnOpenTask() {
+        String task=openTask("SENT");long first=1731731306000L;
+        receive(beginReport(binding,task,200,first,"drone"),207,false);
+        String other=heartbeat(binding,0,UUID.randomUUID().toString()).replace("1731731424000",Long.toString(first+1000))
+                .replace("\"cameraStatus\":{","\"cameraStatus\":{\"trackingState\":\"LOST\",");
+        receive(other,208,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isTrue();
+        String lost=heartbeat(binding,0,task).replace("1731731424000",Long.toString(first+2000))
+                .replace("\"cameraStatus\":{","\"cameraStatus\":{\"trackingState\":\"LOST\",");
+        receive(lost,209,false);
+        assertThat(edges.freshTrackingReport(edges.task(task),first,clock.nowMillis())).isFalse();
+    }
     @Test void cameraStatusUpdatesRuntimeWithoutInbox() {
         String commandId = UUID.randomUUID().toString();
         edges.insertCommand(commandId, "EO-CAM", binding.opsDeviceId(), null, "EO_CAMERA_STATUS", "test",
@@ -403,6 +439,8 @@ class EoEdgeMqttTest {
     private Binding register(String edgeId, String deviceId) {
         String opsId = configuration.register(new Registration(EoEdgeEnvelope.PROTOCOL, brokerId, null, deviceId, null,
                 "replay", org, district, "EO-" + UUID.randomUUID(), "光电夹具", null, null, null, edgeId), key());
+        jdbc.update("UPDATE ops_device SET longitude=104,latitude=30.499,coordinate_system='WGS-84' WHERE device_id=?",opsId);
+        jdbc.update("INSERT INTO device_sensing_profile(device_id,coverage_kind,radius_m,source_label,version,updated_at) VALUES (?,'CIRCLE',1500,'test configured coverage',0,?)",opsId,clock.nowMillis());
         return edges.binding(opsId, false);
     }
     private String openTask(String commandStatus) {

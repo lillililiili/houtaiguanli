@@ -18,5 +18,6 @@ public class QaDeviceVideoController {
     @PutMapping public ApiResponse<VideoStreamRegistry.Stream> register(@PathVariable String deviceId){return ApiResponse.ok(service.register(deviceId));}
     @DeleteMapping public ApiResponse<Map<String,Boolean>> remove(@PathVariable String deviceId){service.remove(deviceId);return ApiResponse.ok(Map.of("removed",true));}
     @PutMapping("/frames") public ApiResponse<VideoStreamRegistry.Frame> frame(@PathVariable String deviceId,@RequestBody QaDeviceVideoService.FrameInput input){return ApiResponse.ok(service.frame(deviceId,input));}
+    @PutMapping("/frames/batch") public ApiResponse<QaDeviceVideoService.BatchResult> batch(@PathVariable String deviceId,@RequestBody QaDeviceVideoService.BatchInput input){return ApiResponse.ok(service.batch(deviceId,input));}
     @GetMapping("/observation-associations") public ApiResponse<Map<String,?>> observations(@PathVariable String deviceId,@RequestParam("task_id") String taskId){return ApiResponse.ok(Map.of("items",service.observationAssociations(deviceId,taskId)));}
 }

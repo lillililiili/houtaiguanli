@@ -110,11 +110,11 @@ public class UavRiskCaseIdentity {
         var parameters=new HashMap<String,Object>();parameters.put("prediction_now",now);parameters.put("case_ids",ids);
         UavMeasuredRiskSql.addTimes(parameters,jdbc,now,measuredQaAllowed,measuredSimulationAllowed);
         return namedJdbc.queryForList(
-                UavMeasuredRiskSql.expand("SELECT c.*,"+ACTION_EVENT+" AS action_event_id,"+VERIFICATION+" AS verification_status,"+STAGE
+                UavRiskReadClock.align(UavMeasuredRiskSql.expand("SELECT c.*,"+ACTION_EVENT+" AS action_event_id,"+VERIFICATION+" AS verification_status,"+STAGE
                 +" AS stage,p.latest_prediction_id,p.first_prediction_id,p.warning_json,p.valid_until,p.reason AS prediction_reason,"
                 +"("+CASE_DEVICE_WORK_REMAINS+") AS device_work_remains FROM uav_risk_case c"
                 +" LEFT JOIN prediction_episode p ON p.episode_id=c.episode_id JOIN uav_event root_event ON root_event.event_id=c.root_event_id"
-                +" WHERE c.risk_case_id IN (:case_ids) AND c.superseded_by IS NULL",postgis),parameters);
+                +" WHERE c.risk_case_id IN (:case_ids) AND c.superseded_by IS NULL",postgis),parameters,postgis,clock),parameters);
     }
     /** Lock episode first, then case, before event / authorization / device locks. */
     public void lockCases(String eventId){
@@ -190,7 +190,7 @@ public class UavRiskCaseIdentity {
         var parameters=new HashMap<String,Object>();parameters.put("case_id",c.riskCaseId());
         UavMeasuredRiskSql.addTimes(parameters,jdbc,clock.nowMillis(),measuredQaAllowed,measuredSimulationAllowed);
         return Boolean.TRUE.equals(namedJdbc.queryForObject(
-                UavMeasuredRiskSql.expand("SELECT "+UavMeasuredRiskSql.TOKEN+" FROM uav_risk_case c WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL",postgis),parameters,Boolean.class));
+                UavRiskReadClock.align(UavMeasuredRiskSql.expand("SELECT "+UavMeasuredRiskSql.TOKEN+" FROM uav_risk_case c WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL",postgis),parameters,postgis,clock),parameters,Boolean.class));
     }
     public Long measuredFreshnessMillis(){return UavMeasuredRiskSql.freshnessMillis(jdbc);}
     public Long measuredObservedAt(CaseRef c){return jdbc.queryForObject("SELECT CAST(EXTRACT(EPOCH FROM s.observed_at)*1000 AS BIGINT) FROM target_latest_state s JOIN uav_risk_case c ON c.target_id=s.target_id WHERE c.risk_case_id=?",Long.class,c.riskCaseId());}

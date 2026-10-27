@@ -98,13 +98,25 @@ public class VideoStreamRegistry {
                 s.targetId(),s.deviceId(),s.sourceMode(),s.expiresAt(),true,s.streamKind(),s.sourceIdentity()));
     }
     public synchronized void appendFrame(Stream stream,Frame frame) {
+        appendFrame(stream,frame,false);
+    }
+    public synchronized void appendBatchFrame(Stream stream,Frame frame) {
+        appendFrame(stream,frame,true);
+    }
+    private void appendFrame(Stream stream,Frame frame,boolean detailed) {
         Stream current=find(stream.taskId());long now=clock.nowMillis();
         if(current==null || !current.streamId().equals(stream.streamId()))throw invalidFrame();
         var buffer=frames.computeIfAbsent(stream.streamId(),key->new java.util.ArrayDeque<>());
         Frame last=buffer.peekLast();
-        if(frame.frameTimestamp()>now || frame.frameTimestamp()<now-5000 || frame.mediaTimeMs()<0
-                || last!=null && (frame.frameTimestamp()<=last.frameTimestamp() || frame.mediaTimeMs()<=last.mediaTimeMs()))throw invalidFrame();
+        if(frame.frameTimestamp()>now)throw frameRejected(detailed,"VIDEO_FRAME_FUTURE","视频帧时间晚于当前时间");
+        if(frame.frameTimestamp()<now-5000)throw frameRejected(detailed,"VIDEO_FRAME_STALE","视频帧已超过5秒接收时效");
+        if(frame.mediaTimeMs()<0)throw invalidFrame();
+        if(last!=null && (frame.frameTimestamp()<=last.frameTimestamp() || frame.mediaTimeMs()<=last.mediaTimeMs()))
+            throw frameRejected(detailed,"VIDEO_FRAME_NON_MONOTONIC","视频帧重复或帧时间、媒体时间未递增");
         buffer.addLast(frame);while(buffer.size()>300 || !buffer.isEmpty() && buffer.peekFirst().frameTimestamp()<now-30000)buffer.removeFirst();
+    }
+    private static ApiException frameRejected(boolean detailed,String code,String reason) {
+        return detailed?new ApiException(HttpStatus.CONFLICT,code,reason):invalidFrame();
     }
     public synchronized java.util.List<Frame> frames(Stream stream) {
         if(stream==null)return java.util.List.of();Stream current=find(stream.taskId());

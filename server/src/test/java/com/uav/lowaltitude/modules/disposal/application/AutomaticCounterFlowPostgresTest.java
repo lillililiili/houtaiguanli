@@ -231,6 +231,7 @@ class AutomaticCounterFlowPostgresTest {
             case "OBSERVATION_STALE" -> {
                 Instant later = clock.now().plusSeconds(61);
                 doReturn(later).when(clock).now();
+                doReturn(false).when(clock).usesSystemClock();
                 // Keep device freshness and the authorization window valid, isolating target evidence expiry.
                 jdbc.update("UPDATE ops_device_state SET observed_at=?,received_at=? WHERE device_id=?", later.toEpochMilli(), later.toEpochMilli(), device);
                 assertThat(row.validUntil().toInstant()).isAfter(later);
@@ -323,11 +324,13 @@ class AutomaticCounterFlowPostgresTest {
         rule("counterVoiceWait",Integer.toString(seconds),clock.nowMillis());
         jdbc.update("UPDATE automation_rule_group SET version=version+1 WHERE category='counter'");
         doReturn(Instant.ofEpochMilli(completed+seconds*1000L-1)).when(clock).now();
+        doReturn(false).when(clock).usesSystemClock();
         service.evaluate("counter",event);
         assertThat(runs.state("counter",event).status()).isEqualTo("WAITING");
         launch(); assertNoAutomaticStart();
 
         doReturn(Instant.ofEpochMilli(completed+seconds*1000L)).when(clock).now();
+        doReturn(false).when(clock).usesSystemClock();
         service.evaluate("counter",event);
         assertThat(runs.state("counter",event).status()).isEqualTo("PASS");
         launch(); launch();

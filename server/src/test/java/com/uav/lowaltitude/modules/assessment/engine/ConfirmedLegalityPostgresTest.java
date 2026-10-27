@@ -74,6 +74,31 @@ class ConfirmedLegalityPostgresTest {
                 .isEqualTo(expected == PlanMatchCode.NONE ? ResultCode.NOT_APPLICABLE : ResultCode.FAIL);
     }
 
+    @ParameterizedTest @org.junit.jupiter.params.provider.ValueSource(strings={"live","replay","mock"})
+    void newSensorRawTrackDoesNotReplaceCurrentFusedEvidence(String mode) {
+        OffsetDateTime now=OffsetDateTime.now().withNano(0);
+        String target=sourceTarget("TRACK-"+id(),mode,now),source=id(),link=id(),fused=id(),raw=id();
+        jdbc.update("INSERT INTO integration_source(source_id,source_code,name,enabled,source_mode,created_at,updated_at,version) VALUES (?,?,?,TRUE,?,?,?,0)",source,source,"新增传感器来源",mode,now,now);
+        jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,?,?,'FUSED')",fused,target,fused,now.minusSeconds(20),now.minusSeconds(20));
+        for(int i=0;i<10;i++) {
+            var at=now.minusSeconds(10-i);
+            jdbc.update("INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at) VALUES (?,?,?,?,?,ST_SetSRID(ST_MakePoint(116,35),4326),?)",id(),fused,i,at,at,at);
+        }
+        assertThat(repository.latestTrackId(target)).isEqualTo(fused);
+        var before=repository.recentPointTimes(fused,10,now.minusSeconds(120),now);
+        jdbc.update("INSERT INTO target_source_link(link_id,target_id,source_id,source_session_key,external_target_id,created_at) VALUES (?,?,?,?,?,?)",link,target,source,id(),id(),now);
+        jdbc.update("INSERT INTO track(track_id,target_id,link_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,?,?,?,'RAW')",raw,target,link,raw,now,now);
+        jdbc.update("INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,created_at) VALUES (?,?,0,?,?,ST_SetSRID(ST_MakePoint(116,35),4326),?)",id(),raw,now,now,now);
+        String other=sourceTarget("NEIGHBOR-"+id(),"live".equals(mode)?"replay":"live",now.plusSeconds(1));
+        jdbc.update("INSERT INTO track(track_id,target_id,external_track_id,started_at,created_at,layer) VALUES (?,?,?,?,?,'FUSED')",id(),other,id(),now.plusSeconds(1),now.plusSeconds(1));
+        assertThat(repository.latestTrackId(target)).isEqualTo(fused);
+        assertThat(repository.recentPointTimes(repository.latestTrackId(target),10,now.minusSeconds(120),now)).containsExactlyElementsOf(before);
+        assertThat(repository.recentPointTimes(raw,10,now.minusSeconds(120),now)).hasSize(1);
+        // A closed fused history does not override the newer legacy/current raw track.
+        jdbc.update("UPDATE track SET ended_at=? WHERE track_id=?",now,fused);
+        assertThat(repository.latestTrackId(target)).isEqualTo(raw);
+    }
+
     @Test void qualityQueryBoundsObservedTimeBeforeOrderingAndLimit() {
         OffsetDateTime now=OffsetDateTime.now().withNano(0);
         String target=id(),link=id(),track=id();

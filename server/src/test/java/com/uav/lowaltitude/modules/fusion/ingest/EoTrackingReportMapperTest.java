@@ -66,6 +66,11 @@ class EoTrackingReportMapperTest {
         assertThat(mapper.map(inbox(report("BeginTracking",1,AI_STATUS)
                 .replace("\"codeStatus\":200","\"codeStatus\":500"))).items()).isEmpty();
     }
+    @Test void turningOrLostCannotReuseAiEvenWithContradictoryWorkingFlag() {
+        for(String state:java.util.List.of("TURNING","LOST","UNKNOWN","STOPPED"))
+            assertThat(mapper.map(inbox(report("BeginTracking",1,AI_STATUS)
+                    .replace("\"cameraStatus\":{","\"cameraStatus\":{\"trackingState\":\""+state+"\","))).items()).isEmpty();
+    }
 
     @Test
     void bootstrapSourceIsRecordedButNeverIngestedAsAnObservation() {

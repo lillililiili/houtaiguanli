@@ -49,6 +49,7 @@ public class EoDispatchService {
         var options=new ArrayList<SwitchOption>();
         var occupation=new ArrayList<String>();
         boolean protectedBusy=false,available=false;
+        boolean coverageAvailable=block==null && devices(snapshot).stream().anyMatch(id->tracking.deviceScope(id,user.userId(),user.scopeMode()));
         if(block==null && task==null) for(String id:devices(snapshot)) {
             if(preferred!=null && !preferred.equals(id)) continue;
             if(!tracking.deviceScope(id,user.userId(),user.scopeMode())) continue;
@@ -77,14 +78,16 @@ public class EoDispatchService {
         } else if(block!=null) { status="BLOCKED";message=EoTrackingStatusService.blockMessage(block);options.clear(); }
         else if(request!=null) {
             status="WAITING_DEVICE";
-            message=protectedBusy?"等待光电跟踪：设备正在支撑处置，当前任务不可打断。"
+            message=!coverageAvailable?"等待光电跟踪：暂无覆盖目标当前有效位置的光电设备；设备范围未配置或目标位于范围外。"
+                    :protectedBusy?"等待光电跟踪：设备正在支撑处置，当前任务不可打断。"
                     :available?"已进入跟踪队列，等待后台分配设备。":"等待光电跟踪：设备正在执行其他任务或暂无可用设备。";
             if(!available && !occupation.isEmpty()) message="等待光电跟踪。当前设备占用："+String.join("；",occupation)+"。"
                     +(protectedBusy?"处置中的观察不可被普通请求打断。":"");
         } else {
             var last=queue.latest(target);
             status="IDLE";
-            message=available?"当前没有光电跟踪任务，可请求跟踪此目标。"
+            message=!coverageAvailable?"暂无覆盖目标当前有效位置的光电设备；设备范围未配置或目标位于范围外，可请求排队等待。"
+                    :available?"当前没有光电跟踪任务，可请求跟踪此目标。"
                     :protectedBusy?"光电正在支撑处置，可请求排队等待。":"当前没有光电跟踪任务；可请求排队，或选择允许切换的设备。";
             if(last!=null && "FAILED".equals(text(last,"status"))) {status="FAILED";message=text(last,"message");}
         }
@@ -127,6 +130,7 @@ public class EoDispatchService {
             throw conflict("当前请求已指定另一台光电，请先取消原请求再重新选择。");
         if(selected==null)selected=existingDevice;
         if(selected!=null) {
+            if(!covered(snapshot,selected))throw conflict("指定光电范围未配置，或目标当前有效位置不在其配置范围内。");
             if(!deviceMatches(snapshot,selected))throw conflict("指定光电不存在、已停用或与目标的来源及所属范围不匹配。");
             if(!tracking.deviceScope(selected,actor.userId(),actor.scopeMode()))throw forbidden();
         }
@@ -233,7 +237,7 @@ public class EoDispatchService {
                 var choices=new ArrayList<Map<String,Object>>();
                 for(String device:devices(snapshot)) {
                     var old=edges.openTask(device);
-                    if(old!=null && ("AUTO".equals(text(old,"origin")) || priority(target)==100) && switchable(old,snapshot,device)
+                    if(old!=null && "AUTO".equals(text(old,"origin")) && switchable(old,snapshot,device)
                             && priority(target)>priority(text(old,"target_id"))) choices.add(old);
                 }
                 choices.sort(Comparator.comparingInt(t->priority(text(t,"target_id"))));
@@ -254,14 +258,19 @@ public class EoDispatchService {
     private int priority(String target) {return queue.priority(target,policy.now()-policy.demandMaxAge(),policy.now());}
     public boolean protectedObservation(String target) {return queue.protectedTarget(target);}
     private List<String> devices(Map<String,Object> snapshot) {
-        return queue.devices(text(snapshot,"owner_org_id"),text(snapshot,"district_id"),EoTrackingPolicy.mode(snapshot),policy.heartbeatCutoff(),policy.now());
+        return queue.devices(text(snapshot,"owner_org_id"),text(snapshot,"district_id"),EoTrackingPolicy.mode(snapshot),policy.heartbeatCutoff(),policy.now())
+                .stream().filter(id->covered(snapshot,id)).toList();
+    }
+    private boolean covered(Map<String,Object> snapshot,String device) {
+        return com.uav.lowaltitude.modules.device.domain.EoCoverage.contains(tracking.coverage(device),EoTrackingPolicy.position(snapshot));
     }
     private Binding idle(Map<String,Object> snapshot,String device) {
+        if(!covered(snapshot,device)) return null;
         return edges.idleDeviceForMode(text(snapshot,"owner_org_id"),text(snapshot,"district_id"),device,EoTrackingPolicy.mode(snapshot),policy.heartbeatCutoff(),policy.now());
     }
     private boolean deviceMatches(Map<String,Object> snapshot,String device) {
         var binding=edges.binding(device,false);
-        return binding!=null && binding.enabled() && Objects.equals(binding.ownerOrgId(),text(snapshot,"owner_org_id"))
+        return binding!=null && binding.enabled() && covered(snapshot,device) && Objects.equals(binding.ownerOrgId(),text(snapshot,"owner_org_id"))
                 && Objects.equals(binding.districtId(),text(snapshot,"district_id"))
                 && Objects.equals(binding.sourceMode(),EoTrackingPolicy.mode(snapshot));
     }

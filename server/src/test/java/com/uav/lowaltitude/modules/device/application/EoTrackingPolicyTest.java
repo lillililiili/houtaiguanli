@@ -25,6 +25,12 @@ class EoTrackingPolicyTest {
         when(repository.alarms(anyString(),anyLong(),anyLong())).thenReturn(List.of(Map.of("state_code","CONFIRMED")));
         assertThat(policy.demand("target")).extracting(EoTrackingPolicy.DemandReason::code).containsExactly("ALARM_OBSERVE");
     }
+    @Test void identityChangeInvalidatesContinuityEvenWhenGuidanceAndReportsRemainFresh() {
+        var task=Map.<String,Object>of("task_id",UUID.randomUUID().toString(),"target_id",UUID.randomUUID().toString());
+        when(repository.taskTargetChanged(task)).thenReturn(true);
+        assertThat(policy.continuationBlock(Map.of(),task,null)).isEqualTo("EO_TASK_TARGET_CHANGED");
+        assertThat(policy.trackingBlock(Map.of(),task,null)).isEqualTo("EO_TASK_TARGET_CHANGED");
+    }
     @Test void simulatedAutoTrackingNeverEnablesRealDevices() {
         var scoped=new EoTrackingPolicy(repository,new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)),
                 departure,edges,predictions,true,true,15000,30000,300000);

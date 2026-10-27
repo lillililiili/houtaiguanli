@@ -46,4 +46,25 @@ class UavEventBatchItemServiceTest {
         verify(verification).verify(eq("selected"), argThat(body -> !body.contains("idempotency_key") && !body.contains("event_id") && body.contains("expected_version")), eq("verify-item-key"));
         verifyNoInteractions(disposal);
     }
+
+    @Test void sameEventCanResolveTwoIndependentCasesButLegacyCannotGuess() throws Exception {
+        var cases=mock(UavRiskCaseIdentity.class);item.riskCases(cases,mock(UavRiskCaseService.class));
+        var first=new UavRiskCaseIdentity.CaseRef("area-a",null,"a","OBSERVED","shared",java.util.List.of("shared"),false,false,4);
+        var second=new UavRiskCaseIdentity.CaseRef("area-b",null,"b","OBSERVED","shared",java.util.List.of("shared"),false,false,9);
+        when(cases.allCases("shared")).thenReturn(java.util.List.of(first,second));
+        when(cases.find("area-a")).thenReturn(first);when(cases.find("area-b")).thenReturn(second);
+        assertThat(item.resolve(json.readTree("{\"event_id\":\"shared\",\"risk_case_id\":\"area-a\",\"expected_case_version\":4}"),true)).isEqualTo(first);
+        assertThat(item.resolve(json.readTree("{\"event_id\":\"shared\",\"risk_case_id\":\"area-b\",\"expected_case_version\":9}"),true)).isEqualTo(second);
+        assertThatThrownBy(()->item.resolve(json.readTree("{\"event_id\":\"shared\"}"),true)).isInstanceOf(ApiException.class).satisfies(ex->assertThat(((ApiException)ex).getCode()).isEqualTo("RISK_CASE_AMBIGUOUS"));
+        verifyNoInteractions(disposal,verification);
+    }
+    @Test void predictionTransitionAndStaleCaseVersionCannotSubmitToOldEvent() throws Exception {
+        var cases=mock(UavRiskCaseIdentity.class);item.riskCases(cases,mock(UavRiskCaseService.class));
+        var current=new UavRiskCaseIdentity.CaseRef("continuing", "episode", "area", "OBSERVED", "measured",java.util.List.of("forecast","measured"),false,true,6);
+        when(cases.find("continuing")).thenReturn(current);
+        assertThatThrownBy(()->item.resolve(json.readTree("{\"event_id\":\"forecast\",\"risk_case_id\":\"continuing\",\"expected_case_version\":6}"),true)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(()->item.resolve(json.readTree("{\"event_id\":\"measured\",\"risk_case_id\":\"continuing\",\"expected_case_version\":5}"),true)).isInstanceOf(ApiException.class);
+        assertThat(item.resolve(json.readTree("{\"event_id\":\"measured\",\"risk_case_id\":\"continuing\",\"expected_case_version\":6}"),true).riskCaseId()).isEqualTo("continuing");
+        verifyNoInteractions(disposal,verification);
+    }
 }

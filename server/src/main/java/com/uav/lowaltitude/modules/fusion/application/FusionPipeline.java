@@ -309,7 +309,7 @@ public class FusionPipeline {
             if (targetId == null) {
                 // 决策 16-2：同一来源在同一帧里还有另一条回波、且那条落在一个**本帧之前就存在**的目标上，
                 // 那么这条新回波很可能是那个目标分裂出来的，而不是凭空冒出来的第三方。记下来交给 autoSplit 计帧。
-                String origin = sameSourceOrigin(parsed, assignedTarget, byTarget, i);
+                String origin = sameSourceOrigin(parsed, assignedTarget, byTarget.keySet(), serialsByTarget, i);
                 targetId = createTarget(observation, frame.observedAt(), params);
                 created.add(targetId);
                 if (origin != null) splitOrigins.put(targetId, origin);
@@ -381,7 +381,7 @@ public class FusionPipeline {
         // 被并目标要在进 ⑤ 之前从本帧结果里摘掉，否则融合层会为一个已经不存在的目标再写一帧。
         Map<String, Set<String>> mergeSerials = serialsAfterFrame(snapshots, relinked, parsed, assignedTarget);
         autoMerge(domain, frame.observedAt(), params, machine, predicted, byTarget, statuses, estimatesByTarget, observedByTarget, mergeSerials);
-        autoSplit(domain, frame.observedAt(), params, machine, splitOrigins, estimatesByTarget);
+        autoSplit(domain, frame.observedAt(), params, machine, splitOrigins, estimatesByTarget, mergeSerials);
 
         // ⑤ 交给融合层（E2）。E2 未落地时 ObjectProvider 取不到 Bean，用无操作实现，原始层照常入库。
         FusedLayerWriter writer = fusedLayerWriter.getIfAvailable(() -> f -> { });
@@ -732,14 +732,21 @@ public class FusionPipeline {
     }
 
     /** 本帧同一来源的另一条回波落在了哪个既有目标上；没有就返回 null。 */
-    private String sameSourceOrigin(List<SourceObservation> parsed, String[] assignedTarget,
-            Map<String, ActiveTarget> byTarget, int index) {
-        String sourceId = parsed.get(index).sourceId();
+    static String sameSourceOrigin(List<SourceObservation> parsed, String[] assignedTarget,
+            Set<String> existingTargets, Map<String, Set<String>> knownSerials, int index) {
+        SourceObservation observation = parsed.get(index);
         for (int j = 0; j < parsed.size(); j++) {
-            if (j == index || !sourceId.equals(parsed.get(j).sourceId())) continue;
+            SourceObservation otherObservation = parsed.get(j);
+            if (j == index || !observation.sourceId().equals(otherObservation.sourceId())
+                    || !observation.domain().equals(otherObservation.domain())) continue;
             String other = assignedTarget[j];
             // 必须是本帧之前就存在的目标：两条都是本帧新建时谁也不是谁分裂出来的。
-            if (other != null && byTarget.containsKey(other)) return other;
+            if (other == null || !existingTargets.contains(other)) continue;
+            Set<String> serials = new LinkedHashSet<>(knownSerials.getOrDefault(other, Set.of()));
+            String reported = IdentitySerials.of(otherObservation);
+            if (reported != null) serials.add(reported);
+            // 同源同帧只表示同一传感器看到了两条回波；明确不同机身身份不是同目标分裂。
+            if (!IdentitySerials.conflicts(IdentitySerials.of(observation), serials)) return other;
         }
         return null;
     }
@@ -756,7 +763,8 @@ public class FusionPipeline {
      * 照"改写"写会是又一个"H2 绿、PG 红"。CREATE 那行记的是创建当时的事实，本就不该抹掉。
      */
     private void autoSplit(FusionDomainKey domain, Instant frameAt, FusionParams params, IdentityStateMachine machine,
-            Map<String, String> splitOrigins, Map<String, List<SourceEstimate>> estimatesByTarget) {
+            Map<String, String> splitOrigins, Map<String, List<SourceEstimate>> estimatesByTarget,
+            Map<String, Set<String>> knownSerials) {
         MergeSplitEvaluator evaluator = new MergeSplitEvaluator(machine);
         for (Map.Entry<String, String> entry : splitOrigins.entrySet()) {
             String pendingKey = "ONE_TO_MANY|" + entry.getValue() + "," + entry.getKey();
@@ -771,6 +779,11 @@ public class FusionPipeline {
             String[] pair = pending.pendingKey().substring("ONE_TO_MANY|".length()).split(",", 2);
             if (pair.length != 2) continue;
             String origin = pair[0], child = pair[1];
+            // 待定形成时身份可能缺失；后续明确属于两架飞机时不能再把旧待定升级为分裂。
+            if (IdentitySerials.conflicts(knownSerials.get(origin), knownSerials.get(child))) {
+                pendings.resolve(pending.pendingId(), "DROPPED", frameAt);
+                continue;
+            }
             double separation = separationM(estimatesByTarget, origin, child);
             if (Double.isNaN(separation)) continue;   // 本帧没同时看到这两个，不计也不重置
             int framesSeen = splitOrigins.containsKey(child) ? pending.framesSeen() : pending.framesSeen() + 1;

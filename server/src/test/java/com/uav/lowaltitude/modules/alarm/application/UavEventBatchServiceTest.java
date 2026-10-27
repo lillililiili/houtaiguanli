@@ -72,4 +72,13 @@ class UavEventBatchServiceTest {
         assertThat(result.items().get(0).data()).isInstanceOf(DirectResultDto.class);
         assertThat(result.items().get(1).status()).isEqualTo("SUCCEEDED");
     }
+
+    @Test void transportKeepsSameEventDifferentCasesIndependentThroughPartialFailure() {
+        when(item.counter(any())).thenThrow(new ApiException(HttpStatus.FORBIDDEN,"FORBIDDEN","来源或权限不允许"))
+            .thenReturn(Map.of("status","REQUESTED"));
+        var result=service.counter("{\"items\":[{\"event_id\":\"shared\",\"risk_case_id\":\"region-a\",\"expected_case_version\":3},{\"event_id\":\"shared\",\"risk_case_id\":\"region-b\",\"expected_case_version\":8}]}");
+        assertThat(result.items()).hasSize(2);assertThat(result.failed()).isEqualTo(1);assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(result.items().get(0).riskCaseId()).isEqualTo("region-a");assertThat(result.items().get(1).riskCaseId()).isEqualTo("region-b");
+        verify(item,times(2)).counter(any());
+    }
 }

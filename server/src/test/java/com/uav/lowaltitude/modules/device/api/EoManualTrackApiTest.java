@@ -565,6 +565,56 @@ class EoManualTrackApiTest {
         assertThat(edges.task(next).get("status")).isEqualTo("OPEN");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"SPLIT,true,true","MERGE,true,false","SPLIT,false,false","MERGE,false,false"})
+    void identityChangeStopsOldTaskAndRestartsOnlyAfterSuccessfulStopAndNewObservation(String operation,boolean automatic,boolean autoEnabled) throws Exception {
+        String target=insertTarget(true),task=startManualTask(target),neighbor=insertTarget(true);
+        long began=clock.nowMillis();
+        if(automatic)trackingRepository.automatic(task);
+        String alarm=key();
+        jdbc.update("INSERT INTO alarm(alarm_id,target_id,source_id,source_alarm_id,alarm_type,severity,received_at,source_mode,owner_org_id,district_id,created_at) VALUES (?,?,?,?,'UAV_INTRUSION','HIGH',CURRENT_TIMESTAMP,'replay',?,?,CURRENT_TIMESTAMP)",alarm,target,binding.sourceId(),alarm,org,district);
+        jdbc.update("INSERT INTO uav_event(event_id,alarm_id,state_code,owner_org_id,district_id,created_at,updated_at,version) VALUES (?,?,'PENDING_VERIFICATION',?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0)",key(),alarm,org,district);
+        String begin=String.valueOf(edges.task(task).get("begin_command_id"));
+        edges.updateCommand(begin,"QUEUED","SENT",began,null,null);
+        edges.updateCommand(begin,"SENT","SUCCEEDED",began,"200",null);
+        doReturn(began+1000).when(clock).nowMillis();refreshStopDevice();
+        edges.trackingReport(task,clock.nowMillis(),clock.nowMillis());
+        String config=jdbc.queryForObject("SELECT config_version FROM fusion_config ORDER BY created_at DESC FETCH FIRST 1 ROW ONLY",String.class);
+        String members=mapper.writeValueAsString(java.util.List.of(target,neighbor));
+        jdbc.update("INSERT INTO target_lineage(lineage_id,op,occurred_at,origin_target_id,survivor_target_id,member_target_ids,algo_version,config_version,operator_kind,created_at) VALUES (?,?,?,?,?,CAST(? AS JSON),'test',?,'SYSTEM',?)",key(),operation,new java.sql.Timestamp(clock.nowMillis()),"MERGE".equals(operation)?neighbor:target,"MERGE".equals(operation)?target:neighbor,members,config,new java.sql.Timestamp(clock.nowMillis()));
+        doReturn(autoEnabled).when(trackingPolicy).enabled();
+        scheduler.poll();
+        var stopped=edges.task(task);
+        assertThat(stopped.get("status")).isEqualTo("ENDING");
+        assertThat(edges.command(String.valueOf(stopped.get("end_command_id"))).get("reason")).isEqualTo("AUTO_TRACK_STOP:EO_TASK_TARGET_CHANGED");
+        scheduler.poll();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task WHERE target_id=?",Long.class,target)).isEqualTo(1);
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDING");
+        String end=String.valueOf(stopped.get("end_command_id"));
+        edges.updateCommand(end,"QUEUED","SENT",clock.nowMillis(),null,null);
+        receiveStop(task,200);
+        assertThat(edges.task(task).get("status")).isEqualTo("ENDED");
+        doReturn(true).when(trackingPolicy).enabled();
+        doReturn(began+2000).when(clock).nowMillis();refreshStopDevice();
+        jdbc.update("UPDATE target_latest_state SET observed_at=?,received_at=? WHERE target_id=?",new java.sql.Timestamp(clock.nowMillis()),new java.sql.Timestamp(clock.nowMillis()),target);
+        scheduler.poll();
+        var replacement=edges.openTaskByTarget(target);
+        assertThat(replacement).isNotNull();
+        assertThat(replacement.get("task_id")).isNotEqualTo(task);
+        assertThat(trackingPolicy.taskIdentityChanged(replacement)).isFalse();
+        assertThat(trackingPolicy.taskIdentityChanged(edges.task(task))).isTrue();
+    }
+
+    @Test void currentAliasInvalidatesEvenTaskCreatedAfterHistoricalMerge() {
+        String target=insertTarget(true),survivor=insertTarget(true),lineage=key();long now=clock.nowMillis();
+        String config=jdbc.queryForObject("SELECT config_version FROM fusion_config ORDER BY created_at DESC FETCH FIRST 1 ROW ONLY",String.class);
+        jdbc.update("INSERT INTO target_lineage(lineage_id,op,occurred_at,survivor_target_id,member_target_ids,algo_version,config_version,operator_kind,created_at) VALUES (?,'MERGE',?,?,CAST(? AS JSON),'test',?,'SYSTEM',?)",lineage,new java.sql.Timestamp(now-2000),survivor,"[\""+target+"\"]",config,new java.sql.Timestamp(now-2000));
+        var task=java.util.Map.<String,Object>of("target_id",target,"created_at",now);
+        assertThat(trackingRepository.taskTargetChanged(task)).isFalse();
+        jdbc.update("INSERT INTO target_current_alias(historical_target_id,current_target_id,lineage_id,updated_at) VALUES (?,?,?,?)",target,survivor,lineage,new java.sql.Timestamp(now));
+        assertThat(trackingRepository.taskTargetChanged(task)).isTrue();
+    }
+
     @Test void manualTaskWithFreshEoReportsSurvivesStaleGuidanceAndNoAutomaticDemand() throws Exception {
         String target=insertTarget(true),task=startManualTask(target);
         String begin=String.valueOf(edges.task(task).get("begin_command_id"));
@@ -707,6 +757,33 @@ class EoManualTrackApiTest {
         edgeIngress.receive(brokerId, owner, binding.reportingTopic(), receipt, 1, 1, false, false, now);
     }
 
+    @Test void eoSituationReadsMeasuredAnglesWithoutCreatingWorkAndExpiresThem() throws Exception {
+        long now=clock.nowMillis();
+        var camera=new java.util.LinkedHashMap<String,Object>(java.util.Map.of("angleReference","TRUE_NORTH","angleUnit","DEG",
+                "calibrated",true,"panOrientAngle",75,"tiltOrientAngle",12,"hfov",12,"vfov",8,"trackingState","IDLE"));
+        camera.put("platformObservedAt",1); // Sender cannot override the ingress timestamp.
+        byte[] heartbeat=EoEdgeEnvelope.encode("HeartBeat",binding.edgeId(),now,java.util.Map.of("deviceId",binding.externalDeviceId(),"codeStatus",200,"workState",0,"cameraStatus",camera));
+        edgeIngress.receive(brokerId,owner,binding.reportingTopic(),heartbeat,112,1,false,false,now);
+        long commands=jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class);
+        mvc.perform(get("/api/v1/devices/eo-situation")).andExpect(status().isUnauthorized());
+        var data=mapper.readTree(mvc.perform(get("/api/v1/devices/eo-situation").header("Authorization",bearer()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+        com.fasterxml.jackson.databind.JsonNode found=null;
+        for(var item:data.path("items"))if(binding.opsDeviceId().equals(item.path("device_id").asText()))found=item;
+        assertThat(found).isNotNull();
+        assertThat(found.path("azimuth_deg").asDouble()).isEqualTo(75);
+        assertThat(found.path("observed_at").asLong()).isEqualTo(now);
+        assertThat(found.path("tracking_state").asText()).isEqualTo("IDLE");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM device_command",Long.class)).isEqualTo(commands);
+        doReturn(now+30001).when(clock).nowMillis();
+        data=mapper.readTree(mvc.perform(get("/api/v1/devices/eo-situation").header("Authorization",bearer()))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+        for(var item:data.path("items"))if(binding.opsDeviceId().equals(item.path("device_id").asText())) {
+            assertThat(item.path("azimuth_deg").isNull()).isTrue();
+            assertThat(item.path("reason").asText()).isEqualTo("CAMERA_REPORT_STALE");
+        }
+    }
+
     @Test void videoReadIsScopedAndDoesNotCreateWork() throws Exception {
         String target = insertTarget(true);
         long tasks = jdbc.queryForObject("SELECT COUNT(*) FROM eo_tracking_task", Long.class);
@@ -827,6 +904,8 @@ class EoManualTrackApiTest {
     private Binding register(String edgeId, String deviceId) {
         String opsId = configuration.register(new Registration(EoEdgeEnvelope.PROTOCOL, brokerId, null, deviceId, null,
                 "replay", org, district, "EO-" + UUID.randomUUID(), "光电夹具", null, null, null, edgeId), key());
+        jdbc.update("UPDATE ops_device SET longitude=118.5,latitude=37.399,coordinate_system='WGS-84' WHERE device_id=?",opsId);
+        jdbc.update("INSERT INTO device_sensing_profile(device_id,coverage_kind,radius_m,source_label,version,updated_at) VALUES (?,'CIRCLE',1500,'test configured coverage',0,?)",opsId,clock.nowMillis());
         return edges.binding(opsId, false);
     }
 

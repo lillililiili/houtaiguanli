@@ -19,6 +19,23 @@ public class EoTrackingRepository {
                 c.getMetaData().getDatabaseProductName().contains("PostgreSQL"));
     }
     public boolean deviceScope(String id,String user,String scope) {return devices.canDeleteInScope(id,user,scope);}
+    public Map<String,Object> coverage(String device) {
+        return jdbc.queryForList("SELECT d.longitude,d.latitude,d.coordinate_system,p.* FROM ops_device d "
+                + "JOIN device_sensing_profile p ON p.device_id=d.device_id WHERE d.device_id=?",device)
+                .stream().findFirst().orElse(null);
+    }
+    public boolean taskTargetChanged(Map<String,Object> task) {
+        if(task==null)return false;
+        if(!(task.get("created_at") instanceof Number created) || task.get("target_id")==null)return true;
+        String target=task.get("target_id").toString();
+        Integer count=jdbc.queryForObject("""
+                SELECT COUNT(*) FROM (SELECT 1 FROM target_lineage WHERE occurred_at>=? AND
+                ((op='SPLIT' AND (origin_target_id=? OR survivor_target_id=?))
+                 OR (op='MERGE' AND (survivor_target_id=? OR CAST(member_target_ids AS VARCHAR) LIKE ?)))
+                UNION ALL SELECT 1 FROM target_current_alias WHERE historical_target_id=?) changed
+                """,Integer.class,new Timestamp(created.longValue()),target,target,target,"%\""+target+"\"%",target);
+        return count!=null && count>0;
+    }
     public boolean roleEnabled(String role) {return Boolean.TRUE.equals(jdbc.queryForObject("SELECT enabled FROM app_role WHERE role_code=?",Boolean.class,role));}
     /**
      * 自动轮询锁目标：目标行正被别的事务（主要是融合写目标）锁着时跳过、返回 false，下一轮轮询再看。

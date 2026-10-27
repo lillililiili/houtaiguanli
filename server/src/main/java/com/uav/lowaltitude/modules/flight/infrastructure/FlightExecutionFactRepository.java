@@ -54,6 +54,40 @@ public class FlightExecutionFactRepository {
     }
     public boolean verifiedPilot(String id,long at){return id!=null && jdbc.queryForObject("SELECT COUNT(*) FROM business_contact c JOIN app_org o ON o.org_id=c.org_id AND o.enabled=TRUE WHERE c.contact_id=? AND c.enabled=TRUE AND c.verified_at IS NOT NULL AND c.verified_at<=? AND c.verification_basis IS NOT NULL AND TRIM(c.verification_basis)<>'' AND (c.valid_until IS NULL OR c.valid_until>?)",Long.class,id,at,at)>0;}
     public String reportingOrg(String binding,String source){if(binding==null||source==null)return null;var rows=jdbc.queryForList("SELECT b.org_id FROM plan_source_binding b JOIN app_org o ON o.org_id=b.org_id AND o.enabled=TRUE WHERE b.binding_id=? AND b.source_id=? AND b.enabled=TRUE",String.class,binding,source);return rows.isEmpty()?null:rows.get(0);}
+    /** Exact immutable evidence reference, scoped to the evaluation's complete tuple and track. */
+    public StoredFact historical(String id,String target,String track,String org,String district,String mode) {
+        var rows=jdbc.query("SELECT f.source_id,f.payload_json,f.received_at,s.name AS source_name FROM flight_execution_fact f"
+                +" JOIN integration_source s ON s.source_id=f.source_id AND s.source_mode=f.source_mode"
+                +" WHERE f.fact_id=? AND f.target_id=? AND f.track_id=? AND f.owner_org_id=? AND f.district_id=? AND f.source_mode=?",
+                (r,n)->{
+                    Input input=decode(r.getString("payload_json"));
+                    return Objects.equals(input.sourceId(),r.getString("source_id"))?new StoredFact(input,r.getLong("received_at"),r.getString("source_name")):null;
+                },
+                id,target,track,org,district,mode);
+        if(rows.isEmpty())return null;
+        var row=rows.get(0);if(row==null)return null;var input=row.input();
+        return Objects.equals(input.targetId(),target)&&Objects.equals(input.trackId(),track)&&Objects.equals(input.sourceMode(),mode)?row:null;
+    }
+    /** Directory labels only, never return contact IDs, phone numbers or evidence payloads. */
+    public String pilotLabel(String contact,String org) {
+        if(contact==null)return null;
+        var rows=jdbc.queryForList("SELECT name FROM business_contact WHERE contact_id=? AND org_id=?",String.class,contact,org);
+        return rows.isEmpty()?null:rows.get(0);
+    }
+    public String reportingLabel(String binding,String source,String org) {
+        if(binding==null||source==null)return null;
+        var rows=jdbc.queryForList("SELECT o.name FROM plan_source_binding b JOIN app_org o ON o.org_id=b.org_id"
+                +" WHERE b.binding_id=? AND b.source_id=? AND b.org_id=?",String.class,binding,source,org);
+        return rows.isEmpty()?null:rows.get(0);
+    }
+    public String planReportingLabel(String plan,long version,String org,String district,String mode) {
+        var rows=jdbc.queryForList("SELECT o.name FROM flight_plan p JOIN plan_source_binding b ON b.binding_id=p.source_binding_id"
+                +" AND b.source_id=p.source_id JOIN app_org o ON o.org_id=b.org_id AND o.org_id=p.owner_org_id"
+                +" WHERE p.plan_id=? AND p.version=? AND p.owner_org_id=? AND p.district_id=? AND p.source_mode=?",
+                String.class,plan,version,org,district,mode);
+        return rows.isEmpty()?null:rows.get(0);
+    }
+    public record StoredFact(Input input,long receivedAt,String sourceName) { }
     private Input decode(String value){try{return json.readValue(value,Input.class);}catch(Exception e){throw new IllegalStateException("执行事实无法读取",e);}}
     public record Target(String org,String district,String mode) { }
     public record Existing(String id,String hash,String mode) { }
