@@ -50,6 +50,11 @@ management:
         enabled: true
 
 app:
+  # 航班接收机（pingStation3）UDP 推送：接收机网页里把发送地址填成本服务地址和这个端口。
+  adsb:
+    pingstation:
+      enabled: ${APP_ADSB_PINGSTATION_ENABLED:true}
+      udp-port: ${APP_ADSB_PINGSTATION_UDP_PORT:30021}
   flight-device-check:
     schedule:
       enabled: ${APP_FLIGHT_DEVICE_CHECK_SCHEDULE_ENABLED:false}

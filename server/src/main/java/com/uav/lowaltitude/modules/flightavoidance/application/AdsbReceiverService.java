@@ -2,6 +2,7 @@ package com.uav.lowaltitude.modules.flightavoidance.application;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -26,8 +27,9 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 航班接收机登记与航班数据接收。
  *
- * 真实接收机的数据格式各厂家不同，要按厂家说明书接入；在那之前后台登记为待接入（停用），不参与检查。
- * 设备模拟器的接收机只在本地测试环境（local+qa）可用，数据标为模拟。
+ * 真实接收机（pingStation3）通过 UDP 推送航班数据，见 {@code PingStationUdpListener}；后台登记时填机身识别码，
+ * 数据对上识别码就收，但登记后先是待接入（停用），管理员看到数据正常进来后启用才参与检查。
+ * 设备模拟器的接收机只在本地测试环境（local+qa）可用，数据标为模拟；它也可以带识别码走同一条 UDP 路。
  */
 @Service
 public class AdsbReceiverService {
@@ -62,11 +64,12 @@ public class AdsbReceiverService {
         String deviceNo = input.deviceNo().trim();
         retiredNumbers.reject(deviceNo);
         String id = UUID.randomUUID().toString();
+        String stationGuid = requireFreeStationGuid(input.stationGuid(), null);
         long now = clock.nowMillis();
         try {
             receivers.insert(id, deviceNo, input.name().trim(), clean(input.vendor()), clean(input.model()), clean(input.address()),
                     input.ownerOrgId().trim(), input.districtId().trim(), coordinate(input.longitude()), coordinate(input.latitude()),
-                    input.receiveRangeKm(), false, now);
+                    input.receiveRangeKm(), stationGuid, false, now);
         } catch (DataIntegrityViolationException e) {
             throw new ApiException(HttpStatus.CONFLICT, "DEVICE_NO_CONFLICT", "设备编号已存在，请检查设备台账");
         }
@@ -83,8 +86,9 @@ public class AdsbReceiverService {
         if (!before.deviceNo().equals(input.deviceNo().trim()) || !before.ownerOrgId().equals(input.ownerOrgId().trim())
                 || !before.districtId().equals(input.districtId().trim()))
             throw bad("设备编号和所属范围不可在此修改");
+        String stationGuid = requireFreeStationGuid(input.stationGuid(), id);
         if (receivers.update(id, input.name().trim(), clean(input.vendor()), clean(input.model()), clean(input.address()),
-                coordinate(input.longitude()), coordinate(input.latitude()), input.receiveRangeKm(), input.version(),
+                coordinate(input.longitude()), coordinate(input.latitude()), input.receiveRangeKm(), stationGuid, input.version(),
                 clock.nowMillis()) != 1)
             throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "设备已被修改，请重新加载后保存");
         audit.record(actor.userId(), actor.account(), "adsb_receiver_update", "device", id, "更新航班接收机档案", null);
@@ -109,13 +113,13 @@ public class AdsbReceiverService {
                 throw new ApiException(HttpStatus.CONFLICT, "QA_DEVICE_CONFLICT", "已有同编号设备，来源、归属或类型不是这台模拟航班接收机");
             String id = String.valueOf(row.get("device_id"));
             receivers.refreshSimulated(id, input.name().trim(), coordinate(input.longitude()), coordinate(input.latitude()),
-                    input.receiveRangeKm(), now);
+                    input.receiveRangeKm(), requireFreeStationGuid(input.stationGuid(), id), now);
             return receivers.find(id);
         }
         retiredNumbers.reject(deviceNo);
         String id = UUID.randomUUID().toString();
         receivers.insert(id, deviceNo, input.name().trim(), "设备模拟器", null, null, org, district, coordinate(input.longitude()),
-                coordinate(input.latitude()), input.receiveRangeKm(), true, now);
+                coordinate(input.latitude()), input.receiveRangeKm(), requireFreeStationGuid(input.stationGuid(), null), true, now);
         devices.addEvent(UUID.randomUUID().toString(), id, "CATALOG_CREATED", "INFO", "设备模拟器登记模拟航班接收机", now, true);
         audit.record(actor.userId(), actor.account(), "adsb_receiver_simulated", "device", id, "登记模拟航班接收机（设备模拟器）", null);
         return receivers.find(id);
@@ -159,6 +163,57 @@ public class AdsbReceiverService {
             audit.record(actor.userId(), actor.account(), "adsb_receiver_simulated_release", "device", deviceId, "模拟航班接收机已停用（模拟结束）", null);
         }
         return changed;
+    }
+
+    /* ---- 真实接收机（UDP 推送） ---- */
+
+    /**
+     * 一台接收机通过 UDP 送来的一批航班。识别码没登记返回 -1（调用方记为未匹配站点）；
+     * 否则只收接收范围内、时间不在将来的，并记下这台接收机最近收到数据的时间。停用的接收机数据也收，启用后立刻可用。
+     */
+    @Transactional
+    public int receiveFromStation(String stationGuid, List<FlightCheck.Aircraft> aircraft, long now) {
+        ReceiverProfile receiver = receivers.findByStationGuid(stationGuid.toLowerCase());
+        if (receiver == null) return -1;
+        if (!flights.lockReceiver(receiver.deviceId())) return -1;
+        int accepted = 0;
+        for (FlightCheck.Aircraft a : aircraft) {
+            if (a.observedAt() > now + 5_000) continue;
+            if (receiver.longitude() != null && FlightCheck.distanceKm(receiver.longitude().doubleValue(), receiver.latitude().doubleValue(),
+                    a.longitude(), a.latitude()) > receiver.receiveRangeKm()) continue;
+            flights.upsertAircraft(receiver.deviceId(), a, now, receiver.simulated());
+            accepted++;
+        }
+        flights.touchReceiver(receiver.deviceId(), now);
+        if (now - lastPrunedAt > 60_000L) { flights.pruneAircraft(now - KEEP_MILLIS); lastPrunedAt = now; }
+        return accepted;
+    }
+
+    /** 接收机每 30 秒的状态报文：设备在线但未必有航班，也算收到数据。识别码没登记返回 false。 */
+    @Transactional
+    public boolean stationHeartbeat(String stationGuid, long now) {
+        ReceiverProfile receiver = receivers.findByStationGuid(stationGuid.toLowerCase());
+        if (receiver == null) return false;
+        flights.touchReceiver(receiver.deviceId(), now);
+        return true;
+    }
+
+    private volatile long lastPrunedAt;
+
+    public UnmatchedStations unmatchedStations(com.uav.lowaltitude.modules.flightavoidance.infrastructure.PingStationUdpListener listener) {
+        permissions.requireDevicesRead();
+        return new UnmatchedStations(listener.port(), listener.unmatchedStations());
+    }
+
+    /** 识别码统一小写保存；已登记在别的接收机上时拒绝。 */
+    private String requireFreeStationGuid(String stationGuid, String selfId) {
+        String guid = clean(stationGuid);
+        if (guid == null) return null;
+        guid = guid.toLowerCase();
+        ReceiverProfile other = receivers.findByStationGuid(guid);
+        if (other != null && !other.deviceId().equals(selfId))
+            throw new ApiException(HttpStatus.CONFLICT, "STATION_GUID_CONFLICT", "这个识别码已登记在接收机「" + other.name() + "」上");
+        return guid;
     }
 
     private void requireSimulation() {

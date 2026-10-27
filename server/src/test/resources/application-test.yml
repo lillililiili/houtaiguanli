@@ -11,6 +11,10 @@ spring:
 
 app:
   source-mode: mock
+  # 用例各自起上下文，随机端口免得互相抢。
+  adsb:
+    pingstation:
+      udp-port: 0
   # 自动截图录像的后台轮询会在别的测试中途写审计；需要它的测试自己构造实例。
   video:
     auto-capture:
