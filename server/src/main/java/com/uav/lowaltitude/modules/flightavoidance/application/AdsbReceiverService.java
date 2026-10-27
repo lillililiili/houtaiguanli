@@ -175,7 +175,7 @@ public class AdsbReceiverService {
     public int receiveFromStation(String stationGuid, List<FlightCheck.Aircraft> aircraft, long now) {
         ReceiverProfile receiver = receivers.findByStationGuid(stationGuid.toLowerCase());
         if (receiver == null) return -1;
-        if (!flights.lockReceiver(receiver.deviceId())) return -1;
+        if (!flights.lockReceiver(receiver.deviceId())) return 0; // 登记行刚被删：不收，也不算「未匹配」
         int accepted = 0;
         for (FlightCheck.Aircraft a : aircraft) {
             if (a.observedAt() > now + 5_000) continue;
