@@ -78,6 +78,7 @@ final class AuditLabels {
             Map.entry("adsb_receiver_simulated", "登记模拟航班接收机"),
             Map.entry("adsb_receiver_simulated_release", "停用模拟航班接收机"),
             Map.entry("flight_avoidance_changed", "修改航班避让规则"),
+            Map.entry("counter_flight_distance_changed", "修改反制设备航班安全距离"),
             Map.entry("device_enable", "启用设备"),
             Map.entry("device_disable", "停用设备"),
             Map.entry("mqtt_broker_create", "登记消息接入连接"),

@@ -35,8 +35,21 @@ public final class FlightAvoidanceDtos {
     public record Aircraft(String icao24, String callsign, String airline, double longitude, double latitude, Integer altitudeM,
             Double groundSpeedMps, Double trackDeg, long observedAt) { }
 
-    /** 地图用：在用的接收机、最近收到的航班，以及画范围圈用的规则。 */
-    public record Traffic(List<Receiver> receivers, List<Aircraft> aircraft, Policy policy, long servedAt) { }
+    /** 地图用：在用的接收机、最近收到的航班，以及画范围圈用的规则（单独设置过距离的反制设备另列）。 */
+    public record Traffic(List<Receiver> receivers, List<Aircraft> aircraft, Policy policy, List<DeviceDistance> deviceDistances,
+            long servedAt) { }
+
+    /** 一台反制设备的航班安全距离。custom 为 false 时是规则管理里的默认值。 */
+    public record DeviceDistance(String deviceId, boolean custom, BigDecimal forceLandBlockKm, BigDecimal forceLandWarnKm,
+            int forceLandMaxAltitudeM, BigDecimal driveAwayWarnKm, int driveAwayMaxAltitudeM, Long version, boolean canManage) { }
+
+    /** custom 为 false 时改回默认值，其余数字不看。expectedVersion：之前没单独设置时为 null。 */
+    public record DeviceDistanceInput(boolean custom, @Min(0) Long expectedVersion,
+            @DecimalMin("0.5") @DecimalMax("350") BigDecimal forceLandBlockKm,
+            @DecimalMin("0.5") @DecimalMax("350") BigDecimal forceLandWarnKm,
+            @Min(100) @Max(15000) Integer forceLandMaxAltitudeM,
+            @DecimalMin("0.5") @DecimalMax("350") BigDecimal driveAwayWarnKm,
+            @Min(100) @Max(15000) Integer driveAwayMaxAltitudeM) { }
 
     public record CheckRecord(String checkId, String eventId, String authorizationId, String deviceId, String deviceName,
             String countermeasureMode, String stage, String result, boolean acknowledged, String actorName,

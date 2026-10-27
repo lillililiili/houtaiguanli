@@ -105,11 +105,82 @@ public class FlightAvoidanceService {
         return new ChangePage(items, page, size, repository.changeCount());
     }
 
+    /* ---- 每台反制设备单独设置的距离（2026-10-27 用户确认） ---- */
+
+    @Transactional(readOnly = true)
+    public DeviceDistance deviceDistance(String deviceId) {
+        permissions.requireBusinessData("responsePlans.read");
+        if (repository.counterDeviceName(deviceId) == null)
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "反制设备不存在");
+        return distanceView(deviceId, canManage());
+    }
+
+    @Transactional
+    public DeviceDistance saveDeviceDistance(String deviceId, DeviceDistanceInput input, String key) {
+        permissions.requireBusinessData("responsePlans.read");
+        permissions.require("responsePlans.auth");
+        String name = repository.counterDeviceName(deviceId);
+        if (name == null) throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "反制设备不存在");
+        if (input.custom()) {
+            if (input.forceLandBlockKm() == null || input.forceLandWarnKm() == null || input.forceLandMaxAltitudeM() == null
+                    || input.driveAwayWarnKm() == null || input.driveAwayMaxAltitudeM() == null)
+                throw bad("请填写全部距离和高度");
+            if (input.forceLandWarnKm().compareTo(input.forceLandBlockKm()) < 0) throw bad("迫降的提醒范围不能小于禁止反制范围");
+        }
+        idempotency.claim(key, "flight-distance:" + deviceId + ":" + encode(input));
+        Map<String, Object> before = repository.deviceDistance(deviceId);
+        Long current = before == null ? null : number(before, "version");
+        if (!java.util.Objects.equals(current, input.expectedVersion()))
+            throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "这台设备的航班安全距离已被修改，请重新打开后保存");
+        long now = clock.nowMillis();
+        if (input.custom()) repository.saveDeviceDistance(deviceId, scale(input.forceLandBlockKm()), scale(input.forceLandWarnKm()),
+                input.forceLandMaxAltitudeM(), scale(input.driveAwayWarnKm()), input.driveAwayMaxAltitudeM(), now);
+        else repository.clearDeviceDistance(deviceId);
+        DeviceDistance after = distanceView(deviceId, true);
+        var actor = AuthContext.require();
+        audit.record(actor.userId(), actor.account(), "USER", "responsePlans", "counter_flight_distance_changed", "device", deviceId,
+                "device=" + name + "; before=" + (before == null ? "default" : encode(distanceView(deviceId, before)))
+                        + "; after=" + (after.custom() ? encode(after) : "default"), "SUCCESS", "", "");
+        return after;
+    }
+
+    /** 这台设备实际用的距离：单独设置过就用自己的，否则用规则管理里的默认值。 */
+    private FlightAvoidancePolicy policyFor(String deviceId) {
+        FlightAvoidancePolicy global = repository.policy(false);
+        if (deviceId == null) return global;
+        FlightAvoidancePolicy own = repository.devicePolicy(deviceId, global.version());
+        return own == null ? global : own;
+    }
+
+    private DeviceDistance distanceView(String deviceId, boolean manage) {
+        Map<String, Object> row = repository.deviceDistance(deviceId);
+        if (row != null) return distanceView(deviceId, row, manage);
+        FlightAvoidancePolicy p = repository.policy(false);
+        return new DeviceDistance(deviceId, false, p.forceLandBlockKm(), p.forceLandWarnKm(), p.forceLandMaxAltitudeM(),
+                p.driveAwayWarnKm(), p.driveAwayMaxAltitudeM(), null, manage);
+    }
+
+    private DeviceDistance distanceView(String deviceId, Map<String, Object> row) { return distanceView(deviceId, row, false); }
+
+    private static DeviceDistance distanceView(String deviceId, Map<String, Object> row, boolean manage) {
+        return new DeviceDistance(deviceId, true, km(row, "force_land_block_km"), km(row, "force_land_warn_km"),
+                (int) number(row, "force_land_max_altitude_m"), km(row, "drive_away_warn_km"),
+                (int) number(row, "drive_away_max_altitude_m"), number(row, "version"), manage);
+    }
+
+    private static BigDecimal km(Map<String, Object> row, String key) {
+        return new BigDecimal(String.valueOf(row.get(key))).setScale(1, RoundingMode.HALF_UP);
+    }
+
+    private boolean canManage() {
+        return permissions.permissionCodesForUser(AuthContext.require().userId()).contains("responsePlans.auth");
+    }
+
     /* ---- 检查 ---- */
 
     /** 内部检查：不读当前账号，反制各条路径和反制中的巡检共用。 */
     public FlightCheck.Result evaluate(String deviceId, CounterMode mode) {
-        FlightAvoidancePolicy policy = repository.policy(false);
+        FlightAvoidancePolicy policy = policyFor(deviceId);
         List<Map<String, Object>> receivers = repository.activeReceivers(simulatedActiveAfter());
         if (receivers.isEmpty()) return FlightCheck.evaluate(policy, mode, 0, 0, 0, List.of());
         long now = clock.nowMillis(), freshAfter = now - FlightAvoidancePolicy.DATA_STALE_MILLIS;
@@ -239,7 +310,9 @@ public class FlightAvoidanceService {
         for (FlightCheck.Aircraft a : receivers.isEmpty() ? List.<FlightCheck.Aircraft>of() : repository.aircraftSince(freshAfter))
             latest.put(a.icao24(), new Aircraft(a.icao24(), a.callsign(), a.airline(), a.longitude(), a.latitude(), a.altitudeM(),
                     a.groundSpeedMps(), a.trackDeg(), a.observedAt()));
-        return new Traffic(receivers, new ArrayList<>(latest.values()), view(repository.policy(false)), now);
+        List<DeviceDistance> distances = repository.deviceDistances().stream()
+                .map(row -> distanceView(text(row, "device_id"), row)).toList();
+        return new Traffic(receivers, new ArrayList<>(latest.values()), view(repository.policy(false)), distances, now);
     }
 
     @Transactional(readOnly = true)
@@ -267,7 +340,7 @@ public class FlightAvoidanceService {
     }
 
     private Policy view(FlightAvoidancePolicy p) {
-        boolean manage = permissions.permissionCodesForUser(AuthContext.require().userId()).contains("responsePlans.auth");
+        boolean manage = canManage();
         return new Policy(p.version(), p.forceLandBlockKm(), p.forceLandWarnKm(), p.forceLandMaxAltitudeM(), p.driveAwayWarnKm(),
                 p.driveAwayMaxAltitudeM(), p.updatedAt(), manage);
     }

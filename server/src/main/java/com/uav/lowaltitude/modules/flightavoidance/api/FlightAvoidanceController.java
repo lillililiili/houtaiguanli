@@ -27,6 +27,17 @@ public class FlightAvoidanceController {
         return ApiResponse.ok(service.history(page, size));
     }
 
+    /** 设备登记：这台反制设备的航班安全距离。 */
+    @GetMapping("/devices/{deviceId}/distance") public ApiResponse<DeviceDistance> distance(@PathVariable String deviceId) {
+        return ApiResponse.ok(service.deviceDistance(deviceId));
+    }
+
+    @com.uav.lowaltitude.platform.security.BackendOnly
+    @PutMapping("/devices/{deviceId}/distance") public ApiResponse<DeviceDistance> saveDistance(@PathVariable String deviceId,
+            @Valid @RequestBody DeviceDistanceInput input, @RequestHeader("Idempotency-Key") String key) {
+        return ApiResponse.ok(service.saveDeviceDistance(deviceId, input, key));
+    }
+
     /** 反制弹窗：所选反制设备附近的航班情况。 */
     @GetMapping("/check") public ApiResponse<Check> check(@RequestParam("device_id") String deviceId,
             @RequestParam(value = "countermeasure_mode", required = false) String mode) {
