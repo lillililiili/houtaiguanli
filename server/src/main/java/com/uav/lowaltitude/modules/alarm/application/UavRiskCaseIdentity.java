@@ -125,11 +125,11 @@ public class UavRiskCaseIdentity {
         long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
         parameters.put("prediction_now",now);
         var rows=namedJdbc.queryForList(
-                UavMeasuredRiskSql.expand("SELECT c.*,"+ACTION_EVENT+" AS action_event_id,"+VERIFICATION+" AS verification_status,"+STAGE
+                UavRiskReadClock.align(UavMeasuredRiskSql.expand("SELECT c.*,"+ACTION_EVENT+" AS action_event_id,"+VERIFICATION+" AS verification_status,"+STAGE
                 +" AS stage,p.latest_prediction_id,p.first_prediction_id,p.warning_json,p.valid_until,p.reason AS prediction_reason,"
                 +"("+CASE_DEVICE_WORK_REMAINS+") AS device_work_remains FROM uav_risk_case c"
                 +" LEFT JOIN prediction_episode p ON p.episode_id=c.episode_id JOIN uav_event root_event ON root_event.event_id=c.root_event_id"
-                +" WHERE c.risk_case_id IN (:case_ids) AND c.superseded_by IS NULL",postgis),parameters);
+                +" WHERE c.risk_case_id IN (:case_ids) AND c.superseded_by IS NULL",postgis),parameters,postgis,clock),parameters);
         if(attempt<2&&rows.stream().anyMatch(row->"UNKNOWN".equals(row.get("stage")))&&frameCommittedAfterSample(ids,now))continue;
         return rows;
         }
@@ -227,7 +227,7 @@ public class UavRiskCaseIdentity {
         var parameters=new HashMap<String,Object>();parameters.put("case_id",c.riskCaseId());
         long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
         boolean current=Boolean.TRUE.equals(namedJdbc.queryForObject(
-                UavMeasuredRiskSql.expand("SELECT "+UavMeasuredRiskSql.TOKEN+" FROM uav_risk_case c WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL",postgis),parameters,Boolean.class));
+                UavRiskReadClock.align(UavMeasuredRiskSql.expand("SELECT "+UavMeasuredRiskSql.TOKEN+" FROM uav_risk_case c WHERE c.risk_case_id=:case_id AND c.superseded_by IS NULL",postgis),parameters,postgis,clock),parameters,Boolean.class));
         if(!current&&attempt<2&&frameCommittedAfterSample(List.of(c.riskCaseId()),now))continue;
         return current;
         }
@@ -238,7 +238,7 @@ public class UavRiskCaseIdentity {
         for(int attempt=0;;attempt++) {
         var parameters=new HashMap<String,Object>();parameters.put("case_id",c.riskCaseId());
         long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
-        var rows=namedJdbc.queryForList(UavMeasuredRiskSql.currentEntriesQuery(postgis),parameters);
+        var rows=namedJdbc.queryForList(UavRiskReadClock.align(UavMeasuredRiskSql.currentEntriesQuery(postgis),parameters,postgis,clock),parameters);
         if(rows.isEmpty()&&attempt<2&&frameCommittedAfterSample(List.of(c.riskCaseId()),now))continue;
         return rows;
         }

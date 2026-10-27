@@ -46,6 +46,35 @@ public class RiskRepository {
         this.jdbc = new NamedParameterJdbcTemplate(jdbcTemplate);
     }
 
+    /** Candidate union is filtered in SQL, never a first-page approximation of current risks. */
+    public List<SituationCandidate> situationCandidates(RiskQuery query,AccessDecision access,long now) {
+        Where where=where(query,access);
+        where.params.put("situation_now",java.time.Instant.ofEpochMilli(now).atOffset(ZoneOffset.UTC));
+        String handoff="h.source_kind='RISK' AND h.risk_id=r.risk_id AND h.source_id=r.risk_id"
+                +" AND h.owner_org_id=r.owner_org_id AND h.district_id=r.district_id AND h.source_mode=r.source_mode";
+        String completed="EXISTS(SELECT 1 FROM handoff_delivery d WHERE d.handoff_id=h.handoff_id"
+                +" AND NOT EXISTS(SELECT 1 FROM handoff_delivery newer WHERE newer.handoff_id=d.handoff_id AND newer.attempt_no>d.attempt_no)"
+                +" AND (d.receipt_status='ACKNOWLEDGED' OR (d.delivery_status='DELIVERED' AND d.receipt_status='NOT_EXPECTED')))";
+        String unfinished="(r.state_code IN ('PENDING_VERIFICATION','PENDING_NOTIFICATION')"
+                +" OR EXISTS(SELECT 1 FROM handoff h WHERE "+handoff+" AND NOT ("+completed+"))"
+                +" OR (r.state_code='NOTIFIED' AND NOT EXISTS(SELECT 1 FROM handoff h WHERE "+handoff+")))";
+        String published="COALESCE(w.published_at,wf.published_at)",start="COALESCE(w.valid_from,wf.valid_from)",end="COALESCE(w.valid_to,wf.valid_to)";
+        String possibleCurrent="(EXISTS(SELECT 1 FROM app_org current_org WHERE current_org.org_id=r.owner_org_id AND current_org.enabled=TRUE AND current_org.deleted_at IS NULL)"
+                +" AND r.state_code<>'EXCLUDED' AND NOT EXISTS(SELECT 1 FROM risk_clearance_evidence clear WHERE clear.risk_id=r.risk_id)"
+                +" AND (r.risk_type<>'WEATHER' OR "+start+" IS NULL OR "+end+" IS NULL OR "+published+">:situation_now"
+                +" OR "+start+">="+end+" OR ("+start+"<=:situation_now AND "+end+">:situation_now)))";
+        String joins=" LEFT JOIN weather_risk_fact w ON w.risk_id=r.risk_id LEFT JOIN weather_forecast_risk_fact wf ON wf.risk_id=r.risk_id";
+        return jdbc.query(select()+names()+","+unfinished+" AS processing,"+possibleCurrent+" AS possible_current"
+                +from()+nameJoins()+joins+where.sql+" AND ("+unfinished+" OR "+possibleCurrent+")",where.params,
+                (rs,index)->new SituationCandidate(risk(rs,index),rs.getBoolean("processing"),rs.getBoolean("possible_current")));
+    }
+    public record SituationCandidate(RiskRow risk,boolean processing,boolean possibleCurrent) { }
+    public boolean currentUnit(RiskRow row) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS(SELECT 1 FROM app_org o JOIN app_district d ON d.district_id=:district"
+                +" WHERE o.org_id=:org AND o.enabled=TRUE AND o.deleted_at IS NULL AND d.enabled=TRUE)",
+                Map.of("org",row.ownerOrgId(),"district",row.districtId()),Boolean.class));
+    }
+
     /** Transport replay mode also carries live-generated simulator frames.
      * Classify by linked protocol contracts, never by target names or current IDs. */
     public boolean simulatedObservation(RiskRow row) {

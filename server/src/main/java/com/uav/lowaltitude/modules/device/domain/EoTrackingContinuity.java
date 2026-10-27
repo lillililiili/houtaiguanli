@@ -32,6 +32,7 @@ public final class EoTrackingContinuity {
         long observed = number(task.get("last_report_observed_at"));
         long received = number(task.get("last_report_at"));
         if (!fresh(observed, now - reportMaxAge, now) || !fresh(received, now - reportMaxAge, now)
+                || observed <= number(task.get("last_failure_observed_at"))
                 || observed > received || observed < number(task.get("created_at"))
                 || observed < number(command.get("issued_at"))) return "EO_REPORT_STALE";
         return null;

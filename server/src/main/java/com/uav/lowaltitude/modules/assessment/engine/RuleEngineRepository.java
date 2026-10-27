@@ -303,7 +303,12 @@ public class RuleEngineRepository {
     }
 
     public String latestTrackId(String targetId) {
-        List<String> rows = jdbc.queryForList("SELECT track_id FROM track WHERE target_id=:id ORDER BY started_at DESC,created_at DESC,track_id DESC FETCH FIRST 1 ROWS ONLY",
+        // Target state is fused. A newly joined sensor's one-point RAW track must not
+        // replace its existing continuous evidence. Closed fused tracks receive no
+        // preference; installations without an open fused layer retain legacy selection.
+        List<String> rows = jdbc.queryForList("SELECT track_id FROM track WHERE target_id=:id ORDER BY "
+                + "CASE WHEN layer='FUSED' AND ended_at IS NULL THEN 0 ELSE 1 END,"
+                + "started_at DESC,created_at DESC,track_id DESC FETCH FIRST 1 ROWS ONLY",
                 Map.of("id", targetId), String.class);
         return rows.isEmpty() ? null : rows.get(0);
     }

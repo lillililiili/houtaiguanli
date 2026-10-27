@@ -81,4 +81,26 @@ class AlarmAirspaceReadServiceTest {
         assertThatThrownBy(() -> service.read(alarmId)).isInstanceOf(ApiException.class);
         verifyNoInteractions(repository, evaluations, airspaces);
     }
+    @Test void evaluationReferencesKeepNonSpatialTriggersAndRealEscalationsOnly() {
+        alarm("{\"evaluation_id\":\""+evaluationId+"\"}");
+        String upgrade=UUID.randomUUID().toString();
+        when(repository.airspaceEvaluationReferences(alarmId)).thenReturn(List.of(new AlarmReadRepository.AirspaceEvaluationReference(upgrade,3)));
+        for(String id:List.of(evaluationId,upgrade)) {
+            var e=evaluation(id,"FAIL","unused");when(e.alarmId()).thenReturn(alarmId);when(e.hitDetails()).thenReturn(List.of());
+        }
+        var result=service.evaluationReferences(alarmId);
+        assertThat(result.status()).isEqualTo("AVAILABLE");
+        assertThat(result.items()).extracting(AlarmAirspaceReadService.EvaluationRef::evaluationId).containsExactly(evaluationId,upgrade);
+        assertThat(result.items()).extracting(AlarmAirspaceReadService.EvaluationRef::relation).containsExactly("FIRST","ESCALATION");
+        verifyNoInteractions(airspaces);
+        verify(access,never()).require(PermissionCode.AIRSPACE_READ);
+    }
+    @Test void evaluationReferencesRejectSameTargetEvaluationFromAnotherAlarmAndReportMissing() {
+        alarm("{\"evaluation_id\":\""+evaluationId+"\"}");
+        var e=evaluation(evaluationId,"FAIL","unused");when(e.alarmId()).thenReturn(UUID.randomUUID().toString());
+        assertThat(service.evaluationReferences(alarmId).status()).isEqualTo("UNKNOWN");
+        when(e.alarmId()).thenReturn(alarmId);when(e.sourceMode()).thenReturn("live");
+        assertThat(service.evaluationReferences(alarmId).items()).isEmpty();
+        verifyNoInteractions(airspaces);
+    }
 }

@@ -37,7 +37,9 @@ public class EoTrackingScheduler {
             if(!repository.tryLock(target)) continue;
             var snapshot=repository.snapshot(target);
             boolean automatic="AUTO".equals(text(task,"origin"));
-            if(automatic && !policy.enabledFor(snapshot)) continue;
+            // Disabling new automatic starts must not strand an identity-invalid
+            // task. Its authorized stop still needs a real device receipt.
+            if(automatic && !policy.enabledFor(snapshot) && !policy.taskIdentityChanged(task)) continue;
             var device=edges.binding(text(task,"ops_device_id"),true);
             if(device==null) continue;
             // Manual requests need the same continuity maintenance even when automatic starts are disabled.

@@ -60,10 +60,12 @@ public class EoTrackingReportMapper implements FrameMapper {
 
         Long workState = integer(metadata, "workState");
         Long codeStatus = integer(metadata, "codeStatus");
+        String trackingState=text(metadata==null?null:metadata.path("cameraStatus"),"trackingState");
         JsonNode aiStatus = metadata == null ? null : metadata.get("aiStatus");
         // 心跳与结束跟踪不是错误，只是没有观测；未映射的新事件同样放过，等契约明确再接。
         if (!BEGIN_TRACKING.equals(event) || codeStatus != null && codeStatus != 200
                 || workState == null || workState != WORK_STATE_TRACKING
+                || trackingState!=null && !"TRACKING".equals(trackingState)
                 || aiStatus == null || !aiStatus.isObject()) {
             return Frame.empty(sessionKey, timestamp, inbox.source(), observedAt);
         }

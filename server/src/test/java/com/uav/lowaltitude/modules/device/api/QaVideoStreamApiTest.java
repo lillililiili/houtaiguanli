@@ -102,6 +102,20 @@ class QaVideoStreamApiTest extends EoManualTrackApiTest {
         mvc.perform(put(registration+"/frames").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON)
                 .content(body.replace(ai.streamId(),UUID.randomUUID().toString()))).andExpect(status().isConflict());
         // Changing the source-device reference prevents even an existing observation id from naming a target.
+        doReturn(now+100).when(clock).nowMillis();
+        var batchFrames=java.util.List.of(
+                Map.of("frame_timestamp",now+1,"media_time_ms",101,"detections",java.util.List.of(Map.of("detection_id","batch","x",.1,"y",.1,"width",.2,"height",.2,"observation_id",observation))),
+                Map.of("frame_timestamp",now+2,"media_time_ms",102,"detections",java.util.List.of(Map.of("detection_id","bad","x",.1,"y",.1,"width",1.2,"height",.2))),
+                Map.of("frame_timestamp",now+1,"media_time_ms",101,"detections",java.util.List.of()),
+                Map.of("frame_timestamp",now+3,"media_time_ms",103,"detections",java.util.List.of()));
+        String batch=mapper.writeValueAsString(Map.of("stream_id",ai.streamId(),"task_id",task,"frames",batchFrames));
+        mvc.perform(put(registration+"/frames/batch").contentType(MediaType.APPLICATION_JSON).content(batch)).andExpect(status().isUnauthorized());
+        mvc.perform(put(registration+"/frames/batch").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON).content(batch))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.accepted_count").value(2)).andExpect(jsonPath("$.data.rejected_count").value(2))
+                .andExpect(jsonPath("$.data.frames[0].detections[0].association_status").value("LINKED"))
+                .andExpect(jsonPath("$.data.frames[1].error_code").value("VIDEO_FRAME_INVALID"));
+        mvc.perform(put(registration+"/frames/batch").header("Authorization","Bearer "+token).contentType(MediaType.APPLICATION_JSON)
+                .content(batch.replace(ai.streamId(),UUID.randomUUID().toString()))).andExpect(status().isConflict());
         jdbc.update("UPDATE target_source_link SET device_id=NULL WHERE link_id=?",link);
         mvc.perform(get(base).header("Authorization","Bearer "+token)).andExpect(jsonPath("$.data.metadata.frames[0].detections[0].association_status").value("UNLINKED"));
         jdbc.update("UPDATE target_source_link SET device_id=? WHERE link_id=?",binding.deviceId(),link);

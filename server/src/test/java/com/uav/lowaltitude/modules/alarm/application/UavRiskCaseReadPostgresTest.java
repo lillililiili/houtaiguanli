@@ -615,6 +615,159 @@ class UavRiskCaseReadPostgresTest {
         }
     }
 
+    @Test void situationProjectionKeepsCaseIdentityAcrossPredictionEntryAndScopesBeforeReturning() {
+        Fixtures f=new Fixtures(DATABASE,"live");
+        Cycle first=f.predict(id(),f.now-2000),second=f.predict(id(),f.now-1000);
+        var predicted=f.reader().situationRows(ALL).stream().filter(r->f.target.equals(r.alarm().targetId())).toList();
+        assertThat(predicted).extracting(r->r.alarm().riskCaseId()).containsExactlyInAnyOrder(first.episode(),second.episode());
+        assertThat(predicted).extracting(AlarmReadRepository.SituationRow::stage).containsOnly("PREDICTED");
+        assertThat(f.reader().situationItem(ALL,"risk",first.episode()).stage()).isEqualTo("PREDICTED");
+        assertThat(f.reader().situationItem(new AccessDecision(id(),ScopeMode.ASSIGNED),"risk",first.episode())).isNull();
+        String observed=f.enter(List.of(first,second));
+        var entered=f.reader().situationRows(ALL).stream().filter(r->f.target.equals(r.alarm().targetId())).toList();
+        assertThat(entered).hasSize(2).extracting(r->r.alarm().eventId()).containsOnly(observed);
+        assertThat(entered).extracting(AlarmReadRepository.SituationRow::stage).containsOnly("ENTERED");
+        assertThat(entered).extracting(AlarmReadRepository.SituationRow::areaId).containsExactlyInAnyOrder(first.airspace(),second.airspace());
+        assertThat(f.reader().situationRows(new AccessDecision(id(),ScopeMode.ASSIGNED))).isEmpty();
+        assertThat(f.reader().situationRows(new AccessDecision(id(),ScopeMode.NONE))).isEmpty();
+        f.jdbc.update("UPDATE target_degradation SET determined=FALSE WHERE target_id=?",f.target);
+        assertThat(f.reader().situationRows(ALL).stream().filter(r->f.target.equals(r.alarm().targetId())))
+                .extracting(AlarmReadRepository.SituationRow::stage).containsOnly("UNKNOWN");
+        f.jdbc.update("UPDATE prediction_episode SET status='CLEARED',active_key=NULL WHERE episode_id=?",first.episode());
+        assertThat(f.reader().situationItem(ALL,"risk",first.episode()).stage()).isEqualTo("CLEARED");
+        f.jdbc.update("UPDATE app_org SET deleted_at=?,deleted_by=?,enabled=FALSE WHERE org_id=?",f.now,id(),f.org);
+        assertThat(f.reader().situationItem(ALL,"risk",first.episode()).currentUnit()).isFalse();
+    }
+    @Test void situationLegacyKeyLookupIsExactAndDoesNotAliasAnExistingCase() {
+        Fixtures f=new Fixtures(DATABASE,"live");String event=f.event("RULE_LEGALITY",f.now);
+        // Current PostgreSQL triggers create a case for new events; old event keys must not alias it.
+        assertThat(f.reader().situationItem(ALL,"event",event)).isNull();
+        assertThat(f.reader().situationItem(ALL,"event",id())).isNull();
+        String alarm=f.jdbc.queryForObject("SELECT alarm_id FROM uav_event WHERE event_id=?",String.class,event);
+        assertThat(f.reader().situationItem(ALL,"alarm",alarm)).isNull();
+        var cycle=f.predict(id(),f.now-1000);f.identities().lockCases(cycle.event());
+        assertThat(f.reader().situationItem(ALL,"event",cycle.event())).isNull();
+        assertThat(f.reader().situationItem(ALL,"risk",cycle.episode())).isNotNull();
+    }
+
+    @Test void historicalExecutionProjectionReadsPinnedFactAndRejectsForeignTuple() {
+        Fixtures f=new Fixtures(DATABASE,"live");f.measuredPoint(f.now,f.longitude,100);
+        var mapper=new ObjectMapper();var repo=new com.uav.lowaltitude.modules.flight.infrastructure.FlightExecutionFactRepository(f.jdbc,mapper);
+        String fact=id(),pilot=id(),binding=id();
+        var input=new com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.Input(f.source,f.mode,id(),1L,f.target,
+                f.measuredTrack,id(),f.now-1000,f.now+1000,"AIRBORNE",
+                new com.uav.lowaltitude.modules.flight.domain.FlightExecutionFacts.PositionEvent(f.now,
+                        new java.math.BigDecimal("117.25"),new java.math.BigDecimal("36.45"),java.math.BigDecimal.ZERO),
+                null,pilot,binding,List.of("isolated-source-evidence"));
+        repo.insert(fact,input,new com.uav.lowaltitude.modules.flight.infrastructure.FlightExecutionFactRepository.Target(f.org,f.district,f.mode),f.now,"a".repeat(64),json(input));
+        f.jdbc.update("INSERT INTO business_contact(contact_id,org_id,name,roles,created_at,updated_at) VALUES(?,?,?,CAST('[]' AS JSON),?,?)",pilot,f.org,"Scoped historical pilot",f.now,f.now);
+        f.jdbc.update("INSERT INTO plan_source_binding(binding_id,source_id,external_org_code,org_id,created_at,updated_at) VALUES(?,?,?,?,?,?)",binding,f.source,id(),f.org,f.now,f.now);
+        assertThat(repo.historical(fact,f.target,f.measuredTrack,f.org,f.district,f.mode).input().takeoff().accuracyM()).isZero();
+        assertThat(repo.historical(fact,f.target,f.measuredTrack,id(),f.district,f.mode)).isNull();
+        assertThat(repo.historical(fact,f.target,f.measuredTrack,f.org,f.district,"replay")).isNull();
+        assertThat(repo.pilotLabel(pilot,f.org)).isEqualTo("Scoped historical pilot");assertThat(repo.pilotLabel(pilot,id())).isNull();
+        assertThat(repo.reportingLabel(binding,f.source,f.org)).isEqualTo("Isolated risk owner");
+        assertThat(repo.reportingLabel(binding,f.source,id())).isNull();
+        assertThat(repo.planReportingLabel(id(),1L,f.org,f.district,f.mode)).isNull();
+    }
+
+    @Test void situationProcessingKeepsManualStopUntilRealAllOffReceiptAfterCaseClearance() {
+        Fixtures f=new Fixtures(DATABASE,"live");Cycle cycle=f.predict(id(),f.now-2000);String event=f.enter(List.of(cycle));
+        String actor=actor(f),auth=authorization(f,cycle.episode(),event,actor,"STOPPED"),stop=id(),command=id();
+        String controller=f.jdbc.queryForObject("SELECT device_id FROM disposal_authorization WHERE authorization_id=?",String.class,auth),opsSource=id();
+        f.jdbc.update("INSERT INTO ops_integration_source(source_id,source_code,name,protocol_code,protocol_version,source_mode,enabled,allowed_cidrs,simulated,version,created_at,updated_at) VALUES (?,?,?,'COUNTERMEASURE_TCP_4CH_V2_0','2.0','live',TRUE,'127.0.0.1/32',FALSE,0,?,?)",opsSource,opsSource,"isolated controller source",f.now,f.now);
+        f.jdbc.update("INSERT INTO ops_device(device_id,source_id,external_device_id,device_no,name,device_type_code,device_type_name,channel,enabled,source_mode,simulated,version,created_at,updated_at) VALUES (?,?,?,?,?,'countermeasure','反制','反制直连',TRUE,'live',FALSE,0,?,?)",controller,opsSource,controller,controller,"isolated controller",f.now,f.now);
+        f.jdbc.update("UPDATE prediction_episode SET status='CLEARED',active_key=NULL WHERE episode_id=?",cycle.episode());
+        f.jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,?,?,'isolated stop','QUEUED','live',FALSE,?,?)",
+                command,command,controller,actor,"COUNTERMEASURE_ALL_OFF",f.now,f.now);
+        f.jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note,request_origin) VALUES(?,?,?,?,?,'MANUAL')",stop,event,actor,f.now,"isolated stop");
+        f.jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,command_id,stop_status,detail) VALUES(?,?,?,'isolated device','COUNTERMEASURE_4CH','live',FALSE,?,'QUEUED','waiting all-off')",stop,controller,auth,command);
+        var waiting=f.reader().situationRows(ALL).stream().filter(r->cycle.episode().equals(r.alarm().riskCaseId())).findFirst().orElseThrow();
+        assertThat(waiting.stage()).isEqualTo("CLEARED");assertThat(waiting.workRemains()).isTrue();
+        f.jdbc.update("UPDATE device_command SET status='TIMED_OUT' WHERE command_id=?",command);
+        assertThat(f.reader().situationRows(ALL).stream().filter(r->cycle.episode().equals(r.alarm().riskCaseId())).findFirst().orElseThrow().workRemains()).isTrue();
+        f.jdbc.update("UPDATE device_command SET status='SUCCEEDED',completed_at=?,result_code='ALL_OFF_ACK' WHERE command_id=?",f.now,command);
+        assertThat(f.reader().situationRows(ALL).stream().filter(r->cycle.episode().equals(r.alarm().riskCaseId()))).isEmpty();
+    }
+
+    @Test void situationCandidatesFilterEndedHistoryAndKeepRealNotificationAwaitingReceipt() {
+        Fixtures f=new Fixtures(DATABASE,"live");
+        String route=id(),version=id(),plan=id(),actor=actor(f),recipient=id(),handoff=id();
+        f.jdbc.update("INSERT INTO route(route_id,route_no,name,source_id,source_mode,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,'isolated route',?,?,?,?,?,?)",route,route,f.source,f.mode,f.org,f.district,at(f.now),at(f.now));
+        f.jdbc.update("INSERT INTO route_version(route_version_id,route_id,version_no,centerline,valid_from,created_at) VALUES(?,?,1,ST_GeomFromText('LINESTRING(117 36,117.1 36.1)',4326),?,?)",version,route,at(f.now-1000),at(f.now));
+        f.jdbc.update("INSERT INTO flight_plan(plan_id,plan_no,status_code,source_id,source_mode,route_version_id,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,'EXECUTING',?,?,?,?,?,?,?)",plan,plan,f.source,f.mode,version,f.org,f.district,at(f.now),at(f.now));
+        var ids=new LinkedHashMap<String,String>();
+        for(String state:List.of("NOTIFIED","ACKNOWLEDGED","EXCLUDED","PENDING_VERIFICATION")) {
+            String risk=id();ids.put(state,risk);
+            f.jdbc.update("INSERT INTO flight_risk(risk_id,source_id,source_risk_id,plan_id,route_version_id,risk_type,severity,state_code,reason_code,reason_text,occurred_at,received_at,source_mode,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,?,?,?,'WEATHER','HIGH',?,'ISOLATED','isolated weather',?,?,?,?,?,?,?)",
+                    risk,f.source,risk,plan,version,state,at(f.now-10000),at(f.now-10000),f.mode,f.org,f.district,at(f.now),at(f.now));
+            f.jdbc.update("INSERT INTO weather_risk_fact(risk_id,polygon_json,published_at,valid_from,valid_to) VALUES(?,'{}',?,?,?)",risk,at(f.now-20000),at(f.now-10000),at(f.now-1));
+        }
+        f.jdbc.update("INSERT INTO handoff_recipient(recipient_id,display_name,handoff_type,created_at,updated_at) VALUES(?,'isolated recipient','RISK_NOTICE',?,?)",recipient,at(f.now),at(f.now));
+        f.jdbc.update("INSERT INTO handoff(handoff_id,source_kind,source_id,risk_id,handoff_type,recipient_id,source_version,owner_org_id,district_id,source_mode,submitted_by,created_at) VALUES(?,'RISK',?,?,'RISK_NOTICE',?,0,?,?,?,?,?)",
+                handoff,ids.get("NOTIFIED"),ids.get("NOTIFIED"),recipient,f.org,f.district,f.mode,actor,at(f.now));
+        f.jdbc.update("INSERT INTO handoff_delivery(delivery_id,handoff_id,attempt_no,delivery_status,receipt_status,created_at) VALUES(?,?,1,'SUBMITTED','PENDING',?)",id(),handoff,at(f.now));
+        var repo=new com.uav.lowaltitude.modules.risk.infrastructure.RiskRepository(f.jdbc);
+        var query=new com.uav.lowaltitude.modules.risk.infrastructure.RiskRepository.RiskQuery(null,null,plan,null,null,null,null,null,null,null,null);
+        var candidates=repo.situationCandidates(query,ALL,f.now);
+        assertThat(candidates).extracting(c->c.risk().riskId()).containsExactlyInAnyOrder(ids.get("NOTIFIED"),ids.get("PENDING_VERIFICATION"));
+        assertThat(candidates).allMatch(c->c.processing()&&!c.possibleCurrent());
+        assertThat(repo.situationCandidates(query,new AccessDecision(id(),ScopeMode.ASSIGNED),f.now)).isEmpty();
+        f.jdbc.update("INSERT INTO handoff_delivery(delivery_id,handoff_id,attempt_no,delivery_status,receipt_status,created_at,delivered_at,acknowledged_at) VALUES(?,?,2,'DELIVERED','ACKNOWLEDGED',?,?,?)",id(),handoff,at(f.now),at(f.now),at(f.now));
+        assertThat(repo.situationCandidates(query,ALL,f.now)).extracting(c->c.risk().riskId()).containsExactly(ids.get("PENDING_VERIFICATION"));
+        var readable=repo.find(ids.get("PENDING_VERIFICATION"),ALL);
+        assertThat(repo.currentUnit(readable)).isTrue();
+        f.jdbc.update("UPDATE app_org SET deleted_at=?,deleted_by=?,enabled=FALSE WHERE org_id=?",f.now,id(),f.org);
+        assertThat(repo.currentUnit(readable)).isFalse();
+        assertThat(repo.situationCandidates(query,ALL,f.now)).allMatch(c->!c.possibleCurrent());
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void liveQueryClockDoesNotTreatCommittedObservationAsFutureAfterConfigReads(String mode) {
+        Fixtures f=new Fixtures(DATABASE,mode);
+        Cycle cycle=f.predict(id(),f.now-2000);f.enter(List.of(cycle));
+        // Model the timestamp captured before configuration I/O: a later observation is already
+        // committed when the actual SELECT starts. It is not a future observation at read time.
+        AppClock preflight=spy(new AppClock());
+        doReturn(Instant.ofEpochMilli(f.now-1000)).when(preflight).now();
+        doReturn(f.now-1000).when(preflight).nowMillis();
+        assertThat(preflight.usesSystemClock()).isTrue();
+        var reader=f.reader(preflight);
+        var filter=query(f,"ENTERED",List.of("CURRENT","AWAITING_CONFIRMATION"),false);
+        assertThat(reader.count(filter,ALL)).isEqualTo(1);
+        assertThat(reader.list(filter,ALL,0,10,null,null)).extracting(AlarmReadRepository.AlarmRow::riskCaseId).containsExactly(cycle.episode());
+        assertThat(reader.listForExport(filter,ALL,10,null,null)).hasSize(1);
+        var identities=qa(new UavRiskCaseIdentity(f.jdbc,preflight));
+        assertThat(identities.summary(cycle.episode())).containsEntry("stage","ENTERED");
+        assertThat(identities.currentMeasuredArea(identities.find(cycle.episode()))).isTrue();
+
+        // Explicit application clocks stay authoritative, even though database wall time is later.
+        AppClock fixedBefore=new AppClock(Clock.fixed(Instant.ofEpochMilli(f.now-1000),ZoneOffset.UTC));
+        assertThat(fixedBefore.usesSystemClock()).isFalse();
+        assertThat(f.reader(fixedBefore).count(filter,ALL)).isZero();
+        assertThat(qa(new UavRiskCaseIdentity(f.jdbc,fixedBefore)).summary(cycle.episode())).containsEntry("stage","UNKNOWN");
+        // Neither the SQL snapshot clock nor the fixed clock accepts an actual future source sample.
+        f.measuredPoint(System.currentTimeMillis()+60000,f.longitude,100);
+        assertThat(reader.count(filter,ALL)).isZero();
+        assertThat(identities.summary(cycle.episode())).containsEntry("stage","UNKNOWN");
+    }
+
+    @Test void liveReadClockKeepsConfiguredExpiryAndUsesOneInstantPerStatement() {
+        Fixtures f=new Fixtures(DATABASE,"live");Cycle cycle=f.predict(id(),f.now-2000);f.enter(List.of(cycle));
+        long lifetime=UavMeasuredRiskSql.freshnessMillis(f.jdbc);
+        var expired=new AppClock(Clock.fixed(Instant.ofEpochMilli(f.now+lifetime+1),ZoneOffset.UTC));
+        assertThat(f.reader(expired).count(query(f,"ENTERED",null,false),ALL)).isZero();
+        var parameters=new HashMap<String,Object>();
+        UavMeasuredRiskSql.addTimes(parameters,f.jdbc,f.clock(),true,true);
+        parameters.put("prediction_now",f.now);
+        String sql=UavRiskReadClock.align("SELECT :measured_now AS first,:measured_now AS second,"
+                +"EXTRACT(EPOCH FROM (:measured_now - :measured_since))*1000 AS lifetime,:prediction_now AS millis",parameters,true,new AppClock());
+        var row=new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(f.jdbc).queryForMap(sql,parameters);
+        assertThat(row.get("first")).isEqualTo(row.get("second"));
+        assertThat(((Number)row.get("lifetime")).longValue()).isEqualTo(lifetime);
+        assertThat(((Number)row.get("millis")).longValue()).isEqualTo(((java.sql.Timestamp)row.get("first")).getTime());
+    }
+
     @ParameterizedTest @ValueSource(strings={"live","replay"})
     void twoAreasShareEventButNotAttentionProgressOrPermissions(String mode){
         Fixtures f=new Fixtures(DATABASE,mode);

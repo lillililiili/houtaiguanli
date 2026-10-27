@@ -13,4 +13,8 @@ public class AlarmAirspaceController {
     public ApiResponse<AlarmAirspaceReadService.Result> read(@PathVariable String alarmId) {
         return ApiResponse.ok(service.read(alarmId));
     }
+    @GetMapping("/{alarmId}/evaluation-refs")
+    public ApiResponse<AlarmAirspaceReadService.EvaluationRefs> evaluations(@PathVariable String alarmId) {
+        return ApiResponse.ok(service.evaluationReferences(alarmId));
+    }
 }

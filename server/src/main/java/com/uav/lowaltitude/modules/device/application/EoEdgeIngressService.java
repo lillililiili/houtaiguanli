@@ -40,6 +40,7 @@ public class EoEdgeIngressService {
                 throw new EoEdgeEnvelope.Rejected("SOURCE_MODE_MISMATCH");
             if (retained) throw new EoEdgeEnvelope.Rejected("RETAINED_NOT_REALTIME");
             if (qos != 1) throw new EoEdgeEnvelope.Rejected("QOS1_REQUIRED");
+            if (m.timestamp()>receivedAt) throw new EoEdgeEnvelope.Rejected("REPORT_TIME_IN_FUTURE");
             if (!m.supported()) throw new EoEdgeEnvelope.Rejected("PROTOCOL_EVENT_UNSUPPORTED");
             boolean repeated = mqtt.transportDuplicate(broker, packet, topic, m.hash(), duplicate);
             var before = edges.monitoringEvents().lock(binding.opsDeviceId());
@@ -52,6 +53,7 @@ public class EoEdgeIngressService {
                     outcome = "IGNORED"; reason = "STALE_HEARTBEAT";
                 } else {
                     edges.heartbeat(binding, m, cameraJson(m), receivedAt);
+                    invalidateReportedTracking(binding,m,receivedAt);
                     edges.monitoringEvents().accepted(before, "HEARTBEAT", receivedAt);
                     outcome = "ACCEPTED"; reason = "HEARTBEAT_UPDATED";
                 }
@@ -115,8 +117,14 @@ public class EoEdgeIngressService {
             String outcome = again != null && again.equals(m.hash()) ? "DUPLICATE" : "CONFLICT";
             return new TrackingResult(outcome, outcome.equals("DUPLICATE") ? "SAME_MESSAGE" : "KEY_PAYLOAD_CONFLICT", null);
         }
-        edges.report(binding, receivedAt);
-        if (m.timestamp()<=receivedAt) edges.trackingReport(m.taskId(),m.timestamp(),receivedAt);
+        if (edges.advanceReportWatermark(binding.opsDeviceId(), "CameraStatus", m.timestamp()))
+            edges.camera(binding, cameraJson(m), m.workState(), receivedAt);
+        if (Integer.valueOf(1).equals(m.workState()) && actualTracking(m)) {
+            edges.report(binding, receivedAt);
+            if (m.timestamp()<=receivedAt) edges.trackingReport(m.taskId(),m.timestamp(),receivedAt);
+        } else {
+            edges.trackingFailure(m.taskId(),m.timestamp(),receivedAt);
+        }
         completeBegin(binding, task, m, receivedAt, true, inboxId);
         return new TrackingResult("ACCEPTED", "INBOX_RECEIVED", inboxId);
     }
@@ -164,6 +172,15 @@ public class EoEdgeIngressService {
     private void cameraStatus(Binding binding, EoEdgeEnvelope m, long receivedAt) {
         completeCommand(commandId(binding.opsDeviceId(), "EO_CAMERA_STATUS"), m, receivedAt);
         edges.camera(binding, cameraJson(m), m.workState(), receivedAt);
+        invalidateReportedTracking(binding,m,receivedAt);
+    }
+    private void invalidateReportedTracking(Binding binding,EoEdgeEnvelope m,long receivedAt) {
+        if(m.taskId()==null || !java.util.Set.of("TURNING","LOST","UNKNOWN","STOPPED").contains(cameraState(m)))return;
+        var task=edges.task(m.taskId());
+        if(task!=null && binding.opsDeviceId().equals(text(task,"ops_device_id"))
+                && java.util.Set.of("OPEN","ENDING").contains(text(task,"status"))
+                && task.get("created_at") instanceof Number created && m.timestamp()>=created.longValue())
+            edges.trackingFailure(m.taskId(),m.timestamp(),receivedAt);
     }
 
     private void completeCommand(String commandId, EoEdgeEnvelope m, long now) {
@@ -188,8 +205,22 @@ public class EoEdgeIngressService {
         try {
             JsonNode metadata = json.readTree(m.json()).path("metadata");
             JsonNode camera = metadata.path("cameraStatus");
-            return camera.isMissingNode() || camera.isNull() ? null : camera.toString();
+            if (!camera.isObject()) return null;
+            var stamped=((com.fasterxml.jackson.databind.node.ObjectNode)camera).deepCopy();
+            stamped.put("platformObservedAt",m.timestamp());
+            stamped.put("platformTaskId",m.taskId());
+            stamped.put("platformEvent",m.event());
+            return stamped.toString();
         } catch (Exception ex) { return null; }
+    }
+    private String cameraState(EoEdgeEnvelope m) {
+        try {return json.readTree(m.json()).path("metadata").path("cameraStatus").path("trackingState").asText("");}
+        catch(Exception ex) {return "";}
+    }
+    private boolean actualTracking(EoEdgeEnvelope m) {
+        String state=cameraState(m);
+        // Existing real devices without the extension retain the protocol's workState contract.
+        return state.isEmpty() || "TRACKING".equals(state);
     }
     private static String text(java.util.Map<String, Object> row, String key) {
         Object value = row.get(key); return value == null ? null : String.valueOf(value);

@@ -25,4 +25,9 @@ public class AppClock {
     public long nowMillis() {
         return now().toEpochMilli();
     }
+
+    /** Fixed/offset application clocks must keep their explicit instant in database reads. */
+    public boolean usesSystemClock() {
+        return clock.equals(Clock.systemUTC());
+    }
 }

@@ -142,6 +142,7 @@ public class EoTrackingStatusService {
     public static String blockMessage(String block,Map<String,Object> snapshot) {
         return switch(block) {
             case "TARGET_POSITION_UNAVAILABLE" -> "当前没有可用位置，不能引导光电";
+            case "EO_TASK_TARGET_CHANGED" -> "目标已发生合并或拆分，正在停止原跟踪；确认停止后重新校验观察资格";
             case "TARGET_POSITION_STALE" -> "目标位置已过期或轨迹不可用，不能以失联推断飞离";
             case "EO_CLASS_UNSUPPORTED" -> "BALLOON".equals(text(snapshot,"subtype")) || "BALLOON".equals(text(snapshot,"object_type_code"))
                     ? "暂未接入气球自动追踪，暂无该目标的跟踪画面。"

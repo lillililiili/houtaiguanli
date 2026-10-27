@@ -61,6 +61,56 @@ class FusionIdentityClassAndClockTest {
     private record Obj(String id, double lon, double lat, Integer objectType, String serial) { }
 
     @Test
+    void independentSerialsSeenLaterInTheSameSourceFrameNeverCreateSplitLineage() {
+        String prefix = UUID.randomUUID().toString();
+        String firstId = prefix + "-one", secondId = prefix + "-two";
+        String firstSerial = UUID.randomUUID().toString(), secondSerial = UUID.randomUUID().toString();
+        Instant start = Instant.parse("2026-10-25T01:00:00Z");
+        double lon = 119.2, lat = 38.2;
+        for (int k = 0; k < 4; k++)
+            frame("tdoa", TDOA, start.plusSeconds(k), start.plusSeconds(k).plusMillis(100),
+                    new Obj(firstId, lon, lat, UAV, firstSerial));
+        String origin = targetOf(firstId);
+        for (int k = 4; k < 12; k++)
+            frame("tdoa", TDOA, start.plusSeconds(k), start.plusSeconds(k).plusMillis(100),
+                    new Obj(firstId, lon, lat, UAV, firstSerial),
+                    new Obj(secondId, lon + meters(1200, lat), lat, UAV, secondSerial));
+        String independent = targetOf(secondId);
+        assertThat(independent).isNotNull().isNotEqualTo(origin);
+        assertThat(targetOf(firstId)).isEqualTo(origin);
+        assertThat(jdbc.queryForObject("select count(*) from target_lineage where op='SPLIT'"
+                + " and origin_target_id=? and survivor_target_id=?", Long.class, origin, independent)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from association_pending where pending_key=?", Long.class,
+                "ONE_TO_MANY|" + origin + "," + independent)).isZero();
+    }
+
+    @Test
+    void lateIndependentSerialsDropAnUnconfirmedSplitWithoutChangingHistory() {
+        String prefix = UUID.randomUUID().toString();
+        String firstId = prefix + "-one", secondId = prefix + "-two";
+        Instant start = Instant.parse("2026-10-25T02:00:00Z");
+        double lon = 119.3, lat = 38.3;
+        frame("tdoa", TDOA, start, start.plusMillis(100), new Obj(firstId, lon, lat, UAV, null));
+        frame("tdoa", TDOA, start.plusSeconds(1), start.plusSeconds(1).plusMillis(100),
+                new Obj(firstId, lon, lat, UAV, null), new Obj(secondId, lon + meters(900, lat), lat, UAV, null));
+        String origin = targetOf(firstId), independent = targetOf(secondId);
+        String pending = "ONE_TO_MANY|" + origin + "," + independent;
+        assertThat(jdbc.queryForObject("select count(*) from association_pending where pending_key=? and resolved_at is null",
+                Long.class, pending)).isEqualTo(1L);
+        String firstSerial = UUID.randomUUID().toString(), secondSerial = UUID.randomUUID().toString();
+        for (int k = 2; k < 10; k++)
+            frame("tdoa", TDOA, start.plusSeconds(k), start.plusSeconds(k).plusMillis(100),
+                    new Obj(firstId, lon, lat, UAV, firstSerial),
+                    new Obj(secondId, lon + meters(900, lat), lat, UAV, secondSerial));
+        assertThat(jdbc.queryForObject("select resolution from association_pending where pending_key=?", String.class, pending))
+                .isEqualTo("DROPPED");
+        assertThat(jdbc.queryForObject("select count(*) from target_lineage where op='SPLIT'"
+                + " and origin_target_id=? and survivor_target_id=?", Long.class, origin, independent)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from target_lineage where op='CREATE' and survivor_target_id in (?,?)",
+                Long.class, origin, independent)).isEqualTo(2L);
+    }
+
+    @Test
     void twoDronesWithDifferentSerialsTwelveMetresApartStayTwoTargets() {
         // TC-FUS-002 / TC-EXT-001：雷达与 TDOA 同时看见两架，间距 12 m（雷达目标 σ≈10 m，自动合并门限 2σ≈20 m），
         // 同向飞 8 帧。两边序列号不同：关联不能交叉、自动合并不能把它们并掉，TDOA 的帧也不能因为待定记录失败。

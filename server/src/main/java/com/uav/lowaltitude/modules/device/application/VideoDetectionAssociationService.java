@@ -49,8 +49,11 @@ public class VideoDetectionAssociationService {
         } catch(java.io.IOException | IllegalArgumentException ex){return false;}
     }
     public Association resolve(VideoStreamRegistry.Stream stream,String observationId,long frameTimestamp) {
+        return resolve(current(stream),observationId,frameTimestamp);
+    }
+    public Association resolve(List<Association> candidates,String observationId,long frameTimestamp) {
         if(observationId==null || observationId.isBlank())return null;
-        return current(stream).stream().filter(a->Objects.equals(a.observationId(),observationId)
+        return candidates.stream().filter(a->Objects.equals(a.observationId(),observationId)
                 && Math.abs(frameTimestamp-a.observedAt())<=2000).findFirst().orElse(null);
     }
     public boolean stillLinked(VideoStreamRegistry.Stream stream,VideoStreamRegistry.Detection detection,long frameTimestamp) {

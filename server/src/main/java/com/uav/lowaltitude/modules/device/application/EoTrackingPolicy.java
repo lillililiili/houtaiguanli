@@ -42,9 +42,11 @@ public class EoTrackingPolicy {
         String targetMode=mode(target);
         return enabled() && targetMode!=null && Arrays.stream(autoSourceModes.split(",")).map(String::trim).anyMatch(targetMode::equals);
     }
-    public long cutoff() { return clock.nowMillis()-positionAge; }
+    public long cutoff() { return cutoff(clock.nowMillis()); }
+    public long cutoff(long at) {return at-positionAge;}
     public long demandMaxAge() { return demandAge; }
-    public long heartbeatCutoff() {return clock.nowMillis()-heartbeatAge;}
+    public long heartbeatCutoff() {return heartbeatCutoff(clock.nowMillis());}
+    public long heartbeatCutoff(long at) {return at-heartbeatAge;}
     public long now() {return clock.nowMillis();}
     public boolean deviceReady(Binding b) {
         long now=clock.nowMillis();
@@ -69,6 +71,7 @@ public class EoTrackingPolicy {
         return null;
     }
     public String trackingBlock(Map<String,Object> target, Map<String,Object> task, Binding device) {
+        if(taskIdentityChanged(task))return "EO_TASK_TARGET_CHANGED";
         var identity=target==null?null:new EoTrackingContinuity.Target(text(target,"target_id"),text(target,"source_mode"),
                 text(target,"owner_org_id"),text(target,"district_id"),text(target,"object_type_code"),text(target,"track_status"));
         return EoTrackingContinuity.block(identity,task,device,task==null?null:edges.command(text(task,"begin_command_id")),
@@ -76,11 +79,13 @@ public class EoTrackingPolicy {
     }
     /** Fresh reports from this very EO task can sustain tracking when fused guidance is late. */
     public String continuationBlock(Map<String,Object> target, Map<String,Object> task, Binding device) {
+        if(taskIdentityChanged(task))return "EO_TASK_TARGET_CHANGED";
         // An existing device's continuation/stop path must survive a directory permission change.
         String guidanceBlock=observationBlock(target);
         if (!"TARGET_POSITION_STALE".equals(guidanceBlock) && !"TARGET_POSITION_UNAVAILABLE".equals(guidanceBlock)) return guidanceBlock;
         return trackingBlock(target,task,device);
     }
+    public boolean taskIdentityChanged(Map<String,Object> task) {return repository.taskTargetChanged(task);}
     public static boolean supportsClass(Map<String,Object> target) {
         return target!=null && Set.of("UAV","BIRD").contains(text(target,"object_type_code"));
     }

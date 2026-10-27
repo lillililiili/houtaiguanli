@@ -27,8 +27,8 @@ import com.uav.lowaltitude.platform.security.AuthContext;
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 public class UavEventBatchService {
     private static final Logger log = LoggerFactory.getLogger(UavEventBatchService.class);
-    private static final Set<String> VERIFY_FIELDS = Set.of("event_id", "expected_version", "conclusion", "note", "idempotency_key");
-    private static final Set<String> COUNTER_FIELDS = Set.of("event_id", "expected_version", "idempotency_key", "mode", "request");
+    private static final Set<String> VERIFY_FIELDS = Set.of("event_id", "risk_case_id", "expected_case_version", "prediction_id", "expected_version", "conclusion", "note", "idempotency_key");
+    private static final Set<String> COUNTER_FIELDS = Set.of("event_id", "risk_case_id", "expected_case_version", "prediction_id", "expected_version", "idempotency_key", "mode", "request");
     private final UavEventBatchItemService items;
     private final UavEventVerificationService verification;
     private final UavAdvisoryService advisory;
@@ -44,9 +44,11 @@ public class UavEventBatchService {
     public PrecheckResult precheck(String raw) {
         access.require(PermissionCode.ALARM_READ);
         List<PrecheckItem> result = new ArrayList<>();
-        for (JsonNode item : envelope(raw, Set.of("event_id"))) {
+        for (JsonNode item : envelope(raw, Set.of("event_id","risk_case_id","expected_case_version"))) {
             String id = UavEventBatchItemService.text(item, "event_id");
             try {
+                var scoped = items.precheck(item);
+                if(scoped!=null){result.add(scoped);continue;}
                 var event = verification.event(id);
                 var counter = advisory.overview(id);
                 if (event.version() != counter.eventVersion())
@@ -61,10 +63,10 @@ public class UavEventBatchService {
                 result.add(new PrecheckItem(id, "READY", event, List.copyOf(conclusions), reason,
                         new CounterOptions(counter.canRequestCounter(), counter.canDirectCounter(), counter.counterBlockReason()), null));
             } catch (ApiException denied) {
-                result.add(new PrecheckItem(id, "FAILED", null, List.of(), null, null, new ErrorDto(denied.getCode(), denied.getMessage())));
+                result.add(new PrecheckItem(id, item.path("risk_case_id").asText(null),null,null,"FAILED", null, List.of(), null, null, new ErrorDto(denied.getCode(), denied.getMessage())));
             } catch (RuntimeException unavailable) {
                 log.warn("Batch precheck unavailable for event {}", id, unavailable);
-                result.add(new PrecheckItem(id, "UNKNOWN", null, List.of(), null, null, unknownError()));
+                result.add(new PrecheckItem(id, item.path("risk_case_id").asText(null),null,null,"UNKNOWN", null, List.of(), null, null, unknownError()));
             }
         }
         return new PrecheckResult(List.copyOf(result));
@@ -86,19 +88,19 @@ public class UavEventBatchService {
             try {
                 Object data = operation.apply(request); // The item proxy commits before returning.
                 if (data instanceof DirectResultDto direct && ("APPROVED".equals(direct.status()) || direct.executionBlockReason() != null))
-                    result = new ItemResult(id, "FAILED", data, new ErrorDto("COUNTER_EXECUTION_BLOCKED", "直接授权已建立，设备执行受阻，请查看授权详情"));
-                else result = new ItemResult(id, "SUCCEEDED", data, null);
+                    result = new ItemResult(id,request.path("risk_case_id").asText(null), "FAILED", data, new ErrorDto("COUNTER_EXECUTION_BLOCKED", "直接授权已建立，设备执行受阻，请查看授权详情"));
+                else result = new ItemResult(id,request.path("risk_case_id").asText(null), "SUCCEEDED", data, null);
             } catch (ApiException denied) {
-                result = new ItemResult(id, "FAILED", null, new ErrorDto(denied.getCode(), denied.getMessage()));
+                result = new ItemResult(id,request.path("risk_case_id").asText(null), "FAILED", null, new ErrorDto(denied.getCode(), denied.getMessage()));
             } catch (RuntimeException uncertain) {
                 log.warn("Batch operation outcome requires reconciliation for event {}", id, uncertain);
-                result = new ItemResult(id, "UNKNOWN", null, unknownError());
+                result = new ItemResult(id,request.path("risk_case_id").asText(null), "UNKNOWN", null, unknownError());
             }
             if (result.error() != null) {
-                try { failureAudit(action, id, result.error().code()); }
+                try { failureAudit(action, id, request.path("risk_case_id").asText(null), result.error().code()); }
                 catch (RuntimeException unavailable) {
                     log.error("Batch failure audit unavailable for event {}; reconciliation required", id, unavailable);
-                    result = new ItemResult(id, "UNKNOWN", result.data(), new ErrorDto("AUDIT_UNAVAILABLE",
+                    result = new ItemResult(id,request.path("risk_case_id").asText(null), "UNKNOWN", result.data(), new ErrorDto("AUDIT_UNAVAILABLE",
                             "该项结果的失败审计暂不可用，请刷新核对业务结果，勿重复提交"));
                 }
             }
@@ -106,10 +108,10 @@ public class UavEventBatchService {
         }
         return new BatchResult(List.copyOf(results), count(results, "SUCCEEDED"), count(results, "FAILED"), count(results, "UNKNOWN"));
     }
-    private void failureAudit(String action, String id, String code) {
+    private void failureAudit(String action, String id, String caseId, String code) {
         var actor = AuthContext.require();
         audit.recordStandalone(actor.userId(), actor.account(), actor.roleCode(), "alarms", action,
-                "uav_event", id, "error_code=" + code, "FAILURE", "", "");
+                caseId==null?"uav_event":"uav_risk_case", caseId==null?id:caseId, "error_code=" + code, "FAILURE", "", "");
     }
     private List<JsonNode> envelope(String raw, Set<String> fields) {
         try (JsonParser parser = json.getFactory().createParser(raw == null ? "" : raw)) {
@@ -126,7 +128,8 @@ public class UavEventBatchService {
                 while (names.hasNext()) if (!fields.contains(names.next())) throw invalid("批量成员含未知字段");
                 String id = UavEventBatchItemService.text(item, "event_id");
                 if (id.isBlank() || id.length() > 36 || !id.equals(id.trim())) throw invalid("event_id 无效");
-                if (!seen.add(id)) throw new ApiException(HttpStatus.BAD_REQUEST, "DUPLICATE_EVENT", "同一事件不能在一批内重复提交");
+                String identity=item.has("risk_case_id")?"risk:"+UavEventBatchItemService.text(item,"risk_case_id"):"event:"+id;
+                if (!seen.add(identity)) throw new ApiException(HttpStatus.BAD_REQUEST, "DUPLICATE_EVENT", "同一事件不能在一批内重复提交");
                 result.add(item);
             }
             return result;

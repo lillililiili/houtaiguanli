@@ -31,6 +31,43 @@ public class AlarmAirspaceReadService {
     }
     public record Item(int occurrence, long evaluatedAt, Long observedAt, String ruleCode, String reasonCode, VersionContextDto airspace) { }
     public record Result(String status, List<Item> items) { }
+    public record EvaluationRef(String evaluationId, Long observedAt, long evaluatedAt, String relation, int occurrence) { }
+    public record EvaluationRefs(String status,List<EvaluationRef> items) { }
+
+    /** First trigger and real escalations only, including rules that did not hit an airspace. */
+    @Transactional(readOnly=true)
+    public EvaluationRefs evaluationReferences(String alarmId) {
+        var scope=access.require(PermissionCode.ALARM_READ);
+        access.require(PermissionCode.ASSESSMENT_READ);
+        access.require(PermissionCode.TARGET_READ);
+        var alarm=repository.find(alarmId,scope);
+        if(alarm==null)throw new ApiException(HttpStatus.NOT_FOUND,"ALARM_NOT_FOUND","告警不存在");
+        String original=originalEvaluation(alarm.detailJson());
+        var refs=new ArrayList<AirspaceEvaluationReference>();
+        if(original!=null)refs.add(new AirspaceEvaluationReference(original,0));
+        refs.addAll(repository.airspaceEvaluationReferences(alarmId));
+        boolean incomplete=original==null;
+        var items=new ArrayList<EvaluationRef>();
+        for(var ref:refs) {
+            if(ref.evaluationId()==null){incomplete=true;continue;}
+            try {
+                var evaluation=evaluations.detail(ref.evaluationId());
+                if(!Objects.equals(alarmId,evaluation.alarmId()) || evaluation.targetId()==null
+                        || !Objects.equals(alarm.targetId(),evaluation.targetId())
+                        || !Objects.equals(alarm.ownerOrgId(),evaluation.ownerOrgId())
+                        || !Objects.equals(alarm.districtId(),evaluation.districtId())
+                        || !Objects.equals(alarm.sourceMode(),evaluation.sourceMode()) || !"ACTIVE".equals(evaluation.mode())) {
+                    incomplete=true;continue;
+                }
+                items.add(new EvaluationRef(ref.evaluationId(),evaluation.observedAt(),evaluation.evaluatedAt(),
+                        ref.occurrence()==0?"FIRST":"ESCALATION",ref.occurrence()));
+            }catch(ApiException ex){
+                if(ex.getStatus()!=HttpStatus.FORBIDDEN && ex.getStatus()!=HttpStatus.NOT_FOUND)throw ex;
+                incomplete=true;
+            }
+        }
+        return new EvaluationRefs(items.isEmpty()?"UNKNOWN":incomplete?"PARTIAL":"AVAILABLE",List.copyOf(items));
+    }
 
     @Transactional(readOnly = true)
     public Result read(String alarmId) {

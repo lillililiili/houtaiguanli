@@ -33,6 +33,10 @@ public class EoEdgeRepository {
     private final DeviceMonitoringEventRepository monitoring;
     public EoEdgeRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; this.monitoring = new DeviceMonitoringEventRepository(jdbc); }
     public DeviceMonitoringEventRepository monitoringEvents() { return monitoring; }
+    public Map<String,Object> cameraSnapshot(String device) {
+        return jdbc.queryForList("SELECT camera_status_json,camera_received_at,work_state FROM eo_device_binding WHERE ops_device_id=?",device)
+                .stream().findFirst().orElse(null);
+    }
 
     /** The ingress holds the binding row lock, making watermark checks and writes atomic. */
     public boolean advanceReportWatermark(String deviceId, String event, long observedAt) {
