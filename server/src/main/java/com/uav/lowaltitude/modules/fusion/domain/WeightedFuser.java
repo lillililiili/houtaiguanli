@@ -1,5 +1,6 @@
 package com.uav.lowaltitude.modules.fusion.domain;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
@@ -27,7 +28,9 @@ public final class WeightedFuser {
     public FusedState fuse(List<SourceEstimate> estimates, FusionParams params, String previousPositionSourceId) {
         Selection selection = selector.select(estimates, params, previousPositionSourceId);
         List<UnknownField> unknown = new ArrayList<>(selection.unknownFields());
-        List<SourceEstimate> positioned = estimates.stream().filter(AttributeSelector::positioned).toList();
+        Instant newest = AttributeSelector.newestPosition(estimates);
+        List<SourceEstimate> positioned = estimates.stream().filter(AttributeSelector::positioned)
+                .filter(e -> AttributeSelector.ageFactor(e, newest, params) > 0).toList();
         Double longitude = null, latitude = null, accuracy = null;
         List<Contribution> contributions = new ArrayList<>();
         if (positioned.isEmpty()) {
@@ -41,14 +44,18 @@ public final class WeightedFuser {
             double total = 0, inverseVariance = 0;
             for (int i = 0; i < positioned.size(); i++) {
                 SourceEstimate e = positioned.get(i);
-                weights[i] = AttributeSelector.positionWeight(e, params);
+                double age = AttributeSelector.ageFactor(e, newest, params);
+                weights[i] = AttributeSelector.positionWeight(e, params) * age;
                 total += weights[i];
-                inverseVariance += 1 / (e.accuracyM() * e.accuracyM());
+                inverseVariance += age / (e.accuracyM() * e.accuracyM());
             }
             if (total <= 0) {
                 // 质量因子把全部来源压到 0 时退回纯 1/σ² 加权，而不是让位置消失。
                 total = 0;
-                for (int i = 0; i < positioned.size(); i++) { weights[i] = 1 / (positioned.get(i).accuracyM() * positioned.get(i).accuracyM()); total += weights[i]; }
+                for (int i = 0; i < positioned.size(); i++) {
+                    weights[i] = AttributeSelector.ageFactor(positioned.get(i), newest, params) / (positioned.get(i).accuracyM() * positioned.get(i).accuracyM());
+                    total += weights[i];
+                }
             }
             double x = 0, y = 0;
             for (int i = 0; i < positioned.size(); i++) {

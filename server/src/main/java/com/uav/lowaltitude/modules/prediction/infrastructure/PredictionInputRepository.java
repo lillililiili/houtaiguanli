@@ -150,12 +150,15 @@ public class PredictionInputRepository {
         if (simulated && !simulation.allowed()) return unavailable(target, "SIMULATION_DISABLED", points, continuity);
         // This stable membership snapshot changes when an actual source identity/session is added,
         // not whenever the selected position source alternates during normal multi-source fusion.
+        // EO links are left out: an EO tracking session follows this target and gets a new session per task,
+        // so counting it would restart stability, drop the warning and stop the very EO task that observes it.
         List<String> identities = jdbc.query("""
                 SELECT l.source_id,l.source_session_key,l.external_target_id FROM target_source_link l
                 JOIN target original ON original.target_id=l.target_id
                 LEFT JOIN target_current_alias a ON a.historical_target_id=l.target_id
                 WHERE COALESCE(a.current_target_id,l.target_id)=:target
                   AND original.owner_org_id=:org AND original.district_id=:district AND original.source_mode=:mode
+                  AND NOT EXISTS(SELECT 1 FROM integration_source eo WHERE eo.source_id=l.source_id AND eo.source_type='EO')
                 ORDER BY l.source_id,l.source_session_key,l.external_target_id
                 """, scope(target), (rs, n) -> rs.getString(1) + ":" + rs.getString(2) + ":" + rs.getString(3));
         continuity += "|" + anchor.trackId() + "|" + header.selectionConfig() + "|" + String.join(",", identities);
@@ -188,6 +191,9 @@ public class PredictionInputRepository {
                 .stream().findFirst().orElse(null);
     }
 
+    // A frame observed slightly earlier can arrive after the latest one. The fused writer stores it as a history
+    // point with a higher point_seq and keeps latest_state, so only newer-seq points observed no earlier than the
+    // anchor make the anchor stale; a late one does not mean latest_state moved elsewhere.
     private List<Sample> samples(String target, long now, Config config) {
         return jdbc.query("""
                 SELECT p.point_id,p.track_id,tr.config_version,p.observed_at,p.received_at,ST_X(p.location) lon,ST_Y(p.location) lat,
@@ -197,7 +203,7 @@ public class PredictionInputRepository {
                         AND ls.altitude_amsl_m IS NOT DISTINCT FROM p.altitude_amsl_m
                         AND ls.height_agl_m IS NOT DISTINCT FROM p.height_agl_m
                         AND NOT EXISTS(SELECT 1 FROM track_point newer WHERE newer.track_id=p.track_id
-                          AND newer.point_seq>p.point_seq)) latest_matches,
+                          AND newer.point_seq>p.point_seq AND newer.observed_at>=p.observed_at)) latest_matches,
                        EXISTS(SELECT 1 FROM track other JOIN track_point peer ON peer.track_id=other.track_id
                          WHERE other.target_id=tr.target_id AND other.layer='FUSED' AND peer.observed_at=p.observed_at
                            AND peer.point_id<>p.point_id

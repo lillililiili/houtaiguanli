@@ -80,6 +80,28 @@ class PredictionEventGateTest {
                 .as("risk verification must not rewrite the original verdict").isEqualTo("PENDING_VERIFICATION");
     }
 
+    @Test void actualEntryKeepsObservationWhileItsMeasuredAlarmIsStillJoiningTheCase() {
+        var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
+        gate.riskCases(cases);
+        var unknown=new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                id(),episode,id(),"UNKNOWN",predicted,java.util.List.of(predicted),false,true,2);
+        when(cases.allCases(predicted)).thenReturn(java.util.List.of(unknown));
+        when(cases.allCases(observed)).thenReturn(java.util.List.of(unknown));
+        jdbc.update("UPDATE prediction_episode SET status='ENTERED',entered_evidence_valid=TRUE WHERE episode_id=?",episode);
+        assertThat(gate.observationRequired(predicted)).as("entry is seen before the measured alarm joins the case").isTrue();
+        assertThat(gate.observationRequired(observed)).isFalse();
+        jdbc.update("UPDATE prediction_episode SET entered_evidence_valid=FALSE WHERE episode_id=?",episode);
+        assertThat(gate.observationRequired(predicted)).isFalse();
+        jdbc.update("UPDATE prediction_episode SET entered_evidence_valid=TRUE,valid_until=? WHERE episode_id=?",now,episode);
+        assertThat(gate.observationRequired(predicted)).isFalse();
+        jdbc.update("UPDATE prediction_episode SET valid_until=? WHERE episode_id=?",now+20_000,episode);
+        for(String stage:java.util.List.of("ENDED","CLEARED")) {
+            when(cases.allCases(predicted)).thenReturn(java.util.List.of(new com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.CaseRef(
+                    id(),episode,id(),stage,predicted,java.util.List.of(predicted),false,true,3)));
+            assertThat(gate.observationRequired(predicted)).as(stage).isFalse();
+        }
+    }
+
     @Test void anotherCurrentRegionKeepsObservationAndUnrelatedMeasuredEventsKeepOriginalPolicy() {
         var cases=mock(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity.class);
         gate.riskCases(cases);

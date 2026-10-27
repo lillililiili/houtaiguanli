@@ -77,12 +77,15 @@ public class PredictionEventGate {
         // Case verification does not rewrite the raw event verdict. Do not let that old pending
         // verdict keep automatic observation alive after the risk was rejected or became invalid.
         // Read every region here: a valid independent risk for the same event still needs observing.
+        Facts f = facts(eventId);
         if (riskCases != null) {
             var cases = riskCases.allCases(eventId);
-            if (!cases.isEmpty() && cases.stream().allMatch(c ->
-                    java.util.Set.of("ENDED", "CLEARED", "UNKNOWN").contains(c.stage()))) return false;
+            // The actual entry is seen before its measured alarm joins the case, and the case reads UNKNOWN
+            // until then. Keep observing through that handoff instead of stopping the camera at the entry.
+            boolean entering = f != null && "PREDICTED".equals(f.role()) && "ENTERED".equals(f.status()) && current(f, clock.nowMillis());
+            if (!cases.isEmpty() && cases.stream().allMatch(c -> java.util.Set.of("ENDED", "CLEARED").contains(c.stage())
+                    || ("UNKNOWN".equals(c.stage()) && !entering))) return false;
         }
-        Facts f = facts(eventId);
         if (f == null || !"PREDICTED".equals(f.role())) return null;
         if(measuredHandoffCurrent(eventId))return true;
         return current(f, clock.nowMillis());
