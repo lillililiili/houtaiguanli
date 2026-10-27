@@ -1015,4 +1015,15 @@ public class DeviceRepository {
 
     private record SqlWhere(String sql, Map<String, Object> params) {
     }
+
+    /** 只给航班接收机的影子来源用：不经适配器校验，直接跟着设备开关。 */
+    public void setSourceEnabled(String sourceId, boolean enabled, long now) {
+        jdbc.update("UPDATE ops_integration_source SET enabled=?,updated_at=? WHERE source_id=?", enabled, now, sourceId);
+    }
+
+    /** 航班接收机登记的机身识别码；没登记或不是航班接收机时为 null。 */
+    public String adsbStationGuid(String deviceId) {
+        var rows = jdbc.queryForList("SELECT station_guid FROM adsb_receiver WHERE device_id=?", String.class, deviceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
 }

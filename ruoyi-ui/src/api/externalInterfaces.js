@@ -6,7 +6,8 @@ export const externalInterfacesApi = {
 export const adsbReceiversApi = {
   get: id => request({ url: `/v1/adsb-receivers/${encodeURIComponent(id)}` }),
   create: body => mutation('post', '/v1/adsb-receivers', body),
-  update: (id, body) => mutation('put', `/v1/adsb-receivers/${encodeURIComponent(id)}`, body)
+  update: (id, body) => mutation('put', `/v1/adsb-receivers/${encodeURIComponent(id)}`, body),
+  unmatchedStations: () => request({ url: '/v1/adsb-receivers/unmatched-stations' })
 };
 
 export const weatherSensorsApi = {

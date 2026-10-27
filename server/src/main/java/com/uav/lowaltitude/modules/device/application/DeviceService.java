@@ -375,6 +375,10 @@ public class DeviceService {
         Map<String, Object> device = requiredDevice(id);
         if (enabled && "weather_sensor".equals(text(device, "device_type_code")))
             throw bad("PROTOCOL_UNSUPPORTED", "天气传感器协议尚未接入，不能启用");
+        // 真实航班接收机靠机身识别码认数据；没填识别码就启用，只会一直「收不到航班信息」。
+        if (enabled && "adsb_receiver".equals(text(device, "device_type_code")) && !Boolean.TRUE.equals(device.get("simulated"))
+                && repository.adsbStationGuid(id) == null)
+            throw bad("VALIDATION_ERROR", "请先在接入设备里填写这台航班接收机的识别码，再启用");
         if (enabled) DeviceCatalogTypes.requireRegistrable(text(device, "device_type_code"));
         long now = clock.nowMillis();
         if (repository.setEnabled(id, version, enabled, now) != 1) throw conflict();
@@ -382,7 +386,10 @@ public class DeviceService {
         repository.addEvent(UUID.randomUUID().toString(), id, enabled ? "DEVICE_ENABLED" : "DEVICE_DISABLED", "WARN",
                 (enabled ? "设备已启用：" : "设备已停用：") + reason.trim(), now, "mock".equals(properties.getSourceMode()));
         String sourceId = text(device, "source_id");
-        if (sourceId != null) {
+        if (sourceId != null && "adsb_receiver".equals(text(device, "device_type_code"))) {
+            // 航班接收机的来源只是它自己的影子行（数据走 UDP，不经接入来源适配器），跟着设备一起开关。
+            repository.setSourceEnabled(sourceId, enabled, now);
+        } else if (sourceId != null) {
             if(com.uav.lowaltitude.platform.security.UnitOperationsContext.active()) repository.requireSourceInUnit(sourceId,com.uav.lowaltitude.platform.security.UnitOperationsContext.orgId());
             boolean anyEnabled = repository.countEnabledOnSource(sourceId) > 0;
             sources.syncEnabled(sourceId, anyEnabled, reason.trim());

@@ -62,18 +62,25 @@ public final class FlightAvoidanceDtos {
             @NotBlank @Size(max = 36) String ownerOrgId, @NotBlank @Size(max = 36) String districtId,
             @NotNull @DecimalMin("-180") @DecimalMax("180") BigDecimal longitude,
             @NotNull @DecimalMin("-90") @DecimalMax("90") BigDecimal latitude,
-            @Min(10) @Max(600) int receiveRangeKm, @Min(0) Long version) { }
+            @Min(10) @Max(600) int receiveRangeKm, @Pattern(regexp = "[0-9A-Fa-f]{16}") String stationGuid, @Min(0) Long version) { }
 
+    /** stationGuid：接收机的机身识别码；lastDataAt：最近一次收到它的数据的时间。 */
     public record ReceiverProfile(String deviceId, String deviceNo, String name, String vendor, String model, String address,
             String ownerOrgId, String districtId, BigDecimal longitude, BigDecimal latitude, int receiveRangeKm,
-            boolean enabled, boolean simulated, long version) { }
+            String stationGuid, Long lastDataAt, boolean enabled, boolean simulated, long version) { }
+
+    /** 最近通过 UDP 送来数据、但识别码没登记在任何接收机上的站点，登记页用来提示。 */
+    public record UnmatchedStation(String stationGuid, String fromAddress, long lastSeenAt, long messages) { }
+
+    /** udpPort：本服务收接收机数据的端口（没在监听时为 -1），登记页提示客户往哪发。 */
+    public record UnmatchedStations(int udpPort, List<UnmatchedStation> stations) { }
 
     /** 设备模拟器：登记一台模拟航班接收机（只在本地测试环境）。 */
     public record SimulatedReceiverInput(@NotBlank @Size(max = 64) String deviceNo, @NotBlank @Size(max = 128) String name,
             @NotBlank @Size(max = 36) String ownerOrgId, @NotBlank @Size(max = 36) String districtId,
             @NotNull @DecimalMin("-180") @DecimalMax("180") BigDecimal longitude,
             @NotNull @DecimalMin("-90") @DecimalMax("90") BigDecimal latitude,
-            @Min(10) @Max(600) int receiveRangeKm) { }
+            @Min(10) @Max(600) int receiveRangeKm, @Pattern(regexp = "[0-9A-Fa-f]{16}") String stationGuid) { }
 
     /** 设备模拟器：一批航班位置。空列表表示接收机在线但附近没有航班。 */
     public record SimulatedReport(@NotNull @Size(max = 500) List<@Valid ReportedAircraft> aircraft) { }

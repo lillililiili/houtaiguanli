@@ -34,12 +34,13 @@
 - `GET/PUT /api/v1/flight-avoidance/policy`、`GET …/policy/history`：规则（PUT 只限后台）。
 - `GET /api/v1/flight-avoidance/check?device_id=&countermeasure_mode=`：反制弹窗提示用，需任一处置权限（申请、直接反制、执行、审批或查看）。
 - `GET /api/v1/flight-avoidance/traffic`：融合感知「民航航班」图层，需 `target:read`。
-- `/api/v1/adsb-receivers`：后台登记航班接收机。真实设备的数据格式要按厂家说明书接入，登记后为「待接入」（停用），不参与检查。
-- 设备模拟器（仅 local+qa 且 `app.qa.device-setup.enabled`）：`POST /api/v1/local-interface-simulator/adsb-receiver` 登记，`…/{id}/aircraft` 送航班，`…/{id}/release` 停用。航班数据只留 10 分钟。
+- `/api/v1/adsb-receivers`：后台登记航班接收机，可填机身识别码 `station_guid`（16 位十六进制，唯一）；`GET …/unmatched-stations` 给登记页提示本服务的 UDP 端口和最近送来数据但没登记的识别码。登记后为「待接入」（停用），数据对上识别码就先收着；管理员看到「最近收到数据」后在设备台账启用（没填识别码不能启用），启用后参与检查。
+- 真实接收机：客户的 pingStation3（uAvionix ICD Rev F）在它的网页里把发送地址填成本服务地址和 `app.adsb.pingstation.udp-port`（默认 30021），JSON 一架一条通过 UDP 推送，每 30 秒一条状态报文（只更新「最近收到数据」）。`PingStationUdpListener` 收、`PingStationMessage` 换算（毫米→米、百分之一度→度、厘米/秒→米/秒，航班号前三位对常见航空公司），没登记的识别码一律不收。端口打不开只记日志。端口对所有网卡开放、只认识别码不认来源地址：正式部署时用防火墙或路由把这个 UDP 端口只放给接收机所在的地址（局域网内其他机器知道识别码就能伪造航班、拦住反制）。
+- 设备模拟器（仅 local+qa 且 `app.qa.device-setup.enabled`）：`POST /api/v1/local-interface-simulator/adsb-receiver` 登记（带固定识别码 `a1b2c3d4e5f60001`），航班按 pingStation3 格式通过 UDP 推给上面同一个端口（和真实设备同一条路），`…/{id}/aircraft` 仍可直接送航班，`…/{id}/release` 停用。航班数据只留 10 分钟。
 
 前台没有新增前台动作，FrontendActionPolicy 白名单未改。
 
 ## 还没定的
 
-- 真实接收机型号和数据接口（等厂家资料）。
+- 真实接收机现场联调：接收机的网络地址、能否连到本服务、识别码（2026-10-27 已按 pingStation3 资料接好，等正式设备）。
 - 反制设备 900M 等频段对航班的实际影响范围；现在的默认值是用户确认的保守值，以后按厂家资料在规则管理里调整。

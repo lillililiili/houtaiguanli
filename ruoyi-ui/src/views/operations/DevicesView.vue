@@ -84,8 +84,16 @@ const deviceForm = reactive({
   recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false, device_address: 1,
   wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live', scope_key: '',
   device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-  longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350
+  longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350,
+  station_guid: '', last_data_at: null
 });
+// pingStation3 推送数据时带机身识别码；登记页用这里的提示告诉管理员往哪发、最近收到了哪些没登记的识别码。
+const stationHint = reactive({ udpPort: null, stations: [] });
+async function loadStationHint() {
+  try { const data = await adsbReceiversApi.unmatchedStations(); Object.assign(stationHint, { udpPort: data?.udp_port ?? null, stations: data?.stations || [] }); }
+  catch { Object.assign(stationHint, { udpPort: null, stations: [] }); }
+}
+watch(() => selectedType.value === 'adsb_receiver' && deviceDialog.visible, show => { if (show) void loadStationHint(); });
 const unsupportedCoordinateSystem = computed(() => (deviceForm.longitude != null || deviceForm.latitude != null)
   && !['WGS84', 'WGS-84'].includes(String(deviceForm.coordinate_system || '').trim().toUpperCase()));
 function clearDevicePosition() {
@@ -217,7 +225,8 @@ function resetDeviceForm() {
     allowed_cidrs: '', recognition_code_ref: '', rtk_enabled: false, coordinate_transform_enabled: false,
     device_address: 1, wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live',
     scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
-    longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350 });
+    longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350,
+    station_guid: '', last_data_at: null });
   coordinatePickerOpen.value = false;
 }
 
@@ -268,7 +277,8 @@ async function openDevice(row = null) {
       selectedType.value = 'adsb_receiver';
       Object.assign(deviceForm, current, { scope_key: `${current.owner_org_id}/${current.district_id}`,
         longitude: current.longitude == null ? null : Number(current.longitude), latitude: current.latitude == null ? null : Number(current.latitude),
-        coordinate_system: 'WGS-84', vendor: current.vendor || '', model: current.model || '', address: current.address || '' });
+        coordinate_system: 'WGS-84', vendor: current.vendor || '', model: current.model || '', address: current.address || '',
+        station_guid: current.station_guid || '', last_data_at: current.last_data_at ?? null });
     } else if (current) {
       const connection = current.connection || {}, protocol = current.protocol_configuration || {};
       Object.assign(deviceForm, {
@@ -356,7 +366,8 @@ async function saveDevice() {
       const [owner_org_id, district_id] = deviceForm.scope_key.split('/');
       const payload = { device_no: deviceForm.device_no.trim(), name: deviceForm.name.trim(), vendor: deviceForm.vendor?.trim() || null,
         model: deviceForm.model?.trim() || null, address: deviceForm.address?.trim() || null, owner_org_id, district_id,
-        longitude: location.longitude, latitude: location.latitude, receive_range_km: deviceForm.receive_range_km, version: deviceForm.version };
+        longitude: location.longitude, latitude: location.latitude, receive_range_km: deviceForm.receive_range_km,
+        station_guid: deviceForm.station_guid?.trim() || null, version: deviceForm.version };
       const receiver = deviceDialog.editing ? await adsbReceiversApi.update(deviceDialog.row.device_id, payload) : await adsbReceiversApi.create(payload);
       saved = { device: receiver };
     } else if (isMqttTransport.value) {
@@ -516,6 +527,9 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
               <div v-if="isAdsb" class="wide adsb-receive-settings">
                 <b>接收设置</b>
                 <div class="adsb-receive-row"><label for="adsb-receive-range">接收范围</label><el-input-number id="adsb-receive-range" class="adsb-range-input" v-model="deviceForm.receive_range_km" :min="10" :max="600" :precision="0" controls-position="right" /><span class="adsb-unit">公里</span><span class="access-field-note">地图上显示这个范围内的民航航班</span></div>
+                <div class="adsb-receive-row"><label for="adsb-station-guid">接收机识别码</label><el-input id="adsb-station-guid" class="adsb-guid-input" v-model="deviceForm.station_guid" maxlength="16" placeholder="设备自带的 16 位识别码" /><span class="access-field-note">接收机发来的数据带这个识别码，对上才收</span></div>
+                <div v-if="stationHint.stations.length" class="adsb-receive-row adsb-station-hint"><span class="access-field-note">最近收到数据但还没登记的识别码：</span><el-button v-for="station in stationHint.stations" :key="station.station_guid" link type="primary" @click="deviceForm.station_guid = station.station_guid">{{ station.station_guid }}</el-button></div>
+                <div class="adsb-receive-row"><span class="access-field-note">{{ stationHint.udpPort > 0 ? `接收机的发送地址填本系统的地址和端口 ${stationHint.udpPort}` : '本系统收航班数据的端口没有打开，请联系维护人员' }}<template v-if="deviceDialog.editing">；{{ deviceForm.last_data_at ? `最近收到数据：${formatTime(deviceForm.last_data_at)}` : '还没收到过数据' }}</template></span></div>
               </div>
             </div>
             <el-alert v-if="deviceDialog.optionsError" :title="deviceDialog.optionsError" type="error" :closable="false"><el-button link @click="refreshAccessOptions">重新加载接入资料</el-button></el-alert>
@@ -583,6 +597,8 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
 .access-basic-grid .adsb-receive-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; }
 .access-basic-grid .adsb-receive-row > * { flex: none; width: auto !important; margin: 0; }
 .access-basic-grid .adsb-receive-row > .adsb-range-input { width: 140px !important; }
+.access-basic-grid .adsb-receive-row > .adsb-guid-input { width: 220px !important; }
+.adsb-station-hint { flex-wrap: wrap !important; }
 .adsb-receive-row label { color: var(--admin-text, #33415a); }
 .adsb-unit { margin-right: 12px; color: var(--admin-muted); }
 .access-section-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
