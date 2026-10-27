@@ -47,6 +47,53 @@ public class FlightAvoidanceRepository {
         return jdbc.queryForObject("SELECT COUNT(*) FROM flight_avoidance_change", Long.class);
     }
 
+    /* ---- 每台反制设备单独设置的距离 ---- */
+
+    /** 这台设备单独设置的距离；没有单独设置时返回 null。version 沿用默认规则的版本号，便于检查记录对照。 */
+    public FlightAvoidancePolicy devicePolicy(String deviceId, long policyVersion) {
+        var rows = jdbc.query("SELECT * FROM counter_flight_distance WHERE device_id=?",
+                (r, n) -> new FlightAvoidancePolicy(policyVersion, r.getBigDecimal("force_land_block_km"),
+                        r.getBigDecimal("force_land_warn_km"), r.getInt("force_land_max_altitude_m"),
+                        r.getBigDecimal("drive_away_warn_km"), r.getInt("drive_away_max_altitude_m"), r.getLong("updated_at")),
+                deviceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    public List<Map<String, Object>> deviceDistances() {
+        return jdbc.queryForList("""
+                SELECT c.* FROM counter_flight_distance c JOIN ops_device d ON d.device_id=c.device_id
+                WHERE d.deleted_at IS NULL ORDER BY c.device_id
+                """);
+    }
+
+    public Map<String, Object> deviceDistance(String deviceId) {
+        var rows = jdbc.queryForList("SELECT * FROM counter_flight_distance WHERE device_id=?", deviceId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** 四通道反制设备才有航班安全距离；返回设备名称，不是反制设备或已删除时返回 null。 */
+    public String counterDeviceName(String deviceId) {
+        var rows = jdbc.queryForList("""
+                SELECT d.name FROM ops_device d JOIN countermeasure_4ch_profile p ON p.device_id=d.device_id
+                WHERE d.device_id=? AND d.deleted_at IS NULL
+                """, deviceId);
+        return rows.isEmpty() ? null : String.valueOf(rows.get(0).get("name"));
+    }
+
+    public void saveDeviceDistance(String deviceId, BigDecimal forceLandBlockKm, BigDecimal forceLandWarnKm, int forceLandMaxAltitudeM,
+            BigDecimal driveAwayWarnKm, int driveAwayMaxAltitudeM, long now) {
+        if (jdbc.update("""
+                UPDATE counter_flight_distance SET version=version+1,force_land_block_km=?,force_land_warn_km=?,
+                    force_land_max_altitude_m=?,drive_away_warn_km=?,drive_away_max_altitude_m=?,updated_at=? WHERE device_id=?
+                """, forceLandBlockKm, forceLandWarnKm, forceLandMaxAltitudeM, driveAwayWarnKm, driveAwayMaxAltitudeM, now, deviceId) == 0)
+            jdbc.update("INSERT INTO counter_flight_distance VALUES(?,1,?,?,?,?,?,?)", deviceId, forceLandBlockKm, forceLandWarnKm,
+                    forceLandMaxAltitudeM, driveAwayWarnKm, driveAwayMaxAltitudeM, now);
+    }
+
+    public int clearDeviceDistance(String deviceId) {
+        return jdbc.update("DELETE FROM counter_flight_distance WHERE device_id=?", deviceId);
+    }
+
     /* ---- 航班接收机与航班 ---- */
 
     /**
