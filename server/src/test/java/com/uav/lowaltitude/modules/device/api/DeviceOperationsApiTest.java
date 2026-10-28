@@ -373,6 +373,33 @@ class DeviceOperationsApiTest {
     }
 
     @Test
+    void elevationIsGroundPlusMountAndCanBeCleared() throws Exception {
+        String ops = login("admin1");
+        String deviceId = deviceId("DEV-MOCK-003", ops);
+        mvc.perform(put("/api/v1/devices/{id}/elevation", deviceId).header("Authorization", bearer(ops))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ground_elevation_m\":4.5,\"mount_height_m\":28}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ground_elevation_m").value(4.5))
+                .andExpect(jsonPath("$.data.mount_height_m").value(28))
+                .andExpect(jsonPath("$.data.altitude_m").value(32.5))
+                .andExpect(jsonPath("$.data.altitude_datum").value("AMSL"));
+        mvc.perform(put("/api/v1/devices/{id}/elevation", deviceId).header("Authorization", bearer(ops))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ground_elevation_m\":4.5}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        mvc.perform(put("/api/v1/devices/{id}/elevation", deviceId).header("Authorization", bearer(ops))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ground_elevation_m\":4.5,\"mount_height_m\":-1}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        mvc.perform(put("/api/v1/devices/{id}/elevation", deviceId).header("Authorization", bearer(ops))
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.ground_elevation_m").doesNotExist())
+                .andExpect(jsonPath("$.data.altitude_m").doesNotExist());
+        mvc.perform(put("/api/v1/devices/{id}/elevation", deviceId).header("Authorization", bearer(login("wugang")))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"ground_elevation_m\":4.5,\"mount_height_m\":28}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void rebootIsIdempotentAndCompletesFromPersistentOutbox() throws Exception {
         String ops = login("admin1");
         String deviceId = deviceId("DEV-MOCK-001", ops);

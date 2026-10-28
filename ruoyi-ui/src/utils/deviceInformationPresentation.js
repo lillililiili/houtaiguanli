@@ -33,6 +33,7 @@ const archiveFields = [
   ['vendor', '厂家'], ['model', '型号'], ['firmware_version', '固件版本'],
   ['owner_name', '所属单位'], ['region_name', '区域'], ['address', '安装地址'],
   ['longitude', '安装经度', '°'], ['latitude', '安装纬度', '°'], ['coordinate_system', '坐标系'],
+  ['ground_elevation_m', '地面海拔', 'm'], ['mount_height_m', '架设高度', 'm'],
   ['altitude_m', '海拔高度', 'm'], ['altitude_datum', '高度基准'], ['installed_at', '安装时间', 'epoch_ms'],
   ['enabled', '台账启用']
 ];

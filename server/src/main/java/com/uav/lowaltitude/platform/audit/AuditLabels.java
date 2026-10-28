@@ -86,6 +86,7 @@ final class AuditLabels {
             Map.entry("mqtt_broker_enable", "启用消息接入连接"),
             Map.entry("mqtt_broker_disable", "停用消息接入连接"),
             Map.entry("device_sensing_profile_update", "更新设备感知覆盖参数"),
+            Map.entry("device_elevation_update", "更新设备地面海拔和架设高度"),
             Map.entry("device_sensing_profile_delete", "删除设备感知覆盖参数"),
             Map.entry("device_reboot_requested", "远程重启设备"),
             Map.entry("commission_create", "新建接入调测任务"),

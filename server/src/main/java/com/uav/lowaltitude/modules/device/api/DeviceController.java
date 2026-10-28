@@ -187,6 +187,15 @@ public class DeviceController {
 
     public record DeleteRequest(@NotNull Long version, @NotBlank String reason) { }
 
+    /** 接入人员填的地面海拔和架设高度；两项一起填或一起清空。 */
+    @PutMapping("/{deviceId}/elevation")
+    @com.uav.lowaltitude.platform.security.BackendOnly
+    public ApiResponse<DeviceDetail> updateElevation(@PathVariable String deviceId, @RequestBody ElevationRequest request) {
+        return ApiResponse.ok(service.updateElevation(deviceId, request.groundElevationM(), request.mountHeightM()));
+    }
+
+    public record ElevationRequest(java.math.BigDecimal groundElevationM, java.math.BigDecimal mountHeightM) { }
+
     @PutMapping("/{deviceId}/sensing-profile")
     @com.uav.lowaltitude.platform.security.BackendOnly
     public ApiResponse<DeviceDetail> upsertSensingProfile(
