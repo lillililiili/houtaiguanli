@@ -20,7 +20,7 @@ try {
     $login=Call-Platform 'POST' '/auth/login' @{account=$Account;password=$credential.GetNetworkCredential().Password}
     $headers.Authorization='Bearer '+$login.session_id
     $credential=$null; $secret=$null; $login=$null
-    $matches=@(Call-Platform 'GET' '/mqtt-brokers' | Where-Object { $_.name -eq 'local-lingyun-replay' })
+    $matches=@(Call-Platform 'GET' '/mqtt-brokers' | Where-Object { $_.name -eq 'local-sim-replay' })
     if ($matches.Count -gt 1) { throw '同名连接不唯一，请核对现有配置' }
     if ($matches.Count -eq 1) { $broker=$matches[0] }
     else {
@@ -32,13 +32,13 @@ try {
         $choice=if($scopes.Count -eq 1){1}else{[int](Read-Host '选择本次验收已有的单位与区域序号')}
         if ($choice -lt 1 -or $choice -gt $scopes.Count) { throw '选择范围无效' }
         $scope=$scopes[$choice-1]
-        $body=[ordered]@{name='local-lingyun-replay';host='127.0.0.1';port=1883;tls=$false;username=$null;credential_ref=$null;allowed_cidrs='127.0.0.1/32';source_mode='replay';owner_org_id=$scope.org_id;district_id=$scope.district_id}
+        $body=[ordered]@{name='local-sim-replay';host='127.0.0.1';port=1883;tls=$false;username=$null;credential_ref=$null;allowed_cidrs='127.0.0.1/32';source_mode='replay';owner_org_id=$scope.org_id;district_id=$scope.district_id}
         $hash=[Security.Cryptography.SHA256]::Create()
         try { $digest=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($body|ConvertTo-Json -Compress)))).Replace('-','').Substring(0,32) }
         finally { $hash.Dispose() }
         try { $broker=Call-Platform 'POST' '/mqtt-brokers' $body ('item1-create-'+$digest) }
         catch {
-            $matches=@(Call-Platform 'GET' '/mqtt-brokers' | Where-Object { $_.name -eq 'local-lingyun-replay' })
+            $matches=@(Call-Platform 'GET' '/mqtt-brokers' | Where-Object { $_.name -eq 'local-sim-replay' })
             if ($matches.Count -ne 1) { throw '提交结果未知，回读未确认；已停止，不能盲目重复创建' }
             $broker=$matches[0]
             if ($broker.owner_org_id -ne $scope.org_id -or $broker.district_id -ne $scope.district_id) { throw '回读范围与本次提交不一致' }

@@ -36,7 +36,7 @@ public class LocalMqttSimSeeder implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(LocalMqttSimSeeder.class);
 
-    public static final String BROKER_NAME = "local-lingyun-replay";
+    public static final String BROKER_NAME = "local-sim-replay";
     public static final String HOST = "127.0.0.1";
     public static final int PORT = 1883;
     public static final String ALLOWED_CIDRS = "127.0.0.1/32";

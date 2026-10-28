@@ -105,8 +105,8 @@ def new_manifest(batch):
 def preflight(h, m, eo_confirmed_disabled=False, enforce_eo_gate=False):
     require('prod' not in os.environ.get('SPRING_PROFILES_ACTIVE', 'local').lower(), 'Production profile refused')
     require(h.local_psql('SELECT current_database();') == 'houtaiguanli', 'Wrong database')
-    broker = rows(h, "SELECT broker_id,name,host,port,source_mode,enabled,owner_org_id,district_id FROM mqtt_broker WHERE name='local-lingyun-replay'")
-    require(len(broker) == 1, 'Expected one local-lingyun-replay broker')
+    broker = rows(h, "SELECT broker_id,name,host,port,source_mode,enabled,owner_org_id,district_id FROM mqtt_broker WHERE name='local-sim-replay'")
+    require(len(broker) == 1, 'Expected one local-sim-replay broker')
     b = broker[0]
     require(b['source_mode'] == 'replay' and b['enabled'] and b['host'] in ('localhost', '127.0.0.1') and b['port'] == 1883, 'Broker must be enabled local replay:1883')
     m['broker'] = b

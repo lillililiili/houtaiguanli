@@ -73,7 +73,7 @@ class SimulatorMqttBrowserFixtureTest {
             broker.startServer(properties);
             String user=jdbc.queryForObject("select user_id from app_user where account='admin1'",String.class);
             AuthContext.set(new AuthUser(user,"admin1","隔离模拟器验收","ROLE-ADMIN",1,false,"ALL"));
-            brokerId=configuration.create(new BrokerInput("local-lingyun-replay","127.0.0.1",mqttPort,false,null,null,
+            brokerId=configuration.create(new BrokerInput("local-sim-replay","127.0.0.1",mqttPort,false,null,null,
                     "127.0.0.1/32","replay","seed-stage3-org","seed-stage3-district",null),UUID.randomUUID().toString()).brokerId();
             configuration.enable(brokerId,0,true,UUID.randomUUID().toString()); AuthContext.clear(); mqtt.reconcile();
             var identity=jdbc.queryForMap("select current_database() as database,current_schema() as schema");

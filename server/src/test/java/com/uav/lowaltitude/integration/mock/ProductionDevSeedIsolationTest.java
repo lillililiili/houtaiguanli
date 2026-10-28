@@ -52,7 +52,7 @@ class ProductionDevSeedIsolationTest {
             assertThat(count(jdbc, "select count(*) from ops_integration_source where source_code='LOCAL-MOCK'")).isZero();
             assertThat(count(jdbc, "select count(*) from ops_device where device_no like 'DEV-MOCK-%'")).isZero();
             assertThat(count(jdbc, "select count(*) from ops_device where device_no in ('S85R1','S85T1','S85A1','S85G1','S85D1','S85I1','S85E1D1','S85Y1','S85F1','S85B1')")).isZero();
-            assertThat(count(jdbc, "select count(*) from mqtt_broker where name='local-lingyun-replay'")).isZero();
+            assertThat(count(jdbc, "select count(*) from mqtt_broker where name='local-sim-replay'")).isZero();
             assertThat(count(jdbc, "select count(*) from target where target_id like 'seed-target-%'")).isZero();
             assertThat(count(jdbc, "select count(*) from report_airborne_target")).isZero();
             assertThat(count(jdbc, "select count(*) from report_penalty_case")).isZero();
