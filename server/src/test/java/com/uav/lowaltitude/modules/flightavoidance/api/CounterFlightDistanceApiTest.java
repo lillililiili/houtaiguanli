@@ -115,7 +115,44 @@ class CounterFlightDistanceApiTest {
         return deviceId;
     }
 
+    /** 2026-10-28 用户「改后台」：接收机 60 秒内有过报文就算收得到航班信息；航班位置仍只认最近 30 秒的。 */
+    @Test
+    void receiverCountsAsAliveForSixtySecondsWhileAircraftPositionsExpireAfterThirty() throws Exception {
+        String token = login(), counter = insertCounter();
+        long now = System.currentTimeMillis();
+        // 天上没飞机：接收机只有每 30 秒一条状态报文，45 秒前的状态仍算收得到。
+        String receiver = insertReceiver(now - 45_000);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("CLEAR"));
+        // 超过 60 秒没有任何报文才算收不到航班信息。
+        jdbc.update("UPDATE adsb_receiver SET last_data_at=? WHERE device_id=?", now - 61_000, receiver);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("NO_DATA"));
+        // 接收机刚报过状态，但禁止反制范围里那架航班 40 秒没再报位置：不算在附近。
+        jdbc.update("UPDATE adsb_receiver SET last_data_at=? WHERE device_id=?", now, receiver);
+        insertAircraft(receiver, 5.0, 1500, now - 40_000);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("CLEAR"));
+        jdbc.update("UPDATE adsb_aircraft SET received_at=? WHERE receiver_id=?", now - 20_000, receiver);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("BLOCK"));
+    }
+
+    /** 接收机整台没声 30–60 秒之间：它最后报的航班仍算在附近，不能变成「附近没有航班」放行。 */
+    @Test
+    void silentReceiverKeepsItsLastAircraftUntilItCountsAsNoData() throws Exception {
+        String token = login(), counter = insertCounter();
+        long now = System.currentTimeMillis();
+        String receiver = insertReceiver(now - 45_000);
+        insertAircraft(receiver, 5.0, 1500, now - 45_000);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("BLOCK"));
+        // 接收机没声满 60 秒：收不到航班信息，不是附近没有航班。
+        jdbc.update("UPDATE adsb_receiver SET last_data_at=? WHERE device_id=?", now - 61_000, receiver);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("NO_DATA"));
+    }
+
     private void insertReceiverWithAircraft(double northKm, int altitudeM) {
+        long now = System.currentTimeMillis();
+        insertAircraft(insertReceiver(now), northKm, altitudeM, now);
+    }
+
+    private String insertReceiver(long lastDataAt) {
         long now = System.currentTimeMillis();
         String id = UUID.randomUUID().toString();
         jdbc.update("""
@@ -127,11 +164,16 @@ class CounterFlightDistanceApiTest {
                     channel,longitude,latitude,coordinate_system,enabled,source_mode,simulated,version,created_at,updated_at)
                 VALUES (?,?,?,?,?,'adsb_receiver','ADS-B 航班接收机','网络接入',?,?,'WGS-84',TRUE,'live',FALSE,0,?,?)
                 """, id, id, "ADSB-FD", "ADSB-FD", "航班接收机夹具", LON, LAT, now, now);
-        jdbc.update("INSERT INTO adsb_receiver(device_id,receive_range_km,last_data_at) VALUES(?,350,?)", id, now);
+        jdbc.update("INSERT INTO adsb_receiver(device_id,receive_range_km,last_data_at) VALUES(?,350,?)", id, lastDataAt);
+        return id;
+    }
+
+    /** 一架航班停在反制设备正北 northKm 公里。 */
+    private void insertAircraft(String receiverId, double northKm, int altitudeM, long receivedAt) {
         jdbc.update("""
                 INSERT INTO adsb_aircraft(receiver_id,icao24,callsign,longitude,latitude,altitude_m,ground_speed_mps,track_deg,
                     observed_at,received_at,simulated) VALUES(?,'780A1B','CES2471',?,?,?,0,0,?,?,FALSE)
-                """, id, LON, LAT + northKm / 111.32, altitudeM, now, now);
+                """, receiverId, LON, LAT + northKm / 111.32, altitudeM, receivedAt, receivedAt);
     }
 
     private String login() throws Exception {

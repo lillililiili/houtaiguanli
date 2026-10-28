@@ -12,8 +12,8 @@ import com.uav.lowaltitude.modules.flightavoidance.domain.FlightAvoidancePolicy.
 /**
  * 以选中的反制设备为中心，看附近有没有低空民航航班。
  *
- * 只认最近 30 秒内收到的航班数据；没有在用的航班接收机时不检查（OFF），
- * 有接收机但都没有新数据时如实给出「收不到航班信息」（NO_DATA），不当作附近没有飞机。
+ * 只认最近 30 秒内收到的航班位置；没有在用的航班接收机时不检查（OFF），
+ * 有接收机但 60 秒内没送来任何报文时如实给出「收不到航班信息」（NO_DATA），不当作附近没有飞机。
  * 航班没报高度时按可能在低空处理，不把未知当成安全。
  */
 public final class FlightCheck {
@@ -40,7 +40,7 @@ public final class FlightCheck {
 
     /**
      * @param receivers 在用的航班接收机台数；为 0 时不检查
-     * @param freshAircraft 最近 30 秒内收到的航班，没有新数据时传 null
+     * @param freshAircraft 最近 30 秒内收到的航班，接收机 60 秒内没有任何报文时传 null
      */
     public static Result evaluate(FlightAvoidancePolicy policy, CounterMode mode, double deviceLon, double deviceLat,
             int receivers, List<Aircraft> freshAircraft) {

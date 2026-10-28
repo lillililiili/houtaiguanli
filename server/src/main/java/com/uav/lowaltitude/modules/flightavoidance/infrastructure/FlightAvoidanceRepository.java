@@ -113,12 +113,30 @@ public class FlightAvoidanceRepository {
                 SELECT x.* FROM adsb_aircraft x JOIN ops_device d ON d.device_id=x.receiver_id
                 WHERE x.received_at>=? AND d.enabled=TRUE AND d.deleted_at IS NULL
                 ORDER BY x.icao24,x.observed_at
-                """, (r, n) -> new Aircraft(r.getString("icao24"), r.getString("callsign"), r.getString("airline"),
+                """, this::aircraft, receivedAfter);
+    }
+
+    /**
+     * 反制前检查用：只看还在线的接收机（最后一条报文不早于 receiverFreshAfter），
+     * 每台接收机的航班按「它最后一条报文往前 aircraftStaleMillis」算，不按现在的时间——
+     * 接收机整台没声时它最后报的航班一直算数，直到接收机本身被判为收不到航班信息，不会先出现「附近没有航班」。
+     */
+    public List<Aircraft> aircraftForCheck(long receiverFreshAfter, long aircraftStaleMillis) {
+        return jdbc.query("""
+                SELECT x.* FROM adsb_aircraft x JOIN ops_device d ON d.device_id=x.receiver_id
+                JOIN adsb_receiver a ON a.device_id=x.receiver_id
+                WHERE a.last_data_at>=? AND x.received_at>=a.last_data_at-? AND d.enabled=TRUE AND d.deleted_at IS NULL
+                ORDER BY x.icao24,x.observed_at
+                """, this::aircraft, receiverFreshAfter, aircraftStaleMillis);
+    }
+
+    private Aircraft aircraft(java.sql.ResultSet r, int n) throws java.sql.SQLException {
+        return new Aircraft(r.getString("icao24"), r.getString("callsign"), r.getString("airline"),
                 r.getBigDecimal("longitude").doubleValue(), r.getBigDecimal("latitude").doubleValue(),
                 (Integer) r.getObject("altitude_m", Integer.class),
                 r.getBigDecimal("ground_speed_mps") == null ? null : r.getBigDecimal("ground_speed_mps").doubleValue(),
                 r.getBigDecimal("track_deg") == null ? null : r.getBigDecimal("track_deg").doubleValue(),
-                r.getLong("observed_at")), receivedAfter);
+                r.getLong("observed_at"));
     }
 
     public boolean lockReceiver(String deviceId) {

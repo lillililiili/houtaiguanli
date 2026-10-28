@@ -183,14 +183,15 @@ public class FlightAvoidanceService {
         FlightAvoidancePolicy policy = policyFor(deviceId);
         List<Map<String, Object>> receivers = repository.activeReceivers(simulatedActiveAfter());
         if (receivers.isEmpty()) return FlightCheck.evaluate(policy, mode, 0, 0, 0, List.of());
-        long now = clock.nowMillis(), freshAfter = now - FlightAvoidancePolicy.DATA_STALE_MILLIS;
+        long now = clock.nowMillis(), receiverFreshAfter = now - FlightAvoidancePolicy.DATA_STALE_MILLIS;
         Map<String, Object> device = deviceId == null ? null : repository.devicePosition(deviceId);
-        boolean fresh = receivers.stream().anyMatch(r -> r.get("last_data_at") != null && number(r, "last_data_at") >= freshAfter);
+        boolean fresh = receivers.stream().anyMatch(r -> r.get("last_data_at") != null && number(r, "last_data_at") >= receiverFreshAfter);
         // 反制设备没有位置时无法判断离航班多远，按收不到航班信息处理，不当作附近没有飞机。
         if (device == null || device.get("longitude") == null || device.get("latitude") == null || !fresh)
             return FlightCheck.evaluate(policy, mode, 0, 0, receivers.size(), null);
+        // 航班按所属接收机最后一条报文往前 30 秒算：接收机整台没声时，它最后的航班一直算到接收机被判为收不到，不会先变成「附近没有航班」。
         return FlightCheck.evaluate(policy, mode, decimal(device, "longitude"), decimal(device, "latitude"),
-                receivers.size(), repository.aircraftSince(freshAfter));
+                receivers.size(), repository.aircraftForCheck(receiverFreshAfter, FlightAvoidancePolicy.AIRCRAFT_STALE_MILLIS));
     }
 
     /** 反制弹窗：选好执行设备和反制方式后显示附近航班情况。 */
@@ -299,15 +300,16 @@ public class FlightAvoidanceService {
     @Transactional(readOnly = true)
     public Traffic traffic() {
         access.require(PermissionCode.TARGET_READ);
-        long now = clock.nowMillis(), freshAfter = now - FlightAvoidancePolicy.DATA_STALE_MILLIS;
+        long now = clock.nowMillis(), receiverFreshAfter = now - FlightAvoidancePolicy.DATA_STALE_MILLIS;
         List<Receiver> receivers = repository.activeReceivers(simulatedActiveAfter()).stream().map(r -> new Receiver(text(r, "device_id"),
                 text(r, "device_no"), text(r, "name"), r.get("longitude") == null ? null : decimal(r, "longitude"),
                 r.get("latitude") == null ? null : decimal(r, "latitude"), (int) number(r, "receive_range_km"),
                 r.get("last_data_at") == null ? null : number(r, "last_data_at"),
-                r.get("last_data_at") != null && number(r, "last_data_at") >= freshAfter, Boolean.TRUE.equals(r.get("simulated"))))
+                r.get("last_data_at") != null && number(r, "last_data_at") >= receiverFreshAfter, Boolean.TRUE.equals(r.get("simulated"))))
                 .toList();
         Map<String, Aircraft> latest = new LinkedHashMap<>();
-        for (FlightCheck.Aircraft a : receivers.isEmpty() ? List.<FlightCheck.Aircraft>of() : repository.aircraftSince(freshAfter))
+        for (FlightCheck.Aircraft a : receivers.isEmpty() ? List.<FlightCheck.Aircraft>of()
+                : repository.aircraftSince(now - FlightAvoidancePolicy.AIRCRAFT_STALE_MILLIS))
             latest.put(a.icao24(), new Aircraft(a.icao24(), a.callsign(), a.airline(), a.longitude(), a.latitude(), a.altitudeM(),
                     a.groundSpeedMps(), a.trackDeg(), a.observedAt()));
         List<DeviceDistance> distances = repository.deviceDistances().stream()

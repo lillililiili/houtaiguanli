@@ -87,8 +87,8 @@ public class DeviceRepository {
     private Map<String,Object> readParameters() {
         Map<String,Object> params = new HashMap<>();
         params.put("weather_fresh_after", clock.nowMillis() - 15000);
-        // 航班接收机：30 秒内收到过航班数据就是在线（2026-10-26 航班避让）。
-        params.put("adsb_fresh_after", clock.nowMillis() - 30000);
+        // 航班接收机：和航班避让检查用同一个门槛，60 秒内送来过报文（航班或状态）就是在线（2026-10-26 航班避让，2026-10-28 放宽）。
+        params.put("adsb_fresh_after", clock.nowMillis() - com.uav.lowaltitude.modules.flightavoidance.domain.FlightAvoidancePolicy.DATA_STALE_MILLIS);
         return params;
     }
 
