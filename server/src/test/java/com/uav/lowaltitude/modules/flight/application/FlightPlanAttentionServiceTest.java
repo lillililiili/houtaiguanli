@@ -173,6 +173,54 @@ class FlightPlanAttentionServiceTest {
     }
 
     @Test
+    void planWhoseAircraftIsAlreadySeenNoLongerCountsDeviceProblems() {
+        String deviceId = UUID.randomUUID().toString();
+        var broken = new FlightDeviceCheckService.DeviceRow(deviceId,"覆盖设备",true,java.math.BigDecimal.ONE,
+                "OFFLINE","BAD",1L,1L,true,true,List.of());
+        when(checks.readForAttention(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(device)
+                ? Map.of(device.planId(),new FlightDeviceCheckService.Check(device.planId(),"AUTO_DEVICE_ABNORMAL","",1L,
+                        "DEVICE_SCAN_COVERAGE",true,0,0,List.of(broken),true)) : Map.of());
+        when(maintenance.openForPlans(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(device.planId())
+                ? List.of(new PlanTask(device.planId(), "task-1", "雷达一号", "SUBMITTED")) : List.of());
+        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(seen("MATCHED"));
+
+        var ranked = service.page(PlanQuery.empty(), ACCESS, null, 0, 20);
+        assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(
+                "pending-risk", "unmatched", "device", "deviated", "normal-new", "normal-old",
+                "pending-soon", "pending-later", "ended");
+        assertThat(ranked.summary().needsAction()).isEqualTo(1);
+        assertThat(ranked.summary().device()).isZero();
+        assertThat(ranked.summary().otherExecuting()).isEqualTo(5);
+        var attention = ranked.attention().get(device.planId());
+        assertThat(attention.kinds()).isEmpty();
+        assertThat(attention.deviceTasks()).isEmpty();
+        assertThat(attention.deviceChecks()).isEmpty();
+        assertThat(service.page(PlanQuery.empty(), ACCESS, "DEVICE", 0, 20).rows()).isEmpty();
+        verify(checks, never()).readForAttention(org.mockito.ArgumentMatchers.argThat(rows -> rows.contains(device)));
+        verify(maintenance, never()).openForPlans(org.mockito.ArgumentMatchers.argThat(ids -> ids.contains(device.planId())));
+
+        // 飞机被看到但同时有风险待处理：风险照常提醒，只去掉设备。
+        when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenReturn(List.of(
+                new PlanStateCount(device.planId(), "PENDING_VERIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 1)));
+        assertThat(service.page(PlanQuery.empty(), ACCESS, null, 0, 20).attention().get(device.planId()).kinds())
+                .containsExactly("RISK");
+
+        // 还没看到飞机（偏航判断里也没有关联目标）：设备照常提醒。
+        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(match("NONE", null));
+        assertThat(service.page(PlanQuery.empty(), ACCESS, null, 0, 20).attention().get(device.planId()).kinds())
+                .containsExactly("DEVICE", "RISK");
+    }
+
+    @Test
+    void viewerWhoCannotReadAssessmentsStillSeesDeviceProblemsOfASeenPlan() {
+        when(actuals.assessmentAccess()).thenReturn(null);
+        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(seen("MATCHED"));
+        var ranked = service.page(PlanQuery.empty(), ACCESS, "DEVICE", 0, 20);
+        assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(device.planId());
+        verify(actuals, never()).latestMatch(any(), any());
+    }
+
+    @Test
     void kindFilterKeepsOnlyPlansWithThatProblem() {
         var risk = service.page(PlanQuery.empty(), ACCESS, "RISK", 0, 20);
         assertThat(risk.rows()).extracting(PlanRow::planId).containsExactly("pending-risk");
@@ -300,6 +348,10 @@ class FlightPlanAttentionServiceTest {
         List<HitDetailDto> hits = corridor == null ? List.of()
                 : List.of(new HitDetailDto("C01", "HIT", null, null, Map.of("dimensions", Map.of("corridor", corridor)), List.of(), List.of()));
         return new MatchDto("AVAILABLE", code, "evaluation", 0L, null, hits, null, List.of());
+    }
+
+    private static MatchDto seen(String code) {
+        return new MatchDto("AVAILABLE", code, "evaluation", 0L, null, List.of(), "target-1", List.of());
     }
 
     private static PlanRow row(String id, String status, OffsetDateTime startAt) {

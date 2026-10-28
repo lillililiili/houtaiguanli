@@ -4,6 +4,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +39,7 @@ import static com.uav.lowaltitude.modules.flight.api.FlightActualsDtos.NO_EVALUA
  * 顺序：需要处理（执行中的、新的在前，再是待执行的、开始时间近的在前）→ 其他执行中（新的在前）→ 待执行（开始时间近的在前）
  * → 已结束/已取消（新的在前）。需要处理只看还没结束的任务：
  * 执行中的共用航线覆盖设备检查，当前异常或未办结处置单均计入；2026-10-18 起匹配结论不再作为需要处理的类别。
+ * 2026-10-28 用户确认：已关联感知目标（飞机已被设备看到）的任务不再计设备异常，设备本身仍在后台设备异常处理办理。
  * 执行中和待执行的都看待核验、待通知的风险。每一项只在当前用户有对应读权限时参与，
  * 没权限看研判或风险的人不会因为排序看出这些结论。
  */
@@ -124,16 +126,22 @@ public class FlightPlanAttentionService {
         List<String> activeIds = active.stream().map(PlanRow::planId).toList();
 
         Map<String, String> matchIssue = new HashMap<>();
+        Set<String> seen = new HashSet<>();
         if (assessment != null) for (String id : executingIds) {
-            String issue = matchIssue(actuals.latestMatch(id, assessment));
+            MatchDto match = actuals.latestMatch(id, assessment);
+            String issue = matchIssue(match);
             if (issue != null) matchIssue.put(id, issue);
+            // 与设备检查弹窗同一口径：最近研判已关联感知目标，飞机已被看到，不必再看周围设备。
+            if (match != null && match.targetId() != null) seen.add(id);
         }
 
+        List<String> unseenIds = executingIds.stream().filter(id -> !seen.contains(id)).toList();
         Map<String, List<DeviceTaskDto>> devices = new HashMap<>();
-        for (var task : maintenance.openForPlans(executingIds))
+        for (var task : maintenance.openForPlans(unseenIds))
             devices.computeIfAbsent(task.planId(), ignored -> new ArrayList<>())
                     .add(new DeviceTaskDto(task.taskId(), task.deviceName(), task.workflowState()));
-        var currentChecks = deviceChecks.readForAttention(active.stream().filter(row -> "EXECUTING".equals(row.statusCode())).toList());
+        var currentChecks = deviceChecks.readForAttention(active.stream()
+                .filter(row -> "EXECUTING".equals(row.statusCode()) && !seen.contains(row.planId())).toList());
 
         Map<String, long[]> riskCounts = new HashMap<>();
         Map<String, List<RiskKindDto>> riskKinds = new HashMap<>();
