@@ -129,10 +129,8 @@ class PingStationFeedApiTest {
         assertThat(listener.handle(traffic("754104714b10e9a7", "780C01", "CSN3101", LAT + 11 / 111.32, LON, 2_100_000, base + 2000), "127.0.0.1")).isEqualTo(1);
         assertThat(listener.handle(traffic("754104714b10e9a7", "780C01", "CSN3101", LAT + 9 / 111.32, LON, 1_900_000, base), "127.0.0.1")).isEqualTo(1);
         listener.flush();
-        waitUntil(() -> jdbc.queryForObject("SELECT COUNT(*) FROM adsb_aircraft WHERE receiver_id=?", Long.class, id) == 1);
-        var row = jdbc.queryForMap("SELECT * FROM adsb_aircraft WHERE receiver_id=?", id);
-        assertThat(((Number) row.get("observed_at")).longValue()).isEqualTo(base + 2000);
-        assertThat(row.get("altitude_m")).isEqualTo(2100);
+        waitUntil(() -> jdbc.queryForList("SELECT observed_at FROM adsb_aircraft WHERE receiver_id=?", Long.class, id).equals(java.util.List.of(base + 2000)));
+        assertThat(jdbc.queryForMap("SELECT * FROM adsb_aircraft WHERE receiver_id=?", id).get("altitude_m")).isEqualTo(2100);
         assertThat(listener.flush()).isZero();
         cleanup(id);
     }

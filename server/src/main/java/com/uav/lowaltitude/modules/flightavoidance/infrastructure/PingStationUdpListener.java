@@ -38,7 +38,7 @@ import com.uav.lowaltitude.platform.time.AppClock;
  *
  * 真实接收机 350 公里内一两百架航班、每架每秒一条，一条一个事务会让数据库每秒提交几百次。
  * 所以报文先攒在内存里（每架只留时间最新的一条），每 {@code app.adsb.pingstation.flush-millis}（默认 1 秒）
- * 按接收机合并成一个事务写库，「最近收到数据」也只在这时更新一次。页面上的位置最多旧 1 秒，和之前一样。
+ * 按接收机合并成一个事务写库，「最近收到数据」也只在这时更新一次。写库最多晚 1 秒。
  */
 @Component
 public class PingStationUdpListener implements SmartLifecycle {
@@ -102,7 +102,16 @@ public class PingStationUdpListener implements SmartLifecycle {
         thread = null;
         ScheduledExecutorService f = flusher;
         flusher = null;
-        if (f != null) f.shutdownNow();
+        if (f != null) {
+            // 等正在写的那一批写完再收尾，否则连接池先关，最后一秒的位置会丢。
+            f.shutdown();
+            try {
+                if (!f.awaitTermination(2, TimeUnit.SECONDS)) f.shutdownNow();
+            } catch (InterruptedException e) {
+                f.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
         flushQuietly();
     }
 
