@@ -35,7 +35,7 @@
 - `GET /api/v1/flight-avoidance/check?device_id=&countermeasure_mode=`：反制弹窗提示用，需任一处置权限（申请、直接反制、执行、审批或查看）。
 - `GET /api/v1/flight-avoidance/traffic`：融合感知「民航航班」图层，需 `target:read`。
 - `/api/v1/adsb-receivers`：后台登记航班接收机，可填机身识别码 `station_guid`（16 位十六进制，唯一）；`GET …/unmatched-stations` 给登记页提示本服务的 UDP 端口和最近送来数据但没登记的识别码。登记后为「待接入」（停用），数据对上识别码就先收着；管理员看到「最近收到数据」后在设备台账启用（没填识别码不能启用），启用后参与检查。
-- 真实接收机：客户的 pingStation3（uAvionix ICD Rev F）在它的网页里把发送地址填成本服务地址和 `app.adsb.pingstation.udp-port`（默认 30021），JSON 一架一条通过 UDP 推送，每 30 秒一条状态报文（只更新「最近收到数据」）。`PingStationUdpListener` 收、`PingStationMessage` 换算（毫米→米、百分之一度→度、厘米/秒→米/秒，航班号前三位对常见航空公司），没登记的识别码一律不收。端口打不开只记日志。端口对所有网卡开放、只认识别码不认来源地址：正式部署时用防火墙或路由把这个 UDP 端口只放给接收机所在的地址（局域网内其他机器知道识别码就能伪造航班、拦住反制）。
+- 真实接收机：客户的 pingStation3（uAvionix ICD Rev F）在它的网页里把发送地址填成本服务地址和 `app.adsb.pingstation.udp-port`（默认 30021），JSON 一架一条通过 UDP 推送，每 30 秒一条状态报文（只更新「最近收到数据」）。`PingStationUdpListener` 收、`PingStationMessage` 换算（毫米→米、百分之一度→度、厘米/秒→米/秒，航班号前三位对常见航空公司），没登记的识别码一律不收。报文不是一条一个事务：先攒在内存里，每 `app.adsb.pingstation.flush-millis`（默认 1000 毫秒）按接收机合并成一个事务写库，每架航班只写时间最新的一条，「最近收到数据」也只在这时更新；高峰一两百架、每秒几百条报文时数据库每秒只提交一次，页面上的位置最多旧 1 秒。写库失败这一批丢掉，下一秒的报文补回来。端口打不开只记日志。端口对所有网卡开放、只认识别码不认来源地址：正式部署时用防火墙或路由把这个 UDP 端口只放给接收机所在的地址（局域网内其他机器知道识别码就能伪造航班、拦住反制）。
 - 设备模拟器（仅 local+qa 且 `app.qa.device-setup.enabled`）：`POST /api/v1/local-interface-simulator/adsb-receiver` 登记（带固定识别码 `a1b2c3d4e5f60001`），航班按 pingStation3 格式通过 UDP 推给上面同一个端口（和真实设备同一条路），`…/{id}/aircraft` 仍可直接送航班，`…/{id}/release` 停用。航班数据只留 10 分钟。
 
 前台没有新增前台动作，FrontendActionPolicy 白名单未改。

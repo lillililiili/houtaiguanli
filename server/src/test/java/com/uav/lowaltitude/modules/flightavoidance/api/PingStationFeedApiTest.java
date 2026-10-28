@@ -119,6 +119,24 @@ class PingStationFeedApiTest {
         cleanup(first, second);
     }
 
+    @Test
+    void reportsAreMergedPerAircraftAndWrittenOncePerFlush() throws Exception {
+        String token = login();
+        String id = createReceiver(token, "754104714b10e9a7");
+        long base = System.currentTimeMillis() / 1000 * 1000 - 10_000;
+        // 同一架一秒内来了三条，其中最老的一条最后到：只写时间最新的那条，写库前都攒着。
+        assertThat(listener.handle(traffic("754104714b10e9a7", "780C01", "CSN3101", LAT + 10 / 111.32, LON, 2_000_000, base + 1000), "127.0.0.1")).isEqualTo(1);
+        assertThat(listener.handle(traffic("754104714b10e9a7", "780C01", "CSN3101", LAT + 11 / 111.32, LON, 2_100_000, base + 2000), "127.0.0.1")).isEqualTo(1);
+        assertThat(listener.handle(traffic("754104714b10e9a7", "780C01", "CSN3101", LAT + 9 / 111.32, LON, 1_900_000, base), "127.0.0.1")).isEqualTo(1);
+        listener.flush();
+        waitUntil(() -> jdbc.queryForObject("SELECT COUNT(*) FROM adsb_aircraft WHERE receiver_id=?", Long.class, id) == 1);
+        var row = jdbc.queryForMap("SELECT * FROM adsb_aircraft WHERE receiver_id=?", id);
+        assertThat(((Number) row.get("observed_at")).longValue()).isEqualTo(base + 2000);
+        assertThat(row.get("altitude_m")).isEqualTo(2100);
+        assertThat(listener.flush()).isZero();
+        cleanup(id);
+    }
+
     private String traffic(String guid, String icao, String callsign, double lat, double lon, long altitudeMm, long observedAt) {
         return "{\"aircraft\":[{\"icaoAddress\":\"" + icao + "\",\"trafficSource\":0,\"latDD\":" + lat + ",\"lonDD\":" + lon
                 + ",\"altitudeMM\":" + altitudeMm + ",\"headingDE2\":26330,\"horVelocityCMS\":21143,\"verVelocityCMS\":0,\"squawk\":1305,"

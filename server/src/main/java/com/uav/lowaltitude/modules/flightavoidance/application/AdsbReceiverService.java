@@ -27,7 +27,8 @@ import com.uav.lowaltitude.platform.time.AppClock;
 /**
  * 航班接收机登记与航班数据接收。
  *
- * 真实接收机（pingStation3）通过 UDP 推送航班数据，见 {@code PingStationUdpListener}；后台登记时填机身识别码，
+ * 真实接收机（pingStation3）通过 UDP 推送航班数据，见 {@code PingStationUdpListener}（报文先攒着，每秒按接收机合并成一个事务
+ * 调 {@link #receiveFromStation}）；后台登记时填机身识别码，
  * 数据对上识别码就收，但登记后先是待接入（停用），管理员看到数据正常进来后启用才参与检查。
  * 设备模拟器的接收机只在本地测试环境（local+qa）可用，数据标为模拟；它也可以带识别码走同一条 UDP 路。
  */
@@ -168,7 +169,7 @@ public class AdsbReceiverService {
     /* ---- 真实接收机（UDP 推送） ---- */
 
     /**
-     * 一台接收机通过 UDP 送来的一批航班。识别码没登记返回 -1（调用方记为未匹配站点）；
+     * 一台接收机通过 UDP 送来的一批航班（监听器每秒合并一次，每架只有时间最新的一条）。识别码没登记返回 -1（调用方记为未匹配站点）；
      * 否则只收接收范围内、时间不在将来的，并记下这台接收机最近收到数据的时间。停用的接收机数据也收，启用后立刻可用。
      */
     @Transactional
