@@ -189,8 +189,9 @@ public class FlightAvoidanceService {
         // 反制设备没有位置时无法判断离航班多远，按收不到航班信息处理，不当作附近没有飞机。
         if (device == null || device.get("longitude") == null || device.get("latitude") == null || !fresh)
             return FlightCheck.evaluate(policy, mode, 0, 0, receivers.size(), null);
+        // 航班按所属接收机最后一条报文往前 30 秒算：接收机整台没声时，它最后的航班一直算到接收机被判为收不到，不会先变成「附近没有航班」。
         return FlightCheck.evaluate(policy, mode, decimal(device, "longitude"), decimal(device, "latitude"),
-                receivers.size(), repository.aircraftSince(now - FlightAvoidancePolicy.AIRCRAFT_STALE_MILLIS));
+                receivers.size(), repository.aircraftForCheck(receiverFreshAfter, FlightAvoidancePolicy.AIRCRAFT_STALE_MILLIS));
     }
 
     /** 反制弹窗：选好执行设备和反制方式后显示附近航班情况。 */

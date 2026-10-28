@@ -134,6 +134,19 @@ class CounterFlightDistanceApiTest {
         check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("BLOCK"));
     }
 
+    /** 接收机整台没声 30–60 秒之间：它最后报的航班仍算在附近，不能变成「附近没有航班」放行。 */
+    @Test
+    void silentReceiverKeepsItsLastAircraftUntilItCountsAsNoData() throws Exception {
+        String token = login(), counter = insertCounter();
+        long now = System.currentTimeMillis();
+        String receiver = insertReceiver(now - 45_000);
+        insertAircraft(receiver, 5.0, 1500, now - 45_000);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("BLOCK"));
+        // 接收机没声满 60 秒：收不到航班信息，不是附近没有航班。
+        jdbc.update("UPDATE adsb_receiver SET last_data_at=? WHERE device_id=?", now - 61_000, receiver);
+        check(token, counter, "FORCE_LAND").andExpect(jsonPath("$.data.level").value("NO_DATA"));
+    }
+
     private void insertReceiverWithAircraft(double northKm, int altitudeM) {
         long now = System.currentTimeMillis();
         insertAircraft(insertReceiver(now), northKm, altitudeM, now);

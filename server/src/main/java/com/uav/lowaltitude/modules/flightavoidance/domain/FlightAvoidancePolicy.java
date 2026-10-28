@@ -17,7 +17,10 @@ public record FlightAvoidancePolicy(long version, BigDecimal forceLandBlockKm, B
      * 原来按 30 秒算，天上没飞机时每隔半分钟就会闪一次「收不到航班信息」（2026-10-28 用户「改后台」）。
      */
     public static final long DATA_STALE_MILLIS = 60_000L;
-    /** 一架航班超过这么久没再报位置（正常每秒一条）就不算在附近，地图上也不再画。 */
+    /**
+     * 一架航班超过这么久没再报位置（正常每秒一条）就不算在附近，地图上也不再画。
+     * 反制前检查按它所属接收机最后一条报文往前算，地图按现在往前算。
+     */
     public static final long AIRCRAFT_STALE_MILLIS = 30_000L;
     /** 设备模拟器的接收机 10 分钟没送数据就当模拟已结束，不再参与检查。 */
     public static final long SIMULATED_QUIET_MILLIS = 10 * 60_000L;
