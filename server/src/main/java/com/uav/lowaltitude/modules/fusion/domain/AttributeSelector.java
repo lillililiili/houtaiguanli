@@ -1,9 +1,12 @@
 package com.uav.lowaltitude.modules.fusion.domain;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
@@ -32,8 +35,9 @@ public final class AttributeSelector {
 
     public Selection select(List<SourceEstimate> estimates, FusionParams params, String previousPositionSourceId) {
         List<UnknownField> unknown = new ArrayList<>();
-        Optional<SourceEstimate> position = estimates.stream().filter(AttributeSelector::positioned)
-                .max(Comparator.comparingDouble((SourceEstimate e) -> positionWeight(e, params)).thenComparing(SourceEstimate::sourceId, Comparator.reverseOrder()));
+        Instant newest = newestPosition(estimates);
+        Optional<SourceEstimate> position = estimates.stream().filter(AttributeSelector::positioned).filter(e -> ageFactor(e, newest, params) > 0)
+                .max(Comparator.comparingDouble((SourceEstimate e) -> positionWeight(e, params) * ageFactor(e, newest, params)).thenComparing(SourceEstimate::sourceId, Comparator.reverseOrder()));
         String positionSourceId = position.map(SourceEstimate::sourceId).orElse(null);
         // 运动量与位置主源同源：速度/航向若混用别的来源，会与融合位置的时间基准和精度不一致。
         Double speed = position.map(SourceEstimate::speedMps).orElse(null);
@@ -73,6 +77,20 @@ public final class AttributeSelector {
     /** 位置主源按 权重×质量/σ² 选取：精度差一个数量级的来源即使类型权重高也不该做主源。 */
     static double positionWeight(SourceEstimate e, FusionParams params) {
         return effectiveWeight(e, ATTR_POSITION, params) / (e.accuracyM() * e.accuracyM());
+    }
+
+    /**
+     * 别的来源沿用到本帧的旧位置没有外推，目标在动时落在身后。按它比本帧最新位置旧多少打折，口径与延迟相同
+     * （quality.latency_penalty_ms）：同一时刻不打折，旧满这个时长就不再参与本帧位置，否则同一时刻会写出相距几十米的两个点。
+     */
+    static double ageFactor(SourceEstimate e, Instant newest, FusionParams params) {
+        if (newest == null || e.observedAt() == null || !e.observedAt().isBefore(newest)) return 1;
+        return clamp(1 - Duration.between(e.observedAt(), newest).toMillis() / params.number("quality", "latency_penalty_ms"));
+    }
+
+    static Instant newestPosition(List<SourceEstimate> estimates) {
+        return estimates.stream().filter(AttributeSelector::positioned).map(SourceEstimate::observedAt)
+                .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
     }
 
     /** w_eff = weights[type][attr] · q_latency · q_loss · q_anomaly；缺来源类型的权重是部署错误，直接抛出。 */

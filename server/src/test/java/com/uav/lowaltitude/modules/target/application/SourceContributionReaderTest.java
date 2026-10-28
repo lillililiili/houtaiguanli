@@ -46,6 +46,8 @@ class SourceContributionReaderTest {
         when(config.params(null)).thenReturn(params);
         when(params.integer("identity", "short_lost_after_ms")).thenReturn(5000);
         when(params.weights()).thenReturn(Map.of("RADAR", Map.of("position",1d,"class",1d,"identity",0d,"motion",1d)));
+        // demo-v1 的 quality.latency_penalty_ms：几路来源观测时间不同时，融合按旧多少给位置打折。
+        when(params.number("quality", "latency_penalty_ms")).thenReturn(2000d);
         return params;
     }
     private void simulatorWeights() {

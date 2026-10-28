@@ -63,6 +63,45 @@ class PredictionInputPostgresTest {
     }
 
     @Test
+    void eoTrackingTasksDoNotRestartContinuityButANewMeasuringSessionStillDoes() {
+        fixture("live", false, 10);
+        var repository = repository("test");
+        var first = repository.load(target, now, config);
+        assertThat(first.invalidReason()).isNull();
+        // Every EO tracking task links the target under a new session; it observes this target, it is not a new track.
+        String eoSource = id(), eoDevice = id();
+        jdbc.update("""
+                INSERT INTO integration_source(source_id,source_code,name,protocol_code,protocol_version,enabled,source_mode,source_type,created_at,updated_at,version)
+                VALUES (?,?,?,'EO','1',TRUE,?,'EO',?,?,0)
+                """, eoSource, eoSource, "K03测试光电", mode, ts(now), ts(now));
+        jdbc.update("""
+                INSERT INTO device(device_id,source_id,external_device_id,device_no,name,enabled,source_mode,owner_org_id,district_id,created_at,updated_at,version)
+                VALUES (?,?,?,?,?,TRUE,?,?,?,?,?,0)
+                """, eoDevice, eoSource, eoDevice, eoDevice, "K03测试光电", mode, org, district, ts(now), ts(now));
+        for (String task : List.of("eo-task-1", "eo-task-2")) {
+            jdbc.update("INSERT INTO target_source_link(link_id,target_id,source_id,device_id,source_session_key,external_target_id,created_at) VALUES (?,?,?,?,?,?,?)",
+                    id(), target, eoSource, eoDevice, task, target, ts(now));
+            assertThat(repository.load(target, now, config).continuityKey()).as(task).isEqualTo(first.continuityKey());
+        }
+        jdbc.update("INSERT INTO target_source_link(link_id,target_id,source_id,device_id,source_session_key,external_target_id,created_at) VALUES (?,?,?,?,?,?,?)",
+                id(), target, sources[0], devices[0], "session-2", target, ts(now));
+        assertThat(repository.load(target, now, config).continuityKey()).isNotEqualTo(first.continuityKey());
+    }
+
+    @Test
+    void lateFrameKeptAsHistoryDoesNotMakeTheLatestMeasurementLookReplaced() {
+        fixture("live", false, 10);
+        // Observed between the last two frames but arriving after the latest one: the fused writer stores it as a
+        // history point with the next point_seq and leaves latest_state on the newer frame.
+        point(10, now - 500, now + 100, 0, false, 85, false);
+        var input = repository("test").load(target, now + 200, config);
+        assertThat(input.invalidReason()).isNull();
+        assertThat(input.points()).hasSize(11);
+        assertThat(input.points().get(9).observedAt()).isEqualTo(now - 500);
+        assertThat(input.points().get(10).observedAt()).isEqualTo(now);
+    }
+
+    @Test
     void ordinaryReplayNeverBecomesCurrentJustBecauseWallClockIsFresh() {
         fixture("replay", false, 10);
         assertThat(repository("local", "qa").load(target, now, config).invalidReason()).isEqualTo("HISTORICAL_REPLAY_NOT_CURRENT");
@@ -192,27 +231,33 @@ class PredictionInputPostgresTest {
     }
 
     private void append(int seq, long observed, int sourceIndex, boolean defaulted) {
-        double[] coordinate = AlphaBetaFilter.fromEnu(lon, lat, seq * 10, 0);
+        point(seq, observed, observed, sourceIndex, defaulted, seq * 10, true);
+    }
+
+    /** latest=false writes a late frame the way the fused writer does: a history point that leaves latest_state alone. */
+    private void point(int seq, long observed, long received, int sourceIndex, boolean defaulted, double east, boolean latest) {
+        double[] coordinate = AlphaBetaFilter.fromEnu(lon, lat, east, 0);
         String geom = "SRID=4326;POINT(" + coordinate[0] + " " + coordinate[1] + ")";
         String inbox = id(), observation = id();
         String incoming = normalized ? "sim-normalized:" + sources[sourceIndex] : "live".equals(mode) ? "live-radar:" + devices[sourceIndex] : "replay:" + sources[sourceIndex];
         jdbc.update("""
                 INSERT INTO inbox_message(inbox_id,source,source_msg_id,source_id,payload_hash,payload,received_at,status)
                 VALUES (?,?,?,?,?,CAST('{}' AS JSON),?,'RECEIVED')
-                """, inbox, incoming, id(), sources[sourceIndex], "0".repeat(64), observed);
+                """, inbox, incoming, id(), sources[sourceIndex], "0".repeat(64), received);
         jdbc.update("""
                 INSERT INTO source_observation(observation_id,inbox_id,source_id,device_id,source_type,source_session_key,external_target_id,
                   observed_at,received_at,location,position_accuracy_m,altitude_amsl_m,quality,source_mode,owner_org_id,district_id,created_at)
                 VALUES (?,?,?,?,?,'session',?,?,?,CAST(? AS GEOMETRY),?,100,CAST(? AS JSON),?,?,?,?)
                 """, observation, inbox, sources[sourceIndex], devices[sourceIndex], normalized ? "SIM_NORMALIZED" : "RADAR",
-                target, ts(observed), ts(observed), geom, defaulted ? null : 1,
+                target, ts(observed), ts(received), geom, defaulted ? null : 1,
                 defaulted ? "{\"accuracy_defaulted\":true}" : "{}", mode, org, district, ts(observed));
         String contributing = "[{\"observation_id\":\"" + observation + "\",\"source_id\":\"" + sources[sourceIndex] + "\",\"weight\":1}]";
         jdbc.update("""
                 INSERT INTO track_point(point_id,track_id,point_seq,observed_at,received_at,location,altitude_amsl_m,created_at,
                   point_kind,position_accuracy_m,contributing,position_source_id,observation_id)
                 VALUES (?,?,?,?,?,CAST(? AS GEOMETRY),100,?,'MEAS',1,CAST(? AS JSON),?,?)
-                """, id(), track, seq, ts(observed), ts(observed), geom, ts(observed), contributing, sources[sourceIndex], observation);
+                """, id(), track, seq, ts(observed), ts(received), geom, ts(received), contributing, sources[sourceIndex], observation);
+        if (!latest) return;
         if (jdbc.update("""
                 UPDATE target_latest_state SET location=CAST(? AS GEOMETRY),altitude_amsl_m=100,observed_at=?,received_at=?,updated_at=?
                 WHERE target_id=?

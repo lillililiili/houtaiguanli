@@ -89,6 +89,40 @@ class WeightedFuserTest {
         assertThat(fused.identityClue()).isEqualTo("RF-2");
     }
 
+    @Test
+    void positionCarriedFromAnEarlierFrameCountsLessAsItAgesAndStopsAtTheLatencyPenalty() {
+        SourceEstimate eo = estimate("eo", "EO", LON + 0.001, LAT, 15.0, null, null, 3.0, 180.0, null, null, null);
+        SourceEstimate tdoa = estimate("tdoa", "TDOA", LON, LAT, 60.0, null, null, 8.0, 90.0, null, null, null);
+        double eoWeight = 0.2 / (15.0 * 15.0), tdoaWeight = 0.25 / (60.0 * 60.0);
+
+        FusedState sameTime = new WeightedFuser().fuse(List.of(eo, tdoa), MapParams.demo(), null);
+        assertThat(eoShare(sameTime)).isCloseTo(eoWeight / (eoWeight + tdoaWeight), org.assertj.core.data.Offset.offset(1e-9));
+
+        // latency_penalty_ms = 2000：旧 1 秒的位置只算一半，精度也只按一半计入。
+        FusedState oneSecond = new WeightedFuser().fuse(List.of(eo, at(tdoa, T0.plusMillis(1000))), MapParams.demo(), null);
+        assertThat(eoShare(oneSecond)).isCloseTo(0.5 * eoWeight / (0.5 * eoWeight + tdoaWeight), org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(oneSecond.accuracyM()).isCloseTo(Math.sqrt(1 / (0.5 / (15.0 * 15.0) + 1 / (60.0 * 60.0))), org.assertj.core.data.Offset.offset(1e-9));
+        assertThat(oneSecond.longitude()).isLessThan(sameTime.longitude());
+
+        // 旧满 2 秒不再参与本帧位置：位置、精度、运动量都只来自本帧的来源。
+        FusedState stale = new WeightedFuser().fuse(List.of(eo, at(tdoa, T0.plusMillis(2000))), MapParams.demo(), null);
+        assertThat(stale.contributions()).extracting(c -> c.sourceId()).containsExactly("tdoa");
+        assertThat(stale.longitude()).isCloseTo(LON, org.assertj.core.data.Offset.offset(1e-12));
+        assertThat(stale.accuracyM()).isEqualTo(60.0);
+        assertThat(stale.selection().positionSourceId()).isEqualTo("tdoa");
+        assertThat(stale.speedMps()).isEqualTo(8.0);
+    }
+
+    private static double eoShare(FusedState fused) {
+        return fused.contributions().stream().filter(c -> "eo".equals(c.sourceId())).mapToDouble(c -> c.weight()).sum();
+    }
+
+    static SourceEstimate at(SourceEstimate e, Instant observedAt) {
+        return new SourceEstimate(e.sourceId(), e.sourceCode(), e.sourceType(), e.schemaStatus(), e.linkId(), e.rawTrackId(),
+                e.observationId(), observedAt, e.longitude(), e.latitude(), e.accuracyM(), e.altitudeAmslM(), e.heightAglM(),
+                e.speedMps(), e.headingDeg(), e.classCode(), e.classConfidence(), e.identityClue(), e.identityConfidence(), e.kind(), e.quality());
+    }
+
     static SourceEstimate estimate(String sourceId, String type, Double lon, Double lat, Double acc, Double amsl, Double agl,
             Double speed, Double heading, String classCode, Double classConf, String identity) {
         return new SourceEstimate(sourceId, sourceId.toUpperCase(), type, "RADAR".equals(type) ? "CONFIRMED" : "DEMO",
