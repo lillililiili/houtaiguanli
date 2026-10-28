@@ -48,7 +48,7 @@ def run(batch, seconds, output):
     if (folder / 'manifest.json').exists():
         raise ValueError('Use a new batch; old scenario times and records must stay unchanged')
     api = ScenarioApi(batch)
-    broker = next(b for b in api.data('GET', '/mqtt-brokers') if b['name'] == 'local-lingyun-replay')
+    broker = next(b for b in api.data('GET', '/mqtt-brokers') if b['name'] == 'local-sim-replay')
     if broker['source_mode'] != 'replay' or broker['host'] not in ('127.0.0.1', 'localhost') or not broker['enabled']:
         raise ValueError('Enabled local replay broker required')
     setting_row = local_psql("SELECT channel_type || '|' || version FROM notification_setting WHERE setting_id='advisory-sms'")

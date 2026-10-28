@@ -139,7 +139,7 @@ Linux/macOS 在 `server/` 执行：
 
 隔离测试加载旧 `LocalMqttSimSeeder` 夹具时，会幂等登记以下历史样例：
 
-- MQTT 连接 `local-lingyun-replay`：`127.0.0.1:1883`，`tls=false`，`allowed_cidrs=127.0.0.1/32`，`source_mode=replay`，并启用
+- MQTT 连接 `local-sim-replay`：`127.0.0.1:1883`，`tls=false`，`allowed_cidrs=127.0.0.1/32`，`source_mode=replay`，并启用
 - 设备：`S85R1` 雷达、`S85T1` TDOA、`S85G1` 5G-A（`LINGYUN_MQTT_V8_6`，`providerCode=dongying`）；现场只有融合感知箱（雷达、光电、反制）、TDOA、5G-A 和气象设备，早期登记的 `S85A1`/`S85D1`/`S85I1`/`S85Y1`/`S85F1`/`S85B1` 不再登记，已有库启动时给它们打删除标记；光电边端 `edgeId=S85E1`、`externalDeviceId=S85E1D1`（`EO_EDGE_MQTT_20250826`）
 
 **`S85R1` 不是现场 T02 TCP 雷达。** `test` profile 不插入这些设备。已有同名连接或外部编号则跳过，不改人工登记。`api` Compose 服务不依赖 Mosquitto；本机 `spring-boot:run` 连宿主机 1883。

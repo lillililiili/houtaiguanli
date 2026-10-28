@@ -328,11 +328,11 @@ def prepare(batch):
         print('Reusing manifest:', path)
         return
     isolate_replay_batch(api, batch)
-    broker = next(b for b in api.data('GET', '/mqtt-brokers') if b['name'] == 'local-lingyun-replay')
+    broker = next(b for b in api.data('GET', '/mqtt-brokers') if b['name'] == 'local-sim-replay')
     if broker['source_mode'] != 'replay' or broker['host'] not in ('localhost', '127.0.0.1'):
         raise ValueError('Expected local replay broker')
     if not broker['enabled']:
-        raise ValueError('Enable local-lingyun-replay in the device page first')
+        raise ValueError('Enable local-sim-replay in the device page first')
     now = millis()
     day = (now + 8 * 3600_000) // 86_400_000 * 86_400_000 - 8 * 3600_000
     airspaces = api.data('GET', f'/airspaces?page=1&size=100&valid_at={now}')['items']
