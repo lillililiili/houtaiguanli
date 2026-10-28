@@ -55,6 +55,8 @@ app:
     pingstation:
       enabled: ${APP_ADSB_PINGSTATION_ENABLED:true}
       udp-port: ${APP_ADSB_PINGSTATION_UDP_PORT:30021}
+      # 报文先攒在内存里，每隔这么多毫秒合并成一个事务写库（每架航班只写最新一条）。
+      flush-millis: ${APP_ADSB_PINGSTATION_FLUSH_MILLIS:1000}
   flight-device-check:
     schedule:
       enabled: ${APP_FLIGHT_DEVICE_CHECK_SCHEDULE_ENABLED:false}
