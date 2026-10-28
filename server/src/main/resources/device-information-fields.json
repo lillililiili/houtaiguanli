@@ -156,7 +156,7 @@
     },
     {
       "path": "/altitude_m",
-      "label": "安装高度",
+      "label": "海拔高度",
       "type": "number",
       "unit": "m",
       "required": false
