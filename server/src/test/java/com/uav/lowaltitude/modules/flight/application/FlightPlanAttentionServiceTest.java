@@ -182,7 +182,7 @@ class FlightPlanAttentionServiceTest {
                         "DEVICE_SCAN_COVERAGE",true,0,0,List.of(broken),true)) : Map.of());
         when(maintenance.openForPlans(anyList())).thenAnswer(call -> ((List<?>) call.getArgument(0)).contains(device.planId())
                 ? List.of(new PlanTask(device.planId(), "task-1", "雷达一号", "SUBMITTED")) : List.of());
-        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(seen("MATCHED"));
+        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(seen("FULL", null));
 
         var ranked = service.page(PlanQuery.empty(), ACCESS, null, 0, 20);
         assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(
@@ -205,7 +205,18 @@ class FlightPlanAttentionServiceTest {
         assertThat(service.page(PlanQuery.empty(), ACCESS, null, 0, 20).attention().get(device.planId()).kinds())
                 .containsExactly("RISK");
 
-        // 还没看到飞机（偏航判断里也没有关联目标）：设备照常提醒。
+        // 只要关联了目标就算看到，不论身份未定（PARTIAL）还是偏航（corridor MISMATCH）。
+        when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenReturn(List.of());
+        for (var match : List.of(seen("PARTIAL", null), seen("NONE", "MISMATCH"), seen("UNDETERMINED", null))) {
+            when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(match);
+            var page = service.page(PlanQuery.empty(), ACCESS, null, 0, 20);
+            assertThat(page.attention().get(device.planId()).kinds()).isEmpty();
+            assertThat(page.attention().get(device.planId()).matchIssue()).isNotNull();
+        }
+
+        // 还没看到飞机（没有关联目标）：设备照常提醒。
+        when(risks.pendingCountsByPlan(any(), anyList(), eq(ACCESS))).thenReturn(List.of(
+                new PlanStateCount(device.planId(), "PENDING_VERIFICATION", "WEATHER", "WEATHER_THUNDERSTORM", 1)));
         when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(match("NONE", null));
         assertThat(service.page(PlanQuery.empty(), ACCESS, null, 0, 20).attention().get(device.planId()).kinds())
                 .containsExactly("DEVICE", "RISK");
@@ -214,7 +225,7 @@ class FlightPlanAttentionServiceTest {
     @Test
     void viewerWhoCannotReadAssessmentsStillSeesDeviceProblemsOfASeenPlan() {
         when(actuals.assessmentAccess()).thenReturn(null);
-        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(seen("MATCHED"));
+        when(actuals.latestMatch(device.planId(), ACCESS)).thenReturn(seen("FULL", null));
         var ranked = service.page(PlanQuery.empty(), ACCESS, "DEVICE", 0, 20);
         assertThat(ranked.rows()).extracting(PlanRow::planId).containsExactly(device.planId());
         verify(actuals, never()).latestMatch(any(), any());
@@ -350,8 +361,10 @@ class FlightPlanAttentionServiceTest {
         return new MatchDto("AVAILABLE", code, "evaluation", 0L, null, hits, null, List.of());
     }
 
-    private static MatchDto seen(String code) {
-        return new MatchDto("AVAILABLE", code, "evaluation", 0L, null, List.of(), "target-1", List.of());
+    private static MatchDto seen(String code, String corridor) {
+        MatchDto unseen = match(code, corridor);
+        return new MatchDto(unseen.availability(), code, unseen.evaluationId(), unseen.evaluatedAt(), null,
+                unseen.hitDetailsC01(), "target-1", List.of());
     }
 
     private static PlanRow row(String id, String status, OffsetDateTime startAt) {

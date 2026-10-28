@@ -48,6 +48,8 @@
 
 2026-10-18 起只保留设备异常与风险待处理，旧两类筛选返回 400。`match_issue` 继续只读保留，`attention_summary.deviation/aircraft` 为兼容字段固定返回 0；匹配问题不计入 `needs_action`，也不优先排序。可选 `attention=DEVICE|RISK` 只筛选对应问题任务，`total` 是该筛选的完整数量；`attention_summary` 保留其他筛选条件下的全部问题分类统计，一个任务可同时计入多个问题类别。每个请求在只读可重复读事务中完成各批读取、事实查询、历史计数和分页，避免并发写入使同一响应的列表与数量不一致。后续请求会读取新的快照，不冻结任务历史或限制正常更新。未提供 `order` 时保持原列表顺序。
 
+2026-10-28 起，当前账号可读研判且执行中任务的最近一次 ACTIVE 研判带 `target_id`（已关联感知目标）时，该任务 `attention.kinds` 不含 `DEVICE`，`device_checks`、`device_tasks` 为空，也不计入 `attention_summary.device` 和 `attention=DEVICE`；风险类别不受影响。不能读研判的账号保持原口径。
+
 `GET /flight-plans` 接受：
 
 ```text
