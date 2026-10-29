@@ -85,7 +85,7 @@ const deviceForm = reactive({
   wire_encoding: 'AUTO', poll_interval_millis: 5000, broker_id: '', source_mode: 'live', scope_key: '',
   device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
   longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350,
-  station_guid: '', last_data_at: null
+  station_guid: '', last_data_at: null, ground_elevation_m: null, mount_height_m: null
 });
 // pingStation3 推送数据时带机身识别码；登记页用这里的提示告诉管理员往哪发、最近收到了哪些没登记的识别码。
 const stationHint = reactive({ udpPort: null, stations: [] });
@@ -101,6 +101,28 @@ function clearDevicePosition() {
 }
 function chooseDeviceLongitude(value) { deviceForm.longitude = value; deviceForm.coordinate_system = 'WGS-84'; }
 function chooseDeviceLatitude(value) { deviceForm.latitude = value; deviceForm.coordinate_system = 'WGS-84'; }
+// 地面海拔 + 架设高度 = 海拔高度。两项一起填；以前直接登记、没分开的海拔照旧显示。
+const loadedElevation = reactive({ ground: null, mount: null, altitude: null });
+function elevationNumber(value) { return value == null || value === '' ? null : Number(value); }
+function rememberElevation(source) {
+  deviceForm.ground_elevation_m = elevationNumber(source?.ground_elevation_m);
+  deviceForm.mount_height_m = elevationNumber(source?.mount_height_m);
+  Object.assign(loadedElevation, { ground: deviceForm.ground_elevation_m, mount: deviceForm.mount_height_m,
+    altitude: source?.altitude_datum === 'AMSL' || source?.altitude_datum == null ? elevationNumber(source?.altitude_m) : null });
+}
+const deviceAltitudeText = computed(() => {
+  const ground = elevationNumber(deviceForm.ground_elevation_m), mount = elevationNumber(deviceForm.mount_height_m);
+  if (ground != null && mount != null) return `${Number((ground + mount).toFixed(2))} 米（地面海拔 ${ground} 米 + 架设高度 ${mount} 米）`;
+  if (ground == null && mount == null && loadedElevation.altitude != null && loadedElevation.ground == null)
+    return `${loadedElevation.altitude} 米（以前登记的，没分开填地面海拔和架设高度）`;
+  return '未填写（地面海拔和架设高度都填了才算）';
+});
+function elevationChange() {
+  const ground = elevationNumber(deviceForm.ground_elevation_m), mount = elevationNumber(deviceForm.mount_height_m);
+  if ((ground == null) !== (mount == null)) throw new Error('地面海拔和架设高度要一起填写');
+  if (ground === loadedElevation.ground && mount === loadedElevation.mount) return null;
+  return { ground_elevation_m: ground, mount_height_m: mount };
+}
 const isWeather = computed(() => selectedType.value === 'weather_sensor');
 const isAdsb = computed(() => selectedType.value === 'adsb_receiver');
 const usesDemoConfiguration = computed(() => !deviceDialog.editing
@@ -227,6 +249,7 @@ function resetDeviceForm() {
     scope_key: '', device_type_abbr: 'radar', provider_code: '', external_device_id: '', edge_id: '', model: '', address: '',
     longitude: null, latitude: null, coordinate_system: 'WGS-84', version: null, simulated: false, receive_range_km: 350,
     station_guid: '', last_data_at: null });
+  rememberElevation(null);
   coordinatePickerOpen.value = false;
 }
 
@@ -279,6 +302,7 @@ async function openDevice(row = null) {
         longitude: current.longitude == null ? null : Number(current.longitude), latitude: current.latitude == null ? null : Number(current.latitude),
         coordinate_system: 'WGS-84', vendor: current.vendor || '', model: current.model || '', address: current.address || '',
         station_guid: current.station_guid || '', last_data_at: current.last_data_at ?? null });
+      rememberElevation(current);
     } else if (current) {
       const connection = current.connection || {}, protocol = current.protocol_configuration || {};
       Object.assign(deviceForm, {
@@ -293,6 +317,7 @@ async function openDevice(row = null) {
         coordinate_transform_enabled: Boolean(protocol.coordinate_transform_enabled), device_address: protocol.device_address || 1,
         wire_encoding: protocol.wire_encoding || 'AUTO', poll_interval_millis: protocol.poll_interval_millis || 5000
       });
+      rememberElevation(current);
       if ([MQTT_PROTOCOL, EO_PROTOCOL].includes(current.protocol_code)) {
         const status = await deviceApi.protocolStatus(row.device_id);
         const mqtt = status?.details || {};
@@ -344,8 +369,8 @@ async function saveDevice() {
   if (!isWeather.value && !isAdsb.value && !availableProtocols.value.some(item => item.protocol_code === deviceForm.protocol_code)) return;
   if (deviceDialog.optionsError || deviceDialog.optionsLoading) return;
   if (!await deviceFormRef.value.validate().catch(() => false) || deviceDialog.saving) return;
-  let location;
-  try { location = locationValues(); }
+  let location, elevation = null;
+  try { location = locationValues(); if (!isWeather.value) elevation = elevationChange(); }
   catch (e) { ElMessage.error(e.message); return; }
   const distanceProblem = isCountermeasure.value ? flightDistance.validate() : null;
   if (distanceProblem) { ElMessage.error(distanceProblem); return; }
@@ -380,7 +405,8 @@ async function saveDevice() {
         device_type_name: current.device.device_type_name, channel: current.device.channel, vendor: deviceForm.vendor || null,
         model: deviceForm.model || null, owner_name: current.owner_name || null, region_name: deviceForm.region_name || null,
         address: deviceForm.address || null, longitude: location.longitude, latitude: location.latitude,
-        coordinate_system: location.coordinate_system, allowed_cidrs: deviceForm.allowed_cidrs.trim(), connection: tcpConnection(deviceForm, current),
+        coordinate_system: location.coordinate_system, altitude_m: current.altitude_m ?? null, altitude_datum: current.altitude_datum ?? null,
+        allowed_cidrs: deviceForm.allowed_cidrs.trim(), connection: tcpConnection(deviceForm, current),
         protocol_configuration: { login_role: 'DATA', recognition_code_ref: deviceForm.recognition_code_ref || null,
           rtk_enabled: deviceForm.rtk_enabled, coordinate_transform_enabled: deviceForm.coordinate_transform_enabled,
           device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }
@@ -395,6 +421,7 @@ async function saveDevice() {
         device_address: deviceForm.device_address || 1, wire_encoding: deviceForm.wire_encoding || 'AUTO', poll_interval_millis: deviceForm.poll_interval_millis || 5000 }, key);
     }
     selectedId.value = saved.device.device_id;
+    if (elevation) await deviceApi.elevation(saved.device.device_id, elevation);
     if (isCountermeasure.value) {
       try { await flightDistance.save(saved.device.device_id); }
       catch (e) {
@@ -512,7 +539,10 @@ onBeforeUnmount(() => { mapWarmup.abort(); alive = false; detailSequence++; });
                 <div class="coordinate-fields">
                   <el-form-item label="安装经度"><el-input-number v-model="deviceForm.longitude" :min="-180" :max="180" :precision="7" :step="0.000001" controls-position="right" placeholder="例如：118.6592400" /></el-form-item>
                   <el-form-item label="安装纬度"><el-input-number v-model="deviceForm.latitude" :min="-90" :max="90" :precision="7" :step="0.000001" controls-position="right" placeholder="例如：37.4300000" /></el-form-item>
+                  <el-form-item label="地面海拔（米）"><el-input-number v-model="deviceForm.ground_elevation_m" :min="-500" :max="9000" :precision="1" :step="1" controls-position="right" placeholder="设备所在地面的海拔，例如：5" /></el-form-item>
+                  <el-form-item label="架设高度（米）"><el-input-number v-model="deviceForm.mount_height_m" :min="0" :max="1000" :precision="1" :step="1" controls-position="right" placeholder="设备离地面多高，例如：25" /></el-form-item>
                 </div>
+                <div class="access-field-note">海拔高度：{{ deviceAltitudeText }}</div>
                 <DeviceCoordinatePicker v-if="coordinatePickerOpen" :longitude="unsupportedCoordinateSystem ? null : deviceForm.longitude" :latitude="unsupportedCoordinateSystem ? null : deviceForm.latitude" :disabled="deviceDialog.saving" @update:longitude="chooseDeviceLongitude" @update:latitude="chooseDeviceLatitude" />
               </div>
               <div v-if="isCountermeasure && flightDistance.state.visible" class="wide adsb-receive-settings flight-distance-settings">

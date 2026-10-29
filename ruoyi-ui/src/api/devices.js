@@ -8,6 +8,7 @@ export const deviceApi = {
   detail: id => request({ url: `/v1/devices/${encodeURIComponent(id)}` }),
   onboard: (body, key = newIdempotencyKey('device-onboard')) => mutation('post', '/v1/devices/onboard', body, { idempotencyKey: key }),
   update: (id, body, key = newIdempotencyKey('device-update')) => mutation('put', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
+  elevation: (id, body) => mutation('put', `/v1/devices/${encodeURIComponent(id)}/elevation`, body),
   remove: (id, body, key = newIdempotencyKey('device-delete')) => mutation('delete', `/v1/devices/${encodeURIComponent(id)}`, body, { idempotencyKey: key }),
   setEnabled: (id, body, key = newIdempotencyKey('device-enabled')) => mutation('patch', `/v1/devices/${encodeURIComponent(id)}/enabled`, body, { idempotencyKey: key }),
   overview: (params = {}) => request({ url: `/v1/device-monitor/overview${queryString(params)}` }),

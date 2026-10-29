@@ -403,6 +403,14 @@ public class DeviceRepository {
                 """, values);
     }
 
+    public int updateElevation(String deviceId, BigDecimal ground, BigDecimal mount, BigDecimal altitude, String datum, long now) {
+        return jdbc.update("""
+                UPDATE ops_device SET ground_elevation_m=?, mount_height_m=?, altitude_m=?, altitude_datum=?,
+                    version=version+1, updated_at=?
+                WHERE device_id=? AND deleted_at IS NULL
+                """, ground, mount, altitude, datum, now, deviceId);
+    }
+
     public int updateDevice(String deviceId, long expectedVersion, Map<String, Object> values) {
         Map<String, Object> p = new HashMap<>(values);
         p.put("device_id", deviceId);

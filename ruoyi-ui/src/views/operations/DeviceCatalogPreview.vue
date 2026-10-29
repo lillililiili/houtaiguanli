@@ -15,7 +15,7 @@ const archive = computed(() => catalogInformation(props.detail));
 function fieldValue(key) { return key === 'device_no' ? formatDeviceNo(device.value[key]) : display(device.value[key]); }
 watch(() => [props.detail?.device?.device_id, props.observationsAllowed], () => { tab.value = isWeather.value && props.observationsAllowed ? 'weather' : 'location'; });
 const fields = computed(() => ({
-  location: [['longitude', '经度', '°'], ['latitude', '纬度', '°'], ['altitude_m', '海拔高度', 'm'], ['coordinate_system', '坐标系'], ['address', '安装位置'], ['region_name', '所属区域']],
+  location: [['longitude', '经度', '°'], ['latitude', '纬度', '°'], ['ground_elevation_m', '地面海拔', 'm'], ['mount_height_m', '架设高度', 'm'], ['altitude_m', '海拔高度', 'm'], ['coordinate_system', '坐标系'], ['address', '安装位置'], ['region_name', '所属区域']],
   basic: [['device_no', '设备编号'], ['device_type_name', '设备类型'], ['model', '设备型号'], ['vendor', '供应商'], ['firmware_version', '固件版本'], ['owner_name', '产权单位']],
   region: [['region_name', '所属区域'], ['owner_name', '产权单位'], ['address', '安装位置'], ['altitude_datum', '高度基准']]
 }[tab.value] || []));

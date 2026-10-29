@@ -196,7 +196,8 @@ public class DeviceService {
                 connection != null, text(row, "source_code"), text(row, "source_name"),
                 text(row, "protocol_code"), text(row, "protocol_version"), protocol,
                 metrics(text(row, "metrics_json")),
-                connection != null ? text(row, "allowed_cidrs") : null);
+                connection != null ? text(row, "allowed_cidrs") : null,
+                decimal(row, "ground_elevation_m"), decimal(row, "mount_height_m"));
     }
 
     public DeviceState state(String id) {
@@ -434,6 +435,31 @@ public class DeviceService {
     }
 
     public record CatalogBlockers(String deviceId, String deviceNo, String name, List<String> reasons) { }
+
+    /**
+     * 地面海拔 + 架设高度 = 设备海拔高度（altitude_m，基准 AMSL）。两项一起填或一起清空；
+     * 清空时海拔高度也清空，不留旧值。天气传感器没有安装位置，不收这两项。
+     */
+    @Transactional
+    public DeviceDetail updateElevation(String id, BigDecimal groundElevationM, BigDecimal mountHeightM) {
+        AuthUser user = access.requireDevicesOperate();
+        Map<String, Object> row = requiredDevice(id);
+        if ("weather_sensor".equals(text(row, "device_type_code")))
+            throw bad("VALIDATION_ERROR", "天气传感器不填地面海拔和架设高度");
+        if ((groundElevationM == null) != (mountHeightM == null))
+            throw bad("VALIDATION_ERROR", "地面海拔和架设高度要一起填写");
+        if (groundElevationM != null && (groundElevationM.compareTo(BigDecimal.valueOf(-500)) < 0
+                || groundElevationM.compareTo(BigDecimal.valueOf(9000)) > 0))
+            throw bad("VALIDATION_ERROR", "地面海拔须在 -500 到 9000 米之间");
+        if (mountHeightM != null && (mountHeightM.signum() < 0 || mountHeightM.compareTo(BigDecimal.valueOf(1000)) > 0))
+            throw bad("VALIDATION_ERROR", "架设高度须在 0 到 1000 米之间");
+        BigDecimal altitude = groundElevationM == null ? null : groundElevationM.add(mountHeightM);
+        long now = clock.nowMillis();
+        repository.updateElevation(id, groundElevationM, mountHeightM, altitude, altitude == null ? null : "AMSL", now);
+        audit.record(user.userId(), user.account(), "device_elevation_update", "device", id,
+                "ground=" + groundElevationM + "; mount=" + mountHeightM, null);
+        return detail(id);
+    }
 
     @Transactional
     public DeviceDetail upsertSensingProfile(String id, SensingProfileMutation mutation, String idempotencyKey) {
@@ -938,7 +964,7 @@ public class DeviceService {
                                ConnectionProfile connection, boolean connectionVisible, String sourceCode,
                                String sourceName, String protocolCode, String protocolVersion,
                                ProtocolConfiguration protocolConfiguration, List<MetricValue> metrics,
-                               String allowedCidrs) { }
+                               String allowedCidrs, BigDecimal groundElevationM, BigDecimal mountHeightM) { }
     public record DeviceState(String deviceId, String connectivity, String workStateCode, boolean hasAlarm,
                               String healthCode, Long observedAt, Long receivedAt, Long lastHeartbeatAt,
                               String unknownReason, List<MetricValue> metrics, boolean simulated) { }
