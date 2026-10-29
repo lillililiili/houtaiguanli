@@ -49,6 +49,9 @@ public final class TargetDtos {
     public record DisposalSummaryDto(String authorizationId, String authorizationNo, String actionType,
             String status) { }
 
+    /** Situation-only presentation; completion does not rewrite observed position or target life cycle. */
+    public record SituationVisibilityDto(String state) { }
+
     public record TargetSummaryDto(
             String targetId,
             String targetNo,
@@ -67,7 +70,8 @@ public final class TargetDtos {
             RiskSummaryDto riskSummary,
             LegalitySummaryDto legalitySummary,
             DisposalSummaryDto disposalSummary,
-            Long mapExpiresAt) {
+            Long mapExpiresAt,
+            SituationVisibilityDto situationVisibility) {
     }
 
     public record TargetDetailDto(

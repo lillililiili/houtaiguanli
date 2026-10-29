@@ -5,6 +5,9 @@ spring:
       on-profile: "local & qa & !production"
 
 app:
+  # 流程9的目标均带模拟来源；仅 local,qa 模拟预测窗口扩展到120秒，真实目标仍为10/20/30秒。
+  prediction:
+    qa-simulated-horizon-seconds: ${APP_PREDICTION_QA_SIMULATED_HORIZON_SECONDS:120}
   # 直接写入气象风险仅供显式隔离测试；设备模拟器提交观测和预报，由平台规则判断风险。
   weather-risk:
     qa:

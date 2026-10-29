@@ -18,10 +18,15 @@ import java.util.function.LongSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import com.uav.lowaltitude.platform.config.SimulationPolicy;
 
 /** Durable per-target outbox consumer. Its row lock also serializes retries and concurrent workers. */
 @Service
@@ -42,6 +47,7 @@ public class PredictionWorker {
     private final PredictionEngine engine = new PredictionEngine();
     private final PredictionSpatialEvaluator spatial = new PredictionSpatialEvaluator();
     private final PredictionStability stability = new PredictionStability();
+    private int simulatedForecastHorizonSeconds = 30;
 
     public PredictionWorker(JdbcTemplate jdbc, ObjectMapper json, PredictionJobQueue jobs,
             PredictionInputRepository inputs, PredictionConfiguration config, PredictionResponseService response,
@@ -49,6 +55,15 @@ public class PredictionWorker {
             AppClock clock, PlatformTransactionManager transactions) {
         this.jdbc=jdbc; this.json=json; this.jobs=jobs; this.inputs=inputs; this.config=config; this.response=response;
         this.alarms=alarms; this.events=events; this.numbers=numbers; this.clock=clock; this.tx=new TransactionTemplate(transactions);
+    }
+
+    @Autowired
+    public void configureSimulatedForecastHorizon(SimulationPolicy simulation, Environment environment,
+            @Value("${app.prediction.qa-simulated-horizon-seconds:30}") int configuredSeconds) {
+        if (configuredSeconds < 30 || configuredSeconds > 600)
+            throw new IllegalArgumentException("Invalid QA simulated prediction horizon");
+        if (simulation.allowed() && environment.acceptsProfiles(Profiles.of("local & qa & !prod & !production")))
+            simulatedForecastHorizonSeconds = configuredSeconds;
     }
 
     @Scheduled(scheduler=RealtimeSchedulingConfig.PREDICTION_SCHEDULER,
@@ -104,8 +119,9 @@ public class PredictionWorker {
         Target target=input.target();
         jdbc.update("INSERT INTO prediction_parameter_version(version_id,parameters_json,created_at) VALUES (?,CAST(? AS JSON),?) ON CONFLICT(version_id) DO NOTHING",
                 config.version(),config.serialized(),now);
+        int horizonSeconds=target.simulated()?simulatedForecastHorizonSeconds:30;
         PredictionEngine.Result result=input.invalidReason()==null
-                ? engine.forecast(input.points(),now,config.parameters().forecast())
+                ? engine.forecast(input.points(),now,config.parameters().forecast(),horizonSeconds)
                 : PredictionEngine.Result.unknown(input.invalidReason());
         var latest=input.points().stream().max(Comparator.comparingLong(PredictionEngine.Measurement::observedAt)).orElse(null);
         if(!result.reliable()) {
@@ -137,7 +153,7 @@ public class PredictionWorker {
             }
         }
         payload.put("evidence_notes",input.evidenceNotes());
-        var spatialResults=result.reliable()?spatial.evaluate(result.forecast(),input.airspaces()):List.<PredictionSpatialEvaluator.Assessment>of();
+        var spatialResults=result.reliable()?spatial.evaluate(result.forecast(),input.airspaces(),horizonSeconds):List.<PredictionSpatialEvaluator.Assessment>of();
         // Display and lifecycle use the same forecast and airspace versions in this transaction.
         // Reuse that calculation; never retain spatial decisions across observations or versions.
         Map<String,PredictionSpatialEvaluator.Assessment> spatialByRegion=new HashMap<>();

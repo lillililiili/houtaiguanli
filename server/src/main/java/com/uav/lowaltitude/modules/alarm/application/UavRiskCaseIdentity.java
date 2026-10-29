@@ -45,8 +45,13 @@ public class UavRiskCaseIdentity {
     public static final String CASE_LATEST_ENTRY = "COALESCE((SELECT MAX(al.observed_at) FROM prediction_actual_entry_link al"
             + " JOIN uav_risk_case_member em ON em.event_id=al.event_id AND em.risk_case_id=c.risk_case_id"
             + " WHERE al.target_id=c.target_id AND al.airspace_id=c.airspace_id),c.created_at)";
+    // Repeated inside observations renew evidence, not the beginning of this continuous risk.
+    // Clamp after MIN: the first measurement can precede the event's ingest/creation time.
+    public static final String CASE_FIRST_ENTRY = "GREATEST(c.created_at,COALESCE((SELECT MIN(al.observed_at) FROM prediction_actual_entry_link al"
+            + " JOIN uav_risk_case_member em ON em.event_id=al.event_id AND em.risk_case_id=c.risk_case_id"
+            + " WHERE al.target_id=c.target_id AND al.airspace_id=c.airspace_id),c.created_at))";
     public static final String CASE_COMPLETED = "EXISTS(" + CASE_AUTHORIZATION + " AND da.status='COMPLETED'"
-            + " AND CAST(EXTRACT(EPOCH FROM da.updated_at)*1000 AS BIGINT)>=" + CASE_LATEST_ENTRY
+            + " AND CAST(EXTRACT(EPOCH FROM da.updated_at)*1000 AS BIGINT)>=" + CASE_FIRST_ENTRY
             + " AND NOT EXISTS(" + CASE_AUTHORIZATION.replace("da.","newer.").replace("authorization da", "authorization newer")
             + " AND (newer.requested_at>da.requested_at OR (newer.requested_at=da.requested_at AND newer.authorization_id>da.authorization_id))))";
     public static final String CASE_DEPARTED = "EXISTS(SELECT 1 FROM uav_auto_voice_task vt WHERE vt.departure_evaluated_at IS NOT NULL"
@@ -118,6 +123,56 @@ public class UavRiskCaseIdentity {
         if(id==null)return null;
         var rows=detailRows(List.of(id));
         return rows.isEmpty()?null:rows.get(0);
+    }
+
+    /** Only call for targets already authorized by the target read service. Never changes their observations. */
+    public Set<String> situationCompletedTargets(Collection<String> targetIds) {
+        if(targetIds==null||targetIds.isEmpty())return Set.of();
+        var parameters=new HashMap<String,Object>();parameters.put("target_ids",targetIds);
+        long now=UavMeasuredRiskSql.addTimes(parameters,jdbc,clock,measuredQaAllowed,measuredSimulationAllowed);
+        parameters.put("prediction_now",now);
+        String stoppedAt="(SELECT done.completed_at FROM device_command done WHERE done.command_id=da.execution_command_id"
+                +" AND done.device_id=da.device_id AND done.source_mode=da.source_mode)";
+        String completion="("+CASE_AUTHORIZATION.replace("SELECT 1 FROM disposal_authorization da", "SELECT MAX("+stoppedAt+") FROM disposal_authorization da")
+                +" AND da.target_id=c.target_id AND EXISTS(SELECT 1 FROM uav_risk_case_member subject_member"
+                +" WHERE subject_member.risk_case_id=c.risk_case_id AND subject_member.event_id=da.subject_id)"
+                +" AND da.action_type='COUNTERMEASURE' AND "
+                +com.uav.lowaltitude.modules.disposal.infrastructure.DisposalRepository.PUNISHMENT_COMPLETION.replace("a.","da.")
+                +" AND "+stoppedAt+">="+CASE_FIRST_ENTRY
+                +" AND "+stoppedAt+"<=:prediction_now"
+                +" AND NOT EXISTS("+CASE_AUTHORIZATION.replace("da.","newer.").replace("authorization da", "authorization newer")
+                +" AND (newer.requested_at>da.requested_at OR (newer.requested_at=da.requested_at AND newer.authorization_id>da.authorization_id))))";
+        String unsettled="EXISTS("+CASE_AUTHORIZATION+" AND EXISTS(SELECT 1 FROM disposal_emergency_stop_device sd"
+                +" LEFT JOIN device_command sc ON sc.command_id=sd.command_id"
+                +" WHERE sd.authorization_id=da.authorization_id AND sd.source_mode=c.source_mode AND sd.stop_status<>'NOT_REQUIRED'"
+                +" AND (sc.command_id IS NULL OR sc.status<>'SUCCEEDED' OR sc.device_id<>sd.device_id OR sc.source_mode<>sd.source_mode"
+                +" OR sc.completed_at IS NULL OR sc.completed_at>:prediction_now)))";
+        String scope="(t.object_type_code='UAV' AND c.owner_org_id=t.owner_org_id AND c.district_id=t.district_id AND c.source_mode=t.source_mode"
+                +" AND root_event.owner_org_id=c.owner_org_id AND root_event.district_id=c.district_id"
+                +" AND root_alarm.target_id=c.target_id AND root_alarm.owner_org_id=c.owner_org_id"
+                +" AND root_alarm.district_id=c.district_id AND root_alarm.source_mode=c.source_mode)";
+        String sql="SELECT c.target_id,c.risk_case_id,c.created_at,c.source_mode,"+scope+" AS scope_matches,"
+                +STAGE+" AS stage,("+CASE_DEVICE_WORK_REMAINS+" OR "+unsettled+") AS work_remains,"+completion+" AS completed_at"
+                +" FROM uav_risk_case c JOIN target t ON t.target_id=c.target_id"
+                +" LEFT JOIN prediction_episode p ON p.episode_id=c.episode_id"
+                +" LEFT JOIN uav_event root_event ON root_event.event_id=c.root_event_id"
+                +" LEFT JOIN alarm root_alarm ON root_alarm.alarm_id=root_event.alarm_id"
+                +" WHERE c.target_id IN (:target_ids) AND c.superseded_by IS NULL";
+        var rows=namedJdbc.queryForList(UavRiskReadClock.align(UavMeasuredRiskSql.expand(sql,postgis),parameters,postgis,clock),parameters);
+        var byTarget=new HashMap<String,List<Map<String,Object>>>();
+        for(var row:rows)byTarget.computeIfAbsent((String)row.get("target_id"),key->new ArrayList<>()).add(row);
+        var completed=new HashSet<String>();
+        for(var entry:byTarget.entrySet()){
+            var cases=entry.getValue();
+            if(cases.stream().anyMatch(row->!Boolean.TRUE.equals(row.get("scope_matches"))
+                    ||Boolean.TRUE.equals(row.get("work_remains"))||!Set.of("CLEARED","ENDED").contains(row.get("stage"))
+                    ||("replay".equals(row.get("source_mode"))&&(!measuredQaAllowed||!measuredSimulationAllowed))))continue;
+            long finished=cases.stream().map(row->row.get("completed_at")).filter(Number.class::isInstance)
+                    .map(Number.class::cast).mapToLong(Number::longValue).max().orElse(Long.MIN_VALUE);
+            // A later episode cannot borrow an earlier cycle's completion, even when already cleared.
+            if(finished!=Long.MIN_VALUE&&cases.stream().noneMatch(row->((Number)row.get("created_at")).longValue()>finished))completed.add(entry.getKey());
+        }
+        return Set.copyOf(completed);
     }
     private List<Map<String,Object>> detailRows(Collection<String> ids){
         for(int attempt=0;;attempt++) {

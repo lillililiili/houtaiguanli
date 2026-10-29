@@ -16,7 +16,7 @@ import com.uav.lowaltitude.modules.prediction.domain.PredictionEngine.Point;
 import com.uav.lowaltitude.modules.prediction.domain.PredictionStability.Decision;
 
 /**
- * Continuous 0..30 second space/time intersection, including polygon holes and multiple polygons.
+ * Continuous measured-to-forecast space/time intersection, including polygon holes and multiple polygons.
  * Every segment is divided at temporal, vertical and moving uncertainty-disc/edge roots.
  * Thus a narrow region between the three displayed milestones cannot be skipped.
  * Metric calculations use the same local ENU projection as the forecasting engine.
@@ -53,17 +53,27 @@ public final class PredictionSpatialEvaluator {
     private record Classification(Decision decision, String reason) { }
 
     public List<Assessment> evaluate(Forecast forecast, List<AirspaceVersion> versions) {
+        return evaluate(forecast, versions, 30);
+    }
+
+    /** Longer forecast windows are enabled only by the caller for explicitly simulated QA targets. */
+    public List<Assessment> evaluate(Forecast forecast, List<AirspaceVersion> versions, int horizonSeconds) {
         Map<String, List<AirspaceVersion>> byAirspace = new LinkedHashMap<>();
         if (versions != null) for (AirspaceVersion v : versions) {
             if (v == null || v.airspaceId() == null) throw new IllegalArgumentException("Airspace identity is required");
             byAirspace.computeIfAbsent(v.airspaceId(), key -> new ArrayList<>()).add(v);
         }
-        return byAirspace.entrySet().stream().map(e -> evaluateForAirspace(e.getKey(), forecast, e.getValue())).toList();
+        return byAirspace.entrySet().stream().map(e -> evaluateForAirspace(e.getKey(), forecast, e.getValue(), horizonSeconds)).toList();
     }
 
     public Assessment evaluateForAirspace(String airspaceId, Forecast forecast, List<AirspaceVersion> versions) {
-        if (!validForecast(forecast)) return result(airspaceId, Decision.UNKNOWN, null, Set.of(), Set.of("PREDICTION_UNAVAILABLE"));
-        long start = forecast.originAt(), end = start + 30_000;
+        return evaluateForAirspace(airspaceId, forecast, versions, 30);
+    }
+
+    public Assessment evaluateForAirspace(String airspaceId, Forecast forecast, List<AirspaceVersion> versions, int horizonSeconds) {
+        if (horizonSeconds < 30 || horizonSeconds > 600 || !validForecast(forecast, horizonSeconds))
+            return result(airspaceId, Decision.UNKNOWN, null, Set.of(), Set.of("PREDICTION_UNAVAILABLE"));
+        long start = forecast.originAt(), end = start + horizonSeconds * 1000L;
         List<AirspaceVersion> relevant = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>(), reasons = new LinkedHashSet<>();
         Map<String, AirspaceVersion> unique = new LinkedHashMap<>();
@@ -96,7 +106,7 @@ public final class PredictionSpatialEvaluator {
                 Point first = forecast.points().get(i - 1), last = forecast.points().get(i);
                 double firstAt = start + first.seconds() * 1000.0, lastAt = start + last.seconds() * 1000.0;
                 double from = Math.max(firstAt, version.validFrom());
-                double to = Math.min(lastAt, version.validTo() == null ? Double.POSITIVE_INFINITY : version.validTo());
+                double to = Math.min(Math.min(lastAt, end), version.validTo() == null ? Double.POSITIVE_INFINITY : version.validTo());
                 if (from > to || from >= (version.validTo() == null ? Double.POSITIVE_INFINITY : version.validTo())) continue;
                 double duration = lastAt - firstAt;
                 double lo = (from - firstAt) / duration, hi = (to - firstAt) / duration;
@@ -112,7 +122,7 @@ public final class PredictionSpatialEvaluator {
                 probes.sort(Double::compare);
                 for (double u : probes) {
                     double at = firstAt + duration * u;
-                    // Effective windows are half open, including a version beginning exactly at +30s.
+                    // Effective windows are half open, including a version beginning exactly at the horizon.
                     if (at < version.validFrom() || version.validTo() != null && at >= version.validTo()) continue;
                     Classification c = classify(interpolate(a, b, u), version, shapes);
                     if (c.decision() == Decision.ENTER) {
@@ -133,10 +143,10 @@ public final class PredictionSpatialEvaluator {
         return new Assessment(id, decision, at, List.copyOf(versions), List.copyOf(reasons));
     }
 
-    private static boolean validForecast(Forecast forecast) {
+    private static boolean validForecast(Forecast forecast, int horizonSeconds) {
         if (forecast == null || forecast.points() == null || forecast.points().size() < 2) return false;
         List<Point> points = forecast.points();
-        if (points.get(0).seconds() != 0 || points.get(points.size() - 1).seconds() != 30) return false;
+        if (points.get(0).seconds() != 0 || points.get(points.size() - 1).seconds() < horizonSeconds) return false;
         int prior = -1;
         for (Point p : points) {
             if (p.seconds() <= prior || !validCoordinate(p.longitude(), p.latitude()) || !Double.isFinite(p.uncertaintyM()) || p.uncertaintyM() < 0) return false;

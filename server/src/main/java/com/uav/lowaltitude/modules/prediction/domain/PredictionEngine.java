@@ -59,6 +59,13 @@ public final class PredictionEngine {
     }
 
     public Result forecast(List<Measurement> measurements, long asOf, Config config) {
+        return forecast(measurements, asOf, config, 30);
+    }
+
+    /** QA-only callers may request a longer horizon for explicitly simulated targets. */
+    public Result forecast(List<Measurement> measurements, long asOf, Config config, int horizonSeconds) {
+        if (horizonSeconds < 30 || horizonSeconds > 600)
+            throw new IllegalArgumentException("Invalid prediction horizon");
         if (measurements == null || measurements.isEmpty()) return Result.unknown("NO_MEASUREMENTS");
         List<Measurement> ordered = measurements.stream().filter(m -> m != null && m.observedAt() >= asOf - config.windowMillis())
                 .sorted(Comparator.comparingLong(Measurement::observedAt).thenComparingLong(Measurement::receivedAt)
@@ -121,13 +128,13 @@ public final class PredictionEngine {
         notes.add("ERROR_BOUNDS_ARE_MODEL_ESTIMATES");
         if (amsl != null || agl != null) notes.add("ALTITUDE_ERROR_IS_MODEL_ASSUMPTION");
         List<Point> points = new ArrayList<>(), milestones = new ArrayList<>();
-        for (int second = 0; second <= 30; second++) {
+        for (int second = 0; second <= horizonSeconds; second++) {
             double dt = delay + second;
             double[] lonLat = AlphaBetaFilter.fromEnu(latest.longitude(), latest.latitude(), fit.x + fit.vx * dt, fit.y + fit.vy * dt);
             double error = baseError + velocityError * dt + config.accelerationErrorMps2() * dt * dt / 2;
             Point p = new Point(second, lonLat[0], lonLat[1], error, heightAt(amsl, dt, config), heightAt(agl, dt, config));
             points.add(p);
-            if (second == 10 || second == 20 || second == 30) milestones.add(p);
+            if (second == 10 || second == 20 || second == 30 || (second > 30 && second % 30 == 0)) milestones.add(p);
         }
         double heading = (Math.toDegrees(Math.atan2(fit.vx, fit.vy)) + 360) % 360;
         Quality quality = new Quality(samples.size(), span, speed, heading, direction, speedChange, fit.normalizedResidual, velocityError, notes);

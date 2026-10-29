@@ -860,6 +860,118 @@ class UavRiskCaseReadPostgresTest {
     }
 
     @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void completedContinuousRiskStaysEndedWhenLaterMeasurementsRenewEvidence(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);
+        Cycle completed=f.predict(id(),f.now-2000),neighbor=f.predict(id(),f.now-1000);
+        f.confirm(completed);
+        String event=f.enter(List.of(completed,neighbor)),actor=actor(f);
+        String auth=authorization(f,completed.episode(),event,actor,"COMPLETED");
+        long finished=f.now+1000,later=f.now+5000;
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(finished),auth);
+        completeDevice(f,auth,actor,finished);
+        assertThat(f.identities(finished).find(completed.episode()).stage()).isEqualTo("ENDED");
+
+        f.renewEntries(event,later,List.of(completed.airspace(),neighbor.airspace()));
+        assertThat(f.identities(later).find(completed.episode()).stage()).isEqualTo("ENDED");
+        assertThat(f.identities(later).find(neighbor.episode()).stage()).isEqualTo("ENTERED");
+        var reader=f.reader(f.clock(later));
+        assertThat(reader.situationRows(ALL).stream().filter(row->f.target.equals(row.alarm().targetId())))
+                .extracting(row->row.alarm().riskCaseId()).containsExactly(neighbor.episode());
+        assertThat(reader.list(query(f,"ENDED",List.of("HISTORY"),false),ALL,0,10,null,null))
+                .extracting(AlarmReadRepository.AlarmRow::riskCaseId).containsExactly(completed.episode());
+        assertThat(reader.situationItem(ALL,"risk",completed.episode()).stage()).isEqualTo("ENDED");
+        assertThat(reader.targetReadable(f.target,ALL)).isTrue();
+        assertThat(f.jdbc.queryForObject("SELECT CAST(EXTRACT(EPOCH FROM observed_at)*1000 AS BIGINT) FROM target_latest_state WHERE target_id=?",Long.class,f.target)).isEqualTo(later);
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM prediction_actual_entry_link WHERE event_id=?",Long.class,event)).isEqualTo(4L);
+        assertThat(f.identities(later).allCases(event)).hasSize(2);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void completedRiskDoesNotHideANewCycleInTheSameArea(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle first=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(first)),actor=actor(f),auth=authorization(f,first.episode(),event,actor,"COMPLETED");
+        long finished=f.now+1000,later=f.now+5000;
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(finished),auth);
+        completeDevice(f,auth,actor,finished);
+        // An independently established new episode owns its own identity and never borrows the old authorization.
+        f.jdbc.update("UPDATE prediction_episode SET active_key=NULL,closed_at=? WHERE episode_id=?",finished+1000,first.episode());
+        Cycle next=f.predict(first.airspace(),finished+2000);
+        String nextEvent=f.event("RULE_LEGALITY",later);
+        f.renewEntries(nextEvent,later,List.of(next.airspace()));
+        f.jdbc.update("INSERT INTO prediction_event_link(event_id,episode_id,role,created_at) VALUES(?,?,'OBSERVED',?)",nextEvent,next.episode(),later);
+        f.jdbc.update("UPDATE prediction_episode SET status='ENTERED',entered_evidence_valid=TRUE WHERE episode_id=?",next.episode());
+        assertThat(f.identities(later).find(first.episode()).stage()).isEqualTo("ENDED");
+        assertThat(f.identities(later).find(next.episode()).stage()).isEqualTo("ENTERED");
+        assertThat(f.reader(f.clock(later)).situationRows(ALL).stream().filter(row->f.target.equals(row.alarm().targetId())))
+                .extracting(row->row.alarm().riskCaseId()).containsExactly(next.episode());
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void completionBeforeFirstMeasuredEntryDoesNotHideThatEntry(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-2000);
+        String actor=actor(f),auth=authorization(f,cycle.episode(),cycle.event(),actor,"COMPLETED");
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(f.now-1000),auth);
+        completeDevice(f,auth,actor,f.now-1000);
+        f.enter(List.of(cycle));
+        assertThat(f.identities().find(cycle.episode()).stage()).isEqualTo("ENTERED");
+        assertThat(f.reader().situationRows(ALL).stream().filter(row->f.target.equals(row.alarm().targetId())))
+                .extracting(row->row.alarm().riskCaseId()).containsExactly(cycle.episode());
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void firstEntryBeforeCaseCreationIsClampedOnceWithoutMovingOnRenewal(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);
+        String event=f.event("RULE_LEGALITY",f.now),area=id(),actor=actor(f);
+        f.actualEntry(event,area,f.now-1000);
+        String risk=f.identities().allCases(event).get(0).riskCaseId();
+        String auth=authorization(f,risk,event,actor,"COMPLETED");
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(f.now-500),auth);
+        assertThat(f.identities().find(risk).stage()).as("A completion older than this case cannot close it").isEqualTo("ENTERED");
+        long finished=f.now+1000,later=f.now+5000;
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(finished),auth);
+        completeDevice(f,auth,actor,finished);
+        f.renewEntries(event,later,List.of(area));
+        assertThat(f.identities(later).find(risk).stage()).isEqualTo("ENDED");
+        assertThat(f.reader(f.clock(later)).situationRows(ALL).stream().filter(row->f.target.equals(row.alarm().targetId()))).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void newerAuthorizationKeepsRiskCurrentAfterAnOlderCompletion(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(cycle)),actor=actor(f),completed=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+        completeDevice(f,completed,actor,f.now);
+        String newer=authorization(f,cycle.episode(),event,actor,"EXECUTING");
+        f.jdbc.update("UPDATE disposal_authorization SET requested_at=?,updated_at=? WHERE authorization_id=?",at(f.now+1000),at(f.now+1000),newer);
+        long later=f.now+5000;f.renewEntries(event,later,List.of(cycle.airspace()));
+        assertThat(f.identities(later).find(cycle.episode()).stage()).isEqualTo("ENTERED");
+        var current=f.reader(f.clock(later)).situationItem(ALL,"risk",cycle.episode());
+        assertThat(current.workRemains()).isTrue();
+        assertThat(f.reader(f.clock(later)).situationRows(ALL).stream().filter(row->f.target.equals(row.alarm().targetId())))
+                .extracting(row->row.alarm().riskCaseId()).containsExactly(cycle.episode());
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void completedRiskKeepsAnUnconfirmedStopUntilTheRealReceipt(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(cycle)),actor=actor(f),auth=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+        completeDevice(f,auth,actor,f.now);
+        String device=f.jdbc.queryForObject("SELECT device_id FROM disposal_authorization WHERE authorization_id=?",String.class,auth),stop=id(),command=id();
+        f.jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,?,'COUNTERMEASURE_ALL_OFF','isolated pending stop','QUEUED',?,?,?,?)",command,command,device,actor,mode,!mode.equals("live"),f.now,f.now);
+        f.jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note,request_origin) VALUES(?,?,?,?,?,'SYSTEM_PREDICTION_STOP')",stop,event,actor,f.now,"isolated pending stop");
+        f.jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,command_id,stop_status,detail) VALUES(?,?,?,'isolated device','COUNTERMEASURE_4CH',?,?,?,'QUEUED','waiting all-off')",stop,device,auth,mode,!mode.equals("live"),command);
+        long later=f.now+5000;f.renewEntries(event,later,List.of(cycle.airspace()));
+        var reader=f.reader(f.clock(later));
+        for(String state:List.of("QUEUED","TIMED_OUT")){
+            f.jdbc.update("UPDATE device_command SET status=? WHERE command_id=?",state,command);
+            var pending=reader.situationRows(ALL).stream().filter(row->cycle.episode().equals(row.alarm().riskCaseId())).findFirst().orElseThrow();
+            assertThat(pending.stage()).isEqualTo("ENDED");assertThat(pending.workRemains()).isTrue();
+            assertThat(f.identities(later).details(cycle.episode())).containsEntry("device_work_remains",true);
+        }
+        f.jdbc.update("UPDATE device_command SET status='SUCCEEDED',completed_at=?,result_code='ALL_OFF_ACK' WHERE command_id=?",later,command);
+        assertThat(reader.situationRows(ALL).stream().filter(row->f.target.equals(row.alarm().targetId()))).isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
     void legacyUnscopedDepartureCannotClearSharedEventAreasButExactScopeClearsOnlyItsCase(String mode){
         Fixtures f=new Fixtures(DATABASE,mode);
         String event=f.event("RULE_LEGALITY",f.now-2000),areaA=id(),areaB=id();
@@ -886,6 +998,178 @@ class UavRiskCaseReadPostgresTest {
         assertThat(f.reader().list(query(f,"ENTERED",List.of("CURRENT"),false),ALL,0,10,null,null))
                 .extracting(AlarmReadRepository.AlarmRow::riskCaseId).containsExactly(second);
         assertThat(f.jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,event)).isEqualTo("PENDING_VERIFICATION");
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void situationCompletionHidesRenewedTargetWithoutChangingObservationsOrHistory(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-2000);f.confirm(cycle);
+        String event=f.enter(List.of(cycle)),actor=actor(f),auth=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+        long finished=f.now+1000,later=f.now+5000;
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(finished),auth);
+        String command=completeDevice(f,auth,actor,finished);
+        f.renewEntries(event,later,List.of(cycle.airspace()));
+        var state=f.jdbc.queryForMap("SELECT observed_at,received_at,ST_AsText(location) AS location FROM target_latest_state WHERE target_id=?",f.target);
+        long observations=f.jdbc.queryForObject("SELECT COUNT(*) FROM track_point WHERE track_id=?",Long.class,f.measuredTrack);
+
+        assertThat(f.identities(later).situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+        assertThat(f.jdbc.queryForMap("SELECT observed_at,received_at,ST_AsText(location) AS location FROM target_latest_state WHERE target_id=?",f.target)).isEqualTo(state);
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM track_point WHERE track_id=?",Long.class,f.measuredTrack)).isEqualTo(observations).isEqualTo(2L);
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM prediction_actual_entry_link WHERE event_id=?",Long.class,event)).isEqualTo(2L);
+        assertThat(f.jdbc.queryForObject("SELECT state_code FROM uav_event WHERE event_id=?",String.class,event)).isEqualTo("PENDING_VERIFICATION");
+        assertThat(f.jdbc.queryForObject("SELECT completed_at FROM device_command WHERE command_id=?",Long.class,command)).isEqualTo(finished);
+        assertThat(f.identities(later).eventIds(cycle.episode())).containsExactlyInAnyOrder(cycle.event(),event);
+        var reader=f.reader(f.clock(later));
+        assertThat(reader.targetReadable(f.target,ALL)).isTrue();
+        assertThat(reader.list(query(f,"ENDED",List.of("HISTORY"),false),ALL,0,10,null,null))
+                .extracting(AlarmReadRepository.AlarmRow::riskCaseId).containsExactly(cycle.episode());
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void situationCompletionRequiresSuccessfulTimelyCountermeasureOffReceipt(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(cycle)),actor=actor(f);
+        long finished=f.now+1000,later=f.now+5000;
+        var identities=f.identities(later);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("No authorization is no completion").isEmpty();
+        String auth=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+        f.jdbc.update("UPDATE disposal_authorization SET updated_at=? WHERE authorization_id=?",at(finished),auth);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A COMPLETED label without a real off receipt is insufficient").isEmpty();
+        String command=completeDevice(f,auth,actor,finished);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+
+        for(String status:List.of("QUEUED","FAILED","TIMED_OUT")){
+            f.jdbc.update("UPDATE device_command SET status=? WHERE command_id=?",status,command);
+            assertThat(identities.situationCompletedTargets(List.of(f.target))).as("Off command %s is not a successful receipt",status).isEmpty();
+        }
+        f.jdbc.update("UPDATE device_command SET status='SUCCEEDED',completed_at=NULL WHERE command_id=?",command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("An absent completion time cannot close a cycle").isEmpty();
+        for(long receipt:List.of(f.now-1,later+1)){
+            f.jdbc.update("UPDATE device_command SET completed_at=? WHERE command_id=?",receipt,command);
+            assertThat(identities.situationCompletedTargets(List.of(f.target))).as("Receipt %s must lie between first entry and the read clock",receipt).isEmpty();
+        }
+        f.jdbc.update("UPDATE device_command SET completed_at=? WHERE command_id=?",finished,command);
+        for(String status:List.of("FAILED","EXPIRED","STOPPED")){
+            f.jdbc.update("UPDATE disposal_authorization SET status=? WHERE authorization_id=?",status,auth);
+            assertThat(identities.situationCompletedTargets(List.of(f.target))).as("Authorization %s is not completed countermeasure work",status).isEmpty();
+        }
+        f.jdbc.update("UPDATE disposal_authorization SET status='COMPLETED',action_type='JAMMING' WHERE authorization_id=?",auth);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("Legacy jamming completion does not supply the new map decision").isEmpty();
+        f.jdbc.update("UPDATE disposal_authorization SET action_type='COUNTERMEASURE' WHERE authorization_id=?",auth);
+        f.jdbc.update("UPDATE countermeasure_4ch_command SET action='SET_MASK',channel=NULL,mask=13 WHERE command_id=?",command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A successful nonzero mask is not all-off").isEmpty();
+        f.jdbc.update("UPDATE countermeasure_4ch_command SET action='SET_MASK',channel=NULL,mask=0 WHERE command_id=?",command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void situationCompletionWaitsForEveryAreaAndDoesNotBorrowAnOlderAuthorization(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle first=f.predict(id(),f.now-2000),second=f.predict(id(),f.now-1000);
+        String event=f.enter(List.of(first,second)),actor=actor(f);
+        long finished=f.now+1000,later=f.now+5000;
+        String firstAuth=authorization(f,first.episode(),event,actor,"COMPLETED");
+        completeDevice(f,firstAuth,actor,finished);
+        var identities=f.identities(later);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("The independent second area is still entered").isEmpty();
+        String secondAuth=authorization(f,second.episode(),event,actor,"COMPLETED");
+        completeDevice(f,secondAuth,actor,finished+1000);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+
+        String newer=authorization(f,second.episode(),event,actor,"EXECUTING");
+        f.jdbc.update("UPDATE disposal_authorization SET requested_at=?,updated_at=? WHERE authorization_id=?",at(finished+2000),at(finished+2000),newer);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A newer authorization owns the second area's current work").isEmpty();
+        f.jdbc.update("UPDATE disposal_authorization SET status='EXPIRED' WHERE authorization_id=?",newer);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("Expiry of the newer attempt does not revive an older completion").isEmpty();
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void situationCompletionDoesNotHideALaterCycleEvenWhenAlreadyCleared(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle first=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(first)),actor=actor(f),auth=authorization(f,first.episode(),event,actor,"COMPLETED");
+        long finished=f.now+1000,later=f.now+5000;
+        completeDevice(f,auth,actor,finished);
+        assertThat(f.identities(later).situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+        f.jdbc.update("UPDATE prediction_episode SET active_key=NULL,closed_at=? WHERE episode_id=?",finished+500,first.episode());
+        Cycle next=f.predict(first.airspace(),finished+1000);
+        assertThat(f.identities(later).situationCompletedTargets(List.of(f.target))).as("A new active cycle remains visible").isEmpty();
+        f.jdbc.update("UPDATE prediction_episode SET status='CLEARED',active_key=NULL,closed_at=? WHERE episode_id=?",later,next.episode());
+        assertThat(f.identities(later).find(next.episode()).stage()).isEqualTo("CLEARED");
+        assertThat(f.identities(later).situationCompletedTargets(List.of(f.target))).as("A cleared new cycle cannot borrow a previous cycle's completion").isEmpty();
+    }
+
+    @ParameterizedTest @org.junit.jupiter.params.provider.CsvSource({
+            "live,SYSTEM_PREDICTION_STOP","replay,SYSTEM_PREDICTION_STOP",
+            "live,MANUAL","replay,MANUAL","live,SYSTEM_AIRCRAFT_STOP","replay,SYSTEM_AIRCRAFT_STOP"})
+    void situationCompletionWaitsForStopReceiptFromEveryOrigin(String mode,String origin){
+        Fixtures f=new Fixtures(DATABASE,mode);Cycle cycle=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(cycle)),actor=actor(f),auth=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+        long finished=f.now+1000,later=f.now+5000;
+        completeDevice(f,auth,actor,finished);
+        var identities=f.identities(later);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+        String device=f.jdbc.queryForObject("SELECT device_id FROM disposal_authorization WHERE authorization_id=?",String.class,auth);
+        String stop=id(),command=id();
+        f.jdbc.update("INSERT INTO disposal_emergency_stop(stop_id,event_id,requested_by,requested_at,note,request_origin) VALUES(?,?,?,?,?,?)",stop,event,actor,finished+100,"Isolated pending stop",origin);
+        f.jdbc.update("INSERT INTO disposal_emergency_stop_device(stop_id,device_id,authorization_id,device_name,channel,source_mode,simulated,stop_status,detail) VALUES(?,?,?,'Isolated counter','COUNTERMEASURE_4CH',?,?,'QUEUED','Awaiting all-off')",stop,device,auth,mode,!mode.equals("live"));
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s without a command receipt remains visible",origin).isEmpty();
+        f.jdbc.update("INSERT INTO device_command(command_id,command_no,device_id,requested_by,command_type,reason,status,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,?,'COUNTERMEASURE_ALL_OFF','Isolated pending stop','QUEUED',?,?,?,?)",command,command,device,actor,mode,!mode.equals("live"),finished+100,finished+100);
+        f.jdbc.update("UPDATE disposal_emergency_stop_device SET command_id=? WHERE stop_id=? AND device_id=?",command,stop,device);
+        for(String status:List.of("QUEUED","TIMED_OUT","FAILED")){
+            f.jdbc.update("UPDATE device_command SET status=? WHERE command_id=?",status,command);
+            assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s %s is still an unsettled stop",origin,status).isEmpty();
+        }
+        f.jdbc.update("UPDATE device_command SET status='SUCCEEDED',completed_at=?,result_code='ALL_OFF_ACK' WHERE command_id=?",later,command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+        f.jdbc.update("UPDATE device_command SET completed_at=NULL WHERE command_id=?",command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s needs a recorded stop completion time",origin).isEmpty();
+        f.jdbc.update("UPDATE device_command SET completed_at=? WHERE command_id=?",later+1,command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s cannot use a future stop receipt",origin).isEmpty();
+        f.jdbc.update("UPDATE device_command SET completed_at=?,source_mode=? WHERE command_id=?",later,"live".equals(mode)?"replay":"live",command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s cannot borrow a stop receipt from another source",origin).isEmpty();
+        String otherDevice=id();
+        f.jdbc.update("INSERT INTO ops_device(device_id,device_no,name,device_type_name,channel,source_mode,simulated,created_at,updated_at) VALUES(?,?,?,'反制','测试',?,?,?,?)",otherDevice,otherDevice,"Other isolated counter",mode,!mode.equals("live"),f.now,f.now);
+        f.jdbc.update("UPDATE device_command SET source_mode=?,device_id=? WHERE command_id=?",mode,otherDevice,command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s cannot borrow another device's stop receipt",origin).isEmpty();
+        f.jdbc.update("UPDATE device_command SET device_id=? WHERE command_id=?",device,command);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("%s is settled only after the matching timely receipt is restored",origin).containsExactly(f.target);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void situationCompletionRejectsTargetAuthorizationAndRiskScopeMismatches(String mode){
+        Fixtures f=new Fixtures(DATABASE,mode),other=new Fixtures(DATABASE,mode);
+        Cycle cycle=f.predict(id(),f.now-2000);
+        String event=f.enter(List.of(cycle)),actor=actor(f),auth=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+        long finished=f.now+1000,later=Math.max(f.now,other.now)+5000;
+        completeDevice(f,auth,actor,finished);
+        var identities=f.identities(later);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+        f.jdbc.update("UPDATE disposal_authorization SET target_id=? WHERE authorization_id=?",other.target,auth);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A same-case authorization for a different target is not this target's completion").isEmpty();
+        f.jdbc.update("UPDATE disposal_authorization SET target_id=? WHERE authorization_id=?",f.target,auth);
+        f.jdbc.update("UPDATE target SET owner_org_id=? WHERE target_id=?",other.org,f.target);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A different target owner cannot borrow the risk").isEmpty();
+        f.jdbc.update("UPDATE target SET owner_org_id=?,district_id=? WHERE target_id=?",f.org,other.district,f.target);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A different district cannot borrow the risk").isEmpty();
+        f.jdbc.update("UPDATE target SET district_id=?,source_mode=? WHERE target_id=?",f.district,"live".equals(mode)?"replay":"live",f.target);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).as("A different source cannot borrow the risk").isEmpty();
+        f.jdbc.update("UPDATE target SET source_mode=? WHERE target_id=?",mode,f.target);
+        assertThat(identities.situationCompletedTargets(List.of(f.target))).containsExactly(f.target);
+    }
+
+    @ParameterizedTest @ValueSource(strings={"live","replay"})
+    void situationCompletionReturnsOnlyTargetsFromTheAlreadyReadableInputPage(String mode){
+        Fixtures first=new Fixtures(DATABASE,mode),second=new Fixtures(DATABASE,mode);
+        for(Fixtures f:List.of(first,second)){
+            Cycle cycle=f.predict(id(),f.now-2000);
+            String event=f.enter(List.of(cycle)),actor=actor(f),auth=authorization(f,cycle.episode(),event,actor,"COMPLETED");
+            completeDevice(f,auth,actor,f.now+1000);
+        }
+        var identities=first.identities(Math.max(first.now,second.now)+5000);
+        assertThat(identities.situationCompletedTargets(List.of(first.target,second.target))).containsExactlyInAnyOrder(first.target,second.target);
+        assertThat(identities.situationCompletedTargets(List.of(first.target,id()))).containsExactly(first.target);
+        assertThat(identities.situationCompletedTargets(List.of(second.target))).containsExactly(second.target);
+        assertThat(identities.situationCompletedTargets(List.of(id()))).isEmpty();
+        assertThat(identities.situationCompletedTargets(List.of())).isEmpty();
+        assertThat(identities.situationCompletedTargets(null)).isEmpty();
     }
 
     @ParameterizedTest @ValueSource(strings={"live","replay"})
@@ -1227,8 +1511,10 @@ class UavRiskCaseReadPostgresTest {
             }
             jdbc.update("INSERT INTO rule_run(run_id,rule_set_id,rule_set_version_id,mode,trigger_kind,as_of,started_at,finished_at,status,source_mode,created_at) VALUES(?,?,?,'ACTIVE','MANUAL',?,?,?,'DONE',?,?)",run,ruleSet,ruleVersion,at(now),at(now),at(now),mode,at(now));
         }
-        AppClock clock() { return new AppClock(Clock.fixed(Instant.ofEpochMilli(now),ZoneOffset.UTC)); }
-        UavRiskCaseIdentity identities() { return qa(new UavRiskCaseIdentity(jdbc,clock())); }
+        AppClock clock() { return clock(now); }
+        AppClock clock(long at) { return new AppClock(Clock.fixed(Instant.ofEpochMilli(at),ZoneOffset.UTC)); }
+        UavRiskCaseIdentity identities() { return identities(now); }
+        UavRiskCaseIdentity identities(long at) { return qa(new UavRiskCaseIdentity(jdbc,clock(at))); }
         AlarmReadRepository reader() {return reader(clock());}
         AlarmReadRepository reader(AppClock readClock) {
             FusionConfigService fusion=mock(FusionConfigService.class);
@@ -1294,19 +1580,31 @@ class UavRiskCaseReadPostgresTest {
             }
             return observed;
         }
-        void actualEntry(String event,String airspace) {
-            if(jdbc.queryForObject("SELECT COUNT(*) FROM track WHERE target_id=?",Long.class,target)==0)measuredPoint(now,longitude,100);
-            String evaluation=id();
+        void actualEntry(String event,String airspace) { actualEntry(event,airspace,now); }
+        void actualEntry(String event,String airspace,long observed) {
+            if(jdbc.queryForObject("SELECT COUNT(*) FROM track WHERE target_id=?",Long.class,target)==0)measuredPoint(observed,longitude,100);
             var existing=jdbc.queryForList("SELECT evaluation_id FROM rule_evaluation WHERE alarm_id=(SELECT alarm_id FROM uav_event WHERE event_id=?) ORDER BY evaluated_at DESC,evaluation_id DESC FETCH FIRST 1 ROW ONLY",String.class,event);
-            if(!existing.isEmpty())evaluation=existing.get(0);
-            else jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) VALUES(?,?,?,'ACTIVE','TARGET',?,?,?,?,'FRESH','NONE','ILLEGAL',90,'HIGH',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),(SELECT alarm_id FROM uav_event WHERE event_id=?),?,?,?,?,?,'isolated-measured',CAST('[]' AS JSON))",
-                    evaluation,run,ruleVersion,target,at(now),at(now),at(now),event,org,district,mode,at(now),assurance);
+            String evaluation=existing.isEmpty()?measuredEvaluation(event,observed):existing.get(0);
             String version=id();
             if(jdbc.queryForObject("SELECT COUNT(*) FROM airspace WHERE airspace_id=?",Long.class,airspace)==0){
                 jdbc.update("INSERT INTO airspace(airspace_id,airspace_no,name,source_mode,owner_org_id,district_id,created_at,updated_at) VALUES(?,?,'Isolated measured region',?,?,?,?,?)",airspace,airspace,mode,org,district,at(now),at(now));
                 jdbc.update("INSERT INTO airspace_version(airspace_version_id,airspace_id,version_no,kind_code,boundary,min_altitude_m,max_altitude_m,altitude_datum,valid_from,created_at) VALUES (?,?,1,'PROHIBITED',ST_Multi(ST_MakeEnvelope(?,?,?,?,4326)),0,200,'AMSL',?,?)",version,airspace,longitude-.01,latitude-.01,longitude+.01,latitude+.01,at(now-60_000),at(now));
             }else version=jdbc.queryForObject("SELECT airspace_version_id FROM airspace_version WHERE airspace_id=? ORDER BY version_no DESC FETCH FIRST 1 ROW ONLY",String.class,airspace);
-            jdbc.update("INSERT INTO prediction_actual_entry_link(event_id,target_id,airspace_id,observed_at,evaluation_id,airspace_version_id) VALUES(?,?,?,?,?,?)",event,target,airspace,now,evaluation,version);
+            jdbc.update("INSERT INTO prediction_actual_entry_link(event_id,target_id,airspace_id,observed_at,evaluation_id,airspace_version_id) VALUES(?,?,?,?,?,?)",event,target,airspace,observed,evaluation,version);
+        }
+        String measuredEvaluation(String event,long observed) {
+            String evaluation=id();
+            jdbc.update("INSERT INTO rule_evaluation(evaluation_id,run_id,rule_set_version_id,mode,subject_kind,target_id,observed_at,as_of,evaluated_at,freshness_code,plan_match_code,legal_status,score,grade,violation_reasons,hit_details,unknown_reasons,evidence_references,input_snapshot,alarm_id,owner_org_id,district_id,source_mode,created_at,decision_assurance_code,decision_algorithm_version,decision_assurance_reasons) VALUES(?,?,?,'ACTIVE','TARGET',?,?,?,?,'FRESH','NONE','ILLEGAL',90,'HIGH',CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('[]' AS JSON),CAST('{}' AS JSON),(SELECT alarm_id FROM uav_event WHERE event_id=?),?,?,?,?,?,'isolated-measured',CAST('[]' AS JSON))",
+                    evaluation,run,ruleVersion,target,at(observed),at(observed),at(observed),event,org,district,mode,at(observed),assurance);
+            return evaluation;
+        }
+        void renewEntries(String event,long observed,List<String> areas) {
+            measuredPoint(observed,longitude,100);
+            String evaluation=measuredEvaluation(event,observed);
+            for(String area:areas) {
+                String version=jdbc.queryForObject("SELECT airspace_version_id FROM airspace_version WHERE airspace_id=? ORDER BY version_no DESC FETCH FIRST 1 ROW ONLY",String.class,area);
+                jdbc.update("INSERT INTO prediction_actual_entry_link(event_id,target_id,airspace_id,observed_at,evaluation_id,airspace_version_id) VALUES(?,?,?,?,?,?)",event,target,area,observed,evaluation,version);
+            }
         }
         void measuredPoint(long observed,double lon,double amsl){measuredPoint(observed,lon,amsl,"{}");}
         void lateSourceSwitchPoint(long received) {

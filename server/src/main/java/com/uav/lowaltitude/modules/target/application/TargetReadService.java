@@ -96,6 +96,12 @@ public class TargetReadService {
     private final ObjectMapper objectMapper;
     private final FusionConfigService fusionConfig;
     private final SourceContributionReader sourceContributions;
+    private com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void situationVisibility(com.uav.lowaltitude.modules.alarm.application.UavRiskCaseIdentity riskCases) {
+        this.riskCases = riskCases;
+    }
 
     public TargetReadService(
             AccessControlService accessControl,
@@ -115,7 +121,7 @@ public class TargetReadService {
         this.sourceContributions = sourceContributions;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public PageDto<TargetSummaryDto> targets(MultiValueMap<String, String> parameters) {
         AccessDecision access = accessControl.require(PermissionCode.TARGET_READ);
         RequestValues request = new RequestValues(parameters);
@@ -139,9 +145,14 @@ public class TargetReadService {
         List<TargetRow> rows = repository.listTargets(query, access, page.offset(), page.size);
         // 三摘要与方位按**整页**一次取回（决策 15-4）：逐条查会变成 N+1，而列表最大 100 条。
         Map<String, TargetSummariesRow> summaries = summaries(rows);
+        Set<String> completed = mapVisibleAt == null || riskCases == null ? Set.of()
+                : riskCases.situationCompletedTargets(rows.stream().filter(row -> "UAV".equals(row.objectTypeCode()))
+                    .map(TargetRow::targetId).toList());
         long mapLifetimeMs = rows.isEmpty() ? 0 : mapVisibleAt != null ? visibleLifetimeMs : configuredMapLifetimeMs();
         List<TargetSummaryDto> items = rows.stream()
-                .map(row -> summary(row, summaries.get(row.targetId()), mapLifetimeMs))
+                .map(row -> summary(row, summaries.get(row.targetId()), mapLifetimeMs, mapVisibleAt == null ? null
+                        : new com.uav.lowaltitude.modules.target.api.TargetDtos.SituationVisibilityDto(
+                            completed.contains(row.targetId()) ? "COUNTERMEASURE_COMPLETED" : "VISIBLE")))
                 .toList();
         return new PageDto<>(items, page.page, page.size, total);
     }
@@ -284,14 +295,15 @@ public class TargetReadService {
         return new RecentTracksDto(observed.to.toInstant().toEpochMilli(), items);
     }
 
-    private TargetSummaryDto summary(TargetRow row, TargetSummariesRow summaries, long mapLifetimeMs) {
+    private TargetSummaryDto summary(TargetRow row, TargetSummariesRow summaries, long mapLifetimeMs,
+            com.uav.lowaltitude.modules.target.api.TargetDtos.SituationVisibilityDto situationVisibility) {
         TargetStateDto state = state(row, summaries);
         return new TargetSummaryDto(
                 row.targetId(), row.targetNo(), millis(row.firstSeenAt()), millis(row.lastSeenAt()),
                 row.objectTypeCode(), row.subtype(), row.uavSn(), row.sourceMode(), row.ownerOrgId(),
                 row.districtId(), state, row.ownerOrgName(), row.districtName(),
                 riskSummary(summaries), legalitySummary(summaries), disposalSummary(summaries),
-                mapExpiresAt(row, mapLifetimeMs));
+                mapExpiresAt(row, mapLifetimeMs), situationVisibility);
     }
 
     /**

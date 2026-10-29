@@ -34,6 +34,17 @@ class PredictionSpatialEvaluatorTest {
     }
 
     @Test
+    void extendedSpatialRunwayIsOptInAndKeepsTheStandardThirtySecondWindow() {
+        double lon = 118, lat = 37;
+        Forecast extended = forecast(lon, lat, 0.05, true, 120);
+        var zone = zone("a", "v1", NOW, null, List.of(rectangle(lon, lat, 900, -10, 1100, 10)));
+        assertThat(evaluator.evaluateForAirspace("a", extended, List.of(zone)).decision()).isEqualTo(Decision.CLEAR);
+        var qa = evaluator.evaluateForAirspace("a", extended, List.of(zone), 120);
+        assertThat(qa.decision()).isEqualTo(Decision.ENTER);
+        assertThat(qa.entrySeconds()).isBetween(90.4, 90.6);
+    }
+
+    @Test
     void holesAndMultipolygonsDoNotBecomeSolidBoundingBoxes() {
         double lon = 118, lat = 37;
         Polygon withHole = new Polygon(rectangle(lon, lat, -100, -100, 400, 100).shell(),
@@ -97,13 +108,20 @@ class PredictionSpatialEvaluatorTest {
     }
 
     private static Forecast forecast(double lon, double lat, double error, boolean height) {
+        return forecast(lon, lat, error, height, 30);
+    }
+    private static Forecast forecast(double lon, double lat, double error, boolean height, int horizonSeconds) {
         List<Point> points = new ArrayList<>();
-        for (int seconds : new int[] { 0, 10, 20, 30 }) {
+        List<Point> milestones = new ArrayList<>();
+        for (int seconds = 0; seconds <= horizonSeconds; seconds++) {
             double[] ll = AlphaBetaFilter.fromEnu(lon, lat, seconds * 10, 0);
-            points.add(new Point(seconds, ll[0], ll[1], error, height ? new Height(100, 5) : null, null));
+            Point point = new Point(seconds, ll[0], ll[1], error, height ? new Height(100, 5) : null, null);
+            points.add(point);
+            if (seconds == 10 || seconds == 20 || seconds == 30 || (seconds > 30 && seconds % 30 == 0))
+                milestones.add(point);
         }
         return new Forecast(NOW, NOW, UUID.randomUUID().toString(), lon, lat, 10, 0, List.of(), points,
-                points.subList(1, 4), null, PredictionEngine.ALGORITHM_VERSION);
+                milestones, null, PredictionEngine.ALGORITHM_VERSION);
     }
     private static Polygon rectangle(double lon, double lat, double x1, double y1, double x2, double y2) {
         List<GeoPoint> ring = new ArrayList<>();

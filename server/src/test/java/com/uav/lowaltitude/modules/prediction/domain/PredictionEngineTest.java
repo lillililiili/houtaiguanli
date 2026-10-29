@@ -37,6 +37,17 @@ class PredictionEngineTest {
     }
 
     @Test
+    void longerQaHorizonKeepsStandardMilestonesAndAddsTheRequestedSimulatedRunway() {
+        var data = measurements(118, 37, BASE, i -> new double[] { i * 10, i * 2 });
+        var extended = engine.forecast(data, BASE, Config.defaults(), 120);
+        assertThat(extended.reliable()).isTrue();
+        assertThat(extended.forecast().points()).hasSize(121);
+        assertThat(extended.forecast().milestones()).extracting(PredictionEngine.Point::seconds)
+                .containsExactly(10, 20, 30, 60, 90, 120);
+        assertThat(engine.forecast(data, BASE, Config.defaults()).forecast().points()).hasSize(31);
+    }
+
+    @Test
     void originAdvancesFromFreshMeasurementWithoutClaimingAnotherObservation() {
         var result = engine.forecast(measurements(118, 37, BASE, i -> new double[] { i * 10, 0 }), BASE + 2_000, Config.defaults());
         assertThat(result.reliable()).isTrue();
